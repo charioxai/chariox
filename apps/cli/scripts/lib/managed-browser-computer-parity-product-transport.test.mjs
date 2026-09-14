@@ -9,6 +9,7 @@ const moduleUrl = new URL("./managed-browser-computer-parity-product-transport.m
 const kernelClientDistUrl = new URL("../../../../packages/kernel-client/dist/ipc.js", import.meta.url);
 const kernelRequestsDistUrl = new URL("../../../../packages/kernel-client/dist/ipc-requests.js", import.meta.url);
 const relayCryptoDistUrl = new URL("../../../../packages/kernel-client/dist/relay-crypto.js", import.meta.url);
+const displayStreamDistUrl = new URL("../../../../packages/kernel-client/dist/display-stream.js", import.meta.url);
 
 const importProductTransport = () => import(moduleUrl.href);
 
@@ -248,6 +249,225 @@ test("real LocalIpcClient authorizes a Selkies endpoint, then fails closed witho
     assert.equal(receivedRequests[0].request.GetSliceDisplayEndpoint.slice_ref, "slice-1");
   } finally {
     client.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("real LocalIpcClient authorizes and connects the encrypted Selkies display stream", async () => {
+  let LocalIpcClient;
+  let getSliceDisplayEndpointRequest;
+  let getRoomEnvironmentStateRequest;
+  let relayStatusRequest;
+  let decryptRelayPayload;
+  let encryptRelayPayload;
+  let createBrowserRelayKeypair;
+  let decryptBrowserRelayPayload;
+  let encryptBrowserRelayPayload;
+  let openSelkiesDisplayStream;
+  let WebSocket;
+  let WebSocketServer;
+  try {
+    ({ LocalIpcClient } = await import(kernelClientDistUrl.href));
+    ({ getSliceDisplayEndpointRequest, getRoomEnvironmentStateRequest, relayStatusRequest } = await import(kernelRequestsDistUrl.href));
+    ({ decryptRelayPayload, encryptRelayPayload } = await import(relayCryptoDistUrl.href));
+    ({
+      createRelayKeypair: createBrowserRelayKeypair,
+      decryptRelayPayload: decryptBrowserRelayPayload,
+      encryptRelayPayload: encryptBrowserRelayPayload,
+    } = await import(new URL("../../../../packages/kernel-client/dist/browser-relay-crypto.js", import.meta.url).href));
+    ({ openSelkiesDisplayStream } = await import(displayStreamDistUrl.href));
+    ({ WebSocket, WebSocketServer } = createRequire(fileURLToPath(kernelClientDistUrl))("ws"));
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `real Selkies stream regression requires the built public display client and existing ws dependency; ${detail}`,
+      { cause: error },
+    );
+  }
+
+  const worker = createECDH("prime256v1");
+  const workerPublicKey = worker.generateKeys().toString("base64");
+  const displayWorker = await createBrowserRelayKeypair();
+  const server = new WebSocketServer({ port: 0 });
+  await once(server, "listening");
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const relayEndpoint = `ws://127.0.0.1:${address.port}`;
+  const displayEndpoint = `${relayEndpoint}/display/tunnel-1/stream`;
+  const receivedFrames = [];
+  const receivedRequests = [];
+  const receivedDisplayControls = [];
+  let viewerPublicKey;
+  let serverError;
+  server.on("connection", (socket, request) => {
+    const pathname = new URL(request.url ?? "/", relayEndpoint).pathname;
+    if (pathname === "/display/tunnel-1/stream") {
+      socket.on("message", async (raw, isBinary) => {
+        try {
+          assert.equal(isBinary, true, "Selkies viewer controls must use the relay binary lane");
+          const packet = JSON.parse(raw.toString());
+          const fragment = JSON.parse(await decryptBrowserRelayPayload(displayWorker.privateKey, packet, viewerPublicKey));
+          receivedDisplayControls.push(fragment);
+          assert.equal(fragment.protocol, "chariox-display-v1");
+          assert.equal(fragment.stream_id, "tunnel-1");
+          assert.equal(fragment.sender, "viewer");
+          assert.equal(fragment.sequence, 0);
+          assert.equal(fragment.kind, "text");
+          assert.equal(Buffer.from(fragment.data_base64, "base64").toString("utf8"), "START_VIDEO");
+          assert.equal(typeof viewerPublicKey, "string");
+          const response = await encryptBrowserRelayPayload(
+            viewerPublicKey,
+            JSON.stringify({
+              protocol: "chariox-display-v1",
+              stream_id: "tunnel-1",
+              sender: "kernel",
+              sequence: 0,
+              kind: "text",
+              final_fragment: true,
+              data_base64: Buffer.from("VIDEO_STARTED", "utf8").toString("base64"),
+            }),
+            displayWorker,
+          );
+          socket.send(Buffer.from(JSON.stringify(response.payload), "utf8"));
+          const videoFrame = Buffer.alloc(12, 0x2a);
+          videoFrame[0] = 4;
+          const frameResponse = await encryptBrowserRelayPayload(
+            viewerPublicKey,
+            JSON.stringify({
+              protocol: "chariox-display-v1",
+              stream_id: "tunnel-1",
+              sender: "kernel",
+              sequence: 1,
+              kind: "binary",
+              final_fragment: true,
+              data_base64: videoFrame.toString("base64"),
+            }),
+            displayWorker,
+          );
+          socket.send(Buffer.from(JSON.stringify(frameResponse.payload), "utf8"));
+        } catch (error) {
+          serverError = error;
+          socket.close();
+        }
+      });
+      return;
+    }
+
+    socket.on("message", (raw) => {
+      try {
+        const frame = JSON.parse(raw.toString());
+        receivedFrames.push(frame);
+        if (frame.kind === "client_connect") {
+          assert.equal(frame.auth_token, "operator-test-token");
+          assert.deepEqual(frame.target, { daemon_id: "daemon-1", daemon_alias: null });
+          socket.send(JSON.stringify({
+            kind: "client_connected",
+            target: frame.target,
+            daemon_public_key: workerPublicKey,
+          }));
+          return;
+        }
+        if (frame.kind !== "client_request") return;
+        const envelope = JSON.parse(decryptRelayPayload(worker.getPrivateKey(), frame.encrypted_request));
+        receivedRequests.push(envelope);
+        let response;
+        if (Object.hasOwn(envelope.request, "RelayStatus")) {
+          assert.deepEqual(envelope.request, relayStatusRequest());
+          response = {
+            RelayStatus: {
+              status: {
+                configured: true,
+                connected: true,
+                daemon_id: "daemon-1",
+                machine_id: "machine-1",
+              },
+            },
+          };
+        } else if (Object.hasOwn(envelope.request, "GetRoomEnvironmentState")) {
+          assert.deepEqual(envelope.request, getRoomEnvironmentStateRequest("room-1"));
+          response = {
+            RoomEnvironmentState: {
+              environment: {
+                session_id: "room-1",
+                environment_id: "environment-1",
+              },
+            },
+          };
+        } else {
+          const requestValue = envelope.request.GetSliceDisplayEndpoint;
+          viewerPublicKey = requestValue.viewer_public_key;
+          assert.equal(Buffer.from(viewerPublicKey, "base64").length, 65);
+          assert.deepEqual(envelope.request, getSliceDisplayEndpointRequest("slice-1", {
+            sessionId: "room-1",
+            attachmentId: "attachment-1",
+            viewerPublicKey,
+          }));
+          response = {
+            SliceDisplayEndpoint: {
+              endpoint: {
+                slice_id: "slice-1",
+                kind: "selkies",
+                url: displayEndpoint,
+                access: "tunnel",
+                stream_protocol: "chariox-display-v1",
+                stream_id: "tunnel-1",
+                peer_public_key: displayWorker.publicKeyBase64,
+              },
+            },
+          };
+        }
+        const encryptedResponse = encryptRelayPayload(
+          frame.encrypted_request.sender_public_key,
+          Buffer.from(JSON.stringify(response), "utf8"),
+        ).payload;
+        socket.send(JSON.stringify({
+          kind: "client_response",
+          request_id: frame.request_id,
+          encrypted_response: encryptedResponse,
+        }));
+      } catch (error) {
+        serverError = error;
+        socket.close();
+      }
+    });
+  });
+
+  const client = new LocalIpcClient(relayEndpoint, {
+    relayAuthToken: "operator-test-token",
+    targetDaemonId: "daemon-1",
+  });
+  const imported = await importProductTransport();
+  const transport = imported.createManagedBrowserComputerParityTransportFromPublicClient({
+    client,
+    requestApi: { getSliceDisplayEndpointRequest, getRoomEnvironmentStateRequest, relayStatusRequest },
+    displayTransport: { openSelkiesDisplayStream, webSocket: WebSocket },
+  });
+  try {
+    const result = await transport.run("selkies.attach", {
+      binding: {
+        kernelId: "daemon-1",
+        machineId: "machine-1",
+        roomId: "room-1",
+        environmentId: "environment-1",
+      },
+      client: "web",
+      displayBackend: "selkies",
+      sliceId: "slice-1",
+      attachmentId: "attachment-1",
+    });
+    assert.equal(result.attached, true);
+    assert.equal(result.displayProtocol, "chariox-display-v1");
+    assert.equal(result.displayStreamId, "tunnel-1");
+    assert.deepEqual(result.startupMessage, { kind: "text", byteLength: "VIDEO_STARTED".length });
+    assert.deepEqual(result.firstFrame, { kind: "binary", byteLength: 12, recordType: 4 });
+    assert.deepEqual(receivedFrames.map((frame) => frame.kind), [
+      "client_connect", "client_request", "client_request", "client_request",
+    ]);
+    assert.equal(receivedRequests.length, 3);
+    assert.equal(receivedDisplayControls.length, 1);
+    assert.ifError(serverError);
+  } finally {
+    await client.close();
     await new Promise((resolve) => server.close(resolve));
   }
 });
