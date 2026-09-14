@@ -983,13 +983,11 @@ mod tests {
             .join("disposable-worker/kernel-started");
 
         let previous_home = env::var_os("HOME");
-        let previous_home = env::var_os("HOME");
         let previous_chariox_home = env::var_os("CHARIOX_HOME");
         let previous_receipt = env::var_os(ACTIVITY_RECEIPT_ENV);
         let previous_local_auth = env::var_os("CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE");
         let previous_started_marker = env::var_os("CHARIOX_KERNEL_STARTED_MARKER");
         env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
-        env::set_var("HOME", &task_root);
         env::set_var("HOME", &task_root);
         env::set_var("CHARIOX_KERNEL_STARTED_MARKER", &worker_started_marker);
 
@@ -1411,7 +1409,6 @@ mod tests {
             .expect("relay task should join");
         let cloud_requests = cloud_api.stop();
 
-        restore_worker_test_env("HOME", previous_home);
         restore_worker_test_env("HOME", previous_home);
         restore_worker_test_env("CHARIOX_HOME", previous_chariox_home);
         restore_worker_test_env(ACTIVITY_RECEIPT_ENV, previous_receipt);
