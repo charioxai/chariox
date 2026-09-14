@@ -1138,6 +1138,15 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         ProjectEnvironmentSetupPhase::Cancelled,
         "cancellation intent must win over missing-status redispatch"
     );
+    assert_eq!(
+        cancelled_status.message.as_deref(),
+        Some("setup cancellation completed because the worker had no matching operation"),
+        "an authenticated missing-worker response must settle the public cancellation"
+    );
+    assert!(
+        cancelled_status.retryable,
+        "a cancellation settled without a worker must remain retryable"
+    );
     state_worker
         .write()
         .await
