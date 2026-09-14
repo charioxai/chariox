@@ -1646,6 +1646,25 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     restarted_connector_worker
         .await
         .expect("restored worker connector should stop");
+    let restarted_worker_disconnected = async {
+        for _ in 0..200 {
+            if registry
+                .read()
+                .await
+                .daemon_in_realm(SETUP_TRANSPORT_RECOVERY_REALM, &config_worker.daemon_id)
+                .is_none()
+            {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        false
+    }
+    .await;
+    assert!(
+        restarted_worker_disconnected,
+        "restored worker should be absent before the retained-worker fixture registers"
+    );
 
     // Start a separate operation through an authenticated external worker
     // fixture. Its first Get is worker-authoritative Cancelled, allowing the
