@@ -219,6 +219,32 @@ test("display ingress backlog is bounded before a stalled decode and discarded a
   }
 })
 
+test("display close discards a decode that completes after closure", async () => {
+  const { stream, socket, worker } = await openFixture()
+  const first = await encryptedFragment(stream, worker, textFragment(0, "first"))
+  let releaseFirst = () => {}
+  let firstDecodeStarted = false
+  const stalledFirst = {
+    size: first.byteLength,
+    async arrayBuffer() {
+      firstDecodeStarted = true
+      return new Promise<ArrayBuffer>((resolve) => {
+        releaseFirst = () => resolve(first.buffer.slice(first.byteOffset, first.byteOffset + first.byteLength))
+      })
+    },
+  }
+  socket.emit("message", stalledFirst, true)
+  await new Promise<void>((resolve) => queueMicrotask(resolve))
+  assert.equal(firstDecodeStarted, true)
+  const pending = stream.receive({ timeoutMs: 250 })
+  const closing = stream.close()
+  await assert.rejects(withDeadline(pending), /was closed/)
+  releaseFirst()
+  await closing
+  await new Promise<void>((resolve) => queueMicrotask(resolve))
+  await assert.rejects(withDeadline(stream.receive()), /closed/)
+})
+
 test("concurrent display controls reserve distinct ordered sequences", async () => {
   const { stream, socket, worker } = await openFixture()
   await Promise.all([stream.sendControl("START_VIDEO"), stream.sendControl("REQUEST_KEYFRAME")])
