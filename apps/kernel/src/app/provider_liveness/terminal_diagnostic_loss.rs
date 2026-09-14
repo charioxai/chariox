@@ -153,6 +153,19 @@ fn app_resize_liveness_reconciliation_preserves_pty_terminal_diagnostic() {
         crate::git_observer::CompletedTurnSettlementStatus::Failed,
         "unexpected provider exit must not project a successful turn"
     );
+    let termination = completed_turn
+        .provider_termination
+        .as_ref()
+        .expect("public liveness settlement must retain the PTY exit status");
+    assert_eq!(
+        termination.category,
+        crate::provider::ProviderRunTerminationCategory::ProcessExit,
+        "a real child exit must remain distinguishable from cancellation or transport failure"
+    );
+    assert_eq!(
+        termination.reason, "provider process exited with status 1",
+        "the public liveness projection must retain the exact child exit status"
+    );
 
     let repeated_input_result = app.send_terminal_input(
         session.id(),
