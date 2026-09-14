@@ -222,6 +222,11 @@ async fn public_remote_completion_preserves_worker_termination_async() {
         "normal public completion must retain the worker-reported termination"
     );
     assert_eq!(
+        projected.settlement_status,
+        crate::git_observer::CompletedTurnSettlementStatus::Failed,
+        "worker-reported termination must not project a successful turn"
+    );
+    assert_eq!(
         app.agents()
             .get_agent(&agent_id)
             .expect("remote agent should remain available")
