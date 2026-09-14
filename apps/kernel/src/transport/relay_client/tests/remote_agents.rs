@@ -77,66 +77,78 @@ async fn public_remote_completion_preserves_worker_termination_async() {
         .expect("worker registration should send");
     wait_for_daemon_registration(registry, &worker_config.daemon_id).await;
 
-    let mut home_config = DaemonConfig::for_tests();
-    home_config.daemon_id = "termination-home".to_string();
-    home_config.host_machine_id = "termination-home-machine".to_string();
-    home_config.relay_url = Some(relay_url);
-    home_config.relay_token = Some("termination-test-token".to_string());
-    home_config.relay_request_timeout_ms = 2_000;
-    let mut app = DaemonApp::bootstrap(home_config).expect("home daemon should bootstrap");
-    let (session_id, agent_id, prompt_id, active_prompt) = {
-        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new(
-                "workspace-remote-termination",
-                "worktree-remote-termination",
-            ))
-            .expect("home session should be created");
-        let attachment = crate::app::KernelSessionService::new(&mut app)
-            .attach(AttachRequest::new(
-                session.id(),
-                "remote-termination-client",
-                ClientCapabilityLevel::InteractiveStructured,
-            ))
-            .expect("home attachment should be created");
-        app.agents()
-            .bind_remote_execution(
-                agent.id(),
-                crate::agent::RemoteAgentBinding {
-                    worker_kernel_id: worker_config.daemon_id.clone(),
-                    worker_machine_id: worker_config.host_machine_id.clone(),
-                    execution_lease_id: "termination-lease".to_string(),
-                    leased_agent_id: "termination-leased-agent".to_string(),
-                    active_worker_provider_run_id: Some("worker-provider-run".to_string()),
-                    relay_url: None,
-                    relay_token: None,
-                    relay_peer_protocol_version: Some(
-                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-                    ),
-                },
-            )
-            .expect("home agent should bind to worker");
-        let PromptSubmissionOutcome::Started { prompt } = app
-            .submit_prompt(
-                session.id(),
-                attachment.id(),
-                Some(agent.id()),
-                "remote prompt with worker termination",
-                Vec::new(),
-            )
-            .expect("remote prompt should start")
-        else {
-            panic!("remote prompt should be active");
-        };
-        (
-            session.id().to_string(),
-            agent.id().to_string(),
-            prompt.id().to_string(),
-            prompt,
-        )
-    };
-
-    let termination = crate::provider::ProviderRunTermination::process_exit(23, 17_600);
+    let (active_prompt_tx, active_prompt_rx) = oneshot::channel();
     let worker_response = tokio::spawn(async move {
+        let (submit_relay_request_id, submit_home_public_key) = loop {
+            let message = timeout(Duration::from_secs(2), worker_socket.next())
+                .await
+                .expect("worker should receive prompt submission request before timeout")
+                .expect("worker relay socket should remain open")
+                .expect("worker relay frame should decode");
+            let Message::Text(text) = message else {
+                continue;
+            };
+            let envelope = serde_json::from_str::<chariox_relay::protocol::RelayEnvelope>(&text)
+                .expect("worker relay envelope should decode");
+            let chariox_relay::protocol::RelayEnvelope::DaemonIncomingPeerRequest {
+                relay_request_id,
+                encrypted_request,
+                ..
+            } = envelope
+            else {
+                continue;
+            };
+            let decrypted = crate::transport::relay_crypto::decrypt_payload_for_private_key(
+                &worker_private_key,
+                &encrypted_request,
+            )
+            .expect("worker should decrypt prompt submission request");
+            let request = serde_json::from_slice::<RelayPeerRequest>(&decrypted.plaintext)
+                .expect("prompt submission request should decode");
+            assert!(matches!(
+                request,
+                RelayPeerRequest::SubmitLeasedPrompt { leased_agent_id, .. }
+                    if leased_agent_id == "termination-leased-agent"
+            ));
+            break (relay_request_id, decrypted.sender_public_key);
+        };
+        let submission = RelayPeerResponse::LeasedPromptSubmitted {
+            provider_run_id: "worker-provider-run".to_string(),
+            outcome: PromptSubmissionOutcome::Started {
+                prompt: crate::session::PromptQueueItem::new(
+                    "worker-prompt",
+                    "worker-attachment",
+                    "termination-leased-agent",
+                    "remote prompt with worker termination",
+                    crate::session::PromptStatus::Running,
+                ),
+            },
+        };
+        let encrypted_submission = crate::transport::relay_crypto::encrypt_payload_for_peer(
+            &worker_private_key,
+            &submit_home_public_key,
+            &serde_json::to_vec(&submission).expect("worker submission should serialize"),
+        )
+        .expect("worker submission should encrypt");
+        worker_socket
+            .send(Message::Text(
+                serde_json::to_string(
+                    &chariox_relay::protocol::RelayEnvelope::DaemonIncomingPeerResponse {
+                        relay_request_id: submit_relay_request_id,
+                        encrypted_response: Some(encrypted_submission),
+                        error: None,
+                    },
+                )
+                .expect("worker submission envelope should serialize")
+                .into(),
+            ))
+            .await
+            .expect("worker submission should send");
+
+        let active_prompt = active_prompt_rx
+            .await
+            .expect("home should provide active prompt after submission");
+        let termination = crate::provider::ProviderRunTermination::process_exit(23, 17_600);
         let (relay_request_id, home_public_key) = loop {
             let message = timeout(Duration::from_secs(2), worker_socket.next())
                 .await
@@ -202,6 +214,69 @@ async fn public_remote_completion_preserves_worker_termination_async() {
             .expect("worker response should send");
         let _ = worker_socket.close(None).await;
     });
+    tokio::task::yield_now().await;
+
+    let mut home_config = DaemonConfig::for_tests();
+    home_config.daemon_id = "termination-home".to_string();
+    home_config.host_machine_id = "termination-home-machine".to_string();
+    home_config.relay_url = Some(relay_url);
+    home_config.relay_token = Some("termination-test-token".to_string());
+    home_config.relay_request_timeout_ms = 2_000;
+    let mut app = DaemonApp::bootstrap(home_config).expect("home daemon should bootstrap");
+    let (session_id, agent_id, prompt_id, active_prompt) = {
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-remote-termination",
+                "worktree-remote-termination",
+            ))
+            .expect("home session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "remote-termination-client",
+                ClientCapabilityLevel::InteractiveStructured,
+            ))
+            .expect("home attachment should be created");
+        app.agents()
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: worker_config.daemon_id.clone(),
+                    worker_machine_id: worker_config.host_machine_id.clone(),
+                    execution_lease_id: "termination-lease".to_string(),
+                    leased_agent_id: "termination-leased-agent".to_string(),
+                    active_worker_provider_run_id: Some("worker-provider-run".to_string()),
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .expect("home agent should bind to worker");
+        let PromptSubmissionOutcome::Started { prompt } = app
+            .submit_prompt(
+                session.id(),
+                attachment.id(),
+                Some(agent.id()),
+                "remote prompt with worker termination",
+                Vec::new(),
+            )
+            .expect("remote prompt should start")
+        else {
+            panic!("remote prompt should be active");
+        };
+        (
+            session.id().to_string(),
+            agent.id().to_string(),
+            prompt.id().to_string(),
+            prompt,
+        )
+    };
+
+    active_prompt_tx
+        .send(active_prompt)
+        .expect("worker should wait for the home prompt before completion");
 
     let completion =
         crate::transport::TransportService::complete_active_prompt(&mut app, &session_id)
