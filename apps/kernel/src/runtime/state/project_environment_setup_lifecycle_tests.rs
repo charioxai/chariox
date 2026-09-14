@@ -15,8 +15,8 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 #[cfg(unix)]
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
 };
 #[cfg(unix)]
 use std::thread;
@@ -24,7 +24,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[cfg(unix)]
-use chariox_relay::{RelayConfig, RelayServer};
+use chariox_relay::{
+    RelayAction, RelayAuthVerifier, RelayConfig, RelayServer, RelaySubjectKind, RelayTokenClaims,
+    ScopedTokenVerifier,
+};
 #[cfg(unix)]
 use tokio::sync::{oneshot, watch};
 
@@ -423,37 +426,21 @@ async fn public_setup_status_transport_recovery_preserves_operation_until_worker
         .local_addr()
         .expect("relay listener should have addr");
     let relay_url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let relay = Arc::new(RelayServer::new(RelayConfig {
-        host: addr.ip().to_string(),
-        port: addr.port(),
-        shared_token: Some("secret".to_string()),
-    }));
-    let registry = relay.registry();
-    let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel::<()>();
-    let server_task = {
-        let relay = Arc::clone(&relay);
-        tokio::spawn(async move {
-            relay
-                .run_listener_until(listener, async {
-                    let _ = server_shutdown_rx.await;
-                })
-                .await
-                .expect("relay server should run");
-        })
-    };
 
     let mut config_home = DaemonConfig::for_tests();
+    let home_relay_token = "setup-transport-recovery-home-token".to_string();
     config_home.daemon_id = "home-kernel-transport-recovery".to_string();
     config_home.host_machine_id = "home-machine-transport-recovery".to_string();
     config_home.relay_url = Some(relay_url.clone());
-    config_home.relay_token = Some("secret".to_string());
+    config_home.relay_token = Some(home_relay_token);
     config_home.relay_heartbeat_ms = 50;
 
     let mut config_worker = DaemonConfig::for_tests();
+    let worker_relay_token = "setup-transport-recovery-worker-token".to_string();
     config_worker.daemon_id = "worker-kernel-transport-recovery".to_string();
     config_worker.host_machine_id = "worker-machine-transport-recovery".to_string();
     config_worker.relay_url = Some(relay_url.clone());
-    config_worker.relay_token = Some("secret".to_string());
+    config_worker.relay_token = Some(worker_relay_token.clone());
     config_worker.relay_heartbeat_ms = 50;
     config_worker.kernel_runtime_role = KernelRuntimeRole::RemoteLeaseWorker;
     config_worker.accept_remote_leases = true;
@@ -503,6 +490,28 @@ async fn public_setup_status_transport_recovery_preserves_operation_until_worker
     )
     .unwrap();
     ensure_worker_validation_boundary(&config_worker).expect("fixture is a confirmed worker");
+
+    let relay = Arc::new(RelayServer::with_auth_verifier(
+        RelayConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            shared_token: None,
+        },
+        setup_transport_recovery_relay_auth(&config_home, &config_worker),
+    ));
+    let registry = relay.registry();
+    let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel::<()>();
+    let server_task = {
+        let relay = Arc::clone(&relay);
+        tokio::spawn(async move {
+            relay
+                .run_listener_until(listener, async {
+                    let _ = server_shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        })
+    };
 
     let app_home = Arc::new(tokio::sync::Mutex::new(
         crate::DaemonApp::bootstrap(config_home.clone()).unwrap(),
@@ -655,7 +664,7 @@ async fn public_setup_status_transport_recovery_preserves_operation_until_worker
             state_worker,
             shutdown_worker_rx,
             relay_url.clone(),
-            "secret".to_string(),
+            worker_relay_token.clone(),
         ),
     );
     for daemon_id in [&config_home.daemon_id, &config_worker.daemon_id] {
@@ -783,7 +792,7 @@ async fn public_setup_status_transport_recovery_preserves_operation_until_worker
             state_worker,
             shutdown_worker_rx,
             relay_url,
-            "secret".to_string(),
+            worker_relay_token,
         ),
     );
     for _ in 0..200 {
@@ -847,6 +856,85 @@ async fn public_setup_status_transport_recovery_preserves_operation_until_worker
         .expect("restored worker connector should stop");
     let _ = server_shutdown_tx.send(());
     server_task.await.expect("relay server should stop");
+}
+
+#[cfg(unix)]
+fn setup_transport_recovery_relay_auth(
+    config_home: &DaemonConfig,
+    config_worker: &DaemonConfig,
+) -> RelayAuthVerifier {
+    let allowed_actions = vec![
+        RelayAction::DaemonRegister,
+        RelayAction::DaemonHeartbeat,
+        RelayAction::ClientMetadataRead,
+        RelayAction::PacketRoute,
+        RelayAction::PeerRequest,
+        RelayAction::PeerEvent,
+    ];
+    let claims = [
+        (
+            "setup-transport-recovery-home-token",
+            RelayTokenClaims {
+                issuer: "project-environment-setup-test".to_string(),
+                subject: config_home.daemon_id.clone(),
+                subject_kind: RelaySubjectKind::Kernel,
+                realm_id: "realm-transport-recovery".to_string(),
+                allowed_actions: allowed_actions.clone(),
+                allowed_targets: None,
+                issued_at_ms: 1,
+                expires_at_ms: u64::MAX,
+                token_id: "setup-transport-recovery-home-token".to_string(),
+                account_id: None,
+                organization_id: None,
+                user_id: Some("user-1".to_string()),
+                device_id: None,
+                machine_id: Some(config_home.host_machine_id.clone()),
+                client_id: None,
+                session_id: None,
+                public_key_thumbprint: Some(
+                    crate::runtime::terminal_pairings::public_key_thumbprint(
+                        &config_home.relay_public_key,
+                    ),
+                ),
+                entitlements_version: None,
+            },
+        ),
+        (
+            "setup-transport-recovery-worker-token",
+            RelayTokenClaims {
+                issuer: "project-environment-setup-test".to_string(),
+                subject: config_worker.daemon_id.clone(),
+                subject_kind: RelaySubjectKind::Kernel,
+                realm_id: "realm-transport-recovery".to_string(),
+                allowed_actions,
+                allowed_targets: Some(vec![config_home.daemon_id.clone()]),
+                issued_at_ms: 1,
+                expires_at_ms: u64::MAX,
+                token_id: "setup-transport-recovery-worker-token".to_string(),
+                account_id: None,
+                organization_id: None,
+                user_id: Some("user-1".to_string()),
+                device_id: None,
+                machine_id: Some(config_worker.host_machine_id.clone()),
+                client_id: None,
+                session_id: None,
+                public_key_thumbprint: Some(
+                    crate::runtime::terminal_pairings::public_key_thumbprint(
+                        &config_worker.relay_public_key,
+                    ),
+                ),
+                entitlements_version: None,
+            },
+        ),
+    ]
+    .into_iter()
+    .map(|(token, claims)| (token.to_string(), claims))
+    .collect();
+    RelayAuthVerifier::ScopedToken(ScopedTokenVerifier::new(
+        claims,
+        std::collections::BTreeMap::new(),
+        Some(10),
+    ))
 }
 
 #[cfg(unix)]
