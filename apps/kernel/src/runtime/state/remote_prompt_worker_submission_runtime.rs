@@ -379,6 +379,7 @@ pub(super) fn remote_prompt_error_should_retry_transport(error: &DaemonError) ->
     let message = message.to_ascii_lowercase();
     let transient_message = [
         "target daemon is not connected to relay",
+        "target daemon disconnected from relay",
         "relay is not connected",
         "relay peer request was cancelled",
         "timed out waiting for relay peer response",
@@ -494,6 +495,26 @@ mod tests {
         };
 
         assert!(remote_prompt_error_should_retry_transport(&error));
+    }
+
+    #[test]
+    fn remote_prompt_dispatch_retries_relay_reported_disconnected_targets() {
+        let error = DaemonError::LocalTransport {
+            operation: "read relay peer response",
+            message: "target daemon disconnected from relay".to_string(),
+        };
+
+        assert!(remote_prompt_error_should_retry_transport(&error));
+    }
+
+    #[test]
+    fn remote_prompt_dispatch_does_not_retry_relay_authorization_failures() {
+        let error = DaemonError::LocalTransport {
+            operation: "read relay peer response",
+            message: "invalid relay token".to_string(),
+        };
+
+        assert!(!remote_prompt_error_should_retry_transport(&error));
     }
 
     #[test]
