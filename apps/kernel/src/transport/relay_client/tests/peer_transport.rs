@@ -5,7 +5,7 @@ use super::support::*;
 fn provider_account_materialization_peer_shape_is_versioned_and_debug_redacted() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        50
+        52
     );
     let mut materialization = crate::account_profile::ProviderAccountMaterialization {
         profile: crate::account_profile::ProviderAccountReplicaMetadata {
@@ -52,7 +52,7 @@ fn provider_account_materialization_peer_shape_is_versioned_and_debug_redacted()
 fn remote_provider_launch_credential_peer_shape_is_versioned_and_debug_redacted() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        50
+        52
     );
     let request = RelayPeerRequest::SubmitLeasedPrompt {
         leased_agent_id: "leased-agent-1".to_string(),
@@ -121,7 +121,7 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
 
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        50
+        52
     );
     let request = RelayPeerRequest::UploadManagedContextChunk {
         transfer_id: "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
@@ -142,9 +142,11 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
         value.pointer("/capability"),
         Some(&serde_json::json!("capability-canary"))
     );
+    let arm_plan = crate::managed_bootstrap::ManagedKernelContextPlan::empty_for_tests("context-1")
+        .package_binding();
+    let arm_plan_digest = arm_plan.plan_digest.clone();
     let arm = serde_json::to_value(RelayPeerRequest::ArmManagedContextImport {
-        context_id: "context-1".to_string(),
-        plan_digest: format!("sha256:{}", "f".repeat(64)),
+        plan: arm_plan,
         target_environment_id: "environment-1".to_string(),
         target_kernel_id: "target-kernel-1".to_string(),
         target_key_thumbprint: "d".repeat(64),
@@ -154,8 +156,13 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
     })
     .expect("managed context arm should serialize");
     assert_eq!(
-        arm.pointer("/context_id"),
+        arm.pointer("/plan/context_id"),
         Some(&serde_json::json!("context-1"))
+    );
+    assert!(arm.pointer("/context_id").is_none());
+    assert_eq!(
+        arm.pointer("/plan/plan_digest"),
+        Some(&serde_json::json!(arm_plan_digest))
     );
 
     let response = RelayPeerResponse::ManagedContextImportStatus {

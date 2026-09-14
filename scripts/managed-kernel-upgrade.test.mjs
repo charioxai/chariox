@@ -29,7 +29,7 @@ const upgradeState = join(repositoryRoot, "deploy/managed-kernel/managed-kernel-
 const managedService = join(repositoryRoot, "deploy/managed-kernel/chariox-managed-bootstrap.service")
 const serviceName = "chariox-managed-bootstrap.service"
 
-test("repository release policy permits protocol 325 to 326 upgrade and rollback", async (context) => {
+test("repository release policy permits deployed protocol 325 and intermediate 326 to 327 upgrade and rollback", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-release-policy-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const current = join(root, "current")
@@ -37,7 +37,12 @@ test("repository release policy permits protocol 325 to 326 upgrade and rollback
   const policyPath = "usr/lib/chariox/slice-build-context/apps/kernel/managed-upgrade-protocol-transitions.json"
   await mkdir(current)
   await put(join(target, policyPath), await readFile(join(repositoryRoot, "apps/kernel/managed-upgrade-protocol-transitions.json")))
-  for (const args of [[current, "325", target, "326"], [target, "326", current, "325"]]) {
+  for (const args of [
+    [current, "325", target, "327"],
+    [target, "327", current, "325"],
+    [current, "326", target, "327"],
+    [target, "327", current, "326"],
+  ]) {
     const result = spawnSync(process.execPath, [upgradeState, "validate-protocol-transition", ...args], { encoding: "utf8" })
     assert.equal(result.status, 0, result.stderr)
   }
@@ -1003,14 +1008,14 @@ test("managed kernel upgrade requires the exact confirmed registered-kernel rece
   assert.match(result.stderr, /not a confirmed registered-kernel receipt/)
 })
 
-test("managed kernel upgrade accepts only a signed explicitly supported newer protocol", async (context) => {
+test("managed kernel upgrade accepts signed direct deployed protocol 325 to 327 transition and rollback", async (context) => {
   const harness = await makeHarness(context, {
-    targetProtocol: 326,
+    targetProtocol: 327,
     targetTransitionPolicy: {
       schemaVersion: 1,
-      protocol: 326,
-      upgradeFrom: [325, 326],
-      rollbackTo: [325, 326],
+      protocol: 327,
+      upgradeFrom: [325, 326, 327],
+      rollbackTo: [325, 326, 327],
     },
   })
   const result = harness.run()
@@ -1018,6 +1023,17 @@ test("managed kernel upgrade accepts only a signed explicitly supported newer pr
   assert.equal(
     await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
     `releases/${harness.target.digest.slice("sha256:".length)}`,
+  )
+  const rollback = harness.run({}, [
+    harness.current.rootfs,
+    harness.target.digest,
+    harness.current.digest,
+    harness.trustedKey,
+  ])
+  assert.equal(rollback.status, 0, rollback.stderr)
+  assert.equal(
+    await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
+    `releases/${harness.current.digest.slice("sha256:".length)}`,
   )
 })
 

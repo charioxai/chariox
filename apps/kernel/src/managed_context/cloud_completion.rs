@@ -79,6 +79,91 @@ pub(crate) async fn complete_managed_context_import(
     Ok(())
 }
 
+pub(crate) fn validate_disposable_worker_completion_binding(
+    config: &DaemonConfig,
+    target_environment_id: &str,
+    target_kernel_id: &str,
+    target_key_thumbprint: &str,
+    plan: &ManagedContextPlanBinding,
+) -> Result<(), DaemonError> {
+    crate::managed_bootstrap::worker::confirmed_disposable_worker_home_caller(config)
+        .map_err(|error| {
+            completion_error(
+                format!("confirmed disposable worker binding is unavailable: {error}"),
+                false,
+            )
+        })?
+        .ok_or_else(|| completion_error("target is not a confirmed disposable worker", false))?;
+    if target_environment_id.trim().is_empty()
+        || target_kernel_id != config.daemon_id
+        || target_key_thumbprint
+            != crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key)
+    {
+        return Err(completion_error(
+            "managed context completion does not match the disposable worker binding",
+            false,
+        ));
+    }
+    crate::managed_context::package::validate_plan_binding(plan)
+        .map_err(|_| completion_error("managed context completion plan is invalid", false))
+}
+
+pub(crate) async fn complete_disposable_managed_context_import(
+    config: &DaemonConfig,
+    target_environment_id: &str,
+    plan: &ManagedContextPlanBinding,
+    context_manifest_digest: &str,
+) -> Result<(), DaemonError> {
+    validate_disposable_worker_completion_binding(
+        config,
+        target_environment_id,
+        &config.daemon_id,
+        &crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key),
+        plan,
+    )?;
+    let profile = config.cloud_relay.as_ref().ok_or_else(|| {
+        completion_error("managed worker Cloud relay profile is unavailable", false)
+    })?;
+    let machine_id = profile.machine_id.as_deref().ok_or_else(|| {
+        completion_error(
+            "managed worker Cloud Machine identity is unavailable",
+            false,
+        )
+    })?;
+    let machine_credential = profile.machine_credential.as_deref().ok_or_else(|| {
+        completion_error(
+            "managed worker Cloud Machine credential is unavailable",
+            false,
+        )
+    })?;
+    let response: CompleteManagedContextResponse = post_cloud_json(
+        profile.api_url.clone(),
+        "/v1/managed-kernels/context/complete",
+        serde_json::json!({
+            "accountId": profile.account_id,
+            "environmentId": target_environment_id,
+            "machineId": machine_id,
+            "kernelId": config.daemon_id,
+            "machineCredential": machine_credential,
+            "contextId": plan.context_id,
+            "planDigest": plan.plan_digest,
+            "contextManifestDigest": context_manifest_digest,
+        }),
+    )
+    .await
+    .map_err(cloud_completion_error)?;
+    if !response.ready
+        || response.observed_state != "ready"
+        || response.context_manifest_digest != context_manifest_digest
+    {
+        return Err(completion_error(
+            "Cloud returned an invalid disposable worker context completion result",
+            false,
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_managed_context_completion_binding(
     config: &DaemonConfig,
     registration: &ConfirmedManagedKernelRegistration,

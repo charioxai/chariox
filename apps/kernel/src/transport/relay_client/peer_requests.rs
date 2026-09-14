@@ -78,9 +78,13 @@ pub(super) async fn handle_daemon_peer_request(
             daemon_id,
         )
     };
+    let confirmed_disposable_worker = router.kernel_runtime_role()
+        == crate::config::KernelRuntimeRole::RemoteLeaseWorker
+        && router.confirmed_disposable_worker_home_caller().is_ok();
     if managed_context_request(&request)
         && crate::runtime::kernel_runtime_role_policy::ensure_managed_context_import_allowed(
             router.kernel_runtime_role(),
+            confirmed_disposable_worker,
         )
         .is_err()
     {
@@ -95,6 +99,7 @@ pub(super) async fn handle_daemon_peer_request(
     }
     let lease_worker_caller = if router.kernel_runtime_role()
         == crate::config::KernelRuntimeRole::RemoteLeaseWorker
+        && !managed_context_request(&request)
     {
         if !lease_worker_peer_request_allowed(&request) {
             return RelayRequestOutcome {
@@ -1461,8 +1466,7 @@ pub(super) async fn handle_daemon_peer_request(
             }
         }
         RelayPeerRequest::ArmManagedContextImport {
-            context_id,
-            plan_digest,
+            plan,
             target_environment_id,
             target_kernel_id,
             target_key_thumbprint,
@@ -1478,8 +1482,7 @@ pub(super) async fn handle_daemon_peer_request(
                     crate::runtime::router::RelayManagedContextArmRequest {
                         identity,
                         source_kernel_id,
-                        context_id,
-                        plan_digest,
+                        plan,
                         target_environment_id,
                         target_kernel_id,
                         target_key_thumbprint,
@@ -2390,8 +2393,7 @@ mod tests {
         let state = Arc::new(RwLock::new(RelayClientState::default()));
         let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
         let request = RelayPeerRequest::ArmManagedContextImport {
-            context_id: "context-1".to_string(),
-            plan_digest: format!("sha256:{}", "f".repeat(64)),
+            plan: ManagedKernelContextPlan::empty_for_tests("context-1").package_binding(),
             target_environment_id: "environment-1".to_string(),
             target_kernel_id: "target-kernel-1".to_string(),
             target_key_thumbprint: "a".repeat(64),
@@ -2830,8 +2832,7 @@ mod tests {
             outgoing_tx: &outgoing_tx,
         };
         let request = RelayPeerRequest::ArmManagedContextImport {
-            context_id: plan.context_id,
-            plan_digest: plan.plan_digest,
+            plan: plan.clone(),
             target_environment_id: "environment-machine-source".to_string(),
             target_kernel_id,
             target_key_thumbprint,
@@ -3057,8 +3058,7 @@ mod tests {
                 crate::runtime::router::RelayManagedContextArmRequest {
                     identity: scoped_kernel_identity(Some(source_key_thumbprint.clone()), u64::MAX),
                     source_kernel_id: source_kernel_id.to_string(),
-                    context_id: enrollment_binding.context_id.clone(),
-                    plan_digest: enrollment_binding.plan_digest.clone(),
+                    plan: enrollment_binding.clone(),
                     target_environment_id: "environment-git-enrollment".to_string(),
                     target_kernel_id,
                     target_key_thumbprint,
@@ -3302,8 +3302,11 @@ mod tests {
                 crate::runtime::router::RelayManagedContextArmRequest {
                     identity: identity.clone(),
                     source_kernel_id: source_kernel_id.to_string(),
-                    context_id: "wrong-context".to_string(),
-                    plan_digest: plan_digest.clone(),
+                    plan: {
+                        let mut wrong_plan = package.plan.clone();
+                        wrong_plan.context_id = "wrong-context".to_string();
+                        wrong_plan
+                    },
                     target_environment_id: "environment-managed-1".to_string(),
                     target_kernel_id: target_kernel_id.clone(),
                     target_key_thumbprint: target_key_thumbprint.clone(),
@@ -3328,8 +3331,7 @@ mod tests {
                 crate::runtime::router::RelayManagedContextArmRequest {
                     identity: wrong_source_identity,
                     source_kernel_id: source_kernel_id.to_string(),
-                    context_id: context_id.clone(),
-                    plan_digest: plan_digest.clone(),
+                    plan: package.plan.clone(),
                     target_environment_id: "environment-managed-1".to_string(),
                     target_kernel_id: target_kernel_id.clone(),
                     target_key_thumbprint: target_key_thumbprint.clone(),
@@ -3355,8 +3357,7 @@ mod tests {
             &source_private_key,
             &target_public_key,
             RelayPeerRequest::ArmManagedContextImport {
-                context_id: context_id.clone(),
-                plan_digest: plan_digest.clone(),
+                plan: package.plan.clone(),
                 target_environment_id: "environment-managed-1".to_string(),
                 target_kernel_id: target_kernel_id.clone(),
                 target_key_thumbprint: target_key_thumbprint.clone(),
@@ -3630,8 +3631,7 @@ mod tests {
             &source_private_key,
             &target_public_key,
             RelayPeerRequest::ArmManagedContextImport {
-                context_id: terminal_context_id.clone(),
-                plan_digest: terminal_plan_digest.clone(),
+                plan: terminal_package.plan.clone(),
                 target_environment_id: "environment-managed-1".to_string(),
                 target_kernel_id: target_kernel_id.clone(),
                 target_key_thumbprint: target_key_thumbprint.clone(),
@@ -3783,7 +3783,7 @@ mod tests {
                     key_thumbprint: source_key_thumbprint.clone(),
                     owner_user_id: identity.user_id.clone().expect("source owner"),
                     realm_id: identity.realm_id.clone(),
-                    target_environment_id: "environment-managed-1".to_string(),
+                    target_environment_id: Some("environment-managed-1".to_string()),
                     target_kernel_id: target_kernel_id.clone(),
                     target_key_thumbprint: target_key_thumbprint.clone(),
                 },
@@ -3847,7 +3847,6 @@ mod tests {
             "project-managed-peer",
         );
         let recovery_plan_binding = recovery_plan.package_binding();
-        let recovery_plan_digest = recovery_plan_binding.plan_digest.clone();
         let recovery_vault = export_transferred_vault_snapshot(
             &source_vault_path,
             &recovery_context_id,
@@ -3923,8 +3922,7 @@ mod tests {
             &source_private_key,
             &target_public_key,
             RelayPeerRequest::ArmManagedContextImport {
-                context_id: recovery_context_id,
-                plan_digest: recovery_plan_digest,
+                plan: recovery_package.plan.clone(),
                 target_environment_id: "environment-managed-1".to_string(),
                 target_kernel_id: target_kernel_id.clone(),
                 target_key_thumbprint: target_key_thumbprint.clone(),
@@ -3984,7 +3982,7 @@ mod tests {
             key_thumbprint: source_key_thumbprint.clone(),
             owner_user_id: identity.user_id.clone().expect("source owner"),
             realm_id: identity.realm_id.clone(),
-            target_environment_id: "environment-managed-1".to_string(),
+            target_environment_id: Some("environment-managed-1".to_string()),
             target_kernel_id: target_kernel_id.clone(),
             target_key_thumbprint: target_key_thumbprint.clone(),
         };

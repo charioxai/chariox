@@ -2081,7 +2081,7 @@ fn caller(source_thumbprint: &str) -> ManagedContextTransferCaller {
         key_thumbprint: source_thumbprint.to_string(),
         owner_user_id: "user-1".to_string(),
         realm_id: "realm-1".to_string(),
-        target_environment_id: "environment-1".to_string(),
+        target_environment_id: Some("environment-1".to_string()),
         target_kernel_id: "kernel-target".to_string(),
         target_key_thumbprint: sha256_bytes(b"target-key"),
     }

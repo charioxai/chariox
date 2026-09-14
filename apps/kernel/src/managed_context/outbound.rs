@@ -116,8 +116,7 @@ pub(crate) async fn transfer_managed_context_package(
     let capability = request.capability.clone();
     let armed = transport
         .send(RelayPeerRequest::ArmManagedContextImport {
-            context_id: request.plan.context_id.clone(),
-            plan_digest: request.plan.plan_digest.clone(),
+            plan: request.plan.clone(),
             target_environment_id: request.target_environment_id,
             target_kernel_id: request.target_kernel_id,
             target_key_thumbprint: request.target_key_thumbprint,

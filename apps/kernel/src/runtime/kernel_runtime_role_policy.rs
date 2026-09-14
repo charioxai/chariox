@@ -17,8 +17,9 @@ pub(crate) fn ensure_public_request_allowed(
 
 pub(crate) fn ensure_managed_context_import_allowed(
     role: KernelRuntimeRole,
+    confirmed_disposable_worker: bool,
 ) -> Result<(), DaemonError> {
-    if role == KernelRuntimeRole::RemoteLeaseWorker {
+    if role == KernelRuntimeRole::RemoteLeaseWorker && !confirmed_disposable_worker {
         return Err(role_denied(role, "managed_context.import"));
     }
     Ok(())
