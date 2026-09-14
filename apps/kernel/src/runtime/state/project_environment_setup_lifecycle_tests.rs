@@ -1888,6 +1888,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     let (
         withheld_worker_shutdown,
         withheld_retry_release_tx,
+        withheld_start_seen,
         withheld_retry_seen,
         withheld_recovery_retry_seen,
         withheld_second_get_seen,
@@ -1937,6 +1938,10 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         stale_attempt_started_status.phase,
         ProjectEnvironmentSetupPhase::Requested
     );
+    tokio::time::timeout(Duration::from_secs(2), withheld_start_seen)
+        .await
+        .expect("withheld-retry worker should observe the public Start before its first Get")
+        .expect("withheld-retry Start barrier should remain available");
 
     let stale_attempt_cancelled = response_status(
         get_setup_status(
@@ -2218,6 +2223,7 @@ fn spawn_external_worker_fixture_with_withheld_retry(
     oneshot::Receiver<()>,
     oneshot::Receiver<()>,
     oneshot::Receiver<()>,
+    oneshot::Receiver<()>,
     Arc<AtomicUsize>,
     tokio::task::JoinHandle<()>,
 ) {
@@ -2250,6 +2256,7 @@ fn spawn_external_worker_fixture_with_withheld_retry(
     (
         shutdown_tx,
         release_retry_tx,
+        start_seen_rx,
         retry_seen_rx,
         recovery_retry_seen_rx,
         second_get_seen_rx,
