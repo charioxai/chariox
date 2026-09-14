@@ -14,7 +14,7 @@ export const PROJECT_ENVIRONMENT_SETUP_MINIMUM_PROTOCOL = 326
 export const PROJECT_ENVIRONMENT_SETUP_RELAY_PEER_MINIMUM_PROTOCOL = 51
 export const DEFAULT_PROVIDER = 'codex'
 export const DEFAULT_ACCOUNT_PROFILE = 'codex-1'
-export const DEFAULT_MODEL = 'gpt-5.5'
+export const DEFAULT_MODEL = 'gpt-5.6-luna'
 export const DEFAULT_EFFORT = 'max'
 export const DEFAULT_PROMPT =
   'Reply with exactly PROJECT_ENVIRONMENT_SETUP_ACCEPTANCE_OK. Do not modify files.'
@@ -28,7 +28,7 @@ export const DEFAULT_ARTIFACT_ROOT = path.join(
 )
 
 const TERMINAL_SETUP_PHASES = new Set(['ready', 'failed', 'cancelled'])
-const CANCELLABLE_SETUP_PHASES = new Set(['requested', 'preparing', 'validating'])
+const CANCELLABLE_SETUP_PHASES = new Set(['preparing', 'validating'])
 
 function valueAfter(argv, index, flag) {
   const value = argv[index + 1]
@@ -735,10 +735,12 @@ export async function runProjectEnvironmentSetupAcceptance(options, modules = nu
   const { artifactRoot, reportPath } = reportPathFor(options)
   await mkdir(artifactRoot, { recursive: true, mode: 0o700 })
   const startedAtMs = Date.now()
+  const injectedOrchestration = modules != null
   const report = {
     schema: 'chariox.live.project_environment_setup_acceptance.v1',
     status: 'running',
     liveAcceptance: false,
+    executionMode: injectedOrchestration ? 'injected-orchestration-test' : 'live',
     startedAtMs,
     options: reportSafeOptions(options),
     protocol: {
@@ -876,9 +878,6 @@ export async function runProjectEnvironmentSetupAcceptance(options, modules = nu
     let cancellation = { status: 'not_applicable', reason: null }
     let retry = { status: 'not_applicable', attempt: null }
     if (CANCELLABLE_SETUP_PHASES.has(cancellableStatus.phase)) {
-      if (cancellableStatus.phase === 'requested') {
-        throw new Error('setup never exposed a worker preparing/validating phase before cancellation')
-      }
       const cancelledResponse = await sendTracked(context, setupRequests.cancel, setupCapabilityDiagnostic())
       const cancelledStatus = observeSetupStatus(
         context,
@@ -994,13 +993,20 @@ export async function runProjectEnvironmentSetupAcceptance(options, modules = nu
       completionEventAtMs: completion.completedAtMs,
     }
     report.status = 'passed'
-    report.liveAcceptance = true
+    report.liveAcceptance = !injectedOrchestration
   } catch (error) {
     failure = safeErrorMessage(error, options)
     report.status = 'failed'
     report.failure = failure
   } finally {
     report.cleanup = requests ? await cleanupDrillResources(context, requests) : null
+    if (report.cleanup?.errors.length) {
+      const cleanupFailure = `cleanup failed: ${report.cleanup.errors.join('; ')}`
+      failure = failure ? `${failure}; ${cleanupFailure}` : cleanupFailure
+      report.status = 'failed'
+      report.liveAcceptance = false
+      report.failure = failure
+    }
     report.finishedAtMs = Date.now()
     report.durationMs = report.finishedAtMs - startedAtMs
     await writeDrillReport(reportPath, report)

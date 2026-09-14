@@ -46,7 +46,7 @@ pnpm --filter @chariox/cli run project-environment:setup-acceptance -- \
   --validation-command 'git rev-parse --show-toplevel'
 ```
 
-For a direct home-kernel WebSocket, use `--kernel-url "$CHARIOX_KERNEL_URL"` and the existing local-auth environment. The defaults are provider `codex`, account profile `codex-1`, model `gpt-5.5`, and effort `max`; pass explicit values when the selected existing account requires them. The prompt defaults to a read-only reply marker and may be overridden with `--prompt` only when the operator has reviewed its side effects.
+For a direct home-kernel WebSocket, use `--kernel-url "$CHARIOX_KERNEL_URL"` and the existing local-auth environment. The defaults are provider `codex`, account profile `codex-1`, model `gpt-5.6-luna`, and effort `max`; pass explicit values when the selected existing account requires them. The prompt defaults to a read-only reply marker and may be overridden with `--prompt` only when the operator has reviewed its side effects.
 
 The default report is written outside the repository under `~/.chariox/dev/project-environment-setup-acceptance/acceptance-report.json`; `--report` and `--artifact-root` may point to another external path. A passing report contains the exact worker machine/kernel, platform, managed runtime release digest, setup attempt/phase evidence, install-step count, validation command/passed/failed/output-byte counts, provider run ID, and launch/submit/completion counts. It contains no token or provider output.
 
