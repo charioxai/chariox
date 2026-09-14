@@ -30,6 +30,61 @@ use crate::transport::relay_peer::{
 
 const PUBLIC_STATUS_RESPONSE_DEADLINE: Duration = Duration::from_millis(300);
 
+#[derive(Debug)]
+struct ClientResponseObservation {
+    response: Option<LocalDaemonResponse>,
+    error: Option<RelayError>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FreshGetWorkerObservation {
+    Status,
+    NotFound,
+}
+
+async fn expect_client_response_observation<S>(
+    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    request_id: &str,
+    client_private_key: &str,
+) -> ClientResponseObservation
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    loop {
+        match socket.next().await {
+            Some(Ok(Message::Text(payload))) => {
+                match serde_json::from_str::<RelayEnvelope>(&payload)
+                    .expect("relay envelope should parse")
+                {
+                    RelayEnvelope::ClientResponse {
+                        request_id: response_request_id,
+                        encrypted_response,
+                        error,
+                    } => {
+                        assert_eq!(response_request_id, request_id);
+                        let response = encrypted_response.map(|encrypted_response| {
+                            let decrypted = relay_crypto::decrypt_payload_for_private_key(
+                                client_private_key,
+                                &encrypted_response,
+                            )
+                            .expect("client response should decrypt with its request key");
+                            serde_json::from_slice(&decrypted.plaintext)
+                                .expect("encrypted local response should deserialize")
+                        });
+                        return ClientResponseObservation { response, error };
+                    }
+                    RelayEnvelope::ClientEvent { .. } => {}
+                    other => {
+                        panic!("unexpected envelope while awaiting client response: {other:?}")
+                    }
+                }
+            }
+            Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
+            other => panic!("unexpected relay message while awaiting client response: {other:?}"),
+        }
+    }
+}
+
 #[test]
 fn authenticated_public_setup_status_request_has_a_bounded_worker_response_deadline() {
     run_async_with_large_test_stack(
@@ -435,6 +490,7 @@ async fn run_authenticated_public_concurrent_missing_setup_polls(drop_inflight_g
         retry_seen,
         initial_start_seen,
         mut missing_get_seen,
+        fresh_get_worker_observation,
         replay_start_seen,
         worker_start_count,
         worker_task,
@@ -623,10 +679,12 @@ async fn run_authenticated_public_concurrent_missing_setup_polls(drop_inflight_g
             "the dropped setup Get must not settle after its observer is gone"
         );
 
-        // A fresh authenticated poll may remain bounded and unresolved while
-        // the accepted replay response is still withheld, but it must not
-        // retain the cancelled caller's InFlight state.
-        let _ = send_client_request(
+        // The initial Start reconciliation can race with the recovery
+        // reservation made by the dropped Get. Decode the fresh response so
+        // a current home-visible status is not mistaken for an error-only
+        // envelope; the worker barriers and late-response checks below still
+        // establish whether the worker actually acknowledged the replay.
+        let fresh_get_private_key = send_client_request(
             &mut first_client,
             "setup-status-dropped-get-fresh-poll",
             &config_home.daemon_id,
@@ -638,20 +696,64 @@ async fn run_authenticated_public_concurrent_missing_setup_polls(drop_inflight_g
             ),
         )
         .await;
-        let fresh_get_error = tokio::time::timeout(
+        let fresh_get = tokio::time::timeout(
             PUBLIC_STATUS_RESPONSE_DEADLINE,
-            expect_client_response_error(&mut first_client, "setup-status-dropped-get-fresh-poll"),
+            expect_client_response_observation(
+                &mut first_client,
+                "setup-status-dropped-get-fresh-poll",
+                &fresh_get_private_key,
+            ),
         )
         .await
         .expect("fresh public polling must remain bounded after the dropped observation");
-        assert_eq!(fresh_get_error.code, "local_transport_error");
-        assert!(fresh_get_error.retryable);
-        assert!(
-            fresh_get_error
-                .message
-                .ends_with("same-attempt replay result is unresolved"),
-            "a dropped observation must become explicit unresolved state, not stale InFlight: {fresh_get_error:?}"
-        );
+        let fresh_worker_observation =
+            tokio::time::timeout(Duration::from_secs(2), fresh_get_worker_observation)
+                .await
+                .expect("fixture worker must classify the fresh public Get")
+                .expect("fresh worker observation barrier should remain available");
+        match (fresh_get.response, fresh_get.error) {
+            (
+                Some(LocalDaemonResponse::ProjectEnvironmentSetupStatus { status }),
+                None,
+            ) => {
+                // A successful status is valid only when this fresh Get was
+                // answered by the worker. A home status can otherwise be a
+                // stale acknowledgement of the racing initial Start.
+                assert_eq!(
+                    fresh_worker_observation,
+                    FreshGetWorkerObservation::Status,
+                    "fresh public poll returned an encrypted status without a worker status response; status={status:?}"
+                );
+                assert_eq!(status.operation_id, operation_id);
+                assert_eq!(status.session_id, session_id);
+                assert_eq!(status.agent_id, agent_id);
+                assert_eq!(status.attempt, 1);
+                assert_eq!(status.phase, ProjectEnvironmentSetupPhase::Requested);
+                assert!(status.retryable);
+            }
+            (None, Some(fresh_get_error)) => {
+                assert_eq!(
+                    fresh_worker_observation,
+                    FreshGetWorkerObservation::NotFound,
+                    "fresh public poll returned a transport error although the worker reported a status: error={fresh_get_error:?}"
+                );
+                assert_eq!(fresh_get_error.code, "local_transport_error");
+                assert!(fresh_get_error.retryable);
+                assert!(
+                    fresh_get_error
+                        .message
+                        .ends_with("same-attempt replay result is unresolved"),
+                    "a dropped observation must become explicit unresolved state, not stale InFlight: {fresh_get_error:?}"
+                );
+            }
+            (Some(response), Some(error)) => panic!(
+                "fresh public poll returned both encrypted response and relay error: response={response:?}, error={error:?}"
+            ),
+            (None, None) => panic!("fresh public poll returned neither response nor relay error"),
+            (Some(response), None) => {
+                panic!("unexpected encrypted fresh setup response: {response:?}")
+            }
+        }
         assert_eq!(
             worker_start_count.load(Ordering::Acquire),
             2,
@@ -975,6 +1077,7 @@ fn spawn_missing_then_withheld_replay_worker(
     oneshot::Receiver<()>,
     oneshot::Receiver<()>,
     oneshot::Receiver<()>,
+    oneshot::Receiver<FreshGetWorkerObservation>,
     Arc<AtomicUsize>,
     tokio::task::JoinHandle<()>,
 ) {
@@ -984,6 +1087,7 @@ fn spawn_missing_then_withheld_replay_worker(
     let (retry_seen_tx, retry_seen_rx) = oneshot::channel();
     let (initial_start_seen_tx, initial_start_seen_rx) = oneshot::channel();
     let (missing_get_seen_tx, missing_get_seen_rx) = oneshot::channel();
+    let (fresh_get_worker_observation_tx, fresh_get_worker_observation_rx) = oneshot::channel();
     let (replay_start_seen_tx, replay_start_seen_rx) = oneshot::channel();
     let start_count = Arc::new(AtomicUsize::new(0));
     let task = tokio::spawn(run_missing_then_withheld_replay_worker(
@@ -997,6 +1101,7 @@ fn spawn_missing_then_withheld_replay_worker(
         retry_seen_tx,
         initial_start_seen_tx,
         missing_get_seen_tx,
+        fresh_get_worker_observation_tx,
         replay_start_seen_tx,
         Arc::clone(&start_count),
     ));
@@ -1007,6 +1112,7 @@ fn spawn_missing_then_withheld_replay_worker(
         retry_seen_rx,
         initial_start_seen_rx,
         missing_get_seen_rx,
+        fresh_get_worker_observation_rx,
         replay_start_seen_rx,
         start_count,
         task,
@@ -1024,6 +1130,7 @@ async fn run_missing_then_withheld_replay_worker(
     retry_seen_tx: oneshot::Sender<()>,
     initial_start_seen_tx: oneshot::Sender<()>,
     missing_get_seen_tx: oneshot::Sender<()>,
+    fresh_get_worker_observation_tx: oneshot::Sender<FreshGetWorkerObservation>,
     replay_start_seen_tx: oneshot::Sender<()>,
     start_count: Arc<AtomicUsize>,
 ) {
@@ -1046,6 +1153,7 @@ async fn run_missing_then_withheld_replay_worker(
 
     let mut initial_start_seen_tx = Some(initial_start_seen_tx);
     let mut missing_get_seen_tx = Some(missing_get_seen_tx);
+    let mut fresh_get_worker_observation_tx = Some(fresh_get_worker_observation_tx);
     let mut replay_start_seen_tx = Some(replay_start_seen_tx);
     let mut release_replay_applied_tx = Some(release_replay_applied_tx);
     let mut retry_seen_tx = Some(retry_seen_tx);
@@ -1258,6 +1366,14 @@ async fn run_missing_then_withheld_replay_worker(
                     RelayPeerRequest::GetLeasedProjectEnvironmentSetupStatus { .. }
                         if held_setup.is_some() =>
                     {
+                        if missing_get_seen {
+                            if let Some(fresh_get_worker_observation_tx) =
+                                fresh_get_worker_observation_tx.take()
+                            {
+                                let _ = fresh_get_worker_observation_tx
+                                    .send(FreshGetWorkerObservation::Status);
+                            }
+                        }
                         (
                             Some(encrypt_worker_response(
                                 &worker_private_key,
@@ -1277,6 +1393,11 @@ async fn run_missing_then_withheld_replay_worker(
                             if let Some(missing_get_seen_tx) = missing_get_seen_tx.take() {
                                 let _ = missing_get_seen_tx.send(());
                             }
+                        } else if let Some(fresh_get_worker_observation_tx) =
+                            fresh_get_worker_observation_tx.take()
+                        {
+                            let _ = fresh_get_worker_observation_tx
+                                .send(FreshGetWorkerObservation::NotFound);
                         }
                         (
                             None,
