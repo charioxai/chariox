@@ -434,7 +434,7 @@ async fn run_authenticated_public_concurrent_missing_setup_polls(drop_inflight_g
         release_replay_applied,
         retry_seen,
         initial_start_seen,
-        missing_get_seen,
+        mut missing_get_seen,
         replay_start_seen,
         worker_start_count,
         worker_task,
@@ -569,7 +569,19 @@ async fn run_authenticated_public_concurrent_missing_setup_polls(drop_inflight_g
         // as the relay connector, but is not a client-socket disconnect. The
         // public relay path is exercised separately below.
         let runtime = home_router.runtime_state();
-        let dropped_get = tokio::spawn({
+        let (entry_execution, entry_status, entry_cancel_requested) = runtime
+            .owned
+            .project_environment_setups
+            .get_entry_with_cancellation(&operation_id, "user-1")
+            .expect("authenticated Start must create the shared runtime setup entry");
+        assert_eq!(entry_execution.operation_id, operation_id);
+        assert_eq!(entry_execution.session_id, session_id);
+        assert_eq!(entry_execution.agent_id, agent_id);
+        assert_eq!(entry_execution.owner_user_id, "user-1");
+        assert_eq!(entry_status.attempt, 1);
+        assert!(!entry_cancel_requested);
+
+        let mut dropped_get = tokio::spawn({
             let runtime = runtime.clone();
             let operation_id = operation_id.clone();
             async move {
@@ -583,10 +595,45 @@ async fn run_authenticated_public_concurrent_missing_setup_polls(drop_inflight_g
                     .await
             }
         });
-        tokio::time::timeout(Duration::from_secs(2), missing_get_seen)
-            .await
-            .expect("fixture worker should observe the dropped Get")
-            .expect("dropped Get barrier should remain available");
+        let dropped_get_or_barrier = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::select! {
+                barrier = &mut missing_get_seen => {
+                    barrier.expect("dropped Get barrier should remain available");
+                    None
+                }
+                task_result = &mut dropped_get => Some(task_result),
+            }
+        })
+        .await;
+        match dropped_get_or_barrier {
+            Ok(None) => {}
+            Ok(Some(task_result)) => {
+                let task_result = task_result
+                    .expect("dropped Get task must not panic before reaching the worker");
+                panic!(
+                    "dropped Get completed before the worker request barrier; result={task_result:?}; shared_entry=(operation_id={}, session_id={}, agent_id={}, owner_user_id={}, attempt={}, cancel_requested={})",
+                    entry_execution.operation_id,
+                    entry_execution.session_id,
+                    entry_execution.agent_id,
+                    entry_execution.owner_user_id,
+                    entry_status.attempt,
+                    entry_cancel_requested,
+                );
+            }
+            Err(_) => {
+                dropped_get.abort();
+                let task_result = dropped_get.await;
+                panic!(
+                    "fixture worker did not observe the dropped Get within 2s; task_result={task_result:?}; shared_entry=(operation_id={}, session_id={}, agent_id={}, owner_user_id={}, attempt={}, cancel_requested={})",
+                    entry_execution.operation_id,
+                    entry_execution.session_id,
+                    entry_execution.agent_id,
+                    entry_execution.owner_user_id,
+                    entry_status.attempt,
+                    entry_cancel_requested,
+                );
+            }
+        }
         tokio::time::timeout(Duration::from_secs(2), replay_start_seen)
             .await
             .expect("fixture worker should observe the replay before the Get is dropped")
