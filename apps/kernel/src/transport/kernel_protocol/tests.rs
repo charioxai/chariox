@@ -34,7 +34,20 @@ fn relay_transport_errors_keep_the_stable_local_transport_projection() {
     let mapped = map_kernel_error(&error);
 
     assert_eq!(mapped.code, "local_transport_error");
+    assert_eq!(mapped.message, error.to_string());
     assert!(mapped.retryable);
+
+    let business_error = DaemonError::RelayTransport {
+        operation: "read relay peer response",
+        code: "leased_agent_not_found".to_string(),
+        message: "worker does not have the leased agent".to_string(),
+        retryable: false,
+    };
+    let mapped = map_kernel_error(&business_error);
+
+    assert_eq!(mapped.code, "local_transport_error");
+    assert_eq!(mapped.message, business_error.to_string());
+    assert!(!mapped.retryable);
 }
 
 #[test]
