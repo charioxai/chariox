@@ -7,6 +7,7 @@ const REMOTE_SETUP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(240);
 pub(super) async fn start_remote_setup(
     state: &KernelRuntimeState,
     execution: &SetupExecution,
+    attempt: u32,
 ) -> Result<RelayProjectEnvironmentSetupStatus, DaemonError> {
     let (relay_config, target) = remote_relay_context(state, execution).await?;
     send_setup_request(
@@ -19,6 +20,7 @@ pub(super) async fn start_remote_setup(
                 .clone()
                 .ok_or_else(|| setup_error("remote setup is missing its leased agent binding"))?,
             operation_id: execution.operation_id.clone(),
+            attempt,
             project_id: execution.project_id.clone(),
             home_session_id: execution.session_id.clone(),
             home_agent_id: execution.agent_id.clone(),

@@ -5,7 +5,7 @@ use super::support::*;
 fn provider_account_materialization_peer_shape_is_versioned_and_debug_redacted() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        52
+        53
     );
     let mut materialization = crate::account_profile::ProviderAccountMaterialization {
         profile: crate::account_profile::ProviderAccountReplicaMetadata {
@@ -52,7 +52,7 @@ fn provider_account_materialization_peer_shape_is_versioned_and_debug_redacted()
 fn remote_provider_launch_credential_peer_shape_is_versioned_and_debug_redacted() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        52
+        53
     );
     let request = RelayPeerRequest::SubmitLeasedPrompt {
         leased_agent_id: "leased-agent-1".to_string(),
@@ -121,7 +121,7 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
 
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        52
+        53
     );
     let request = RelayPeerRequest::UploadManagedContextChunk {
         transfer_id: "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
@@ -398,7 +398,19 @@ async fn proxied_peer_requests_are_handled_through_relay() {
     )
     .await
     .expect_err("the worker should reject an unknown leased agent");
+    let crate::error::DaemonError::RelayTransport {
+        code, retryable, ..
+    } = &missing_lease
+    else {
+        panic!("relay error should retain structured metadata: {missing_lease:?}");
+    };
+    assert_eq!(code, "leased_agent_not_found");
+    assert!(!retryable);
     let diagnostic = missing_lease.to_string();
+    assert!(
+        diagnostic.contains("leased_agent_not_found"),
+        "real relay error code should survive peer transport: {missing_lease:?}"
+    );
     assert!(diagnostic.contains("leased agent"));
     assert!(!diagnostic.contains("relay-secret-canary"));
 

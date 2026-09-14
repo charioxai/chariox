@@ -79,4 +79,8 @@ pub use workspace::*;
 /// Version 326 adds kernel-owned project environment setup and readiness operations.
 /// Version 327 carries the source-selected managed-context plan required for
 /// confirmed disposable-worker imports.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 327;
+/// Version 328 carries the home-authoritative setup attempt through relay
+/// recovery and the authenticated worker setup boundary.
+/// Version 329 preserves structured relay retryability in the stable local
+/// transport error projection exposed to clients.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 329;

@@ -130,6 +130,25 @@ impl ProjectEnvironmentSetupStore {
         &self,
         execution: SetupExecution,
     ) -> Result<(ProjectEnvironmentSetupStatus, bool), DaemonError> {
+        self.begin_with_attempt(execution, None)
+    }
+
+    pub(super) fn begin_at_attempt(
+        &self,
+        execution: SetupExecution,
+        attempt: u32,
+    ) -> Result<(ProjectEnvironmentSetupStatus, bool), DaemonError> {
+        if attempt == 0 {
+            return Err(setup_error("setup attempt must be positive"));
+        }
+        self.begin_with_attempt(execution, Some(attempt))
+    }
+
+    fn begin_with_attempt(
+        &self,
+        execution: SetupExecution,
+        requested_attempt: Option<u32>,
+    ) -> Result<(ProjectEnvironmentSetupStatus, bool), DaemonError> {
         let fingerprint = setup_fingerprint(&execution)?;
         let mut entries = self
             .entries
@@ -139,6 +158,11 @@ impl ProjectEnvironmentSetupStore {
             if existing.fingerprint != fingerprint {
                 return Err(setup_error(
                     "operation id was already used for a different setup request",
+                ));
+            }
+            if requested_attempt.is_some_and(|attempt| existing.status.attempt != attempt) {
+                return Err(setup_error(
+                    "setup attempt does not match the existing worker operation",
                 ));
             }
             return Ok((existing.status.clone(), false));
@@ -152,7 +176,7 @@ impl ProjectEnvironmentSetupStore {
             worker_id: execution.target_worker_id.clone(),
             platform: execution.target_platform.clone(),
             phase: ProjectEnvironmentSetupPhase::Requested,
-            attempt: 1,
+            attempt: requested_attempt.unwrap_or(1),
             progress_percent: 0,
             definition_digest: execution
                 .definition
@@ -201,6 +225,11 @@ impl ProjectEnvironmentSetupStore {
         {
             return Err(setup_error(
                 "only failed or cancelled setup operations can be retried",
+            ));
+        }
+        if !entry.status.retryable {
+            return Err(setup_error(
+                "setup operation is not retryable; reconnect the worker and query status first",
             ));
         }
         let attempt = entry.status.attempt.saturating_add(1);
@@ -252,6 +281,15 @@ impl ProjectEnvironmentSetupStore {
         operation_id: &str,
         caller_user_id: &str,
     ) -> Result<(SetupExecution, ProjectEnvironmentSetupStatus), DaemonError> {
+        self.get_entry_with_cancellation(operation_id, caller_user_id)
+            .map(|(execution, status, _)| (execution, status))
+    }
+
+    pub(super) fn get_entry_with_cancellation(
+        &self,
+        operation_id: &str,
+        caller_user_id: &str,
+    ) -> Result<(SetupExecution, ProjectEnvironmentSetupStatus, bool), DaemonError> {
         let entries = self
             .entries
             .lock()
@@ -264,7 +302,11 @@ impl ProjectEnvironmentSetupStore {
                 "caller is not allowed to inspect this setup operation",
             ));
         }
-        Ok((entry.execution.clone(), entry.status.clone()))
+        Ok((
+            entry.execution.clone(),
+            entry.status.clone(),
+            entry.cancel_requested,
+        ))
     }
 
     pub(super) fn remote_status(
@@ -506,6 +548,27 @@ impl ProjectEnvironmentSetupStore {
     }
 
     pub(super) fn mark_failed(&self, operation_id: &str, attempt: u32, code: &str, message: &str) {
+        self.mark_failed_with_retryability(operation_id, attempt, code, message, true);
+    }
+
+    pub(super) fn mark_failed_non_retryable(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        code: &str,
+        message: &str,
+    ) {
+        self.mark_failed_with_retryability(operation_id, attempt, code, message, false);
+    }
+
+    fn mark_failed_with_retryability(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        code: &str,
+        message: &str,
+        retryable: bool,
+    ) {
         let mut entries = self
             .entries
             .lock()
@@ -527,7 +590,7 @@ impl ProjectEnvironmentSetupStore {
         entry.status.message = Some(message.to_string());
         entry.status.failure_code = Some(code.to_string());
         entry.status.failure_message = Some(message.to_string());
-        entry.status.retryable = true;
+        entry.status.retryable = retryable;
         entry.status.updated_at_ms = crate::session::unix_epoch_ms();
         entry.cancel_requested = false;
         let persisted = entry.clone();

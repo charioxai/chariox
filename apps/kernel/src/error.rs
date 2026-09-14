@@ -17,6 +17,15 @@ pub enum DaemonError {
         operation: &'static str,
         message: String,
     },
+    #[error(
+        "relay transport `{operation}` failed with code `{code}` (retryable={retryable}): {message}"
+    )]
+    RelayTransport {
+        operation: &'static str,
+        code: String,
+        message: String,
+        retryable: bool,
+    },
     #[error("kernel runtime role `{role}` does not allow `{operation}`")]
     KernelRuntimeRoleDenied {
         role: &'static str,

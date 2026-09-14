@@ -69,30 +69,97 @@ impl KernelRuntimeState {
                 Ok(LocalDaemonResponse::ProjectEnvironmentSetupStarted { status })
             }
             LocalDaemonRequest::GetProjectEnvironmentSetupStatus(request) => {
-                let (execution, status) = self
-                    .owned
-                    .project_environment_setups
-                    .get_entry(&request.operation_id, caller_user_id)?;
+                let (execution, status, cancel_requested) =
+                    self.owned
+                        .project_environment_setups
+                        .get_entry_with_cancellation(&request.operation_id, caller_user_id)?;
                 if execution.remote_leased_agent_id.is_some() {
                     let setup = get_remote_setup_status(self, &execution).await;
                     let status = match setup {
                         Ok(setup) => {
                             self.reconcile_remote_project_environment_setup(&execution, setup)?
                         }
+                        Err(error)
+                            if is_missing_remote_setup_operation(&error)
+                                && !cancel_requested
+                                && matches!(
+                                    status.phase,
+                                    ProjectEnvironmentSetupPhase::Requested
+                                        | ProjectEnvironmentSetupPhase::Preparing
+                                        | ProjectEnvironmentSetupPhase::Validating
+                                ) =>
+                        {
+                            // An authenticated worker reply proves that this
+                            // operation never reached that worker. Re-send
+                            // the original operation and keep its attempt;
+                            // worker-side begin() is idempotent for the same
+                            // operation fingerprint and attempt.
+                            match start_remote_setup(self, &execution, status.attempt).await {
+                                Ok(setup) => self.reconcile_remote_project_environment_setup(
+                                    &execution, setup,
+                                )?,
+                                Err(error)
+                                    if remote_prompt_error_should_retry_transport(&error) =>
+                                {
+                                    return Err(error);
+                                }
+                                Err(error) => {
+                                    if let DaemonError::RelayTransport {
+                                        code,
+                                        retryable: false,
+                                        ..
+                                    } = &error
+                                    {
+                                        self.owned
+                                            .project_environment_setups
+                                            .mark_failed_non_retryable(
+                                            &execution.operation_id,
+                                            status.attempt,
+                                            code,
+                                            "the remote worker rejected project environment setup",
+                                        );
+                                    } else {
+                                        self.owned.project_environment_setups.mark_failed(
+                                            &execution.operation_id,
+                                            status.attempt,
+                                            "worker_dispatch_failed",
+                                            "the remote worker could not be reached for environment setup",
+                                        );
+                                    }
+                                    return Err(error);
+                                }
+                            }
+                        }
                         Err(error) if remote_prompt_error_should_retry_transport(&error) => {
                             // A relay disconnect is transport uncertainty, not
-                            // a worker-authoritative terminal result. Preserve
-                            // the current operation so a later Get can
-                            // reconcile the worker's actual status.
+                            // a worker-authoritative terminal result. Return
+                            // the structured diagnostic while preserving the
+                            // current operation and attempt for a later Get.
                             return Err(error);
                         }
                         Err(error) => {
-                            self.owned.project_environment_setups.mark_failed(
-                                &execution.operation_id,
-                                status.attempt,
-                                "worker_status_unavailable",
-                                "the remote worker status could not be confirmed",
-                            );
+                            if let DaemonError::RelayTransport {
+                                code,
+                                retryable: false,
+                                ..
+                            } = &error
+                            {
+                                self.owned
+                                    .project_environment_setups
+                                    .mark_failed_non_retryable(
+                                        &execution.operation_id,
+                                        status.attempt,
+                                        code,
+                                        "the remote worker rejected setup status",
+                                    );
+                            } else {
+                                self.owned.project_environment_setups.mark_failed(
+                                    &execution.operation_id,
+                                    status.attempt,
+                                    "worker_status_unavailable",
+                                    "the remote worker status could not be confirmed",
+                                );
+                            }
                             return Err(error);
                         }
                     };
@@ -147,6 +214,7 @@ impl KernelRuntimeState {
         target: crate::app::LeasedProjectEnvironmentSetupTarget,
         leased_agent_id: String,
         operation_id: String,
+        attempt: u32,
         project_id: String,
         workspace_id: String,
         target_worker_id: String,
@@ -197,7 +265,7 @@ impl KernelRuntimeState {
         let (status, should_spawn) = self
             .owned
             .project_environment_setups
-            .begin(execution.clone())?;
+            .begin_at_attempt(execution.clone(), attempt)?;
         if should_spawn {
             self.spawn_project_environment_setup(execution.clone(), status.attempt);
         }
@@ -302,7 +370,7 @@ impl KernelRuntimeState {
             let result = if retry {
                 retry_remote_setup(&runtime_state, &execution).await
             } else {
-                start_remote_setup(&runtime_state, &execution).await
+                start_remote_setup(&runtime_state, &execution, attempt).await
             };
             match result {
                 Ok(setup) => {
@@ -326,12 +394,34 @@ impl KernelRuntimeState {
                     }
                 }
                 Err(error) => {
-                    runtime_state.owned.project_environment_setups.mark_failed(
-                        &execution.operation_id,
-                        attempt,
-                        "worker_dispatch_failed",
-                        "the remote worker could not be reached for environment setup",
-                    );
+                    if remote_prompt_error_should_retry_transport(&error) {
+                        // The worker may still be executing after this
+                        // transport observation. Leave the active operation
+                        // untouched so a later status query can reconcile
+                        // the worker-authoritative result.
+                    } else if let DaemonError::RelayTransport {
+                        code,
+                        retryable: false,
+                        ..
+                    } = &error
+                    {
+                        runtime_state
+                            .owned
+                            .project_environment_setups
+                            .mark_failed_non_retryable(
+                                &execution.operation_id,
+                                attempt,
+                                code,
+                                "the remote worker rejected project environment setup",
+                            );
+                    } else {
+                        runtime_state.owned.project_environment_setups.mark_failed(
+                            &execution.operation_id,
+                            attempt,
+                            "worker_dispatch_failed",
+                            "the remote worker could not be reached for environment setup",
+                        );
+                    }
                     crate::logging::warn_with_fields(
                         "project.environment_setup",
                         "remote setup dispatch failed",
@@ -909,6 +999,34 @@ mod tests {
             .begin(changed)
             .expect_err("same id with changed input must fail");
         assert!(error.to_string().contains("different setup request"));
+    }
+
+    #[test]
+    fn worker_setup_recovery_preserves_attempt_and_rejects_stale_replay() {
+        let store = ProjectEnvironmentSetupStore::default();
+        let (started, should_spawn) = store
+            .begin_at_attempt(execution(), 2)
+            .expect("worker recovery should start at the home attempt");
+        assert!(should_spawn);
+        assert_eq!(started.attempt, 2);
+
+        let (replayed, should_spawn) = store
+            .begin_at_attempt(execution(), 2)
+            .expect("same worker recovery request should be idempotent");
+        assert!(!should_spawn);
+        assert_eq!(replayed, started);
+
+        let stale = store
+            .begin_at_attempt(execution(), 1)
+            .expect_err("stale worker recovery must not reopen attempt 1");
+        assert!(stale
+            .to_string()
+            .contains("attempt does not match the existing worker operation"));
+
+        let zero = store
+            .begin_at_attempt(execution(), 0)
+            .expect_err("worker recovery must reject an invalid attempt");
+        assert!(zero.to_string().contains("attempt must be positive"));
     }
 
     #[test]
