@@ -185,6 +185,51 @@ test("production selkies.providers fails when public execution omits a durable t
   }
 })
 
+test("official provider harness preserves structured failures, causes, and AbortError", async () => {
+  const requestApi = officialHarnessRequestApi()
+  const request = { binding }
+
+  const structuredFailure = await captureRejection(() => runSelkiesProviderAcceptance({
+    workerClient: {
+      async send() {
+        return { ProviderCatalog: { catalog: {} } }
+      },
+    },
+    requestApi,
+    request,
+  }))
+  assert.equal(structuredFailure.code, "selkies_providers_catalog_required")
+  assert.notEqual(structuredFailure.code, "selkies_providers_official_harness_failed")
+
+  const originalFailure = new Error("public provider request failed")
+  const wrappedFailure = await captureRejection(() => runSelkiesProviderAcceptance({
+    workerClient: {
+      async send() {
+        throw originalFailure
+      },
+    },
+    requestApi,
+    request,
+  }))
+  assert.equal(wrappedFailure.code, "selkies_providers_official_harness_failed")
+  assert.equal(wrappedFailure.cause, originalFailure)
+
+  const controller = new AbortController()
+  controller.abort()
+  const aborted = await captureRejection(() => runSelkiesProviderAcceptance({
+    workerClient: {
+      async send() {
+        throw new Error("aborted request must not be sent")
+      },
+    },
+    requestApi,
+    request,
+    signal: controller.signal,
+  }))
+  assert.equal(aborted.name, "AbortError")
+  assert.notEqual(aborted.code, "selkies_providers_official_harness_failed")
+})
+
 test("selkies.providers does not accept an advertised catalog without authenticated runtime proof", async () => {
   const requests = []
   const requestApi = minimalRequestApi()
@@ -404,6 +449,49 @@ test("selkies.providers rejects a completed output without a persisted provider 
   }
 })
 
+test("selkies.providers uses only the provider's official resume-state identity", async () => {
+  const modules = await loadPublicClientModules()
+  const { LocalIpcClient } = modules.kernelClient
+  const requestApi = modules.requestApi
+  const homeRelay = await createControlledRelay({ requestApi, role: "home" })
+  const workerRelay = await createControlledRelay({
+    requestApi,
+    role: "worker",
+    resumeStateByProvider: {
+      codex: {
+        codex_thread_id: providerThreadIds.codex,
+        opencode_session_id: "unrelated-opencode-session",
+        claude_session_id: "unrelated-claude-session",
+      },
+    },
+  })
+  const homeClient = new LocalIpcClient(homeRelay.endpoint, {
+    relayAuthToken: "operator-test-token",
+    targetDaemonId: homeBinding.kernelId,
+  })
+  const workerClient = new LocalIpcClient(workerRelay.endpoint, {
+    relayAuthToken: "operator-test-token",
+    targetDaemonId: binding.kernelId,
+  })
+  try {
+    const result = await runSelkiesProviders({
+      homeClient,
+      workerClient,
+      requestApi,
+      request: {
+        displayBackend: "selkies",
+        binding,
+        providerProfiles,
+        providerRunIds,
+        providerPromptIds: fixtureProviderPromptIds(),
+      },
+    })
+    assert.equal(result.providerEvidence.codex.runtime.providerThreadId, providerThreadIds.codex)
+  } finally {
+    await closeClientsAndRelays(homeClient, workerClient, homeRelay, workerRelay)
+  }
+})
+
 test("selkies.providers rejects a changed provider thread across worker runs", async () => {
   const modules = await loadPublicClientModules()
   const { LocalIpcClient } = modules.kernelClient
@@ -460,6 +548,17 @@ async function closeClientsAndRelays(homeClient, workerClient, homeRelay, worker
   await workerRelay?.close()
 }
 
+async function captureRejection(operation) {
+  let rejection
+  try {
+    await operation()
+  } catch (error) {
+    rejection = error
+  }
+  assert.ok(rejection, "operation should reject")
+  return rejection
+}
+
 async function createControlledRelay({
   requestApi,
   role,
@@ -469,6 +568,7 @@ async function createControlledRelay({
   omitProvider = null,
   omitToolProvider = null,
   mismatchProvider = null,
+  resumeStateByProvider = null,
 }) {
   const { decryptRelayPayload, encryptRelayPayload } = await import(relayCryptoDistUrl.href)
   const { WebSocketServer } = createRequire(fileURLToPath(kernelClientDistUrl))("ws")
@@ -523,6 +623,7 @@ async function createControlledRelay({
           omitProvider,
           omitToolProvider,
           mismatchProvider,
+          resumeStateByProvider,
         })
         const encryptedResponse = encryptRelayPayload(
           frame.encrypted_request.sender_public_key,
@@ -923,6 +1024,7 @@ function responseFor(request, requestApi, {
   omitProvider = null,
   omitToolProvider = null,
   mismatchProvider = null,
+  resumeStateByProvider = null,
 } = {}) {
   if (executionState) return executionResponseFor(request, requestApi, executionState)
   if ("RelayStatus" in request) {
@@ -1046,7 +1148,6 @@ function responseFor(request, requestApi, {
           execution_mode: "build",
           permission_level: "yolo",
           control_capabilities: [],
-          resume_state: {},
           external_provider_import: current && providerRunId === importedProviderRunId
             ? {
               external_provider_session_id: threadId,
@@ -1058,6 +1159,7 @@ function responseFor(request, requestApi, {
             }
             : null,
           provider_session_id: threadId,
+          resume_state: resumeStateByProvider?.[provider] ?? {},
           started_at_ms: 1,
           last_activity_at_ms: 2,
         },
@@ -1122,6 +1224,17 @@ function minimalRequestApi() {
     getSessionHistoryBlobContentRequest: (sessionId, agentId, blobId) => ({
       GetSessionHistoryBlobContent: { session_id: sessionId, agent_id: agentId, blob_id: blobId },
     }),
+  }
+}
+
+function officialHarnessRequestApi() {
+  return {
+    ...minimalRequestApi(),
+    spawnAgentRequest: (...args) => ({ SpawnAgent: args }),
+    attachToSessionRequest: (...args) => ({ AttachToSession: args }),
+    submitPromptRequest: (...args) => ({ SubmitPrompt: args }),
+    getSessionStateRequest: (...args) => ({ GetSessionState: args }),
+    listRoomEnvironmentActionHistoryRequest: (...args) => ({ ListRoomEnvironmentActionHistory: args }),
   }
 }
 

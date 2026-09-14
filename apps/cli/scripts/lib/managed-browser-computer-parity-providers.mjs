@@ -3,6 +3,14 @@ import { createHash } from "node:crypto"
 import { runRoomRealProviderAction } from "./live-room-real-provider.mjs"
 
 const PROVIDER_FAMILIES = Object.freeze(["codex", "opencode", "claude"])
+// These are the only provider-native resume fields in the Rust
+// ProviderResumeState contract. A runtime may retain state for other provider
+// families, but those fields do not identify this provider's thread.
+const PROVIDER_RESUME_STATE_FIELDS = Object.freeze({
+  codex: "codex_thread_id",
+  opencode: "opencode_session_id",
+  claude: "claude_session_id",
+})
 const KNOWN_PROVIDER_RUN_STATES = new Set(["Starting", "Running", "Parked", "Ended"])
 const EXECUTED_PROVIDER_RUN_STATES = new Set(["Running", "Parked", "Ended"])
 const OFFICIAL_PROVIDER_STATUS = "official"
@@ -33,11 +41,17 @@ export async function runSelkiesProviderAcceptance({
       request,
       signal,
     })
-  } catch {
-    fail(
-      "selkies_providers_official_harness_failed",
+  } catch (error) {
+    // Preserve public validation codes and cancellation. Unknown failures keep
+    // their original error as cause so the live drill can diagnose the failed
+    // public operation without exposing provider credentials.
+    if (error?.name === "AbortError" || hasText(error?.code)) throw error
+    const wrapped = new Error(
       "selkies.providers official provider harness failed before returning public execution evidence",
+      { cause: error },
     )
+    wrapped.code = "selkies_providers_official_harness_failed"
+    throw wrapped
   }
   if (!harnessResult || typeof harnessResult !== "object" || Array.isArray(harnessResult)) {
     fail(
@@ -1039,28 +1053,25 @@ function validateProviderRuntime(runtime, provider, accountProfile, binding, pro
 }
 
 function providerThreadIdFromRuntime(runtime, provider) {
-  const candidates = [
-    runtime.provider_session_id,
-    runtime.resume_state?.[`${provider}_session_id`],
-    runtime.resume_state?.[`${provider}_thread_id`],
-    runtime.resume_state?.opencode_session_id,
-    runtime.resume_state?.codex_thread_id,
-    runtime.resume_state?.claude_session_id,
-  ].filter(hasText).map((value) => value.trim())
-  const unique = [...new Set(candidates)]
-  if (unique.length === 0) {
+  const resumeStateField = PROVIDER_RESUME_STATE_FIELDS[provider]
+  // RuntimeProviderRun derives provider_session_id from this provider-native
+  // field; prefer the native value when it is present and use the projected
+  // field only for runtimes that omit resume_state in their public payload.
+  const providerNativeThreadId = resumeStateField == null
+    ? null
+    : runtime.resume_state?.[resumeStateField]
+  const providerThreadId = hasText(providerNativeThreadId)
+    ? providerNativeThreadId.trim()
+    : hasText(runtime.provider_session_id)
+      ? runtime.provider_session_id.trim()
+      : null
+  if (providerThreadId == null) {
     fail(
       "selkies_providers_thread_continuity_required",
       `selkies.providers requires a persisted provider thread id for ${provider}`,
     )
   }
-  if (unique.length > 1) {
-    fail(
-      "selkies_providers_thread_continuity_required",
-      `selkies.providers observed conflicting provider thread ids for ${provider}`,
-    )
-  }
-  return unique[0]
+  return providerThreadId
 }
 
 function validateExternalProviderImport(importMetadata, provider, accountProfile) {
