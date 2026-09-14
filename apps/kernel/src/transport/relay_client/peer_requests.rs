@@ -202,6 +202,15 @@ pub(super) async fn handle_daemon_peer_request(
     } else {
         None
     };
+    #[cfg(test)]
+    let test_peer_request_release = {
+        let state = state.read().await;
+        state.test_observe_authenticated_peer_request(&request)
+    };
+    #[cfg(test)]
+    if let Some(release) = test_peer_request_release {
+        let _ = release.await;
+    }
     if !from_daemon_id.trim().is_empty()
         && !matches!(
             &request,

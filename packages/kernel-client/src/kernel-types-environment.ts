@@ -182,6 +182,18 @@ export type RoomEnvironmentSliceResponse = {
   RoomEnvironmentSlice: { binding: RoomEnvironmentSliceBinding | null }
 }
 
+export type RoomEnvironmentResourceInventory = {
+  session_id: string
+  environment_id: string
+  slice_id: string
+  browser_ids: string[]
+  profile_ids: string[]
+}
+
+export type RoomEnvironmentResourceInventoryResponse = {
+  RoomEnvironmentResourceInventory: { inventory: RoomEnvironmentResourceInventory }
+}
+
 export type RoomEnvironmentScreenshotArtifact = {
   artifact_id: string
   sha256: string

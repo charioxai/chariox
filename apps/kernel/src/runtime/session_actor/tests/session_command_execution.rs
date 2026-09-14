@@ -35,7 +35,7 @@ while IFS= read -r request; do
       ;;
     *'"method":"browser.reconcile"'*)
       printf 'reconcile\n' >> '__LOG__'
-      printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"event_cursor":1,"tabs":[{"target_id":"target-a","document_id":"loader-a","url":"https://a.test","title":"A"}],"focused_target_id":"target-a","viewport":{"css_width":1280,"css_height":800,"device_scale_factor":1,"desktop_pixel_width":1280,"desktop_pixel_height":800}}}\n' "$id"
+      printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"event_cursor":1,"tabs":[{"target_id":"target-a","document_id":"loader-a","url":"https://a.test","title":"A"}],"focused_target_id":"target-a","resource_inventory":{"browser_ids":["browser-pid-41"],"profile_ids":["profile-sha256-41"]},"viewport":{"css_width":1280,"css_height":800,"device_scale_factor":1,"desktop_pixel_width":1280,"desktop_pixel_height":800}}}\n' "$id"
       ;;
     *'"method":"browser.snapshot"'*)
       printf 'snapshot\n' >> '__LOG__'

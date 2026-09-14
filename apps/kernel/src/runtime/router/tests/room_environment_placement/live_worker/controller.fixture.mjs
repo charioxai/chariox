@@ -310,6 +310,14 @@ const browser = new BrowserCdpClient({
     downloadDirectory: join(dirname(pidFile), "downloads"),
     uploadRoots: [dirname(pidFile)],
 });
+// This fixture supplies the worker observation that a real slice controller
+// obtains from its own namespace. It is deliberately test-only: production
+// BrowserControllerStdioServer uses browser-controller-resources.mjs to scan
+// the worker's actual /proc and profile identities.
+const fixtureResourceInventory = async () => ({
+  browser_ids: ["browser-pid-fixture"],
+  profile_ids: ["profile-sha256-fixture"],
+});
 const uploadFiles = browser.uploadFiles.bind(browser);
 browser.uploadFiles = async (request, options = {}) => {
   const observedAbort = () => writeFileSync(join(dirname(pidFile), "upload-cancel-observed"), "cancel observed");
@@ -335,4 +343,4 @@ for (const [scope, methods] of [
     } finally { options.signal?.removeEventListener("abort", observedAbort); }
   };
 }
-await new BrowserControllerStdioServer({ browser }).run();
+await new BrowserControllerStdioServer({ browser, resourceInventory: fixtureResourceInventory }).run();

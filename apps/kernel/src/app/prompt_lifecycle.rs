@@ -567,6 +567,21 @@ impl DaemonApp {
         )
     }
 
+    pub(crate) fn fail_active_prompt_with_termination(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: Option<&str>,
+        provider_termination: Option<crate::provider::ProviderRunTermination>,
+    ) -> Result<PromptCompletion, DaemonError> {
+        crate::app::KernelAgentService::new(self).fail_active_prompt_with_termination(
+            session_id,
+            agent_id,
+            provider_run_id,
+            provider_termination,
+        )
+    }
+
     #[doc(hidden)]
     pub fn cancel_active_prompt(
         &mut self,

@@ -34,6 +34,7 @@ struct ProviderRunLivenessOutcome {
     session_id: String,
     provider_run_id: String,
     agent_id: String,
+    provider_termination: Option<crate::provider::ProviderRunTermination>,
     transition: ProviderRunLivenessTransition,
 }
 
@@ -207,10 +208,11 @@ impl ProviderRunLivenessSessionEffects {
                 .started_next
                 .is_some(),
             ProviderRunExitPromptSettlement::FailActivePrompt => app
-                .fail_active_prompt(
+                .fail_active_prompt_with_termination(
                     &outcome.session_id,
                     &outcome.agent_id,
                     Some(&outcome.provider_run_id),
+                    outcome.provider_termination.clone(),
                 )?
                 .started_next
                 .is_some(),
@@ -309,6 +311,7 @@ impl<'a> ProviderRunLivenessRuntime<'a> {
                     session_id: session_id.to_string(),
                     provider_run_id: provider_run_id.to_string(),
                     agent_id,
+                    provider_termination: None,
                     transition: ProviderRunLivenessTransition::AlreadyEnded,
                 }));
             }
@@ -342,12 +345,28 @@ impl<'a> ProviderRunLivenessRuntime<'a> {
         };
         self.app.update_provider_run_projection(ended_run.clone());
         let _ = ProviderRunLivenessProcesses::remove_tracked_process(self.app, provider_run_id)?;
+        let provider_termination = process_exit.as_ref().map(|process_exit| {
+            match (process_exit.exit_code, process_exit.signal.as_deref()) {
+                (Some(exit_code), _) => crate::provider::ProviderRunTermination::process_exit(
+                    exit_code,
+                    crate::session::unix_epoch_ms(),
+                ),
+                (None, Some(signal)) => crate::provider::ProviderRunTermination::signal(
+                    signal,
+                    crate::session::unix_epoch_ms(),
+                ),
+                (None, None) => crate::provider::ProviderRunTermination::unknown_process_exit(
+                    crate::session::unix_epoch_ms(),
+                ),
+            }
+        });
 
         Ok(Some(ProviderRunLivenessOutcome {
             ended_run,
             session_id: session_id.to_string(),
             provider_run_id: provider_run_id.to_string(),
             agent_id,
+            provider_termination,
             transition: ProviderRunLivenessTransition::UnexpectedExit,
         }))
     }
@@ -416,6 +435,7 @@ mod tests {
             session_id: session.id().to_string(),
             provider_run_id: run.id().to_string(),
             agent_id: agent.id().to_string(),
+            provider_termination: None,
             transition: ProviderRunLivenessTransition::UnexpectedExit,
         };
 
