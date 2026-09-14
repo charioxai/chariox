@@ -41,6 +41,16 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
                 false,
             )
         }
+        DaemonError::LocalTransport { operation, message }
+            if *operation == "project environment setup" =>
+        {
+            let code = if message == "setup operation was not found" {
+                crate::transport::relay_peer::PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE
+            } else {
+                crate::transport::relay_peer::PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE
+            };
+            relay_error(code, &error.to_string(), false)
+        }
         DaemonError::LocalTransport { .. } => {
             relay_error("transport_error", &error.to_string(), true)
         }

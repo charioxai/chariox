@@ -88,6 +88,22 @@ pub(super) fn setup_error(message: &str) -> DaemonError {
     }
 }
 
+pub(super) fn is_missing_remote_setup_operation(error: &DaemonError) -> bool {
+    let DaemonError::RelayTransport {
+        operation,
+        code,
+        retryable: false,
+        ..
+    } = error
+    else {
+        return false;
+    };
+    matches!(
+        *operation,
+        "read relay peer response" | "read temporary relay peer response"
+    ) && code == crate::transport::relay_peer::PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE
+}
+
 pub(super) fn actual_worker_platform() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }

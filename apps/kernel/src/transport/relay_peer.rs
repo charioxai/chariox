@@ -80,6 +80,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 52;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
+pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
+pub const PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE: &str = "project_environment_setup_rejected";
 
 /// Home-selected execution identity for a leased prompt. Contains no credentials.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

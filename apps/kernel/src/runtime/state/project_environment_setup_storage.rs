@@ -257,6 +257,15 @@ impl ProjectEnvironmentSetupStore {
         operation_id: &str,
         caller_user_id: &str,
     ) -> Result<(SetupExecution, ProjectEnvironmentSetupStatus), DaemonError> {
+        self.get_entry_with_cancellation(operation_id, caller_user_id)
+            .map(|(execution, status, _)| (execution, status))
+    }
+
+    pub(super) fn get_entry_with_cancellation(
+        &self,
+        operation_id: &str,
+        caller_user_id: &str,
+    ) -> Result<(SetupExecution, ProjectEnvironmentSetupStatus, bool), DaemonError> {
         let entries = self
             .entries
             .lock()
@@ -269,7 +278,11 @@ impl ProjectEnvironmentSetupStore {
                 "caller is not allowed to inspect this setup operation",
             ));
         }
-        Ok((entry.execution.clone(), entry.status.clone()))
+        Ok((
+            entry.execution.clone(),
+            entry.status.clone(),
+            entry.cancel_requested,
+        ))
     }
 
     pub(super) fn remote_status(

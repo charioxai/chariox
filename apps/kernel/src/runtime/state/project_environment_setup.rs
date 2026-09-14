@@ -69,15 +69,66 @@ impl KernelRuntimeState {
                 Ok(LocalDaemonResponse::ProjectEnvironmentSetupStarted { status })
             }
             LocalDaemonRequest::GetProjectEnvironmentSetupStatus(request) => {
-                let (execution, status) = self
-                    .owned
-                    .project_environment_setups
-                    .get_entry(&request.operation_id, caller_user_id)?;
+                let (execution, status, cancel_requested) =
+                    self.owned
+                        .project_environment_setups
+                        .get_entry_with_cancellation(&request.operation_id, caller_user_id)?;
                 if execution.remote_leased_agent_id.is_some() {
                     let setup = get_remote_setup_status(self, &execution).await;
                     let status = match setup {
                         Ok(setup) => {
                             self.reconcile_remote_project_environment_setup(&execution, setup)?
+                        }
+                        Err(error)
+                            if is_missing_remote_setup_operation(&error)
+                                && !cancel_requested
+                                && matches!(
+                                    status.phase,
+                                    ProjectEnvironmentSetupPhase::Requested
+                                        | ProjectEnvironmentSetupPhase::Preparing
+                                        | ProjectEnvironmentSetupPhase::Validating
+                                ) =>
+                        {
+                            // An authenticated worker reply proves that this
+                            // operation never reached that worker. Re-send
+                            // the original operation and keep its attempt;
+                            // worker-side begin() is idempotent for the same
+                            // operation fingerprint.
+                            match start_remote_setup(self, &execution).await {
+                                Ok(setup) => self.reconcile_remote_project_environment_setup(
+                                    &execution, setup,
+                                )?,
+                                Err(error)
+                                    if remote_prompt_error_should_retry_transport(&error) =>
+                                {
+                                    return Err(error);
+                                }
+                                Err(error) => {
+                                    if let DaemonError::RelayTransport {
+                                        code,
+                                        retryable: false,
+                                        ..
+                                    } = &error
+                                    {
+                                        self.owned
+                                            .project_environment_setups
+                                            .mark_failed_non_retryable(
+                                            &execution.operation_id,
+                                            status.attempt,
+                                            code,
+                                            "the remote worker rejected project environment setup",
+                                        );
+                                    } else {
+                                        self.owned.project_environment_setups.mark_failed(
+                                            &execution.operation_id,
+                                            status.attempt,
+                                            "worker_dispatch_failed",
+                                            "the remote worker could not be reached for environment setup",
+                                        );
+                                    }
+                                    return Err(error);
+                                }
+                            }
                         }
                         Err(error) if remote_prompt_error_should_retry_transport(&error) => {
                             // A relay disconnect is transport uncertainty, not

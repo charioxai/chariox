@@ -119,10 +119,19 @@ fn set_remote_prompt_launch_credential(
 fn response_requires_provider_launch_credential(
     response: &Result<RelayPeerResponse, DaemonError>,
 ) -> bool {
-    let Err(DaemonError::LocalTransport { message, .. }) = response else {
+    let Err(error) = response else {
         return false;
     };
-    message.contains(REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE)
+    match error {
+        DaemonError::LocalTransport { message, .. } => {
+            message.contains(REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE)
+        }
+        DaemonError::RelayTransport { code, message, .. } => {
+            code == REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE
+                || message.contains(REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE)
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]

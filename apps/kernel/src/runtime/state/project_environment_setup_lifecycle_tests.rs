@@ -613,11 +613,6 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
             .expect("home agent should bind to the worker");
     }
 
-    let worker_router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
-        Arc::clone(&app_worker),
-        1,
-    ));
-    let worker_runtime = worker_router.runtime_state();
     let target_platform = actual_worker_platform();
     let validation_command = "command -v sh".to_string();
     let definition = ProjectEnvironmentDefinition {
@@ -632,6 +627,41 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         }],
         validation_commands: vec![validation_command.clone()],
     };
+    let provider_fixture = UtilityProviderFixture::start(definition.clone());
+    {
+        let mut app = app_worker.lock().await;
+        let launch_request = LaunchProviderRequest::new(
+            &backing_session_id,
+            "opencode",
+            "opencode",
+            "default",
+            "opencode/test-model",
+        )
+        .with_agent_id(&backing_agent_id)
+        .with_owner_user_id("user-1");
+        let mut provider_run = RuntimeProviderRun::new(
+            "setup-recovery-provider-run",
+            &launch_request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "opencode-project-environment-recovery-fixture".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
+                pty_env_remove: Vec::new(),
+                working_directory: Some(workspace.clone()),
+                structured_endpoint: Some(provider_fixture.address()),
+            },
+        );
+        provider_run.mark_running();
+        app.providers_mut().insert_run_for_test(provider_run);
+    }
+    let worker_router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
+        Arc::clone(&app_worker),
+        1,
+    ));
+    let worker_runtime = worker_router.runtime_state();
     let worker_execution = super::SetupExecution {
         owner_user_id: "user-1".to_string(),
         operation_id: "setup-transport-recovery".to_string(),
@@ -949,12 +979,48 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         ),
         "worker-missing recovery must return an active or measured status, not a heuristic terminal result: {recovered_missing_status:?}"
     );
-    let (_, worker_recovered_status) = worker_runtime
-        .owned
-        .project_environment_setups
-        .get_entry(dispatch_never_arrived_operation_id, "user-1")
-        .expect("authenticated missing-operation recovery should redispatch the same operation");
-    assert_eq!(worker_recovered_status.attempt, 1);
+    let worker_progress_deadline = Instant::now() + Duration::from_secs(10);
+    let recovered_worker_status = loop {
+        let status = response_status(
+            get_setup_status(
+                &runtime,
+                dispatch_never_arrived_operation_id,
+                "user-1",
+                "authenticated status polling after same-operation redispatch",
+            )
+            .await,
+        );
+        if matches!(
+            status.phase,
+            ProjectEnvironmentSetupPhase::Preparing
+                | ProjectEnvironmentSetupPhase::Validating
+                | ProjectEnvironmentSetupPhase::Ready
+        ) {
+            break status;
+        }
+        assert!(
+            !matches!(
+                status.phase,
+                ProjectEnvironmentSetupPhase::Failed | ProjectEnvironmentSetupPhase::Cancelled
+            ),
+            "worker status must not fabricate terminal recovery state: {status:?}; provider trace: {}",
+            provider_fixture.diagnostics()
+        );
+        assert!(
+            Instant::now() < worker_progress_deadline,
+            "authenticated worker status never advanced after redispatch: {status:?}; provider trace: {}",
+            provider_fixture.diagnostics()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(
+        recovered_worker_status.operation_id,
+        dispatch_never_arrived_operation_id
+    );
+    assert_eq!(
+        recovered_worker_status.attempt, 1,
+        "the authenticated worker status must retain the original operation attempt"
+    );
 
     let replayed = runtime
         .execute_project_environment_setup_request(
