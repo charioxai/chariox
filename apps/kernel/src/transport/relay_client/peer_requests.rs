@@ -4335,7 +4335,7 @@ mod tests {
                 RelayPeerResponse::ManagedContextImportFailed {
                     code,
                     retryable: false,
-                } if code == "unauthorized"
+                } if code == "managed_context_cloud_completion_rejected"
             ),
             "rebound finalize response: {rebound:?}"
         );
