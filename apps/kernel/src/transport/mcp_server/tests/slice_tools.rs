@@ -1635,6 +1635,9 @@ done
             "secret_input",
             "fill",
             "dialog",
+            "download_configure",
+            "upload",
+            "permission_set",
             "navigate"
         ]
     );

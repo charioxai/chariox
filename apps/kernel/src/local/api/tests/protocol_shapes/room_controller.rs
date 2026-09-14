@@ -812,7 +812,10 @@ fn room_controller_protocol_shapes_are_versioned() {
             "browser":{"browser_generation":3,"event_cursor":4,
                 "tabs":[{"target_id":"target-1","document_id":"doc-1",
                     "url":"https://example.test/","title":"Example"}],
-                "focused_target_id":"target-1","viewport":{
+                "focused_target_id":"target-1","resource_inventory":{
+                    "browser_ids":["browser-pid-41"],
+                    "profile_ids":["profile-sha256-41"]
+                },"viewport":{
                     "css_width":1280,"css_height":800,"device_scale_factor":1,
                     "desktop_pixel_width":1280,"desktop_pixel_height":800}}
         }}),
