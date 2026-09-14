@@ -24,8 +24,11 @@ Browser, Computer, prompt, provider, Git, or vault payloads.
    version, and a fresh heartbeat for the expected immutable kernel/machine.
 5. Released Web, local TUI, and remote TUI clients, authenticated through their
    normal product paths. Do not pass their cookies or tokens to this harness.
-6. Codex, OpenCode, and Claude advertised through official provider harnesses.
-   The drill checks capability presence and never copies provider-internal state.
+6. Codex, OpenCode, and Claude executed through the existing official provider
+   harness. The provider adapter verifies authenticated worker runtime,
+   provider-native thread identity, and durable prompt/tool/final history. Any
+   supported credential/bootstrap transfer remains harness-owned; the drill
+   does not manufacture a no-copy receipt.
 7. Product-managed Git authentication and an attended, synthetic-test vault
    entry. The adapter receives only fixture name `synthetic-vault-marker-v1`,
    never its value.
@@ -97,8 +100,11 @@ capabilities, and resource headroom, the orchestrator:
 1. Creates the headed environment through the kernel-owned default. The result
    must be `selkies` with exactly one Room, browser, and profile.
 2. Attaches Web, local TUI, and remote TUI to that same Room/environment.
-3. Confirms official Codex, OpenCode, and Claude harness capabilities.
-   Evidence must explicitly report that no provider-internal state was copied.
+3. Runs the existing official Codex, OpenCode, and Claude harnesses and
+   requires a real prompt/tool/final round trip plus durable provider-thread
+   evidence from the authenticated worker. Catalog, auth, and run labels alone
+   cannot pass the provider step. Supported credential/bootstrap transfer is
+   allowed and is not converted into a synthetic transfer declaration.
 4. Runs structured Browser discovery/fill/click with one mutation, then Computer
    screenshot, pointer, and keyboard input.
 5. Verifies actor overlay, human takeover/cancellation, and attribution.

@@ -114,7 +114,28 @@ function successfulResult(step, input) {
   if (step === "novnc.create") return target("novnc")
   if (step.endsWith(".attach")) return { ...target(input.displayBackend), client: input.client }
   const binding = target(input.displayBackend)
-  if (step.endsWith(".providers")) return { ...binding, providers: { codex: "official", opencode: "official", claude: "official" }, providerStateCopied: false }
+  if (step.endsWith(".providers")) return {
+    ...binding,
+    providers: { codex: "official", opencode: "official", claude: "official" },
+    providerExecutionEvidence: Object.fromEntries(["codex", "opencode", "claude"].map((provider) => [provider, {
+      promptId: "fixture-prompt-" + provider,
+      toolCallId: "fixture-tool-" + provider,
+      finalTurnId: "fixture-turn-" + provider,
+      outputObserved: true,
+      roundTripVerified: true,
+    }])),
+    providerStateEvidence: {
+      schema: "chariox.browser_computer.provider_state_evidence.v1",
+      authority: "worker-provider-runtime",
+      scope: "public worker runtime and durable history only",
+      persistedHistory: { codex: true, opencode: true, claude: true },
+      providerThreads: Object.fromEntries(["codex", "opencode", "claude"].map((provider) => [provider, {
+        current: "fixture-thread-" + provider,
+        previous: "fixture-thread-" + provider,
+        continuity: true,
+      }])),
+    },
+  }
   if (step.endsWith(".browser")) return { ...binding, structuredActions: true, mutationCount: 1, browserCount: 1 }
   if (step.endsWith(".computer")) return { ...binding, screenshot: true, pointer: true, keyboard: true }
   if (step.endsWith(".takeover")) return { ...binding, overlayVisible: true, takeoverCompleted: true, actorAttributed: true }
@@ -243,12 +264,18 @@ test("managed parity harness requires every official provider plus Git and synth
   }
 })
 
-test("managed parity harness rejects provider evidence that does not prove zero state copying", async () => {
+test("managed parity harness requires provider execution and durable state observations", async () => {
   const injected = transport({ mutate: {
-    "selkies.providers": (value) => ({ ...value, providerStateCopied: true }),
+    "selkies.providers": (value) => ({
+      ...value,
+      providerExecutionEvidence: {
+        ...value.providerExecutionEvidence,
+        codex: { ...value.providerExecutionEvidence.codex, roundTripVerified: false },
+      },
+    }),
   } })
   const report = await runManagedBrowserComputerParityHarness({ config: config(), transport: injected })
-  assert.equal(report.failure.code, "provider_state_copy_forbidden")
+  assert.equal(report.failure.code, "provider_execution_evidence_required")
 })
 
 test("managed parity harness rejects duplicate Rooms, browsers, and profiles", async () => {
