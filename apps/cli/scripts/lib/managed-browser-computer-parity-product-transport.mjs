@@ -276,6 +276,31 @@ async function runSelkiesCreate({
     step: "selkies.create slice start",
   })
 
+  // Create responses for a newly provisioned slice may intentionally omit the
+  // display endpoint until the worker is running. Observe the post-start
+  // record through the released public GetSlice request instead of inferring
+  // the kernel-selected backend from the stopped CreateSlice response.
+  const observedResponse = await sendWithAbortSignal(
+    displayClient,
+    requireRequestConstructor(requestApi, "getSliceRequest")(ownedResources.sliceId),
+    signal,
+    "selkies.create slice observation",
+  )
+  const observed = responseVariant(
+    observedResponse,
+    "Slice",
+    "selkies.create slice observation",
+  ).slice
+  validateStartedSlice(observed, {
+    sliceId: ownedResources.sliceId,
+    roomId,
+    workerKernelRef,
+    binding,
+    targetMachineRef,
+    step: "selkies.create slice observation",
+  })
+  const displayBackend = observedDisplayBackend(observed, "selkies.create slice observation")
+
   const identity = await readAuthoritativeBinding({
     displayClient,
     identityClient,
@@ -288,7 +313,7 @@ async function runSelkiesCreate({
   ownedResources.identity = identity
   return {
     ...identity,
-    displayBackend: createdDisplayBackend(created, "selkies.create"),
+    displayBackend,
     sliceId: ownedResources.sliceId,
   }
 }
@@ -396,10 +421,10 @@ function validateCreatedSlice(slice, { roomId, workerKernelRef, targetMachineRef
   }
 }
 
-function createdDisplayBackend(slice, step) {
+function observedDisplayBackend(slice, step) {
   const endpoint = slice?.display_endpoint
   if (!endpoint || typeof endpoint !== "object") {
-    throw new Error(`managed parity ${step} cannot verify the kernel-selected display backend`)
+    throw new Error(`managed parity ${step} returned no kernel-selected display endpoint`)
   }
   if (endpoint.slice_id !== slice.id || endpoint.kind !== "selkies") {
     throw new Error(`managed parity ${step} did not return the kernel-selected Selkies backend`)

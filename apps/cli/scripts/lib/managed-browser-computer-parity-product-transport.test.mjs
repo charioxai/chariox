@@ -937,6 +937,7 @@ test("real LocalIpcClient cleanup deletes a slice after post-create validation f
   let createSliceRequest;
   let deleteSliceRequest;
   let detachFromSessionRequest;
+  let getSliceRequest;
   let getSliceDisplayEndpointRequest;
   let decryptRelayPayload;
   let encryptRelayPayload;
@@ -947,6 +948,7 @@ test("real LocalIpcClient cleanup deletes a slice after post-create validation f
       createSliceRequest,
       deleteSliceRequest,
       detachFromSessionRequest,
+      getSliceRequest,
       getSliceDisplayEndpointRequest,
     } = await import(kernelRequestsDistUrl.href));
     ({ decryptRelayPayload, encryptRelayPayload } = await import(relayCryptoDistUrl.href));
@@ -1037,6 +1039,7 @@ test("real LocalIpcClient cleanup deletes a slice after post-create validation f
       createSliceRequest,
       deleteSliceRequest,
       detachFromSessionRequest,
+      getSliceRequest,
       getSliceDisplayEndpointRequest,
     },
     targetKernelRef: "worker-ref-1",
