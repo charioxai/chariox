@@ -753,6 +753,8 @@ mod tests {
 
     use crate::config::{DaemonConfig, PersistedCloudRelayProfile};
     use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
+    use crate::managed_bootstrap::ManagedKernelContextPlan;
+    use crate::managed_context::outbound_service::ManagedContextTransferTicket;
     use crate::runtime::command::KernelCommand;
 
     #[cfg(unix)]
@@ -932,7 +934,6 @@ mod tests {
         use crate::managed_context::development::DevelopmentRepositoryRole;
         use crate::managed_context::outbound_service::{
             ManagedContextOutboundOperationPhase, ManagedContextTransferTarget,
-            ManagedContextTransferTicket,
         };
         use crate::session::{CreateSessionRequest, SessionAgentDefaults, SessionProjectSelection};
 
@@ -989,14 +990,16 @@ mod tests {
             kernel_host: fixture.config.kernel_host.clone(),
             kernel_port: fixture.config.kernel_port,
         };
-        let worker_envelope = WorkerEnvelope {
-            schema_version: 1,
-            cloud_api_url: "https://cloud.example.test".to_string(),
-            allocation_id: "allocation-disposable-project".to_string(),
-            token: format!("mboot_{}", "d".repeat(40)),
-            expires_at: (fixture.now + chrono::Duration::hours(1)).to_rfc3339(),
-            runtime_release_digest: fixture.release_digest.clone(),
-        };
+        let test_now = chrono::Utc::now();
+        let worker_cloud_api_url = "https://cloud.example.test".to_string();
+        let worker_envelope = serde_json::json!({
+            "schemaVersion": 1,
+            "cloudApiUrl": worker_cloud_api_url,
+            "allocationId": "allocation-disposable-project",
+            "token": format!("mboot_{}", "d".repeat(40)),
+            "expiresAt": (test_now + chrono::Duration::hours(1)).to_rfc3339(),
+            "runtimeReleaseDigest": fixture.release_digest.clone(),
+        });
         write_private_file(
             &worker_config.envelope_path,
             &serde_json::to_vec(&worker_envelope).expect("encode worker envelope"),
@@ -1025,7 +1028,7 @@ mod tests {
                 kernel_id: home_kernel_id.to_string(),
                 relay_public_key: home_public_key.clone(),
             };
-            response.cloud_relay.api_url = worker_envelope.cloud_api_url.clone();
+            response.cloud_relay.api_url = worker_cloud_api_url.clone();
             response.cloud_relay.account_id = "account-1".to_string();
             response.cloud_relay.user_id = "local".to_string();
             response.cloud_relay.realm_id = "default".to_string();
@@ -1036,7 +1039,7 @@ mod tests {
             response: exchange_response,
             confirmations: StdMutex::new(Vec::new()),
         };
-        let mut prepared = prepare(&worker_config, &worker_cloud, fixture.now)
+        let mut prepared = prepare(&worker_config, &worker_cloud, test_now)
             .expect("worker enrollment should create a receipt");
         assert_eq!(prepared.receipt.status, WorkerReceiptStatus::Exchanged);
         assert!(prepared.pending.is_some());
