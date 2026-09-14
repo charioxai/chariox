@@ -322,7 +322,9 @@ fn codex_request_timeout(method: &str) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::{codex_read_should_retry, codex_request_timeout, CodexClient};
-    use crate::provider::CodexNotification;
+    use crate::provider::{
+        AgentExecutionMode, AgentPermissionLevel, CodexNotification, ProviderWriteAccessMode,
+    };
     use serde_json::{json, Value};
     use std::net::TcpListener;
     use std::thread;
@@ -353,6 +355,108 @@ mod tests {
             Duration::from_secs(120)
         );
         assert_eq!(codex_request_timeout("turn/start"), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn codex_thread_resume_accepts_large_history_frame_within_message_budget() {
+        const LARGE_HISTORY_BYTES: usize = 23_600_000;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind websocket fixture");
+        let address = listener.local_addr().expect("resolve websocket fixture");
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept websocket fixture");
+            let mut socket = accept(stream).expect("upgrade websocket fixture");
+
+            let initialize = socket.read().expect("read initialize request");
+            let Message::Text(initialize) = initialize else {
+                panic!("expected initialize request text frame");
+            };
+            let initialize: Value =
+                serde_json::from_str(&initialize).expect("parse initialize request");
+            assert_eq!(
+                initialize.get("method").and_then(Value::as_str),
+                Some("initialize")
+            );
+            socket
+                .send(Message::Text(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": initialize.get("id").cloned().expect("initialize id"),
+                        "result": {},
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("send initialize response");
+
+            let initialized = socket.read().expect("read initialized notification");
+            let Message::Text(initialized) = initialized else {
+                panic!("expected initialized notification text frame");
+            };
+            let initialized: Value =
+                serde_json::from_str(&initialized).expect("parse initialized notification");
+            assert_eq!(
+                initialized.get("method").and_then(Value::as_str),
+                Some("initialized")
+            );
+
+            let resume = socket.read().expect("read thread/resume request");
+            let Message::Text(resume) = resume else {
+                panic!("expected thread/resume request text frame");
+            };
+            let resume: Value = serde_json::from_str(&resume).expect("parse thread/resume request");
+            assert_eq!(
+                resume.get("method").and_then(Value::as_str),
+                Some("thread/resume")
+            );
+
+            // This deliberately stays below tungstenite's default aggregate-message budget
+            // (64 MiB) while exceeding its default single-frame budget (16 MiB). It models the
+            // large persisted Codex history that previously stopped the client reader.
+            let history = "h".repeat(LARGE_HISTORY_BYTES);
+            let response = json!({
+                "jsonrpc": "2.0",
+                "id": resume.get("id").cloned().expect("resume id"),
+                "result": {
+                    "thread": { "id": "thread-large-history" },
+                    "model": "gpt-5.6",
+                    "history": history,
+                },
+            })
+            .to_string();
+            assert!(response.len() > 16 * 1024 * 1024);
+            assert!(
+                (23_000_000..=24_000_000).contains(&response.len()),
+                "fixture response should stay near the observed 23.6 MiB failure: {} bytes",
+                response.len()
+            );
+            assert!(response.len() < 64 * 1024 * 1024);
+            let _ = socket.send(Message::Text(response.into()));
+        });
+
+        let endpoint = format!("ws://{address}");
+        let client = CodexClient::new("provider-run-large-history", endpoint)
+            .expect("client should construct");
+        let result = client.connect_initialized().and_then(|mut socket| {
+            let mut next_request_id = 1;
+            let result = client.thread_resume(
+                &mut socket,
+                &mut next_request_id,
+                "thread-resume-large-history",
+                None,
+                Some("gpt-5.6"),
+                ProviderWriteAccessMode::Unrestricted,
+                AgentExecutionMode::Build,
+                AgentPermissionLevel::Yolo,
+                None,
+            );
+            drop(socket);
+            result
+        });
+        server.join().expect("join websocket fixture");
+
+        let resumed = result.expect("valid history below the aggregate limit should be admitted");
+        assert_eq!(resumed.thread.id, "thread-large-history");
+        assert_eq!(resumed.model, "gpt-5.6");
     }
 
     #[test]
