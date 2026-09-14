@@ -1856,6 +1856,71 @@ mod tests {
     }
 
     #[test]
+    fn late_recovery_rejection_cannot_clear_a_newer_reservation() {
+        let store = ProjectEnvironmentSetupStore::default();
+        let mut execution = execution();
+        execution.remote_leased_agent_id = Some("leased-agent-old".to_string());
+        store.begin(execution).expect("remote setup should start");
+
+        let old_observation_generation = store.begin_remote_observation();
+        assert_eq!(
+            store.begin_remote_recovery(
+                "setup-1",
+                1,
+                "leased-agent-old",
+                old_observation_generation,
+            ),
+            RemoteSetupRecoveryDecision::Dispatch
+        );
+
+        // Model the old recovery continuation returning a permanent rejection
+        // after a newer public Retry has already taken ownership of the entry.
+        store.mark_failed(
+            "setup-1",
+            1,
+            "worker_failed",
+            "the retained worker rejected attempt one",
+        );
+        let (_, new_attempt, _) = store
+            .retry("setup-1", "session-1", "user-1")
+            .expect("the newer public Retry should advance the operation");
+        assert_eq!(new_attempt, 2);
+        store
+            .rebind_remote_leased_agent(
+                "setup-1",
+                new_attempt,
+                "leased-agent-old",
+                "leased-agent-new".to_string(),
+            )
+            .expect("the newer attempt should use the fresh lease");
+        let new_observation_generation = store.begin_remote_observation();
+        assert_eq!(
+            store.begin_remote_recovery(
+                "setup-1",
+                new_attempt,
+                "leased-agent-new",
+                new_observation_generation,
+            ),
+            RemoteSetupRecoveryDecision::Dispatch
+        );
+
+        // This is the current late-continuation clear_remote_recovery call.
+        // It must not erase the newer attempt-two reservation.
+        store.clear_remote_recovery("setup-1");
+        let later_observation_generation = store.begin_remote_observation();
+        assert_eq!(
+            store.begin_remote_recovery(
+                "setup-1",
+                new_attempt,
+                "leased-agent-new",
+                later_observation_generation,
+            ),
+            RemoteSetupRecoveryDecision::InFlight,
+            "a late old rejection must not release the newer recovery reservation"
+        );
+    }
+
+    #[test]
     fn non_retryable_worker_rejection_does_not_suggest_reconnect() {
         let store = ProjectEnvironmentSetupStore::default();
         store.begin(execution()).expect("setup should start");
