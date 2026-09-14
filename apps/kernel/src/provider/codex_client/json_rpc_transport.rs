@@ -2,7 +2,11 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio_tungstenite::tungstenite::{connect_with_config, protocol::WebSocketConfig, Message};
+use tokio_tungstenite::tungstenite::{
+    client::connect_with_config,
+    protocol::WebSocketConfig,
+    Message,
+};
 
 use crate::error::DaemonError;
 
