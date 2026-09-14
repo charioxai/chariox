@@ -837,6 +837,10 @@ impl KernelRuntimeState {
 mod cancellation_tests;
 
 #[cfg(test)]
+#[path = "project_environment_setup_lifecycle_tests.rs"]
+mod lifecycle_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::local::{
