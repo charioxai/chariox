@@ -411,14 +411,44 @@ fn authenticated_public_dropped_setup_get_recovers_through_cancel_and_retry() {
 }
 
 async fn authenticated_public_dropped_setup_get_recovers_through_cancel_and_retry_async() {
-    run_authenticated_public_concurrent_missing_setup_polls(true).await;
+    run_authenticated_public_concurrent_missing_setup_polls_with_mode(true, false, false).await;
 }
 
 async fn authenticated_public_concurrent_missing_setup_polls_share_a_bounded_recovery_async() {
-    run_authenticated_public_concurrent_missing_setup_polls(false).await;
+    run_authenticated_public_concurrent_missing_setup_polls_with_mode(false, false, false).await;
 }
 
-async fn run_authenticated_public_concurrent_missing_setup_polls(drop_inflight_get: bool) {
+#[test]
+fn authenticated_public_worker_loss_after_acknowledged_replay_reopens_same_attempt_recovery() {
+    run_async_with_large_test_stack(
+        "public-project-environment-setup-acknowledged-worker-loss",
+        authenticated_public_worker_loss_after_acknowledged_replay_reopens_same_attempt_recovery_async,
+    );
+}
+
+async fn authenticated_public_worker_loss_after_acknowledged_replay_reopens_same_attempt_recovery_async(
+) {
+    run_authenticated_public_concurrent_missing_setup_polls_with_mode(false, true, false).await;
+}
+
+#[test]
+fn authenticated_public_lost_replay_status_then_second_worker_loss_reopens_same_attempt_recovery() {
+    run_async_with_large_test_stack(
+        "public-project-environment-setup-lost-replay-status-second-loss",
+        authenticated_public_lost_replay_status_then_second_worker_loss_reopens_same_attempt_recovery_async,
+    );
+}
+
+async fn authenticated_public_lost_replay_status_then_second_worker_loss_reopens_same_attempt_recovery_async(
+) {
+    run_authenticated_public_concurrent_missing_setup_polls_with_mode(false, true, true).await;
+}
+
+async fn run_authenticated_public_concurrent_missing_setup_polls_with_mode(
+    drop_inflight_get: bool,
+    reopen_after_acknowledged_worker_loss: bool,
+    lose_replay_response: bool,
+) {
     let _relay_test_guard = relay_client_test_guard().await;
     let _test_home = RelayTestHome::new();
 
@@ -488,10 +518,15 @@ async fn run_authenticated_public_concurrent_missing_setup_polls(drop_inflight_g
         release_replay_tx,
         release_replay_applied,
         retry_seen,
+        lose_setup_tx,
         initial_start_seen,
         mut missing_get_seen,
         fresh_get_worker_observation,
         replay_start_seen,
+        worker_status_seen,
+        setup_loss_applied,
+        post_loss_get_seen,
+        post_loss_start_seen,
         worker_start_count,
         worker_task,
     ) = spawn_missing_then_withheld_replay_worker(
@@ -499,6 +534,7 @@ async fn run_authenticated_public_concurrent_missing_setup_polls(drop_inflight_g
         worker_registration,
         worker_private_key,
         config_home.relay_public_key.clone(),
+        lose_replay_response,
     );
     wait_for_daemon_registration(registry.clone(), &config_worker.daemon_id).await;
 
@@ -1018,10 +1054,18 @@ async fn run_authenticated_public_concurrent_missing_setup_polls(drop_inflight_g
         &config_home.daemon_id,
         &recovery_home_public_key,
         LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
-            GetProjectEnvironmentSetupStatusRequest { operation_id },
+            GetProjectEnvironmentSetupStatusRequest {
+                operation_id: operation_id.clone(),
+            },
         ),
     )
     .await;
+    if lose_replay_response {
+        tokio::time::timeout(Duration::from_secs(2), worker_status_seen)
+            .await
+            .expect("fixture worker should observe the later authenticated status Get")
+            .expect("worker status barrier should remain available");
+    }
     let recovery_response = tokio::time::timeout(
         Duration::from_secs(2),
         expect_client_response(
@@ -1052,6 +1096,69 @@ async fn run_authenticated_public_concurrent_missing_setup_polls(drop_inflight_g
         "recovery must not create another Start after the shared replay"
     );
 
+    if reopen_after_acknowledged_worker_loss {
+        let _ = lose_setup_tx.send(());
+        tokio::time::timeout(Duration::from_secs(2), setup_loss_applied)
+            .await
+            .expect("fixture worker should observe the controlled setup loss")
+            .expect("setup-loss barrier should remain available");
+
+        let post_loss_private_key = send_client_request(
+            &mut recovery_client,
+            "setup-status-acknowledged-loss-get",
+            &config_home.daemon_id,
+            &recovery_home_public_key,
+            LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
+                GetProjectEnvironmentSetupStatusRequest { operation_id },
+            ),
+        )
+        .await;
+        tokio::time::timeout(Duration::from_secs(2), post_loss_get_seen)
+            .await
+            .expect("fixture worker should observe the authenticated post-loss Get")
+            .expect("post-loss Get barrier should remain available");
+        let post_loss_response = tokio::time::timeout(
+            Duration::from_secs(2),
+            expect_client_response(
+                &mut recovery_client,
+                "setup-status-acknowledged-loss-get",
+                &post_loss_private_key,
+            ),
+        )
+        .await
+        .expect("post-loss setup recovery should remain publicly bounded");
+        let post_loss_status = match post_loss_response {
+            LocalDaemonResponse::ProjectEnvironmentSetupStatus { status } => status,
+            other => panic!("unexpected post-loss setup response: {other:?}"),
+        };
+        assert_eq!(
+            post_loss_status.operation_id,
+            "setup-status-concurrent-recovery"
+        );
+        assert_eq!(post_loss_status.attempt, 1);
+        assert_eq!(
+            post_loss_status.phase,
+            ProjectEnvironmentSetupPhase::Requested
+        );
+        assert!(post_loss_status.retryable);
+
+        let redispatched_attempt = tokio::time::timeout(Duration::from_secs(2), post_loss_start_seen)
+            .await
+            .expect(
+                "an authenticated post-loss not-found must reopen recovery after an acknowledged replay",
+            )
+            .expect("post-loss replay Start barrier should remain available");
+        assert_eq!(
+            redispatched_attempt, 1,
+            "post-loss recovery must preserve the authoritative operation attempt"
+        );
+        assert_eq!(
+            worker_start_count.load(Ordering::Acquire),
+            3,
+            "post-loss recovery must dispatch one additional same-attempt Start"
+        );
+    }
+
     let _ = shutdown_worker_tx.send(());
     worker_task
         .await
@@ -1069,15 +1176,20 @@ fn spawn_missing_then_withheld_replay_worker(
     registration: DaemonRegistration,
     worker_private_key: String,
     home_public_key: String,
+    lose_replay_response: bool,
 ) -> (
     oneshot::Sender<()>,
     oneshot::Sender<()>,
     oneshot::Receiver<()>,
     oneshot::Receiver<()>,
+    oneshot::Sender<()>,
     oneshot::Receiver<()>,
     oneshot::Receiver<()>,
     oneshot::Receiver<FreshGetWorkerObservation>,
     oneshot::Receiver<()>,
+    oneshot::Receiver<()>,
+    oneshot::Receiver<()>,
+    oneshot::Receiver<u32>,
     Arc<AtomicUsize>,
     tokio::task::JoinHandle<()>,
 ) {
@@ -1085,10 +1197,15 @@ fn spawn_missing_then_withheld_replay_worker(
     let (release_replay_tx, release_replay_rx) = oneshot::channel();
     let (release_replay_applied_tx, release_replay_applied_rx) = oneshot::channel();
     let (retry_seen_tx, retry_seen_rx) = oneshot::channel();
+    let (lose_setup_tx, lose_setup_rx) = oneshot::channel();
     let (initial_start_seen_tx, initial_start_seen_rx) = oneshot::channel();
     let (missing_get_seen_tx, missing_get_seen_rx) = oneshot::channel();
     let (fresh_get_worker_observation_tx, fresh_get_worker_observation_rx) = oneshot::channel();
     let (replay_start_seen_tx, replay_start_seen_rx) = oneshot::channel();
+    let (worker_status_seen_tx, worker_status_seen_rx) = oneshot::channel();
+    let (setup_loss_applied_tx, setup_loss_applied_rx) = oneshot::channel();
+    let (post_loss_get_seen_tx, post_loss_get_seen_rx) = oneshot::channel();
+    let (post_loss_start_seen_tx, post_loss_start_seen_rx) = oneshot::channel();
     let start_count = Arc::new(AtomicUsize::new(0));
     let task = tokio::spawn(run_missing_then_withheld_replay_worker(
         relay_url,
@@ -1099,10 +1216,16 @@ fn spawn_missing_then_withheld_replay_worker(
         release_replay_rx,
         release_replay_applied_tx,
         retry_seen_tx,
+        lose_setup_rx,
+        lose_replay_response,
         initial_start_seen_tx,
         missing_get_seen_tx,
         fresh_get_worker_observation_tx,
         replay_start_seen_tx,
+        worker_status_seen_tx,
+        setup_loss_applied_tx,
+        post_loss_get_seen_tx,
+        post_loss_start_seen_tx,
         Arc::clone(&start_count),
     ));
     (
@@ -1110,10 +1233,15 @@ fn spawn_missing_then_withheld_replay_worker(
         release_replay_tx,
         release_replay_applied_rx,
         retry_seen_rx,
+        lose_setup_tx,
         initial_start_seen_rx,
         missing_get_seen_rx,
         fresh_get_worker_observation_rx,
         replay_start_seen_rx,
+        worker_status_seen_rx,
+        setup_loss_applied_rx,
+        post_loss_get_seen_rx,
+        post_loss_start_seen_rx,
         start_count,
         task,
     )
@@ -1128,10 +1256,16 @@ async fn run_missing_then_withheld_replay_worker(
     mut release_replay_rx: oneshot::Receiver<()>,
     release_replay_applied_tx: oneshot::Sender<()>,
     retry_seen_tx: oneshot::Sender<()>,
+    mut lose_setup_rx: oneshot::Receiver<()>,
+    lose_replay_response: bool,
     initial_start_seen_tx: oneshot::Sender<()>,
     missing_get_seen_tx: oneshot::Sender<()>,
     fresh_get_worker_observation_tx: oneshot::Sender<FreshGetWorkerObservation>,
     replay_start_seen_tx: oneshot::Sender<()>,
+    worker_status_seen_tx: oneshot::Sender<()>,
+    setup_loss_applied_tx: oneshot::Sender<()>,
+    post_loss_get_seen_tx: oneshot::Sender<()>,
+    post_loss_start_seen_tx: oneshot::Sender<u32>,
     start_count: Arc<AtomicUsize>,
 ) {
     let (mut socket, _) =
@@ -1157,8 +1291,14 @@ async fn run_missing_then_withheld_replay_worker(
     let mut replay_start_seen_tx = Some(replay_start_seen_tx);
     let mut release_replay_applied_tx = Some(release_replay_applied_tx);
     let mut retry_seen_tx = Some(retry_seen_tx);
+    let mut worker_status_seen_tx = Some(worker_status_seen_tx);
+    let mut setup_loss_applied_tx = Some(setup_loss_applied_tx);
+    let mut post_loss_get_seen_tx = Some(post_loss_get_seen_tx);
+    let mut post_loss_start_seen_tx = Some(post_loss_start_seen_tx);
     let mut missing_get_seen = false;
     let mut replay_released = false;
+    let mut loss_trigger_consumed = false;
+    let mut setup_lost = false;
     let mut held_setup: Option<RelayProjectEnvironmentSetupStatus> = None;
     let mut held_replay: Option<(String, RelayProjectEnvironmentSetupStatus)> = None;
     loop {
@@ -1168,7 +1308,9 @@ async fn run_missing_then_withheld_replay_worker(
                 return;
             }
             _ = &mut release_replay_rx,
-                if held_replay.is_some() && !replay_released =>
+                if !replay_released
+                    && (held_replay.is_some()
+                        || (lose_replay_response && held_setup.is_some())) =>
             {
                 if let Some((relay_request_id, setup)) = held_replay.take() {
                     // If a later public Retry already advanced the worker,
@@ -1206,6 +1348,16 @@ async fn run_missing_then_withheld_replay_worker(
                     }
                 }
                 replay_released = true;
+            }
+            _ = &mut lose_setup_rx,
+                if held_setup.is_some() && !setup_lost && !loss_trigger_consumed =>
+            {
+                held_setup = None;
+                setup_lost = true;
+                loss_trigger_consumed = true;
+                if let Some(setup_loss_applied_tx) = setup_loss_applied_tx.take() {
+                    let _ = setup_loss_applied_tx.send(());
+                }
             }
             message = socket.next() => {
                 let Some(Ok(message)) = message else {
@@ -1299,8 +1451,28 @@ async fn run_missing_then_withheld_replay_worker(
                             if let Some(replay_start_seen_tx) = replay_start_seen_tx.take() {
                                 let _ = replay_start_seen_tx.send(());
                             }
-                            held_replay = Some((relay_request_id, setup));
+                            if lose_replay_response {
+                                held_setup = Some(setup);
+                            } else {
+                                held_replay = Some((relay_request_id, setup));
+                            }
                             continue;
+                        } else if start_number == 3 && setup_lost {
+                            setup_lost = false;
+                            held_setup = Some(setup.clone());
+                            if let Some(post_loss_start_seen_tx) = post_loss_start_seen_tx.take() {
+                                let _ = post_loss_start_seen_tx.send(attempt);
+                            }
+                            (
+                                Some(encrypt_worker_response(
+                                    &worker_private_key,
+                                    &home_public_key,
+                                    RelayPeerResponse::LeasedProjectEnvironmentSetupStarted {
+                                        setup,
+                                    },
+                                )),
+                                None,
+                            )
                         } else {
                             (
                                 None,
@@ -1364,7 +1536,9 @@ async fn run_missing_then_withheld_replay_worker(
                         )
                     }
                     RelayPeerRequest::GetLeasedProjectEnvironmentSetupStatus { .. }
-                        if held_setup.is_some() =>
+                        if held_setup.is_some()
+                            && !setup_lost
+                            && (!lose_replay_response || replay_released) =>
                     {
                         if missing_get_seen {
                             if let Some(fresh_get_worker_observation_tx) =
@@ -1373,6 +1547,9 @@ async fn run_missing_then_withheld_replay_worker(
                                 let _ = fresh_get_worker_observation_tx
                                     .send(FreshGetWorkerObservation::Status);
                             }
+                        }
+                        if let Some(worker_status_seen_tx) = worker_status_seen_tx.take() {
+                            let _ = worker_status_seen_tx.send(());
                         }
                         (
                             Some(encrypt_worker_response(
@@ -1388,7 +1565,11 @@ async fn run_missing_then_withheld_replay_worker(
                         )
                     }
                     RelayPeerRequest::GetLeasedProjectEnvironmentSetupStatus { .. } => {
-                        if !missing_get_seen {
+                        if setup_lost {
+                            if let Some(post_loss_get_seen_tx) = post_loss_get_seen_tx.take() {
+                                let _ = post_loss_get_seen_tx.send(());
+                            }
+                        } else if !missing_get_seen {
                             missing_get_seen = true;
                             if let Some(missing_get_seen_tx) = missing_get_seen_tx.take() {
                                 let _ = missing_get_seen_tx.send(());
