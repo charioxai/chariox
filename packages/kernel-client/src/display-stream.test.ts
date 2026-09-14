@@ -184,6 +184,41 @@ test("display ingress preserves packet order when the first decode is delayed", 
   await stream.close()
 })
 
+test("display ingress backlog is bounded before a stalled decode and discarded after close", async () => {
+  const { stream, socket, worker } = await openFixture()
+  const first = await encryptedFragment(stream, worker, textFragment(0, "first"))
+  let releaseFirst = () => {}
+  let firstDecodeStarted = false
+  const stalledFirst = {
+    size: first.byteLength,
+    async arrayBuffer() {
+      firstDecodeStarted = true
+      return new Promise<ArrayBuffer>((resolve) => {
+        releaseFirst = () => resolve(first.buffer.slice(first.byteOffset, first.byteOffset + first.byteLength))
+      })
+    },
+  }
+  socket.emit("message", stalledFirst, true)
+  await new Promise<void>((resolve) => queueMicrotask(resolve))
+  assert.equal(firstDecodeStarted, true)
+
+  const subsequent = await Promise.all(Array.from({ length: 17 }, async (_, index) => (
+    encryptedFragment(stream, worker, textFragment(index + 1, `queued-${index}`))
+  )))
+  try {
+    for (const packet of subsequent) socket.emit("message", packet, true)
+    await waitForClose(socket)
+    assert.equal(socket.closeCount, 1)
+    releaseFirst()
+    await assert.rejects(withDeadline(stream.receive()), /receive buffer exceeded/)
+    await new Promise<void>((resolve) => queueMicrotask(resolve))
+    await assert.rejects(withDeadline(stream.receive()), /receive buffer exceeded/)
+  } finally {
+    releaseFirst()
+    await stream.close()
+  }
+})
+
 test("concurrent display controls reserve distinct ordered sequences", async () => {
   const { stream, socket, worker } = await openFixture()
   await Promise.all([stream.sendControl("START_VIDEO"), stream.sendControl("REQUEST_KEYFRAME")])
