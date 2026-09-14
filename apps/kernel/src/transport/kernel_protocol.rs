@@ -815,11 +815,11 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         {
             kernel_error("credential_vault_locked", error, false)
         }
-        // Relay diagnostics are an internal cause channel. Keep the local
-        // daemon protocol's historical transport projection stable for CLI
-        // and app clients; structured details remain available to the
-        // kernel's internal retry/reconciliation paths.
-        DaemonError::RelayTransport { .. } => kernel_error("local_transport_error", error, true),
+        // Keep the stable local transport code/message for CLI and app
+        // clients, while preserving the relay's structured retryability.
+        DaemonError::RelayTransport { retryable, .. } => {
+            kernel_error("local_transport_error", error, *retryable)
+        }
         DaemonError::LocalTransport { .. } => kernel_error("local_transport_error", error, true),
         DaemonError::PtySpawn { .. } => kernel_error("pty_spawn_failed", error, true),
         DaemonError::PtyCleanup { .. } => kernel_error("pty_cleanup_failed", error, true),
