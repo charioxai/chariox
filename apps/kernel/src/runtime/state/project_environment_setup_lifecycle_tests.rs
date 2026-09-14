@@ -812,6 +812,59 @@ async fn public_setup_status_transport_recovery_preserves_operation_until_worker
         "a transient worker status error must not manufacture terminal failure"
     );
 
+    let second_interrupted = runtime
+        .execute_project_environment_setup_request(
+            LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
+                GetProjectEnvironmentSetupStatusRequest {
+                    operation_id: "setup-transport-recovery".to_string(),
+                },
+            ),
+            "user-1",
+        )
+        .await;
+    assert!(
+        second_interrupted.is_err(),
+        "the second transport interruption should remain observable: {second_interrupted:?}"
+    );
+
+    let terminal = runtime
+        .execute_project_environment_setup_request(
+            LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
+                GetProjectEnvironmentSetupStatusRequest {
+                    operation_id: "setup-transport-recovery".to_string(),
+                },
+            ),
+            "user-1",
+        )
+        .await
+        .expect("a permanently unreachable setup should expose a terminal status");
+    let terminal = response_status(terminal);
+    assert_eq!(
+        terminal.phase,
+        ProjectEnvironmentSetupPhase::Failed,
+        "bounded transport uncertainty must become an observable failure"
+    );
+    assert_eq!(
+        terminal.failure_code.as_deref(),
+        Some("worker_status_unavailable")
+    );
+    assert!(!terminal.retryable);
+    let retry = runtime
+        .execute_project_environment_setup_request(
+            LocalDaemonRequest::RetryProjectEnvironmentSetup(
+                RetryProjectEnvironmentSetupRequest {
+                    operation_id: "setup-transport-recovery".to_string(),
+                    session_id: session_id.clone(),
+                },
+            ),
+            "user-1",
+        )
+        .await;
+    assert!(
+        retry.is_err(),
+        "uncertain setup must not be retried before worker status is confirmed: {retry:?}"
+    );
+
     let state_worker = {
         let app = app_worker.lock().await;
         app.relay_client_state()
@@ -856,7 +909,7 @@ async fn public_setup_status_transport_recovery_preserves_operation_until_worker
     let replayed_status = response_status(replayed);
     assert_eq!(
         replayed_status.phase,
-        ProjectEnvironmentSetupPhase::Requested
+        ProjectEnvironmentSetupPhase::Failed
     );
     assert_eq!(replayed_status.attempt, 1);
     let ready = get_setup_status(

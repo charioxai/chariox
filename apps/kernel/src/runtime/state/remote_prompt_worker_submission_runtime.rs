@@ -508,6 +508,16 @@ mod tests {
     }
 
     #[test]
+    fn remote_prompt_dispatch_retries_temporary_relay_responses() {
+        let error = DaemonError::LocalTransport {
+            operation: "read temporary relay peer response",
+            message: "target daemon disconnected from relay".to_string(),
+        };
+
+        assert!(remote_prompt_error_should_retry_transport(&error));
+    }
+
+    #[test]
     fn remote_prompt_dispatch_does_not_retry_relay_authorization_failures() {
         let error = DaemonError::LocalTransport {
             operation: "read relay peer response",

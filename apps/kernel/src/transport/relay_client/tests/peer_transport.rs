@@ -399,6 +399,10 @@ async fn proxied_peer_requests_are_handled_through_relay() {
     .await
     .expect_err("the worker should reject an unknown leased agent");
     let diagnostic = missing_lease.to_string();
+    assert!(
+        diagnostic.contains("leased_agent_not_found"),
+        "real relay error code should survive peer transport: {missing_lease:?}"
+    );
     assert!(diagnostic.contains("leased agent"));
     assert!(!diagnostic.contains("relay-secret-canary"));
 
