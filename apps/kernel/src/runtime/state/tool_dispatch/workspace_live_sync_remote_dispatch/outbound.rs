@@ -243,6 +243,17 @@ mod recovery_tests {
         assert!(remote_workspace_live_sync_relay_error_is_retryable(
             &disconnected
         ));
+
+        let structured_disconnected = DaemonError::RelayTransport {
+            operation: "read temporary relay peer response",
+            code: "target_not_connected".to_string(),
+            message: "target daemon is not connected to relay".to_string(),
+            retryable: true,
+        };
+        assert!(remote_workspace_live_sync_relay_error_is_retryable(
+            &structured_disconnected
+        ));
+
         assert!(!remote_workspace_live_sync_relay_error_is_retryable(
             &rejected
         ));

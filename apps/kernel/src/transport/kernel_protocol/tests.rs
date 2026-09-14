@@ -23,6 +23,21 @@ fn credential_vault_locked_uses_a_stable_transport_error_code() {
 }
 
 #[test]
+fn relay_transport_errors_keep_the_stable_local_transport_projection() {
+    let error = DaemonError::RelayTransport {
+        operation: "read relay peer response",
+        code: "target_not_connected".to_string(),
+        message: "target daemon is not connected to relay".to_string(),
+        retryable: true,
+    };
+
+    let mapped = map_kernel_error(&error);
+
+    assert_eq!(mapped.code, "local_transport_error");
+    assert!(mapped.retryable);
+}
+
+#[test]
 fn terminal_output_event_batches_stay_under_json_byte_cap() {
     let records = (0..20)
         .map(|index| TerminalOutputRecord {

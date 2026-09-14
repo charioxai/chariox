@@ -376,7 +376,7 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn public_setup_status_transport_recovery_preserves_operation_until_worker_ready() {
+async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_preserve_operation() {
     let _environment_lock = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
         "chariox-project-environment-transport-recovery-{}-{}",
@@ -872,6 +872,23 @@ async fn public_setup_status_transport_recovery_preserves_operation_until_worker
         "uncertain setup must not be retried before worker status is confirmed: {retry:?}"
     );
 
+    let dispatch_never_arrived_operation_id = "setup-dispatch-never-arrived";
+    let dispatch_never_arrived = StartProjectEnvironmentSetupRequest {
+        operation_id: dispatch_never_arrived_operation_id.to_string(),
+        ..start_request.clone()
+    };
+    let started_while_worker_was_disconnected = runtime
+        .execute_project_environment_setup_request(
+            LocalDaemonRequest::StartProjectEnvironmentSetup(dispatch_never_arrived),
+            "user-1",
+        )
+        .await
+        .expect("home should retain a setup whose dispatch was interrupted");
+    assert_eq!(
+        response_status(started_while_worker_was_disconnected).phase,
+        ProjectEnvironmentSetupPhase::Requested
+    );
+
     let state_worker = {
         let app = app_worker.lock().await;
         app.relay_client_state()
@@ -905,6 +922,39 @@ async fn public_setup_status_transport_recovery_preserves_operation_until_worker
             .is_some(),
         "worker should re-register before recovery is queried"
     );
+
+    let recovered_missing_operation = get_setup_status(
+        &runtime,
+        dispatch_never_arrived_operation_id,
+        "user-1",
+        "status after the worker reports the dispatch-never-arrived operation missing",
+    )
+    .await;
+    let recovered_missing_status = response_status(recovered_missing_operation);
+    assert_eq!(
+        recovered_missing_status.operation_id,
+        dispatch_never_arrived_operation_id
+    );
+    assert_eq!(
+        recovered_missing_status.attempt, 1,
+        "same-operation recovery must not manufacture a retry attempt"
+    );
+    assert!(
+        matches!(
+            recovered_missing_status.phase,
+            ProjectEnvironmentSetupPhase::Requested
+                | ProjectEnvironmentSetupPhase::Preparing
+                | ProjectEnvironmentSetupPhase::Validating
+                | ProjectEnvironmentSetupPhase::Ready
+        ),
+        "worker-missing recovery must return an active or measured status, not a heuristic terminal result: {recovered_missing_status:?}"
+    );
+    let (_, worker_recovered_status) = worker_runtime
+        .owned
+        .project_environment_setups
+        .get_entry(dispatch_never_arrived_operation_id, "user-1")
+        .expect("authenticated missing-operation recovery should redispatch the same operation");
+    assert_eq!(worker_recovered_status.attempt, 1);
 
     let replayed = runtime
         .execute_project_environment_setup_request(

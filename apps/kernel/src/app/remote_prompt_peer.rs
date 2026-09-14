@@ -137,6 +137,16 @@ mod tests {
         });
         assert!(response_requires_provider_launch_credential(&required));
 
+        let structured_required = Err(DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE.to_string(),
+            message: "worker requested a credential for a cold provider launch".to_string(),
+            retryable: false,
+        });
+        assert!(response_requires_provider_launch_credential(
+            &structured_required
+        ));
+
         let unrelated = Err(DaemonError::LocalTransport {
             operation: "read relay peer response",
             message: "worker unavailable".to_string(),

@@ -260,6 +260,18 @@ mod tests {
     }
 
     #[test]
+    fn missing_project_environment_setup_is_an_authenticated_business_error() {
+        let error = DaemonError::LocalTransport {
+            operation: "project environment setup",
+            message: "setup operation was not found".to_string(),
+        };
+
+        let relay_error = map_relay_error(&error);
+        assert_eq!(relay_error.code, "project_environment_setup_not_found");
+        assert!(!relay_error.retryable);
+    }
+
+    #[test]
     fn room_environment_cleanup_errors_preserve_cause_classification() {
         for (source, code, retryable) in [
             (
