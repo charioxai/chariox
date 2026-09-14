@@ -129,7 +129,7 @@ function relayActionName(action) {
   return name
 }
 
-function relayClaims({ subject, subjectKind, actions, userId = null, targets = null }) {
+function relayClaims({ subject, subjectKind, actions, userId = null, targets = null, machineId = null }) {
   return {
     issuer: RELAY_ISSUER,
     subject,
@@ -144,7 +144,7 @@ function relayClaims({ subject, subjectKind, actions, userId = null, targets = n
     organization_id: null,
     user_id: userId,
     device_id: subject,
-    machine_id: subjectKind === 'kernel' || subjectKind === 'machine' ? subject : null,
+    machine_id: machineId ?? (subjectKind === 'kernel' || subjectKind === 'machine' ? subject : null),
     client_id: subjectKind === 'client' ? subject : null,
     // Local drill tokens are intentionally unbound. Production-issued tokens
     // bind this claim to the kernel's real relay key thumbprint; a fabricated
@@ -232,11 +232,13 @@ export function printHelp() {
 export function makeChildrenEnv(ports, rootDir) {
   const daemonId = `relay-drill-daemon-${process.pid}-${Date.now()}`
   const daemonAlias = `relay-drill-${process.pid}`
+  const machineId = `relay-drill-machine-${process.pid}`
   const daemonRelayToken = signRelayToken(relayClaims({
     subject: daemonId,
     subjectKind: 'kernel',
     actions: ['daemon_register', 'daemon_heartbeat', 'packet_route', 'peer_request', 'peer_event'],
     userId: 'local',
+    machineId,
   }))
   const clientRelayToken = signRelayToken(relayClaims({
     subject: `relay-drill-client-${process.pid}`,
@@ -267,6 +269,7 @@ export function makeChildrenEnv(ports, rootDir) {
       CHARIOX_RELAY_TOKEN: daemonRelayToken,
       CHARIOX_DAEMON_ID: daemonId,
       CHARIOX_DAEMON_ALIAS: daemonAlias,
+      CHARIOX_MACHINE_ID: machineId,
       CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
       CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, 'session-history'),
     },

@@ -63,6 +63,23 @@ test("existing relay fixture issues scoped client and daemon auth for one isolat
   assert.equal(envs.relayEnv.CHARIOX_RELAY_SCOPED_HMAC_SECRET, "chariox-relay-runtime-drill-secret")
 })
 
+test("relay daemon fixture binds token machine identity to kernel registration", () => {
+  const rootDir = "/tmp/chariox-relay-attachment-recovery-machine-identity-fixture"
+  const ports = {
+    relayPort: 45178,
+    kernelPort: 46178,
+    mcpPort: 46179,
+    openCodePort: 47178,
+    codexPort: 47179,
+  }
+  const envs = makeChildrenEnv(ports, rootDir)
+  const daemonClaims = decodeJwtPayload(envs.daemonEnv.CHARIOX_RELAY_TOKEN)
+
+  assert.equal(daemonClaims.machine_id, envs.daemonEnv.CHARIOX_MACHINE_ID)
+  assert.match(daemonClaims.machine_id, /^relay-drill-machine-/)
+  assert.notEqual(daemonClaims.machine_id, envs.daemonEnv.CHARIOX_DAEMON_ID)
+})
+
 test("runnable mode stays on existing encrypted relay fixtures and production recovery wiring", async () => {
   const source = await readFile(drillSourceUrl, "utf8")
   const modeStart = source.indexOf("async function runAttachmentRecoveryScenario")
