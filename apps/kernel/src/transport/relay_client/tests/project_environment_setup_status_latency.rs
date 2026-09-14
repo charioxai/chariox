@@ -13,12 +13,14 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::agent::RemoteAgentBinding;
 use crate::local::{
-    GetProjectEnvironmentSetupStatusRequest, LocalDaemonRequest, LocalDaemonResponse,
-    ProjectEnvironmentDefinition, ProjectEnvironmentDefinitionOrigin,
-    ProjectEnvironmentDefinitionSource, ProjectEnvironmentSetupPhase,
-    ProjectEnvironmentSetupStatus, ProjectEnvironmentSetupStep, ProjectEnvironmentSetupStepKind,
+    CancelProjectEnvironmentSetupRequest, GetProjectEnvironmentSetupStatusRequest,
+    LocalDaemonRequest, LocalDaemonResponse, ProjectEnvironmentDefinition,
+    ProjectEnvironmentDefinitionOrigin, ProjectEnvironmentDefinitionSource,
+    ProjectEnvironmentSetupPhase, ProjectEnvironmentSetupStatus, ProjectEnvironmentSetupStep,
+    ProjectEnvironmentSetupStepKind, RetryProjectEnvironmentSetupRequest,
     StartProjectEnvironmentSetupRequest,
 };
+use crate::runtime::router::CommandRouter;
 use crate::session::CreateSessionRequest;
 use crate::transport::relay_peer::{
     RelayPeerRequest, RelayPeerResponse, RelayProjectEnvironmentSetupStatus,
@@ -345,7 +347,23 @@ fn authenticated_public_concurrent_missing_setup_polls_share_a_bounded_recovery(
     );
 }
 
+#[test]
+fn authenticated_public_dropped_setup_get_recovers_through_cancel_and_retry() {
+    run_async_with_large_test_stack(
+        "public-project-environment-setup-dropped-get-recovery",
+        authenticated_public_dropped_setup_get_recovers_through_cancel_and_retry_async,
+    );
+}
+
+async fn authenticated_public_dropped_setup_get_recovers_through_cancel_and_retry_async() {
+    run_authenticated_public_concurrent_missing_setup_polls(true).await;
+}
+
 async fn authenticated_public_concurrent_missing_setup_polls_share_a_bounded_recovery_async() {
+    run_authenticated_public_concurrent_missing_setup_polls(false).await;
+}
+
+async fn run_authenticated_public_concurrent_missing_setup_polls(drop_inflight_get: bool) {
     let _relay_test_guard = relay_client_test_guard().await;
     let _test_home = RelayTestHome::new();
 
@@ -413,6 +431,8 @@ async fn authenticated_public_concurrent_missing_setup_polls_share_a_bounded_rec
     let (
         shutdown_worker_tx,
         release_replay_tx,
+        release_replay_applied,
+        retry_seen,
         initial_start_seen,
         missing_get_seen,
         replay_start_seen,
@@ -539,6 +559,217 @@ async fn authenticated_public_concurrent_missing_setup_polls_share_a_bounded_rec
         .await
         .expect("fixture worker should observe the initial Start")
         .expect("initial Start barrier should remain available");
+
+    if drop_inflight_get {
+        // This is the public request entry point used by the authenticated
+        // relay client. Abort only after the worker has received the replay
+        // Start, so the observation is definitely waiting on its response.
+        let runtime = CommandRouter::with_interactive_capacity_from_app(Arc::clone(&app_home), 1)
+            .runtime_state();
+        let dropped_get = tokio::spawn({
+            let runtime = runtime.clone();
+            let operation_id = operation_id.clone();
+            async move {
+                runtime
+                    .execute_project_environment_setup_request(
+                        LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
+                            GetProjectEnvironmentSetupStatusRequest { operation_id },
+                        ),
+                        "user-1",
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(2), missing_get_seen)
+            .await
+            .expect("fixture worker should observe the dropped Get")
+            .expect("dropped Get barrier should remain available");
+        tokio::time::timeout(Duration::from_secs(2), replay_start_seen)
+            .await
+            .expect("fixture worker should observe the replay before the Get is dropped")
+            .expect("replay Start barrier should remain available");
+        dropped_get.abort();
+        let dropped_result = dropped_get
+            .await
+            .expect_err("the in-flight public Get must be cancelled by the observer");
+        assert!(
+            dropped_result.is_cancelled(),
+            "the dropped public Get must not settle after its observer is gone"
+        );
+
+        // A fresh authenticated poll must not be trapped behind the cancelled
+        // caller's process-local InFlight reservation. The fixture accepts
+        // only another Start for authoritative attempt one; any attempt-two
+        // Start is treated as obsolete dispatch.
+        let fresh_get_private_key = send_client_request(
+            &mut first_client,
+            "setup-status-dropped-get-fresh-poll",
+            &config_home.daemon_id,
+            &first_home_public_key,
+            LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
+                GetProjectEnvironmentSetupStatusRequest {
+                    operation_id: operation_id.clone(),
+                },
+            ),
+        )
+        .await;
+        let fresh_get_response = tokio::time::timeout(
+            PUBLIC_STATUS_RESPONSE_DEADLINE,
+            expect_client_response(
+                &mut first_client,
+                "setup-status-dropped-get-fresh-poll",
+                &fresh_get_private_key,
+            ),
+        )
+        .await
+        .expect("fresh public polling must recover after the dropped observation");
+        let fresh_status = match fresh_get_response {
+            LocalDaemonResponse::ProjectEnvironmentSetupStatus { status } => status,
+            other => panic!("unexpected fresh setup response: {other:?}"),
+        };
+        assert_eq!(fresh_status.operation_id, operation_id);
+        assert_eq!(fresh_status.attempt, 1);
+        assert_eq!(fresh_status.phase, ProjectEnvironmentSetupPhase::Requested);
+        assert!(fresh_status.retryable);
+        assert_eq!(
+            worker_start_count.load(Ordering::Acquire),
+            3,
+            "fresh polling must issue one current-attempt replay after the dropped observation"
+        );
+
+        // Resolve the old held response before exercising public control
+        // operations. It is intentionally late and must not overwrite the
+        // home operation after Cancel advances the authoritative state.
+        let _ = release_replay_tx.send(());
+        tokio::time::timeout(Duration::from_secs(2), release_replay_applied)
+            .await
+            .expect("the old replay response should be released")
+            .expect("old replay release barrier should remain available");
+
+        let cancel_private_key = send_client_request(
+            &mut first_client,
+            "setup-status-dropped-get-cancel",
+            &config_home.daemon_id,
+            &first_home_public_key,
+            LocalDaemonRequest::CancelProjectEnvironmentSetup(
+                CancelProjectEnvironmentSetupRequest {
+                    operation_id: operation_id.clone(),
+                    session_id: session_id.clone(),
+                },
+            ),
+        )
+        .await;
+        let cancel_response = tokio::time::timeout(
+            PUBLIC_STATUS_RESPONSE_DEADLINE,
+            expect_client_response(
+                &mut first_client,
+                "setup-status-dropped-get-cancel",
+                &cancel_private_key,
+            ),
+        )
+        .await
+        .expect("public Cancel must recover the dropped observation");
+        let cancelled_status = match cancel_response {
+            LocalDaemonResponse::ProjectEnvironmentSetupCancelled { status } => status,
+            other => panic!("unexpected cancellation response: {other:?}"),
+        };
+        assert_eq!(cancelled_status.operation_id, operation_id);
+        assert_eq!(cancelled_status.attempt, 1);
+        assert_eq!(
+            cancelled_status.phase,
+            ProjectEnvironmentSetupPhase::Cancelled
+        );
+        assert!(cancelled_status.retryable);
+
+        let retry_private_key = send_client_request(
+            &mut first_client,
+            "setup-status-dropped-get-retry",
+            &config_home.daemon_id,
+            &first_home_public_key,
+            LocalDaemonRequest::RetryProjectEnvironmentSetup(RetryProjectEnvironmentSetupRequest {
+                operation_id: operation_id.clone(),
+                session_id: session_id.clone(),
+            }),
+        )
+        .await;
+        let retry_response = tokio::time::timeout(
+            PUBLIC_STATUS_RESPONSE_DEADLINE,
+            expect_client_response(
+                &mut first_client,
+                "setup-status-dropped-get-retry",
+                &retry_private_key,
+            ),
+        )
+        .await
+        .expect("public Retry must be accepted after Cancel");
+        let retried_status = match retry_response {
+            LocalDaemonResponse::ProjectEnvironmentSetupRetried { status } => status,
+            other => panic!("unexpected retry response: {other:?}"),
+        };
+        assert_eq!(retried_status.operation_id, operation_id);
+        assert_eq!(retried_status.attempt, 2);
+        assert_eq!(
+            retried_status.phase,
+            ProjectEnvironmentSetupPhase::Requested
+        );
+        assert!(retried_status.retryable);
+        tokio::time::timeout(Duration::from_secs(2), retry_seen)
+            .await
+            .expect("fixture worker should observe the public Retry")
+            .expect("Retry barrier should remain available");
+
+        let final_get_private_key = send_client_request(
+            &mut first_client,
+            "setup-status-dropped-get-final-poll",
+            &config_home.daemon_id,
+            &first_home_public_key,
+            LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
+                GetProjectEnvironmentSetupStatusRequest { operation_id },
+            ),
+        )
+        .await;
+        let final_get_response = tokio::time::timeout(
+            PUBLIC_STATUS_RESPONSE_DEADLINE,
+            expect_client_response(
+                &mut first_client,
+                "setup-status-dropped-get-final-poll",
+                &final_get_private_key,
+            ),
+        )
+        .await
+        .expect("fresh polling must remain available after public Retry");
+        let final_status = match final_get_response {
+            LocalDaemonResponse::ProjectEnvironmentSetupStatus { status } => status,
+            other => panic!("unexpected final setup response: {other:?}"),
+        };
+        assert_eq!(
+            final_status.operation_id,
+            "setup-status-concurrent-recovery"
+        );
+        assert_eq!(final_status.attempt, 2);
+        assert_eq!(final_status.phase, ProjectEnvironmentSetupPhase::Requested);
+        assert!(final_status.retryable);
+        assert_eq!(
+            worker_start_count.load(Ordering::Acquire),
+            3,
+            "Retry must not dispatch an obsolete Start for either attempt"
+        );
+        let _ = first_client.close(None).await;
+
+        let _ = shutdown_worker_tx.send(());
+        worker_task
+            .await
+            .expect("dropped-observation worker should stop");
+        let _ = shutdown_home_tx.send(true);
+        connector_home
+            .await
+            .expect("home relay connector should stop");
+        let _ = server_shutdown_tx.send(());
+        server_task
+            .await
+            .expect("relay server should stop after dropped-observation recovery");
+        return;
+    }
 
     let (mut second_client, _) = connect_async(&relay_url)
         .await
@@ -701,11 +932,15 @@ fn spawn_missing_then_withheld_replay_worker(
     oneshot::Receiver<()>,
     oneshot::Receiver<()>,
     oneshot::Receiver<()>,
+    oneshot::Receiver<()>,
+    oneshot::Receiver<()>,
     Arc<AtomicUsize>,
     tokio::task::JoinHandle<()>,
 ) {
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (release_replay_tx, release_replay_rx) = oneshot::channel();
+    let (release_replay_applied_tx, release_replay_applied_rx) = oneshot::channel();
+    let (retry_seen_tx, retry_seen_rx) = oneshot::channel();
     let (initial_start_seen_tx, initial_start_seen_rx) = oneshot::channel();
     let (missing_get_seen_tx, missing_get_seen_rx) = oneshot::channel();
     let (replay_start_seen_tx, replay_start_seen_rx) = oneshot::channel();
@@ -717,6 +952,8 @@ fn spawn_missing_then_withheld_replay_worker(
         home_public_key,
         shutdown_rx,
         release_replay_rx,
+        release_replay_applied_tx,
+        retry_seen_tx,
         initial_start_seen_tx,
         missing_get_seen_tx,
         replay_start_seen_tx,
@@ -725,6 +962,8 @@ fn spawn_missing_then_withheld_replay_worker(
     (
         shutdown_tx,
         release_replay_tx,
+        release_replay_applied_rx,
+        retry_seen_rx,
         initial_start_seen_rx,
         missing_get_seen_rx,
         replay_start_seen_rx,
@@ -740,6 +979,8 @@ async fn run_missing_then_withheld_replay_worker(
     home_public_key: String,
     mut shutdown_rx: oneshot::Receiver<()>,
     mut release_replay_rx: oneshot::Receiver<()>,
+    release_replay_applied_tx: oneshot::Sender<()>,
+    retry_seen_tx: oneshot::Sender<()>,
     initial_start_seen_tx: oneshot::Sender<()>,
     missing_get_seen_tx: oneshot::Sender<()>,
     replay_start_seen_tx: oneshot::Sender<()>,
@@ -765,6 +1006,8 @@ async fn run_missing_then_withheld_replay_worker(
     let mut initial_start_seen_tx = Some(initial_start_seen_tx);
     let mut missing_get_seen_tx = Some(missing_get_seen_tx);
     let mut replay_start_seen_tx = Some(replay_start_seen_tx);
+    let mut release_replay_applied_tx = Some(release_replay_applied_tx);
+    let mut retry_seen_tx = Some(retry_seen_tx);
     let mut missing_get_seen = false;
     let mut replay_released = false;
     let mut held_setup: Option<RelayProjectEnvironmentSetupStatus> = None;
@@ -803,6 +1046,9 @@ async fn run_missing_then_withheld_replay_worker(
                         .is_err()
                     {
                         return;
+                    }
+                    if let Some(release_replay_applied_tx) = release_replay_applied_tx.take() {
+                        let _ = release_replay_applied_tx.send(());
                     }
                 }
                 replay_released = true;
@@ -901,6 +1147,18 @@ async fn run_missing_then_withheld_replay_worker(
                             }
                             held_replay = Some((relay_request_id, setup));
                             continue;
+                        } else if start_number == 3 && attempt == 1 {
+                            held_setup = Some(setup.clone());
+                            (
+                                Some(encrypt_worker_response(
+                                    &worker_private_key,
+                                    &home_public_key,
+                                    RelayPeerResponse::LeasedProjectEnvironmentSetupStarted {
+                                        setup,
+                                    },
+                                )),
+                                None,
+                            )
                         } else {
                             (
                                 None,
@@ -911,6 +1169,57 @@ async fn run_missing_then_withheld_replay_worker(
                                 }),
                             )
                         }
+                    }
+                    RelayPeerRequest::CancelLeasedProjectEnvironmentSetup { .. } => {
+                        let mut setup = held_setup
+                            .clone()
+                            .or_else(|| held_replay.as_ref().map(|(_, setup)| setup.clone()))
+                            .expect("control request should follow an accepted setup");
+                        setup.status.phase = ProjectEnvironmentSetupPhase::Cancelled;
+                        setup.status.message = Some("fixture worker cancelled setup".to_string());
+                        setup.status.failure_code = None;
+                        setup.status.failure_message = None;
+                        setup.status.retryable = true;
+                        setup.status.updated_at_ms = crate::session::unix_epoch_ms();
+                        held_setup = Some(setup.clone());
+                        (
+                            Some(encrypt_worker_response(
+                                &worker_private_key,
+                                &home_public_key,
+                                RelayPeerResponse::LeasedProjectEnvironmentSetupCancelled {
+                                    setup,
+                                },
+                            )),
+                            None,
+                        )
+                    }
+                    RelayPeerRequest::RetryLeasedProjectEnvironmentSetup { .. } => {
+                        let mut setup = held_setup
+                            .clone()
+                            .or_else(|| held_replay.as_ref().map(|(_, setup)| setup.clone()))
+                            .expect("retry request should follow an accepted setup");
+                        setup.status.phase = ProjectEnvironmentSetupPhase::Requested;
+                        setup.status.attempt = setup.status.attempt.saturating_add(1);
+                        setup.status.progress_percent = 0;
+                        setup.status.message = Some("fixture worker accepted retry".to_string());
+                        setup.status.failure_code = None;
+                        setup.status.failure_message = None;
+                        setup.status.retryable = true;
+                        setup.status.updated_at_ms = crate::session::unix_epoch_ms();
+                        held_setup = Some(setup.clone());
+                        if let Some(retry_seen_tx) = retry_seen_tx.take() {
+                            let _ = retry_seen_tx.send(());
+                        }
+                        (
+                            Some(encrypt_worker_response(
+                                &worker_private_key,
+                                &home_public_key,
+                                RelayPeerResponse::LeasedProjectEnvironmentSetupRetried {
+                                    setup,
+                                },
+                            )),
+                            None,
+                        )
                     }
                     RelayPeerRequest::GetLeasedProjectEnvironmentSetupStatus { .. }
                         if held_setup.is_some() =>
