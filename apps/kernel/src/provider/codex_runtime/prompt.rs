@@ -182,6 +182,7 @@ fn ensure_codex_thread_ready(
                 run.execution_mode(),
                 run.permission_level(),
                 developer_instructions,
+                &mut state.buffered_notifications,
             )
         } else if let Some(thread_id) = state.pending_thread_id().map(str::to_string) {
             client.thread_resume(
