@@ -480,6 +480,7 @@ test("real public create binds and starts the home-owned slice before attach use
   let deleteSliceRequest;
   let detachFromSessionRequest;
   let getRoomEnvironmentStateRequest;
+  let getRoomEnvironmentResourceInventoryRequest;
   let getSliceRequest;
   let getSliceDisplayEndpointRequest;
   let listSessionsRequest;
@@ -498,6 +499,7 @@ test("real public create binds and starts the home-owned slice before attach use
       deleteSliceRequest,
       detachFromSessionRequest,
       getRoomEnvironmentStateRequest,
+      getRoomEnvironmentResourceInventoryRequest,
       getSliceRequest,
       getSliceDisplayEndpointRequest,
       listSessionsRequest,
@@ -523,6 +525,7 @@ test("real public create binds and starts the home-owned slice before attach use
   assert.ok(address && typeof address === "object");
   const endpoint = `ws://127.0.0.1:${address.port}`;
   const receivedRequests = [];
+  let inventoryMode = "valid";
   let serverError;
   server.on("connection", (socket) => {
     socket.on("message", (raw) => {
@@ -543,8 +546,10 @@ test("real public create binds and starts the home-owned slice before attach use
         receivedRequests.push(envelope.request);
         let response;
         if (Object.hasOwn(envelope.request, "CreateSlice")) {
+          const createRequest = envelope.request.CreateSlice;
+          assert.match(createRequest.name, /^managed-parity-run-(?:1|zero|duplicate)-selkies$/);
           assert.deepEqual(envelope.request, createSliceRequest({
-            name: "managed-parity-run-1-selkies",
+            name: createRequest.name,
             backend: "ssh_docker",
             displayMode: "headed",
             workerKernelRef: "worker-ref-1",
@@ -554,7 +559,7 @@ test("real public create binds and starts the home-owned slice before attach use
             SliceCreated: {
               slice: {
                 id: "slice-1",
-                name: "managed-parity-run-1-selkies",
+                name: createRequest.name,
                 owner_kernel_id: "daemon-1",
                 owner_machine_id: "machine-1",
                 environment_session_id: null,
@@ -665,6 +670,29 @@ test("real public create binds and starts the home-owned slice before attach use
                 { id: "slice-1", environment_session_id: "room-1" },
                 { id: "foreign-slice", environment_session_id: "other-room" },
               ],
+            },
+          };
+        } else if (Object.hasOwn(envelope.request, "GetRoomEnvironmentResourceInventory")) {
+          assert.deepEqual(
+            envelope.request,
+            getRoomEnvironmentResourceInventoryRequest("room-1", "slice-1"),
+          );
+          const inventory = inventoryMode === "zero"
+            ? { browser_ids: [], profile_ids: ["profile-room-1"] }
+            : inventoryMode === "duplicate"
+              ? {
+                browser_ids: ["browser-process-1", "browser-process-2"],
+                profile_ids: ["profile-room-1", "profile-room-2"],
+              }
+              : { browser_ids: ["browser-process-1"], profile_ids: ["profile-room-1"] };
+          response = {
+            RoomEnvironmentResourceInventory: {
+              inventory: {
+                session_id: "room-1",
+                environment_id: "environment-1",
+                slice_id: "slice-1",
+                ...inventory,
+              },
             },
           };
         } else if (Object.hasOwn(envelope.request, "RelayStatus")) {
@@ -778,6 +806,7 @@ test("real public create binds and starts the home-owned slice before attach use
       deleteSliceRequest,
       detachFromSessionRequest,
       getRoomEnvironmentStateRequest,
+      getRoomEnvironmentResourceInventoryRequest,
       getSliceRequest,
       getSliceDisplayEndpointRequest,
       listSessionsRequest,
@@ -891,6 +920,43 @@ test("real public create binds and starts the home-owned slice before attach use
       "DeleteSlice",
     ]);
     assert.ifError(serverError);
+
+    for (const mode of ["zero", "duplicate"]) {
+      inventoryMode = mode;
+      const invalidTransport = imported.createManagedBrowserComputerParityTransportFromPublicClient({
+        client,
+        requestApi: {
+          bindRoomEnvironmentSliceRequest,
+          createSliceRequest,
+          deleteSliceRequest,
+          getRoomEnvironmentResourceInventoryRequest,
+          getRoomEnvironmentStateRequest,
+          getSliceRequest,
+          getSliceDisplayEndpointRequest,
+          listSessionsRequest,
+          listSlicesRequest,
+          relayStatusRequest,
+          startSliceRequest,
+        },
+        targetKernelRef: "worker-ref-1",
+        targetMachineRef: "machine-1",
+      });
+      await assert.rejects(
+        () => invalidTransport.run("selkies.create", {
+          runId: `managed-parity-run-${mode}`,
+          binding: {
+            kernelId: "daemon-1",
+            machineId: "machine-1",
+            roomId: "room-1",
+            environmentId: "environment-1",
+          },
+          displayBackend: null,
+          kernelOwnedDefault: true,
+        }),
+        /exactly one worker browser and profile identity/,
+      );
+      await invalidTransport.run("cleanup.perform", { scope: "run_owned_resources" });
+    }
   } finally {
     await client.close();
     await new Promise((resolve) => server.close(resolve));

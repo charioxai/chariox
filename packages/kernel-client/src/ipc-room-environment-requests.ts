@@ -7,6 +7,7 @@ export const roomEnvironmentActionCancellationMinimumProtocolVersion = 277
 export const roomEnvironmentActionHistoryMinimumProtocolVersion = 279
 export const roomEnvironmentSliceBindingMinimumProtocolVersion = 282
 export const roomEnvironmentScreenshotMinimumProtocolVersion = 296
+export const roomEnvironmentResourceInventoryMinimumProtocolVersion = 329
 export const roomEnvironmentBrowserHistoryMinimumProtocolVersion = 305
 export const roomEnvironmentBrowserTabActionsMinimumProtocolVersion = 306
 
@@ -20,6 +21,15 @@ export function getRoomEnvironmentStateRequest(sessionId: string) {
 
 export function getRoomEnvironmentSliceRequest(sessionId: string) {
   return { GetRoomEnvironmentSlice: { session_id: sessionId } }
+}
+
+export function getRoomEnvironmentResourceInventoryRequest(sessionId: string, sliceId: string) {
+  return {
+    GetRoomEnvironmentResourceInventory: {
+      session_id: sessionId,
+      slice_id: sliceId,
+    },
+  }
 }
 
 export function captureRoomEnvironmentScreenshotRequest(
