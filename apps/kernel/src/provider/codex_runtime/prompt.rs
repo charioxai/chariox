@@ -515,6 +515,18 @@ mod prompt_tests {
                 ))
                 .expect("send large resume response");
 
+            let tool_response = read_json_response(&mut socket, 91);
+            assert_eq!(
+                tool_response["result"]["success"],
+                json!(true),
+                "runtime MCP tool response should report success"
+            );
+            assert_eq!(
+                tool_response["result"]["contentItems"][0]["text"],
+                json!("diagnostic result"),
+                "runtime MCP tool response should carry the controlled result"
+            );
+
             let turn_request = read_json_request(&mut socket, "turn/start");
             turn_start_seen_tx
                 .send(())
@@ -658,6 +670,25 @@ mod prompt_tests {
             serde_json::from_str(&text).expect("parse Codex request payload");
         assert_eq!(request["method"], expected_method);
         request
+    }
+
+    fn read_json_response(
+        socket: &mut tokio_tungstenite::tungstenite::WebSocket<std::net::TcpStream>,
+        expected_id: u64,
+    ) -> serde_json::Value {
+        let message = socket.read().expect("read Codex response");
+        let Message::Text(text) = message else {
+            panic!("expected text Codex response");
+        };
+        let response: serde_json::Value =
+            serde_json::from_str(&text).expect("parse Codex response payload");
+        assert_eq!(response["jsonrpc"], json!("2.0"));
+        assert_eq!(response["id"], json!(expected_id));
+        assert!(
+            response.get("result").is_some(),
+            "Codex server request should receive a JSON-RPC result"
+        );
+        response
     }
 }
 
