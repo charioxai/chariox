@@ -13,6 +13,7 @@ import { once } from "node:events"
 import os from "node:os"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
+import { pathToFileURL } from "node:url"
 
 import {
   assertCandidateProtocolOutput,
@@ -85,7 +86,7 @@ function childStatus(child) {
   return "running"
 }
 
-function processHasExited(child) {
+export function processHasExited(child) {
   return child?.exitCode != null || child?.signalCode != null
 }
 
@@ -105,7 +106,7 @@ function startKernel(binary, env, cwd) {
   return child
 }
 
-async function runVersionProbe(binary, timeoutMs) {
+export async function runVersionProbe(binary, timeoutMs) {
   const child = spawn(binary, ["--print-local-daemon-protocol-version"], {
     env: {
       PATH: process.env.PATH || "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -152,7 +153,7 @@ async function request(client, value, label, deadline) {
   )
 }
 
-async function waitForKernel({ LocalIpcClient, listSessionsRequest, endpoint, token, child, deadline }) {
+export async function waitForKernel({ LocalIpcClient, listSessionsRequest, endpoint, token, child, deadline }) {
   let lastError = null
   while (Date.now() < deadline) {
     if (child.spawnError || processHasExited(child)) {
@@ -181,7 +182,7 @@ async function waitForKernel({ LocalIpcClient, listSessionsRequest, endpoint, to
   throw new Error(`candidate kernel did not become ready at ${endpoint}: ${lastError?.message ?? lastError}`)
 }
 
-async function expectAuthenticationFailure({ LocalIpcClient, listSessionsRequest, endpoint, token, deadline }) {
+export async function expectAuthenticationFailure({ LocalIpcClient, listSessionsRequest, endpoint, token, deadline }) {
   const client = new LocalIpcClient(endpoint, {
     localAuthToken: `${token}-wrong`,
     controlRequestRetryDeadlineMs: 0,
@@ -238,7 +239,7 @@ async function ensureAuthTokenFile(tokenFile, token) {
   }
 }
 
-async function startOwnedKernel({ binary, env, authToken, ports, workspace, rootDir, tokenFile, ownershipFile, endpoint, runId, generation }) {
+export async function startOwnedKernel({ binary, env, authToken, ports, workspace, rootDir, tokenFile, ownershipFile, endpoint, runId, generation }) {
   await ensurePortsAreAvailable(ports, "kernel")
   await ensureAuthTokenFile(tokenFile, authToken)
   const child = startKernel(binary, env, workspace)
@@ -270,7 +271,7 @@ async function startOwnedKernel({ binary, env, authToken, ports, workspace, root
   }
 }
 
-async function stopAndReleaseKernel({ child, ownership, ownershipFile, ports, deadline, label }) {
+export async function stopAndReleaseKernel({ child, ownership, ownershipFile, ports, deadline, label }) {
   if (!child) return null
   if (!ownership) {
     throw new Error(`${label} child ownership was not established; refusing to signal an unverified process`)
@@ -647,7 +648,9 @@ async function main() {
   if (passedDetails) log("passed", passedDetails)
 }
 
-main().catch((error) => {
-  console.error(`[staged-kernel-restart] failed: ${error.stack ?? error.message}`)
-  process.exitCode = 1
-})
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(`[staged-kernel-restart] failed: ${error.stack ?? error.message}`)
+    process.exitCode = 1
+  })
+}

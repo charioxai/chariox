@@ -88,6 +88,57 @@ test("recover reattaches the current disconnected session", async () => {
   assert.equal(controller.isInFlight(), false)
 })
 
+test("recover applies authoritative state with a replacement while preserving the sibling attachment", async () => {
+  let disconnected = true
+  let appliedAttachment: TestAttachment | null = null
+  let appliedSession: (TestSession & { attachment_ids: string[]; agents: Array<{ id: string }> }) | null = null
+  const authoritativeSession = {
+    id: "session-1",
+    attachment_ids: ["attachment-sibling"],
+    agents: [{ id: "agent-1" }],
+  }
+  const controller = createKernelRestartRecoveryController<
+    TestSession & { attachment_ids: string[]; agents: Array<{ id: string }> },
+    TestAttachment
+  >({
+    isClosing: () => false,
+    isAttached: () => true,
+    isDisconnected: () => disconnected,
+    getSessionId: () => "session-1",
+    getSessionState: async (sessionId) => {
+      assert.equal(sessionId, "session-1")
+      return authoritativeSession
+    },
+    attachToSession: async (sessionId) => {
+      assert.equal(sessionId, "session-1")
+      return { id: "attachment-replacement" }
+    },
+    projectSession: (session) => session,
+    applyAttachment: (attachment) => {
+      appliedAttachment = attachment
+    },
+    applySession: (session) => {
+      appliedSession = session
+    },
+    resetKernelEventSubscription: () => {},
+    syncKernelEventSubscription: async () => {},
+    refreshAgentPanes: async () => {},
+    clearLocalBusyStateForAuthoritativeIdle: () => {},
+    onRecovered: () => {
+      disconnected = false
+    },
+    onAttemptFailed: () => {},
+    sleep: async () => {},
+  })
+
+  await controller.recover()
+
+  assert.deepEqual(appliedAttachment, { id: "attachment-replacement" })
+  assert.deepEqual(appliedSession, authoritativeSession)
+  assert.deepEqual(appliedSession?.attachment_ids, ["attachment-sibling"])
+  assert.deepEqual(appliedSession?.agents, [{ id: "agent-1" }])
+})
+
 test("recover is idle when detached or no session is selected", () => {
   const controller = createKernelRestartRecoveryController<TestSession, TestAttachment>({
     isClosing: () => false,
