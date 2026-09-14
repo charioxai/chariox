@@ -12,6 +12,7 @@ const DISPLAY_WIRE_PROTOCOL = "chariox-display-v1"
 const DISPLAY_FRAGMENT_BYTES = 64 * 1024
 const DISPLAY_MESSAGE_BYTES = 4 * 1024 * 1024
 const DISPLAY_ENCRYPTED_PACKET_BYTES = 128 * 1024
+const DISPLAY_RECEIVE_QUEUE_MESSAGES = 16
 const DISPLAY_CONNECT_TIMEOUT_MS = 10_000
 const DISPLAY_CLOSE_TIMEOUT_MS = 1_000
 
@@ -114,6 +115,9 @@ class EncryptedSelkiesDisplayStream implements SelkiesDisplayStream {
     removeAbort?: () => void
     timer?: ReturnType<typeof setTimeout>
   }> = []
+  private sendTail: Promise<void> = Promise.resolve()
+  private ingressTail: Promise<void> = Promise.resolve()
+  private queuedBytes = 0
   private sendSequence = 0
   private receiveSequence = 0
   private partialKind: "text" | "binary" | null = null
@@ -134,7 +138,9 @@ class EncryptedSelkiesDisplayStream implements SelkiesDisplayStream {
     this.peerPublicKey = requireText(endpoint.peer_public_key, "endpoint.peer_public_key")
     this.streamId = requireText(endpoint.stream_id, "endpoint.stream_id")
     const onMessage = (...args: unknown[]) => {
-      void this.acceptSocketMessage(args).catch((error: unknown) => this.fail(error))
+      this.ingressTail = this.ingressTail
+        .then(() => this.acceptSocketMessage(args))
+        .catch((error: unknown) => this.fail(error))
     }
     const onError = () => this.fail(displayError("WebSocket reported a transport error"))
     const onClose = () => {
@@ -165,11 +171,17 @@ class EncryptedSelkiesDisplayStream implements SelkiesDisplayStream {
       throw displayError("rejected an unsafe viewer control")
     }
     this.ensureOpen()
-    await this.sendMessage("text", new TextEncoder().encode(control), options.signal)
+    const operation = this.sendTail.then(() => this.sendMessage("text", new TextEncoder().encode(control), options.signal))
+    this.sendTail = operation.catch(() => {})
+    await operation
   }
 
   receive(options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<DisplayMessage> {
-    if (this.queue.length > 0) return Promise.resolve(this.queue.shift()!)
+    if (this.queue.length > 0) {
+      const message = this.queue.shift()!
+      this.queuedBytes -= message.data.byteLength
+      return Promise.resolve(message)
+    }
     if (this.failure) return Promise.reject(this.failure)
     if (this.closed) return Promise.reject(displayError("is closed"))
     throwIfAborted(options.signal, "before receiving display data")
@@ -181,7 +193,6 @@ class EncryptedSelkiesDisplayStream implements SelkiesDisplayStream {
         timer?: ReturnType<typeof setTimeout>
       }
       const abort = () => {
-        this.removeWaiter(waiter)
         this.fail(abortError("display receive"))
       }
       if (options.signal) {
@@ -195,7 +206,6 @@ class EncryptedSelkiesDisplayStream implements SelkiesDisplayStream {
           return
         }
         waiter.timer = setTimeout(() => {
-          this.removeWaiter(waiter)
           this.fail(displayError("did not receive display data before the deadline"))
         }, options.timeoutMs)
       }
@@ -207,6 +217,7 @@ class EncryptedSelkiesDisplayStream implements SelkiesDisplayStream {
     if (this.closed) return
     this.closed = true
     this.removeSocketListeners()
+    this.clearReceiveBuffer()
     const waitForClose = waitForSocketClose(this.socket)
     try {
       if (this.socket.readyState !== 3) this.socket.close()
@@ -253,7 +264,7 @@ class EncryptedSelkiesDisplayStream implements SelkiesDisplayStream {
   }
 
   private async acceptSocketMessage(args: unknown[]): Promise<void> {
-    if (this.closed) return
+    if (this.closed || this.failure) return
     if (args.length > 1 && args[1] !== true) {
       throw displayError("received a non-binary Selkies packet")
     }
@@ -305,7 +316,12 @@ class EncryptedSelkiesDisplayStream implements SelkiesDisplayStream {
       waiter.removeAbort?.()
       waiter.resolve(message)
     } else {
+      if (this.queue.length >= DISPLAY_RECEIVE_QUEUE_MESSAGES
+        || this.queuedBytes + message.data.byteLength > DISPLAY_MESSAGE_BYTES) {
+        throw displayError("receive buffer exceeded its bounded capacity")
+      }
       this.queue.push(message)
+      this.queuedBytes += message.data.byteLength
     }
   }
 
@@ -313,6 +329,7 @@ class EncryptedSelkiesDisplayStream implements SelkiesDisplayStream {
     if (this.failure || this.closed) return
     this.failure = error instanceof Error ? error : displayError(String(error))
     this.removeSocketListeners()
+    this.clearReceiveBuffer()
     this.rejectWaiters(this.failure)
     closeSocketNow(this.socket)
   }
@@ -323,6 +340,13 @@ class EncryptedSelkiesDisplayStream implements SelkiesDisplayStream {
       waiter.removeAbort?.()
       waiter.reject(error)
     }
+  }
+
+  private clearReceiveBuffer() {
+    this.queue.length = 0
+    this.queuedBytes = 0
+    this.partial = new Uint8Array()
+    this.partialKind = null
   }
 
   private removeWaiter(waiter: { reject: (error: unknown) => void; removeAbort?: () => void; timer?: ReturnType<typeof setTimeout> }) {
