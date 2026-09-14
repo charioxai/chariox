@@ -1,8 +1,13 @@
+import { createRequire } from "node:module"
+import { fileURLToPath } from "node:url"
+
 const OPERATOR_ENDPOINT_ENV = "CHARIOX_MANAGED_PARITY_HOME_KERNEL_URL"
 const TARGET_KERNEL_ENV = "CHARIOX_MANAGED_PARITY_TARGET_KERNEL_REF"
 const TARGET_MACHINE_ENV = "CHARIOX_MANAGED_PARITY_TARGET_MACHINE_REF"
 const OPERATOR_CLIENT_ENV = "CHARIOX_MANAGED_PARITY_CLIENT_ID"
 const OPERATOR_SESSION_ENV = "CHARIOX_MANAGED_PARITY_SESSION_ID"
+const DISPLAY_CONNECT_TIMEOUT_MS = 10_000
+const DISPLAY_READY_TIMEOUT_MS = 10_000
 
 /**
  * Build the reviewed parity transport from the released public kernel client.
@@ -10,11 +15,9 @@ const OPERATOR_SESSION_ENV = "CHARIOX_MANAGED_PARITY_SESSION_ID"
  * The operator supplies only non-secret target references here. LocalIpcClient
  * consumes the normal one-shot local-auth configuration itself, resolves a
  * scoped relay connection through the home kernel, and keeps the relay token
- * in memory. This adapter deliberately implements only operations whose
- * public request and response contracts have been verified. A Selkies display
- * endpoint is authorization metadata; it is not a display attachment or
- * stream. The latter therefore fails closed until the released client exposes
- * that operation.
+ * in memory. The home client remains open as the Room authority for display
+ * admission; the scoped worker client supplies only target identity/status.
+ * Every operation not mapped to a released public request remains fail-closed.
  */
 export async function createManagedBrowserComputerParityTransport({ evidenceRoot, signal } = {}) {
   if (typeof evidenceRoot !== "string" || evidenceRoot.trim() === "") {
@@ -28,9 +31,10 @@ export async function createManagedBrowserComputerParityTransport({ evidenceRoot
   const sessionId = requiredOperatorValue(OPERATOR_SESSION_ENV)
   requireStandardLocalAuthConfiguration()
 
-  const [{ LocalIpcClient }, requestApi] = await Promise.all([
+  const [{ LocalIpcClient }, requestApi, displayApi] = await Promise.all([
     import("../../../../packages/kernel-client/dist/ipc.js"),
     import("../../../../packages/kernel-client/dist/ipc-requests.js"),
+    import("../../../../packages/kernel-client/dist/display-stream.js"),
   ])
   const homeClient = new LocalIpcClient(homeKernelUrl)
   let connection
@@ -47,8 +51,9 @@ export async function createManagedBrowserComputerParityTransport({ evidenceRoot
       "resolve target",
     )
     connection = resolvedConnection(response)
-  } finally {
+  } catch (error) {
     await homeClient.close().catch(() => {})
+    throw error
   }
 
   requireText(connection.relay_url, "KernelClientConnectionResolved.connection.relay_url")
@@ -63,31 +68,72 @@ export async function createManagedBrowserComputerParityTransport({ evidenceRoot
     requireText(connection.target_daemon_alias, "KernelClientConnectionResolved.connection.target_daemon_alias")
   }
 
-  const workerClient = new LocalIpcClient(connection.relay_url, {
-    relayAuthToken: connection.relay_token,
-    targetDaemonId: connection.target_daemon_id ?? undefined,
-    targetDaemonAlias: connection.target_daemon_alias ?? undefined,
-  })
-  return {
-    ...createManagedBrowserComputerParityTransportFromPublicClient({
-      client: workerClient,
-      requestApi,
-    }),
-    close: () => workerClient.close(),
+  let workerClient
+  try {
+    workerClient = new LocalIpcClient(connection.relay_url, {
+      relayAuthToken: connection.relay_token,
+      targetDaemonId: connection.target_daemon_id ?? undefined,
+      targetDaemonAlias: connection.target_daemon_alias ?? undefined,
+    })
+    const webSocketModule = createRequire(fileURLToPath(new URL(
+      "../../../../packages/kernel-client/dist/ipc.js",
+      import.meta.url,
+    )))("ws")
+    const webSocket = webSocketModule.WebSocket ?? webSocketModule.default ?? webSocketModule
+    return {
+      ...createManagedBrowserComputerParityTransportFromPublicClient({
+        client: workerClient,
+        displayClient: homeClient,
+        identityClient: workerClient,
+        requestApi,
+        displayTransport: {
+          openSelkiesDisplayStream: displayApi.openSelkiesDisplayStream,
+          webSocket,
+        },
+      }),
+      close: async () => {
+        await workerClient.close().catch(() => {})
+        await homeClient.close().catch(() => {})
+      },
+    }
+  } catch (error) {
+    await workerClient?.close().catch(() => {})
+    await homeClient.close().catch(() => {})
+    throw error
   }
 }
 
 /**
  * Compose the transport around the public client's request/response seam.
  * Tests use an externally controlled authenticated endpoint here; production
- * construction above supplies LocalIpcClient and the released request module.
+ * construction above supplies home/worker LocalIpcClient instances, the
+ * released request module, and the released display-stream module.
  */
-export function createManagedBrowserComputerParityTransportFromPublicClient({ client, requestApi } = {}) {
+export function createManagedBrowserComputerParityTransportFromPublicClient({
+  client,
+  displayClient = client,
+  identityClient = client,
+  requestApi,
+  displayTransport,
+} = {}) {
   if (!client || typeof client.send !== "function") {
     throw new Error("managed parity transport requires a public kernel client")
   }
+  if (!displayClient || typeof displayClient.send !== "function") {
+    throw new Error("managed parity transport requires a public display client")
+  }
+  if (!identityClient || typeof identityClient.send !== "function") {
+    throw new Error("managed parity transport requires a public identity client")
+  }
   if (!requestApi || typeof requestApi.getSliceDisplayEndpointRequest !== "function") {
     throw new Error("managed parity transport requires released kernel request constructors")
+  }
+  if (displayTransport !== undefined && typeof displayTransport.openSelkiesDisplayStream !== "function") {
+    throw new Error("managed parity transport requires a released Selkies display-stream opener")
+  }
+  if (displayTransport !== undefined && (typeof requestApi.relayStatusRequest !== "function"
+    || typeof requestApi.getRoomEnvironmentStateRequest !== "function")) {
+    throw new Error("managed parity transport requires released identity and Room request constructors")
   }
 
   return {
@@ -98,12 +144,28 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({ cl
       if (signal?.aborted) {
         throw new Error("managed parity selkies.attach was aborted before the public request")
       }
-      return runSelkiesAttach({ client, requestApi, request, signal })
+      return runSelkiesAttach({
+        client,
+        displayClient,
+        identityClient,
+        requestApi,
+        displayTransport,
+        request,
+        signal,
+      })
     },
   }
 }
 
-async function runSelkiesAttach({ client, requestApi, request, signal }) {
+async function runSelkiesAttach({
+  client,
+  displayClient,
+  identityClient,
+  requestApi,
+  displayTransport,
+  request,
+  signal,
+}) {
   const binding = request?.binding
   if (!binding || typeof binding !== "object") {
     throw new Error("managed parity selkies.attach requires a target binding")
@@ -113,6 +175,73 @@ async function runSelkiesAttach({ client, requestApi, request, signal }) {
   }
   if (!["web", "local_tui", "remote_tui"].includes(request.client)) {
     throw new Error("managed parity selkies.attach requires a documented client")
+  }
+
+  if (displayTransport?.openSelkiesDisplayStream) {
+    if (!hasText(request.sliceId) || !hasText(request.attachmentId)) {
+      throw new Error(
+        "managed parity selkies.attach requires sliceId and attachmentId for a public display stream",
+      )
+    }
+    const roomId = requireText(binding.roomId, "binding.roomId")
+    const identity = await readAuthoritativeBinding({
+      displayClient,
+      identityClient,
+      requestApi,
+      roomId,
+      signal,
+    })
+    assertBinding(identity, binding, "selkies.attach")
+    let stream
+    try {
+      stream = await displayTransport.openSelkiesDisplayStream({
+        client: displayClient,
+        sliceId: request.sliceId.trim(),
+        sessionId: roomId,
+        attachmentId: request.attachmentId.trim(),
+        webSocket: displayTransport.webSocket,
+        signal,
+        connectTimeoutMs: request.connectTimeoutMs ?? DISPLAY_CONNECT_TIMEOUT_MS,
+      })
+      await stream.sendControl("START_VIDEO", { signal })
+      const readyDeadline = Date.now() + (request.streamReadyTimeoutMs ?? DISPLAY_READY_TIMEOUT_MS)
+      const startupMessage = await receiveDisplayMessageUntil(
+        stream,
+        signal,
+        readyDeadline,
+        (message) => message.kind === "text" && new TextDecoder().decode(message.data) === "VIDEO_STARTED",
+        "VIDEO_STARTED",
+      )
+      const firstFrame = await receiveDisplayMessageUntil(
+        stream,
+        signal,
+        readyDeadline,
+        (message) => message.kind === "binary"
+          && message.data.byteLength > 10
+          && message.data.byteLength <= 4 * 1024 * 1024
+          && message.data[0] === 4,
+        "a valid Selkies video frame",
+      )
+      return {
+        ...identity,
+        client: request.client,
+        displayBackend: request.displayBackend,
+        attached: true,
+        displayProtocol: stream.endpoint.stream_protocol,
+        displayStreamId: stream.endpoint.stream_id,
+        startupMessage: {
+          kind: startupMessage.kind,
+          byteLength: startupMessage.data.byteLength,
+        },
+        firstFrame: {
+          kind: firstFrame.kind,
+          byteLength: firstFrame.data.byteLength,
+          recordType: firstFrame.data[0],
+        },
+      }
+    } finally {
+      await stream?.close()
+    }
   }
 
   if (!hasText(request.sliceId) || !hasText(request.attachmentId) || !hasText(request.viewerPublicKey)) {
@@ -152,6 +281,55 @@ async function runSelkiesAttach({ client, requestApi, request, signal }) {
   throw new Error(
     "managed parity selkies.attach has no public Selkies display-stream connection API after authorization",
   )
+}
+
+async function receiveDisplayMessageUntil(stream, signal, deadline, matches, description) {
+  while (true) {
+    const remainingMs = deadline - Date.now()
+    if (remainingMs <= 0) {
+      throw new Error(`managed parity selkies.attach did not receive ${description} before the deadline`)
+    }
+    const message = await stream.receive({ signal, timeoutMs: remainingMs })
+    if (matches(message)) return message
+  }
+}
+
+async function readAuthoritativeBinding({ displayClient, identityClient, requestApi, roomId, signal }) {
+  const relayResponse = await sendWithAbortSignal(
+    identityClient,
+    requestApi.relayStatusRequest(),
+    signal,
+    "selkies.attach relay identity",
+  )
+  const relayStatus = responseVariant(relayResponse, "RelayStatus", "selkies.attach relay identity").status
+  if (relayStatus?.configured !== true || relayStatus.connected !== true) {
+    throw new Error("managed parity selkies.attach requires a connected configured relay")
+  }
+  const environmentResponse = await sendWithAbortSignal(
+    displayClient,
+    requestApi.getRoomEnvironmentStateRequest(roomId),
+    signal,
+    "selkies.attach Room state",
+  )
+  const environment = responseVariant(
+    environmentResponse,
+    "RoomEnvironmentState",
+    "selkies.attach Room state",
+  ).environment
+  return {
+    kernelId: requireText(relayStatus?.daemon_id, "RelayStatus.status.daemon_id"),
+    machineId: requireText(relayStatus?.machine_id, "RelayStatus.status.machine_id"),
+    roomId: requireText(environment?.session_id, "RoomEnvironmentState.environment.session_id"),
+    environmentId: requireText(environment?.environment_id, "RoomEnvironmentState.environment.environment_id"),
+  }
+}
+
+function assertBinding(value, binding, step) {
+  for (const field of ["kernelId", "machineId", "roomId", "environmentId"]) {
+    if (value[field] !== binding[field]) {
+      throw new Error(`managed parity target identity mismatch for ${step}: ${field}`)
+    }
+  }
 }
 
 async function sendWithAbortSignal(client, request, signal, step) {
