@@ -878,6 +878,7 @@ async fn run_missing_then_withheld_replay_worker(
     let mut post_loss_start_seen_tx = Some(post_loss_start_seen_tx);
     let mut missing_get_seen = false;
     let mut replay_released = false;
+    let mut loss_trigger_consumed = false;
     let mut setup_lost = false;
     let mut held_setup: Option<RelayProjectEnvironmentSetupStatus> = None;
     let mut held_replay: Option<(String, RelayProjectEnvironmentSetupStatus)> = None;
@@ -920,10 +921,11 @@ async fn run_missing_then_withheld_replay_worker(
                 replay_released = true;
             }
             _ = &mut lose_setup_rx,
-                if held_setup.is_some() && !setup_lost =>
+                if held_setup.is_some() && !setup_lost && !loss_trigger_consumed =>
             {
                 held_setup = None;
                 setup_lost = true;
+                loss_trigger_consumed = true;
                 if let Some(setup_loss_applied_tx) = setup_loss_applied_tx.take() {
                     let _ = setup_loss_applied_tx.send(());
                 }

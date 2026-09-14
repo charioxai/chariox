@@ -74,6 +74,14 @@ impl KernelRuntimeState {
                         .project_environment_setups
                         .get_entry_with_cancellation(&request.operation_id, caller_user_id)?;
                 if execution.remote_leased_agent_id.is_some() {
+                    let observation_generation = self
+                        .owned
+                        .project_environment_setups
+                        .begin_remote_observation();
+                    let binding_id = execution
+                        .remote_leased_agent_id
+                        .as_deref()
+                        .expect("remote setup observations require a leased-agent binding");
                     let observation_deadline = Instant::now()
                         + remote_setup_observation_budget(&self.owned.config_projection.snapshot());
                     let setup = get_remote_setup_status_with_deadline(
@@ -83,9 +91,12 @@ impl KernelRuntimeState {
                     )
                     .await;
                     let status = match setup {
-                        Ok(setup) => {
-                            self.reconcile_remote_project_environment_setup(&execution, setup)?
-                        }
+                        Ok(setup) => self
+                            .reconcile_remote_project_environment_setup_with_observation(
+                                &execution,
+                                setup,
+                                Some(observation_generation),
+                            )?,
                         Err(error)
                             if is_missing_remote_setup_operation(&error)
                                 && matches!(
@@ -100,11 +111,12 @@ impl KernelRuntimeState {
                                     status,
                                 });
                             }
-                            match self
-                                .owned
-                                .project_environment_setups
-                                .begin_remote_recovery(&execution.operation_id, status.attempt)
-                            {
+                            match self.owned.project_environment_setups.begin_remote_recovery(
+                                &execution.operation_id,
+                                status.attempt,
+                                binding_id,
+                                observation_generation,
+                            ) {
                                 RemoteSetupRecoveryDecision::Cancelled => {
                                     return Ok(
                                         LocalDaemonResponse::ProjectEnvironmentSetupStatus {
@@ -181,9 +193,12 @@ impl KernelRuntimeState {
                             .await
                             {
                                 Ok(setup) => {
-                                    match self.reconcile_remote_project_environment_setup(
-                                        &execution, setup,
-                                    ) {
+                                    match self
+                                        .reconcile_remote_project_environment_setup_with_observation(
+                                            &execution,
+                                            setup,
+                                            Some(observation_generation),
+                                        ) {
                                         Ok(status) => status,
                                         Err(error) => {
                                             self.owned
@@ -191,6 +206,8 @@ impl KernelRuntimeState {
                                                 .mark_remote_recovery_unknown(
                                                     &execution.operation_id,
                                                     status.attempt,
+                                                    binding_id,
+                                                    observation_generation,
                                                 );
                                             return Err(error);
                                         }
@@ -204,6 +221,8 @@ impl KernelRuntimeState {
                                         .mark_remote_recovery_unknown(
                                             &execution.operation_id,
                                             status.attempt,
+                                            binding_id,
+                                            observation_generation,
                                         );
                                     return Err(error);
                                 }
@@ -547,6 +566,15 @@ impl KernelRuntimeState {
         execution: &SetupExecution,
         setup: RelayProjectEnvironmentSetupStatus,
     ) -> Result<ProjectEnvironmentSetupStatus, DaemonError> {
+        self.reconcile_remote_project_environment_setup_with_observation(execution, setup, None)
+    }
+
+    fn reconcile_remote_project_environment_setup_with_observation(
+        &self,
+        execution: &SetupExecution,
+        setup: RelayProjectEnvironmentSetupStatus,
+        observation_generation: Option<u64>,
+    ) -> Result<ProjectEnvironmentSetupStatus, DaemonError> {
         let (_, current_status) = self
             .owned
             .project_environment_setups
@@ -573,6 +601,7 @@ impl KernelRuntimeState {
             execution,
             setup.status,
             setup.definition,
+            observation_generation,
         )
     }
 
@@ -1134,6 +1163,70 @@ mod tests {
             .begin_at_attempt(execution(), 0)
             .expect_err("worker recovery must reject an invalid attempt");
         assert!(zero.to_string().contains("attempt must be positive"));
+    }
+
+    #[test]
+    fn remote_recovery_reopens_only_after_a_fresh_bound_observation() {
+        let store = ProjectEnvironmentSetupStore::default();
+        let mut execution = execution();
+        execution.remote_leased_agent_id = Some("leased-agent-1".to_string());
+        store.begin(execution).expect("remote setup should start");
+
+        let first_observation = store.begin_remote_observation();
+        let overlapping_observation = store.begin_remote_observation();
+        assert_eq!(
+            store.begin_remote_recovery("setup-1", 1, "leased-agent-1", first_observation,),
+            RemoteSetupRecoveryDecision::Dispatch
+        );
+        store.mark_remote_recovery_observed(
+            "setup-1",
+            1,
+            "leased-agent-1",
+            Some(first_observation),
+        );
+        assert_eq!(
+            store.begin_remote_recovery("setup-1", 1, "leased-agent-1", overlapping_observation,),
+            RemoteSetupRecoveryDecision::Acknowledged,
+            "an overlapping not-found must not clear an acknowledged replay"
+        );
+
+        let fresh_observation = store.begin_remote_observation();
+        assert_eq!(
+            store.begin_remote_recovery("setup-1", 1, "leased-agent-1", fresh_observation,),
+            RemoteSetupRecoveryDecision::Dispatch,
+            "a fresh same-binding not-found may reopen recovery"
+        );
+        store.mark_remote_recovery_unknown("setup-1", 1, "leased-agent-1", first_observation);
+        assert_eq!(
+            store.begin_remote_recovery("setup-1", 1, "leased-agent-1", fresh_observation,),
+            RemoteSetupRecoveryDecision::InFlight,
+            "a stale response must not alter the fresh recovery reservation"
+        );
+        assert_eq!(
+            store.begin_remote_recovery("setup-1", 1, "leased-agent-2", fresh_observation,),
+            RemoteSetupRecoveryDecision::Stale,
+            "an observation from an old binding must be fenced"
+        );
+    }
+
+    #[test]
+    fn non_retryable_worker_rejection_does_not_suggest_reconnect() {
+        let store = ProjectEnvironmentSetupStore::default();
+        store.begin(execution()).expect("setup should start");
+        store.mark_failed_non_retryable(
+            "setup-1",
+            1,
+            "worker_rejected",
+            "the worker rejected the setup request",
+        );
+
+        let error = store
+            .retry("setup-1", "session-1", "user-1")
+            .expect_err("a non-retryable worker rejection must remain terminal");
+        let message = error.to_string();
+        assert!(message.contains("rejected by the worker"), "{message}");
+        assert!(message.contains("not retryable"), "{message}");
+        assert!(!message.contains("reconnect"), "{message}");
     }
 
     #[test]

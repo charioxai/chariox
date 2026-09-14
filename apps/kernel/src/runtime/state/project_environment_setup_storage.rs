@@ -48,11 +48,37 @@ pub(super) enum RemoteSetupRecoveryDecision {
     Stale,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum RemoteSetupRecoveryState {
-    InFlight { attempt: u32 },
-    Unknown { attempt: u32 },
-    Acknowledged { attempt: u32 },
+    InFlight {
+        attempt: u32,
+        observation_generation: u64,
+        binding_id: String,
+    },
+    Unknown {
+        attempt: u32,
+        observation_generation: u64,
+        binding_id: String,
+    },
+    Acknowledged {
+        attempt: u32,
+        observed_through: u64,
+        binding_id: String,
+    },
+}
+
+#[derive(Debug, Default)]
+struct RemoteSetupRecoveryCoordinator {
+    next_observation_generation: u64,
+    recoveries: BTreeMap<String, RemoteSetupRecoveryState>,
+}
+
+fn recovery_state_attempt(state: &RemoteSetupRecoveryState) -> u32 {
+    match state {
+        RemoteSetupRecoveryState::InFlight { attempt, .. }
+        | RemoteSetupRecoveryState::Unknown { attempt, .. }
+        | RemoteSetupRecoveryState::Acknowledged { attempt, .. } => *attempt,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -61,7 +87,7 @@ pub(in crate::runtime::state) struct ProjectEnvironmentSetupStore {
     // Recovery reservations are deliberately process-local: an uncertain
     // replay must fence same-attempt duplicate Starts until a worker status,
     // explicit cancellation, or a new retry attempt resolves it.
-    remote_recoveries: Arc<Mutex<BTreeMap<String, RemoteSetupRecoveryState>>>,
+    remote_recoveries: Arc<Mutex<RemoteSetupRecoveryCoordinator>>,
     durable_state_store: Option<DurableKernelStateStore>,
     execution_settled: Arc<tokio::sync::Notify>,
 }
@@ -83,7 +109,7 @@ impl Default for ProjectEnvironmentSetupStore {
     fn default() -> Self {
         Self {
             entries: Arc::new(Mutex::new(BTreeMap::new())),
-            remote_recoveries: Arc::new(Mutex::new(BTreeMap::new())),
+            remote_recoveries: Arc::new(Mutex::new(RemoteSetupRecoveryCoordinator::default())),
             durable_state_store: None,
             execution_settled: Arc::new(tokio::sync::Notify::new()),
         }
@@ -96,7 +122,7 @@ impl ProjectEnvironmentSetupStore {
     ) -> Self {
         let store = Self {
             entries: Arc::new(Mutex::new(BTreeMap::new())),
-            remote_recoveries: Arc::new(Mutex::new(BTreeMap::new())),
+            remote_recoveries: Arc::new(Mutex::new(RemoteSetupRecoveryCoordinator::default())),
             durable_state_store: Some(durable_state_store.clone()),
             execution_settled: Arc::new(tokio::sync::Notify::new()),
         };
@@ -252,7 +278,7 @@ impl ProjectEnvironmentSetupStore {
         }
         if !entry.status.retryable {
             return Err(setup_error(
-                "setup operation is not retryable; reconnect the worker and query status first",
+                "setup operation was rejected by the worker and is not retryable",
             ));
         }
         let attempt = entry.status.attempt.saturating_add(1);
@@ -333,10 +359,22 @@ impl ProjectEnvironmentSetupStore {
         ))
     }
 
+    pub(super) fn begin_remote_observation(&self) -> u64 {
+        let mut coordinator = self
+            .remote_recoveries
+            .lock()
+            .expect("remote setup recovery lock should not be poisoned");
+        coordinator.next_observation_generation =
+            coordinator.next_observation_generation.saturating_add(1);
+        coordinator.next_observation_generation
+    }
+
     pub(super) fn begin_remote_recovery(
         &self,
         operation_id: &str,
         attempt: u32,
+        binding_id: &str,
+        observation_generation: u64,
     ) -> RemoteSetupRecoveryDecision {
         let entries = self
             .entries
@@ -362,21 +400,63 @@ impl ProjectEnvironmentSetupStore {
             .remote_recoveries
             .lock()
             .expect("remote setup recovery lock should not be poisoned");
-        match remote_recoveries.get(operation_id).copied() {
+        if entry.execution.remote_leased_agent_id.as_deref() != Some(binding_id) {
+            return RemoteSetupRecoveryDecision::Stale;
+        }
+        match remote_recoveries.recoveries.get(operation_id).cloned() {
             Some(RemoteSetupRecoveryState::InFlight {
                 attempt: current_attempt,
-            }) if current_attempt == attempt => RemoteSetupRecoveryDecision::InFlight,
+                binding_id: current_binding_id,
+                ..
+            }) if current_attempt == attempt && current_binding_id == binding_id => {
+                RemoteSetupRecoveryDecision::InFlight
+            }
             Some(RemoteSetupRecoveryState::Unknown {
                 attempt: current_attempt,
-            }) if current_attempt == attempt => RemoteSetupRecoveryDecision::Unknown,
+                binding_id: current_binding_id,
+                ..
+            }) if current_attempt == attempt && current_binding_id == binding_id => {
+                RemoteSetupRecoveryDecision::Unknown
+            }
             Some(RemoteSetupRecoveryState::Acknowledged {
                 attempt: current_attempt,
-            }) if current_attempt == attempt => RemoteSetupRecoveryDecision::Acknowledged,
+                observed_through,
+                binding_id: current_binding_id,
+            }) if current_attempt == attempt && current_binding_id == binding_id => {
+                if observation_generation > observed_through {
+                    remote_recoveries.recoveries.insert(
+                        operation_id.to_owned(),
+                        RemoteSetupRecoveryState::InFlight {
+                            attempt,
+                            observation_generation,
+                            binding_id: binding_id.to_owned(),
+                        },
+                    );
+                    RemoteSetupRecoveryDecision::Dispatch
+                } else {
+                    RemoteSetupRecoveryDecision::Acknowledged
+                }
+            }
+            Some(state) if recovery_state_attempt(&state) == attempt => {
+                remote_recoveries.recoveries.insert(
+                    operation_id.to_owned(),
+                    RemoteSetupRecoveryState::InFlight {
+                        attempt,
+                        observation_generation,
+                        binding_id: binding_id.to_owned(),
+                    },
+                );
+                RemoteSetupRecoveryDecision::Dispatch
+            }
             Some(_) => RemoteSetupRecoveryDecision::Stale,
             None => {
-                remote_recoveries.insert(
+                remote_recoveries.recoveries.insert(
                     operation_id.to_owned(),
-                    RemoteSetupRecoveryState::InFlight { attempt },
+                    RemoteSetupRecoveryState::InFlight {
+                        attempt,
+                        observation_generation,
+                        binding_id: binding_id.to_owned(),
+                    },
                 );
                 RemoteSetupRecoveryDecision::Dispatch
             }
@@ -411,49 +491,85 @@ impl ProjectEnvironmentSetupStore {
             .lock()
             .expect("remote setup recovery lock should not be poisoned");
         matches!(
-            remote_recoveries.get(operation_id),
+            remote_recoveries.recoveries.get(operation_id),
             Some(RemoteSetupRecoveryState::InFlight {
                 attempt: current_attempt
+                ..
             }) if *current_attempt == attempt
         )
     }
 
-    pub(super) fn mark_remote_recovery_unknown(&self, operation_id: &str, attempt: u32) {
+    pub(super) fn mark_remote_recovery_unknown(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        binding_id: &str,
+        observation_generation: u64,
+    ) {
         let mut remote_recoveries = self
             .remote_recoveries
             .lock()
             .expect("remote setup recovery lock should not be poisoned");
         if matches!(
-            remote_recoveries.get(operation_id),
+            remote_recoveries.recoveries.get(operation_id),
             Some(RemoteSetupRecoveryState::InFlight {
-                attempt: current_attempt
+                attempt: current_attempt,
+                observation_generation: current_generation,
+                binding_id: current_binding_id,
             }) if *current_attempt == attempt
+                && *current_generation == observation_generation
+                && current_binding_id == binding_id
         ) {
-            remote_recoveries.insert(
+            remote_recoveries.recoveries.insert(
                 operation_id.to_owned(),
-                RemoteSetupRecoveryState::Unknown { attempt },
+                RemoteSetupRecoveryState::Unknown {
+                    attempt,
+                    observation_generation,
+                    binding_id: binding_id.to_owned(),
+                },
             );
         }
     }
 
-    pub(super) fn mark_remote_recovery_observed(&self, operation_id: &str, attempt: u32) {
+    pub(super) fn mark_remote_recovery_observed(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        binding_id: &str,
+        observation_generation: Option<u64>,
+    ) {
         let mut remote_recoveries = self
             .remote_recoveries
             .lock()
             .expect("remote setup recovery lock should not be poisoned");
-        let should_acknowledge = matches!(
-            remote_recoveries.get(operation_id),
-            Some(RemoteSetupRecoveryState::InFlight {
-                attempt: current_attempt
-            })
-                | Some(RemoteSetupRecoveryState::Unknown {
-                    attempt: current_attempt
-                }) if *current_attempt == attempt
-        );
+        let should_acknowledge = match remote_recoveries.recoveries.get(operation_id) {
+            Some(
+                RemoteSetupRecoveryState::InFlight {
+                    attempt: current_attempt,
+                    observation_generation: current_generation,
+                    binding_id: current_binding_id,
+                }
+                | RemoteSetupRecoveryState::Unknown {
+                    attempt: current_attempt,
+                    observation_generation: current_generation,
+                    binding_id: current_binding_id,
+                },
+            ) => {
+                *current_attempt == attempt
+                    && current_binding_id == binding_id
+                    && observation_generation
+                        .map_or(true, |generation| generation == *current_generation)
+            }
+            _ => false,
+        };
         if should_acknowledge {
-            remote_recoveries.insert(
+            remote_recoveries.recoveries.insert(
                 operation_id.to_owned(),
-                RemoteSetupRecoveryState::Acknowledged { attempt },
+                RemoteSetupRecoveryState::Acknowledged {
+                    attempt,
+                    observed_through: remote_recoveries.next_observation_generation,
+                    binding_id: binding_id.to_owned(),
+                },
             );
         }
     }
@@ -462,6 +578,7 @@ impl ProjectEnvironmentSetupStore {
         self.remote_recoveries
             .lock()
             .expect("remote setup recovery lock should not be poisoned")
+            .recoveries
             .remove(operation_id);
     }
 
@@ -497,6 +614,7 @@ impl ProjectEnvironmentSetupStore {
         expected: &SetupExecution,
         status: ProjectEnvironmentSetupStatus,
         definition: Option<ProjectEnvironmentDefinition>,
+        observation_generation: Option<u64>,
     ) -> Result<ProjectEnvironmentSetupStatus, DaemonError> {
         let mut entries = self
             .entries
@@ -534,7 +652,15 @@ impl ProjectEnvironmentSetupStore {
         let persisted = entry.clone();
         drop(entries);
         self.persist(&persisted);
-        self.mark_remote_recovery_observed(operation_id, status.attempt);
+        self.mark_remote_recovery_observed(
+            operation_id,
+            status.attempt,
+            expected
+                .remote_leased_agent_id
+                .as_deref()
+                .unwrap_or_default(),
+            observation_generation,
+        );
         Ok(status)
     }
 
