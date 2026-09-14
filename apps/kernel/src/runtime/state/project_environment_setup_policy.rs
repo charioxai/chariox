@@ -125,6 +125,24 @@ pub(super) fn is_stale_remote_setup_binding_error(error: &DaemonError) -> bool {
     )
 }
 
+pub(super) fn remote_setup_recovery_permanent_rejection_code(error: &DaemonError) -> Option<&str> {
+    match error {
+        DaemonError::RelayTransport {
+            operation,
+            code,
+            retryable: false,
+            ..
+        } if matches!(
+            *operation,
+            "read relay peer response" | "read temporary relay peer response"
+        ) && code == crate::transport::relay_peer::PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE =>
+        {
+            Some(code.as_str())
+        }
+        _ => None,
+    }
+}
+
 pub(super) fn is_replayable_stale_remote_setup_status(
     current: &ProjectEnvironmentSetupStatus,
     remote: &ProjectEnvironmentSetupStatus,

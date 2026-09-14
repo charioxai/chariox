@@ -72,6 +72,9 @@ const MAX_PROVIDER_FIXTURE_TRACE_ENTRIES: usize = 64;
 const SETUP_TRANSPORT_RECOVERY_REALM: &str = "realm-transport-recovery";
 
 #[cfg(unix)]
+const SETUP_TRANSPORT_RECOVERY_RELAY_REQUEST_TIMEOUT_MS: u64 = 500;
+
+#[cfg(unix)]
 #[tokio::test]
 async fn public_setup_lifecycle_validates_supplied_definition_through_worker_boundary() {
     exercise_public_setup_lifecycle(DefinitionScenario::Supplied).await;
@@ -452,6 +455,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     config_home.relay_url = Some(relay_url.clone());
     config_home.relay_token = Some(home_relay_token.clone());
     config_home.relay_heartbeat_ms = 50;
+    config_home.relay_request_timeout_ms = SETUP_TRANSPORT_RECOVERY_RELAY_REQUEST_TIMEOUT_MS;
 
     let mut config_worker = DaemonConfig::for_tests();
     let worker_relay_token = "setup-transport-recovery-worker-token".to_string();
@@ -460,6 +464,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     config_worker.relay_url = Some(relay_url.clone());
     config_worker.relay_token = Some(worker_relay_token.clone());
     config_worker.relay_heartbeat_ms = 50;
+    config_worker.relay_request_timeout_ms = SETUP_TRANSPORT_RECOVERY_RELAY_REQUEST_TIMEOUT_MS;
     config_worker.kernel_runtime_role = KernelRuntimeRole::RemoteLeaseWorker;
     config_worker.accept_remote_leases = true;
     config_worker.remote_lease_capacity = Some(1);

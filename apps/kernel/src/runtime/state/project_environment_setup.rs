@@ -98,12 +98,14 @@ impl KernelRuntimeState {
                                 Ok(setup) => self.reconcile_remote_project_environment_setup(
                                     &execution, setup,
                                 )?,
-                                Err(error)
-                                    if remote_prompt_error_should_retry_transport(&error) =>
-                                {
+                                Err(error) => {
+                                    self.settle_remote_setup_recovery_rejection(
+                                        &execution,
+                                        status.attempt,
+                                        &error,
+                                    );
                                     return Err(error);
                                 }
-                                Err(error) => return Err(error),
                             }
                         }
                         Ok(setup) => {
@@ -137,12 +139,14 @@ impl KernelRuntimeState {
                                         &rebound_execution,
                                         setup,
                                     )?,
-                                Err(error)
-                                    if remote_prompt_error_should_retry_transport(&error) =>
-                                {
+                                Err(error) => {
+                                    self.settle_remote_setup_recovery_rejection(
+                                        &execution,
+                                        status.attempt,
+                                        &error,
+                                    );
                                     return Err(error);
                                 }
-                                Err(error) => return Err(error),
                             }
                         }
                         Err(error)
@@ -535,6 +539,37 @@ impl KernelRuntimeState {
             setup.status,
             setup.definition,
         )
+    }
+
+    fn settle_remote_setup_recovery_rejection(
+        &self,
+        execution: &SetupExecution,
+        attempt: u32,
+        error: &DaemonError,
+    ) {
+        Self::settle_remote_setup_recovery_rejection_in_store(
+            &self.owned.project_environment_setups,
+            execution,
+            attempt,
+            error,
+        );
+    }
+
+    fn settle_remote_setup_recovery_rejection_in_store(
+        store: &ProjectEnvironmentSetupStore,
+        execution: &SetupExecution,
+        attempt: u32,
+        error: &DaemonError,
+    ) {
+        let Some(code) = remote_setup_recovery_permanent_rejection_code(error) else {
+            return;
+        };
+        store.mark_failed_non_retryable(
+            &execution.operation_id,
+            attempt,
+            code,
+            "the remote worker rejected project environment setup after binding recovery",
+        );
     }
 
     fn prepare_setup_execution(
@@ -1159,6 +1194,82 @@ mod tests {
 
         current.agent_id = "different-agent".to_string();
         assert!(!is_replayable_stale_remote_setup_status(&current, &stale));
+    }
+
+    #[test]
+    fn permanent_worker_rejection_settles_recovery_but_transport_uncertainty_does_not() {
+        let store = ProjectEnvironmentSetupStore::default();
+        let mut execution = execution();
+        execution.remote_leased_agent_id = Some("leased-agent-old".to_string());
+        store
+            .begin(execution.clone())
+            .expect("remote setup should start");
+        let rejection = DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: crate::transport::relay_peer::PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE.to_string(),
+            message: "worker rejected setup".to_string(),
+            retryable: false,
+        };
+        let code = remote_setup_recovery_permanent_rejection_code(&rejection)
+            .expect("worker rejection should be classified as terminal");
+        KernelRuntimeState::settle_remote_setup_recovery_rejection_in_store(
+            &store, &execution, 1, &rejection,
+        );
+        let (_, failed) = store
+            .get_entry(&execution.operation_id, &execution.owner_user_id)
+            .expect("settled setup should remain inspectable");
+        assert_eq!(failed.phase, ProjectEnvironmentSetupPhase::Failed);
+        assert_eq!(failed.failure_code.as_deref(), Some(code));
+        assert!(!failed.retryable);
+
+        let metadata_failure = DaemonError::RelayTransport {
+            operation: "read relay metadata response",
+            code: crate::transport::relay_peer::PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE.to_string(),
+            message: "metadata request failed".to_string(),
+            retryable: false,
+        };
+        let uncertain_store = ProjectEnvironmentSetupStore::default();
+        uncertain_store
+            .begin(execution.clone())
+            .expect("uncertain setup should start");
+        KernelRuntimeState::settle_remote_setup_recovery_rejection_in_store(
+            &uncertain_store,
+            &execution,
+            1,
+            &metadata_failure,
+        );
+        let (_, still_active) = uncertain_store
+            .get_entry(&execution.operation_id, &execution.owner_user_id)
+            .expect("uncertain setup should remain inspectable");
+        assert_eq!(still_active.phase, ProjectEnvironmentSetupPhase::Requested);
+        assert!(still_active.retryable);
+        assert_eq!(
+            remote_setup_recovery_permanent_rejection_code(&metadata_failure),
+            None,
+            "metadata failure is transport uncertainty, not worker authority"
+        );
+        let ownership_failure = DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "unauthorized".to_string(),
+            message: "authenticated home kernel does not own the leased resource".to_string(),
+            retryable: false,
+        };
+        assert_eq!(
+            remote_setup_recovery_permanent_rejection_code(&ownership_failure),
+            None,
+            "stale binding must remain eligible for binding recovery"
+        );
+        let business_unauthorized = DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "unauthorized".to_string(),
+            message: "provider rejected the business request".to_string(),
+            retryable: false,
+        };
+        assert_eq!(
+            remote_setup_recovery_permanent_rejection_code(&business_unauthorized),
+            None,
+            "business authorization failure is not worker setup authority"
+        );
     }
 
     #[test]

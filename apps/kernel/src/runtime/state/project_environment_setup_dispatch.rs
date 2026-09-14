@@ -110,8 +110,9 @@ pub(super) async fn refresh_remote_setup_binding_and_retry(
             "remote setup binding changed before its stale lease could be refreshed",
         ));
     }
+    let agent_id = execution.agent_id.clone();
     let rebound_agent = state
-        .with_app_side_effect(|app| app.refresh_remote_agent_binding(&execution.agent_id))
+        .with_app_side_effect_blocking(move |app| app.refresh_remote_agent_binding(&agent_id))
         .await?;
     let rebound_execution = rebound_agent
         .remote_execution()
