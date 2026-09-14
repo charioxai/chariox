@@ -1152,7 +1152,7 @@ mod tests {
         worker_app_config.cloud_relay = Some(test_cloud_profile(
             cloud_api.url.clone(),
             "worker-machine",
-            "mcred_worker_test",
+            &format!("mcred_{}", "w".repeat(40)),
             "default",
         ));
         worker_app_config.kernel_runtime_role = KernelRuntimeRole::RemoteLeaseWorker;
