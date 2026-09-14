@@ -222,7 +222,7 @@ fn subscription_watch_can_skip_snapshot_while_draining_terminal_output() {
 }
 
 #[test]
-fn compatibility_output_pump_reaps_first_output_timeout() {
+fn compatibility_output_pump_preserves_quiet_provider_turn() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -282,35 +282,33 @@ fn compatibility_output_pump_reaps_first_output_timeout() {
         session.id(),
         attachment.id(),
     )
-    .expect("compatibility pump should reap silent timeout");
+    .expect("compatibility pump should observe the quiet provider");
 
     assert!(
         records.is_empty(),
-        "first-output timeout emits a runtime notice, not provider output"
+        "a quiet provider has not emitted output"
     );
     let session_state = app
         .sessions()
         .get_session(session.id())
         .expect("session should still exist");
     assert!(
-        session_state.active_prompt_for_agent(agent.id()).is_none(),
-        "silent provider timeout must close the active prompt"
+        session_state.active_prompt_for_agent(agent.id()).is_some(),
+        "elapsed silence alone must not close a provider turn"
     );
     let run = app
         .providers()
         .get_run(run.id())
         .expect("provider run should still exist");
-    assert!(run
-        .terminal_diagnostic()
-        .expect("timeout diagnostic should be recorded")
-        .contains("Provider prompt produced no output"));
+    assert!(run.terminal_diagnostic().is_none(),
+        "silence is not an authoritative provider failure");
     let notices = app
         .terminal_mut()
         .drain_notice_records(session.id(), attachment.id());
     assert!(
-        notices.iter().any(|record| record
+        !notices.iter().any(|record| record
             .message
-            .contains("Provider prompt produced no output")),
-        "timeout diagnostic should be visible to attached clients"
+            .contains("Chariox closed this turn")),
+        "clients must not receive a fabricated terminal failure"
     );
 }
