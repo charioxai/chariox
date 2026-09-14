@@ -524,9 +524,23 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     let app_home = Arc::new(tokio::sync::Mutex::new(
         crate::DaemonApp::bootstrap(config_home.clone()).unwrap(),
     ));
-    let app_worker = Arc::new(tokio::sync::Mutex::new(
-        crate::DaemonApp::bootstrap(config_worker.clone()).unwrap(),
-    ));
+    let app_worker = {
+        let app = crate::DaemonApp::bootstrap(config_worker.clone()).unwrap();
+        let provider_profiles = app.provider_account_profile_registry();
+        let profiles = provider_profiles
+            .migrate_effective_defaults("user-1", &workspace)
+            .unwrap();
+        for profile in profiles {
+            crate::test_support::authenticate_provider_account(
+                &provider_profiles,
+                "user-1",
+                &profile.provider,
+                &profile.profile_id,
+            )
+            .unwrap();
+        }
+        Arc::new(tokio::sync::Mutex::new(app))
+    };
     let (session_id, agent_id, project_id) = {
         let mut app = app_home.lock().await;
         let (session, agent) = app
@@ -640,24 +654,22 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
             "opencode/test-model",
         )
         .with_agent_id(&backing_agent_id)
-        .with_owner_user_id("user-1");
-        let mut provider_run = RuntimeProviderRun::new(
-            "setup-recovery-provider-run",
-            &launch_request,
-            ProviderLaunchResult {
-                endpoint_mode: AgentEndpointMode::Managed,
-                process_label: "opencode-project-environment-recovery-fixture".into(),
-                pty_target: None,
-                pty_program: None,
-                pty_args: Vec::new(),
-                pty_env: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
-                pty_env_remove: Vec::new(),
-                working_directory: Some(workspace.clone()),
-                structured_endpoint: Some(provider_fixture.address()),
-            },
+        .with_owner_user_id("user-1")
+        .with_variant(Some("fixture".to_string()))
+        .with_structured_endpoint(provider_fixture.address());
+        let provider_run = app
+            .launch_provider(launch_request)
+            .expect("worker utility provider should be prepared through the normal launch path");
+        assert_eq!(
+            provider_run.endpoint_mode(),
+            AgentEndpointMode::External,
+            "the simulated OpenCode endpoint must use the external adapter path"
         );
-        provider_run.mark_running();
-        app.providers_mut().insert_run_for_test(provider_run);
+        assert_eq!(
+            provider_run.state(),
+            crate::provider::ProviderRunState::Running,
+            "the prepared worker provider context must remain live for replay"
+        );
     }
     let worker_router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
         Arc::clone(&app_worker),
@@ -1109,49 +1121,6 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         .await
         .test_clear_authenticated_peer_request_observer();
 
-    // Temporary sanitized diagnostic for the worker-side precondition. Keep
-    // IDs, tokens, prompts, and endpoint details out of the test output; the
-    // booleans distinguish an absent/mismatched prepared context from a run
-    // that was ended during relay recovery.
-    let prepared_context_diagnostic = {
-        let session_present = worker_runtime
-            .owned
-            .session_store
-            .get_session(&backing_session_id)
-            .is_ok();
-        let backing_agent = worker_runtime
-            .owned
-            .agent_store
-            .get_session_agents(&backing_session_id)
-            .into_iter()
-            .find(|agent| agent.id() == backing_agent_id);
-        let agent_present = backing_agent.is_some();
-        let agent_remote_execution = backing_agent
-            .as_ref()
-            .is_some_and(|agent| agent.remote_execution().is_some());
-        let provider_runs = worker_runtime
-            .owned
-            .provider_store
-            .list_runs()
-            .into_iter()
-            .map(|run| {
-                (
-                    run.session_id() == backing_session_id,
-                    run.agent_instance_id() == Some(backing_agent_id.as_str()),
-                    run.state(),
-                )
-            })
-            .collect::<Vec<_>>();
-        (session_present, agent_present, agent_remote_execution, provider_runs)
-    };
-    eprintln!(
-        "sanitized worker utility precondition: session_present={}, agent_present={}, agent_remote_execution={}, provider_runs={:?}",
-        prepared_context_diagnostic.0,
-        prepared_context_diagnostic.1,
-        prepared_context_diagnostic.2,
-        prepared_context_diagnostic.3,
-    );
-
     let recovered_missing_operation = get_setup_status(
         &runtime,
         dispatch_never_arrived_operation_id,
@@ -1495,6 +1464,16 @@ fn serve_provider_request(
     match (method, path) {
         ("GET", "/global/health") => {
             write_json_response(&mut stream, 200, &serde_json::json!({"healthy": true}));
+        }
+        ("POST", path) if path.starts_with("/mcp/") && path.ends_with("/connect") => {
+            write_json_response(&mut stream, 200, &serde_json::json!(true));
+        }
+        ("GET", "/mcp") => {
+            write_json_response(
+                &mut stream,
+                200,
+                &serde_json::json!({"chariox": {"status": "connected"}}),
+            );
         }
         ("POST", "/session") => {
             let mut state = state
