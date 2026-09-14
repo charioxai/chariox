@@ -267,6 +267,17 @@ mod recovery_tests {
             &structured_disconnected
         ));
 
+        let structured_home_rejection = DaemonError::RelayTransport {
+            operation: "read temporary relay peer response",
+            code: "transport_error".to_string(),
+            message: "the original workspace live sync invocation ended before publishing a result"
+                .to_string(),
+            retryable: true,
+        };
+        assert!(!remote_workspace_live_sync_relay_error_is_retryable(
+            &structured_home_rejection
+        ));
+
         assert!(!remote_workspace_live_sync_relay_error_is_retryable(
             &rejected
         ));
