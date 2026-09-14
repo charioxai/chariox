@@ -190,10 +190,7 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
             .with_agent_defaults(crate::session::SessionAgentDefaults::new("opencode")),
         )
         .expect("fresh worker session should be created");
-    let project_id = session
-        .project_id()
-        .expect("session should belong to the default project")
-        .to_string();
+    let project_id = session.project_id().to_string();
     let launch_request = LaunchProviderRequest::new(
         session.id(),
         "opencode",
@@ -521,8 +518,12 @@ fn serve_provider_request(
         ("POST", path) if path.ends_with("/prompt_async") => {
             let prompt_id = serde_json::from_slice::<serde_json::Value>(&body)
                 .ok()
-                .and_then(|value| value.get("messageID").and_then(serde_json::Value::as_str))
-                .map(str::to_string);
+                .and_then(|value| {
+                    value
+                        .get("messageID")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                });
             state
                 .lock()
                 .expect("provider fixture state should not poison")
@@ -589,7 +590,7 @@ fn read_provider_request(stream: &mut TcpStream) -> Option<(String, Vec<u8>)> {
             return None;
         }
     };
-    let header_text = String::from_utf8_lossy(&bytes[..header_end]);
+    let header_text = String::from_utf8_lossy(&bytes[..header_end]).into_owned();
     let content_length = header_text
         .lines()
         .find_map(|line| line.strip_prefix("Content-Length:"))
