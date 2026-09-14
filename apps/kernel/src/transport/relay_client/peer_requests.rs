@@ -1983,6 +1983,7 @@ mod tests {
             None
         );
     }
+    use crate::managed_context::package::ManagedContextPlanBinding;
     use crate::runtime::terminal_pairings::public_key_thumbprint;
     use crate::secret::{
         export_transferred_vault_snapshot, lock_chariox_encrypted_vault,
