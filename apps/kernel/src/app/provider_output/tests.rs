@@ -665,7 +665,7 @@ fn pump_active_prompt_outputs_skips_idle_running_chariox_provider_run() {
 }
 
 #[test]
-fn legacy_pump_reaps_inactive_provider_turn() {
+fn legacy_pump_preserves_quiet_provider_turn() {
     let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -731,24 +731,24 @@ fn legacy_pump_reaps_inactive_provider_turn() {
     }
 
     let _ = pump_terminal_output_for_attachment(&mut app, session.id(), attachment.id())
-        .expect("legacy provider output pump should reap inactive provider turn");
+        .expect("legacy provider output pump should preserve quiet execution");
 
     let session = app
         .sessions
         .get_session(session.id())
         .expect("session should still exist");
     assert!(
-        session.active_prompt_for_agent(agent.id()).is_none(),
-        "legacy inactivity timeout must close the active prompt"
+        session.active_prompt_for_agent(agent.id()).is_some(),
+        "legacy pump must not fail a turn because it is quiet"
     );
     let run = app
         .providers
         .get_run(run.id())
         .expect("provider run should still exist");
-    assert!(run
-        .terminal_diagnostic()
-        .expect("timeout diagnostic should be recorded")
-        .contains("Provider prompt produced no output"));
+    assert!(
+        run.terminal_diagnostic().is_none(),
+        "silence must not fabricate a terminal diagnostic"
+    );
 }
 
 #[test]
