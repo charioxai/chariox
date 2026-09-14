@@ -199,7 +199,7 @@ fn remote_workspace_live_sync_relay_error_is_retryable(error: &DaemonError) -> b
     let structured_transient_code = code.is_some_and(|code| {
         matches!(
             code,
-            "target_not_connected" | "target_disconnected" | "transport_error"
+            "target_not_connected" | "target_disconnected"
         )
     });
     let message = message.to_ascii_lowercase();
