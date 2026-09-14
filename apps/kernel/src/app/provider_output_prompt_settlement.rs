@@ -154,10 +154,33 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
         provider_run_id: &str,
         message: &str,
     ) -> Result<(), DaemonError> {
+        self.fail_for_terminal_failure_if_matches(session_id, provider_run_id, None, None, message)
+            .map(|_| ())
+    }
+
+    pub(crate) fn fail_for_terminal_failure_if_matches(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        expected_prompt_id: Option<&str>,
+        provider_termination: Option<crate::provider::ProviderRunTermination>,
+        message: &str,
+    ) -> Result<bool, DaemonError> {
         let Some(prompt) = self.active_prompt_for_settlement(session_id, provider_run_id)? else {
-            self.clear_prompt_activity(provider_run_id);
-            return Ok(());
+            if expected_prompt_id.is_none() {
+                self.clear_prompt_activity(provider_run_id);
+            }
+            return Ok(false);
         };
+        if expected_prompt_id.is_some_and(|expected_prompt_id| prompt.id() != expected_prompt_id) {
+            return Ok(false);
+        };
+        if expected_prompt_id.is_some() {
+            let diagnosed = self
+                .provider_store
+                .record_terminal_diagnostic(provider_run_id, message.to_string())?;
+            self.app.update_provider_run_projection(diagnosed);
+        }
         if let Ok(outcome) = self
             .provider_store
             .terminate_run_provider_only(session_id, provider_run_id)
@@ -202,11 +225,14 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
             let _ =
                 crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id);
         }
-        let _ = self
-            .app
-            .fail_active_prompt(session_id, &agent_id, Some(provider_run_id))?;
+        let _ = self.app.fail_active_prompt_with_termination(
+            session_id,
+            &agent_id,
+            Some(provider_run_id),
+            provider_termination,
+        )?;
         self.clear_active_turn(provider_run_id);
-        Ok(())
+        Ok(true)
     }
 
     fn fail_for_missing_workflow_output(
@@ -476,6 +502,141 @@ mod tests {
                 .settlement_status,
             crate::git_observer::CompletedTurnSettlementStatus::Failed
         );
+    }
+
+    #[test]
+    fn terminal_failure_does_not_settle_a_replacement_prompt_for_a_stale_poll() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-stale-poll-settlement",
+                "worktree-stale-poll-settlement",
+            ))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-stale-poll-settlement",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "codex",
+            "codex",
+            "default",
+            "gpt-5.6",
+        )
+        .with_agent_id(agent.id());
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "provider-run-stale-poll-settlement",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::External,
+                process_label: "test-stale-poll-settlement".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("test-stale-poll-settlement".to_string()),
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.sessions_mut()
+            .set_active_provider_run(session.id(), Some(run.id().to_string()))
+            .expect("active provider run should be set");
+        app.update_provider_run_projection(run.clone());
+
+        let old_prompt = PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            attachment.id(),
+            agent.id(),
+            "original prompt",
+            PromptStatus::Queued,
+        );
+        let old_prompt_id = match app
+            .prompt_owner_submit_prepared_prompt(session.id(), old_prompt, false)
+            .expect("original prompt should start")
+        {
+            crate::session::PromptSubmissionOutcome::Started { prompt } => prompt.id().to_string(),
+            crate::session::PromptSubmissionOutcome::Queued { .. } => {
+                panic!("original prompt should start immediately")
+            }
+        };
+        app.prompt_owner_complete_active_prompt_only(session.id(), agent.id())
+            .expect("original prompt should be completed before replacement");
+
+        let replacement = PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            attachment.id(),
+            agent.id(),
+            "replacement prompt",
+            PromptStatus::Queued,
+        );
+        let replacement_id = match app
+            .prompt_owner_submit_prepared_prompt(session.id(), replacement, false)
+            .expect("replacement prompt should start")
+        {
+            crate::session::PromptSubmissionOutcome::Started { prompt } => prompt.id().to_string(),
+            crate::session::PromptSubmissionOutcome::Queued { .. } => {
+                panic!("replacement prompt should start immediately")
+            }
+        };
+        let history_before = app
+            .operational_history_store()
+            .load_session_events(session.id(), Some(agent.id()))
+            .expect("operational history should load");
+
+        let provider_store = app.providers.clone();
+        let active_turns = app.active_turns.clone();
+        let prompt_activity = app.prompt_activity.clone();
+        let agent_runtime_projection = app.agent_runtime_projection_store();
+        let settled = ProviderOutputPromptSettlement::new(
+            &mut app,
+            provider_store.clone(),
+            active_turns,
+            prompt_activity,
+            agent_runtime_projection,
+        )
+        .fail_for_terminal_failure_if_matches(
+            session.id(),
+            run.id(),
+            Some(&old_prompt_id),
+            Some(
+                crate::provider::ProviderRunTermination::explicit_provider_error(
+                    "late oversized poll",
+                    crate::session::unix_epoch_ms(),
+                ),
+            ),
+            "late oversized poll",
+        )
+        .expect("stale terminal failure should be ignored");
+        assert!(!settled);
+
+        assert_eq!(
+            app.prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+                .expect("active prompt should load")
+                .expect("replacement prompt should remain active")
+                .id(),
+            replacement_id
+        );
+        let run_after = provider_store
+            .get_run(run.id())
+            .expect("provider run should remain inspectable");
+        assert_eq!(
+            run_after.state(),
+            crate::provider::ProviderRunState::Running
+        );
+        assert_eq!(run_after.terminal_diagnostic(), None);
+        let history_after = app
+            .operational_history_store()
+            .load_session_events(session.id(), Some(agent.id()))
+            .expect("operational history should load after stale failure");
+        assert_eq!(history_after, history_before);
     }
 
     #[test]

@@ -546,6 +546,17 @@ impl<'a> ProviderOutputPumpContext<'a> {
                                 .pending_structured_output_records
                                 .schedule_after_poll_failure(&provider_run_id, now_ms);
                             if retry_attempt.is_none() {
+                                let failure_session_id = self
+                                    .provider_store
+                                    .get_run(&provider_run_id)
+                                    .map(|run| run.session_id().to_string())
+                                    .unwrap_or_else(|_| requested_session_id.to_string());
+                                let _ = self.settle_repeated_structured_poll_failure_if_matches(
+                                    &failure_session_id,
+                                    &provider_run_id,
+                                    polled_prompt_id.as_deref(),
+                                    &error,
+                                )?;
                                 crate::logging::error_with_fields(
                                     "daemon.app",
                                     "structured output polling abandoned after repeated failures",
@@ -586,6 +597,19 @@ impl<'a> ProviderOutputPumpContext<'a> {
                             let retry_attempt = self
                                 .pending_structured_output_records
                                 .schedule_after_poll_failure(&provider_run_id, now_ms);
+                            if retry_attempt.is_none() {
+                                let failure_session_id = self
+                                    .provider_store
+                                    .get_run(&provider_run_id)
+                                    .map(|run| run.session_id().to_string())
+                                    .unwrap_or_else(|_| requested_session_id.to_string());
+                                let _ = self.settle_repeated_structured_poll_failure_if_matches(
+                                    &failure_session_id,
+                                    &provider_run_id,
+                                    polled_prompt_id.as_deref(),
+                                    &reconcile_error,
+                                )?;
+                            }
                             let message = if retry_attempt.is_some() {
                                 "background structured output poll reconciliation failed; retry scheduled"
                             } else {
@@ -1045,6 +1069,32 @@ impl<'a> ProviderOutputPumpContext<'a> {
     ) -> Result<(), DaemonError> {
         self.prompt_settlement()
             .fail_for_terminal_failure(session_id, provider_run_id, message)
+    }
+
+    fn settle_repeated_structured_poll_failure_if_matches(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        expected_prompt_id: Option<&str>,
+        error: &DaemonError,
+    ) -> Result<bool, DaemonError> {
+        let Some(expected_prompt_id) = expected_prompt_id else {
+            return Ok(false);
+        };
+        let diagnostic =
+            format!("Structured provider output polling failed after repeated failures: {error}");
+        let termination = crate::provider::ProviderRunTermination::explicit_provider_error(
+            &diagnostic,
+            crate::session::unix_epoch_ms(),
+        );
+        self.prompt_settlement()
+            .fail_for_terminal_failure_if_matches(
+                session_id,
+                provider_run_id,
+                Some(expected_prompt_id),
+                Some(termination),
+                &diagnostic,
+            )
     }
 
     fn prompt_settlement(&mut self) -> ProviderOutputPromptSettlement<'_> {
