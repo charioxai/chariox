@@ -217,7 +217,8 @@ async fn assert_owned_provider_exit_state(cancelling: bool) {
 #[tokio::test]
 async fn unexpected_owned_provider_exit_promotes_queued_prompt_once_on_replacement_run() {
     let mut app =
-        DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).expect("daemon should boot");
+        crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
+            .expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(crate::session::CreateSessionRequest::new(
             "workspace-unexpected-exit-queue",

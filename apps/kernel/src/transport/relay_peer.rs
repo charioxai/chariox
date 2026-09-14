@@ -75,7 +75,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version 47 carries the workspace kind in managed-context import receipts.
 /// Version 48 carries private browser-cookie import commands and bounded results.
 /// Version 50 carries bounded provider-run termination metadata across leased execution.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 50;
+/// Version 51 carries kernel-owned project-environment setup dispatch and status.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 51;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 
@@ -86,6 +87,16 @@ pub struct RelayAgentExecutionProfile {
     pub account_profile: String,
     pub model: Option<String>,
     pub effort: Option<String>,
+}
+
+/// Status returned by the worker for a project-environment setup operation.
+/// The definition is returned separately from the public status so the home
+/// kernel can persist it only after the worker reports measured validation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayProjectEnvironmentSetupStatus {
+    pub status: crate::local::ProjectEnvironmentSetupStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub definition: Option<crate::session::ProjectEnvironmentDefinition>,
 }
 
 impl From<&crate::agent::AgentInstance> for RelayAgentExecutionProfile {
@@ -689,6 +700,39 @@ pub enum RelayPeerRequest {
     CancelLeasedPrompt {
         leased_agent_id: String,
     },
+    StartLeasedProjectEnvironmentSetup {
+        leased_agent_id: String,
+        operation_id: String,
+        project_id: String,
+        home_session_id: String,
+        home_agent_id: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        workspace_id: String,
+        target_worker_id: String,
+        target_platform: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        definition: Option<crate::session::ProjectEnvironmentDefinition>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        validation_commands: Vec<String>,
+    },
+    GetLeasedProjectEnvironmentSetupStatus {
+        leased_agent_id: String,
+        operation_id: String,
+        home_session_id: String,
+        home_agent_id: String,
+    },
+    CancelLeasedProjectEnvironmentSetup {
+        leased_agent_id: String,
+        operation_id: String,
+        home_session_id: String,
+        home_agent_id: String,
+    },
+    RetryLeasedProjectEnvironmentSetup {
+        leased_agent_id: String,
+        operation_id: String,
+        home_session_id: String,
+        home_agent_id: String,
+    },
     ForwardWorkflowRuntimeTool {
         context: RemoteWorkflowTurnContext,
         tool_name: String,
@@ -930,6 +974,18 @@ pub enum RelayPeerResponse {
     LeasedPromptCancelled {
         cancellation: PromptCancellation,
     },
+    LeasedProjectEnvironmentSetupStarted {
+        setup: RelayProjectEnvironmentSetupStatus,
+    },
+    LeasedProjectEnvironmentSetupStatus {
+        setup: RelayProjectEnvironmentSetupStatus,
+    },
+    LeasedProjectEnvironmentSetupCancelled {
+        setup: RelayProjectEnvironmentSetupStatus,
+    },
+    LeasedProjectEnvironmentSetupRetried {
+        setup: RelayProjectEnvironmentSetupStatus,
+    },
     WorkflowRuntimeToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,
     },
@@ -1051,7 +1107,7 @@ mod tests {
 
     #[test]
     fn leased_completion_provider_termination_shape_is_versioned() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 50);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 51);
         let completion = RelayProjectedCompletion {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,
@@ -1112,6 +1168,101 @@ mod tests {
                 snapshot.pointer("/provider_termination/category"),
                 Some(&serde_json::json!(category)),
             );
+        }
+    }
+
+    #[test]
+    fn project_environment_setup_relay_shapes_round_trip_at_protocol_51() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 51);
+        let definition = crate::session::ProjectEnvironmentDefinition {
+            schema_version: 1,
+            origin: crate::session::ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
+            source: crate::session::ProjectEnvironmentDefinitionSource::Commands,
+            target_platform: "linux-x86_64".to_string(),
+            source_path: None,
+            setup_steps: vec![crate::session::ProjectEnvironmentSetupStep {
+                kind: crate::session::ProjectEnvironmentSetupStepKind::Command,
+                command: "command -v sh".to_string(),
+            }],
+            validation_commands: vec!["command -v sh".to_string()],
+        };
+        let requests = vec![
+            RelayPeerRequest::StartLeasedProjectEnvironmentSetup {
+                leased_agent_id: "leased-agent-1".to_string(),
+                operation_id: "setup-1".to_string(),
+                project_id: "project-1".to_string(),
+                home_session_id: "home-session-1".to_string(),
+                home_agent_id: "home-agent-1".to_string(),
+                workspace_id: "worker-worktree-1".to_string(),
+                target_worker_id: "worker-machine-1".to_string(),
+                target_platform: "linux-x86_64".to_string(),
+                definition: Some(definition.clone()),
+                validation_commands: Vec::new(),
+            },
+            RelayPeerRequest::GetLeasedProjectEnvironmentSetupStatus {
+                leased_agent_id: "leased-agent-1".to_string(),
+                operation_id: "setup-1".to_string(),
+                home_session_id: "home-session-1".to_string(),
+                home_agent_id: "home-agent-1".to_string(),
+            },
+            RelayPeerRequest::CancelLeasedProjectEnvironmentSetup {
+                leased_agent_id: "leased-agent-1".to_string(),
+                operation_id: "setup-1".to_string(),
+                home_session_id: "home-session-1".to_string(),
+                home_agent_id: "home-agent-1".to_string(),
+            },
+            RelayPeerRequest::RetryLeasedProjectEnvironmentSetup {
+                leased_agent_id: "leased-agent-1".to_string(),
+                operation_id: "setup-1".to_string(),
+                home_session_id: "home-session-1".to_string(),
+                home_agent_id: "home-agent-1".to_string(),
+            },
+        ];
+        for request in requests {
+            let encoded = serde_json::to_value(&request).expect("setup request should encode");
+            let decoded: RelayPeerRequest =
+                serde_json::from_value(encoded).expect("setup request should decode");
+            assert_eq!(decoded, request);
+        }
+
+        let setup = RelayProjectEnvironmentSetupStatus {
+            status: crate::local::ProjectEnvironmentSetupStatus {
+                operation_id: "setup-1".to_string(),
+                project_id: "project-1".to_string(),
+                session_id: "home-session-1".to_string(),
+                agent_id: "home-agent-1".to_string(),
+                worker_id: "worker-machine-1".to_string(),
+                platform: "linux-x86_64".to_string(),
+                phase: crate::local::ProjectEnvironmentSetupPhase::Ready,
+                attempt: 1,
+                progress_percent: 100,
+                definition_digest: Some("sha256:definition".to_string()),
+                validation: None,
+                message: Some("ready".to_string()),
+                failure_code: None,
+                failure_message: None,
+                retryable: false,
+                created_at_ms: 1,
+                updated_at_ms: 2,
+            },
+            definition: Some(definition),
+        };
+        for response in [
+            RelayPeerResponse::LeasedProjectEnvironmentSetupStarted {
+                setup: setup.clone(),
+            },
+            RelayPeerResponse::LeasedProjectEnvironmentSetupStatus {
+                setup: setup.clone(),
+            },
+            RelayPeerResponse::LeasedProjectEnvironmentSetupCancelled {
+                setup: setup.clone(),
+            },
+            RelayPeerResponse::LeasedProjectEnvironmentSetupRetried { setup },
+        ] {
+            let encoded = serde_json::to_value(&response).expect("setup response should encode");
+            let decoded: RelayPeerResponse =
+                serde_json::from_value(encoded).expect("setup response should decode");
+            assert_eq!(decoded, response);
         }
     }
 

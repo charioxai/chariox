@@ -529,6 +529,24 @@ impl SessionService {
         Ok(project.clone())
     }
 
+    pub fn update_project_environment_definition(
+        &mut self,
+        project_id: &str,
+        definition: crate::session::ProjectEnvironmentDefinition,
+        caller_user_id: &str,
+    ) -> Result<RuntimeProject, DaemonError> {
+        definition
+            .validate()
+            .map_err(|message| project_error("project.environment_definition.update", message))?;
+        let project = self.project_mut_for_owner(
+            project_id,
+            caller_user_id,
+            "project.environment_definition.update",
+        )?;
+        project.set_environment_definition(definition);
+        Ok(project.clone())
+    }
+
     pub fn archive_project(
         &mut self,
         project_id: &str,

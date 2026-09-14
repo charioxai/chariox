@@ -151,6 +151,7 @@ struct KernelRuntimeOwnedState {
     slice_private_relay_connectors: Arc<Mutex<BTreeMap<String, SlicePrivateRelayConnector>>>,
     workflow_publication_runtimes:
         crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore,
+    project_environment_setups: project_environment_setup::ProjectEnvironmentSetupStore,
 }
 
 #[derive(Debug, Clone)]
@@ -278,6 +279,7 @@ mod provider_output_runtime;
 mod provider_process_runtime_state;
 pub(crate) use provider_process_runtime_state::*;
 mod agent_substitute_transition_owned_state;
+mod project_environment_setup;
 #[cfg(test)]
 mod provider_output_runtime_tests;
 mod provider_prompt_failure_runtime;
@@ -510,6 +512,10 @@ impl KernelRuntimeState {
                 .publication_control_state_root
                 .is_some(),
         ));
+        let project_environment_setups =
+            project_environment_setup::ProjectEnvironmentSetupStore::restore_from_durable_state(
+                &durable_state_store,
+            );
         Self {
             app,
             provider_runtime_lanes,
@@ -600,6 +606,7 @@ impl KernelRuntimeState {
                 slice_private_relay_connectors: Arc::new(Mutex::new(BTreeMap::new())),
                 workflow_publication_runtimes:
                     crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore::default(),
+                project_environment_setups,
             },
         }
     }

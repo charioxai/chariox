@@ -66,6 +66,19 @@ pub(crate) struct LeaseCallerBinding {
     pub(crate) public_key_thumbprint: String,
 }
 
+/// Worker-local execution coordinates for a home-owned environment setup.
+/// Home identifiers are retained for status correlation; backing identifiers
+/// are the only identifiers permitted for provider utility execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LeasedProjectEnvironmentSetupTarget {
+    pub(crate) owner_user_id: String,
+    pub(crate) home_session_id: String,
+    pub(crate) home_agent_id: String,
+    pub(crate) backing_session_id: String,
+    pub(crate) backing_agent_id: String,
+    pub(crate) workspace_id: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LeasedAgentCleanupPhase {
     Provider,
@@ -359,8 +372,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .execution_leases
             .values()
             .filter(|lease| {
-                now_ms.saturating_sub(lease.created_at_ms)
-                    >= REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS
+                now_ms.saturating_sub(lease.created_at_ms) >= REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS
             })
             .map(|lease| lease.id.clone())
             .collect::<Vec<_>>();
@@ -815,6 +827,98 @@ impl<'a> RemoteLeaseRuntime<'a> {
     ) -> Result<(), DaemonError> {
         self.authorize_leased_agent_caller(leased_agent_id, caller)?;
         self.destroy_leased_agent(leased_agent_id)
+    }
+
+    pub(crate) fn project_environment_setup_target(
+        &self,
+        leased_agent_id: &str,
+        home_session_id: &str,
+        home_agent_id: &str,
+        workspace_id: Option<&str>,
+    ) -> Result<LeasedProjectEnvironmentSetupTarget, DaemonError> {
+        if self.app.config.kernel_runtime_role
+            != crate::config::KernelRuntimeRole::RemoteLeaseWorker
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "prepare leased project environment setup",
+                message: "project environment setup is only executable by a lease worker"
+                    .to_string(),
+            });
+        }
+        let leased_agent = self
+            .app
+            .leased_agents
+            .get(leased_agent_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            })?;
+        let lease = self
+            .app
+            .execution_leases
+            .get(&leased_agent.lease_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
+                lease_id: leased_agent.lease_id.clone(),
+            })?;
+        if lease.home_session_id != home_session_id
+            || lease.home_agent_id != home_agent_id
+            || leased_agent.home_agent_id != home_agent_id
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "prepare leased project environment setup",
+                message: "home setup identity does not match the leased agent binding".to_string(),
+            });
+        }
+        if lease.worker_kernel_id != self.app.config.daemon_id
+            || lease.machine_id != self.app.config.host_machine_id
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "prepare leased project environment setup",
+                message: "leased agent worker identity does not match this kernel".to_string(),
+            });
+        }
+        let backing_session = self
+            .app
+            .sessions
+            .get_session(&leased_agent.backing_session_id)?;
+        if backing_session.owner_user_id() != lease.owner_user_id {
+            return Err(DaemonError::LocalTransport {
+                operation: "prepare leased project environment setup",
+                message: "leased backing session owner does not match the lease owner".to_string(),
+            });
+        }
+        let backing_agent = self.app.agents.get_agent(&leased_agent.backing_agent_id)?;
+        if backing_agent.session_id() != backing_session.id()
+            || backing_agent.owner_user_id() != lease.owner_user_id
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "prepare leased project environment setup",
+                message: "leased backing agent identity does not match its worker session"
+                    .to_string(),
+            });
+        }
+        let actual_workspace = backing_agent
+            .worktree_id()
+            .unwrap_or_else(|| backing_session.worktree_id())
+            .to_string();
+        if let Some(workspace_id) = workspace_id {
+            if workspace_id != actual_workspace {
+                return Err(DaemonError::LocalTransport {
+                    operation: "prepare leased project environment setup",
+                    message: "home setup workspace does not match the worker backing worktree"
+                        .to_string(),
+                });
+            }
+        }
+        Ok(LeasedProjectEnvironmentSetupTarget {
+            owner_user_id: lease.owner_user_id,
+            home_session_id: home_session_id.to_string(),
+            home_agent_id: home_agent_id.to_string(),
+            backing_session_id: leased_agent.backing_session_id,
+            backing_agent_id: leased_agent.backing_agent_id,
+            workspace_id: actual_workspace,
+        })
     }
 
     pub(crate) fn leased_workflow_event_capabilities_for_backing_prompt(

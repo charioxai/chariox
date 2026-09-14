@@ -89,6 +89,66 @@ transcripts, relay and Cloud data, logs, traces, screenshots, and helper output.
 Client disconnect and reconnect must not duplicate provider runs or split Room
 state. Every drill must remove everything it created.
 
+## Project environment setup and readiness
+
+Status: the kernel-owned setup contract is being implemented; local focused
+proof comes before the real worker and remote deployment gates.
+
+A selected Project becomes build-ready only through a kernel-owned setup
+operation on its target environment. The home kernel remains the authority for
+the Project, operation identity, progress, cancellation, retry, and readiness;
+the target worker performs the environment work. A local worker and a disposable
+Cloud VM are two placements of this same contract, not two setup
+implementations.
+
+The operation has these observable phases and terminal outcomes:
+
+| Phase | Kernel-owned meaning |
+| --- | --- |
+| `requested` | A durable setup attempt and target binding exist. |
+| `preparing` | The target is applying or generating the repeatable definition. |
+| `validating` | Required commands are executing inside the target worker. |
+| `ready` | Definition application and target validation both succeeded. |
+| `failed` | Setup or validation stopped with a bounded, actionable failure. |
+| `cancelled` | The caller cancelled the attempt and the target reached a settled state. |
+
+Every attempt exposes a stable operation/attempt identity, definition and target
+digests, bounded progress, timestamps, and safe failure details through the
+shared kernel contract. Web, TUI, and Cloud may project that state and request
+cancel/retry, but they do not infer it from connectivity or maintain a second
+setup authority. Reconnect must recover the same attempt; retry must be
+idempotent and produce a new attempt without silently declaring the old one
+ready.
+
+An existing Project environment definition is a repeatable, target-platform
+bound recipe. The kernel reuses or recreates that recipe on the target and then
+validates it there. A user-authored Dockerfile, devcontainer, or setup script is
+an explicit project input referenced by the definition; it is not the same as
+automatic setup and its digest and execution result remain part of the
+kernel-owned record. With no definition, an ordinary utility agent on the
+official provider path may inspect the target, install packages, compilers,
+system tools, and native dependencies, and persist the resulting repeatable
+definition before validation. This path uses no provider SDK or credential
+store.
+
+Package caches and prebuilds are optional accelerators keyed by the target
+platform and definition/image identity. A cache hit never substitutes for
+validation in the actual target worker. Host-tool or Mac-binary copying is
+never a provisioning mechanism; the target installs or builds its own tools.
+`ready` requires successful bounded validation commands in that worker, such as
+the Rust/Cargo/native-dependency checks and a bounded build of the transferred
+Chariox repository. Kernel, relay, or provider connectivity alone cannot set
+the flag.
+
+The local red-green contract tests must cover both definition branches, each
+observable phase, failure, cancellation, retry, reconnect, cache invalidation,
+and the negative case where the worker is connected but validation has not
+passed. The real-worker gate remains open: deploy a pinned target image through
+the reviewed Cloud path, exercise the same definition and utility-agent paths
+inside a disposable VM, run the bounded Rust/Cargo/native-dependency build from
+the transferred repository, and prove cleanup. Those deployment and live
+validation steps are not closed by local tests.
+
 ## Product and architecture decisions
 
 ### One Room environment

@@ -24,6 +24,7 @@ mod history;
 mod managed_context;
 mod managed_environment;
 mod metaagent;
+mod project_environment_setup;
 mod prompt_control;
 mod prompt_settings;
 mod provider_control;
@@ -53,6 +54,7 @@ pub use history::*;
 pub use managed_context::*;
 pub use managed_environment::*;
 pub use metaagent::*;
+pub use project_environment_setup::*;
 pub use prompt_control::*;
 pub use prompt_settings::*;
 pub use provider_control::*;
@@ -74,4 +76,5 @@ pub use workspace::*;
 /// Version 322 makes Selkies the omitted backend for new headed slices.
 /// Version 323 projects bounded provider-run termination metadata with failed turns.
 /// Version 325 preserves failed turn lifecycle in retained history outlines.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 325;
+/// Version 326 adds kernel-owned project environment setup and readiness operations.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 326;

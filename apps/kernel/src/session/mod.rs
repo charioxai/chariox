@@ -2,6 +2,7 @@ mod agent_config;
 mod agent_prompt_scheduling;
 mod metaagent_task;
 mod owner;
+mod project_environment;
 mod prompt_queue;
 mod prompt_runtime;
 mod queued_metaagent_task;
@@ -35,6 +36,11 @@ pub use agent_config::{
     effective_agent_user_authority, EffectiveAgentExecutionConfig, EffectiveAgentUserAuthority,
 };
 pub(crate) use owner::{SessionStateOwner, SessionStateReader, SessionStateStore};
+pub use project_environment::{
+    ProjectEnvironmentDefinition, ProjectEnvironmentDefinitionOrigin,
+    ProjectEnvironmentDefinitionSource, ProjectEnvironmentSetupStep,
+    ProjectEnvironmentSetupStepKind, PROJECT_ENVIRONMENT_DEFINITION_SCHEMA_VERSION,
+};
 pub use room_environment::{
     agent_environment_actor_id, human_environment_actor_id, human_environment_actor_label,
     ActionAdmission, ActionCancellationOutcome, CanonicalViewport, EnvironmentAction,
