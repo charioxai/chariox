@@ -716,7 +716,12 @@ impl KernelRuntimeState {
                     return;
                 }
             },
-            Err(_) => {
+            Err(error) => {
+                #[cfg(test)]
+                eprintln!(
+                    "project_environment_setup utility failure: {}",
+                    crate::provider::sanitize_provider_diagnostic(&error.to_string())
+                );
                 store.mark_failed(
                     &execution.operation_id,
                     attempt,
