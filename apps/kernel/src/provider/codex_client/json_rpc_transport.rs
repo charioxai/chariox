@@ -330,8 +330,9 @@ fn codex_request_timeout(method: &str) -> Duration {
 
 #[cfg(test)]
 mod tests {
+    use super::super::CodexThreadStartResponse;
     use super::{
-        codex_read_should_retry, codex_request_timeout, CodexClient, CodexThreadStartResponse,
+        codex_read_should_retry, codex_request_timeout, CodexClient,
         CODEX_WEBSOCKET_MAX_MESSAGE_SIZE,
     };
     use crate::provider::{
