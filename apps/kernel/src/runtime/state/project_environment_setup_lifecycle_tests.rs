@@ -670,8 +670,8 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         project_id: project_id.clone(),
         session_id: session_id.clone(),
         agent_id: agent_id.clone(),
-        execution_session_id: backing_session_id,
-        execution_agent_id: backing_agent_id,
+        execution_session_id: backing_session_id.clone(),
+        execution_agent_id: backing_agent_id.clone(),
         workspace_id: workspace.display().to_string(),
         target_worker_id: config_worker.host_machine_id.clone(),
         target_platform: target_platform.clone(),
@@ -1108,6 +1108,49 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         .write()
         .await
         .test_clear_authenticated_peer_request_observer();
+
+    // Temporary sanitized diagnostic for the worker-side precondition. Keep
+    // IDs, tokens, prompts, and endpoint details out of the test output; the
+    // booleans distinguish an absent/mismatched prepared context from a run
+    // that was ended during relay recovery.
+    let prepared_context_diagnostic = {
+        let session_present = worker_runtime
+            .owned
+            .session_store
+            .get_session(&backing_session_id)
+            .is_ok();
+        let backing_agent = worker_runtime
+            .owned
+            .agent_store
+            .get_session_agents(&backing_session_id)
+            .into_iter()
+            .find(|agent| agent.id() == backing_agent_id);
+        let agent_present = backing_agent.is_some();
+        let agent_remote_execution = backing_agent
+            .as_ref()
+            .is_some_and(|agent| agent.remote_execution().is_some());
+        let provider_runs = worker_runtime
+            .owned
+            .provider_store
+            .list_runs()
+            .into_iter()
+            .map(|run| {
+                (
+                    run.session_id() == backing_session_id,
+                    run.agent_instance_id() == Some(backing_agent_id.as_str()),
+                    run.state(),
+                )
+            })
+            .collect::<Vec<_>>();
+        (session_present, agent_present, agent_remote_execution, provider_runs)
+    };
+    eprintln!(
+        "sanitized worker utility precondition: session_present={}, agent_present={}, agent_remote_execution={}, provider_runs={:?}",
+        prepared_context_diagnostic.0,
+        prepared_context_diagnostic.1,
+        prepared_context_diagnostic.2,
+        prepared_context_diagnostic.3,
+    );
 
     let recovered_missing_operation = get_setup_status(
         &runtime,
