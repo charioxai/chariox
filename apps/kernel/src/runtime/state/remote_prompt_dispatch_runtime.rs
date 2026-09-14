@@ -484,19 +484,23 @@ impl KernelRuntimeState {
         stale_provider_run_id: &str,
         trigger_error: &str,
     ) -> Result<(), DaemonError> {
+        let refresh_agent_id = agent_id.to_string();
+        let stale_leased_agent_id = stale_binding.leased_agent_id.clone();
+        let refresh_stale_provider_run_id = stale_provider_run_id.to_string();
         let rebound = self
-            .with_app_side_effect(|app| {
-                let agent = app.agents().get_agent(agent_id)?;
+            .with_app_side_effect_blocking(move |app| {
+                let agent = app.agents().get_agent(&refresh_agent_id)?;
                 let Some(current_binding) = agent.remote_execution() else {
                     return Ok(None);
                 };
-                if current_binding.leased_agent_id != stale_binding.leased_agent_id
+                if current_binding.leased_agent_id != stale_leased_agent_id
                     || current_binding.active_worker_provider_run_id.as_deref()
-                        != Some(stale_provider_run_id)
+                        != Some(refresh_stale_provider_run_id.as_str())
                 {
                     return Ok(None);
                 }
-                app.refresh_remote_agent_binding(agent_id).map(Some)
+                app.refresh_remote_agent_binding(&refresh_agent_id)
+                    .map(Some)
             })
             .await?;
         let Some(rebound) = rebound else {

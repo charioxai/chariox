@@ -621,6 +621,26 @@ impl KernelRuntimeState {
         operation(&mut app)
     }
 
+    pub(crate) async fn with_app_side_effect_blocking<R, F>(
+        &self,
+        operation: F,
+    ) -> Result<R, DaemonError>
+    where
+        F: FnOnce(&mut DaemonApp) -> Result<R, DaemonError> + Send + 'static,
+        R: Send + 'static,
+    {
+        let app = Arc::clone(&self.app);
+        tokio::task::spawn_blocking(move || {
+            let mut app = app.blocking_lock();
+            operation(&mut app)
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "run blocking kernel app side effect",
+            message: error.to_string(),
+        })?
+    }
+
     pub(crate) fn provider_account_profile_registry(
         &self,
     ) -> &crate::account_profile::ProviderAccountProfileRegistry {

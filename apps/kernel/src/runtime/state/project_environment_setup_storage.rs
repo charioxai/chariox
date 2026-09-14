@@ -38,9 +38,56 @@ struct PersistedSetupEntry {
     entry: SetupEntry,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RemoteSetupRecoveryDecision {
+    Dispatch,
+    InFlight,
+    Unknown,
+    Acknowledged,
+    Cancelled,
+    Stale,
+}
+
+#[derive(Debug, Clone)]
+enum RemoteSetupRecoveryState {
+    InFlight {
+        attempt: u32,
+        observation_generation: u64,
+        binding_id: String,
+    },
+    Unknown {
+        attempt: u32,
+        observation_generation: u64,
+        binding_id: String,
+    },
+    Acknowledged {
+        attempt: u32,
+        observed_through: u64,
+        binding_id: String,
+    },
+}
+
+#[derive(Debug, Default)]
+struct RemoteSetupRecoveryCoordinator {
+    next_observation_generation: u64,
+    recoveries: BTreeMap<String, RemoteSetupRecoveryState>,
+}
+
+fn recovery_state_attempt(state: &RemoteSetupRecoveryState) -> u32 {
+    match state {
+        RemoteSetupRecoveryState::InFlight { attempt, .. }
+        | RemoteSetupRecoveryState::Unknown { attempt, .. }
+        | RemoteSetupRecoveryState::Acknowledged { attempt, .. } => *attempt,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(in crate::runtime::state) struct ProjectEnvironmentSetupStore {
     entries: Arc<Mutex<BTreeMap<String, SetupEntry>>>,
+    // Recovery reservations are deliberately process-local: an uncertain
+    // replay must fence same-attempt duplicate Starts until a worker status,
+    // explicit cancellation, or a new retry attempt resolves it.
+    remote_recoveries: Arc<Mutex<RemoteSetupRecoveryCoordinator>>,
     durable_state_store: Option<DurableKernelStateStore>,
     execution_settled: Arc<tokio::sync::Notify>,
 }
@@ -58,10 +105,70 @@ impl Drop for SetupExecutionGuard {
     }
 }
 
+pub(super) struct RemoteSetupRecoveryReservationGuard {
+    store: ProjectEnvironmentSetupStore,
+    operation_id: String,
+    attempt: u32,
+    binding_id: String,
+    observation_generation: u64,
+    armed: bool,
+}
+
+impl RemoteSetupRecoveryReservationGuard {
+    pub(super) fn new(
+        store: &ProjectEnvironmentSetupStore,
+        operation_id: &str,
+        attempt: u32,
+        binding_id: &str,
+        observation_generation: u64,
+    ) -> Self {
+        Self {
+            store: store.clone(),
+            operation_id: operation_id.to_owned(),
+            attempt,
+            binding_id: binding_id.to_owned(),
+            observation_generation,
+            armed: true,
+        }
+    }
+
+    pub(super) fn disarm(&mut self) {
+        self.armed = false;
+    }
+
+    pub(super) fn rebind(&mut self, binding_id: &str) {
+        self.binding_id = binding_id.to_owned();
+    }
+
+    pub(super) fn clear_if_matches(&mut self) {
+        self.store.clear_remote_recovery_if_matches(
+            &self.operation_id,
+            self.attempt,
+            &self.binding_id,
+            self.observation_generation,
+        );
+        self.disarm();
+    }
+}
+
+impl Drop for RemoteSetupRecoveryReservationGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.store.mark_remote_recovery_unknown(
+                &self.operation_id,
+                self.attempt,
+                &self.binding_id,
+                self.observation_generation,
+            );
+        }
+    }
+}
+
 impl Default for ProjectEnvironmentSetupStore {
     fn default() -> Self {
         Self {
             entries: Arc::new(Mutex::new(BTreeMap::new())),
+            remote_recoveries: Arc::new(Mutex::new(RemoteSetupRecoveryCoordinator::default())),
             durable_state_store: None,
             execution_settled: Arc::new(tokio::sync::Notify::new()),
         }
@@ -74,6 +181,7 @@ impl ProjectEnvironmentSetupStore {
     ) -> Self {
         let store = Self {
             entries: Arc::new(Mutex::new(BTreeMap::new())),
+            remote_recoveries: Arc::new(Mutex::new(RemoteSetupRecoveryCoordinator::default())),
             durable_state_store: Some(durable_state_store.clone()),
             execution_settled: Arc::new(tokio::sync::Notify::new()),
         };
@@ -229,7 +337,7 @@ impl ProjectEnvironmentSetupStore {
         }
         if !entry.status.retryable {
             return Err(setup_error(
-                "setup operation is not retryable; reconnect the worker and query status first",
+                "setup operation was rejected by the worker and is not retryable",
             ));
         }
         let attempt = entry.status.attempt.saturating_add(1);
@@ -253,6 +361,7 @@ impl ProjectEnvironmentSetupStore {
         let persisted = entry.clone();
         drop(entries);
         self.persist(&persisted);
+        self.clear_remote_recovery(operation_id);
         Ok((execution, attempt, status))
     }
 
@@ -309,6 +418,453 @@ impl ProjectEnvironmentSetupStore {
         ))
     }
 
+    pub(super) fn rebind_remote_leased_agent(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        expected_leased_agent_id: &str,
+        replacement_leased_agent_id: String,
+        observation_generation: u64,
+    ) -> Result<SetupExecution, DaemonError> {
+        if replacement_leased_agent_id.trim().is_empty() {
+            return Err(setup_error(
+                "replacement remote setup binding must have a leased agent",
+            ));
+        }
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("setup state lock should not be poisoned");
+        let entry = entries
+            .get_mut(operation_id)
+            .ok_or_else(|| setup_error("setup operation was not found"))?;
+        if entry.status.attempt != attempt {
+            return Err(setup_error(
+                "setup attempt changed before its remote binding could be refreshed",
+            ));
+        }
+        if entry.cancel_requested
+            || matches!(
+                entry.status.phase,
+                ProjectEnvironmentSetupPhase::Ready
+                    | ProjectEnvironmentSetupPhase::Failed
+                    | ProjectEnvironmentSetupPhase::Cancelled
+            )
+        {
+            return Err(setup_error(
+                "terminal setup cannot refresh its remote binding",
+            ));
+        }
+        match entry.execution.remote_leased_agent_id.as_deref() {
+            Some(current) if current != expected_leased_agent_id => {
+                return Err(setup_error(
+                    "remote setup binding changed before it could be refreshed",
+                ));
+            }
+            Some(current) if current == replacement_leased_agent_id => {
+                return Ok(entry.execution.clone())
+            }
+            Some(_) => {}
+            None => {
+                return Err(setup_error("local setup has no remote binding to refresh"));
+            }
+        }
+        entry.execution.remote_leased_agent_id = Some(replacement_leased_agent_id.clone());
+        entry.fingerprint = setup_fingerprint(&entry.execution)?;
+        let execution = entry.execution.clone();
+        let persisted = entry.clone();
+        drop(entries);
+        self.persist(&persisted);
+        self.rebind_remote_recovery_binding(
+            operation_id,
+            attempt,
+            expected_leased_agent_id,
+            &replacement_leased_agent_id,
+            observation_generation,
+        );
+        Ok(execution)
+    }
+
+    fn rebind_remote_recovery_binding(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        expected_leased_agent_id: &str,
+        replacement_leased_agent_id: &str,
+        observation_generation: u64,
+    ) {
+        let mut remote_recoveries = self
+            .remote_recoveries
+            .lock()
+            .expect("remote setup recovery lock should not be poisoned");
+        let Some(recovery) = remote_recoveries.recoveries.get_mut(operation_id) else {
+            return;
+        };
+        match recovery {
+            RemoteSetupRecoveryState::InFlight {
+                attempt: current_attempt,
+                observation_generation: current_generation,
+                binding_id,
+                ..
+            }
+            | RemoteSetupRecoveryState::Unknown {
+                attempt: current_attempt,
+                observation_generation: current_generation,
+                binding_id,
+                ..
+            } if *current_attempt == attempt
+                && *current_generation == observation_generation
+                && binding_id == expected_leased_agent_id =>
+            {
+                *binding_id = replacement_leased_agent_id.to_owned();
+            }
+            RemoteSetupRecoveryState::Acknowledged {
+                attempt: current_attempt,
+                observed_through,
+                binding_id,
+            } if *current_attempt == attempt
+                && *observed_through == observation_generation
+                && binding_id == expected_leased_agent_id =>
+            {
+                *binding_id = replacement_leased_agent_id.to_owned();
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn rebind_remote_worker_target(
+        &self,
+        operation_id: &str,
+        leased_agent_id: &str,
+        target: &crate::app::LeasedProjectEnvironmentSetupTarget,
+        target_worker_id: &str,
+        target_platform: &str,
+    ) -> Result<
+        (
+            ProjectEnvironmentSetupStatus,
+            Option<ProjectEnvironmentDefinition>,
+        ),
+        DaemonError,
+    > {
+        if leased_agent_id.trim().is_empty() {
+            return Err(setup_error("remote setup is missing its leased agent"));
+        }
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("setup state lock should not be poisoned");
+        let entry = entries
+            .get_mut(operation_id)
+            .ok_or_else(|| setup_error("setup operation was not found"))?;
+        if entry.execution.owner_user_id != target.owner_user_id
+            || entry.execution.session_id != target.home_session_id
+            || entry.execution.agent_id != target.home_agent_id
+            || entry.execution.target_worker_id != target_worker_id
+            || entry.execution.target_platform != target_platform
+        {
+            return Err(setup_error(
+                "remote setup status does not match the worker target",
+            ));
+        }
+        if entry.execution.remote_leased_agent_id.as_deref() == Some(leased_agent_id) {
+            return Ok((entry.status.clone(), entry.execution.definition.clone()));
+        }
+        if entry.execution.remote_leased_agent_id.is_none() {
+            return Err(setup_error(
+                "worker setup is not bound to a remote leased agent",
+            ));
+        }
+        if !matches!(
+            entry.status.phase,
+            ProjectEnvironmentSetupPhase::Failed | ProjectEnvironmentSetupPhase::Cancelled
+        ) || !entry.status.retryable
+        {
+            return Err(setup_error(
+                "worker setup binding cannot be replaced outside a retryable terminal attempt",
+            ));
+        }
+        entry.execution.remote_leased_agent_id = Some(leased_agent_id.to_string());
+        entry.execution.execution_session_id = target.backing_session_id.clone();
+        entry.execution.execution_agent_id = target.backing_agent_id.clone();
+        entry.execution.workspace_id = target.workspace_id.clone();
+        entry.fingerprint = setup_fingerprint(&entry.execution)?;
+        let status = entry.status.clone();
+        let definition = entry.execution.definition.clone();
+        let persisted = entry.clone();
+        drop(entries);
+        self.persist(&persisted);
+        Ok((status, definition))
+    }
+
+    pub(super) fn begin_remote_observation(&self) -> u64 {
+        let mut coordinator = self
+            .remote_recoveries
+            .lock()
+            .expect("remote setup recovery lock should not be poisoned");
+        coordinator.next_observation_generation =
+            coordinator.next_observation_generation.saturating_add(1);
+        coordinator.next_observation_generation
+    }
+
+    pub(super) fn begin_remote_recovery(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        binding_id: &str,
+        observation_generation: u64,
+    ) -> RemoteSetupRecoveryDecision {
+        let entries = self
+            .entries
+            .lock()
+            .expect("setup state lock should not be poisoned");
+        let Some(entry) = entries.get(operation_id) else {
+            return RemoteSetupRecoveryDecision::Stale;
+        };
+        if entry.status.attempt != attempt {
+            return RemoteSetupRecoveryDecision::Stale;
+        }
+        if entry.cancel_requested
+            || matches!(
+                entry.status.phase,
+                ProjectEnvironmentSetupPhase::Ready
+                    | ProjectEnvironmentSetupPhase::Failed
+                    | ProjectEnvironmentSetupPhase::Cancelled
+            )
+        {
+            return RemoteSetupRecoveryDecision::Cancelled;
+        }
+        let mut remote_recoveries = self
+            .remote_recoveries
+            .lock()
+            .expect("remote setup recovery lock should not be poisoned");
+        if entry.execution.remote_leased_agent_id.as_deref() != Some(binding_id) {
+            return RemoteSetupRecoveryDecision::Stale;
+        }
+        match remote_recoveries.recoveries.get(operation_id).cloned() {
+            Some(RemoteSetupRecoveryState::InFlight {
+                attempt: current_attempt,
+                binding_id: current_binding_id,
+                ..
+            }) if current_attempt == attempt && current_binding_id == binding_id => {
+                RemoteSetupRecoveryDecision::InFlight
+            }
+            Some(RemoteSetupRecoveryState::Unknown {
+                attempt: current_attempt,
+                binding_id: current_binding_id,
+                ..
+            }) if current_attempt == attempt && current_binding_id == binding_id => {
+                RemoteSetupRecoveryDecision::Unknown
+            }
+            Some(RemoteSetupRecoveryState::Acknowledged {
+                attempt: current_attempt,
+                observed_through,
+                binding_id: current_binding_id,
+            }) if current_attempt == attempt && current_binding_id == binding_id => {
+                if observation_generation > observed_through {
+                    remote_recoveries.recoveries.insert(
+                        operation_id.to_owned(),
+                        RemoteSetupRecoveryState::InFlight {
+                            attempt,
+                            observation_generation,
+                            binding_id: binding_id.to_owned(),
+                        },
+                    );
+                    RemoteSetupRecoveryDecision::Dispatch
+                } else {
+                    RemoteSetupRecoveryDecision::Acknowledged
+                }
+            }
+            Some(state) if recovery_state_attempt(&state) == attempt => {
+                remote_recoveries.recoveries.insert(
+                    operation_id.to_owned(),
+                    RemoteSetupRecoveryState::InFlight {
+                        attempt,
+                        observation_generation,
+                        binding_id: binding_id.to_owned(),
+                    },
+                );
+                RemoteSetupRecoveryDecision::Dispatch
+            }
+            Some(_) => RemoteSetupRecoveryDecision::Stale,
+            None => {
+                remote_recoveries.recoveries.insert(
+                    operation_id.to_owned(),
+                    RemoteSetupRecoveryState::InFlight {
+                        attempt,
+                        observation_generation,
+                        binding_id: binding_id.to_owned(),
+                    },
+                );
+                RemoteSetupRecoveryDecision::Dispatch
+            }
+        }
+    }
+
+    pub(super) fn remote_recovery_dispatch_allowed(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        binding_id: &str,
+        observation_generation: u64,
+    ) -> bool {
+        let entries = self
+            .entries
+            .lock()
+            .expect("setup state lock should not be poisoned");
+        let Some(entry) = entries.get(operation_id) else {
+            return false;
+        };
+        if entry.status.attempt != attempt
+            || entry.cancel_requested
+            || !matches!(
+                entry.status.phase,
+                ProjectEnvironmentSetupPhase::Requested
+                    | ProjectEnvironmentSetupPhase::Preparing
+                    | ProjectEnvironmentSetupPhase::Validating
+            )
+        {
+            return false;
+        }
+        let remote_recoveries = self
+            .remote_recoveries
+            .lock()
+            .expect("remote setup recovery lock should not be poisoned");
+        matches!(
+            remote_recoveries.recoveries.get(operation_id),
+            Some(RemoteSetupRecoveryState::InFlight {
+                attempt: current_attempt,
+                observation_generation: current_generation,
+                binding_id: current_binding_id,
+            }) if *current_attempt == attempt
+                && *current_generation == observation_generation
+                && current_binding_id == binding_id
+                && entry.execution.remote_leased_agent_id.as_deref() == Some(binding_id)
+        )
+    }
+
+    pub(super) fn mark_remote_recovery_unknown(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        binding_id: &str,
+        observation_generation: u64,
+    ) {
+        let mut remote_recoveries = self
+            .remote_recoveries
+            .lock()
+            .expect("remote setup recovery lock should not be poisoned");
+        if matches!(
+            remote_recoveries.recoveries.get(operation_id),
+            Some(RemoteSetupRecoveryState::InFlight {
+                attempt: current_attempt,
+                observation_generation: current_generation,
+                binding_id: current_binding_id,
+            }) if *current_attempt == attempt
+                && *current_generation == observation_generation
+                && current_binding_id == binding_id
+        ) {
+            remote_recoveries.recoveries.insert(
+                operation_id.to_owned(),
+                RemoteSetupRecoveryState::Unknown {
+                    attempt,
+                    observation_generation,
+                    binding_id: binding_id.to_owned(),
+                },
+            );
+        }
+    }
+
+    pub(super) fn mark_remote_recovery_observed(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        binding_id: &str,
+        observation_generation: Option<u64>,
+    ) {
+        // Only a status Get carries an observation generation. A Start or
+        // Retry response may race with a newer recovery reservation, so it
+        // cannot acknowledge that reservation without the matching fence.
+        let Some(observation_generation) = observation_generation else {
+            return;
+        };
+        let mut remote_recoveries = self
+            .remote_recoveries
+            .lock()
+            .expect("remote setup recovery lock should not be poisoned");
+        let should_acknowledge = match remote_recoveries.recoveries.get(operation_id) {
+            Some(
+                RemoteSetupRecoveryState::InFlight {
+                    attempt: current_attempt,
+                    observation_generation: current_generation,
+                    binding_id: current_binding_id,
+                }
+                | RemoteSetupRecoveryState::Unknown {
+                    attempt: current_attempt,
+                    observation_generation: current_generation,
+                    binding_id: current_binding_id,
+                },
+            ) => {
+                *current_attempt == attempt
+                    && current_binding_id == binding_id
+                    && observation_generation >= *current_generation
+            }
+            _ => false,
+        };
+        if should_acknowledge {
+            let observed_through = remote_recoveries.next_observation_generation;
+            remote_recoveries.recoveries.insert(
+                operation_id.to_owned(),
+                RemoteSetupRecoveryState::Acknowledged {
+                    attempt,
+                    observed_through,
+                    binding_id: binding_id.to_owned(),
+                },
+            );
+        }
+    }
+
+    pub(super) fn clear_remote_recovery(&self, operation_id: &str) {
+        self.remote_recoveries
+            .lock()
+            .expect("remote setup recovery lock should not be poisoned")
+            .recoveries
+            .remove(operation_id);
+    }
+
+    pub(super) fn clear_remote_recovery_if_matches(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        binding_id: &str,
+        observation_generation: u64,
+    ) -> bool {
+        let mut remote_recoveries = self
+            .remote_recoveries
+            .lock()
+            .expect("remote setup recovery lock should not be poisoned");
+        let matches = matches!(
+            remote_recoveries.recoveries.get(operation_id),
+            Some(
+                RemoteSetupRecoveryState::InFlight {
+                    attempt: current_attempt,
+                    observation_generation: current_generation,
+                    binding_id: current_binding_id,
+                }
+                | RemoteSetupRecoveryState::Unknown {
+                    attempt: current_attempt,
+                    observation_generation: current_generation,
+                    binding_id: current_binding_id,
+                },
+            ) if *current_attempt == attempt
+                && *current_generation == observation_generation
+                && current_binding_id == binding_id
+        );
+        if matches {
+            remote_recoveries.recoveries.remove(operation_id);
+        }
+        matches
+    }
+
     pub(super) fn remote_status(
         &self,
         operation_id: &str,
@@ -341,6 +897,7 @@ impl ProjectEnvironmentSetupStore {
         expected: &SetupExecution,
         status: ProjectEnvironmentSetupStatus,
         definition: Option<ProjectEnvironmentDefinition>,
+        observation_generation: Option<u64>,
     ) -> Result<ProjectEnvironmentSetupStatus, DaemonError> {
         let mut entries = self
             .entries
@@ -366,11 +923,27 @@ impl ProjectEnvironmentSetupStore {
         if let Some(definition) = definition {
             entry.execution.definition = Some(definition);
         }
+        let cancellation_requested = entry.cancel_requested;
         entry.status = status.clone();
-        entry.cancel_requested = status.phase == ProjectEnvironmentSetupPhase::Cancelled;
+        entry.cancel_requested = match status.phase {
+            ProjectEnvironmentSetupPhase::Cancelled => true,
+            ProjectEnvironmentSetupPhase::Ready | ProjectEnvironmentSetupPhase::Failed => false,
+            ProjectEnvironmentSetupPhase::Requested
+            | ProjectEnvironmentSetupPhase::Preparing
+            | ProjectEnvironmentSetupPhase::Validating => cancellation_requested,
+        };
         let persisted = entry.clone();
         drop(entries);
         self.persist(&persisted);
+        self.mark_remote_recovery_observed(
+            operation_id,
+            status.attempt,
+            expected
+                .remote_leased_agent_id
+                .as_deref()
+                .unwrap_or_default(),
+            observation_generation,
+        );
         Ok(status)
     }
 
@@ -418,6 +991,7 @@ impl ProjectEnvironmentSetupStore {
         let persisted = entry.clone();
         drop(entries);
         self.persist(&persisted);
+        self.clear_remote_recovery(operation_id);
         Ok(status)
     }
 
