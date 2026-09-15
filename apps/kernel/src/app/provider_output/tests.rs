@@ -541,6 +541,43 @@ fn app_side_stale_poll_failure_reschedules_replacement_and_delivers_followup_out
                 None,
             )
             .expect("the replacement app-side prompt should be delivered");
+            let active_replacement = app
+                .prompt_owner_active_prompt_for_agent_snapshot(&session_id, &agent_id)
+                .expect("replacement prompt state should load")
+                .expect("replacement prompt should remain active before stale poll handling");
+            assert_eq!(active_replacement.id(), replacement.id());
+            assert_eq!(active_replacement.target_agent_id(), agent_id.as_str());
+            assert_eq!(
+                active_replacement.durable_delivery_phase(),
+                Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+            );
+            assert_eq!(
+                active_replacement.durable_delivery_provider_run_id(),
+                Some(provider_run_id.as_str())
+            );
+            let active_run = app
+                .providers
+                .get_run(&provider_run_id)
+                .expect("the stale app-side run should remain available");
+            assert_eq!(
+                active_run.agent_instance_id(),
+                Some(agent_id.as_str()),
+                "the stale poll and replacement must share the same agent owner"
+            );
+            assert!(
+                app.provider_run_has_active_prompt(&session_id, &active_run)
+                    .expect("app prompt/run ownership should resolve"),
+                "the replacement prompt must be durably owned by the stale poll run"
+            );
+            assert!(
+                ProviderOutputPumpContext::new(&mut app)
+                    .stale_structured_poll_has_replacement_prompt(
+                        &provider_run_id,
+                        Some(old_prompt_id.as_str()),
+                    )
+                    .expect("stale replacement classification should resolve"),
+                "the app stale classifier must see the delivered replacement before pumping"
+            );
             replacement_prompt_id = Some(replacement.id().to_string());
         }
         ProviderOutputPump::new(&mut app)
