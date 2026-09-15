@@ -1713,7 +1713,8 @@ mod tests {
     use super::*;
     use crate::local::{
         ProjectEnvironmentDefinitionOrigin, ProjectEnvironmentDefinitionSource,
-        ProjectEnvironmentSetupStep, ProjectEnvironmentSetupStepKind,
+        ProjectEnvironmentInput, ProjectEnvironmentInputKind, ProjectEnvironmentSetupStep,
+        ProjectEnvironmentSetupStepKind,
     };
     use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
 
@@ -1778,6 +1779,41 @@ mod tests {
         assert!(error
             .to_string()
             .contains("environment definition targets a different platform"));
+    }
+
+    fn protocol_330_definition_with_uppercase_input_digest() -> ProjectEnvironmentDefinition {
+        let mut definition = execution().definition.expect("test definition");
+        definition.source = ProjectEnvironmentDefinitionSource::Devcontainer;
+        definition.source_path = Some(".devcontainer/devcontainer.json".to_string());
+        definition.inputs = vec![ProjectEnvironmentInput {
+            kind: ProjectEnvironmentInputKind::Recipe,
+            path: ".devcontainer/devcontainer.json".to_string(),
+            sha256: format!("sha256:{}", "A".repeat(64)),
+        }];
+        definition
+    }
+
+    #[test]
+    fn protocol_330_uppercase_input_digest_is_admitted_by_home_and_leased_paths() {
+        let definition = protocol_330_definition_with_uppercase_input_digest();
+        validate_incoming_setup_definition(&definition)
+            .expect("home admission should normalize an equivalent legacy digest");
+        let admitted = validate_setup_definition(Some(definition), "linux-x86_64", &[])
+            .expect("leased admission should normalize an equivalent legacy digest")
+            .expect("definition should remain present");
+        assert_eq!(admitted.inputs[0].sha256, format!("sha256:{}", "a".repeat(64)));
+        assert_eq!(admitted.validate(), Ok(()));
+        assert!(!serde_json::to_string(&admitted)
+            .expect("definition should serialize")
+            .contains('A'));
+    }
+
+    #[test]
+    fn malformed_input_digest_remains_rejected_by_home_and_leased_paths() {
+        let mut definition = protocol_330_definition_with_uppercase_input_digest();
+        definition.inputs[0].sha256 = format!("sha256:{}", "G".repeat(64));
+        assert!(validate_incoming_setup_definition(&definition).is_err());
+        assert!(validate_setup_definition(Some(definition), "linux-x86_64", &[]).is_err());
     }
 
     #[test]
