@@ -18,6 +18,11 @@ const binding = Object.freeze({
   environmentId: "environment-1",
 })
 
+const homeBinding = Object.freeze({
+  kernelId: "home-kernel-1",
+  machineId: "home-machine-1",
+})
+
 const providerProfiles = Object.freeze({
   codex: "codex-default",
   opencode: "opencode-default",
@@ -30,36 +35,31 @@ const providerRunIds = Object.freeze({
   claude: "provider-run-claude",
 })
 
-const stateProvenance = Object.freeze({
-  schema: "chariox.browser_computer.provider_state_proof.v1",
-  source: "public-worker-runtime",
-  observedOnTarget: true,
-  copyDetected: false,
-  checks: ["fresh-target-context", "no-provider-state-import"],
-})
-
 test("selkies.providers uses target-bound public catalog, auth, and runtime observations", async () => {
   const modules = await loadPublicClientModules()
-  if (!modules) return
 
   const { LocalIpcClient } = modules.kernelClient
   const requestApi = modules.requestApi
-  const relay = await createControlledRelay({ requestApi })
-  const client = new LocalIpcClient(relay.endpoint, {
+  const homeRelay = await createControlledRelay({ requestApi, role: "home" })
+  const workerRelay = await createControlledRelay({ requestApi, role: "worker" })
+  const homeClient = new LocalIpcClient(homeRelay.endpoint, {
+    relayAuthToken: "operator-test-token",
+    targetDaemonId: homeBinding.kernelId,
+  })
+  const workerClient = new LocalIpcClient(workerRelay.endpoint, {
     relayAuthToken: "operator-test-token",
     targetDaemonId: binding.kernelId,
   })
   try {
     const result = await runSelkiesProviders({
-      client,
-      identityClient: client,
+      homeClient,
+      workerClient,
       requestApi,
       request: {
         displayBackend: "selkies",
         binding,
         providerProfiles,
         providerRunIds,
-        stateProvenance,
       },
     })
 
@@ -68,18 +68,24 @@ test("selkies.providers uses target-bound public catalog, auth, and runtime obse
       opencode: "official",
       claude: "official",
     })
-    assert.equal(result.providerStateCopied, false)
-    assert.deepEqual(result.providerStateProof, stateProvenance)
     assert.deepEqual(result.kernelId, binding.kernelId)
     assert.deepEqual(result.machineId, binding.machineId)
     assert.deepEqual(result.roomId, binding.roomId)
     assert.deepEqual(result.environmentId, binding.environmentId)
-    assert.deepEqual(relay.requests, expectedPublicRequests(requestApi))
-    assert.equal(relay.launchRequests, 0, "provider capability must not launch a provider")
-    assert.equal(relay.credentialRequests, 0, "provider capability must not read or mutate credentials")
+    assert.deepEqual(homeRelay.requests, [requestApi.getRoomEnvironmentStateRequest(binding.roomId)])
+    assert.deepEqual(workerRelay.requests, expectedWorkerRequests(requestApi))
+    assert.equal(workerRelay.launchRequests, 0, "provider capability must not launch a provider")
+    assert.equal(workerRelay.credentialRequests, 0, "provider capability must not read or mutate credentials")
+    assert.deepEqual(Object.keys(result.providerExecutionEvidence), ["codex", "opencode", "claude"])
+    assert.ok(result.providerExecutionEvidence.codex.outputObserved)
+    assert.equal(result.providerEvidence.codex.runtime.endpointMode, "Managed")
+    assert.equal(result.providerEvidence.codex.runtime.providerSessionId, "codex-thread-1")
+    assert.equal(result.providerExecutionEvidence.codex.providerSessionId, "codex-thread-1")
   } finally {
-    await client.close()
-    await relay.close()
+    await homeClient.close()
+    await workerClient.close()
+    await homeRelay.close()
+    await workerRelay.close()
   }
 })
 
@@ -94,15 +100,28 @@ test("selkies.providers does not accept an advertised catalog without authentica
       GetProviderAuthStatus: { provider, account_profile: accountProfile },
     }),
     getProviderRunRequest: (providerRunId) => ({ GetProviderRun: { provider_run_id: providerRunId } }),
+    getSessionHistoryOutlineRequest: (sessionId, agentIds, latestPromptCount) => ({
+      GetSessionHistoryOutline: {
+        session_id: sessionId,
+        agent_ids: agentIds,
+        latest_prompt_count: latestPromptCount,
+      },
+    }),
   }
-  const client = {
+  const homeClient = {
+    async send(request) {
+      requests.push(request)
+      if ("GetRoomEnvironmentState" in request) {
+        return { RoomEnvironmentState: { environment: { session_id: binding.roomId, environment_id: binding.environmentId } } }
+      }
+      throw new Error(`home received worker-only request: ${JSON.stringify(request)}`)
+    },
+  }
+  const workerClient = {
     async send(request) {
       requests.push(request)
       if ("RelayStatus" in request) {
-        return { RelayStatus: { status: { configured: true, connected: true, daemon_id: binding.kernelId, machine_id: binding.machineId } } }
-      }
-      if ("GetRoomEnvironmentState" in request) {
-        return { RoomEnvironmentState: { environment: { session_id: binding.roomId, environment_id: binding.environmentId } } }
+        return { RelayStatus: { status: { configured: true, connected: true, relay_token_configured: true, daemon_id: binding.kernelId, machine_id: binding.machineId } } }
       }
       if ("GetProviderCommandCatalogs" in request) {
         return { ProviderCommandCatalogs: { catalogs: shippedCatalogs() } }
@@ -119,19 +138,173 @@ test("selkies.providers does not accept an advertised catalog without authentica
 
   await assert.rejects(
     () => runSelkiesProviders({
-      client,
+      homeClient,
+      workerClient,
       requestApi,
       request: {
         displayBackend: "selkies",
         binding,
         providerProfiles,
         providerRunIds,
-        stateProvenance,
       },
     }),
-    /authenticated provider runtime observation required/,
+    /requires authenticated provider runtime observation/,
   )
   assert.equal(requests.filter((request) => "GetProviderRun" in request).length, 0)
+})
+
+test("selkies.providers does not treat a Starting process label as provider execution", async () => {
+  const modules = await loadPublicClientModules()
+  const { LocalIpcClient } = modules.kernelClient
+  const requestApi = modules.requestApi
+  const homeRelay = await createControlledRelay({ requestApi, role: "home" })
+  const workerRelay = await createControlledRelay({ requestApi, role: "worker", providerRunState: "Starting" })
+  const homeClient = new LocalIpcClient(homeRelay.endpoint, {
+    relayAuthToken: "operator-test-token",
+    targetDaemonId: homeBinding.kernelId,
+  })
+  const workerClient = new LocalIpcClient(workerRelay.endpoint, {
+    relayAuthToken: "operator-test-token",
+    targetDaemonId: binding.kernelId,
+  })
+  try {
+    await assert.rejects(
+      () => runSelkiesProviders({
+        homeClient,
+        workerClient,
+        requestApi,
+        request: {
+          displayBackend: "selkies",
+          binding,
+          providerProfiles,
+          providerRunIds,
+        },
+      }),
+      /requires an active target provider runtime observation/,
+    )
+    assert.equal(workerRelay.requests.filter((request) => "GetSessionHistoryOutline" in request).length, 0)
+  } finally {
+    await homeClient.close()
+    await workerClient.close()
+    await homeRelay.close()
+    await workerRelay.close()
+  }
+})
+
+test("selkies.providers allows supported transfer metadata only with managed worker execution", async () => {
+  const modules = await loadPublicClientModules()
+  const { LocalIpcClient } = modules.kernelClient
+  const requestApi = modules.requestApi
+  const homeRelay = await createControlledRelay({ requestApi, role: "home" })
+  const workerRelay = await createControlledRelay({
+    requestApi, role: "worker",
+    importedProviderRunId: providerRunIds.codex,
+  })
+  const homeClient = new LocalIpcClient(homeRelay.endpoint, {
+    relayAuthToken: "operator-test-token",
+    targetDaemonId: homeBinding.kernelId,
+  })
+  const workerClient = new LocalIpcClient(workerRelay.endpoint, {
+    relayAuthToken: "operator-test-token",
+    targetDaemonId: binding.kernelId,
+  })
+
+  try {
+    const result = await runSelkiesProviders({
+      homeClient,
+      workerClient,
+      requestApi,
+      request: {
+        displayBackend: "selkies",
+        binding,
+        providerProfiles,
+        providerRunIds,
+      },
+    })
+    assert.equal(result.providerEvidence.codex.runtime.endpointMode, "Managed")
+    assert.equal(result.providerExecutionEvidence.codex.outputObserved, true)
+    assert.equal(workerRelay.launchRequests, 0)
+    assert.equal(workerRelay.credentialRequests, 0)
+  } finally {
+    await homeClient.close()
+    await workerClient.close()
+    await homeRelay.close()
+    await workerRelay.close()
+  }
+})
+
+test("selkies.providers rejects an external provider endpoint", async () => {
+  const modules = await loadPublicClientModules()
+  const { LocalIpcClient } = modules.kernelClient
+  const requestApi = modules.requestApi
+  const homeRelay = await createControlledRelay({ requestApi, role: "home" })
+  const workerRelay = await createControlledRelay({ requestApi, role: "worker", providerEndpointMode: "External" })
+  const homeClient = new LocalIpcClient(homeRelay.endpoint, {
+    relayAuthToken: "operator-test-token",
+    targetDaemonId: homeBinding.kernelId,
+  })
+  const workerClient = new LocalIpcClient(workerRelay.endpoint, {
+    relayAuthToken: "operator-test-token",
+    targetDaemonId: binding.kernelId,
+  })
+  try {
+    await assert.rejects(
+      () => runSelkiesProviders({
+        homeClient,
+        workerClient,
+        requestApi,
+        request: {
+          displayBackend: "selkies",
+          binding,
+          providerProfiles,
+          providerRunIds,
+        },
+      }),
+      /active target provider runtime observation/,
+    )
+  } finally {
+    await homeClient.close()
+    await workerClient.close()
+    await homeRelay.close()
+    await workerRelay.close()
+  }
+})
+
+test("selkies.providers requires completed worker history, not only a managed runtime", async () => {
+  const modules = await loadPublicClientModules()
+  const { LocalIpcClient } = modules.kernelClient
+  const requestApi = modules.requestApi
+  const homeRelay = await createControlledRelay({ requestApi, role: "home" })
+  const workerRelay = await createControlledRelay({ requestApi, role: "worker", executionEvidence: false })
+  const homeClient = new LocalIpcClient(homeRelay.endpoint, {
+    relayAuthToken: "operator-test-token",
+    targetDaemonId: homeBinding.kernelId,
+  })
+  const workerClient = new LocalIpcClient(workerRelay.endpoint, {
+    relayAuthToken: "operator-test-token",
+    targetDaemonId: binding.kernelId,
+  })
+  try {
+    await assert.rejects(
+      () => runSelkiesProviders({
+        homeClient,
+        workerClient,
+        requestApi,
+        request: {
+          displayBackend: "selkies",
+          binding,
+          providerProfiles,
+          providerRunIds,
+        },
+      }),
+      /requires a completed worker provider turn for codex/,
+    )
+  } finally {
+    await homeClient.close()
+    await workerClient.close()
+    await homeRelay.close()
+    await workerRelay.close()
+  }
 })
 
 async function loadPublicClientModules() {
@@ -144,18 +317,25 @@ async function loadPublicClientModules() {
     return { kernelClient: { LocalIpcClient }, requestApi, relayCrypto }
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
-    test.skip(`public LocalIpcClient regression requires existing kernel-client dist: ${detail}`)
-    return null
+    throw new Error(`public LocalIpcClient regression requires existing kernel-client dist: ${detail}`, { cause: error })
   }
 }
 
-async function createControlledRelay({ requestApi }) {
+async function createControlledRelay({
+  requestApi,
+  role,
+  importedProviderRunId = null,
+  providerRunState = "Running",
+  providerEndpointMode = "Managed",
+  executionEvidence = true,
+}) {
   const { decryptRelayPayload, encryptRelayPayload } = await import(relayCryptoDistUrl.href)
   const { WebSocketServer } = createRequire(fileURLToPath(kernelClientDistUrl))("ws")
   const server = new WebSocketServer({ port: 0 })
   await once(server, "listening")
   const address = server.address()
   assert.ok(address && typeof address === "object")
+  const target = role === "home" ? homeBinding : binding
   const requests = []
   let launchRequests = 0
   let credentialRequests = 0
@@ -167,7 +347,7 @@ async function createControlledRelay({ requestApi }) {
         const frame = JSON.parse(raw.toString())
         if (frame.kind === "client_connect") {
           assert.equal(frame.auth_token, "operator-test-token")
-          assert.deepEqual(frame.target, { daemon_id: binding.kernelId, daemon_alias: null })
+          assert.deepEqual(frame.target, { daemon_id: target.kernelId, daemon_alias: null })
           const daemon = createECDH("prime256v1")
           const daemonPublicKey = daemon.generateKeys().toString("base64")
           socket.daemon = daemon
@@ -185,7 +365,19 @@ async function createControlledRelay({ requestApi }) {
         const request = envelope.request
         if ("LaunchProviderRun" in request || "LaunchProviderRuns" in request) launchRequests += 1
         if ("GetProviderAccountProfile" in request || "SetProviderAccountCredential" in request) credentialRequests += 1
-        const response = responseFor(request, requestApi)
+        if (role === "worker" && "GetRoomEnvironmentState" in request) {
+          throw new Error("worker must not own the Room environment query")
+        }
+        if (role === "home" && !("GetRoomEnvironmentState" in request)) {
+          throw new Error("home must not provide worker identity or provider evidence")
+        }
+        const response = responseFor(request, requestApi, {
+          role,
+          importedProviderRunId,
+          providerRunState,
+          providerEndpointMode,
+          executionEvidence,
+        })
         const encryptedResponse = encryptRelayPayload(
           frame.encrypted_request.sender_public_key,
           Buffer.from(JSON.stringify(response), "utf8"),
@@ -221,7 +413,13 @@ async function createControlledRelay({ requestApi }) {
   }
 }
 
-function responseFor(request, requestApi) {
+function responseFor(request, requestApi, {
+  role = "worker",
+  importedProviderRunId = null,
+  providerRunState = "Running",
+  providerEndpointMode = "Managed",
+  executionEvidence = true,
+} = {}) {
   if ("RelayStatus" in request) {
     return {
       RelayStatus: {
@@ -241,6 +439,17 @@ function responseFor(request, requestApi) {
   if ("GetRoomEnvironmentState" in request) {
     assert.equal(request.GetRoomEnvironmentState.session_id, binding.roomId)
     return { RoomEnvironmentState: { environment: { session_id: binding.roomId, environment_id: binding.environmentId } } }
+  }
+  if ("GetSessionHistoryOutline" in request) {
+    assert.equal(role, "worker")
+    assert.equal(request.GetSessionHistoryOutline.session_id, binding.roomId)
+    assert.deepEqual(request.GetSessionHistoryOutline.agent_ids, ["agent-1"])
+    assert.equal(request.GetSessionHistoryOutline.latest_prompt_count, 20)
+    return {
+      SessionHistoryOutline: {
+        agents: [{ agent_id: "agent-1", turns: executionEvidence ? completedProviderTurns() : [] }],
+      },
+    }
   }
   if ("GetProviderCommandCatalogs" in request) {
     return { ProviderCommandCatalogs: { catalogs: shippedCatalogs() } }
@@ -284,8 +493,8 @@ function responseFor(request, requestApi) {
           model: `${provider}-model`,
           variant: null,
           usage_tokens_total: null,
-          state: "running",
-          endpoint_mode: "managed",
+          state: providerRunState,
+          endpoint_mode: providerEndpointMode,
           client_interface: "chariox",
           process_label: `${provider}-fixture-process`,
           pty_target: null,
@@ -304,8 +513,16 @@ function responseFor(request, requestApi) {
           permission_level: "yolo",
           control_capabilities: [],
           resume_state: {},
-          external_provider_import: null,
-          provider_session_id: null,
+          external_provider_import: providerRunId === importedProviderRunId
+            ? {
+              external_provider_session_id: `${provider}-thread-1`,
+              external_provider: provider,
+              external_provider_session_provider_id: `${provider}-thread-1`,
+              observed_cursor: {},
+              imported_at_ms: 1,
+            }
+            : null,
+          provider_session_id: `${provider}-thread-1`,
           started_at_ms: 1,
           last_activity_at_ms: 2,
         },
@@ -317,8 +534,6 @@ function responseFor(request, requestApi) {
 
 function expectedPublicRequests(requestApi) {
   const expected = [
-    requestApi.relayStatusRequest(),
-    requestApi.getRoomEnvironmentStateRequest(binding.roomId),
     requestApi.getProviderCommandCatalogsRequest(),
   ]
   for (const provider of ["codex", "opencode", "claude"]) {
@@ -330,7 +545,78 @@ function expectedPublicRequests(requestApi) {
     expected.push(requestApi.getProviderAuthStatusRequest(provider, providerProfiles[provider]))
     expected.push(requestApi.getProviderRunRequest(providerRunIds[provider]))
   }
+  expected.push(requestApi.getSessionHistoryOutlineRequest(binding.roomId, ["agent-1"], 20))
   return expected
+}
+
+function expectedWorkerRequests(requestApi) {
+  return [requestApi.relayStatusRequest(), ...expectedPublicRequests(requestApi)]
+}
+
+function completedProviderTurns() {
+  return ["codex", "opencode", "claude"].map((provider, index) => ({
+    turn_id: `fixture-turn-${provider}`,
+    prompt_id: `fixture-prompt-${provider}`,
+    prompt_origin: "chariox",
+    external_provider: provider,
+    external_provider_session_id: `${provider}-thread-1`,
+    external_provider_turn_id: `${provider}-turn-1`,
+    started_at_ms: 10 + index,
+    lifecycle: "completed",
+    completed_at_ms: 20 + index,
+    user_prompt: historyPageEntry({
+      providerRunId: providerRunIds[provider],
+      kind: "user_prompt",
+      text: `fixture prompt ${provider}`,
+      timestampMs: 10 + index,
+    }),
+    entries: [historyPageEntry({
+      providerRunId: providerRunIds[provider],
+      kind: "provider_output",
+      text: `fixture completed output ${provider}`,
+      timestampMs: 20 + index,
+      externalProvider: provider,
+      externalProviderSessionId: `${provider}-thread-1`,
+      externalProviderTurnId: `${provider}-turn-1`,
+    })],
+    summary: null,
+    blobs: [],
+  }))
+}
+
+function historyPageEntry({
+  providerRunId,
+  kind,
+  text,
+  timestampMs,
+  externalProvider = null,
+  externalProviderSessionId = null,
+  externalProviderTurnId = null,
+}) {
+  return {
+    entry_index: 0,
+    fragment_start: 0,
+    fragment_end: text.length,
+    total_chars: text.length,
+    entry: {
+      session_id: binding.roomId,
+      provider_run_id: providerRunId,
+      agent_id: "agent-1",
+      source_attachment_id: null,
+      prompt_origin: "chariox",
+      kind,
+      merge_key: null,
+      source: null,
+      external_provider: externalProvider,
+      external_provider_session_id: externalProviderSessionId,
+      external_provider_turn_id: externalProviderTurnId,
+      observed_at_ms: null,
+      external_observation: null,
+      attachments: [],
+      text,
+      timestamp_ms: timestampMs,
+    },
+  }
 }
 
 function shippedCatalogs() {

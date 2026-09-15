@@ -114,7 +114,12 @@ function successfulResult(step, input) {
   if (step === "novnc.create") return target("novnc")
   if (step.endsWith(".attach")) return { ...target(input.displayBackend), client: input.client }
   const binding = target(input.displayBackend)
-  if (step.endsWith(".providers")) return { ...binding, providers: { codex: "official", opencode: "official", claude: "official" }, providerStateCopied: false }
+  if (step.endsWith(".providers")) return {
+    ...binding,
+    providers: { codex: "official", opencode: "official", claude: "official" },
+    providerEvidence: successfulProviderEvidence(),
+    providerExecutionEvidence: successfulProviderExecutionEvidence(),
+  }
   if (step.endsWith(".browser")) return { ...binding, structuredActions: true, mutationCount: 1, browserCount: 1 }
   if (step.endsWith(".computer")) return { ...binding, screenshot: true, pointer: true, keyboard: true }
   if (step.endsWith(".takeover")) return { ...binding, overlayVisible: true, takeoverCompleted: true, actorAttributed: true }
@@ -131,6 +136,35 @@ function successfulResult(step, input) {
   if (step === "cleanup.perform") return { attempted: true }
   if (step === "cleanup.inspect") return cleanInventory()
   throw new Error(`unexpected step ${step}`)
+}
+
+function successfulProviderEvidence() {
+  return Object.fromEntries(["codex", "opencode", "claude"].map((provider) => [provider, {
+    catalog: { provider, providerCount: 1, connectedCount: 1, hasDefault: true },
+    auth: { provider, accountProfile: `${provider}-default`, authState: "authenticated" },
+    runtime: {
+      providerRunId: `provider-run-${provider}`,
+      agentInstanceId: "agent-1",
+      providerSessionId: `${provider}-thread-1`,
+      provider,
+      accountProfile: `${provider}-default`,
+      state: "Running",
+      endpointMode: "Managed",
+      processObserved: true,
+    },
+  }]))
+}
+
+function successfulProviderExecutionEvidence() {
+  return Object.fromEntries(["codex", "opencode", "claude"].map((provider) => [provider, {
+    providerRunId: `provider-run-${provider}`,
+    agentInstanceId: "agent-1",
+    providerSessionId: `${provider}-thread-1`,
+    turnId: `fixture-turn-${provider}`,
+    lifecycle: "completed",
+    completedAtMs: 2,
+    outputObserved: true,
+  }]))
 }
 
 function transport({ mutate = {}, failStep = null } = {}) {
@@ -243,12 +277,32 @@ test("managed parity harness requires every official provider plus Git and synth
   }
 })
 
-test("managed parity harness rejects provider evidence that does not prove zero state copying", async () => {
+test("managed parity harness rejects missing worker execution evidence", async () => {
   const injected = transport({ mutate: {
-    "selkies.providers": (value) => ({ ...value, providerStateCopied: true }),
+    "selkies.providers": (value) => {
+      const { providerExecutionEvidence, ...withoutExecutionEvidence } = value
+      return withoutExecutionEvidence
+    },
   } })
   const report = await runManagedBrowserComputerParityHarness({ config: config(), transport: injected })
-  assert.equal(report.failure.code, "provider_state_copy_forbidden")
+  assert.equal(report.failure.code, "provider_execution_evidence_required")
+})
+
+test("managed parity harness rejects an external provider runtime", async () => {
+  const injected = transport({ mutate: {
+    "selkies.providers": (value) => ({
+      ...value,
+      providerEvidence: {
+        ...value.providerEvidence,
+        codex: {
+          ...value.providerEvidence.codex,
+          runtime: { ...value.providerEvidence.codex.runtime, endpointMode: "External" },
+        },
+      },
+    }),
+  } })
+  const report = await runManagedBrowserComputerParityHarness({ config: config(), transport: injected })
+  assert.equal(report.failure.code, "provider_managed_runtime_required")
 })
 
 test("managed parity harness rejects duplicate Rooms, browsers, and profiles", async () => {

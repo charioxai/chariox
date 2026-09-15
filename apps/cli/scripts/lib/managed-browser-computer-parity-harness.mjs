@@ -133,9 +133,7 @@ async function exerciseBackend({ backend, run, expected, fullAcceptance }) {
     const providers = await run(`${prefix}.providers`, { displayBackend: backend })
     validateBoundTarget(providers, expected, backend)
     validateOfficialProviders(providers.providers, `${prefix}.providers`)
-    if (providers.providerStateCopied !== false) {
-      fail("provider_state_copy_forbidden", `${prefix}.providers`)
-    }
+    validateProviderEvidence(providers, `${prefix}.providers`)
 
     const browser = await run(`${prefix}.browser`, { displayBackend: backend })
     validateBoundTarget(browser, expected, backend)
@@ -228,6 +226,39 @@ function validateOfficialProviders(providers, step) {
   for (const provider of PROVIDERS) {
     if (providers?.[provider] !== "official") {
       fail("official_provider_capability_required", step)
+    }
+  }
+}
+
+function validateProviderEvidence(value, step) {
+  if (!value?.providerEvidence || typeof value.providerEvidence !== "object"
+    || !value.providerExecutionEvidence || typeof value.providerExecutionEvidence !== "object") {
+    fail("provider_execution_evidence_required", step)
+  }
+  for (const provider of PROVIDERS) {
+    const observed = value.providerEvidence[provider]
+    const execution = value.providerExecutionEvidence[provider]
+    const runtime = observed?.runtime
+    const auth = observed?.auth
+    const catalog = observed?.catalog
+    if (!catalog || !positiveInteger(catalog.providerCount) || !positiveInteger(catalog.connectedCount)
+      || catalog.hasDefault !== true) {
+      fail("provider_catalog_evidence_required", step)
+    }
+    if (!auth || auth.authState !== "authenticated" || !text(auth.accountProfile)) {
+      fail("provider_auth_evidence_required", step)
+    }
+    if (!runtime || !text(runtime.providerRunId) || !text(runtime.agentInstanceId)
+      || !text(runtime.providerSessionId) || runtime.endpointMode !== "Managed"
+      || !["Running", "Parked"].includes(runtime.state) || typeof runtime.processObserved !== "boolean") {
+      fail("provider_managed_runtime_required", step)
+    }
+    if (!execution || execution.providerRunId !== runtime.providerRunId
+      || execution.agentInstanceId !== runtime.agentInstanceId
+      || execution.providerSessionId !== runtime.providerSessionId
+      || !text(execution.turnId) || execution.lifecycle !== "completed"
+      || !positiveInteger(execution.completedAtMs) || execution.outputObserved !== true) {
+      fail("provider_execution_evidence_required", step)
     }
   }
 }
