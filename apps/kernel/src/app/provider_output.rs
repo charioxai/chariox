@@ -394,7 +394,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
     }
 
     fn stale_structured_poll_has_replacement_prompt(
-        &self,
+        &mut self,
         provider_run_id: &str,
         polled_prompt_id: Option<&str>,
     ) -> Result<bool, DaemonError> {
