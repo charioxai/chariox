@@ -90,6 +90,11 @@ impl KernelRuntimeState {
                             Err(run_error) => Err(run_error),
                         }
                     };
+                    let stale_replacement_prompt = self
+                        .stale_structured_poll_has_replacement_prompt(
+                            &finished_run_id,
+                            polled_prompt_id.as_deref(),
+                        )?;
                     match reconcile_result {
                         Ok(true) => {
                             owned
@@ -98,6 +103,27 @@ impl KernelRuntimeState {
                             continue;
                         }
                         Ok(false) => {
+                            if stale_replacement_prompt {
+                                owned
+                                    .structured_output_records
+                                    .schedule_after_stale_poll_failure(&finished_run_id, now_ms);
+                                crate::logging::warn_with_fields(
+                                    "daemon.app",
+                                    "stale structured output poll failed; replacement poll scheduled",
+                                    serde_json::json!({
+                                        "session_id": if is_requested_run {
+                                            Some(session_id)
+                                        } else {
+                                            None
+                                        },
+                                        "provider_run_id": finished_run_id,
+                                        "polled_prompt_id": polled_prompt_id,
+                                        "retry_limit": crate::app::provider_output::STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT,
+                                        "error": error.to_string(),
+                                    }),
+                                );
+                                continue;
+                            }
                             let retry_attempt = owned
                                 .structured_output_records
                                 .schedule_after_poll_failure(&finished_run_id, now_ms);
@@ -150,8 +176,41 @@ impl KernelRuntimeState {
                             );
                             continue;
                         }
-                        Err(reconcile_error) if is_requested_run => return Err(reconcile_error),
+                        Err(reconcile_error) if is_requested_run => {
+                            if stale_replacement_prompt {
+                                owned
+                                    .structured_output_records
+                                    .schedule_after_stale_poll_failure(&finished_run_id, now_ms);
+                                crate::logging::warn_with_fields(
+                                    "daemon.app",
+                                    "stale structured output poll reconciliation failed; replacement poll scheduled",
+                                    serde_json::json!({
+                                        "session_id": session_id,
+                                        "provider_run_id": finished_run_id,
+                                        "polled_prompt_id": polled_prompt_id,
+                                        "error": reconcile_error.to_string(),
+                                    }),
+                                );
+                                continue;
+                            }
+                            return Err(reconcile_error);
+                        }
                         Err(reconcile_error) => {
+                            if stale_replacement_prompt {
+                                owned
+                                    .structured_output_records
+                                    .schedule_after_stale_poll_failure(&finished_run_id, now_ms);
+                                crate::logging::warn_with_fields(
+                                    "daemon.app",
+                                    "stale structured output poll reconciliation failed; replacement poll scheduled",
+                                    serde_json::json!({
+                                        "provider_run_id": finished_run_id,
+                                        "polled_prompt_id": polled_prompt_id,
+                                        "error": reconcile_error.to_string(),
+                                    }),
+                                );
+                                continue;
+                            }
                             let retry_attempt = owned
                                 .structured_output_records
                                 .schedule_after_poll_failure(&finished_run_id, now_ms);
@@ -363,6 +422,50 @@ impl KernelRuntimeState {
                 .await?;
         }
         Ok(records)
+    }
+
+    fn stale_structured_poll_has_replacement_prompt(
+        &self,
+        provider_run_id: &str,
+        polled_prompt_id: Option<&str>,
+    ) -> Result<bool, DaemonError> {
+        let provider_run = match self.owned.provider_store.get_run(provider_run_id) {
+            Ok(provider_run) => provider_run,
+            Err(_) => return Ok(false),
+        };
+        if !matches!(
+            provider_run.state(),
+            crate::provider::ProviderRunState::Running
+                | crate::provider::ProviderRunState::Starting
+        ) {
+            return Ok(false);
+        }
+        let Some(agent_id) = provider_run.agent_instance_id() else {
+            return Ok(false);
+        };
+        let session = match self
+            .owned
+            .session_store
+            .get_session(provider_run.session_id())
+        {
+            Ok(session) => session,
+            Err(_) => return Ok(false),
+        };
+        let Some(active_prompt) = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+        else {
+            return Ok(false);
+        };
+        if active_prompt.is_external()
+            || polled_prompt_id
+                .is_some_and(|polled_prompt_id| active_prompt.id() == polled_prompt_id)
+        {
+            return Ok(false);
+        }
+        self.owned
+            .provider_run_has_active_prompt(provider_run.session_id(), &provider_run)
     }
 
     #[cfg(test)]

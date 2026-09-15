@@ -106,6 +106,25 @@ impl StructuredOutputRecordStore {
             .copied()
     }
 
+    #[cfg(test)]
+    pub(crate) fn poll_failure_attempts_for_test(&self, provider_run_id: &str) -> u8 {
+        self.consecutive_poll_failures
+            .lock()
+            .expect("structured output poll failure map poisoned")
+            .get(provider_run_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn in_flight_prompt_id_for_test(&self, provider_run_id: &str) -> Option<String> {
+        self.in_flight_prompt_ids
+            .lock()
+            .expect("structured output poll prompt map poisoned")
+            .get(provider_run_id)
+            .cloned()
+    }
+
     pub(crate) fn take_due_provider_run_ids(&self, now_ms: u64) -> BTreeSet<String> {
         let mut schedule = self
             .next_poll_due_at_ms
@@ -161,6 +180,11 @@ impl StructuredOutputRecordStore {
             provider_run_id.into(),
             now_ms.saturating_add(STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS),
         );
+    }
+
+    pub(crate) fn schedule_after_stale_poll_failure(&self, provider_run_id: &str, now_ms: u64) {
+        self.clear_poll_failures(provider_run_id);
+        self.schedule_after_empty_poll(provider_run_id.to_string(), now_ms);
     }
 
     pub(crate) fn mark_poll_succeeded(&self, provider_run_id: &str) {
@@ -271,6 +295,31 @@ mod tests {
         assert_eq!(
             store.schedule_after_poll_failure("provider-run-1", 2_000),
             Some(1),
+        );
+    }
+
+    #[test]
+    fn stale_poll_failure_resets_budget_before_rescheduling() {
+        let store = StructuredOutputRecordStore::default();
+
+        for attempt in 1..=STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT {
+            let expected_attempt =
+                (attempt < STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT).then_some(attempt);
+            assert_eq!(
+                store.schedule_after_poll_failure("provider-run-1", 1_000),
+                expected_attempt,
+            );
+        }
+        assert!(!store.poll_due("provider-run-1", u64::MAX));
+
+        store.schedule_after_stale_poll_failure("provider-run-1", 2_000);
+
+        assert!(!store.poll_due("provider-run-1", 2_499));
+        assert!(store.poll_due("provider-run-1", 2_500));
+        assert_eq!(
+            store.schedule_after_poll_failure("provider-run-1", 3_000),
+            Some(1),
+            "a replacement prompt must receive a fresh failure budget"
         );
     }
 }

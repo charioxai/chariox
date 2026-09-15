@@ -408,6 +408,372 @@ fn live_requested_structured_poll_failures_are_retried_then_surfaced() {
 }
 
 #[test]
+fn app_side_stale_poll_failure_reschedules_replacement_and_delivers_followup_output() {
+    let (mut app, session_id, attachment_id, provider_run_id) = structured_provider_test_app();
+    let agent_id = app
+        .providers
+        .get_run(&provider_run_id)
+        .expect("provider run should exist")
+        .agent_instance_id()
+        .expect("provider run should belong to an agent")
+        .to_string();
+    let old_prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        &attachment_id,
+        &agent_id,
+        "start the original app-side prompt",
+        crate::session::PromptStatus::Queued,
+    );
+    let old_prompt_id = match app
+        .prompt_owner_submit_prepared_prompt(&session_id, old_prompt, false)
+        .expect("the original app-side prompt should start")
+    {
+        crate::session::PromptSubmissionOutcome::Started { prompt } => prompt.id().to_string(),
+        crate::session::PromptSubmissionOutcome::Queued { .. } => {
+            panic!("the original app-side prompt should start")
+        }
+    };
+    app.mark_active_prompt_delivery(
+        &session_id,
+        &agent_id,
+        &old_prompt_id,
+        crate::session::DurablePromptDeliveryPhase::Delivered,
+        Some(provider_run_id.clone()),
+        None,
+    )
+    .expect("the original app-side prompt should be delivered");
+    crate::transport::flow_control::note_prompt_started(&mut app, &provider_run_id);
+    let healthy_agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(&session_id, "opencode")
+                .with_alias("healthy-stale-poll-app"),
+        )
+        .expect("healthy agent should be spawned");
+    let healthy_attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            &session_id,
+            "client-stale-poll-app-healthy",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("healthy attachment should attach");
+    let healthy_request = crate::provider::LaunchProviderRequest::new(
+        &session_id,
+        "opencode",
+        "opencode",
+        "default",
+        "zen",
+    )
+    .with_agent_id(healthy_agent.id());
+    let mut healthy_run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-stale-poll-app-healthy",
+        &healthy_request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "test-opencode-stale-poll-app-healthy".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("test-opencode-stale-poll-app-healthy".to_string()),
+        },
+    );
+    healthy_run.mark_running();
+    let healthy_run_id = healthy_run.id().to_string();
+    app.providers_mut().insert_run_for_test(healthy_run);
+    app.update_provider_run_projection(
+        app.providers()
+            .get_run(&healthy_run_id)
+            .expect("healthy run should remain available")
+            .clone(),
+    );
+
+    let healthy_attachment_id = healthy_attachment.id().to_string();
+    let healthy_prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        &healthy_attachment_id,
+        healthy_agent.id(),
+        "keep the healthy app-side prompt alive",
+        crate::session::PromptStatus::Queued,
+    );
+    let healthy_prompt_id = match app
+        .prompt_owner_submit_prepared_prompt(&session_id, healthy_prompt, false)
+        .expect("the healthy app-side prompt should start")
+    {
+        crate::session::PromptSubmissionOutcome::Started { prompt } => prompt.id().to_string(),
+        crate::session::PromptSubmissionOutcome::Queued { .. } => {
+            panic!("the healthy app-side prompt should start")
+        }
+    };
+    crate::transport::flow_control::note_prompt_started(&mut app, &healthy_run_id);
+    let output_store = app.structured_output_record_store();
+    output_store.mark_poll_enqueued(&healthy_run_id, Some(healthy_prompt_id));
+
+    let mut replacement_prompt_id = None;
+    for attempt in 1..=STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT {
+        output_store.mark_poll_enqueued(&provider_run_id, Some(old_prompt_id.clone()));
+        app.providers_mut()
+            .push_finished_structured_output_poll_for_test(
+                provider_run_id.clone(),
+                Err(crate::error::DaemonError::ProviderProtocol {
+                    provider_run_id: provider_run_id.clone(),
+                    operation: "thread/turns/list",
+                    message: "stale app-side poll failure".to_string(),
+                }),
+            );
+        if attempt == STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT {
+            app.prompt_owner_complete_active_prompt_only(&session_id, &agent_id)
+                .expect("the original prompt should be replaceable");
+            let replacement = crate::session::PromptQueueItem::new(
+                app.sessions_mut().reserve_prompt_id(),
+                &attachment_id,
+                &agent_id,
+                "continue with the replacement app-side prompt",
+                crate::session::PromptStatus::Queued,
+            );
+            let replacement = match app
+                .prompt_owner_submit_prepared_prompt(&session_id, replacement, false)
+                .expect("the replacement app-side prompt should start")
+            {
+                crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+                crate::session::PromptSubmissionOutcome::Queued { .. } => {
+                    panic!("the replacement app-side prompt should start")
+                }
+            };
+            app.mark_active_prompt_delivery(
+                &session_id,
+                &agent_id,
+                replacement.id(),
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some(provider_run_id.clone()),
+                None,
+            )
+            .expect("the replacement app-side prompt should be delivered");
+            let active_replacement = app
+                .prompt_owner_active_prompt_for_agent_snapshot(&session_id, &agent_id)
+                .expect("replacement prompt state should load")
+                .expect("replacement prompt should remain active before stale poll handling");
+            assert_eq!(active_replacement.id(), replacement.id());
+            assert_eq!(active_replacement.target_agent_id(), agent_id.as_str());
+            assert_eq!(
+                active_replacement.durable_delivery_phase(),
+                Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+            );
+            assert_eq!(
+                active_replacement.durable_delivery_provider_run_id(),
+                Some(provider_run_id.as_str())
+            );
+            let active_run = app
+                .providers
+                .get_run(&provider_run_id)
+                .expect("the stale app-side run should remain available");
+            assert_eq!(
+                active_run.agent_instance_id(),
+                Some(agent_id.as_str()),
+                "the stale poll and replacement must share the same agent owner"
+            );
+            assert!(
+                app.provider_run_has_active_prompt(&session_id, &active_run)
+                    .expect("app prompt/run ownership should resolve"),
+                "the replacement prompt must be durably owned by the stale poll run"
+            );
+            let classifier_run_is_live = matches!(
+                active_run.state(),
+                crate::provider::ProviderRunState::Running
+                    | crate::provider::ProviderRunState::Starting
+            );
+            let classifier_prompt_is_external = active_replacement.is_external();
+            let classifier_prompt_matches_old = active_replacement.id() == old_prompt_id;
+            let classifier_owns_prompt = app
+                .provider_run_has_active_prompt(&session_id, &active_run)
+                .expect("app classifier ownership should resolve");
+            assert_eq!(
+                (
+                    classifier_run_is_live,
+                    classifier_prompt_is_external,
+                    classifier_prompt_matches_old,
+                    classifier_owns_prompt,
+                ),
+                (true, false, false, true),
+                "app stale classifier inputs: run_state={:?}, prompt_is_external={}, prompt_matches_old={}, owns_prompt={}, active_prompt_id={}, old_prompt_id={}",
+                active_run.state(),
+                classifier_prompt_is_external,
+                classifier_prompt_matches_old,
+                classifier_owns_prompt,
+                active_replacement.id(),
+                old_prompt_id,
+            );
+            assert!(
+                ProviderOutputPumpContext::new(&mut app)
+                    .stale_structured_poll_has_replacement_prompt(
+                        &provider_run_id,
+                        Some(old_prompt_id.as_str()),
+                    )
+                    .expect("stale replacement classification should resolve"),
+                "the app stale classifier must see the delivered replacement before pumping"
+            );
+            replacement_prompt_id = Some(replacement.id().to_string());
+        }
+        ProviderOutputPump::new(&mut app)
+            .pump_provider_output(ProviderOutputPumpRequest {
+                session_id: &session_id,
+                provider_run_id: &healthy_run_id,
+                recipient_attachment_ids: vec![healthy_attachment.id().to_string()],
+                initial_liveness_already_checked: true,
+            })
+            .expect("a stale background app-side poll must not fail the healthy run");
+    }
+
+    let replacement_prompt_id = replacement_prompt_id.expect("replacement prompt should exist");
+    assert!(
+        output_store.poll_due(&provider_run_id, u64::MAX),
+        "a stale app-side poll failure must not exhaust the replacement prompt's poll budget; failures={}, due_at_ms={:?}, in_flight_prompt_id={:?}",
+        output_store.poll_failure_attempts_for_test(&provider_run_id),
+        output_store.poll_due_at_ms(&provider_run_id),
+        output_store.in_flight_prompt_id_for_test(&provider_run_id),
+    );
+    output_store.mark_poll_enqueued(&provider_run_id, Some(replacement_prompt_id.clone()));
+    let replacement_output = b"replacement app-side poll output".to_vec();
+    app.providers_mut()
+        .push_finished_structured_output_poll_for_test(
+            provider_run_id.clone(),
+            Ok(Some(crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("replacement-app-poll".to_string()),
+                    bytes: replacement_output.clone(),
+                }],
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            })),
+        );
+    ProviderOutputPump::new(&mut app)
+        .pump_provider_output(ProviderOutputPumpRequest {
+            session_id: &session_id,
+            provider_run_id: &healthy_run_id,
+            recipient_attachment_ids: vec![healthy_attachment.id().to_string()],
+            initial_liveness_already_checked: true,
+        })
+        .expect("the replacement app-side poll should be delivered");
+    assert!(
+        app.terminal
+            .drain_output_records(&session_id, &attachment_id)
+            .iter()
+            .any(|record| record.bytes.as_slice() == replacement_output.as_slice()),
+        "the replacement app-side poll output should reach the original attachment"
+    );
+    assert_eq!(
+        app.prompt_owner_active_prompt_for_agent_snapshot(&session_id, &agent_id)
+            .expect("replacement prompt state should load")
+            .expect("replacement prompt should remain active")
+            .id(),
+        replacement_prompt_id
+    );
+}
+
+#[test]
+fn app_side_promptless_poll_failure_reschedules_bound_prompt_and_delivers_output() {
+    let (mut app, session_id, attachment_id, provider_run_id) = structured_provider_test_app();
+    let agent_id = app
+        .providers
+        .get_run(&provider_run_id)
+        .expect("provider run should exist")
+        .agent_instance_id()
+        .expect("provider run should belong to an agent")
+        .to_string();
+    let output_store = app.structured_output_record_store();
+    let mut prompt_id = None;
+
+    for attempt in 1..=STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT {
+        output_store.mark_poll_enqueued(&provider_run_id, None);
+        app.providers_mut()
+            .push_finished_structured_output_poll_for_test(
+                provider_run_id.clone(),
+                Err(crate::error::DaemonError::ProviderProtocol {
+                    provider_run_id: provider_run_id.clone(),
+                    operation: "thread/turns/list",
+                    message: "promptless app-side poll failed before prompt ownership was observed"
+                        .to_string(),
+                }),
+            );
+
+        if attempt == STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT {
+            let prompt = crate::session::PromptQueueItem::new(
+                app.sessions_mut().reserve_prompt_id(),
+                &attachment_id,
+                &agent_id,
+                "start the app-side prompt after an idle poll began",
+                crate::session::PromptStatus::Queued,
+            );
+            let prompt = match app
+                .prompt_owner_submit_prepared_prompt(&session_id, prompt, false)
+                .expect("the app-side prompt should start")
+            {
+                crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+                crate::session::PromptSubmissionOutcome::Queued { .. } => {
+                    panic!("the app-side prompt should start immediately")
+                }
+            };
+            app.mark_active_prompt_delivery(
+                &session_id,
+                &agent_id,
+                prompt.id(),
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some(provider_run_id.clone()),
+                None,
+            )
+            .expect("the app-side prompt should be bound to the same provider run");
+            prompt_id = Some(prompt.id().to_string());
+        }
+
+        ProviderOutputPump::new(&mut app)
+            .pump_provider_output(ProviderOutputPumpRequest {
+                session_id: &session_id,
+                provider_run_id: &provider_run_id,
+                recipient_attachment_ids: vec![attachment_id.clone()],
+                initial_liveness_already_checked: true,
+            })
+            .expect("a promptless app-side poll failure should remain recoverable");
+    }
+
+    let prompt_id = prompt_id.expect("the app-side prompt should exist");
+    assert!(
+        output_store.poll_due(&provider_run_id, u64::MAX),
+        "a promptless app-side failure must not exhaust the bound prompt's poll budget"
+    );
+    output_store.mark_poll_enqueued(&provider_run_id, Some(prompt_id));
+    let replacement_output = b"promptless app-side poll replacement output".to_vec();
+    app.providers_mut()
+        .push_finished_structured_output_poll_for_test(
+            provider_run_id.clone(),
+            Ok(Some(crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("promptless-app-poll".to_string()),
+                    bytes: replacement_output.clone(),
+                }],
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            })),
+        );
+    let records = ProviderOutputPump::new(&mut app)
+        .pump_provider_output(ProviderOutputPumpRequest {
+            session_id: &session_id,
+            provider_run_id: &provider_run_id,
+            recipient_attachment_ids: vec![attachment_id.clone()],
+            initial_liveness_already_checked: true,
+        })
+        .expect("the newly bound app-side prompt poll should be delivered");
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record.bytes.clone())
+            .collect::<Vec<_>>(),
+        vec![replacement_output],
+        "the newly bound app-side prompt must receive output after promptless failures"
+    );
+}
+
+#[test]
 fn provider_terminal_is_transient_and_does_not_wake_meta_traces() {
     let (app, session_id, attachment_id, provider_run_id) = structured_provider_test_app();
     let session = app
