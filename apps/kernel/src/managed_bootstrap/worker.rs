@@ -1766,6 +1766,52 @@ mod tests {
             other => panic!("unexpected setup status response: {other:?}"),
         }
 
+        let legacy_definition = crate::local::ProjectEnvironmentDefinition {
+            schema_version: 1,
+            origin: crate::local::ProjectEnvironmentDefinitionOrigin::UserAuthored,
+            source: crate::local::ProjectEnvironmentDefinitionSource::Devcontainer,
+            target_platform: target_platform.clone(),
+            source_path: Some(".devcontainer/devcontainer.json".to_string()),
+            inputs: Vec::new(),
+            setup_steps: vec![crate::local::ProjectEnvironmentSetupStep {
+                kind: crate::local::ProjectEnvironmentSetupStepKind::Command,
+                command: "command -v sh".to_string(),
+            }],
+            validation_commands: vec!["command -v sh".to_string()],
+        };
+        assert!(legacy_definition.is_unattested_file_backed());
+        let repaired_admission = send_authenticated_peer_request_for_test(
+            &worker_router,
+            &worker_state,
+            &outgoing_tx,
+            from_daemon_id,
+            caller_identity.clone(),
+            &home_private_key,
+            &worker_public_key,
+            RelayPeerRequest::StartLeasedProjectEnvironmentSetup {
+                leased_agent_id: leased_agent_id.clone(),
+                operation_id: "peer-legacy-definition".to_string(),
+                attempt: 1,
+                project_id: "project-legacy-definition".to_string(),
+                home_session_id: "home-session".to_string(),
+                home_agent_id: "home-agent".to_string(),
+                workspace_id: worker_worktree.display().to_string(),
+                target_worker_id: "worker-machine".to_string(),
+                target_platform: target_platform.clone(),
+                definition: Some(legacy_definition),
+                validation_commands: Vec::new(),
+            },
+        )
+        .await
+        .expect("home setup with a repairable legacy definition should reach the worker");
+        match repaired_admission {
+            RelayPeerResponse::LeasedProjectEnvironmentSetupStarted { setup } => {
+                assert_eq!(setup.status.operation_id, "peer-legacy-definition");
+                assert_eq!(setup.status.attempt, 1);
+            }
+            other => panic!("unexpected repairable setup response: {other:?}"),
+        }
+
         for (label, request) in [
             ("stale attempt", start(1, "project-attempt-two")),
             ("zero attempt", start(0, "project-attempt-two")),

@@ -646,16 +646,17 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
         }
 
         let utility_trace = provider_fixture.diagnostics();
+        let materialized_inputs: Vec<(&str, &[u8])> = if input_scenario {
+            vec![(recipe_path, recipe_contents), (lockfile_path, lockfile_contents)]
+        } else {
+            Vec::new()
+        };
         let (second_ready, second_workspace) = run_repaired_definition_on_fresh_worker(
             &root,
             persisted.clone(),
             target_platform.clone(),
             &provider_fixture,
-            if input_scenario {
-                &[(recipe_path, recipe_contents), (lockfile_path, lockfile_contents)]
-            } else {
-                &[]
-            },
+            &materialized_inputs,
         )
         .await;
         assert_eq!(
