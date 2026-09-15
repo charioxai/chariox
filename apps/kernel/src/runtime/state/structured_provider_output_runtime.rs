@@ -429,9 +429,6 @@ impl KernelRuntimeState {
         provider_run_id: &str,
         polled_prompt_id: Option<&str>,
     ) -> Result<bool, DaemonError> {
-        let Some(polled_prompt_id) = polled_prompt_id else {
-            return Ok(false);
-        };
         let provider_run = match self.owned.provider_store.get_run(provider_run_id) {
             Ok(provider_run) => provider_run,
             Err(_) => return Ok(false),
@@ -461,7 +458,10 @@ impl KernelRuntimeState {
         else {
             return Ok(false);
         };
-        if active_prompt.is_external() || active_prompt.id() == polled_prompt_id {
+        if active_prompt.is_external()
+            || polled_prompt_id
+                .is_some_and(|polled_prompt_id| active_prompt.id() == polled_prompt_id)
+        {
             return Ok(false);
         }
         self.owned
