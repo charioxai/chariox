@@ -168,6 +168,144 @@ async fn manual_substitute_changes_reject_active_turn_without_mutation() {
 }
 
 #[tokio::test]
+async fn stale_processing_does_not_release_dispatching_prompt_for_substitute_change() {
+    let (app, runtime, session, agent) = configured_runtime().await;
+    let provider_run_id = start_stub(&runtime, &session, &agent);
+    let prompt_id = "stale-dispatching-review";
+    let mut prompt = crate::session::PromptQueueItem::new(
+        prompt_id,
+        "attachment-1",
+        &agent,
+        "review the current head",
+        crate::session::PromptStatus::Dispatching,
+    )
+    .with_durable_operation("review-turn", "review-turn-fingerprint");
+    prompt.set_durable_delivery(
+        crate::session::DurablePromptDeliveryPhase::Dispatching,
+        Some(provider_run_id.clone()),
+        Some("provider-session-review".to_string()),
+    );
+    {
+        let mut app = app.lock().await;
+        app.prompt_owner_sync_external_active_prompt(&session, &agent, Some(prompt))
+            .expect("the stale provider-owned prompt should be visible to the owner");
+        app.agents_mut()
+            .set_agent_processing(&agent, true)
+            .expect("the legacy processing projection should be mutable");
+        app.agents_mut()
+            .set_agent_processing(&agent, false)
+            .expect("the stale processing projection should be cleared");
+        assert!(!app
+            .agents()
+            .get_agent(&agent)
+            .expect("agent should remain available")
+            .is_processing());
+    }
+
+    let started = crate::app::StartedProviderLaunch {
+        run: runtime
+            .owned
+            .provider_store
+            .get_run(&provider_run_id)
+            .expect("provider run should remain addressable")
+            .clone(),
+        previous_active_run_id: None,
+        provider_credential_env: Default::default(),
+    };
+    runtime
+        .fail_provider_launch(
+            &started,
+            &DaemonError::LocalTransport {
+                operation: "provider launch",
+                message: "native reviewer launch stopped before readiness".to_string(),
+            },
+        )
+        .await;
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(&provider_run_id)
+            .expect("failed provider run should remain addressable")
+            .state(),
+        ProviderRunState::Ended,
+    );
+
+    let error = runtime
+        .update_agent_substitutes(
+            &session,
+            &agent,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            AgentSubstituteAction::Activate {
+                index: 0,
+                reason: None,
+            },
+        )
+        .await
+        .expect_err("stale processing must not bypass the authoritative prompt owner");
+    assert_active_turn_error(error, "update agent substitutes");
+    assert_eq!(
+        runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(
+                &runtime.owned.session_store.get_session(&session).unwrap(),
+                &agent,
+            )
+            .expect("the dispatching prompt should remain owned")
+            .id(),
+        prompt_id,
+    );
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(&provider_run_id)
+            .expect("provider run should remain addressable")
+            .state(),
+        ProviderRunState::Ended,
+    );
+
+    // The canonical prompt-owner cancellation seam is what resolves an
+    // uncertain Dispatching turn. Only after it clears ownership may a
+    // substitute switch retire the old provider run.
+    app.lock()
+        .await
+        .prompt_owner_cancel_active_prompt_only(&session, &agent)
+        .expect("canonical cancellation should clear the stale prompt owner");
+    runtime
+        .update_agent_substitutes(
+            &session,
+            &agent,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            AgentSubstituteAction::Activate {
+                index: 0,
+                reason: None,
+            },
+        )
+        .await
+        .expect("substitute activation should proceed after canonical cancellation");
+    assert_eq!(
+        runtime
+            .owned
+            .agent_store
+            .get_agent(&agent)
+            .unwrap()
+            .active_substitute_index(),
+        Some(0),
+    );
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(&provider_run_id)
+            .unwrap()
+            .state(),
+        ProviderRunState::Ended,
+    );
+}
+
+#[tokio::test]
 async fn missing_substitute_account_does_not_retire_or_mutate_starter() {
     let (_app, runtime, session, agent) = configured_runtime().await;
     runtime
