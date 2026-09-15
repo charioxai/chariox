@@ -155,6 +155,20 @@ fn project_environment_setup_utility_schema() -> serde_json::Value {
                     "source": {"type": "string", "enum": ["commands", "dockerfile", "devcontainer", "setup_script"]},
                     "target_platform": {"type": "string", "minLength": 1, "maxLength": 128},
                     "source_path": {"type": ["string", "null"]},
+                    "inputs": {
+                        "type": "array",
+                        "maxItems": 64,
+                        "items": {
+                            "type": "object",
+                            "required": ["kind", "path", "sha256"],
+                            "additionalProperties": false,
+                            "properties": {
+                                "kind": {"type": "string", "enum": ["recipe", "lockfile"]},
+                                "path": {"type": "string", "minLength": 1, "maxLength": 512},
+                                "sha256": {"type": "string", "pattern": "^sha256:[0-9a-fA-F]{64}$"}
+                            }
+                        }
+                    },
                     "setup_steps": {
                         "type": "array",
                         "maxItems": 64,
@@ -213,6 +227,7 @@ mod tests {
             source: ProjectEnvironmentDefinitionSource::Commands,
             target_platform: "linux-x86_64".to_string(),
             source_path: None,
+            inputs: Vec::new(),
             setup_steps: vec![ProjectEnvironmentSetupStep {
                 kind: ProjectEnvironmentSetupStepKind::Compiler,
                 command: "rustup toolchain install stable".to_string(),

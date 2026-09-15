@@ -4,8 +4,9 @@ use crate::local::{
     CancelProjectEnvironmentSetupRequest, GetProjectEnvironmentSetupStatusRequest,
     ProjectEnvironmentCommandResult, ProjectEnvironmentDefinition,
     ProjectEnvironmentDefinitionOrigin, ProjectEnvironmentDefinitionSource,
-    ProjectEnvironmentSetupPhase, ProjectEnvironmentSetupStatus, ProjectEnvironmentSetupStep,
-    ProjectEnvironmentSetupStepKind, ProjectEnvironmentValidation,
+    ProjectEnvironmentInput, ProjectEnvironmentInputKind, ProjectEnvironmentSetupPhase,
+    ProjectEnvironmentSetupStatus, ProjectEnvironmentSetupStep, ProjectEnvironmentSetupStepKind,
+    ProjectEnvironmentValidation,
     RetryProjectEnvironmentSetupRequest, StartProjectEnvironmentSetupRequest,
     LOCAL_DAEMON_PROTOCOL_VERSION,
 };
@@ -17,6 +18,11 @@ fn definition() -> ProjectEnvironmentDefinition {
         source: ProjectEnvironmentDefinitionSource::Devcontainer,
         target_platform: "linux-x86_64".to_string(),
         source_path: Some(".devcontainer/devcontainer.json".to_string()),
+        inputs: vec![ProjectEnvironmentInput {
+            kind: ProjectEnvironmentInputKind::Recipe,
+            path: ".devcontainer/devcontainer.json".to_string(),
+            sha256: format!("sha256:{}", "a".repeat(64)),
+        }],
         setup_steps: vec![ProjectEnvironmentSetupStep {
             kind: ProjectEnvironmentSetupStepKind::NativeDependency,
             command: "apt-get install -y pkg-config libssl-dev".to_string(),
@@ -58,7 +64,7 @@ fn status() -> ProjectEnvironmentSetupStatus {
 
 #[test]
 fn project_environment_setup_protocol_shape_is_versioned_and_explicit() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 330);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 331);
     let start =
         LocalDaemonRequest::StartProjectEnvironmentSetup(StartProjectEnvironmentSetupRequest {
             operation_id: "setup-1".to_string(),
@@ -86,6 +92,11 @@ fn project_environment_setup_protocol_shape_is_versioned_and_explicit() {
                     "source": "devcontainer",
                     "target_platform": "linux-x86_64",
                     "source_path": ".devcontainer/devcontainer.json",
+                    "inputs": [{
+                        "kind": "recipe",
+                        "path": ".devcontainer/devcontainer.json",
+                        "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    }],
                     "setup_steps": [{
                         "kind": "native_dependency",
                         "command": "apt-get install -y pkg-config libssl-dev"

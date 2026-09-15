@@ -84,4 +84,5 @@ pub use workspace::*;
 /// Version 329 is reserved by the integrated structured relay retryability
 /// contract.
 /// Version 330 carries home-authoritative managed browser/profile inventory.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 330;
+/// Version 331 carries recipe and lockfile input attestations for worker setup.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 331;

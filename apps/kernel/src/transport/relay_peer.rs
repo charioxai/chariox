@@ -78,7 +78,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version 51 carries kernel-owned project-environment setup dispatch and status.
 /// Version 52 carries the source-selected managed-context plan in import arm requests.
 /// Version 53 carries the home-authoritative setup attempt on worker redispatch.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 53;
+/// Version 54 carries recipe and lockfile input attestations for worker setup.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 54;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
@@ -1111,7 +1112,7 @@ mod tests {
 
     #[test]
     fn leased_completion_provider_termination_shape_is_versioned() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 53);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 54);
         let completion = RelayProjectedCompletion {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,
@@ -1177,13 +1178,14 @@ mod tests {
 
     #[test]
     fn project_environment_setup_relay_shapes_round_trip_at_protocol_53() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 53);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 54);
         let definition = crate::session::ProjectEnvironmentDefinition {
             schema_version: 1,
             origin: crate::session::ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
             source: crate::session::ProjectEnvironmentDefinitionSource::Commands,
             target_platform: "linux-x86_64".to_string(),
             source_path: None,
+            inputs: Vec::new(),
             setup_steps: vec![crate::session::ProjectEnvironmentSetupStep {
                 kind: crate::session::ProjectEnvironmentSetupStepKind::Command,
                 command: "command -v sh".to_string(),

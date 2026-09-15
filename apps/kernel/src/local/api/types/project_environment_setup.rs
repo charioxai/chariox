@@ -2,8 +2,8 @@ use super::*;
 
 pub use crate::session::{
     ProjectEnvironmentDefinition, ProjectEnvironmentDefinitionOrigin,
-    ProjectEnvironmentDefinitionSource, ProjectEnvironmentSetupStep,
-    ProjectEnvironmentSetupStepKind,
+    ProjectEnvironmentDefinitionSource, ProjectEnvironmentInput, ProjectEnvironmentInputKind,
+    ProjectEnvironmentSetupStep, ProjectEnvironmentSetupStepKind,
 };
 
 pub use crate::session::PROJECT_ENVIRONMENT_DEFINITION_SCHEMA_VERSION;

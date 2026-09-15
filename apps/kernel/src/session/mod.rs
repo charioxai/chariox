@@ -38,8 +38,9 @@ pub use agent_config::{
 pub(crate) use owner::{SessionStateOwner, SessionStateReader, SessionStateStore};
 pub use project_environment::{
     ProjectEnvironmentDefinition, ProjectEnvironmentDefinitionOrigin,
-    ProjectEnvironmentDefinitionSource, ProjectEnvironmentSetupStep,
-    ProjectEnvironmentSetupStepKind, PROJECT_ENVIRONMENT_DEFINITION_SCHEMA_VERSION,
+    ProjectEnvironmentDefinitionSource, ProjectEnvironmentInput, ProjectEnvironmentInputKind,
+    ProjectEnvironmentSetupStep, ProjectEnvironmentSetupStepKind,
+    PROJECT_ENVIRONMENT_DEFINITION_SCHEMA_VERSION,
 };
 pub use room_environment::{
     agent_environment_actor_id, human_environment_actor_id, human_environment_actor_label,

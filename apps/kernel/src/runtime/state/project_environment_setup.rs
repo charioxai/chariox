@@ -1651,6 +1651,7 @@ mod tests {
                 source: ProjectEnvironmentDefinitionSource::Commands,
                 target_platform: "linux-x86_64".to_string(),
                 source_path: None,
+                inputs: Vec::new(),
                 setup_steps: vec![ProjectEnvironmentSetupStep {
                     kind: ProjectEnvironmentSetupStepKind::Compiler,
                     command: "rustup toolchain install stable".to_string(),

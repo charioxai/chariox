@@ -13,6 +13,14 @@ export type ProjectEnvironmentSetupStepKind =
   | "native_dependency"
   | "command"
 
+export type ProjectEnvironmentInputKind = "recipe" | "lockfile"
+
+export type ProjectEnvironmentInput = {
+  readonly kind: ProjectEnvironmentInputKind
+  readonly path: string
+  readonly sha256: string
+}
+
 export type ProjectEnvironmentSetupStep = {
   readonly kind: ProjectEnvironmentSetupStepKind
   readonly command: string
@@ -24,6 +32,7 @@ export type ProjectEnvironmentDefinition = {
   readonly source: ProjectEnvironmentDefinitionSource
   readonly target_platform: string
   readonly source_path: string | null
+  readonly inputs?: readonly ProjectEnvironmentInput[]
   readonly setup_steps: readonly ProjectEnvironmentSetupStep[]
   readonly validation_commands: readonly string[]
 }

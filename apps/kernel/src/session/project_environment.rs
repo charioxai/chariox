@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -37,6 +38,24 @@ pub enum ProjectEnvironmentSetupStepKind {
     Command,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectEnvironmentInputKind {
+    Recipe,
+    Lockfile,
+}
+
+/// A content-only attestation for a project file that the worker must observe
+/// in its already-materialized worktree. The path and digest are safe to
+/// persist and transfer; file bytes and credentials never cross this seam.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct ProjectEnvironmentInput {
+    pub kind: ProjectEnvironmentInputKind,
+    pub path: String,
+    pub sha256: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct ProjectEnvironmentSetupStep {
@@ -52,6 +71,8 @@ pub struct ProjectEnvironmentDefinition {
     pub source: ProjectEnvironmentDefinitionSource,
     pub target_platform: String,
     pub source_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<ProjectEnvironmentInput>,
     pub setup_steps: Vec<ProjectEnvironmentSetupStep>,
     pub validation_commands: Vec<String>,
 }
@@ -120,6 +141,17 @@ impl ProjectEnvironmentDefinition {
         for command in &self.validation_commands {
             validate_command(command, "validation command")?;
         }
+        validate_inputs(&self.inputs)?;
+        if let Some(source_path) = self.source_path.as_deref() {
+            if !self.inputs.iter().any(|input| {
+                input.kind == ProjectEnvironmentInputKind::Recipe && input.path == source_path
+            }) {
+                return Err(
+                    "file-backed definitions must attest source_path with a recipe input"
+                        .to_string(),
+                );
+            }
+        }
         let encoded = serde_json::to_vec(self)
             .map_err(|error| format!("could not encode environment definition: {error}"))?;
         if encoded.len() > MAX_DEFINITION_BYTES {
@@ -154,6 +186,57 @@ fn validate_command(command: &str, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+const MAX_PROJECT_ENVIRONMENT_INPUTS: usize = 64;
+const MAX_PROJECT_ENVIRONMENT_INPUT_PATH_CHARS: usize = 512;
+
+fn validate_inputs(inputs: &[ProjectEnvironmentInput]) -> Result<(), String> {
+    if inputs.len() > MAX_PROJECT_ENVIRONMENT_INPUTS {
+        return Err(format!(
+            "environment definition cannot contain more than {MAX_PROJECT_ENVIRONMENT_INPUTS} recipe or lockfile inputs"
+        ));
+    }
+    let mut paths = BTreeSet::new();
+    for input in inputs {
+        let path = Path::new(&input.path);
+        if input.path.trim().is_empty()
+            || input.path.chars().count() > MAX_PROJECT_ENVIRONMENT_INPUT_PATH_CHARS
+            || path.is_absolute()
+            || path.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::ParentDir
+                        | std::path::Component::RootDir
+                        | std::path::Component::Prefix(_)
+                )
+            })
+        {
+            return Err(
+                "environment input path must be a non-empty relative path without `..`"
+                    .to_string(),
+            );
+        }
+        if !paths.insert(input.path.clone()) {
+            return Err(format!(
+                "environment input path is listed more than once: {}",
+                input.path
+            ));
+        }
+        let Some(digest) = input.sha256.strip_prefix("sha256:") else {
+            return Err(format!(
+                "environment input digest must use sha256: prefix: {}",
+                input.path
+            ));
+        };
+        if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(format!(
+                "environment input digest must be a 256-bit sha256 value: {}",
+                input.path
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,6 +248,7 @@ mod tests {
             source: ProjectEnvironmentDefinitionSource::Commands,
             target_platform: "linux-x86_64".to_string(),
             source_path: None,
+            inputs: Vec::new(),
             setup_steps: vec![ProjectEnvironmentSetupStep {
                 kind: ProjectEnvironmentSetupStepKind::Compiler,
                 command: "rustup toolchain install stable".to_string(),
@@ -199,6 +283,57 @@ mod tests {
         path_escape.source = ProjectEnvironmentDefinitionSource::Devcontainer;
         path_escape.source_path = Some("../.devcontainer/devcontainer.json".to_string());
         assert!(path_escape
+            .validate()
+            .unwrap_err()
+            .contains("relative path"));
+    }
+
+    #[test]
+    fn file_backed_definition_requires_recipe_attestation_and_valid_digests() {
+        let mut definition = definition();
+        definition.source = ProjectEnvironmentDefinitionSource::Devcontainer;
+        definition.source_path = Some(".devcontainer/devcontainer.json".to_string());
+        assert!(definition
+            .validate()
+            .unwrap_err()
+            .contains("attest source_path"));
+
+        definition.inputs = vec![ProjectEnvironmentInput {
+            kind: ProjectEnvironmentInputKind::Recipe,
+            path: ".devcontainer/devcontainer.json".to_string(),
+            sha256: format!("sha256:{}", "a".repeat(64)),
+        }];
+        assert_eq!(definition.validate(), Ok(()));
+
+        definition.inputs[0].sha256 = "sha256:not-a-digest".to_string();
+        assert!(definition
+            .validate()
+            .unwrap_err()
+            .contains("256-bit sha256"));
+    }
+
+    #[test]
+    fn input_attestations_are_unique_and_do_not_allow_path_escape() {
+        let mut definition = definition();
+        definition.inputs = vec![
+            ProjectEnvironmentInput {
+                kind: ProjectEnvironmentInputKind::Lockfile,
+                path: "Cargo.lock".to_string(),
+                sha256: format!("sha256:{}", "b".repeat(64)),
+            },
+            ProjectEnvironmentInput {
+                kind: ProjectEnvironmentInputKind::Recipe,
+                path: "Cargo.lock".to_string(),
+                sha256: format!("sha256:{}", "c".repeat(64)),
+            },
+        ];
+        assert!(definition
+            .validate()
+            .unwrap_err()
+            .contains("listed more than once"));
+
+        definition.inputs[1].path = "../Cargo.toml".to_string();
+        assert!(definition
             .validate()
             .unwrap_err()
             .contains("relative path"));

@@ -22,6 +22,8 @@ use std::sync::{
 use std::thread;
 #[cfg(unix)]
 use std::time::{Duration, Instant};
+#[cfg(unix)]
+use sha2::{Digest, Sha256};
 
 #[cfg(unix)]
 use chariox_relay::protocol::{DaemonRegistration, RelayEnvelope, RelayError};
@@ -46,9 +48,10 @@ use crate::local::{
     CancelProjectEnvironmentSetupRequest, GetProjectEnvironmentSetupStatusRequest,
     LocalDaemonRequest, LocalDaemonResponse, ProjectEnvironmentCommandResult,
     ProjectEnvironmentDefinition, ProjectEnvironmentDefinitionOrigin,
-    ProjectEnvironmentDefinitionSource, ProjectEnvironmentSetupPhase,
-    ProjectEnvironmentSetupStatus, ProjectEnvironmentSetupStep, ProjectEnvironmentSetupStepKind,
-    ProjectEnvironmentValidation, RetryProjectEnvironmentSetupRequest,
+    ProjectEnvironmentDefinitionSource, ProjectEnvironmentInput, ProjectEnvironmentInputKind,
+    ProjectEnvironmentSetupPhase, ProjectEnvironmentSetupStatus, ProjectEnvironmentSetupStep,
+    ProjectEnvironmentSetupStepKind, ProjectEnvironmentValidation,
+    RetryProjectEnvironmentSetupRequest,
     StartProjectEnvironmentSetupRequest,
 };
 #[cfg(unix)]
@@ -90,6 +93,19 @@ async fn public_setup_lifecycle_generates_definition_through_worker_boundary() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn public_setup_lifecycle_reuses_unchanged_recipe_and_lockfile_inputs_without_utility() {
+    exercise_public_setup_lifecycle(DefinitionScenario::SuppliedInputReuse).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn public_setup_lifecycle_repairs_or_rejects_stale_and_missing_inputs_before_ready() {
+    exercise_public_setup_lifecycle(DefinitionScenario::SuppliedStaleInputs).await;
+    exercise_public_setup_lifecycle(DefinitionScenario::SuppliedMissingInputs).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn public_setup_lifecycle_repairs_failed_reused_definition_through_worker_utility() {
     exercise_public_setup_lifecycle(DefinitionScenario::SuppliedSetupFailure).await;
 }
@@ -100,6 +116,9 @@ enum DefinitionScenario {
     Supplied,
     SuppliedSetupFailure,
     Generated,
+    SuppliedInputReuse,
+    SuppliedStaleInputs,
+    SuppliedMissingInputs,
 }
 
 #[cfg(unix)]
@@ -114,6 +133,30 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
     let workspace = root.join("worker-worktree");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&workspace).unwrap();
+    let input_scenario = matches!(
+        scenario,
+        DefinitionScenario::SuppliedInputReuse
+            | DefinitionScenario::SuppliedStaleInputs
+            | DefinitionScenario::SuppliedMissingInputs
+    );
+    let recipe_path = ".devcontainer/devcontainer.json";
+    let recipe_contents = br#"{"image":"mcr.microsoft.com/devcontainers/base:ubuntu"}
+"#;
+    let lockfile_path = "Cargo.lock";
+    let lockfile_contents = b"version = 3\n\n[[package]]\nname = \"fixture\"\n";
+    if input_scenario {
+        std::fs::create_dir_all(workspace.join(".devcontainer")).unwrap();
+        if !matches!(scenario, DefinitionScenario::SuppliedMissingInputs) {
+            let contents = if matches!(scenario, DefinitionScenario::SuppliedStaleInputs) {
+                br#"{"image":"stale-target"}
+"#
+            } else {
+                recipe_contents
+            };
+            std::fs::write(workspace.join(recipe_path), contents).unwrap();
+        }
+        std::fs::write(workspace.join(lockfile_path), lockfile_contents).unwrap();
+    }
     let receipt = root.join("receipt.json");
     std::fs::write(
         &receipt,
@@ -172,7 +215,11 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
     let command = "touch validation-started; sleep 2; command -v sh".to_string();
     let setup_command = match scenario {
         DefinitionScenario::SuppliedSetupFailure => "false".to_string(),
-        DefinitionScenario::Supplied | DefinitionScenario::Generated => {
+        DefinitionScenario::Supplied
+        | DefinitionScenario::Generated
+        | DefinitionScenario::SuppliedInputReuse
+        | DefinitionScenario::SuppliedStaleInputs
+        | DefinitionScenario::SuppliedMissingInputs => {
             "touch setup-started; command -v sh".to_string()
         }
     };
@@ -180,19 +227,47 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
     let definition = ProjectEnvironmentDefinition {
         schema_version: 1,
         origin: match scenario {
-            DefinitionScenario::Supplied | DefinitionScenario::SuppliedSetupFailure => {
+            DefinitionScenario::Supplied
+            | DefinitionScenario::SuppliedSetupFailure
+            | DefinitionScenario::SuppliedInputReuse
+            | DefinitionScenario::SuppliedStaleInputs
+            | DefinitionScenario::SuppliedMissingInputs => {
                 ProjectEnvironmentDefinitionOrigin::UserAuthored
             }
             DefinitionScenario::Generated => ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
         },
-        source: ProjectEnvironmentDefinitionSource::Commands,
+        source: if input_scenario {
+            ProjectEnvironmentDefinitionSource::Devcontainer
+        } else {
+            ProjectEnvironmentDefinitionSource::Commands
+        },
         target_platform: target_platform.clone(),
-        source_path: None,
+        source_path: input_scenario.then(|| recipe_path.to_string()),
+        inputs: if input_scenario {
+            vec![
+                ProjectEnvironmentInput {
+                    kind: ProjectEnvironmentInputKind::Recipe,
+                    path: recipe_path.to_string(),
+                    sha256: format!("sha256:{:x}", Sha256::digest(recipe_contents)),
+                },
+                ProjectEnvironmentInput {
+                    kind: ProjectEnvironmentInputKind::Lockfile,
+                    path: lockfile_path.to_string(),
+                    sha256: format!("sha256:{:x}", Sha256::digest(lockfile_contents)),
+                },
+            ]
+        } else {
+            Vec::new()
+        },
         setup_steps: vec![ProjectEnvironmentSetupStep {
             kind: ProjectEnvironmentSetupStepKind::Command,
             command: setup_command,
         }],
-        validation_commands: vec![command.clone()],
+        validation_commands: if input_scenario {
+            vec![format!("test -f {recipe_path} && test -f {lockfile_path}")]
+        } else {
+            vec![command.clone()]
+        },
     };
     let provider_fixture = UtilityProviderFixture::start(definition.clone());
 
@@ -270,7 +345,11 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
             .runtime_state();
     if matches!(
         scenario,
-        DefinitionScenario::Supplied | DefinitionScenario::SuppliedSetupFailure
+        DefinitionScenario::Supplied
+            | DefinitionScenario::SuppliedSetupFailure
+            | DefinitionScenario::SuppliedInputReuse
+            | DefinitionScenario::SuppliedStaleInputs
+            | DefinitionScenario::SuppliedMissingInputs
     ) {
         runtime
             .update_project_environment_definition(&project_id, definition.clone(), "user-1")
@@ -287,7 +366,11 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
                 target_platform: target_platform.clone(),
                 definition: None,
                 validation_commands: match scenario {
-                    DefinitionScenario::Supplied | DefinitionScenario::SuppliedSetupFailure => {
+                    DefinitionScenario::Supplied
+                    | DefinitionScenario::SuppliedSetupFailure
+                    | DefinitionScenario::SuppliedInputReuse
+                    | DefinitionScenario::SuppliedStaleInputs
+                    | DefinitionScenario::SuppliedMissingInputs => {
                         Vec::new()
                     }
                     DefinitionScenario::Generated => vec![command.clone()],
@@ -304,6 +387,42 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
     assert_eq!(status.attempt, 1);
 
     let validation_marker = workspace.join("validation-started");
+    if matches!(
+        scenario,
+        DefinitionScenario::SuppliedStaleInputs | DefinitionScenario::SuppliedMissingInputs
+    ) {
+        let failed_deadline = Instant::now() + Duration::from_secs(10);
+        let failed = loop {
+            let status = response_status(
+                get_setup_status(&runtime, "setup-lifecycle", "user-1", "input polling").await,
+            );
+            if status.phase == ProjectEnvironmentSetupPhase::Failed {
+                break status;
+            }
+            assert_ne!(
+                status.phase,
+                ProjectEnvironmentSetupPhase::Ready,
+                "stale or missing materialized inputs must not reach Ready: {status:?}"
+            );
+            assert!(
+                Instant::now() < failed_deadline,
+                "stale or missing inputs did not settle through the repair gate: {status:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert_eq!(
+            failed.failure_code.as_deref(),
+            Some("worker_input_attestation_failed"),
+            "input mismatch must remain distinct from a command validation failure: {failed:?}"
+        );
+        assert_ne!(
+            provider_fixture.diagnostics(),
+            "<no requests observed>",
+            "stale or missing inputs must invoke the existing worker utility for repair"
+        );
+        drop(provider_fixture);
+        return;
+    }
     let validation_deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let response =
@@ -396,7 +515,7 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
     );
 
     match scenario {
-        DefinitionScenario::Supplied => {
+            DefinitionScenario::Supplied | DefinitionScenario::SuppliedInputReuse => {
             assert!(
                 workspace.join("setup-started").exists(),
                 "a reusable definition must be applied by the worker before validation"
@@ -414,6 +533,9 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
                 "missing or failed setup must invoke the existing utility agent"
             );
         }
+        DefinitionScenario::SuppliedStaleInputs | DefinitionScenario::SuppliedMissingInputs => {
+            unreachable!("stale and missing input scenarios return before the Ready assertions")
+        }
     }
 
     let persisted = runtime
@@ -427,7 +549,11 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
     assert_eq!(
         persisted.origin,
         match scenario {
-            DefinitionScenario::Supplied | DefinitionScenario::SuppliedSetupFailure => {
+            DefinitionScenario::Supplied
+            | DefinitionScenario::SuppliedSetupFailure
+            | DefinitionScenario::SuppliedInputReuse
+            | DefinitionScenario::SuppliedStaleInputs
+            | DefinitionScenario::SuppliedMissingInputs => {
                 ProjectEnvironmentDefinitionOrigin::UserAuthored
             }
             DefinitionScenario::Generated => ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
@@ -704,6 +830,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         source: ProjectEnvironmentDefinitionSource::Commands,
         target_platform: target_platform.clone(),
         source_path: None,
+        inputs: Vec::new(),
         setup_steps: vec![ProjectEnvironmentSetupStep {
             kind: ProjectEnvironmentSetupStepKind::Command,
             command: validation_command.clone(),
