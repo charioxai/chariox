@@ -147,6 +147,18 @@ fn parse_project_environment_setup_utility_output_with_policy(
                     message: "utility changed the selected environment definition".to_string(),
                 });
             }
+            if allow_definition_revision
+                && expected
+                    .validation_commands
+                    .iter()
+                    .any(|command| !returned.validation_commands.contains(command))
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "run project environment setup utility",
+                    message: "repair definition must retain every selected validation command"
+                        .to_string(),
+                });
+            }
             returned
         }
         None => parsed
@@ -322,14 +334,13 @@ mod tests {
     fn repair_parser_rejects_dropped_or_replaced_validation_commands() {
         let mut expected = definition();
         expected.origin = ProjectEnvironmentDefinitionOrigin::UserAuthored;
-        expected.validation_commands.push("cargo test --workspace".into());
+        expected
+            .validation_commands
+            .push("cargo test --workspace".into());
 
         for validation_commands in [
             vec!["true".to_string()],
-            vec![
-                "true".to_string(),
-                "cargo test --workspace".to_string(),
-            ],
+            vec!["true".to_string(), "cargo test --workspace".to_string()],
         ] {
             let mut repaired = expected.clone();
             repaired.validation_commands = validation_commands;
@@ -353,7 +364,9 @@ mod tests {
         let mut expected = definition();
         expected.origin = ProjectEnvironmentDefinitionOrigin::UserAuthored;
         let mut repaired = expected.clone();
-        repaired.validation_commands.push("cargo test --workspace".into());
+        repaired
+            .validation_commands
+            .push("cargo test --workspace".into());
 
         let parsed = parse_project_environment_setup_utility_output_for_repair(
             &serde_json::json!({"definition": repaired.clone()}).to_string(),
