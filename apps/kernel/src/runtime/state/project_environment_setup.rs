@@ -1073,8 +1073,12 @@ impl KernelRuntimeState {
             .definition
             .or_else(|| project.environment_definition().cloned());
         if let Some(definition) = &definition {
-            definition
-                .validate()
+            let validation = if definition.is_unattested_file_backed() {
+                definition.validate_for_repair()
+            } else {
+                definition.validate()
+            };
+            validation
                 .map_err(|message| setup_error(&message))?;
             if definition.target_platform != request.target_platform {
                 return Err(setup_error(
@@ -1160,7 +1164,9 @@ impl KernelRuntimeState {
         if !store.update(&execution.operation_id, attempt, |entry| {
             entry.status.phase = ProjectEnvironmentSetupPhase::Preparing;
             entry.status.progress_percent = 10;
-            entry.status.message = Some(if execution.definition.is_some() {
+            entry.status.message = Some(if execution.definition.as_ref().is_some_and(|definition| {
+                !definition.is_unattested_file_backed()
+            }) {
                 "kernel is reusing the stored project environment definition".to_string()
             } else {
                 "utility agent is preparing the target environment".to_string()
@@ -1200,7 +1206,11 @@ impl KernelRuntimeState {
             return;
         }
 
-        if let Some(definition) = execution.definition.as_ref() {
+        if let Some(definition) = execution
+            .definition
+            .as_ref()
+            .filter(|definition| !definition.is_unattested_file_backed())
+        {
             match self
                 .apply_definition_on_worker(&execution, attempt, definition, &provider_run)
                 .await

@@ -79,6 +79,33 @@ pub struct ProjectEnvironmentDefinition {
 
 impl ProjectEnvironmentDefinition {
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_with_source_attestation(true)
+    }
+
+    pub(crate) fn validate_for_repair(&self) -> Result<(), String> {
+        if !self.is_unattested_file_backed() {
+            return self.validate();
+        }
+        self.validate_with_source_attestation(false)
+    }
+
+    pub(crate) fn is_unattested_file_backed(&self) -> bool {
+        matches!(
+            self.source,
+            ProjectEnvironmentDefinitionSource::Dockerfile
+                | ProjectEnvironmentDefinitionSource::Devcontainer
+                | ProjectEnvironmentDefinitionSource::SetupScript
+        ) && self.source_path.as_deref().is_some_and(|source_path| {
+            !self.inputs.iter().any(|input| {
+                input.kind == ProjectEnvironmentInputKind::Recipe && input.path == source_path
+            })
+        })
+    }
+
+    fn validate_with_source_attestation(
+        &self,
+        require_source_attestation: bool,
+    ) -> Result<(), String> {
         if self.schema_version != PROJECT_ENVIRONMENT_DEFINITION_SCHEMA_VERSION {
             return Err(format!(
                 "unsupported project environment definition schema version {}",
@@ -142,14 +169,16 @@ impl ProjectEnvironmentDefinition {
             validate_command(command, "validation command")?;
         }
         validate_inputs(&self.inputs)?;
-        if let Some(source_path) = self.source_path.as_deref() {
-            if !self.inputs.iter().any(|input| {
-                input.kind == ProjectEnvironmentInputKind::Recipe && input.path == source_path
-            }) {
-                return Err(
-                    "file-backed definitions must attest source_path with a recipe input"
-                        .to_string(),
-                );
+        if require_source_attestation {
+            if let Some(source_path) = self.source_path.as_deref() {
+                if !self.inputs.iter().any(|input| {
+                    input.kind == ProjectEnvironmentInputKind::Recipe && input.path == source_path
+                }) {
+                    return Err(
+                        "file-backed definitions must attest source_path with a recipe input"
+                            .to_string(),
+                    );
+                }
             }
         }
         let encoded = serde_json::to_vec(self)
@@ -227,7 +256,11 @@ fn validate_inputs(inputs: &[ProjectEnvironmentInput]) -> Result<(), String> {
                 input.path
             ));
         };
-        if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        if digest.len() != 64
+            || !digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        {
             return Err(format!(
                 "environment input digest must be a 256-bit sha256 value: {}",
                 input.path

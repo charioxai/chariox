@@ -211,7 +211,7 @@ fn project_environment_setup_utility_schema() -> serde_json::Value {
                             "properties": {
                                 "kind": {"type": "string", "enum": ["recipe", "lockfile"]},
                                 "path": {"type": "string", "minLength": 1, "maxLength": 512},
-                                "sha256": {"type": "string", "pattern": "^sha256:[0-9a-fA-F]{64}$"}
+                                "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
                             }
                         }
                     },
