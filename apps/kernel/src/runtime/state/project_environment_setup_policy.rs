@@ -249,9 +249,13 @@ pub(super) fn validate_remote_setup_status(
         ));
     }
     if let Some(definition) = definition {
-        definition
-            .validate()
-            .map_err(|message| setup_error(&message))?;
+        if status.phase == ProjectEnvironmentSetupPhase::Ready {
+            definition
+                .validate()
+                .map_err(|message| setup_error(&message))?;
+        } else {
+            validate_incoming_setup_definition(definition)?;
+        }
         if definition.validation_commands.is_empty()
             || definition.target_platform != expected.target_platform
             || status.definition_digest.as_deref() != Some(definition.digest().as_str())

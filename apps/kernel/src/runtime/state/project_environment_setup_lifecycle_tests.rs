@@ -1207,7 +1207,48 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         }],
         validation_commands: vec![validation_command.clone()],
     };
-    let provider_fixture = UtilityProviderFixture::start(definition.clone());
+    let repair_recipe_path = ".devcontainer/devcontainer.json";
+    let repair_recipe_contents: &[u8] = br#"{"image":"mcr.microsoft.com/devcontainers/base:ubuntu"}
+"#;
+    let repair_lockfile_path = "Cargo.lock";
+    let repair_lockfile_contents: &[u8] = b"version = 3\n\n[[package]]\nname = \"remote-fixture\"\n";
+    let mut repairable_definition = definition.clone();
+    repairable_definition.source = ProjectEnvironmentDefinitionSource::Devcontainer;
+    repairable_definition.source_path = Some(repair_recipe_path.to_string());
+    repairable_definition.inputs.clear();
+    repairable_definition.setup_steps[0].command =
+        "touch remote-repair-complete; command -v sh".to_string();
+    repairable_definition.validation_commands = vec![format!(
+        "command -v sh; test -f {repair_recipe_path}; test -f {repair_lockfile_path}"
+    )];
+    let mut repaired_definition = repairable_definition.clone();
+    repaired_definition.inputs = vec![
+        ProjectEnvironmentInput {
+            kind: ProjectEnvironmentInputKind::Recipe,
+            path: repair_recipe_path.to_string(),
+            sha256: format!("sha256:{:x}", Sha256::digest(repair_recipe_contents)),
+        },
+        ProjectEnvironmentInput {
+            kind: ProjectEnvironmentInputKind::Lockfile,
+            path: repair_lockfile_path.to_string(),
+            sha256: format!("sha256:{:x}", Sha256::digest(repair_lockfile_contents)),
+        },
+    ];
+    let (provider_fixture, release_utility) =
+        UtilityProviderFixture::start_with_repairs_and_prompt_gate(
+            repaired_definition.clone(),
+            Some(workspace.clone()),
+            BTreeMap::from([
+                (
+                    repair_recipe_path.to_string(),
+                    repair_recipe_contents.to_vec(),
+                ),
+                (
+                    repair_lockfile_path.to_string(),
+                    repair_lockfile_contents.to_vec(),
+                ),
+            ]),
+        );
     {
         let mut app = app_worker.lock().await;
         let launch_request = LaunchProviderRequest::new(
@@ -1315,6 +1356,161 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
 
     let home_router = CommandRouter::with_interactive_capacity_from_app(Arc::clone(&app_home), 1);
     let runtime = home_router.runtime_state();
+
+    // A selected legacy file-backed definition is admitted by both kernels,
+    // but remains unattested until the worker utility materializes its inputs.
+    // Hold that utility response so the home must accept the worker's real
+    // pre-Ready status before the repaired definition exists.
+    let repair_operation_id = "setup-remote-repairable-definition";
+    let repair_started = runtime
+        .execute_project_environment_setup_request(
+            LocalDaemonRequest::StartProjectEnvironmentSetup(
+                StartProjectEnvironmentSetupRequest {
+                    operation_id: repair_operation_id.to_string(),
+                    project_id: project_id.clone(),
+                    session_id: session_id.clone(),
+                    agent_id: agent_id.clone(),
+                    target_worker_id: config_worker.host_machine_id.clone(),
+                    target_platform: target_platform.clone(),
+                    definition: Some(repairable_definition.clone()),
+                    validation_commands: Vec::new(),
+                },
+            ),
+            "user-1",
+        )
+        .await
+        .expect("home should admit a repairable selected definition");
+    let repair_started_status = response_status(repair_started);
+    assert_eq!(
+        repair_started_status.phase,
+        ProjectEnvironmentSetupPhase::Requested,
+        "home admission should return the immediate worker-boundary status"
+    );
+
+    let utility_prompt_deadline = Instant::now() + Duration::from_secs(3);
+    while !provider_fixture.diagnostics().contains("prompt_async") {
+        assert!(
+            Instant::now() < utility_prompt_deadline,
+            "worker did not reach the gated utility request; provider trace: {}",
+            provider_fixture.diagnostics()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let immediate_repair_status = runtime
+        .execute_project_environment_setup_request(
+            LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
+                GetProjectEnvironmentSetupStatusRequest {
+                    operation_id: repair_operation_id.to_string(),
+                },
+            ),
+            "user-1",
+        )
+        .await
+        .expect("home should accept the worker's repairable pre-Ready status");
+    let immediate_repair_status = response_status(immediate_repair_status);
+    assert!(
+        matches!(
+            immediate_repair_status.phase,
+            ProjectEnvironmentSetupPhase::Requested
+                | ProjectEnvironmentSetupPhase::Preparing
+                | ProjectEnvironmentSetupPhase::Validating
+        ),
+        "repairable worker status must remain non-terminal before utility completion: {immediate_repair_status:?}"
+    );
+
+    release_utility.store(true, Ordering::Release);
+    let repair_ready_deadline = Instant::now() + Duration::from_secs(10);
+    let repair_ready = loop {
+        let observation = runtime
+            .execute_project_environment_setup_request(
+                LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
+                    GetProjectEnvironmentSetupStatusRequest {
+                        operation_id: repair_operation_id.to_string(),
+                    },
+                ),
+                "user-1",
+            )
+            .await;
+        match observation {
+            Ok(response) => {
+                let status = response_status(response);
+                match status.phase {
+                    ProjectEnvironmentSetupPhase::Ready => break status,
+                    ProjectEnvironmentSetupPhase::Failed
+                    | ProjectEnvironmentSetupPhase::Cancelled => panic!(
+                        "repairable worker setup became terminal before Ready: {status:?}; provider trace: {}",
+                        provider_fixture.diagnostics()
+                    ),
+                    ProjectEnvironmentSetupPhase::Requested
+                    | ProjectEnvironmentSetupPhase::Preparing
+                    | ProjectEnvironmentSetupPhase::Validating => {}
+                }
+            }
+            Err(error) => {
+                let (_, status, _) = runtime
+                    .owned
+                    .project_environment_setups
+                    .get_entry_with_cancellation(repair_operation_id, "user-1")
+                    .expect("repair operation should remain owned during status recovery");
+                assert!(
+                    !matches!(
+                        status.phase,
+                        ProjectEnvironmentSetupPhase::Failed
+                            | ProjectEnvironmentSetupPhase::Cancelled
+                    ),
+                    "repairable worker status error must not manufacture terminal failure: {error}; status={status:?}"
+                );
+            }
+        }
+        assert!(
+            Instant::now() < repair_ready_deadline,
+            "repairable worker setup did not reach Ready: provider trace: {}",
+            provider_fixture.diagnostics()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    assert_eq!(repair_ready.attempt, 1);
+    assert_eq!(
+        repair_ready.definition_digest.as_deref(),
+        Some(repaired_definition.digest().as_str()),
+        "Ready must carry the utility-repaired definition identity"
+    );
+    assert!(
+        repair_ready
+            .validation
+            .as_ref()
+            .is_some_and(ProjectEnvironmentValidation::passed),
+        "Ready must carry passing target-worker validation"
+    );
+    assert!(
+        workspace.join("remote-repair-complete").exists(),
+        "the worker must execute the repaired repeatable setup steps"
+    );
+    assert_eq!(
+        std::fs::read(workspace.join(repair_recipe_path)).unwrap(),
+        repair_recipe_contents,
+        "utility repair must materialize the recipe on the worker"
+    );
+    assert_eq!(
+        std::fs::read(workspace.join(repair_lockfile_path)).unwrap(),
+        repair_lockfile_contents,
+        "utility repair must materialize the lockfile on the worker"
+    );
+    let persisted_repair = runtime
+        .owned
+        .session_store
+        .get_project(&project_id)
+        .expect("selected project should remain available")
+        .environment_definition()
+        .cloned()
+        .expect("Ready should persist the repaired selected definition");
+    assert_eq!(persisted_repair, repaired_definition);
+    assert!(
+        provider_fixture.diagnostics().contains("prompt_async"),
+        "the existing worker utility must have repaired the target: {}",
+        provider_fixture.diagnostics()
+    );
+
     let start_request = StartProjectEnvironmentSetupRequest {
         operation_id: "setup-transport-recovery".to_string(),
         project_id: project_id.clone(),
@@ -3468,6 +3664,30 @@ impl UtilityProviderFixture {
         repair_workspace: Option<PathBuf>,
         repair_files: BTreeMap<String, Vec<u8>>,
     ) -> Self {
+        Self::start_with_options(definition, repair_workspace, repair_files, None)
+    }
+
+    fn start_with_repairs_and_prompt_gate(
+        definition: ProjectEnvironmentDefinition,
+        repair_workspace: Option<PathBuf>,
+        repair_files: BTreeMap<String, Vec<u8>>,
+    ) -> (Self, Arc<AtomicBool>) {
+        let release_prompt = Arc::new(AtomicBool::new(false));
+        let fixture = Self::start_with_options(
+            definition,
+            repair_workspace,
+            repair_files,
+            Some(Arc::clone(&release_prompt)),
+        );
+        (fixture, release_prompt)
+    }
+
+    fn start_with_options(
+        definition: ProjectEnvironmentDefinition,
+        repair_workspace: Option<PathBuf>,
+        repair_files: BTreeMap<String, Vec<u8>>,
+        release_prompt: Option<Arc<AtomicBool>>,
+    ) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("provider fixture should bind");
         listener
             .set_nonblocking(true)
@@ -3486,8 +3706,16 @@ impl UtilityProviderFixture {
                         let state = state_for_server.clone();
                         let definition = definition.clone();
                         let repairs = repairs.clone();
+                        let release_prompt = release_prompt.clone();
                         thread::spawn(move || {
-                            serve_provider_request(stream, stop, state, definition, repairs);
+                            serve_provider_request(
+                                stream,
+                                stop,
+                                state,
+                                definition,
+                                repairs,
+                                release_prompt,
+                            );
                         });
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -3538,6 +3766,7 @@ fn serve_provider_request(
     state: Arc<Mutex<UtilityProviderState>>,
     definition: ProjectEnvironmentDefinition,
     repairs: Option<(PathBuf, BTreeMap<String, Vec<u8>>)>,
+    release_prompt: Option<Arc<AtomicBool>>,
 ) {
     let Some((request_line, body)) = read_provider_request(&mut stream) else {
         return;
@@ -3635,6 +3864,18 @@ fn serve_provider_request(
                 .lock()
                 .expect("provider fixture state should not poison")
                 .prompt_id = prompt_id;
+            if let Some(release_prompt) = release_prompt {
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while !release_prompt.load(Ordering::Acquire)
+                    && !stop.load(Ordering::Acquire)
+                    && Instant::now() < deadline
+                {
+                    thread::sleep(Duration::from_millis(2));
+                }
+                if !release_prompt.load(Ordering::Acquire) {
+                    return;
+                }
+            }
             if let Some((workspace, files)) = repairs.as_ref() {
                 for (relative_path, contents) in files {
                     let target = workspace.join(relative_path);
