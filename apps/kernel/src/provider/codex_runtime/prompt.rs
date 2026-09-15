@@ -454,6 +454,139 @@ mod prompt_tests {
         server.join().expect("join Codex websocket fixture");
     }
 
+    #[test]
+    fn resumed_prompt_does_not_apply_previous_turn_events_to_new_turn() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind Codex websocket fixture");
+        let address = listener.local_addr().expect("resolve fixture address");
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept Codex websocket client");
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .expect("bound fixture reads");
+            let mut socket = accept(stream).expect("upgrade Codex websocket fixture");
+            let resume = read_json_request(&mut socket, "thread/resume");
+            for notification in [
+                json!({"method": "item/agentMessage/delta", "params": {
+                    "itemId": "old-item", "delta": "previous turn output"
+                }}),
+                json!({"method": "codex/event/turn_aborted", "params": {
+                    "msg": {"reason": "previous turn interrupted"}
+                }}),
+                json!({"method": "error", "params": {
+                    "error": {"message": "previous turn failed"}
+                }}),
+            ] {
+                socket
+                    .send(Message::Text(notification.to_string().into()))
+                    .expect("send old resume-phase notification");
+            }
+            socket
+                .send(Message::Text(
+                    json!({
+                        "id": resume["id"],
+                        "result": {"thread": {"id": "thread-reused"}, "model": "gpt-5.5"}
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("acknowledge resume");
+            let start = read_json_request(&mut socket, "turn/start");
+            // New-turn output may precede the admission response and must survive.
+            socket
+                .send(Message::Text(
+                    json!({
+                        "method": "item/agentMessage/delta",
+                        "params": {"itemId": "new-item", "delta": "current turn output"}
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("send current turn notification");
+            socket
+                .send(Message::Text(
+                    json!({
+                        "id": start["id"], "result": {"turn": {"id": "turn-new"}}
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("acknowledge current turn");
+            // Serve the runtime's authoritative recovery check, if requested.
+            // Keep the socket open until the client has observed its poll result.
+            while let Ok(Message::Text(text)) = socket.read() {
+                let request: serde_json::Value = serde_json::from_str(&text).unwrap();
+                assert_eq!(request["method"], "thread/turns/list");
+                socket
+                    .send(Message::Text(
+                        json!({
+                            "id": request["id"],
+                            "result": {"data": [{"id": "turn-new", "status": "inProgress"}]}
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .expect("return current authoritative turn");
+            }
+        });
+        let endpoint = format!("ws://{address}");
+        let (socket, _) = connect(&endpoint).expect("connect Codex websocket client");
+        let request = LaunchProviderRequest::new(
+            "session-resume-phase",
+            "codex",
+            "codex",
+            "default",
+            "default",
+        )
+        .with_agent_id("agent-resume-phase");
+        let run = RuntimeProviderRun::new(
+            "provider-run-resume-phase",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "codex-test".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        let mut state = super::super::state::CodexRuntimeState::pending(
+            endpoint,
+            Some("thread-reused".to_string()),
+            socket,
+            1,
+        );
+        super::submit_codex_prompt(
+            &run,
+            &mut state,
+            &PromptEnvelope::new("continue", "", Vec::new(), PromptManifest::current()),
+        )
+        .expect("admit new prompt");
+        let result = super::super::drain::drain_codex_events(&run, &mut state, None);
+        drop(state);
+        server.join().expect("join Codex websocket fixture");
+        let result = result.expect("poll current turn");
+        assert!(
+            !result.prompt_completed,
+            "old resume events settled the new turn: {result:?}"
+        );
+        assert_eq!(result.terminal_failure, None);
+        assert!(result.completions.is_empty());
+        assert!(result.notices.is_empty());
+        assert_eq!(
+            result
+                .chunks
+                .iter()
+                .flat_map(|chunk| chunk.bytes.iter().copied())
+                .collect::<Vec<_>>(),
+            b"current turn output",
+            "only current-turn output may be projected after resume"
+        );
+    }
+
     fn read_json_request(
         socket: &mut tokio_tungstenite::tungstenite::WebSocket<std::net::TcpStream>,
         expected_method: &str,
