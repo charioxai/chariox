@@ -110,6 +110,7 @@ pub(super) fn run_worker_validation_command(
     workspace_root: &Path,
     environment: &BTreeMap<String, String>,
     should_cancel: impl Fn() -> bool,
+    overall_deadline: Option<Instant>,
 ) -> Result<(i32, usize, usize), String> {
     // This child is spawned only by a confirmed disposable worker kernel after
     // the provider run context and workspace have been fenced above. Keep the
@@ -147,6 +148,13 @@ pub(super) fn run_worker_validation_command(
             });
         }
     }
+    let command_deadline = Instant::now() + Duration::from_millis(VALIDATION_COMMAND_TIMEOUT_MS);
+    let deadline = overall_deadline.map_or(command_deadline, |deadline| {
+        deadline.min(command_deadline)
+    });
+    if deadline.saturating_duration_since(Instant::now()).is_zero() {
+        return Err("worker validation command exceeded the overall setup deadline".to_string());
+    }
     let mut child = command.spawn().map_err(|error| error.to_string())?;
     let Some(stdout) = child.stdout.take() else {
         let _ = child.kill();
@@ -160,7 +168,6 @@ pub(super) fn run_worker_validation_command(
     };
     let stdout_reader = std::thread::spawn(move || count_validation_output(stdout));
     let stderr_reader = std::thread::spawn(move || count_validation_output(stderr));
-    let deadline = Instant::now() + Duration::from_millis(VALIDATION_COMMAND_TIMEOUT_MS);
     let outcome = loop {
         if should_cancel() {
             break Err("worker validation command cancelled".to_string());
@@ -195,6 +202,96 @@ pub(super) fn run_worker_validation_command(
         .map_err(|_| "worker validation stderr reader panicked".to_string())?;
     let stderr_bytes = stderr_bytes?;
     Ok((status.code().unwrap_or(-1), stdout_bytes, stderr_bytes))
+}
+
+pub(super) fn run_worker_setup_steps(
+    commands: &[String],
+    workspace_root: &Path,
+    environment: &BTreeMap<String, String>,
+    should_cancel: impl Fn() -> bool,
+) -> Result<bool, String> {
+    run_worker_setup_steps_until(
+        commands,
+        workspace_root,
+        environment,
+        Instant::now() + VALIDATION_TOTAL_TIMEOUT,
+        should_cancel,
+    )
+}
+
+fn run_worker_setup_steps_until(
+    commands: &[String],
+    workspace_root: &Path,
+    environment: &BTreeMap<String, String>,
+    overall_deadline: Instant,
+    should_cancel: impl Fn() -> bool,
+) -> Result<bool, String> {
+    for command in commands {
+        if should_cancel() {
+            return Err("worker setup command cancelled".to_string());
+        }
+        if overall_deadline.saturating_duration_since(Instant::now()).is_zero() {
+            return Err("worker setup commands timed out".to_string());
+        }
+        let (exit_code, _stdout_bytes, _stderr_bytes) =
+            run_worker_validation_command(command, workspace_root, environment, || {
+                should_cancel()
+            }, Some(overall_deadline))?;
+        if exit_code != 0 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+#[cfg(test)]
+pub(super) fn run_worker_setup_steps_with_total_timeout(
+    commands: &[String],
+    workspace_root: &Path,
+    environment: &BTreeMap<String, String>,
+    total_timeout: Duration,
+    should_cancel: impl Fn() -> bool,
+) -> Result<bool, String> {
+    run_worker_setup_steps_until(
+        commands,
+        workspace_root,
+        environment,
+        Instant::now() + total_timeout,
+        should_cancel,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn setup_steps_enforce_total_deadline_during_an_in_flight_command() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-project-environment-total-deadline-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&root).expect("deadline fixture workspace should exist");
+        let started = Instant::now();
+        let result = run_worker_setup_steps_with_total_timeout(
+            &["sleep 0.03".to_string(), "sleep 0.20".to_string()],
+            &root,
+            &BTreeMap::new(),
+            Duration::from_millis(75),
+            || false,
+        );
+        assert!(
+            result.is_err(),
+            "a command that outlives the total setup budget must fail: {result:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "an in-flight command must be interrupted by the total budget: {:?}",
+            started.elapsed()
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
 
 #[cfg(unix)]

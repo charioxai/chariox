@@ -22,7 +22,8 @@ use crate::local::{
 };
 use crate::provider::RuntimeProviderRun;
 use crate::runtime::agent_utility_executor::{
-    assert_agent_utility_can_run, run_agent_utility_on_provider_run,
+    assert_agent_utility_can_run,
+    run_agent_utility_on_provider_run_for_project_environment_repair,
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
@@ -31,6 +32,29 @@ use crate::transport::relay_peer::{
 };
 
 use super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_retry_transport;
+
+struct WorkerExecutionContext {
+    worker_id: String,
+    platform: String,
+    workspace_root: PathBuf,
+    environment: BTreeMap<String, String>,
+}
+
+fn validation_passed_for_execution(
+    execution: &SetupExecution,
+    definition: &ProjectEnvironmentDefinition,
+    validation: &ProjectEnvironmentValidation,
+) -> bool {
+    validation.worker_id == execution.target_worker_id
+        && validation.platform == execution.target_platform
+        && validation.commands.len() == definition.validation_commands.len()
+        && validation.passed()
+        && validation
+            .commands
+            .iter()
+            .zip(definition.validation_commands.iter())
+            .all(|(result, command)| result.command_digest == command_digest(command))
+}
 
 #[path = "project_environment_setup_dispatch.rs"]
 mod project_environment_setup_dispatch;
@@ -1136,36 +1160,17 @@ impl KernelRuntimeState {
         if !store.update(&execution.operation_id, attempt, |entry| {
             entry.status.phase = ProjectEnvironmentSetupPhase::Preparing;
             entry.status.progress_percent = 10;
-            entry.status.message =
-                Some("utility agent is preparing the target environment".to_string());
+            entry.status.message = Some(if execution.definition.is_some() {
+                "kernel is reusing the stored project environment definition".to_string()
+            } else {
+                "utility agent is preparing the target environment".to_string()
+            });
         }) {
             return;
         }
         if store.is_cancelled(&execution.operation_id, attempt) {
             return;
         }
-        let _ = store.update(&execution.operation_id, attempt, |entry| {
-            entry.status.phase = ProjectEnvironmentSetupPhase::Validating;
-            entry.status.progress_percent = 45;
-            entry.status.message =
-                Some("kernel is validating commands in the target worker".to_string());
-        });
-
-        let utility_request = RunAgentUtilityRequest {
-            session_id: execution.execution_session_id.clone(),
-            agent_id: execution.execution_agent_id.clone(),
-            kind: AgentUtilityKind::ProjectEnvironmentSetup,
-            input: AgentUtilityInput::ProjectEnvironmentSetup(
-                ProjectEnvironmentSetupUtilityInput {
-                    project_id: execution.project_id.clone(),
-                    workspace_id: execution.workspace_id.clone(),
-                    target_worker_id: execution.target_worker_id.clone(),
-                    target_platform: execution.target_platform.clone(),
-                    definition: execution.definition.clone(),
-                    validation_commands: execution.validation_commands.clone(),
-                },
-            ),
-        };
         let (_agent, provider_run) = match assert_agent_utility_can_run(
             self,
             &execution.execution_session_id,
@@ -1194,6 +1199,133 @@ impl KernelRuntimeState {
             );
             return;
         }
+
+        if let Some(definition) = execution.definition.as_ref() {
+            match self
+                .apply_definition_on_worker(&execution, attempt, definition, &provider_run)
+                .await
+            {
+                Ok(true) => {
+                    let _ = store.update(&execution.operation_id, attempt, |entry| {
+                        entry.status.phase = ProjectEnvironmentSetupPhase::Validating;
+                        entry.status.progress_percent = 45;
+                        entry.status.message = Some(
+                            "kernel is validating the reused definition in the target worker"
+                                .to_string(),
+                        );
+                    });
+                    let validation = match self
+                        .validate_definition_on_worker(
+                            &execution,
+                            attempt,
+                            definition,
+                            &provider_run,
+                        )
+                        .await
+                    {
+                        Ok(validation) => validation,
+                        Err(_) => {
+                            store.mark_failed(
+                                &execution.operation_id,
+                                attempt,
+                                "worker_validation_unavailable",
+                                "kernel could not execute target validation commands",
+                            );
+                            return;
+                        }
+                    };
+                    if store.is_cancelled(&execution.operation_id, attempt) {
+                        return;
+                    }
+                    let validation_passed = validation_passed_for_execution(
+                        &execution,
+                        definition,
+                        &validation,
+                    );
+                    let _ = store.update(&execution.operation_id, attempt, |entry| {
+                        entry.status.validation = Some(validation);
+                        entry.status.progress_percent = 85;
+                        entry.status.message = Some(if validation_passed {
+                            "reused definition passed kernel validation".to_string()
+                        } else {
+                            "reused definition failed validation; utility agent is repairing the target"
+                                .to_string()
+                        });
+                    });
+                    if validation_passed {
+                        if execution.persist_project_definition
+                            && self
+                                .update_project_environment_definition(
+                                    &execution.project_id,
+                                    definition.clone(),
+                                    &execution.owner_user_id,
+                                )
+                                .is_err()
+                        {
+                            store.mark_failed(
+                                &execution.operation_id,
+                                attempt,
+                                "definition_persist_failed",
+                                "kernel could not persist the target environment definition",
+                            );
+                            return;
+                        }
+                        let _ = store.update(&execution.operation_id, attempt, |entry| {
+                            entry.status.phase = ProjectEnvironmentSetupPhase::Ready;
+                            entry.status.progress_percent = 100;
+                            entry.status.retryable = false;
+                            entry.status.message = Some(
+                                "project environment is ready on the validated worker".to_string(),
+                            );
+                        });
+                        return;
+                    }
+                }
+                Ok(false) => {
+                    let _ = store.update(&execution.operation_id, attempt, |entry| {
+                        entry.status.message = Some(
+                            "reused definition setup failed; utility agent is repairing the target"
+                                .to_string(),
+                        );
+                    });
+                }
+                Err(_) => {
+                    store.mark_failed(
+                        &execution.operation_id,
+                        attempt,
+                        "worker_setup_unavailable",
+                        "kernel could not execute the stored setup definition",
+                    );
+                    return;
+                }
+            }
+            if store.is_cancelled(&execution.operation_id, attempt) {
+                return;
+            }
+            let _ = store.update(&execution.operation_id, attempt, |entry| {
+                entry.status.phase = ProjectEnvironmentSetupPhase::Preparing;
+                entry.status.progress_percent = 10;
+                entry.status.validation = None;
+                entry.status.message =
+                    Some("utility agent is repairing the target environment".to_string());
+            });
+        }
+
+        let utility_request = RunAgentUtilityRequest {
+            session_id: execution.execution_session_id.clone(),
+            agent_id: execution.execution_agent_id.clone(),
+            kind: AgentUtilityKind::ProjectEnvironmentSetup,
+            input: AgentUtilityInput::ProjectEnvironmentSetup(
+                ProjectEnvironmentSetupUtilityInput {
+                    project_id: execution.project_id.clone(),
+                    workspace_id: execution.workspace_id.clone(),
+                    target_worker_id: execution.target_worker_id.clone(),
+                    target_platform: execution.target_platform.clone(),
+                    definition: execution.definition.clone(),
+                    validation_commands: execution.validation_commands.clone(),
+                },
+            ),
+        };
         let archive_config = self
             .owned
             .config_projection
@@ -1201,7 +1333,7 @@ impl KernelRuntimeState {
             .user_config
             .history
             .archive;
-        let utility_result = run_agent_utility_on_provider_run(
+        let utility_result = run_agent_utility_on_provider_run_for_project_environment_repair(
             self,
             archive_config,
             utility_request,
@@ -1252,6 +1384,7 @@ impl KernelRuntimeState {
         if !store.update(&execution.operation_id, attempt, |entry| {
             entry.execution.definition = Some(definition.clone());
             entry.status.definition_digest = Some(definition.digest());
+            entry.status.phase = ProjectEnvironmentSetupPhase::Validating;
             entry.status.progress_percent = 55;
             entry.status.message =
                 Some("target definition recorded; running kernel validation".to_string());
@@ -1276,15 +1409,7 @@ impl KernelRuntimeState {
         if store.is_cancelled(&execution.operation_id, attempt) {
             return;
         }
-        let validation_passed = validation.worker_id == execution.target_worker_id
-            && validation.platform == execution.target_platform
-            && validation.commands.len() == definition.validation_commands.len()
-            && validation.passed()
-            && validation
-                .commands
-                .iter()
-                .zip(definition.validation_commands.iter())
-                .all(|(result, command)| result.command_digest == command_digest(command));
+        let validation_passed = validation_passed_for_execution(&execution, &definition, &validation);
         let _ = store.update(&execution.operation_id, attempt, |entry| {
             entry.status.validation = Some(validation.clone());
             entry.status.progress_percent = 85;
@@ -1329,17 +1454,15 @@ impl KernelRuntimeState {
         });
     }
 
-    async fn validate_definition_on_worker(
+    fn prepare_worker_execution_context(
         &self,
         execution: &SetupExecution,
-        attempt: u32,
-        definition: &ProjectEnvironmentDefinition,
         provider_run: &RuntimeProviderRun,
-    ) -> Result<ProjectEnvironmentValidation, DaemonError> {
-        // Validation is a worker-kernel operation, not a home-kernel shell
-        // capability. The confirmed receipt is the worker isolation boundary;
-        // the pinned provider run supplies the same prepared cwd/PATH and the
-        // child receives no kernel, vault, provider credential, or control env.
+    ) -> Result<WorkerExecutionContext, DaemonError> {
+        // Both recipe application and validation are worker-kernel operations.
+        // Keep the confirmed receipt, provider binding, canonical worktree, and
+        // sanitized environment checks shared so a reuse path cannot weaken the
+        // home-kernel boundary.
         let config = self.owned.config_projection.snapshot();
         ensure_worker_validation_boundary(&config)?;
         let worker_id = config.host_machine_id;
@@ -1368,11 +1491,9 @@ impl KernelRuntimeState {
             || current_provider_run.working_directory() != provider_run.working_directory()
         {
             return Err(setup_error(
-                "prepared provider context changed before worker validation",
+                "prepared provider context changed before worker setup",
             ));
         }
-        let commands = definition.validation_commands.clone();
-        let operation_id = execution.operation_id.clone();
         let workspace_root = canonical_worker_workspace(
             &execution.workspace_id,
             std::env::var_os("CHARIOX_HOME").as_deref(),
@@ -1390,7 +1511,61 @@ impl KernelRuntimeState {
                 "prepared provider context uses a different worker worktree",
             ));
         }
-        let environment = worker_validation_environment(provider_run);
+        Ok(WorkerExecutionContext {
+            worker_id,
+            platform,
+            workspace_root,
+            environment: worker_validation_environment(provider_run),
+        })
+    }
+
+    async fn apply_definition_on_worker(
+        &self,
+        execution: &SetupExecution,
+        attempt: u32,
+        definition: &ProjectEnvironmentDefinition,
+        provider_run: &RuntimeProviderRun,
+    ) -> Result<bool, DaemonError> {
+        let context = self.prepare_worker_execution_context(execution, provider_run)?;
+        let commands = definition
+            .setup_steps
+            .iter()
+            .map(|step| step.command.clone())
+            .collect::<Vec<_>>();
+        let operation_id = execution.operation_id.clone();
+        let cancellation = self.owned.project_environment_setups.clone();
+        let guard = cancellation
+            .begin_execution(&operation_id, attempt)
+            .ok_or_else(|| setup_error("setup attempt is no longer executing"))?;
+        tokio::task::spawn_blocking(move || {
+            // The blocking commands own this guard even if their async waiter exits.
+            let _guard = guard;
+            run_worker_setup_steps(
+                &commands,
+                &context.workspace_root,
+                &context.environment,
+                || cancellation.is_cancelled(&operation_id, attempt),
+            )
+        })
+        .await
+        .map_err(|error| setup_error(&format!("worker setup task failed: {error}")))?
+        .map_err(|error| setup_error(&error))
+    }
+
+    async fn validate_definition_on_worker(
+        &self,
+        execution: &SetupExecution,
+        attempt: u32,
+        definition: &ProjectEnvironmentDefinition,
+        provider_run: &RuntimeProviderRun,
+    ) -> Result<ProjectEnvironmentValidation, DaemonError> {
+        let context = self.prepare_worker_execution_context(execution, provider_run)?;
+        let worker_id = context.worker_id;
+        let platform = context.platform;
+        let commands = definition.validation_commands.clone();
+        let operation_id = execution.operation_id.clone();
+        let workspace_root = context.workspace_root;
+        let environment = context.environment;
         let cancellation = self.owned.project_environment_setups.clone();
         let guard = cancellation
             .begin_execution(&operation_id, attempt)
@@ -1399,17 +1574,18 @@ impl KernelRuntimeState {
             // The blocking command owns this guard even if its async waiter exits.
             let _guard = guard;
             let started = Instant::now();
+            let overall_deadline = started + VALIDATION_TOTAL_TIMEOUT;
             let mut results = Vec::with_capacity(commands.len());
             for command in commands {
                 if cancellation.is_cancelled(&operation_id, attempt)
-                    || started.elapsed() >= VALIDATION_TOTAL_TIMEOUT
+                    || overall_deadline.saturating_duration_since(Instant::now()).is_zero()
                 {
                     break;
                 }
                 let result =
                     run_worker_validation_command(&command, &workspace_root, &environment, || {
                         cancellation.is_cancelled(&operation_id, attempt)
-                    });
+                    }, Some(overall_deadline));
                 match result {
                     Ok((exit_code, stdout_bytes, stderr_bytes)) => {
                         results.push(ProjectEnvironmentCommandResult {
@@ -1506,6 +1682,19 @@ mod tests {
             .begin(changed)
             .expect_err("same id with changed input must fail");
         assert!(error.to_string().contains("different setup request"));
+    }
+
+    #[test]
+    fn reusable_definition_must_match_the_requested_worker_platform() {
+        let error = validate_setup_definition(
+            execution().definition,
+            "linux-aarch64",
+            &[],
+        )
+        .expect_err("a recipe for another worker platform must be rejected");
+        assert!(error
+            .to_string()
+            .contains("environment definition targets a different platform"));
     }
 
     #[test]
@@ -2213,7 +2402,7 @@ mod tests {
             test ! -w "${CHARIOX_MANAGED_KERNEL_BINARY:-/no-worker-kernel}"
         "#;
         let (exit_code, _, _) =
-            run_worker_validation_command(command, &workspace, &environment, || false)
+            run_worker_validation_command(command, &workspace, &environment, || false, None)
                 .expect("worker validation shell should execute");
         assert_eq!(
             exit_code, 0,
@@ -2262,6 +2451,7 @@ mod tests {
             &workspace,
             &environment,
             || false,
+            None,
         )
         .expect("worker validation shell should execute");
         assert_eq!(exit_code, 0, "installed worker-local tool must resolve");
