@@ -219,6 +219,19 @@ impl DaemonApp {
             )?;
             return Err(error);
         }
+        if let Some(provider_run_id) = prompt.durable_delivery_provider_run_id() {
+            let owns_prompt_run = self.providers.get_run(provider_run_id).is_ok_and(|run| {
+                run.session_id() == session_id && run.agent_instance_id() == Some(agent_id)
+            });
+            if owns_prompt_run {
+                self.pending_structured_output_records
+                    .reset_poll_failures_if_prompt_changed(
+                        provider_run_id,
+                        prompt.id(),
+                        crate::session::unix_epoch_ms(),
+                    );
+            }
+        }
         Ok(prompt)
     }
 
