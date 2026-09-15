@@ -392,12 +392,33 @@ async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
     );
 
     let expected_merge_key = format!("prompt:{}", active.id());
-    let replacement_history = runtime
-        .owned
-        .operational_history_store
-        .load_session_events(&session_id, Some(&agent_id))
-        .unwrap()
-        .into_iter()
+    // Promotion schedules this history append on `spawn_blocking`; wait for
+    // the authoritative operational event rather than racing the writer.
+    let mut operational_history = Vec::new();
+    for _ in 0..100 {
+        operational_history = runtime
+            .owned
+            .operational_history_store
+            .load_session_events(&session_id, Some(&agent_id))
+            .unwrap();
+        let replacement_count = operational_history
+            .iter()
+            .filter(|event| {
+                event
+                    .metadata
+                    .get("merge_key")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(expected_merge_key.as_str())
+            })
+            .count();
+        if replacement_count > 0 {
+            break;
+        }
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let replacement_history = operational_history
+        .iter()
         .filter(|event| {
             event
                 .metadata
@@ -409,6 +430,26 @@ async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
     assert_eq!(
         replacement_history, 1,
         "the replacement prompt must have one canonical history entry"
+    );
+    let replacement_event = operational_history
+        .iter()
+        .find(|event| {
+            event
+                .metadata
+                .get("merge_key")
+                .and_then(serde_json::Value::as_str)
+                == Some(expected_merge_key.as_str())
+        })
+        .expect("the replacement operational history event should be present");
+    assert_eq!(
+        replacement_event.kind,
+        crate::history::HistoryEventKind::UserPrompt,
+        "replacement history must be a user-prompt event"
+    );
+    assert_eq!(
+        replacement_event.prompt_id.as_deref(),
+        Some(active.id()),
+        "replacement history must retain the promoted prompt identity"
     );
 }
 
