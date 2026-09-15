@@ -194,7 +194,15 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
         }],
         validation_commands: vec![command.clone()],
     };
-    let provider_fixture = UtilityProviderFixture::start(definition.clone());
+    let utility_definition = match scenario {
+        DefinitionScenario::SuppliedSetupFailure => {
+            let mut repaired = definition.clone();
+            repaired.setup_steps[0].command = "touch setup-repaired; command -v sh".to_string();
+            repaired
+        }
+        DefinitionScenario::Supplied | DefinitionScenario::Generated => definition.clone(),
+    };
+    let provider_fixture = UtilityProviderFixture::start(utility_definition);
 
     let mut config = DaemonConfig::for_tests();
     config.daemon_id = "worker-kernel".into();
@@ -426,8 +434,7 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
         .expect("Ready setup should persist the measured definition");
     if matches!(scenario, DefinitionScenario::SuppliedSetupFailure) {
         assert_eq!(
-            persisted.setup_steps[0].command,
-            "touch setup-repaired; command -v sh",
+            persisted.setup_steps[0].command, "touch setup-repaired; command -v sh",
             "a successful repair must persist the repeatable definition returned by the utility"
         );
 

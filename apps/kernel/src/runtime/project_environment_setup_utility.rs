@@ -56,6 +56,33 @@ pub(crate) fn parse_project_environment_setup_utility_output(
     expected: Option<&ProjectEnvironmentDefinition>,
     target_platform: &str,
 ) -> Result<ProjectEnvironmentDefinition, DaemonError> {
+    parse_project_environment_setup_utility_output_with_policy(
+        output,
+        expected,
+        target_platform,
+        false,
+    )
+}
+
+pub(crate) fn parse_project_environment_setup_utility_output_for_repair(
+    output: &str,
+    expected: Option<&ProjectEnvironmentDefinition>,
+    target_platform: &str,
+) -> Result<ProjectEnvironmentDefinition, DaemonError> {
+    parse_project_environment_setup_utility_output_with_policy(
+        output,
+        expected,
+        target_platform,
+        true,
+    )
+}
+
+fn parse_project_environment_setup_utility_output_with_policy(
+    output: &str,
+    expected: Option<&ProjectEnvironmentDefinition>,
+    target_platform: &str,
+    allow_definition_revision: bool,
+) -> Result<ProjectEnvironmentDefinition, DaemonError> {
     let json = extract_json_object(output).ok_or_else(|| DaemonError::LocalTransport {
         operation: "run project environment setup utility",
         message: "project environment setup utility did not return a JSON object".to_string(),
@@ -114,7 +141,7 @@ pub(crate) fn parse_project_environment_setup_utility_output(
     let definition = match expected {
         Some(expected) => {
             let returned = parsed.definition.with_origin(expected.origin);
-            if returned != *expected {
+            if !allow_definition_revision && returned != *expected {
                 return Err(DaemonError::LocalTransport {
                     operation: "run project environment setup utility",
                     message: "utility changed the selected environment definition".to_string(),
@@ -258,5 +285,36 @@ mod tests {
         )
         .expect_err("readiness without a validation command should fail");
         assert!(error.to_string().contains("at least one validation"));
+    }
+
+    #[test]
+    fn repair_parser_accepts_revised_definition_but_preserves_selected_origin() {
+        let mut expected = definition();
+        expected.origin = ProjectEnvironmentDefinitionOrigin::UserAuthored;
+        let mut repaired = expected.clone();
+        repaired.origin = ProjectEnvironmentDefinitionOrigin::UtilityGenerated;
+        repaired.setup_steps[0].command =
+            "rustup toolchain install stable --profile minimal".into();
+        let output = serde_json::json!({"definition": repaired});
+
+        let parsed = parse_project_environment_setup_utility_output_for_repair(
+            &output.to_string(),
+            Some(&expected),
+            "linux-x86_64",
+        )
+        .expect("repair output should be allowed to revise a failed definition");
+        assert_eq!(parsed.setup_steps, repaired.setup_steps);
+        assert_eq!(
+            parsed.origin,
+            ProjectEnvironmentDefinitionOrigin::UserAuthored
+        );
+
+        let error = parse_project_environment_setup_utility_output(
+            &output.to_string(),
+            Some(&expected),
+            "linux-x86_64",
+        )
+        .expect_err("ordinary utility output must retain strict selected-definition equality");
+        assert!(error.to_string().contains("changed the selected"));
     }
 }
