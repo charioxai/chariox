@@ -6,7 +6,7 @@ use crate::local::{
 
 #[test]
 fn room_environment_placement_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 331);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 332);
     let request = LocalDaemonRequest::BindRoomEnvironmentSlice(BindRoomEnvironmentSliceRequest {
         session_id: "session-1".into(),
         slice_ref: "desktop".into(),
@@ -50,7 +50,10 @@ fn room_environment_placement_shapes_are_versioned() {
     let inventory_request_wire = serde_json::json!({"GetRoomEnvironmentResourceInventory": {
         "session_id": "session-1", "slice_id": "slice-1"
     }});
-    assert_eq!(serde_json::to_value(&inventory_request).unwrap(), inventory_request_wire);
+    assert_eq!(
+        serde_json::to_value(&inventory_request).unwrap(),
+        inventory_request_wire
+    );
     assert_eq!(
         serde_json::from_value::<LocalDaemonRequest>(inventory_request_wire).unwrap(),
         inventory_request
@@ -73,7 +76,10 @@ fn room_environment_placement_shapes_are_versioned() {
             "profile_ids": ["profile-sha256-41"]
         }
     }});
-    assert_eq!(serde_json::to_value(&inventory_response).unwrap(), inventory_response_wire);
+    assert_eq!(
+        serde_json::to_value(&inventory_response).unwrap(),
+        inventory_response_wire
+    );
     assert_eq!(
         serde_json::from_value::<LocalDaemonResponse>(inventory_response_wire).unwrap(),
         inventory_response

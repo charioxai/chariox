@@ -29,7 +29,7 @@ const upgradeState = join(repositoryRoot, "deploy/managed-kernel/managed-kernel-
 const managedService = join(repositoryRoot, "deploy/managed-kernel/chariox-managed-bootstrap.service")
 const serviceName = "chariox-managed-bootstrap.service"
 
-test("repository release policy permits deployed protocol 325 and intermediates 326 through 330 to 331 upgrade and rollback", async (context) => {
+test("repository release policy permits deployed protocol 325 and intermediates 326 through 331 to 332 upgrade and rollback", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-release-policy-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const current = join(root, "current")
@@ -38,18 +38,20 @@ test("repository release policy permits deployed protocol 325 and intermediates 
   await mkdir(current)
   await put(join(target, policyPath), await readFile(join(repositoryRoot, "apps/kernel/managed-upgrade-protocol-transitions.json")))
   for (const args of [
-    [current, "325", target, "331"],
-    [target, "331", current, "325"],
-    [current, "326", target, "331"],
-    [target, "331", current, "326"],
-    [current, "327", target, "331"],
-    [target, "331", current, "327"],
-    [current, "328", target, "331"],
-    [target, "331", current, "328"],
-    [current, "329", target, "331"],
-    [target, "331", current, "329"],
-    [current, "330", target, "331"],
-    [target, "331", current, "330"],
+    [current, "325", target, "332"],
+    [target, "332", current, "325"],
+    [current, "326", target, "332"],
+    [target, "332", current, "326"],
+    [current, "327", target, "332"],
+    [target, "332", current, "327"],
+    [current, "328", target, "332"],
+    [target, "332", current, "328"],
+    [current, "329", target, "332"],
+    [target, "332", current, "329"],
+    [current, "330", target, "332"],
+    [target, "332", current, "330"],
+    [current, "331", target, "332"],
+    [target, "332", current, "331"],
   ]) {
     const result = spawnSync(process.execPath, [upgradeState, "validate-protocol-transition", ...args], { encoding: "utf8" })
     assert.equal(result.status, 0, result.stderr)
@@ -1016,14 +1018,14 @@ test("managed kernel upgrade requires the exact confirmed registered-kernel rece
   assert.match(result.stderr, /not a confirmed registered-kernel receipt/)
 })
 
-test("managed kernel upgrade accepts signed direct deployed protocol 325 to 331 transition and rollback", async (context) => {
+test("managed kernel upgrade accepts signed direct deployed protocol 325 to 332 transition and rollback", async (context) => {
   const harness = await makeHarness(context, {
-    targetProtocol: 331,
+    targetProtocol: 332,
     targetTransitionPolicy: {
       schemaVersion: 1,
-      protocol: 331,
-      upgradeFrom: [325, 326, 327, 328, 329, 330, 331],
-      rollbackTo: [325, 326, 327, 328, 329, 330, 331],
+      protocol: 332,
+      upgradeFrom: [325, 326, 327, 328, 329, 330, 331, 332],
+      rollbackTo: [325, 326, 327, 328, 329, 330, 331, 332],
     },
   })
   const result = harness.run()

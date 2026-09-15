@@ -330,6 +330,17 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                             ],
                         ),
                         evidence(
+                            "apps/kernel/src/local/api/tests/protocol_shapes/managed_context.rs",
+                            &[
+                                "LOCAL_DAEMON_PROTOCOL_VERSION",
+                                "ManagedContextTransferStatus",
+                                "completed_receipt_uses_public_camel_case_shape",
+                                "transferId",
+                                "archiveSha256",
+                                "receiptSha256",
+                            ],
+                        ),
+                        evidence(
                             "packages/kernel-client/src/ipc-room-environment-requests.test.ts",
                             &[
                                 "LOCAL_DAEMON_PROTOCOL_VERSION",
