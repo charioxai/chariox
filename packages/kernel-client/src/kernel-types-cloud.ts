@@ -130,6 +130,7 @@ export type SliceRecord = {
   name: string
   owner_kernel_id: string
   owner_machine_id: string
+  environment_session_id?: string | null
   session_id?: string | null
   session_ids?: string[]
   agent_ids?: string[]
@@ -205,6 +206,8 @@ export type SliceBackupRecord = {
   home_archive_path: string
   created_at_ms: number
   size_bytes?: number | null
+  home_archive_sha256?: string | null
+  image_id?: string | null
 }
 
 export type SliceLocalDockerPorts = {
@@ -243,13 +246,18 @@ export type SliceRelayEndpoint = {
   private?: boolean
 }
 
+export type SliceDisplayBackend = "novnc" | "selkies"
+
 export type SliceDisplayEndpoint = {
   slice_id: string
-  kind: "novnc" | "chariox_viewer" | "external"
+  kind: SliceDisplayBackend | "chariox_viewer" | "external"
   url: string
   access: "local" | "tunnel" | "public"
   expires_at_ms?: number | null
   capabilities?: string[]
+  stream_protocol?: string | null
+  stream_id?: string | null
+  peer_public_key?: string | null
 }
 
 export type PairedClientRecord = {

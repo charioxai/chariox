@@ -132,6 +132,50 @@ fn chariox_home_owns_config_identity_state_and_runtime_paths() {
 }
 
 #[test]
+fn relay_peer_public_key_claim_survives_restart_and_rejects_rebinding() {
+    let _guard = crate::env_lock::lock();
+    let temp_home = std::env::temp_dir().join(format!(
+        "chariox-relay-peer-key-test-{}",
+        generate_identity_suffix()
+    ));
+    let old_chariox_home = env::var_os("CHARIOX_HOME");
+    unsafe {
+        env::set_var("CHARIOX_HOME", &temp_home);
+    }
+
+    let first_private_key = relay_crypto::generate_private_key_base64();
+    let first_public_key = relay_crypto::public_key_from_private_key_base64(&first_private_key)
+        .expect("first public key should derive");
+    let second_private_key = relay_crypto::generate_private_key_base64();
+    let second_public_key = relay_crypto::public_key_from_private_key_base64(&second_private_key)
+        .expect("second public key should derive");
+
+    assert!(
+        DaemonConfig::claim_relay_peer_public_key("worker-1", &first_public_key)
+            .expect("first authenticated key should persist")
+    );
+    assert!(
+        DaemonConfig::claim_relay_peer_public_key("worker-1", &first_public_key)
+            .expect("the same authenticated key should be idempotent")
+    );
+    assert!(
+        !DaemonConfig::claim_relay_peer_public_key("worker-1", &second_public_key)
+            .expect("a different key should be rejected")
+    );
+    assert_eq!(
+        DaemonConfig::relay_peer_public_key_entries()
+            .get("worker-1")
+            .map(String::as_str),
+        Some(first_public_key.as_str())
+    );
+
+    unsafe {
+        restore_env_var("CHARIOX_HOME", old_chariox_home);
+    }
+    let _ = fs::remove_dir_all(temp_home);
+}
+
+#[test]
 fn renamed_vault_backend_deserializes_to_the_only_supported_encrypted_backend() {
     let config = toml::from_str::<CharioxUserConfig>(
         r#"

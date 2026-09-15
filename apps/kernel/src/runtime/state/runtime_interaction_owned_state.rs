@@ -54,9 +54,6 @@ impl KernelRuntimeOwnedState {
             });
         }
         session.add_active_interaction(interaction.clone());
-        self.restore_session_and_publish_projection(session)?;
-        self.terminal_stream
-            .notify_terminal_projection_change(session_id);
         self.pending_interactions.write().insert(
             interaction.id().to_string(),
             super::PendingInteraction {
@@ -64,6 +61,12 @@ impl KernelRuntimeOwnedState {
                 responder: std::sync::Arc::new(std::sync::Mutex::new(Some(responder))),
             },
         );
+        if let Err(error) = self.restore_session_and_publish_projection(session) {
+            self.pending_interactions.write().remove(interaction.id());
+            return Err(error);
+        }
+        self.terminal_stream
+            .notify_terminal_projection_change(session_id);
         crate::logging::debug_with_fields(
             "runtime.interaction",
             "registered runtime interaction",

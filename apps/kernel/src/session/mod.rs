@@ -2,6 +2,7 @@ mod agent_config;
 mod agent_prompt_scheduling;
 mod metaagent_task;
 mod owner;
+mod project_environment;
 mod prompt_queue;
 mod prompt_runtime;
 mod queued_metaagent_task;
@@ -35,13 +36,28 @@ pub use agent_config::{
     effective_agent_user_authority, EffectiveAgentExecutionConfig, EffectiveAgentUserAuthority,
 };
 pub(crate) use owner::{SessionStateOwner, SessionStateReader, SessionStateStore};
+pub use project_environment::{
+    ProjectEnvironmentDefinition, ProjectEnvironmentDefinitionOrigin,
+    ProjectEnvironmentDefinitionSource, ProjectEnvironmentInput, ProjectEnvironmentInputKind,
+    ProjectEnvironmentSetupStep, ProjectEnvironmentSetupStepKind,
+    PROJECT_ENVIRONMENT_DEFINITION_SCHEMA_VERSION,
+};
 pub use room_environment::{
-    ActionAdmission, CanonicalViewport, EnvironmentAction, EnvironmentActionRequest,
-    EnvironmentActionState, EnvironmentActionTerminal, EnvironmentActor, EnvironmentActorKind,
-    EnvironmentActorPresence, EnvironmentComponent, EnvironmentComponentHealth,
-    EnvironmentComponentHealthState, EnvironmentError, EnvironmentEvent, EnvironmentEventKind,
-    EnvironmentLifecycle, EnvironmentMode, EnvironmentReplay, EnvironmentTab, InputOwnership,
-    InputTarget, RoomEnvironment, RoomEnvironmentSnapshot, TakeoverOutcome,
+    agent_environment_actor_id, human_environment_actor_id, human_environment_actor_label,
+    ActionAdmission, ActionCancellationOutcome, CanonicalViewport, EnvironmentAction,
+    EnvironmentActionArguments, EnvironmentActionCancellationReason, EnvironmentActionFailureCode,
+    EnvironmentActionHistoryPage, EnvironmentActionOutcome, EnvironmentActionRequest,
+    EnvironmentActionState, EnvironmentActionTerminal, EnvironmentActor, EnvironmentActorColor,
+    EnvironmentActorKind, EnvironmentActorPresence, EnvironmentComponent,
+    EnvironmentComponentHealth, EnvironmentComponentHealthState, EnvironmentError,
+    EnvironmentEvent, EnvironmentEventKind, EnvironmentLifecycle, EnvironmentMode,
+    EnvironmentPointer, EnvironmentPointerButton, EnvironmentPointerPosition, EnvironmentReplay,
+    EnvironmentTab, InputOwnership, InputTarget, PendingInputTakeover, RoomEnvironment,
+    RoomEnvironmentSnapshot, TakeoverOutcome,
+};
+pub(crate) use room_environment::{
+    EnvironmentElementTarget, EnvironmentTabObservation, EnvironmentTabRuntimeBinding,
+    RoomEnvironmentRegistry,
 };
 pub use runtime_project::{
     RuntimeProject, RuntimeProjectKind, RuntimeProjectStatus, SessionProjectSelection,

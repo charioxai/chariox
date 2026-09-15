@@ -3,6 +3,7 @@ mod context_plan;
 mod release;
 mod state;
 mod supervisor;
+pub mod worker;
 
 use std::thread;
 use std::time::Duration;
@@ -24,7 +25,7 @@ pub use context_plan::ManagedKernelContextPlan;
 use release::{verify_release, VerifiedRelease};
 use state::{
     remove_envelope, valid_identifier, valid_secret, BootstrapConfig, BootstrapEnvelope,
-    BootstrapReceipt, BootstrapReceiptStatus,
+    BootstrapReceipt, BootstrapReceiptDocument, BootstrapReceiptStatus, ManagedBootstrapEnvelope,
 };
 
 const MIN_PREPARE_RETRY_DELAY: Duration = Duration::from_secs(1);
@@ -46,7 +47,7 @@ struct PreparedManagedKernel {
 
 #[derive(Debug)]
 struct PendingConfirmation {
-    envelope: BootstrapEnvelope,
+    envelope: ManagedBootstrapEnvelope,
     receipt: BootstrapReceipt,
     profile: PersistedCloudRelayProfile,
 }
@@ -100,7 +101,10 @@ pub(crate) fn confirmed_managed_kernel_registration_from_env(
         return Ok(None);
     }
     let config = BootstrapConfig::from_env()?;
-    let Some(receipt) = BootstrapReceipt::read(&config.receipt_path)? else {
+    let Some(receipt) = BootstrapReceiptDocument::read(&config.receipt_path)? else {
+        return Ok(None);
+    };
+    let BootstrapReceiptDocument::ManagedEnvironment(receipt) = receipt else {
         return Ok(None);
     };
     if receipt.status != BootstrapReceiptStatus::Confirmed {
@@ -119,41 +123,37 @@ fn prepare_managed_kernel(
     cloud: &impl BootstrapCloudClient,
     now: DateTime<Utc>,
 ) -> Result<PreparedManagedKernel, DaemonError> {
-    let receipt = BootstrapReceipt::read(&config.receipt_path)?;
+    // Legacy worker records are readable only for an explicit rejection. They
+    // must never create an ordinary machine identity or consume a Cloud grant.
+    let receipt = match BootstrapReceiptDocument::read(&config.receipt_path)? {
+        Some(BootstrapReceiptDocument::ManagedEnvironment(value)) => Some(value),
+        Some(BootstrapReceiptDocument::DisposableWorker(_)) => return Err(legacy_worker_error()),
+        None => None,
+    };
     let envelope = if config.envelope_path.exists() {
-        Some(BootstrapEnvelope::read(&config.envelope_path)?)
+        match BootstrapEnvelope::read(&config.envelope_path)? {
+            BootstrapEnvelope::ManagedEnvironment(value) => Some(value),
+            BootstrapEnvelope::DisposableWorker(_) => return Err(legacy_worker_error()),
+        }
     } else {
         None
     };
-    if receipt.is_none()
-        && envelope
-            .as_ref()
-            .is_some_and(|value| value.expires_at().is_ok_and(|expiry| expiry <= now))
-    {
+    if state::disposable_worker_release_override_path(&config.receipt_path)?.exists() {
         return Err(bootstrap_error(
-            "managed bootstrap token expired before exchange",
+            "disposable worker release override has no matching worker receipt",
         ));
     }
-    let expected_digest = envelope
+    let expected_digest = receipt
         .as_ref()
         .map(|value| value.runtime_release_digest.as_str())
         .or_else(|| {
-            receipt
+            envelope
                 .as_ref()
                 .map(|value| value.runtime_release_digest.as_str())
         })
         .ok_or_else(|| {
             bootstrap_error("managed bootstrap envelope and receipt are both missing")
         })?;
-    if let (Some(envelope), Some(receipt)) = (&envelope, &receipt) {
-        if envelope.environment_id != receipt.environment_id
-            || envelope.runtime_release_digest != receipt.runtime_release_digest
-        {
-            return Err(bootstrap_error(
-                "managed bootstrap envelope conflicts with its receipt",
-            ));
-        }
-    }
     let release = verify_release(
         &config.manifest_path,
         &config.signature_path,
@@ -163,18 +163,24 @@ fn prepare_managed_kernel(
     )?;
     let identity =
         load_or_create_managed_runtime_identity(&config.kernel_host, config.kernel_port)?;
-
-    let confirmation = match receipt {
-        Some(receipt) => resume_registration(config, envelope.as_ref(), receipt, &identity)?,
-        None => begin_registration(
-            config,
-            cloud,
-            now,
-            envelope
-                .as_ref()
-                .ok_or_else(|| bootstrap_error("managed bootstrap envelope is missing"))?,
-            &identity,
-        )?,
+    let confirmation = match (receipt, envelope) {
+        (Some(receipt), envelope) => {
+            if envelope.as_ref().is_some_and(|value| {
+                value.environment_id != receipt.environment_id
+                    || value.runtime_release_digest != receipt.runtime_release_digest
+            }) {
+                return Err(bootstrap_error(
+                    "managed bootstrap envelope conflicts with its receipt",
+                ));
+            }
+            resume_registration(config, envelope.as_ref(), receipt, &identity)?
+        }
+        (None, Some(envelope)) => begin_registration(config, cloud, now, &envelope, &identity)?,
+        (None, None) => {
+            return Err(bootstrap_error(
+                "managed bootstrap envelope and receipt are both missing",
+            ))
+        }
     };
     Ok(PreparedManagedKernel {
         release,
@@ -182,11 +188,15 @@ fn prepare_managed_kernel(
     })
 }
 
+fn legacy_worker_error() -> DaemonError {
+    bootstrap_error("legacy disposable worker bootstrap is unsupported; preserve the records and reprovision through the allocation-worker service")
+}
+
 fn begin_registration(
     config: &BootstrapConfig,
     cloud: &impl BootstrapCloudClient,
     now: DateTime<Utc>,
-    envelope: &BootstrapEnvelope,
+    envelope: &ManagedBootstrapEnvelope,
     identity: &ManagedRuntimeIdentity,
 ) -> Result<Option<PendingConfirmation>, DaemonError> {
     if envelope.expires_at()? <= now {
@@ -229,7 +239,7 @@ fn begin_registration(
 
 fn resume_registration(
     config: &BootstrapConfig,
-    envelope: Option<&BootstrapEnvelope>,
+    envelope: Option<&ManagedBootstrapEnvelope>,
     receipt: BootstrapReceipt,
     identity: &ManagedRuntimeIdentity,
 ) -> Result<Option<PendingConfirmation>, DaemonError> {
@@ -279,7 +289,7 @@ fn confirm_registration(
     config: &BootstrapConfig,
     cloud: &impl BootstrapCloudClient,
     now: DateTime<Utc>,
-    envelope: &BootstrapEnvelope,
+    envelope: &ManagedBootstrapEnvelope,
     mut receipt: BootstrapReceipt,
     profile: &PersistedCloudRelayProfile,
 ) -> Result<(), DaemonError> {
@@ -307,7 +317,7 @@ fn confirm_registration(
 }
 
 fn validate_exchange_response(
-    envelope: &BootstrapEnvelope,
+    envelope: &ManagedBootstrapEnvelope,
     identity: &ManagedRuntimeIdentity,
     response: &cloud::ExchangeResponse,
 ) -> Result<(), DaemonError> {

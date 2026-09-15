@@ -10,6 +10,45 @@ impl KernelRuntimeState {
         message: &str,
         project_failure_output: bool,
     ) -> Result<(), DaemonError> {
+        self.fail_owned_provider_prompt_with_termination(
+            session_id,
+            provider_run_id,
+            message,
+            project_failure_output,
+            None,
+        )
+        .await
+    }
+
+    pub(super) async fn fail_owned_provider_prompt_with_termination(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        message: &str,
+        project_failure_output: bool,
+        provider_termination: Option<crate::provider::ProviderRunTermination>,
+    ) -> Result<(), DaemonError> {
+        self.fail_owned_provider_prompt_with_termination_if_matches(
+            session_id,
+            provider_run_id,
+            message,
+            project_failure_output,
+            None,
+            provider_termination,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    pub(super) async fn fail_owned_provider_prompt_with_termination_if_matches(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        message: &str,
+        project_failure_output: bool,
+        expected_prompt_id: Option<&str>,
+        provider_termination: Option<crate::provider::ProviderRunTermination>,
+    ) -> Result<bool, DaemonError> {
         let owned = &self.owned;
         let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
         let agent_id = provider_run
@@ -18,33 +57,110 @@ impl KernelRuntimeState {
             .ok_or_else(|| DaemonError::AgentNotFound {
                 agent_id: "provider run has no agent".to_string(),
             })?;
+        let safe_message = crate::provider::sanitize_provider_diagnostic(message);
+        let safe_message = if safe_message.is_empty() {
+            "provider reported an error".to_string()
+        } else {
+            safe_message
+        };
+
+        let mut expected_active_prompt = None;
+        let mut expected_completion = None;
+        if let Some(expected_prompt_id) = expected_prompt_id {
+            let session = owned.session_store.get_session(session_id)?;
+            let Some(active_prompt) = owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &agent_id)
+            else {
+                return Ok(false);
+            };
+            if active_prompt.id() != expected_prompt_id || active_prompt.is_external() {
+                return Ok(false);
+            }
+            if self
+                .settle_leased_workflow_provider_failure_if_matches(
+                    session_id,
+                    &agent_id,
+                    provider_run_id,
+                    Some(expected_prompt_id),
+                    provider_termination.clone(),
+                )
+                .await?
+            {
+                let diagnosed = owned
+                    .provider_store
+                    .record_terminal_diagnostic(provider_run_id, message.to_string())?;
+                owned.provider_run_projection.update(diagnosed);
+                self.clear_failed_provider_resume_state_from_message(&provider_run, message)?;
+                self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run_id)
+                    .await;
+                return Ok(true);
+            }
+            let completion = match owned
+                .fail_local_prompt_without_advance_with_termination_if_matches(
+                    session_id,
+                    &agent_id,
+                    Some(provider_run_id),
+                    Some(expected_prompt_id),
+                    provider_termination.clone(),
+                ) {
+                Ok(completion) => completion,
+                Err(DaemonError::NoActivePrompt { .. }) => return Ok(false),
+                Err(error) => return Err(error),
+            };
+            let Some(completion) = completion else {
+                return Ok(false);
+            };
+            expected_active_prompt = Some(active_prompt);
+            expected_completion = Some(completion);
+        } else if self
+            .settle_leased_workflow_provider_failure(
+                session_id,
+                &agent_id,
+                provider_run_id,
+                provider_termination.clone(),
+            )
+            .await?
+        {
+            self.clear_failed_provider_resume_state_from_message(&provider_run, message)?;
+            self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run_id)
+                .await;
+            return Ok(true);
+        }
 
         self.clear_failed_provider_resume_state_from_message(&provider_run, message)?;
 
-        if self
-            .settle_leased_workflow_provider_failure(session_id, &agent_id, provider_run_id)
-            .await?
-        {
-            self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run_id)
-                .await;
-            return Ok(());
-        }
-
         let session = owned.session_store.get_session(session_id)?;
-        let Some(active_prompt) = owned
-            .prompt_state_owner
-            .active_prompt_for_agent(&session, &agent_id)
-        else {
-            return Ok(());
+        let active_prompt = if let Some(active_prompt) = expected_active_prompt {
+            active_prompt
+        } else {
+            let Some(active_prompt) = owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &agent_id)
+            else {
+                return Ok(false);
+            };
+            active_prompt
         };
         if active_prompt.is_external() {
             let _ = owned.clear_prompt_activity(provider_run_id);
             let _ = owned.sync_focused_provider_run_if_idle(session_id);
             let _ = owned.session_snapshot(session_id);
-            return Ok(());
+            return Ok(true);
+        }
+        if expected_prompt_id.is_some() {
+            let diagnosed = owned
+                .provider_store
+                .record_terminal_diagnostic(provider_run_id, message.to_string())?;
+            owned.provider_run_projection.update(diagnosed);
         }
         if project_failure_output {
-            owned.record_provider_failure_output(session_id, provider_run_id, &agent_id, message);
+            owned.record_provider_failure_output(
+                session_id,
+                provider_run_id,
+                &agent_id,
+                &safe_message,
+            );
         }
         self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run_id)
             .await;
@@ -53,7 +169,7 @@ impl KernelRuntimeState {
             &agent_id,
             &active_prompt,
             Some(provider_run_id),
-            message,
+            &safe_message,
         );
         let workflow_failed = active_prompt.workflow_run_id().is_some();
         if workflow_failed {
@@ -61,33 +177,36 @@ impl KernelRuntimeState {
                 session_id,
                 &active_prompt,
                 Some(provider_run_id),
-                message,
+                &safe_message,
             )?;
         }
-        let completion = owned.fail_local_prompt_without_advance(
-            session_id,
-            &agent_id,
-            Some(provider_run_id),
-        )?;
+        let completion = if let Some(completion) = expected_completion {
+            Some(completion)
+        } else {
+            owned.fail_local_prompt_without_advance_with_termination(
+                session_id,
+                &agent_id,
+                Some(provider_run_id),
+                provider_termination,
+            )?
+        };
         // Settle the failed turn first, then choose its successor provider before
         // preparing any queued work. Otherwise admission retries the exhausted
         // account and can return before automatic substitution is reached.
-        let substituted = if let Some(reason) =
-            crate::provider::classify_provider_substitutable_failure_text(
-                provider_run.adapter_key(),
-                message,
-            ) {
-            self.activate_substitute_after_provider_failure(
-                session_id,
-                &agent_id,
-                provider_run_id,
-                &reason,
-                None,
-            )
-            .await
-        } else {
-            false
-        };
+        if let Some(reason) = crate::provider::classify_provider_substitutable_failure_text(
+            provider_run.adapter_key(),
+            message,
+        ) {
+            let _ = self
+                .activate_substitute_after_provider_failure(
+                    session_id,
+                    &agent_id,
+                    provider_run_id,
+                    &reason,
+                    None,
+                )
+                .await;
+        }
         if workflow_failed {
             let dispatches = owned.workflow_maybe_start_next_queued_prompt(session_id);
             owned
@@ -105,13 +224,22 @@ impl KernelRuntimeState {
             .prompt_state_owner
             .peek_next_queued_prompt(&owned.session_store.get_session(session_id)?, &agent_id)
             .is_some();
-        if queued_prompt_pending && !substituted {
-            self.with_app_side_effect(|app| {
-                app.ensure_prompt_provider_run_for_agent(session_id, &agent_id)
-            })
-            .await?;
+        if queued_prompt_pending {
+            let started_next = self
+                .with_app_side_effect(|app| {
+                    app.ensure_prompt_provider_run_for_agent(session_id, &agent_id)?;
+                    app.advance_next_queued_prompt(session_id, &agent_id)
+                })
+                .await?;
+            if started_next.is_some() {
+                owned.agent_store.clear_local_prompt_error(&agent_id)?;
+                owned
+                    .agent_store
+                    .set_agent_state(&agent_id, crate::agent::AgentState::Working)?;
+                let _ = owned.session_snapshot(session_id)?;
+            }
         }
-        Ok(())
+        Ok(true)
     }
 
     fn clear_failed_provider_resume_state_from_message(
@@ -248,6 +376,25 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
         provider_run_id: &str,
+        provider_termination: Option<crate::provider::ProviderRunTermination>,
+    ) -> Result<bool, DaemonError> {
+        self.settle_leased_workflow_provider_failure_if_matches(
+            session_id,
+            agent_id,
+            provider_run_id,
+            None,
+            provider_termination,
+        )
+        .await
+    }
+
+    async fn settle_leased_workflow_provider_failure_if_matches(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+        expected_prompt_id: Option<&str>,
+        provider_termination: Option<crate::provider::ProviderRunTermination>,
     ) -> Result<bool, DaemonError> {
         let leased_context = self
             .with_app_side_effect(|app| {
@@ -258,15 +405,68 @@ impl KernelRuntimeState {
         let Some(_) = leased_context else {
             return Ok(false);
         };
+        if let Some(expected_prompt_id) = expected_prompt_id {
+            let session = self.owned.session_store.get_session(session_id)?;
+            let Some(active_prompt) = self
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, agent_id)
+            else {
+                return Ok(false);
+            };
+            if active_prompt.id() != expected_prompt_id {
+                return Ok(false);
+            }
+        }
         // The home learns failure through the same correlated, replayable runtime
         // projection as completion. Worker settlement must not wait for the home
         // to be reachable or admit another turn on this failed provider.
-        self.owned.fail_local_prompt_without_advance(
-            session_id,
-            agent_id,
-            Some(provider_run_id),
-        )?;
+        let completion = match self
+            .owned
+            .fail_local_prompt_without_advance_with_termination_if_matches(
+                session_id,
+                agent_id,
+                Some(provider_run_id),
+                expected_prompt_id,
+                provider_termination,
+            ) {
+            Ok(completion) => completion,
+            Err(DaemonError::NoActivePrompt { .. }) if expected_prompt_id.is_some() => {
+                return Ok(false)
+            }
+            Err(error) => return Err(error),
+        };
+        if completion.is_none() {
+            return Ok(false);
+        }
         Ok(true)
+    }
+
+    pub(super) async fn settle_repeated_structured_poll_failure_if_matches(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        expected_prompt_id: Option<&str>,
+        error: &DaemonError,
+    ) -> Result<bool, DaemonError> {
+        let Some(expected_prompt_id) = expected_prompt_id else {
+            return Ok(false);
+        };
+        let diagnostic =
+            format!("Structured provider output polling failed after repeated failures: {error}");
+        let termination = crate::provider::ProviderRunTermination::explicit_provider_error(
+            &diagnostic,
+            crate::session::unix_epoch_ms(),
+        );
+        self.fail_owned_provider_prompt_with_termination_if_matches(
+            session_id,
+            provider_run_id,
+            &diagnostic,
+            false,
+            Some(expected_prompt_id),
+            Some(termination),
+        )
+        .await
     }
 
     pub(super) async fn activate_substitute_after_provider_failure(

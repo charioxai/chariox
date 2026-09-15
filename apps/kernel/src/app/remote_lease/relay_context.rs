@@ -67,6 +67,27 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .map(|run| run.id().to_string()))
     }
 
+    pub(crate) fn leased_agent_provider_termination(
+        &self,
+        leased_agent_id: &str,
+        provider_run_id: &str,
+    ) -> Result<Option<crate::provider::ProviderRunTermination>, DaemonError> {
+        let leased_agent = self.app.leased_agents.get(leased_agent_id).ok_or_else(|| {
+            DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            }
+        })?;
+        Ok(self
+            .app
+            .completed_git_turn_snapshot_store()
+            .latest_projection_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .filter(|turn| turn.provider_run_id == provider_run_id)
+            .and_then(|turn| turn.provider_termination))
+    }
+
     pub(crate) fn leased_workflow_turn_context_for_provider_run(
         &self,
         provider_run_id: &str,

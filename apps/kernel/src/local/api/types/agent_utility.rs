@@ -1,9 +1,12 @@
 use super::*;
 
+use crate::session::ProjectEnvironmentDefinition;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentUtilityKind {
     WorkspaceCommitMessage,
     SemanticRecallSearch,
+    ProjectEnvironmentSetup,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,9 +33,21 @@ pub struct SemanticRecallSearchUtilityInput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct ProjectEnvironmentSetupUtilityInput {
+    pub project_id: String,
+    pub workspace_id: String,
+    pub target_worker_id: String,
+    pub target_platform: String,
+    pub definition: Option<ProjectEnvironmentDefinition>,
+    pub validation_commands: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentUtilityInput {
     WorkspaceCommitMessage(WorkspaceCommitMessageUtilityInput),
     SemanticRecallSearch(SemanticRecallSearchUtilityInput),
+    ProjectEnvironmentSetup(ProjectEnvironmentSetupUtilityInput),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +66,9 @@ pub enum AgentUtilityOutput {
     SemanticRecallSearch {
         answer: String,
         matches: Vec<SemanticRecallMatch>,
+    },
+    ProjectEnvironmentSetup {
+        definition: ProjectEnvironmentDefinition,
     },
 }
 

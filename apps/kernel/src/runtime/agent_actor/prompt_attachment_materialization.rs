@@ -1,14 +1,14 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use base64::Engine;
 
 use crate::error::DaemonError;
 use crate::session::PromptAttachment;
 
-pub(super) const INLINE_PROMPT_ATTACHMENT_DIR: &str = "chariox-terminal-prompt-attachments";
+pub(crate) const INLINE_PROMPT_ATTACHMENT_DIR: &str = "chariox-terminal-prompt-attachments";
 
-pub(super) fn materialize_inline_prompt_attachments(
+pub(crate) fn materialize_inline_prompt_attachments(
     session_id: &str,
     agent_id: &str,
     attachments: Vec<PromptAttachment>,
@@ -30,10 +30,7 @@ pub(super) fn materialize_inline_prompt_attachments(
                 .filename()
                 .map(sanitize_attachment_filename)
                 .unwrap_or_else(|| format!("attachment-{index}"));
-            let root = std::env::temp_dir()
-                .join(INLINE_PROMPT_ATTACHMENT_DIR)
-                .join(sanitize_path_component(session_id))
-                .join(sanitize_path_component(agent_id));
+            let root = inline_prompt_attachment_root(session_id, agent_id);
             fs::create_dir_all(&root).map_err(|error| DaemonError::LocalTransport {
                 operation: "create inline prompt attachment directory",
                 message: error.to_string(),
@@ -55,6 +52,13 @@ pub(super) fn materialize_inline_prompt_attachments(
             ))
         })
         .collect()
+}
+
+pub(crate) fn inline_prompt_attachment_root(session_id: &str, agent_id: &str) -> PathBuf {
+    std::env::temp_dir()
+        .join(INLINE_PROMPT_ATTACHMENT_DIR)
+        .join(sanitize_path_component(session_id))
+        .join(sanitize_path_component(agent_id))
 }
 
 fn sanitize_attachment_filename(value: &str) -> String {

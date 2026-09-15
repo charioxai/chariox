@@ -69,6 +69,12 @@ The target kernel:
 - preserves consumed receipts and launch targets across restart for idempotent
   replay.
 
+Receipt replay is transactional recovery only. After a successful import, the
+target kernel owns the imported accounts, Git credentials, repositories, Vault,
+and provider-native state. Normal launches do not resynchronize them from the
+source. Later changes happen through ordinary target-kernel operations or a new,
+explicitly authorized transfer.
+
 A retryable source or transport failure remains visible to the initiating client.
 The launch never falls back to Empty.
 
@@ -107,6 +113,20 @@ target's authoritative Workspace records.
 
 Managed slices accept the same repository topology. Slice reuse requires an exact
 topology match and never changes the parent-kernel ownership model.
+
+For a local Docker slice, explicitly selecting Empty development creates a blank,
+slice-owned workspace below the configured slice development storage root. It
+does not bind or copy the parent Workspace, even when the launch request includes
+that Workspace for Room association. The kernel persists the publication path,
+uses the existing managed publication access helper and broker, and maps provider
+execution to that path. Restart preserves workspace edits. Missing durable
+content or an invalid ownership receipt fails closed rather than replacing it
+with an empty directory. Delete removes only the owned publication.
+
+Legacy Empty slice records without a development storage root are not silently
+migrated or emptied. Recreate those slices explicitly after preserving any work;
+their parent Workspace is not removed by slice cleanup. Requests that omit the
+development selection retain their existing workspace behavior.
 
 Repository `AGENTS.md` and `CLAUDE.md` files remain normal repository content. A
 separate development environment-variable and secret layer is not implemented in

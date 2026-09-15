@@ -228,7 +228,20 @@ impl CommandRouter {
             self.config_projection.clone(),
             self.remote_relay_inventory_projection.clone(),
         )
-        .await
+        .await?;
+        let (_, workers) = self.remote_relay_inventory_projection.snapshot();
+        let authenticated_workers = {
+            let relay_state = self.relay_state.read().await;
+            workers
+                .into_iter()
+                .filter(|worker| worker_presence_is_authenticated(&relay_state, worker))
+                .collect::<Vec<_>>()
+        };
+        for worker in authenticated_workers {
+            self.runtime_state
+                .reconcile_authenticated_slice_worker_presence(&worker)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn session_snapshot_projection_for_attachment(
@@ -239,5 +252,44 @@ impl CommandRouter {
     ) -> Result<SessionSnapshotProjection, DaemonError> {
         self.runtime_state
             .session_snapshot_projection_for_attachment(session_id, attachment_id, last_event_id)
+    }
+}
+
+fn worker_presence_is_authenticated(
+    relay_state: &crate::transport::relay_client::RelayClientState,
+    worker: &chariox_relay::protocol::RelayKernelPresence,
+) -> bool {
+    relay_state
+        .pinned_peer_public_key(&worker.kernel_id)
+        .as_deref()
+        == Some(worker.public_key.as_str())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::worker_presence_is_authenticated;
+
+    #[test]
+    fn slice_health_reconciliation_requires_pinned_worker_presence() {
+        let mut relay_state = crate::transport::relay_client::RelayClientState::default();
+        relay_state.pin_peer_public_key("worker-1", "authenticated-key");
+        let mut worker = chariox_relay::protocol::RelayKernelPresence {
+            kernel_id: "worker-1".to_string(),
+            machine_id: "slice:slice-1".to_string(),
+            machine_alias: None,
+            relay_alias: None,
+            kernel_alias: None,
+            available_providers: vec!["codex".to_string()],
+            provider_accounts: Vec::new(),
+            capabilities: Vec::new(),
+            accepting_remote_leases: true,
+            leased_agent_count: 0,
+            local_session_count: 0,
+            public_key: "unauthenticated-key".to_string(),
+        };
+
+        assert!(!worker_presence_is_authenticated(&relay_state, &worker));
+        worker.public_key = "authenticated-key".to_string();
+        assert!(worker_presence_is_authenticated(&relay_state, &worker));
     }
 }

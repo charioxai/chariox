@@ -157,6 +157,14 @@ export function prepareManagedEnvironmentContextTransferRequest(environmentId: s
   return { PrepareManagedEnvironmentContextTransfer: { environmentId } } as const
 }
 
+export function prepareManagedEnvironmentGitCredentialEnrollmentRequest(input: {
+  readonly environmentId: string
+  readonly sourceTargetId: string
+  readonly gitCredentials: ManagedEnvironmentGitCredentials
+}) {
+  return { PrepareManagedEnvironmentGitCredentialEnrollment: input } as const
+}
+
 export function createManagedEnvironmentRequest(input: {
   readonly clientRequestId: string
   readonly name: string

@@ -1,0 +1,32 @@
+[Unit]
+Description=Chariox disposable worker kernel supervisor
+After=network-online.target
+Wants=network-online.target
+Conflicts=chariox-managed-bootstrap.service
+ConditionPathExists=/usr/local/bin/chariox-managed-bootstrap
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=chariox
+Group=chariox
+Environment=HOME=/var/lib/chariox/home
+Environment=CHARIOX_HOME=/var/lib/chariox/home
+Environment=CHARIOX_DISPOSABLE_WORKER_BOOTSTRAP_PATH=/var/lib/chariox/disposable-worker-bootstrap.json
+Environment=CHARIOX_MANAGED_RELEASE_MANIFEST=/usr/lib/chariox/release-manifest.json
+Environment=CHARIOX_MANAGED_RELEASE_SIGNATURE=/usr/lib/chariox/release-manifest.sig
+Environment=CHARIOX_MANAGED_RELEASE_PUBLIC_KEY=/usr/lib/chariox/release-public-key
+Environment=CHARIOX_MANAGED_KERNEL_BINARY=/usr/local/bin/chariox-kernel
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/local/bin/chariox-managed-bootstrap --disposable-worker
+Restart=always
+RestartSec=2s
+RestartSteps=8
+RestartMaxDelaySec=5min
+KillMode=control-group
+StateDirectory=chariox
+StateDirectoryMode=0700
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

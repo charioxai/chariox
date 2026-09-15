@@ -194,14 +194,17 @@ mod tests {
 
     mod agent_messaging;
     mod agent_prompt_schedules;
+    mod browser_import;
     mod credential_enrollment;
     mod interactive_command_admission;
+    mod lease_worker_authority;
     mod m16_runtime_extension_registration;
     mod m23_metaagent_runtime_tools;
     mod provider_projection;
     mod relay_leased_prompt_steer;
     mod remote_authorization;
     mod remote_workspace_live_sync_authorization;
+    mod room_environment_placement;
     mod runtime_persistence;
     mod session_actor_projection;
     mod session_lifecycle_projection;

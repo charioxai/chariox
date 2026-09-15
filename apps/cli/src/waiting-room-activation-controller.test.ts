@@ -176,6 +176,53 @@ test("waiting room activation creates and starts new headed slices before sessio
   ])
 })
 
+test("waiting room activation deletes a newly created slice when session creation cannot reach its worker", async () => {
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: {
+      action: "create",
+      launch: {
+        provider: "codex",
+        model: "gpt-5.4",
+        effort: "high",
+        sliceCreate: { displayMode: "headed" },
+      },
+    },
+    createError: new Error("target daemon is not connected to relay"),
+    deleteSlice: async () => {},
+  })
+
+  await harness.controller.activate()
+
+  assert.deepEqual(harness.deletedSlices, ["slice-created"])
+  assert.deepEqual(harness.calls.slice(-3), [
+    "deleteSlice:slice-created",
+    "warn",
+    "flash:error:target daemon is not connected to relay",
+  ])
+})
+
+test("waiting room activation preserves a selected existing slice when session creation fails", async () => {
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: {
+      action: "create",
+      launch: {
+        provider: "codex",
+        model: "gpt-5.4",
+        effort: "high",
+        sliceRef: "slice-existing",
+      },
+    },
+    createError: new Error("target daemon is not connected to relay"),
+    deleteSlice: async () => {},
+  })
+
+  await harness.controller.activate()
+
+  assert.deepEqual(harness.deletedSlices, [])
+})
+
 test("waiting room activation sends the selected multi-repository Project to a new slice", async () => {
   const harness = createHarness({
     controlDecision: { action: "none" },
@@ -757,6 +804,7 @@ function createHarness(options: {
   importSession?: RuntimeSession
   loadOlderExternalProviderSessions?: () => Promise<number>
   browseKernelInventory?: (kernelId: string, machineId: string) => Promise<number>
+  deleteSlice?: (sliceRef: string) => Promise<void>
   prepareSessionOwnerClient?: (launch: WaitingRoomLaunchConfig) => Promise<void>
   prepareManagedSessionLaunch?: (
     launch: WaitingRoomLaunchConfig,
@@ -784,6 +832,7 @@ function createHarness(options: {
   }> = []
   const warnings: Array<{ message: string; fields: Record<string, unknown> }> = []
   const deletedSessions: Array<{ sessionId: string; workspacePath: string }> = []
+  const deletedSlices: string[] = []
   const importedExternalSessions: string[] = []
   let promptText = ""
   let workspaceTarget = "/workspace"
@@ -865,6 +914,15 @@ function createHarness(options: {
       calls.push(`startSlice:${sliceRef}`)
       return sliceRecord(sliceRef, "headed")
     },
+    ...(options.deleteSlice
+      ? {
+        deleteSlice: async (sliceRef: string) => {
+          calls.push(`deleteSlice:${sliceRef}`)
+          deletedSlices.push(sliceRef)
+          await options.deleteSlice?.(sliceRef)
+        },
+      }
+      : {}),
     updateSlices: (slice) => {
       calls.push(`updateSlice:${slice.id}`)
     },
@@ -917,6 +975,7 @@ function createHarness(options: {
     createdSlices,
     importedExternalSessions,
     deletedSessions,
+    deletedSlices,
     warnings,
     controller,
     setTargets: (workspacePath: string, worktreePath: string) => {

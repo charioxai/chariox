@@ -77,6 +77,7 @@ impl CodexClient {
         let mut params = json!({
             "approvalPolicy": policy.approval_policy,
             "approvalsReviewer": "user",
+            "ephemeral": false,
             "sandbox": policy.sandbox,
             "personality": "pragmatic",
             "persistExtendedHistory": true,
@@ -113,6 +114,7 @@ impl CodexClient {
         execution_mode: AgentExecutionMode,
         permission_level: AgentPermissionLevel,
         developer_instructions: Option<&str>,
+        buffered_notifications: &mut Vec<CodexNotification>,
     ) -> Result<CodexThreadStartResponse, DaemonError> {
         let policy = codex_permission_policy(write_access_mode, execution_mode, permission_level);
         crate::logging::info_with_fields(
@@ -154,7 +156,13 @@ impl CodexClient {
         {
             params["developerInstructions"] = json!(developer_instructions);
         }
-        self.send_request(socket, next_request_id, "thread/resume", params)
+        self.send_request_buffering_notifications(
+            socket,
+            next_request_id,
+            "thread/resume",
+            params,
+            buffered_notifications,
+        )
     }
 
     pub fn turn_start(

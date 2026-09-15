@@ -54,6 +54,42 @@ pub(super) async fn resolve_session_lane_key(
                 &request.attachment_id,
             )
         }
+        LocalDaemonRequest::StartRoomEnvironment(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::BindRoomEnvironmentSlice(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::StopRoomEnvironment(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::RetryRoomEnvironment(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::UpdateRoomEnvironmentViewport(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::UpdateRoomEnvironmentPointer(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::ReleaseRoomEnvironmentInput(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::SubmitRoomEnvironmentAction(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::SubmitRoomEnvironmentBrowserAction(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::ReadRoomEnvironmentClipboard(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::CancelRoomEnvironmentAction(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
         LocalDaemonRequest::CreateAgentPromptSchedule(request) => {
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }

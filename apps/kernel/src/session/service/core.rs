@@ -14,6 +14,7 @@ impl SessionService {
             PromptIdAllocator::persistent(config.kernel_prompt_counter_path());
         Self {
             store: SessionStore::new(),
+            room_environments: RoomEnvironmentRegistry::new(),
             projects: BTreeMap::new(),
             ephemeral_session_ids: BTreeSet::new(),
             host_machine_id: config.host_machine_id.clone(),
@@ -528,6 +529,24 @@ impl SessionService {
         Ok(project.clone())
     }
 
+    pub fn update_project_environment_definition(
+        &mut self,
+        project_id: &str,
+        definition: crate::session::ProjectEnvironmentDefinition,
+        caller_user_id: &str,
+    ) -> Result<RuntimeProject, DaemonError> {
+        definition
+            .validate()
+            .map_err(|message| project_error("project.environment_definition.update", message))?;
+        let project = self.project_mut_for_owner(
+            project_id,
+            caller_user_id,
+            "project.environment_definition.update",
+        )?;
+        project.set_environment_definition(definition);
+        Ok(project.clone())
+    }
+
     pub fn archive_project(
         &mut self,
         project_id: &str,
@@ -803,6 +822,7 @@ impl SessionService {
 
     pub(crate) fn remove_restored_session(&mut self, session_id: &str) -> Option<RuntimeSession> {
         self.ephemeral_session_ids.remove(session_id);
+        self.room_environments.remove(session_id);
         self.store.remove(session_id)
     }
 

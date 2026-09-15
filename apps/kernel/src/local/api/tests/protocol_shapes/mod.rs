@@ -5,16 +5,23 @@ use crate::local::{
     TerminalCommandCatalogNodeKind, TerminalCommandCatalogSurface,
 };
 
+mod browser_import;
 mod core;
 mod credential_enrollment;
 mod event_publication;
 mod managed_context;
 mod managed_environment;
 mod native_spawn_slice;
+mod project_environment_setup;
 mod prompt_settings;
+mod provider_account_credential;
 mod provider_usage_activity;
 mod publication;
 mod recall_terminal_metaagent;
+mod room_controller;
+mod room_environment;
+mod room_environment_placement;
+mod slice_display;
 mod slice_logs;
 mod workflow_code;
 mod workspace_history_external;
