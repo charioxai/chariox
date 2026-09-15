@@ -82,6 +82,14 @@ impl ProjectEnvironmentDefinition {
         self.validate_with_source_attestation(true)
     }
 
+    pub(crate) fn canonicalize_input_attestations(&self) -> Result<Self, String> {
+        let mut canonical = self.clone();
+        for input in &mut canonical.inputs {
+            input.sha256 = canonicalize_input_digest(&input.sha256, &input.path)?;
+        }
+        Ok(canonical)
+    }
+
     pub(crate) fn validate_for_repair(&self) -> Result<(), String> {
         if !self.is_unattested_file_backed() {
             return self.validate();
@@ -250,17 +258,7 @@ fn validate_inputs(inputs: &[ProjectEnvironmentInput]) -> Result<(), String> {
                 input.path
             ));
         }
-        let Some(digest) = input.sha256.strip_prefix("sha256:") else {
-            return Err(format!(
-                "environment input digest must use sha256: prefix: {}",
-                input.path
-            ));
-        };
-        if digest.len() != 64
-            || !digest
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-        {
+        if canonicalize_input_digest(&input.sha256, &input.path)? != input.sha256 {
             return Err(format!(
                 "environment input digest must be a 256-bit sha256 value: {}",
                 input.path
@@ -268,6 +266,20 @@ fn validate_inputs(inputs: &[ProjectEnvironmentInput]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn canonicalize_input_digest(value: &str, path: &str) -> Result<String, String> {
+    let Some(digest) = value.strip_prefix("sha256:") else {
+        return Err(format!(
+            "environment input digest must use sha256: prefix: {path}"
+        ));
+    };
+    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!(
+            "environment input digest must be a 256-bit sha256 value: {path}"
+        ));
+    }
+    Ok(format!("sha256:{}", digest.to_ascii_lowercase()))
 }
 
 #[cfg(test)]

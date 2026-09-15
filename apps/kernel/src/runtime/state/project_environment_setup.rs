@@ -1072,24 +1072,11 @@ impl KernelRuntimeState {
         let definition = request
             .definition
             .or_else(|| project.environment_definition().cloned());
-        if let Some(definition) = &definition {
-            validate_incoming_setup_definition(definition)?;
-            if definition.target_platform != request.target_platform {
-                return Err(setup_error(
-                    "environment definition targets a different platform",
-                ));
-            }
-            if !request.validation_commands.is_empty() {
-                return Err(setup_error(
-                    "additional validation commands are only allowed when no definition exists",
-                ));
-            }
-            if definition.validation_commands.is_empty() {
-                return Err(setup_error(
-                    "environment definition must include at least one validation command",
-                ));
-            }
-        }
+        let definition = validate_setup_definition(
+            definition,
+            &request.target_platform,
+            &request.validation_commands,
+        )?;
         // A home worktree path is not a worker worktree path. The worker
         // derives its canonical backing worktree from the authenticated lease
         // and rejects any non-empty path that does not match it.
@@ -1796,11 +1783,12 @@ mod tests {
     #[test]
     fn protocol_330_uppercase_input_digest_is_admitted_by_home_and_leased_paths() {
         let definition = protocol_330_definition_with_uppercase_input_digest();
-        validate_incoming_setup_definition(&definition)
+        let home_admitted = canonicalize_incoming_setup_definition(definition.clone())
             .expect("home admission should normalize an equivalent legacy digest");
         let admitted = validate_setup_definition(Some(definition), "linux-x86_64", &[])
             .expect("leased admission should normalize an equivalent legacy digest")
             .expect("definition should remain present");
+        assert_eq!(home_admitted, admitted);
         assert_eq!(admitted.inputs[0].sha256, format!("sha256:{}", "a".repeat(64)));
         assert_eq!(admitted.validate(), Ok(()));
         assert!(!serde_json::to_string(&admitted)
@@ -1812,7 +1800,7 @@ mod tests {
     fn malformed_input_digest_remains_rejected_by_home_and_leased_paths() {
         let mut definition = protocol_330_definition_with_uppercase_input_digest();
         definition.inputs[0].sha256 = format!("sha256:{}", "G".repeat(64));
-        assert!(validate_incoming_setup_definition(&definition).is_err());
+        assert!(canonicalize_incoming_setup_definition(definition.clone()).is_err());
         assert!(validate_setup_definition(Some(definition), "linux-x86_64", &[]).is_err());
     }
 

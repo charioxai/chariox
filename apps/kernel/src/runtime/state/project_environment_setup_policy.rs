@@ -53,6 +53,16 @@ pub(super) fn validate_incoming_setup_definition(
     validation.map_err(|message| setup_error(&message))
 }
 
+pub(super) fn canonicalize_incoming_setup_definition(
+    definition: ProjectEnvironmentDefinition,
+) -> Result<ProjectEnvironmentDefinition, DaemonError> {
+    let definition = definition
+        .canonicalize_input_attestations()
+        .map_err(|message| setup_error(&message))?;
+    validate_incoming_setup_definition(&definition)?;
+    Ok(definition)
+}
+
 pub(super) fn validate_setup_definition(
     definition: Option<ProjectEnvironmentDefinition>,
     target_platform: &str,
@@ -61,7 +71,7 @@ pub(super) fn validate_setup_definition(
     let Some(definition) = definition else {
         return Ok(None);
     };
-    validate_incoming_setup_definition(&definition)?;
+    let definition = canonicalize_incoming_setup_definition(definition)?;
     if definition.target_platform != target_platform {
         return Err(setup_error(
             "environment definition targets a different platform",
