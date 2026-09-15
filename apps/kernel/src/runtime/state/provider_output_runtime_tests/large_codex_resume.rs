@@ -569,3 +569,197 @@ async fn promptless_codex_poll_failure_reschedules_bound_prompt_and_delivers_out
         "the newly bound prompt must receive output after promptless poll failures"
     );
 }
+
+#[tokio::test]
+async fn promptless_codex_poll_failure_before_prompt_start_reschedules_and_delivers_output() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-large-codex-promptless-before-start",
+            "worktree-large-codex-promptless-before-start",
+        ))
+        .expect("session should be created");
+    let healthy_agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(session.id(), "codex")
+                .with_alias("healthy-promptless-before-start"),
+        )
+        .expect("healthy agent should be spawned");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-promptless-before-start",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let healthy_attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-promptless-before-start-healthy",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("healthy attachment should attach");
+    let run = external_codex_run(
+        session.id(),
+        agent.id(),
+        "provider-run-promptless-before-start",
+    );
+    let healthy_run = external_codex_run(
+        session.id(),
+        healthy_agent.id(),
+        "provider-run-promptless-before-start-healthy",
+    );
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.providers_mut().insert_run_for_test(healthy_run.clone());
+    app.sessions_mut()
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    app.update_provider_run_projection(run.clone());
+    app.update_provider_run_projection(healthy_run.clone());
+
+    let healthy_prompt_id = submit_prompt_for_agent(
+        &mut app,
+        session.id(),
+        healthy_attachment.id(),
+        healthy_agent.id(),
+        "keep the concurrent prompt alive while the first run is idle",
+    );
+    crate::transport::flow_control::note_prompt_started(&mut app, healthy_run.id());
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let output_store = runtime.owned.structured_output_records.clone();
+    output_store.mark_poll_enqueued(healthy_run.id(), Some(healthy_prompt_id));
+    let mut replacement_prompt_id = None;
+
+    for attempt in 1..=crate::app::provider_output::STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT {
+        output_store.mark_poll_enqueued(run.id(), None);
+        app.lock()
+            .await
+            .providers_mut()
+            .push_finished_structured_output_poll_for_test(
+                run.id().to_string(),
+                Err(crate::error::DaemonError::ProviderProtocol {
+                    provider_run_id: run.id().to_string(),
+                    operation: "codex_read",
+                    message: "promptless poll failed before prompt ownership was observed"
+                        .to_string(),
+                }),
+            );
+
+        runtime
+            .pump_owned_structured_provider_output(
+                session.id(),
+                healthy_run.id(),
+                vec![healthy_attachment.id().to_string()],
+            )
+            .await
+            .expect("a promptless background poll failure should remain recoverable");
+
+        if attempt == crate::app::provider_output::STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT {
+            let session_state = runtime
+                .owned
+                .session_snapshot(session.id())
+                .expect("session snapshot should exist");
+            assert!(
+                session_state.active_prompt_for_agent(agent.id()).is_none(),
+                "the new prompt must start only after the third idle failure is processed"
+            );
+            let mut app = app.lock().await;
+            let replacement = submit_prompt_for_agent(
+                &mut app,
+                session.id(),
+                attachment.id(),
+                agent.id(),
+                "start only after the idle poll retry budget is exhausted",
+            );
+            app.mark_active_prompt_delivery(
+                session.id(),
+                agent.id(),
+                &replacement,
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some(run.id().to_string()),
+                run.provider_session_id().map(str::to_string),
+            )
+            .expect("the replacement prompt should bind to the same provider run");
+            crate::transport::flow_control::note_prompt_started(&mut app, run.id());
+            replacement_prompt_id = Some(replacement);
+        }
+    }
+
+    let replacement_prompt_id = replacement_prompt_id.expect("replacement prompt should exist");
+    assert!(
+        output_store.poll_due(run.id(), u64::MAX),
+        "a prompt started after the third idle failure must receive a fresh poll admission"
+    );
+    let admitted = runtime
+        .pump_owned_structured_provider_output(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+        )
+        .await
+        .expect("the replacement poll should be admitted");
+    assert!(
+        admitted.is_empty(),
+        "poll admission should not fabricate output"
+    );
+    assert!(
+        !output_store.poll_due(run.id(), u64::MAX),
+        "an admitted replacement poll should be tracked as in flight"
+    );
+
+    let replacement_output = b"output after a post-failure prompt start".to_vec();
+    app.lock()
+        .await
+        .providers_mut()
+        .push_finished_structured_output_poll_for_test(
+            run.id().to_string(),
+            Ok(Some(crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("promptless-before-start".to_string()),
+                    bytes: replacement_output.clone(),
+                }],
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            })),
+        );
+    let records = runtime
+        .pump_owned_structured_provider_output(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+        )
+        .await
+        .expect("the post-failure replacement poll should be delivered");
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record.bytes.clone())
+            .collect::<Vec<_>>(),
+        vec![replacement_output],
+        "the prompt started after the third failure must receive output"
+    );
+    let session_state = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should exist after replacement output");
+    assert_eq!(
+        session_state
+            .active_prompt_for_agent(agent.id())
+            .expect("replacement prompt should remain active")
+            .id(),
+        replacement_prompt_id
+    );
+    let run_after = runtime
+        .owned
+        .provider_store
+        .get_run(run.id())
+        .expect("provider run should remain inspectable");
+    assert_eq!(
+        run_after.state(),
+        crate::provider::ProviderRunState::Running
+    );
+    assert_eq!(run_after.terminal_diagnostic(), None);
+}
