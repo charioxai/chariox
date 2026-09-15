@@ -1573,17 +1573,18 @@ impl KernelRuntimeState {
             // The blocking command owns this guard even if its async waiter exits.
             let _guard = guard;
             let started = Instant::now();
+            let overall_deadline = started + VALIDATION_TOTAL_TIMEOUT;
             let mut results = Vec::with_capacity(commands.len());
             for command in commands {
                 if cancellation.is_cancelled(&operation_id, attempt)
-                    || started.elapsed() >= VALIDATION_TOTAL_TIMEOUT
+                    || overall_deadline.saturating_duration_since(Instant::now()).is_zero()
                 {
                     break;
                 }
                 let result =
                     run_worker_validation_command(&command, &workspace_root, &environment, || {
                         cancellation.is_cancelled(&operation_id, attempt)
-                    });
+                    }, Some(overall_deadline));
                 match result {
                     Ok((exit_code, stdout_bytes, stderr_bytes)) => {
                         results.push(ProjectEnvironmentCommandResult {
@@ -2400,7 +2401,7 @@ mod tests {
             test ! -w "${CHARIOX_MANAGED_KERNEL_BINARY:-/no-worker-kernel}"
         "#;
         let (exit_code, _, _) =
-            run_worker_validation_command(command, &workspace, &environment, || false)
+            run_worker_validation_command(command, &workspace, &environment, || false, None)
                 .expect("worker validation shell should execute");
         assert_eq!(
             exit_code, 0,
@@ -2449,6 +2450,7 @@ mod tests {
             &workspace,
             &environment,
             || false,
+            None,
         )
         .expect("worker validation shell should execute");
         assert_eq!(exit_code, 0, "installed worker-local tool must resolve");
