@@ -532,6 +532,15 @@ fn app_side_stale_poll_failure_reschedules_replacement_and_delivers_followup_out
                     panic!("the replacement app-side prompt should start")
                 }
             };
+            app.mark_active_prompt_delivery(
+                &session_id,
+                &agent_id,
+                replacement.id(),
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some(provider_run_id.clone()),
+                None,
+            )
+            .expect("the replacement app-side prompt should be delivered");
             replacement_prompt_id = Some(replacement.id().to_string());
         }
         ProviderOutputPump::new(&mut app)
@@ -584,6 +593,108 @@ fn app_side_stale_poll_failure_reschedules_replacement_and_delivers_followup_out
             .expect("replacement prompt should remain active")
             .id(),
         replacement_prompt_id
+    );
+}
+
+#[test]
+fn app_side_promptless_poll_failure_reschedules_bound_prompt_and_delivers_output() {
+    let (mut app, session_id, attachment_id, provider_run_id) = structured_provider_test_app();
+    let agent_id = app
+        .providers
+        .get_run(&provider_run_id)
+        .expect("provider run should exist")
+        .agent_instance_id()
+        .expect("provider run should belong to an agent")
+        .to_string();
+    let output_store = app.structured_output_record_store();
+    let mut prompt_id = None;
+
+    for attempt in 1..=STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT {
+        output_store.mark_poll_enqueued(&provider_run_id, None);
+        app.providers_mut()
+            .push_finished_structured_output_poll_for_test(
+                provider_run_id.clone(),
+                Err(crate::error::DaemonError::ProviderProtocol {
+                    provider_run_id: provider_run_id.clone(),
+                    operation: "thread/turns/list",
+                    message: "promptless app-side poll failed before prompt ownership was observed"
+                        .to_string(),
+                }),
+            );
+
+        if attempt == STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT {
+            let prompt = crate::session::PromptQueueItem::new(
+                app.sessions_mut().reserve_prompt_id(),
+                &attachment_id,
+                &agent_id,
+                "start the app-side prompt after an idle poll began",
+                crate::session::PromptStatus::Queued,
+            );
+            let prompt = match app
+                .prompt_owner_submit_prepared_prompt(&session_id, prompt, false)
+                .expect("the app-side prompt should start")
+            {
+                crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+                crate::session::PromptSubmissionOutcome::Queued { .. } => {
+                    panic!("the app-side prompt should start immediately")
+                }
+            };
+            app.mark_active_prompt_delivery(
+                &session_id,
+                &agent_id,
+                prompt.id(),
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some(provider_run_id.clone()),
+                None,
+            )
+            .expect("the app-side prompt should be bound to the same provider run");
+            prompt_id = Some(prompt.id().to_string());
+        }
+
+        ProviderOutputPump::new(&mut app)
+            .pump_provider_output(ProviderOutputPumpRequest {
+                session_id: &session_id,
+                provider_run_id: &provider_run_id,
+                recipient_attachment_ids: vec![attachment_id.clone()],
+                initial_liveness_already_checked: true,
+            })
+            .expect("a promptless app-side poll failure should remain recoverable");
+    }
+
+    let prompt_id = prompt_id.expect("the app-side prompt should exist");
+    assert!(
+        output_store.poll_due(&provider_run_id, u64::MAX),
+        "a promptless app-side failure must not exhaust the bound prompt's poll budget"
+    );
+    output_store.mark_poll_enqueued(&provider_run_id, Some(prompt_id));
+    let replacement_output = b"promptless app-side poll replacement output".to_vec();
+    app.providers_mut()
+        .push_finished_structured_output_poll_for_test(
+            provider_run_id.clone(),
+            Ok(Some(crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("promptless-app-poll".to_string()),
+                    bytes: replacement_output.clone(),
+                }],
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            })),
+        );
+    let records = ProviderOutputPump::new(&mut app)
+        .pump_provider_output(ProviderOutputPumpRequest {
+            session_id: &session_id,
+            provider_run_id: &provider_run_id,
+            recipient_attachment_ids: vec![attachment_id.clone()],
+            initial_liveness_already_checked: true,
+        })
+        .expect("the newly bound app-side prompt poll should be delivered");
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record.bytes.clone())
+            .collect::<Vec<_>>(),
+        vec![replacement_output],
+        "the newly bound app-side prompt must receive output after promptless failures"
     );
 }
 

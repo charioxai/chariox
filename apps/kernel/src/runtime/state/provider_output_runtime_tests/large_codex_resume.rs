@@ -338,6 +338,15 @@ async fn stale_oversized_codex_poll_cannot_settle_replacement_prompt() {
                 agent.id(),
                 "continue with the replacement Codex prompt",
             );
+            app.mark_active_prompt_delivery(
+                session.id(),
+                agent.id(),
+                &replacement,
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some(run.id().to_string()),
+                run.provider_session_id().map(str::to_string),
+            )
+            .expect("replacement prompt should be delivered to the same provider run");
             history_before = Some(
                 app.operational_history_store()
                     .load_session_events(session.id(), Some(agent.id()))
@@ -440,5 +449,123 @@ async fn stale_oversized_codex_poll_cannot_settle_replacement_prompt() {
             .collect::<Vec<_>>(),
         vec![replacement_output],
         "the replacement prompt must receive output after the stale poll"
+    );
+}
+
+#[tokio::test]
+async fn promptless_codex_poll_failure_reschedules_bound_prompt_and_delivers_output() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-large-codex-promptless-poll",
+            "worktree-large-codex-promptless-poll",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-large-codex-promptless-poll",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = external_codex_run(
+        session.id(),
+        agent.id(),
+        "provider-run-large-codex-promptless-poll",
+    );
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions_mut()
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    app.update_provider_run_projection(run.clone());
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let output_store = runtime.owned.structured_output_records.clone();
+    let mut prompt_id = None;
+
+    for attempt in 1..=crate::app::provider_output::STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT {
+        output_store.mark_poll_enqueued(run.id(), None);
+        app.lock()
+            .await
+            .providers_mut()
+            .push_finished_structured_output_poll_for_test(
+                run.id().to_string(),
+                Err(crate::error::DaemonError::ProviderProtocol {
+                    provider_run_id: run.id().to_string(),
+                    operation: "codex_read",
+                    message: "promptless poll failed before prompt ownership was observed"
+                        .to_string(),
+                }),
+            );
+
+        if attempt == crate::app::provider_output::STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT {
+            let mut app = app.lock().await;
+            let replacement = submit_prompt_for_agent(
+                &mut app,
+                session.id(),
+                attachment.id(),
+                agent.id(),
+                "start the prompt after an idle poll began",
+            );
+            app.mark_active_prompt_delivery(
+                session.id(),
+                agent.id(),
+                &replacement,
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some(run.id().to_string()),
+                run.provider_session_id().map(str::to_string),
+            )
+            .expect("the current prompt should be bound to the same provider run");
+            prompt_id = Some(replacement);
+        }
+
+        runtime
+            .pump_owned_structured_provider_output(
+                session.id(),
+                run.id(),
+                vec![attachment.id().to_string()],
+            )
+            .await
+            .expect("a promptless background poll failure should remain recoverable");
+    }
+
+    let prompt_id = prompt_id.expect("the current prompt should exist");
+    assert!(
+        output_store.poll_due(run.id(), u64::MAX),
+        "a promptless failure must not exhaust the newly bound prompt's poll budget"
+    );
+    output_store.mark_poll_enqueued(run.id(), Some(prompt_id));
+    let replacement_output = b"promptless poll replacement output".to_vec();
+    app.lock()
+        .await
+        .providers_mut()
+        .push_finished_structured_output_poll_for_test(
+            run.id().to_string(),
+            Ok(Some(crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("promptless-codex-poll".to_string()),
+                    bytes: replacement_output.clone(),
+                }],
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            })),
+        );
+    let records = runtime
+        .pump_owned_structured_provider_output(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+        )
+        .await
+        .expect("the newly bound prompt poll should be delivered");
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record.bytes.clone())
+            .collect::<Vec<_>>(),
+        vec![replacement_output],
+        "the newly bound prompt must receive output after promptless poll failures"
     );
 }
