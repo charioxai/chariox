@@ -1417,6 +1417,27 @@ impl KernelRuntimeState {
                 return;
             }
         }
+        let _ = store.update(&execution.operation_id, attempt, |entry| {
+            entry.status.progress_percent = 65;
+            entry.status.message = Some(
+                "target inputs attested; applying repeatable setup steps".to_string(),
+            );
+        });
+        match self
+            .apply_definition_on_worker(&execution, attempt, &definition, &provider_run)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) | Err(_) => {
+                store.mark_failed(
+                    &execution.operation_id,
+                    attempt,
+                    "worker_setup_failed",
+                    "kernel could not apply the repaired setup definition",
+                );
+                return;
+            }
+        }
         let validation = match self
             .validate_definition_on_worker(&execution, attempt, &definition, &provider_run)
             .await
