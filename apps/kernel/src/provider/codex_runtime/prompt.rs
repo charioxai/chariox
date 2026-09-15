@@ -184,6 +184,10 @@ fn ensure_codex_thread_ready(
                 developer_instructions,
             )
         } else if let Some(thread_id) = state.pending_thread_id().map(str::to_string) {
+            // No new turn has been submitted yet. Resume may replay old item
+            // deltas and uncorrelated legacy abort/error events; they must not
+            // enter the buffer later drained for the newly admitted prompt.
+            // turn/start and turn/steer retain their own interleaved events.
             client.thread_resume(
                 &mut state.socket,
                 &mut state.next_request_id,
@@ -194,7 +198,7 @@ fn ensure_codex_thread_ready(
                 run.execution_mode(),
                 run.permission_level(),
                 developer_instructions,
-                &mut state.buffered_notifications,
+                &mut Vec::new(),
             )
         } else {
             client.thread_start(
@@ -333,7 +337,7 @@ mod prompt_tests {
     }
 
     #[test]
-    fn resumed_prompt_drains_large_response_and_preserves_interleaved_notification() {
+    fn resumed_prompt_drains_large_response_and_preserves_admission_notification() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind Codex websocket fixture");
         let address = listener
             .local_addr()
@@ -343,28 +347,8 @@ mod prompt_tests {
             let mut socket = accept(stream).expect("upgrade Codex websocket fixture");
 
             let resume_request = read_json_request(&mut socket, "thread/resume");
-            socket
-                .send(Message::Text(
-                    json!({
-                        "jsonrpc": "2.0",
-                        "method": "thread/tokenUsage/updated",
-                        "params": {
-                            "threadId": "thread-reused",
-                            "turnId": "turn-before-failed-prompt",
-                            "tokenUsage": {
-                                "total": {"totalTokens": 42},
-                                "last": {"totalTokens": 7},
-                                "modelContextWindow": 100
-                            }
-                        }
-                    })
-                    .to_string()
-                    .into(),
-                ))
-                .expect("send interleaved resume notification");
-
             // Keep the response large enough to exercise tungstenite frame growth and the
-            // kernel's read loop while the notification above is interleaved with it.
+            // kernel's read loop before the next turn can be admitted.
             let large_history = "resume-history".repeat(220_000);
             socket
                 .send(Message::Text(
@@ -383,6 +367,25 @@ mod prompt_tests {
                 .expect("send large resume response");
 
             let turn_request = read_json_request(&mut socket, "turn/start");
+            socket
+                .send(Message::Text(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "method": "thread/tokenUsage/updated",
+                        "params": {
+                            "threadId": "thread-reused",
+                            "turnId": "turn-after-resume",
+                            "tokenUsage": {
+                                "total": {"totalTokens": 42},
+                                "last": {"totalTokens": 7},
+                                "modelContextWindow": 100
+                            }
+                        }
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("send interleaved current-turn notification");
             socket
                 .send(Message::Text(
                     json!({
@@ -446,7 +449,7 @@ mod prompt_tests {
                     thread_id,
                     turn_id,
                     ..
-                } if thread_id == "thread-reused" && turn_id == "turn-before-failed-prompt"
+                } if thread_id == "thread-reused" && turn_id == "turn-after-resume"
             )
         }));
 
