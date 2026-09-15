@@ -1177,15 +1177,26 @@ mod tests {
     }
 
     #[test]
-    fn project_environment_setup_relay_shapes_round_trip_at_protocol_53() {
+    fn project_environment_setup_relay_shapes_round_trip_at_protocol_54() {
         assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 54);
         let definition = crate::session::ProjectEnvironmentDefinition {
             schema_version: 1,
             origin: crate::session::ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
-            source: crate::session::ProjectEnvironmentDefinitionSource::Commands,
+            source: crate::session::ProjectEnvironmentDefinitionSource::Devcontainer,
             target_platform: "linux-x86_64".to_string(),
-            source_path: None,
-            inputs: Vec::new(),
+            source_path: Some(".devcontainer/devcontainer.json".to_string()),
+            inputs: vec![
+                crate::session::ProjectEnvironmentInput {
+                    kind: crate::session::ProjectEnvironmentInputKind::Recipe,
+                    path: ".devcontainer/devcontainer.json".to_string(),
+                    sha256: format!("sha256:{}", "a".repeat(64)),
+                },
+                crate::session::ProjectEnvironmentInput {
+                    kind: crate::session::ProjectEnvironmentInputKind::Lockfile,
+                    path: "Cargo.lock".to_string(),
+                    sha256: format!("sha256:{}", "b".repeat(64)),
+                },
+            ],
             setup_steps: vec![crate::session::ProjectEnvironmentSetupStep {
                 kind: crate::session::ProjectEnvironmentSetupStepKind::Command,
                 command: "command -v sh".to_string(),

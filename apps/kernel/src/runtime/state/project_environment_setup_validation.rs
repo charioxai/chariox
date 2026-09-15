@@ -98,6 +98,88 @@ pub(super) fn worker_validation_environment(
     environment
 }
 
+const MAX_PROJECT_ENVIRONMENT_INPUT_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_PROJECT_ENVIRONMENT_INPUT_BYTES_TOTAL: u64 = 128 * 1024 * 1024;
+
+/// Verify the content-only inputs in a definition against the worker's
+/// already-materialized project worktree. This deliberately reads files but
+/// never executes them or returns their contents across the setup seam.
+pub(super) fn verify_project_environment_inputs(
+    workspace_root: &Path,
+    definition: &ProjectEnvironmentDefinition,
+) -> Result<(), String> {
+    let mut total_bytes_read = 0_u64;
+    for input in &definition.inputs {
+        let candidate = workspace_root.join(&input.path);
+        let metadata = std::fs::symlink_metadata(&candidate).map_err(|error| {
+            format!(
+                "worker project input is unavailable: {} ({error})",
+                input.path
+            )
+        })?;
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+            return Err(format!(
+                "worker project input is not a regular file: {}",
+                input.path
+            ));
+        }
+        let canonical = candidate.canonicalize().map_err(|error| {
+            format!(
+                "worker project input could not be canonicalized: {} ({error})",
+                input.path
+            )
+        })?;
+        if !canonical.starts_with(workspace_root) {
+            return Err(format!(
+                "worker project input escapes the materialized worktree: {}",
+                input.path
+            ));
+        }
+        let mut file = std::fs::File::open(&canonical).map_err(|error| {
+            format!(
+                "worker project input could not be read: {} ({error})",
+                input.path
+            )
+        })?;
+        let mut digest = Sha256::new();
+        let mut buffer = [0_u8; 8192];
+        let mut bytes_read = 0_u64;
+        loop {
+            let read = file.read(&mut buffer).map_err(|error| {
+                format!(
+                    "worker project input could not be read: {} ({error})",
+                    input.path
+                )
+            })?;
+            if read == 0 {
+                break;
+            }
+            bytes_read = bytes_read.saturating_add(read as u64);
+            total_bytes_read = total_bytes_read.saturating_add(read as u64);
+            if bytes_read > MAX_PROJECT_ENVIRONMENT_INPUT_BYTES {
+                return Err(format!(
+                    "worker project input exceeds the bounded attestation size: {}",
+                    input.path
+                ));
+            }
+            if total_bytes_read > MAX_PROJECT_ENVIRONMENT_INPUT_BYTES_TOTAL {
+                return Err(
+                    "worker project inputs exceed the bounded total attestation size".to_string(),
+                );
+            }
+            digest.update(&buffer[..read]);
+        }
+        let actual = format!("sha256:{:x}", digest.finalize());
+        if actual != input.sha256 {
+            return Err(format!(
+                "worker project input does not match its attested content: {}",
+                input.path
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn worker_validation_environment_allowed(name: &str, removed: &BTreeSet<String>) -> bool {
     !removed.contains(name)
         && !crate::secret::secret_like_env_name(name)
@@ -149,9 +231,8 @@ pub(super) fn run_worker_validation_command(
         }
     }
     let command_deadline = Instant::now() + Duration::from_millis(VALIDATION_COMMAND_TIMEOUT_MS);
-    let deadline = overall_deadline.map_or(command_deadline, |deadline| {
-        deadline.min(command_deadline)
-    });
+    let deadline =
+        overall_deadline.map_or(command_deadline, |deadline| deadline.min(command_deadline));
     if deadline.saturating_duration_since(Instant::now()).is_zero() {
         return Err("worker validation command exceeded the overall setup deadline".to_string());
     }
@@ -230,13 +311,19 @@ fn run_worker_setup_steps_until(
         if should_cancel() {
             return Err("worker setup command cancelled".to_string());
         }
-        if overall_deadline.saturating_duration_since(Instant::now()).is_zero() {
+        if overall_deadline
+            .saturating_duration_since(Instant::now())
+            .is_zero()
+        {
             return Err("worker setup commands timed out".to_string());
         }
-        let (exit_code, _stdout_bytes, _stderr_bytes) =
-            run_worker_validation_command(command, workspace_root, environment, || {
-                should_cancel()
-            }, Some(overall_deadline))?;
+        let (exit_code, _stdout_bytes, _stderr_bytes) = run_worker_validation_command(
+            command,
+            workspace_root,
+            environment,
+            || should_cancel(),
+            Some(overall_deadline),
+        )?;
         if exit_code != 0 {
             return Ok(false);
         }
@@ -264,6 +351,10 @@ pub(super) fn run_worker_setup_steps_with_total_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::local::{
+        ProjectEnvironmentDefinitionOrigin, ProjectEnvironmentDefinitionSource,
+        ProjectEnvironmentInput, ProjectEnvironmentInputKind,
+    };
 
     #[test]
     fn setup_steps_enforce_total_deadline_during_an_in_flight_command() {
@@ -290,6 +381,45 @@ mod tests {
             "an in-flight command must be interrupted by the total budget: {:?}",
             started.elapsed()
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn worker_input_attestation_is_content_bound_and_fails_closed() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-project-environment-input-attestation-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&root).expect("input fixture workspace should exist");
+        let path = root.join("package.json");
+        let contents = br#"{"name":"fixture"}
+"#;
+        std::fs::write(&path, contents).expect("input fixture should be written");
+        let definition = ProjectEnvironmentDefinition {
+            schema_version: 1,
+            origin: ProjectEnvironmentDefinitionOrigin::UserAuthored,
+            source: ProjectEnvironmentDefinitionSource::Devcontainer,
+            target_platform: "linux-x86_64".to_string(),
+            source_path: Some("package.json".to_string()),
+            inputs: vec![ProjectEnvironmentInput {
+                kind: ProjectEnvironmentInputKind::Recipe,
+                path: "package.json".to_string(),
+                sha256: format!("sha256:{:x}", Sha256::digest(contents)),
+            }],
+            setup_steps: Vec::new(),
+            validation_commands: vec!["true".to_string()],
+        };
+        assert_eq!(
+            verify_project_environment_inputs(&root, &definition),
+            Ok(())
+        );
+        std::fs::write(&path, br#"{"name":"changed"}
+"#)
+        .expect("input fixture mutation should be written");
+        assert!(verify_project_environment_inputs(&root, &definition)
+            .unwrap_err()
+            .contains("does not match"));
         let _ = std::fs::remove_dir_all(root);
     }
 }

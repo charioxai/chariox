@@ -22,6 +22,11 @@ fn definition() -> ProjectEnvironmentDefinition {
             kind: ProjectEnvironmentInputKind::Recipe,
             path: ".devcontainer/devcontainer.json".to_string(),
             sha256: format!("sha256:{}", "a".repeat(64)),
+        },
+        ProjectEnvironmentInput {
+            kind: ProjectEnvironmentInputKind::Lockfile,
+            path: "Cargo.lock".to_string(),
+            sha256: format!("sha256:{}", "b".repeat(64)),
         }],
         setup_steps: vec![ProjectEnvironmentSetupStep {
             kind: ProjectEnvironmentSetupStepKind::NativeDependency,
@@ -96,6 +101,10 @@ fn project_environment_setup_protocol_shape_is_versioned_and_explicit() {
                         "kind": "recipe",
                         "path": ".devcontainer/devcontainer.json",
                         "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    }, {
+                        "kind": "lockfile",
+                        "path": "Cargo.lock",
+                        "sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                     }],
                     "setup_steps": [{
                         "kind": "native_dependency",

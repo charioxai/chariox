@@ -304,8 +304,14 @@ mod tests {
             sha256: format!("sha256:{}", "a".repeat(64)),
         }];
         assert_eq!(definition.validate(), Ok(()));
+        let original_digest = definition.digest();
 
         definition.inputs[0].sha256 = "sha256:not-a-digest".to_string();
+        assert_ne!(
+            definition.digest(),
+            original_digest,
+            "the persisted definition identity must include input content identities"
+        );
         assert!(definition
             .validate()
             .unwrap_err()

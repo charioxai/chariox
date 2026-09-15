@@ -264,7 +264,9 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
             command: setup_command,
         }],
         validation_commands: if input_scenario {
-            vec![format!("test -f {recipe_path} && test -f {lockfile_path}")]
+            vec![format!(
+                "touch validation-started; test -f {recipe_path} && test -f {lockfile_path}"
+            )]
         } else {
             vec![command.clone()]
         },

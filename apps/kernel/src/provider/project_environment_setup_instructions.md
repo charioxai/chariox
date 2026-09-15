@@ -11,5 +11,10 @@ User-authored Dockerfiles, devcontainers, and setup scripts are inputs to reprod
 when no definition exists, discover a repeatable recipe and report its package, system-tool,
 compiler, native-dependency, or command steps.
 
+For file-backed definitions, include workspace-relative recipe and relevant lockfile inputs with
+their content-only sha256 identities. Do not put file contents, credentials, tokens, private keys,
+or other secrets in a definition or attestation; the kernel reads and verifies the target files
+itself before readiness.
+
 Return only the JSON object requested by the caller. Do not return command output or a readiness
 claim. The kernel owns persistence, validation, cancellation, retry, and readiness.

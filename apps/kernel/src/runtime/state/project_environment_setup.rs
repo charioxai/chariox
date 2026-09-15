@@ -1236,11 +1236,25 @@ impl KernelRuntimeState {
                     if store.is_cancelled(&execution.operation_id, attempt) {
                         return;
                     }
-                    let validation_passed = validation_passed_for_execution(
+                    let inputs_match = match self.definition_inputs_match_on_worker(
                         &execution,
                         definition,
-                        &validation,
-                    );
+                        &provider_run,
+                    ) {
+                        Ok(matches) => matches,
+                        Err(_) => {
+                            store.mark_failed(
+                                &execution.operation_id,
+                                attempt,
+                                "worker_input_attestation_unavailable",
+                                "kernel could not verify project inputs on the target worker",
+                            );
+                            return;
+                        }
+                    };
+                    let validation_passed =
+                        validation_passed_for_execution(&execution, definition, &validation)
+                            && inputs_match;
                     let _ = store.update(&execution.operation_id, attempt, |entry| {
                         entry.status.validation = Some(validation);
                         entry.status.progress_percent = 85;
@@ -1390,6 +1404,27 @@ impl KernelRuntimeState {
         }) {
             return;
         }
+        match self.definition_inputs_match_on_worker(&execution, &definition, &provider_run) {
+            Ok(true) => {}
+            Ok(false) => {
+                store.mark_failed(
+                    &execution.operation_id,
+                    attempt,
+                    "worker_input_attestation_failed",
+                    "utility repair did not restore the attested project inputs",
+                );
+                return;
+            }
+            Err(_) => {
+                store.mark_failed(
+                    &execution.operation_id,
+                    attempt,
+                    "worker_input_attestation_unavailable",
+                    "kernel could not verify project inputs on the target worker",
+                );
+                return;
+            }
+        }
         let validation = match self
             .validate_definition_on_worker(&execution, attempt, &definition, &provider_run)
             .await
@@ -1408,7 +1443,24 @@ impl KernelRuntimeState {
         if store.is_cancelled(&execution.operation_id, attempt) {
             return;
         }
-        let validation_passed = validation_passed_for_execution(&execution, &definition, &validation);
+        let inputs_match = match self.definition_inputs_match_on_worker(
+            &execution,
+            &definition,
+            &provider_run,
+        ) {
+            Ok(matches) => matches,
+            Err(_) => {
+                store.mark_failed(
+                    &execution.operation_id,
+                    attempt,
+                    "worker_input_attestation_unavailable",
+                    "kernel could not verify project inputs on the target worker",
+                );
+                return;
+            }
+        };
+        let validation_passed =
+            inputs_match && validation_passed_for_execution(&execution, &definition, &validation);
         let _ = store.update(&execution.operation_id, attempt, |entry| {
             entry.status.validation = Some(validation.clone());
             entry.status.progress_percent = 85;
@@ -1518,6 +1570,16 @@ impl KernelRuntimeState {
         })
     }
 
+    fn definition_inputs_match_on_worker(
+        &self,
+        execution: &SetupExecution,
+        definition: &ProjectEnvironmentDefinition,
+        provider_run: &RuntimeProviderRun,
+    ) -> Result<bool, DaemonError> {
+        let context = self.prepare_worker_execution_context(execution, provider_run)?;
+        Ok(verify_project_environment_inputs(&context.workspace_root, definition).is_ok())
+    }
+
     async fn apply_definition_on_worker(
         &self,
         execution: &SetupExecution,
@@ -1526,17 +1588,21 @@ impl KernelRuntimeState {
         provider_run: &RuntimeProviderRun,
     ) -> Result<bool, DaemonError> {
         let context = self.prepare_worker_execution_context(execution, provider_run)?;
+        if verify_project_environment_inputs(&context.workspace_root, definition).is_err() {
+            return Ok(false);
+        }
         let commands = definition
             .setup_steps
             .iter()
             .map(|step| step.command.clone())
             .collect::<Vec<_>>();
+        let workspace_root = context.workspace_root.clone();
         let operation_id = execution.operation_id.clone();
         let cancellation = self.owned.project_environment_setups.clone();
         let guard = cancellation
             .begin_execution(&operation_id, attempt)
             .ok_or_else(|| setup_error("setup attempt is no longer executing"))?;
-        tokio::task::spawn_blocking(move || {
+        let applied = tokio::task::spawn_blocking(move || {
             // The blocking commands own this guard even if their async waiter exits.
             let _guard = guard;
             run_worker_setup_steps(
@@ -1548,7 +1614,14 @@ impl KernelRuntimeState {
         })
         .await
         .map_err(|error| setup_error(&format!("worker setup task failed: {error}")))?
-        .map_err(|error| setup_error(&error))
+        .map_err(|error| setup_error(&error))?;
+        if !applied {
+            return Ok(false);
+        }
+        if verify_project_environment_inputs(&workspace_root, definition).is_err() {
+            return Ok(false);
+        }
+        Ok(true)
     }
 
     async fn validate_definition_on_worker(
@@ -1577,14 +1650,19 @@ impl KernelRuntimeState {
             let mut results = Vec::with_capacity(commands.len());
             for command in commands {
                 if cancellation.is_cancelled(&operation_id, attempt)
-                    || overall_deadline.saturating_duration_since(Instant::now()).is_zero()
+                    || overall_deadline
+                        .saturating_duration_since(Instant::now())
+                        .is_zero()
                 {
                     break;
                 }
-                let result =
-                    run_worker_validation_command(&command, &workspace_root, &environment, || {
-                        cancellation.is_cancelled(&operation_id, attempt)
-                    }, Some(overall_deadline));
+                let result = run_worker_validation_command(
+                    &command,
+                    &workspace_root,
+                    &environment,
+                    || cancellation.is_cancelled(&operation_id, attempt),
+                    Some(overall_deadline),
+                );
                 match result {
                     Ok((exit_code, stdout_bytes, stderr_bytes)) => {
                         results.push(ProjectEnvironmentCommandResult {

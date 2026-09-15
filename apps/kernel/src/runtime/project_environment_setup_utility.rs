@@ -36,6 +36,10 @@ devcontainer, setup script, or commands as appropriate. If it is absent, inspect
 derive a repeatable definition. Package installs, compilers/system tools, and native dependencies\n\
 must be represented as repeatable setup steps. Do not copy binaries from a host or Mac, read host\n\
 credential stores, install a provider SDK, or replace the home kernel.\n\n\
+For a file-backed definition, include a content-only input attestation for the recipe source and\n\
+any relevant lockfiles, using workspace-relative paths and sha256 digests. The kernel will verify\n\
+those files on the target before declaring readiness. Never put file contents, credentials, tokens,\n\
+private keys, or other secrets in the definition or its input attestations.\n\n\
 For a Rust project, ensure the definition accounts for Cargo/rustc and native build dependencies.\n\
 Run bounded project checks in the worker (for example `timeout 180s cargo check --workspace --locked`\n\
 when applicable); the kernel will independently rerun the returned validation commands.\n\n\
