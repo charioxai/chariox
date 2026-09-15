@@ -63,7 +63,7 @@ use crate::runtime::router::CommandRouter;
 #[cfg(unix)]
 use crate::transport::relay_client::TestPeerRequestObservation;
 #[cfg(unix)]
-use crate::session::CreateSessionRequest;
+use crate::session::{CreateSessionRequest, SessionProjectSelection};
 #[cfg(unix)]
 use crate::transport::relay_peer::{
     RelayPeerRequest, RelayPeerResponse, RelayProjectEnvironmentSetupStatus,
@@ -78,6 +78,18 @@ const SETUP_TRANSPORT_RECOVERY_REALM: &str = "realm-transport-recovery";
 
 #[cfg(unix)]
 const SETUP_TRANSPORT_RECOVERY_RELAY_REQUEST_TIMEOUT_MS: u64 = 500;
+
+#[cfg(unix)]
+const CROSS_WORKER_RECIPE_REALM: &str = "realm-cross-worker-recipe";
+
+#[cfg(unix)]
+const CROSS_WORKER_RECIPE_HOME_TOKEN: &str = "cross-worker-recipe-home-token";
+
+#[cfg(unix)]
+const CROSS_WORKER_RECIPE_WORKER_A_TOKEN: &str = "cross-worker-recipe-worker-a-token";
+
+#[cfg(unix)]
+const CROSS_WORKER_RECIPE_WORKER_B_TOKEN: &str = "cross-worker-recipe-worker-b-token";
 
 #[cfg(unix)]
 #[tokio::test]
@@ -114,6 +126,934 @@ async fn public_setup_lifecycle_repairs_legacy_unattested_definition_before_read
 #[tokio::test]
 async fn public_setup_lifecycle_repairs_definition_for_followup_worker_without_utility() {
     exercise_public_setup_lifecycle(DefinitionScenario::SuppliedSetupFailure).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn public_setup_persists_generated_recipe_and_reuses_it_on_distinct_leased_worker() {
+    let _environment_lock = crate::env_lock::lock();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-project-environment-cross-worker-recipe-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let home_state = root.join("home-state");
+    let worker_a_home = root.join("worker-a-home");
+    let worker_b_home = root.join("worker-b-home");
+    let home_workspace = root.join("home-workspace");
+    let worker_a_workspace = root.join("worker-a-worktree");
+    let worker_b_workspace = root.join("worker-b-worktree");
+    let receipt_a = root.join("worker-a-receipt.json");
+    let receipt_b = root.join("worker-b-receipt.json");
+    for directory in [
+        &home_state,
+        &worker_a_home,
+        &worker_b_home,
+        &home_workspace,
+        &worker_a_workspace,
+        &worker_b_workspace,
+    ] {
+        std::fs::create_dir_all(directory).unwrap();
+    }
+
+    struct Cleanup {
+        root: PathBuf,
+        home: Option<std::ffi::OsString>,
+        receipt: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for (key, value) in [
+                ("CHARIOX_HOME", &self.home),
+                ("CHARIOX_DISPOSABLE_WORKER_RECEIPT", &self.receipt),
+            ] {
+                if let Some(value) = value {
+                    std::env::set_var(key, value);
+                } else {
+                    std::env::remove_var(key);
+                }
+            }
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    let _cleanup = Cleanup {
+        root: root.clone(),
+        home: std::env::var_os("CHARIOX_HOME"),
+        receipt: std::env::var_os("CHARIOX_DISPOSABLE_WORKER_RECEIPT"),
+    };
+
+    let recipe_path = ".devcontainer/devcontainer.json";
+    let recipe_contents: &[u8] = br#"{"image":"mcr.microsoft.com/devcontainers/base:ubuntu"}
+"#;
+    let lockfile_path = "Cargo.lock";
+    let lockfile_contents: &[u8] = b"version = 3\n\n[[package]]\nname = \"cross-worker-fixture\"\n";
+    let target_platform = actual_worker_platform();
+    let validation_command = format!(
+        "command -v sh; test -f {recipe_path}; test -f {lockfile_path}; test -f recipe-applied"
+    );
+    let generated_definition = ProjectEnvironmentDefinition {
+        schema_version: 1,
+        origin: ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
+        source: ProjectEnvironmentDefinitionSource::Devcontainer,
+        target_platform: target_platform.clone(),
+        source_path: Some(recipe_path.to_string()),
+        inputs: vec![
+            ProjectEnvironmentInput {
+                kind: ProjectEnvironmentInputKind::Recipe,
+                path: recipe_path.to_string(),
+                sha256: format!("sha256:{:x}", Sha256::digest(recipe_contents)),
+            },
+            ProjectEnvironmentInput {
+                kind: ProjectEnvironmentInputKind::Lockfile,
+                path: lockfile_path.to_string(),
+                sha256: format!("sha256:{:x}", Sha256::digest(lockfile_contents)),
+            },
+        ],
+        setup_steps: vec![ProjectEnvironmentSetupStep {
+            kind: ProjectEnvironmentSetupStepKind::Command,
+            command: "touch recipe-applied; command -v sh".to_string(),
+        }],
+        validation_commands: vec![validation_command.clone()],
+    };
+
+    // B receives the already-materialized project inputs, as the public
+    // workspace transfer does. Its project definition remains absent.
+    std::fs::create_dir_all(worker_b_workspace.join(".devcontainer")).unwrap();
+    std::fs::write(
+        worker_b_workspace.join(recipe_path),
+        recipe_contents,
+    )
+    .unwrap();
+    std::fs::write(worker_b_workspace.join(lockfile_path), lockfile_contents).unwrap();
+
+    let provider_a = UtilityProviderFixture::start_with_repairs(
+        generated_definition.clone(),
+        Some(worker_a_workspace.clone()),
+        BTreeMap::from([
+            (recipe_path.to_string(), recipe_contents.to_vec()),
+            (lockfile_path.to_string(), lockfile_contents.to_vec()),
+        ]),
+    );
+    let provider_b = UtilityProviderFixture::start(generated_definition.clone());
+
+    let listener_seed = RelayServer::new(RelayConfig {
+        host: "127.0.0.1".to_string(),
+        port: 0,
+        shared_token: Some("secret".to_string()),
+    });
+    let listener = listener_seed
+        .bind_listener()
+        .await
+        .expect("relay listener should bind");
+    let address = listener
+        .local_addr()
+        .expect("relay listener should have addr");
+    let relay_url = format!("ws://{}:{}", address.ip(), address.port());
+
+    let account_id = "account-cross-worker-recipe";
+    let mut config_home = DaemonConfig::for_tests();
+    let home_relay_token = CROSS_WORKER_RECIPE_HOME_TOKEN.to_string();
+    config_home.daemon_id = "home-kernel-cross-worker-recipe".to_string();
+    config_home.host_machine_id = "home-machine-cross-worker-recipe".to_string();
+    config_home.relay_url = Some(relay_url.clone());
+    config_home.relay_token = Some(home_relay_token.clone());
+    config_home.relay_heartbeat_ms = 50;
+    config_home.relay_request_timeout_ms = 5_000;
+
+    let mut config_worker_a = DaemonConfig::for_tests();
+    config_worker_a.daemon_id = "worker-kernel-cross-worker-a".to_string();
+    config_worker_a.host_machine_id = "worker-machine-cross-worker-a".to_string();
+    config_worker_a.relay_url = Some(relay_url.clone());
+    config_worker_a.relay_token = Some(CROSS_WORKER_RECIPE_WORKER_A_TOKEN.to_string());
+    config_worker_a.relay_heartbeat_ms = 50;
+    config_worker_a.relay_request_timeout_ms = 5_000;
+    config_worker_a.kernel_runtime_role = KernelRuntimeRole::RemoteLeaseWorker;
+    config_worker_a.accept_remote_leases = true;
+    config_worker_a.remote_lease_capacity = Some(1);
+    config_worker_a.lease_worker_home_caller = Some(crate::config::LeaseWorkerHomeCaller {
+        kernel_id: config_home.daemon_id.clone(),
+        realm_id: CROSS_WORKER_RECIPE_REALM.to_string(),
+        user_id: "user-1".to_string(),
+        relay_public_key: config_home.relay_public_key.clone(),
+    });
+    config_worker_a.cloud_relay = Some(
+        serde_json::from_value(serde_json::json!({
+            "api_url": "https://staging.chariox.com",
+            "email": "owner@example.test",
+            "account_id": account_id,
+            "user_id": "user-1",
+            "account_slug": account_id,
+            "realm_id": CROSS_WORKER_RECIPE_REALM,
+            "relay_url": "wss://relay.example.test",
+            "issuer_id": "issuer-cross-worker-recipe",
+            "machine_id": config_worker_a.host_machine_id.clone(),
+            "machine_credential": format!("mcred_{}", "a".repeat(40))
+        }))
+        .unwrap(),
+    );
+
+    let mut config_worker_b = DaemonConfig::for_tests();
+    config_worker_b.daemon_id = "worker-kernel-cross-worker-b".to_string();
+    config_worker_b.host_machine_id = "worker-machine-cross-worker-b".to_string();
+    config_worker_b.relay_url = Some(relay_url.clone());
+    config_worker_b.relay_token = Some(CROSS_WORKER_RECIPE_WORKER_B_TOKEN.to_string());
+    config_worker_b.relay_heartbeat_ms = 50;
+    config_worker_b.relay_request_timeout_ms = 5_000;
+    config_worker_b.kernel_runtime_role = KernelRuntimeRole::RemoteLeaseWorker;
+    config_worker_b.accept_remote_leases = true;
+    config_worker_b.remote_lease_capacity = Some(1);
+    config_worker_b.lease_worker_home_caller = Some(crate::config::LeaseWorkerHomeCaller {
+        kernel_id: config_home.daemon_id.clone(),
+        realm_id: CROSS_WORKER_RECIPE_REALM.to_string(),
+        user_id: "user-1".to_string(),
+        relay_public_key: config_home.relay_public_key.clone(),
+    });
+    config_worker_b.cloud_relay = Some(
+        serde_json::from_value(serde_json::json!({
+            "api_url": "https://staging.chariox.com",
+            "email": "owner@example.test",
+            "account_id": account_id,
+            "user_id": "user-1",
+            "account_slug": account_id,
+            "realm_id": CROSS_WORKER_RECIPE_REALM,
+            "relay_url": "wss://relay.example.test",
+            "issuer_id": "issuer-cross-worker-recipe",
+            "machine_id": config_worker_b.host_machine_id.clone(),
+            "machine_credential": format!("mcred_{}", "b".repeat(40))
+        }))
+        .unwrap(),
+    );
+
+    write_cross_worker_recipe_receipt(
+        &receipt_a,
+        "allocation-cross-worker-a",
+        &config_home,
+        &config_worker_a,
+        account_id,
+    );
+    write_cross_worker_recipe_receipt(
+        &receipt_b,
+        "allocation-cross-worker-b",
+        &config_home,
+        &config_worker_b,
+        account_id,
+    );
+
+    std::env::set_var("CHARIOX_HOME", &home_state);
+    std::env::remove_var("CHARIOX_DISPOSABLE_WORKER_RECEIPT");
+    let app_home = Arc::new(tokio::sync::Mutex::new(
+        crate::DaemonApp::bootstrap(config_home.clone()).unwrap(),
+    ));
+    let (home_session_a, home_agent_a, home_session_b, home_agent_b, project_id) = {
+        let mut app = app_home.lock().await;
+        let (session_a, agent_a) = app
+            .create_session(
+                CreateSessionRequest::new(
+                    home_workspace.display().to_string(),
+                    home_workspace.display().to_string(),
+                )
+                .with_owner_user_id("user-1")
+                .with_agent_defaults(crate::session::SessionAgentDefaults::new("opencode")),
+            )
+            .expect("home worker-A session should be created");
+        let project_id = session_a.project_id().to_string();
+        let (session_b, agent_b) = app
+            .create_session(
+                CreateSessionRequest::new(
+                    home_workspace.display().to_string(),
+                    home_workspace.display().to_string(),
+                )
+                .with_owner_user_id("user-1")
+                .with_project_selection(SessionProjectSelection::Existing {
+                    project_id: project_id.clone(),
+                })
+                .with_agent_defaults(crate::session::SessionAgentDefaults::new("opencode")),
+            )
+            .expect("home worker-B session should select the existing project");
+        (session_a, agent_a, session_b, agent_b, project_id)
+    };
+    let home_session_a_id = home_session_a.id().to_string();
+    let home_agent_a_id = home_agent_a.id().to_string();
+    let home_session_b_id = home_session_b.id().to_string();
+    let home_agent_b_id = home_agent_b.id().to_string();
+
+    let worker_a = create_cross_worker_recipe_worker(
+        config_worker_a.clone(),
+        &worker_a_home,
+        &receipt_a,
+        &worker_a_workspace,
+        &config_home,
+        &home_session_a_id,
+        &home_agent_a_id,
+        provider_a,
+    )
+    .await;
+    let worker_b = create_cross_worker_recipe_worker(
+        config_worker_b.clone(),
+        &worker_b_home,
+        &receipt_b,
+        &worker_b_workspace,
+        &config_home,
+        &home_session_b_id,
+        &home_agent_b_id,
+        provider_b,
+    )
+    .await;
+
+    {
+        let app = app_home.lock().await;
+        app.agents()
+            .bind_remote_execution(
+                &home_agent_a_id,
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: worker_a.config.daemon_id.clone(),
+                    worker_machine_id: worker_a.config.host_machine_id.clone(),
+                    execution_lease_id: worker_a.lease_id.clone(),
+                    leased_agent_id: worker_a.leased_agent_id.clone(),
+                    active_worker_provider_run_id: None,
+                    relay_url: Some(relay_url.clone()),
+                    relay_token: Some(home_relay_token.clone()),
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .expect("home agent A should bind to worker A");
+        app.agents()
+            .bind_remote_execution(
+                &home_agent_b_id,
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: worker_b.config.daemon_id.clone(),
+                    worker_machine_id: worker_b.config.host_machine_id.clone(),
+                    execution_lease_id: worker_b.lease_id.clone(),
+                    leased_agent_id: worker_b.leased_agent_id.clone(),
+                    active_worker_provider_run_id: None,
+                    relay_url: Some(relay_url.clone()),
+                    relay_token: Some(home_relay_token.clone()),
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .expect("home agent B should bind to worker B");
+    }
+
+    let relay = Arc::new(RelayServer::with_auth_verifier(
+        RelayConfig {
+            host: address.ip().to_string(),
+            port: address.port(),
+            shared_token: None,
+        },
+        cross_worker_recipe_relay_auth(&config_home, &config_worker_a, &config_worker_b),
+    ));
+    let registry = relay.registry();
+    let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel::<()>();
+    let server_task = {
+        let relay = Arc::clone(&relay);
+        tokio::spawn(async move {
+            relay
+                .run_listener_until(listener, async {
+                    let _ = server_shutdown_rx.await;
+                })
+                .await
+                .expect("cross-worker relay server should run");
+        })
+    };
+
+    let home_state_for_connector = {
+        let app = app_home.lock().await;
+        app.relay_client_state()
+    };
+    let (shutdown_home_tx, shutdown_home_rx) = watch::channel(false);
+    let connector_home = tokio::spawn(crate::transport::relay_client::run_daemon_relay_connector(
+        Arc::clone(&app_home),
+        home_state_for_connector,
+        shutdown_home_rx,
+    ));
+    let worker_a_state = {
+        let app = worker_a.app.lock().await;
+        app.relay_client_state()
+    };
+    let (shutdown_worker_a_tx, shutdown_worker_a_rx) = watch::channel(false);
+    let connector_worker_a = tokio::spawn(
+        crate::transport::relay_client::run_daemon_relay_connector_with_router_and_static_relay(
+            Arc::clone(&worker_a.router),
+            worker_a_state,
+            shutdown_worker_a_rx,
+            relay_url.clone(),
+            CROSS_WORKER_RECIPE_WORKER_A_TOKEN.to_string(),
+        ),
+    );
+    let worker_b_state = {
+        let app = worker_b.app.lock().await;
+        app.relay_client_state()
+    };
+    let (shutdown_worker_b_tx, shutdown_worker_b_rx) = watch::channel(false);
+    let connector_worker_b = tokio::spawn(
+        crate::transport::relay_client::run_daemon_relay_connector_with_router_and_static_relay(
+            Arc::clone(&worker_b.router),
+            worker_b_state,
+            shutdown_worker_b_rx,
+            relay_url.clone(),
+            CROSS_WORKER_RECIPE_WORKER_B_TOKEN.to_string(),
+        ),
+    );
+    for daemon_id in [
+        &config_home.daemon_id,
+        &config_worker_a.daemon_id,
+        &config_worker_b.daemon_id,
+    ] {
+        for _ in 0..300 {
+            if registry
+                .read()
+                .await
+                .daemon_in_realm(CROSS_WORKER_RECIPE_REALM, daemon_id)
+                .is_some()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            registry
+                .read()
+                .await
+                .daemon_in_realm(CROSS_WORKER_RECIPE_REALM, daemon_id)
+                .is_some(),
+            "daemon {daemon_id} should register in the cross-worker recipe realm"
+        );
+    }
+
+    let home_router = CommandRouter::with_interactive_capacity_from_app(Arc::clone(&app_home), 1);
+    let home_runtime = home_router.runtime_state();
+    let generated_digest = generated_definition.digest();
+    assert!(
+        home_runtime
+            .owned
+            .session_store
+            .get_project(&project_id)
+            .expect("home project should exist before first use")
+            .environment_definition()
+            .is_none(),
+        "worker A must generate the first persisted definition"
+    );
+
+    // Public home-owned first use: definition=None forces worker A's utility
+    // to generate the recipe, after which home reconciliation persists it.
+    std::env::set_var("CHARIOX_HOME", &worker_a_home);
+    std::env::set_var("CHARIOX_DISPOSABLE_WORKER_RECEIPT", &receipt_a);
+    let start_a = home_runtime
+        .execute_project_environment_setup_request(
+            LocalDaemonRequest::StartProjectEnvironmentSetup(
+                StartProjectEnvironmentSetupRequest {
+                    operation_id: "setup-cross-worker-a".to_string(),
+                    project_id: project_id.clone(),
+                    session_id: home_session_a_id.clone(),
+                    agent_id: home_agent_a_id.clone(),
+                    target_worker_id: worker_a.config.host_machine_id.clone(),
+                    target_platform: target_platform.clone(),
+                    definition: None,
+                    validation_commands: vec![validation_command.clone()],
+                },
+            ),
+            "user-1",
+        )
+        .await
+        .expect("public home-owned worker-A setup should be accepted");
+    assert_eq!(
+        response_status(start_a).phase,
+        ProjectEnvironmentSetupPhase::Requested
+    );
+    let ready_a = wait_for_ready(
+        &home_runtime,
+        "setup-cross-worker-a",
+        &worker_a.provider_fixture,
+    )
+    .await;
+    assert_eq!(ready_a.project_id, project_id);
+    assert_eq!(ready_a.session_id, home_session_a_id);
+    assert_eq!(ready_a.agent_id, home_agent_a_id);
+    assert_eq!(ready_a.worker_id, worker_a.config.host_machine_id);
+    assert_eq!(ready_a.platform, target_platform);
+    assert_eq!(ready_a.definition_digest.as_deref(), Some(generated_digest.as_str()));
+    assert!(ready_a
+        .validation
+        .as_ref()
+        .is_some_and(ProjectEnvironmentValidation::passed));
+    assert!(
+        worker_a.provider_fixture.diagnostics().contains("prompt_async"),
+        "worker A must invoke the utility for first-use generation: {}",
+        worker_a.provider_fixture.diagnostics()
+    );
+    assert_eq!(
+        std::fs::read(worker_a_workspace.join(recipe_path)).unwrap(),
+        recipe_contents
+    );
+    assert_eq!(
+        std::fs::read(worker_a_workspace.join(lockfile_path)).unwrap(),
+        lockfile_contents
+    );
+    assert!(worker_a_workspace.join("recipe-applied").exists());
+    let persisted_on_home = home_runtime
+        .owned
+        .session_store
+        .get_project(&project_id)
+        .expect("home project should remain available")
+        .environment_definition()
+        .cloned()
+        .expect("worker-A Ready should persist the generated definition on home");
+    assert_eq!(persisted_on_home, generated_definition);
+    let (home_a_execution, _) = home_runtime
+        .owned
+        .project_environment_setups
+        .get_entry("setup-cross-worker-a", "user-1")
+        .expect("home A setup entry should be retained");
+    assert!(home_a_execution.persist_project_definition);
+    let (worker_a_execution, worker_a_status) = worker_a
+        .router
+        .runtime_state()
+        .owned
+        .project_environment_setups
+        .get_entry("setup-cross-worker-a", "user-1")
+        .expect("worker-A setup entry should be retained");
+    assert_eq!(worker_a_execution.project_id, project_id);
+    assert_eq!(worker_a_execution.session_id, home_session_a_id);
+    assert_eq!(worker_a_execution.agent_id, home_agent_a_id);
+    assert_eq!(
+        worker_a_execution.validation_commands,
+        vec![validation_command.clone()],
+        "worker A must retain the public validation contract"
+    );
+    assert_eq!(
+        worker_a_execution.execution_session_id,
+        worker_a.backing_session_id
+    );
+    assert_eq!(
+        worker_a_execution.execution_agent_id,
+        worker_a.backing_agent_id
+    );
+    assert_eq!(worker_a_execution.target_worker_id, worker_a.config.host_machine_id);
+    assert_eq!(worker_a_execution.definition, Some(generated_definition.clone()));
+    assert!(!worker_a_execution.persist_project_definition);
+    assert_eq!(
+        worker_a_execution.remote_leased_agent_id.as_deref(),
+        Some(worker_a.leased_agent_id.as_str())
+    );
+    assert_eq!(worker_a_status.phase, ProjectEnvironmentSetupPhase::Ready);
+    assert!(
+        worker_a
+            .router
+            .runtime_state()
+            .owned
+            .session_store
+            .get_project(&project_id)
+            .is_err(),
+        "worker A must not own the home project definition"
+    );
+
+    // Public reuse on B: definition=None must select the persisted home
+    // definition and reach B through the authenticated relay dispatch.
+    assert!(
+        worker_b
+            .router
+            .runtime_state()
+            .owned
+            .session_store
+            .get_project(&project_id)
+            .is_err(),
+        "worker B must not be manually seeded with the home project"
+    );
+    std::env::set_var("CHARIOX_HOME", &worker_b_home);
+    std::env::set_var("CHARIOX_DISPOSABLE_WORKER_RECEIPT", &receipt_b);
+    let start_b = home_runtime
+        .execute_project_environment_setup_request(
+            LocalDaemonRequest::StartProjectEnvironmentSetup(
+                StartProjectEnvironmentSetupRequest {
+                    operation_id: "setup-cross-worker-b".to_string(),
+                    project_id: project_id.clone(),
+                    session_id: home_session_b_id.clone(),
+                    agent_id: home_agent_b_id.clone(),
+                    target_worker_id: worker_b.config.host_machine_id.clone(),
+                    target_platform: target_platform.clone(),
+                    definition: None,
+                    validation_commands: Vec::new(),
+                },
+            ),
+            "user-1",
+        )
+        .await
+        .expect("public home-owned worker-B reuse should be accepted");
+    assert_eq!(
+        response_status(start_b).phase,
+        ProjectEnvironmentSetupPhase::Requested
+    );
+    let ready_b = wait_for_ready(
+        &home_runtime,
+        "setup-cross-worker-b",
+        &worker_b.provider_fixture,
+    )
+    .await;
+    assert_eq!(ready_b.project_id, project_id);
+    assert_eq!(ready_b.session_id, home_session_b_id);
+    assert_eq!(ready_b.agent_id, home_agent_b_id);
+    assert_eq!(ready_b.worker_id, worker_b.config.host_machine_id);
+    assert_ne!(ready_b.worker_id, ready_a.worker_id);
+    assert_eq!(ready_b.platform, target_platform);
+    assert_eq!(ready_b.definition_digest.as_deref(), Some(generated_digest.as_str()));
+    assert!(ready_b
+        .validation
+        .as_ref()
+        .is_some_and(ProjectEnvironmentValidation::passed));
+    assert_eq!(
+        worker_b.provider_fixture.diagnostics(),
+        "<no requests observed>",
+        "worker B must apply the relayed persisted definition without utility"
+    );
+    assert!(worker_b_workspace.join("recipe-applied").exists());
+    assert_eq!(
+        std::fs::read(worker_b_workspace.join(recipe_path)).unwrap(),
+        recipe_contents
+    );
+    assert_eq!(
+        std::fs::read(worker_b_workspace.join(lockfile_path)).unwrap(),
+        lockfile_contents
+    );
+    let (worker_b_execution, worker_b_status) = worker_b
+        .router
+        .runtime_state()
+        .owned
+        .project_environment_setups
+        .get_entry("setup-cross-worker-b", "user-1")
+        .expect("worker-B setup entry should be retained");
+    assert_eq!(worker_b_execution.project_id, project_id);
+    assert_eq!(worker_b_execution.session_id, home_session_b_id);
+    assert_eq!(worker_b_execution.agent_id, home_agent_b_id);
+    assert_eq!(
+        worker_b_execution.execution_session_id,
+        worker_b.backing_session_id
+    );
+    assert_eq!(
+        worker_b_execution.execution_agent_id,
+        worker_b.backing_agent_id
+    );
+    assert_eq!(worker_b_execution.workspace_id, worker_b_workspace.display().to_string());
+    assert_eq!(worker_b_execution.target_worker_id, worker_b.config.host_machine_id);
+    assert_eq!(worker_b_execution.validation_commands, Vec::<String>::new());
+    assert_eq!(worker_b_execution.definition, Some(generated_definition.clone()));
+    assert!(!worker_b_execution.persist_project_definition);
+    assert_eq!(
+        worker_b_execution.remote_leased_agent_id.as_deref(),
+        Some(worker_b.leased_agent_id.as_str())
+    );
+    assert_eq!(
+        worker_b_execution
+            .definition
+            .as_ref()
+            .expect("worker B should receive the persisted definition")
+            .validation_commands,
+        generated_definition.validation_commands,
+        "worker B must validate the persisted recipe with the original commands"
+    );
+    assert_eq!(worker_b_status.phase, ProjectEnvironmentSetupPhase::Ready);
+    assert_eq!(
+        home_runtime
+            .owned
+            .session_store
+            .get_project(&project_id)
+            .expect("home project should remain available after worker B")
+            .environment_definition(),
+        Some(&generated_definition)
+    );
+    let (home_b_execution, _) = home_runtime
+        .owned
+        .project_environment_setups
+        .get_entry("setup-cross-worker-b", "user-1")
+        .expect("home B setup entry should be retained");
+    assert!(home_b_execution.persist_project_definition);
+
+    let _ = shutdown_worker_b_tx.send(true);
+    let _ = shutdown_worker_a_tx.send(true);
+    let _ = shutdown_home_tx.send(true);
+    connector_worker_b
+        .await
+        .expect("worker-B relay connector should stop");
+    connector_worker_a
+        .await
+        .expect("worker-A relay connector should stop");
+    connector_home.await.expect("home relay connector should stop");
+    let _ = server_shutdown_tx.send(());
+    server_task.await.expect("relay server task should stop");
+}
+
+#[cfg(unix)]
+struct CrossWorkerRecipeWorker {
+    config: DaemonConfig,
+    app: Arc<tokio::sync::Mutex<crate::DaemonApp>>,
+    router: Arc<CommandRouter>,
+    lease_id: String,
+    leased_agent_id: String,
+    backing_session_id: String,
+    backing_agent_id: String,
+    provider_fixture: UtilityProviderFixture,
+}
+
+#[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
+async fn create_cross_worker_recipe_worker(
+    config: DaemonConfig,
+    worker_home: &std::path::Path,
+    receipt: &std::path::Path,
+    workspace: &std::path::Path,
+    config_home: &DaemonConfig,
+    home_session_id: &str,
+    home_agent_id: &str,
+    provider_fixture: UtilityProviderFixture,
+) -> CrossWorkerRecipeWorker {
+    std::env::set_var("CHARIOX_HOME", worker_home);
+    std::env::set_var("CHARIOX_DISPOSABLE_WORKER_RECEIPT", receipt);
+    ensure_worker_validation_boundary(&config).expect("cross-worker recipe receipt should be valid");
+
+    let mut bootstrapped_app = crate::DaemonApp::bootstrap(config.clone()).unwrap();
+    let provider_profiles = bootstrapped_app.provider_account_profile_registry();
+    let provider_account_owner =
+        crate::account_profile::provider_account_authority_owner_user_id(&config, "user-1");
+    let profiles = provider_profiles
+        .migrate_effective_defaults(&provider_account_owner, workspace)
+        .unwrap();
+    for profile in profiles {
+        crate::test_support::authenticate_provider_account(
+            &provider_profiles,
+            &provider_account_owner,
+            &profile.provider,
+            &profile.profile_id,
+        )
+        .unwrap();
+    }
+    let app = Arc::new(tokio::sync::Mutex::new(bootstrapped_app));
+
+    let (lease_id, leased_agent_id, backing_session_id, backing_agent_id) = {
+        let mut app = app.lock().await;
+        let caller = crate::app::LeaseCallerBinding {
+            home_kernel_id: config_home.daemon_id.clone(),
+            authenticated_machine_id: config_home.host_machine_id.clone(),
+            owner_user_id: "user-1".to_string(),
+            realm_id: CROSS_WORKER_RECIPE_REALM.to_string(),
+            public_key_thumbprint: crate::runtime::terminal_pairings::public_key_thumbprint(
+                &config_home.relay_public_key,
+            ),
+        };
+        let lease = crate::app::RemoteLeaseRuntime::new(&mut app)
+            .create_bound_execution_lease(
+                &config_home.daemon_id,
+                home_session_id,
+                home_agent_id,
+                false,
+                "user-1",
+                caller,
+            )
+            .expect("leased worker execution lease should be created");
+        let leased_agent = crate::app::RemoteLeaseRuntime::new(&mut app)
+            .create_leased_agent_from_base_directory(
+                workspace,
+                &lease.id,
+                "opencode",
+                "default",
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(workspace.display().to_string()),
+                None,
+            )
+            .expect("leased worker agent should be created");
+        (
+            lease.id,
+            leased_agent.id,
+            leased_agent.backing_session_id,
+            leased_agent.backing_agent_id,
+        )
+    };
+
+    {
+        let mut app = app.lock().await;
+        let launch_request = LaunchProviderRequest::new(
+            &backing_session_id,
+            "opencode",
+            "opencode",
+            "default",
+            "opencode/test-model",
+        )
+        .with_agent_id(&backing_agent_id)
+        .with_owner_user_id("user-1")
+        .with_variant(Some("fixture".to_string()))
+        .with_structured_endpoint(provider_fixture.address());
+        let provider_run = app
+            .launch_provider(launch_request)
+            .expect("leased worker provider should launch through the normal path");
+        assert_eq!(
+            provider_run.state(),
+            crate::provider::ProviderRunState::Running,
+            "leased worker provider context should remain available for setup"
+        );
+    }
+
+    let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
+        Arc::clone(&app),
+        1,
+    ));
+    CrossWorkerRecipeWorker {
+        config,
+        app,
+        router,
+        lease_id,
+        leased_agent_id,
+        backing_session_id,
+        backing_agent_id,
+        provider_fixture,
+    }
+}
+
+#[cfg(unix)]
+fn write_cross_worker_recipe_receipt(
+    path: &std::path::Path,
+    allocation_id: &str,
+    config_home: &DaemonConfig,
+    config_worker: &DaemonConfig,
+    account_id: &str,
+) {
+    std::fs::write(
+        path,
+        serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 1,
+            "status": "confirmed",
+            "allocationId": allocation_id,
+            "machineId": config_worker.host_machine_id,
+            "kernelId": config_worker.daemon_id,
+            "relayPublicKey": config_worker.relay_public_key,
+            "runtimeReleaseDigest": format!("sha256:{}", "a".repeat(64)),
+            "homeCaller": {
+                "accountId": account_id,
+                "userId": "user-1",
+                "realmId": CROSS_WORKER_RECIPE_REALM,
+                "machineId": config_home.host_machine_id,
+                "kernelId": config_home.daemon_id,
+                "relayPublicKey": config_home.relay_public_key
+            },
+            "confirmedAt": "2026-09-15T00:00:00Z"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+#[cfg(unix)]
+fn cross_worker_recipe_relay_auth(
+    config_home: &DaemonConfig,
+    config_worker_a: &DaemonConfig,
+    config_worker_b: &DaemonConfig,
+) -> RelayAuthVerifier {
+    let allowed_actions = vec![
+        RelayAction::DaemonRegister,
+        RelayAction::DaemonHeartbeat,
+        RelayAction::ClientMetadataRead,
+        RelayAction::PacketRoute,
+        RelayAction::PeerRequest,
+        RelayAction::PeerEvent,
+    ];
+    let claims = [
+        (
+            CROSS_WORKER_RECIPE_HOME_TOKEN,
+            RelayTokenClaims {
+                issuer: "project-environment-setup-cross-worker-test".to_string(),
+                subject: config_home.daemon_id.clone(),
+                subject_kind: RelaySubjectKind::Kernel,
+                realm_id: CROSS_WORKER_RECIPE_REALM.to_string(),
+                allowed_actions: allowed_actions.clone(),
+                allowed_targets: None,
+                issued_at_ms: 1,
+                expires_at_ms: u64::MAX,
+                token_id: CROSS_WORKER_RECIPE_HOME_TOKEN.to_string(),
+                account_id: None,
+                organization_id: None,
+                user_id: Some("user-1".to_string()),
+                device_id: None,
+                machine_id: Some(config_home.host_machine_id.clone()),
+                client_id: None,
+                session_id: None,
+                public_key_thumbprint: Some(
+                    crate::runtime::terminal_pairings::public_key_thumbprint(
+                        &config_home.relay_public_key,
+                    ),
+                ),
+                entitlements_version: None,
+            },
+        ),
+        (
+            CROSS_WORKER_RECIPE_WORKER_A_TOKEN,
+            RelayTokenClaims {
+                issuer: "project-environment-setup-cross-worker-test".to_string(),
+                subject: config_worker_a.daemon_id.clone(),
+                subject_kind: RelaySubjectKind::Kernel,
+                realm_id: CROSS_WORKER_RECIPE_REALM.to_string(),
+                allowed_actions: allowed_actions.clone(),
+                allowed_targets: Some(vec![config_home.daemon_id.clone()]),
+                issued_at_ms: 1,
+                expires_at_ms: u64::MAX,
+                token_id: CROSS_WORKER_RECIPE_WORKER_A_TOKEN.to_string(),
+                account_id: None,
+                organization_id: None,
+                user_id: Some("user-1".to_string()),
+                device_id: None,
+                machine_id: Some(config_worker_a.host_machine_id.clone()),
+                client_id: None,
+                session_id: None,
+                public_key_thumbprint: Some(
+                    crate::runtime::terminal_pairings::public_key_thumbprint(
+                        &config_worker_a.relay_public_key,
+                    ),
+                ),
+                entitlements_version: None,
+            },
+        ),
+        (
+            CROSS_WORKER_RECIPE_WORKER_B_TOKEN,
+            RelayTokenClaims {
+                issuer: "project-environment-setup-cross-worker-test".to_string(),
+                subject: config_worker_b.daemon_id.clone(),
+                subject_kind: RelaySubjectKind::Kernel,
+                realm_id: CROSS_WORKER_RECIPE_REALM.to_string(),
+                allowed_actions,
+                allowed_targets: Some(vec![config_home.daemon_id.clone()]),
+                issued_at_ms: 1,
+                expires_at_ms: u64::MAX,
+                token_id: CROSS_WORKER_RECIPE_WORKER_B_TOKEN.to_string(),
+                account_id: None,
+                organization_id: None,
+                user_id: Some("user-1".to_string()),
+                device_id: None,
+                machine_id: Some(config_worker_b.host_machine_id.clone()),
+                client_id: None,
+                session_id: None,
+                public_key_thumbprint: Some(
+                    crate::runtime::terminal_pairings::public_key_thumbprint(
+                        &config_worker_b.relay_public_key,
+                    ),
+                ),
+                entitlements_version: None,
+            },
+        ),
+    ]
+    .into_iter()
+    .map(|(token, claims)| (token.to_string(), claims))
+    .collect();
+    RelayAuthVerifier::ScopedToken(ScopedTokenVerifier::new(
+        claims,
+        BTreeMap::new(),
+        Some(10),
+    ))
 }
 
 #[cfg(unix)]
