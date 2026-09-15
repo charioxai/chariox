@@ -69,6 +69,7 @@ apt-get install -y --no-install-recommends \
   cloud-init \
   curl \
   docker.io \
+  docker-buildx \
   fuse-overlayfs \
   gh \
   git \
