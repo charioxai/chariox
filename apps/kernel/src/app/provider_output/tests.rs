@@ -845,11 +845,25 @@ fn app_side_promptless_poll_failure_before_prompt_start_reschedules_and_delivers
     }
 
     let replacement_prompt_id = replacement_prompt_id.expect("replacement app prompt should exist");
+    std::thread::sleep(std::time::Duration::from_millis(
+        STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS + 50,
+    ));
     assert!(
-        output_store.poll_due(&provider_run_id, u64::MAX),
+        output_store.poll_due(&provider_run_id, crate::session::unix_epoch_ms()),
         "an app prompt started after the third idle failure must receive a fresh poll admission"
     );
-    output_store.mark_poll_enqueued(&provider_run_id, Some(replacement_prompt_id.clone()));
+    let admitted = ProviderOutputPump::new(&mut app)
+        .pump_provider_output(ProviderOutputPumpRequest {
+            session_id: &session_id,
+            provider_run_id: &provider_run_id,
+            recipient_attachment_ids: vec![attachment_id.clone()],
+            initial_liveness_already_checked: true,
+        })
+        .expect("the replacement app poll should be admitted");
+    assert!(
+        admitted.is_empty(),
+        "poll admission should not fabricate app output"
+    );
     assert!(
         !output_store.poll_due(&provider_run_id, u64::MAX),
         "an admitted app replacement poll should be tracked as in flight"

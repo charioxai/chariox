@@ -693,11 +693,26 @@ async fn promptless_codex_poll_failure_before_prompt_start_reschedules_and_deliv
     }
 
     let replacement_prompt_id = replacement_prompt_id.expect("replacement prompt should exist");
+    tokio::time::sleep(std::time::Duration::from_millis(
+        crate::app::provider_output::STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS + 50,
+    ))
+    .await;
     assert!(
-        output_store.poll_due(run.id(), u64::MAX),
+        output_store.poll_due(run.id(), crate::session::unix_epoch_ms()),
         "a prompt started after the third idle failure must receive a fresh poll admission"
     );
-    output_store.mark_poll_enqueued(run.id(), Some(replacement_prompt_id.clone()));
+    let admitted = runtime
+        .pump_owned_structured_provider_output(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+        )
+        .await
+        .expect("the replacement poll should be admitted");
+    assert!(
+        admitted.is_empty(),
+        "poll admission should not fabricate output"
+    );
     assert!(
         !output_store.poll_due(run.id(), u64::MAX),
         "an admitted replacement poll should be tracked as in flight"
