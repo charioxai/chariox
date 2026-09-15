@@ -106,7 +106,7 @@ async fn public_setup_lifecycle_repairs_or_rejects_stale_and_missing_inputs_befo
 
 #[cfg(unix)]
 #[tokio::test]
-async fn public_setup_lifecycle_repairs_failed_reused_definition_through_worker_utility() {
+async fn public_setup_lifecycle_repairs_definition_for_followup_worker_without_utility() {
     exercise_public_setup_lifecycle(DefinitionScenario::SuppliedSetupFailure).await;
 }
 
@@ -271,7 +271,19 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
             vec![command.clone()]
         },
     };
-    let provider_fixture = UtilityProviderFixture::start(definition.clone());
+    let utility_definition = match scenario {
+        DefinitionScenario::SuppliedSetupFailure => {
+            let mut repaired = definition.clone();
+            repaired.setup_steps[0].command = "touch setup-repaired; command -v sh".to_string();
+            repaired
+        }
+        DefinitionScenario::Supplied
+        | DefinitionScenario::Generated
+        | DefinitionScenario::SuppliedInputReuse
+        | DefinitionScenario::SuppliedStaleInputs
+        | DefinitionScenario::SuppliedMissingInputs => definition.clone(),
+    };
+    let provider_fixture = UtilityProviderFixture::start(utility_definition);
 
     let mut config = DaemonConfig::for_tests();
     config.daemon_id = "worker-kernel".into();
@@ -548,6 +560,82 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
         .environment_definition()
         .cloned()
         .expect("Ready setup should persist the measured definition");
+    if matches!(scenario, DefinitionScenario::SuppliedSetupFailure) {
+        assert_eq!(
+            persisted.setup_steps[0].command,
+            "touch setup-repaired; command -v sh",
+            "a successful repair must persist the repeatable definition returned by the utility"
+        );
+
+        let utility_trace = provider_fixture.diagnostics();
+        let second_start = runtime
+            .execute_project_environment_setup_request(
+                LocalDaemonRequest::StartProjectEnvironmentSetup(
+                    StartProjectEnvironmentSetupRequest {
+                        operation_id: "setup-lifecycle-followup".into(),
+                        project_id: project_id.clone(),
+                        session_id: session.id().to_string(),
+                        agent_id: agent.id().to_string(),
+                        target_worker_id: "worker-machine".into(),
+                        target_platform: target_platform.clone(),
+                        definition: None,
+                        validation_commands: Vec::new(),
+                    },
+                ),
+                "user-1",
+            )
+            .await
+            .expect("follow-up worker setup should be accepted");
+        let LocalDaemonResponse::ProjectEnvironmentSetupStarted { status } = second_start else {
+            panic!("unexpected follow-up setup start response: {second_start:?}");
+        };
+        assert_eq!(status.phase, ProjectEnvironmentSetupPhase::Requested);
+        assert_eq!(status.attempt, 1);
+
+        let second_ready_deadline = Instant::now() + Duration::from_secs(10);
+        let second_ready = loop {
+            let status = response_status(
+                get_setup_status(
+                    &runtime,
+                    "setup-lifecycle-followup",
+                    "user-1",
+                    "follow-up worker polling",
+                )
+                .await,
+            );
+            match status.phase {
+                ProjectEnvironmentSetupPhase::Ready => break status,
+                ProjectEnvironmentSetupPhase::Failed => {
+                    panic!("follow-up worker setup failed: {status:?}")
+                }
+                _ => {
+                    assert!(
+                        Instant::now() < second_ready_deadline,
+                        "follow-up worker setup did not reach Ready: {status:?}"
+                    );
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }
+        };
+        assert_eq!(
+            second_ready
+                .validation
+                .as_ref()
+                .expect("follow-up Ready requires worker validation")
+                .commands[0]
+                .exit_code,
+            0
+        );
+        assert!(
+            workspace.join("setup-repaired").exists(),
+            "the follow-up worker must apply the repaired reusable definition"
+        );
+        assert_eq!(
+            provider_fixture.diagnostics(),
+            utility_trace,
+            "the follow-up worker must reuse the repaired definition without utility"
+        );
+    }
     assert_eq!(
         persisted.origin,
         match scenario {
