@@ -100,7 +100,7 @@ async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
         },
     );
     run.mark_running();
-    let (queued_before, workflow_before) = runtime
+    let (queued_before, workflow_before, attachment_id) = runtime
         .with_app_side_effect(|app| {
             app.providers_mut().insert_run_for_test(run.clone());
             app.sessions_mut()
@@ -166,6 +166,7 @@ async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
             Ok::<_, DaemonError>((
                 app.prompt_owner_peek_next_queued_prompt(&session_id, &agent_id)?,
                 workflow_before,
+                attachment.id().to_string(),
             ))
         })
         .await
@@ -377,7 +378,7 @@ async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
     let completion_records = runtime
         .owned
         .terminal_stream
-        .drain_completion_records(&session_id, "substitute-test");
+        .drain_completion_records(&session_id, &attachment_id);
     let failed_completions = completion_records
         .iter()
         .filter(|record| {
