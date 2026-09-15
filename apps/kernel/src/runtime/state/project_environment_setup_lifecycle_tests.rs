@@ -625,6 +625,19 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
                 .exit_code,
             0
         );
+        assert_ne!(
+            second_ready
+                .validation
+                .as_ref()
+                .expect("fresh-worker Ready requires worker validation")
+                .worker_id,
+            ready
+                .validation
+                .as_ref()
+                .expect("initial Ready requires worker validation")
+                .worker_id,
+            "repaired recipe coverage must cross a fresh worker identity"
+        );
         assert!(
             workspace.join("setup-repaired").exists(),
             "the follow-up worker must apply the repaired reusable definition"
