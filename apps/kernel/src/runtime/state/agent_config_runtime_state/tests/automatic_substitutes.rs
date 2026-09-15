@@ -170,6 +170,23 @@ async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
         })
         .await
         .unwrap();
+    // The public submission seam allocates the canonical active prompt id for a
+    // newly started prompt. Keep the id returned by that seam rather than using
+    // the fixture's pre-submission label when checking durable settlement.
+    let failed_prompt_id = {
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .expect("the failed prompt should be active before substitution")
+            .id()
+            .to_string()
+    };
     if claude_hook {
         let result = runtime
             .pump_owned_provider_output(&session_id, run.id(), Vec::new(), true)
@@ -259,7 +276,7 @@ async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
     let settlement = runtime
         .owned
         .operational_history_store
-        .load_prompt_settlement_event(&session_id, &agent_id, "failed-prompt")
+        .load_prompt_settlement_event(&session_id, &agent_id, &failed_prompt_id)
         .unwrap()
         .expect("failed prompt must have durable settlement history");
     assert_eq!(
@@ -365,7 +382,7 @@ async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
         .iter()
         .filter(|record| {
             record.provider_run_id == run.id()
-                && record.message_id == "prompt-complete:failed-prompt"
+                && record.message_id == format!("prompt-complete:{failed_prompt_id}")
         })
         .count();
     assert_eq!(
