@@ -417,6 +417,32 @@ fn app_side_stale_poll_failure_reschedules_replacement_and_delivers_followup_out
         .agent_instance_id()
         .expect("provider run should belong to an agent")
         .to_string();
+    let old_prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        &attachment_id,
+        &agent_id,
+        "start the original app-side prompt",
+        crate::session::PromptStatus::Queued,
+    );
+    let old_prompt_id = match app
+        .prompt_owner_submit_prepared_prompt(&session_id, old_prompt, false)
+        .expect("the original app-side prompt should start")
+    {
+        crate::session::PromptSubmissionOutcome::Started { prompt } => prompt.id().to_string(),
+        crate::session::PromptSubmissionOutcome::Queued { .. } => {
+            panic!("the original app-side prompt should start")
+        }
+    };
+    app.mark_active_prompt_delivery(
+        &session_id,
+        &agent_id,
+        &old_prompt_id,
+        crate::session::DurablePromptDeliveryPhase::Delivered,
+        Some(provider_run_id.clone()),
+        None,
+    )
+    .expect("the original app-side prompt should be delivered");
+    crate::transport::flow_control::note_prompt_started(&mut app, &provider_run_id);
     let healthy_agent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             crate::agent::CreateAgentRequest::new(&session_id, "opencode")
@@ -463,22 +489,6 @@ fn app_side_stale_poll_failure_reschedules_replacement_and_delivers_followup_out
             .clone(),
     );
 
-    let old_prompt = crate::session::PromptQueueItem::new(
-        app.sessions_mut().reserve_prompt_id(),
-        &attachment_id,
-        &agent_id,
-        "start the original app-side prompt",
-        crate::session::PromptStatus::Queued,
-    );
-    let old_prompt_id = match app
-        .prompt_owner_submit_prepared_prompt(&session_id, old_prompt, false)
-        .expect("the original app-side prompt should start")
-    {
-        crate::session::PromptSubmissionOutcome::Started { prompt } => prompt.id().to_string(),
-        crate::session::PromptSubmissionOutcome::Queued { .. } => {
-            panic!("the original app-side prompt should start")
-        }
-    };
     let healthy_attachment_id = healthy_attachment.id().to_string();
     let healthy_prompt = crate::session::PromptQueueItem::new(
         app.sessions_mut().reserve_prompt_id(),
@@ -496,7 +506,6 @@ fn app_side_stale_poll_failure_reschedules_replacement_and_delivers_followup_out
             panic!("the healthy app-side prompt should start")
         }
     };
-    crate::transport::flow_control::note_prompt_started(&mut app, &provider_run_id);
     crate::transport::flow_control::note_prompt_started(&mut app, &healthy_run_id);
     let output_store = app.structured_output_record_store();
     output_store.mark_poll_enqueued(&healthy_run_id, Some(healthy_prompt_id));
