@@ -336,4 +336,50 @@ mod tests {
         .expect_err("ordinary utility output must retain strict selected-definition equality");
         assert!(error.to_string().contains("changed the selected"));
     }
+
+    #[test]
+    fn repair_parser_rejects_dropped_or_replaced_validation_commands() {
+        let mut expected = definition();
+        expected.origin = ProjectEnvironmentDefinitionOrigin::UserAuthored;
+        expected.validation_commands.push("cargo test --workspace".into());
+
+        for validation_commands in [
+            vec!["true".to_string()],
+            vec![
+                "true".to_string(),
+                "cargo test --workspace".to_string(),
+            ],
+        ] {
+            let mut repaired = expected.clone();
+            repaired.validation_commands = validation_commands;
+            let error = parse_project_environment_setup_utility_output_for_repair(
+                &serde_json::json!({"definition": repaired}).to_string(),
+                Some(&expected),
+                "linux-x86_64",
+            )
+            .expect_err("repair must not weaken the stored validation contract");
+            assert!(
+                error
+                    .to_string()
+                    .contains("must retain every selected validation command"),
+                "unexpected validation-contract error: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn repair_parser_accepts_additional_validation_commands() {
+        let mut expected = definition();
+        expected.origin = ProjectEnvironmentDefinitionOrigin::UserAuthored;
+        let mut repaired = expected.clone();
+        repaired.validation_commands.push("cargo test --workspace".into());
+
+        let parsed = parse_project_environment_setup_utility_output_for_repair(
+            &serde_json::json!({"definition": repaired.clone()}).to_string(),
+            Some(&expected),
+            "linux-x86_64",
+        )
+        .expect("repair may add validation commands while retaining the original contract");
+        assert_eq!(parsed.validation_commands, repaired.validation_commands);
+    }
 }
