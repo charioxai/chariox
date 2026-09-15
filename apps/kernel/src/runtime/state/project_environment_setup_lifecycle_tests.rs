@@ -89,9 +89,16 @@ async fn public_setup_lifecycle_generates_definition_through_worker_boundary() {
 }
 
 #[cfg(unix)]
+#[tokio::test]
+async fn public_setup_lifecycle_repairs_failed_reused_definition_through_worker_utility() {
+    exercise_public_setup_lifecycle(DefinitionScenario::SuppliedSetupFailure).await;
+}
+
+#[cfg(unix)]
 #[derive(Clone, Copy)]
 enum DefinitionScenario {
     Supplied,
+    SuppliedSetupFailure,
     Generated,
 }
 
@@ -163,11 +170,19 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
     std::env::set_var("CHARIOX_DISPOSABLE_WORKER_RECEIPT", &receipt);
 
     let command = "touch validation-started; sleep 2; command -v sh".to_string();
+    let setup_command = match scenario {
+        DefinitionScenario::SuppliedSetupFailure => "false".to_string(),
+        DefinitionScenario::Supplied | DefinitionScenario::Generated => {
+            "touch setup-started; command -v sh".to_string()
+        }
+    };
     let target_platform = actual_worker_platform();
     let definition = ProjectEnvironmentDefinition {
         schema_version: 1,
         origin: match scenario {
-            DefinitionScenario::Supplied => ProjectEnvironmentDefinitionOrigin::UserAuthored,
+            DefinitionScenario::Supplied | DefinitionScenario::SuppliedSetupFailure => {
+                ProjectEnvironmentDefinitionOrigin::UserAuthored
+            }
             DefinitionScenario::Generated => ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
         },
         source: ProjectEnvironmentDefinitionSource::Commands,
@@ -175,7 +190,7 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
         source_path: None,
         setup_steps: vec![ProjectEnvironmentSetupStep {
             kind: ProjectEnvironmentSetupStepKind::Command,
-            command: "command -v sh".to_string(),
+            command: setup_command,
         }],
         validation_commands: vec![command.clone()],
     };
@@ -253,6 +268,14 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
     let runtime =
         CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 1)
             .runtime_state();
+    if matches!(
+        scenario,
+        DefinitionScenario::Supplied | DefinitionScenario::SuppliedSetupFailure
+    ) {
+        runtime
+            .update_project_environment_definition(&project_id, definition.clone(), "user-1")
+            .expect("the selected project should retain its reusable definition");
+    }
     let start = runtime
         .execute_project_environment_setup_request(
             LocalDaemonRequest::StartProjectEnvironmentSetup(StartProjectEnvironmentSetupRequest {
@@ -262,12 +285,11 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
                 agent_id: agent.id().to_string(),
                 target_worker_id: "worker-machine".into(),
                 target_platform: target_platform.clone(),
-                definition: match scenario {
-                    DefinitionScenario::Supplied => Some(definition.clone()),
-                    DefinitionScenario::Generated => None,
-                },
+                definition: None,
                 validation_commands: match scenario {
-                    DefinitionScenario::Supplied => Vec::new(),
+                    DefinitionScenario::Supplied | DefinitionScenario::SuppliedSetupFailure => {
+                        Vec::new()
+                    }
                     DefinitionScenario::Generated => vec![command.clone()],
                 },
             }),
@@ -373,6 +395,27 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
         "worker tooling command did not run"
     );
 
+    match scenario {
+        DefinitionScenario::Supplied => {
+            assert!(
+                workspace.join("setup-started").exists(),
+                "a reusable definition must be applied by the worker before validation"
+            );
+            assert_eq!(
+                provider_fixture.diagnostics(),
+                "<no requests observed>",
+                "a passing reusable definition must not invoke the utility agent"
+            );
+        }
+        DefinitionScenario::SuppliedSetupFailure | DefinitionScenario::Generated => {
+            assert_ne!(
+                provider_fixture.diagnostics(),
+                "<no requests observed>",
+                "missing or failed setup must invoke the existing utility agent"
+            );
+        }
+    }
+
     let persisted = runtime
         .owned
         .session_store
@@ -384,7 +427,9 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
     assert_eq!(
         persisted.origin,
         match scenario {
-            DefinitionScenario::Supplied => ProjectEnvironmentDefinitionOrigin::UserAuthored,
+            DefinitionScenario::Supplied | DefinitionScenario::SuppliedSetupFailure => {
+                ProjectEnvironmentDefinitionOrigin::UserAuthored
+            }
             DefinitionScenario::Generated => ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
         }
     );
