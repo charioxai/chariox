@@ -138,6 +138,21 @@ fn parse_project_environment_setup_utility_output_with_policy(
             message: "utility returned a definition for a different target platform".to_string(),
         });
     }
+    if allow_definition_revision {
+        if let Some(expected) = expected {
+            if !validation_commands_include_original(
+                &expected.validation_commands,
+                &parsed.definition.validation_commands,
+            ) {
+                return Err(DaemonError::LocalTransport {
+                    operation: "run project environment setup utility",
+                    message:
+                        "repair utility definition must retain every original validation command"
+                            .to_string(),
+                });
+            }
+        }
+    }
     let definition = match expected {
         Some(expected) => {
             let returned = parsed.definition.with_origin(expected.origin);
@@ -223,6 +238,17 @@ fn extract_json_object(output: &str) -> Option<&str> {
     let start = trimmed.find('{')?;
     let end = trimmed.rfind('}')?;
     (start < end).then_some(&trimmed[start..=end])
+}
+
+fn validation_commands_include_original(original: &[String], revised: &[String]) -> bool {
+    let mut remaining = revised.iter().collect::<Vec<_>>();
+    original.iter().all(|command| {
+        let Some(index) = remaining.iter().position(|candidate| *candidate == command) else {
+            return false;
+        };
+        remaining.remove(index);
+        true
+    })
 }
 
 #[cfg(test)]
