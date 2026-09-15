@@ -300,6 +300,7 @@ test("Hetzner image preparation installs the hosted-drill tools", async () => {
     "cloud-init",
     "curl",
     "docker.io",
+    "docker-buildx",
     "fuse-overlayfs",
     "gh",
     "git",
