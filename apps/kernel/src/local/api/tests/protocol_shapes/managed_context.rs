@@ -183,6 +183,60 @@ fn local_daemon_managed_context_completed_receipt_uses_public_camel_case_shape()
         RelayManagedDevelopmentContextImportReceipt, RelayManagedKernelContextImportReceipt,
     };
 
+    let relay_receipt = RelayManagedContextImportReceipt {
+        transfer_id: "transfer-1".to_string(),
+        archive_sha256: "a".repeat(64),
+        plan_digest: "sha256:plan".to_string(),
+        development: RelayManagedDevelopmentContextImportReceipt::FromSource {
+            project_id: "project-1".to_string(),
+            destination_root: "/managed/context".to_string(),
+            primary_repository_id: "repository-1".to_string(),
+            repositories: vec![RelayManagedContextImportedRepository {
+                workspace_kind: crate::managed_context::development::DevelopmentWorkspaceKind::Git,
+                repository_id: "repository-1".to_string(),
+                role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
+                target_directory: "primary".to_string(),
+                destination_path: "/managed/context/primary".to_string(),
+                head_sha: "b".repeat(40),
+            }],
+        },
+        kernel_context: RelayManagedKernelContextImportReceipt::FromKernel {
+            context_id: "context-1".to_string(),
+            source_kernel_id: "home-kernel".to_string(),
+            source_key_thumbprint: "c".repeat(64),
+            snapshot_sha256: "d".repeat(64),
+            extension_count: 1,
+            dependency_count: 2,
+        },
+        receipt_sha256: "e".repeat(64),
+    };
+    let relay_serialized = serde_json::to_value(&relay_receipt)
+        .expect("relay receipt should retain its snake_case wire shape");
+    assert_eq!(
+        relay_serialized.pointer("/transfer_id"),
+        Some(&serde_json::json!("transfer-1"))
+    );
+    assert_eq!(
+        relay_serialized.pointer("/development/project_id"),
+        Some(&serde_json::json!("project-1"))
+    );
+    assert_eq!(
+        relay_serialized.pointer("/development/repositories/0/destination_path"),
+        Some(&serde_json::json!("/managed/context/primary"))
+    );
+    assert_eq!(
+        relay_serialized.pointer("/kernel_context/source_kernel_id"),
+        Some(&serde_json::json!("home-kernel"))
+    );
+    assert!(relay_serialized.get("transferId").is_none());
+    assert!(relay_serialized.pointer("/development/projectId").is_none());
+    assert!(relay_serialized
+        .pointer("/development/repositories/0/workspacePath")
+        .is_none());
+    assert!(relay_serialized
+        .pointer("/kernelContext/sourceKernelId")
+        .is_none());
+
     let response = LocalDaemonResponse::ManagedContextTransferStatus {
         status: crate::managed_context::outbound_service::ManagedContextOutboundOperationStatus {
             context_id: "context-1".to_string(),
@@ -190,35 +244,7 @@ fn local_daemon_managed_context_completed_receipt_uses_public_camel_case_shape()
             phase: crate::managed_context::outbound_service::ManagedContextOutboundOperationPhase::Completed,
             accepted_bytes: 1_024,
             package_size_bytes: 1_024,
-            receipt: Some(RelayManagedContextImportReceipt {
-                transfer_id: "transfer-1".to_string(),
-                archive_sha256: "a".repeat(64),
-                plan_digest: "sha256:plan".to_string(),
-                development: RelayManagedDevelopmentContextImportReceipt::FromSource {
-                    project_id: "project-1".to_string(),
-                    destination_root: "/managed/context".to_string(),
-                    primary_repository_id: "repository-1".to_string(),
-                    repositories: vec![RelayManagedContextImportedRepository {
-                        workspace_kind:
-                            crate::managed_context::development::DevelopmentWorkspaceKind::Git,
-                        repository_id: "repository-1".to_string(),
-                        role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
-                        target_directory: "primary".to_string(),
-                        destination_path: "/managed/context/primary".to_string(),
-                        head_sha: "b".repeat(40),
-                    }],
-                },
-                kernel_context: RelayManagedKernelContextImportReceipt::FromKernel {
-                    context_id: "context-1".to_string(),
-                    source_kernel_id: "home-kernel".to_string(),
-                    source_key_thumbprint: "c".repeat(64),
-                    snapshot_sha256: "d".repeat(64),
-                    extension_count: 1,
-                    dependency_count: 2,
-                },
-                receipt_sha256: "e".repeat(64),
-            }
-            .into()),
+            receipt: Some(relay_receipt.into()),
             failure_code: None,
             failure_message: None,
             retryable: false,
@@ -264,7 +290,7 @@ fn local_daemon_managed_context_completed_receipt_uses_public_camel_case_shape()
         .expect("public managed-context receipt snapshot should encode");
     assert_eq!(
         format!("{:x}", Sha256::digest(serialized.as_bytes())),
-        "c25c24ec5eab9fb0ed0d5084c77e0fda37f95b31cb971533efd166fda4a31135"
+        "9f48b35ae27b36687176123ed44b341d4bc3e5545b9753d88104f16a06b03a31"
     );
 }
 
