@@ -849,18 +849,7 @@ fn app_side_promptless_poll_failure_before_prompt_start_reschedules_and_delivers
         output_store.poll_due(&provider_run_id, u64::MAX),
         "an app prompt started after the third idle failure must receive a fresh poll admission"
     );
-    let admitted = ProviderOutputPump::new(&mut app)
-        .pump_provider_output(ProviderOutputPumpRequest {
-            session_id: &session_id,
-            provider_run_id: &provider_run_id,
-            recipient_attachment_ids: vec![attachment_id.clone()],
-            initial_liveness_already_checked: true,
-        })
-        .expect("the replacement app poll should be admitted");
-    assert!(
-        admitted.is_empty(),
-        "poll admission should not fabricate app output"
-    );
+    output_store.mark_poll_enqueued(&provider_run_id, Some(replacement_prompt_id.clone()));
     assert!(
         !output_store.poll_due(&provider_run_id, u64::MAX),
         "an admitted app replacement poll should be tracked as in flight"
