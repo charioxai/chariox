@@ -569,6 +569,32 @@ fn app_side_stale_poll_failure_reschedules_replacement_and_delivers_followup_out
                     .expect("app prompt/run ownership should resolve"),
                 "the replacement prompt must be durably owned by the stale poll run"
             );
+            let classifier_run_is_live = matches!(
+                active_run.state(),
+                crate::provider::ProviderRunState::Running
+                    | crate::provider::ProviderRunState::Starting
+            );
+            let classifier_prompt_is_external = active_replacement.is_external();
+            let classifier_prompt_matches_old = active_replacement.id() == old_prompt_id;
+            let classifier_owns_prompt = app
+                .provider_run_has_active_prompt(&session_id, &active_run)
+                .expect("app classifier ownership should resolve");
+            assert_eq!(
+                (
+                    classifier_run_is_live,
+                    classifier_prompt_is_external,
+                    classifier_prompt_matches_old,
+                    classifier_owns_prompt,
+                ),
+                (true, false, false, true),
+                "app stale classifier inputs: run_state={:?}, prompt_is_external={}, prompt_matches_old={}, owns_prompt={}, active_prompt_id={}, old_prompt_id={}",
+                active_run.state(),
+                classifier_prompt_is_external,
+                classifier_prompt_matches_old,
+                classifier_owns_prompt,
+                active_replacement.id(),
+                old_prompt_id,
+            );
             assert!(
                 ProviderOutputPumpContext::new(&mut app)
                     .stale_structured_poll_has_replacement_prompt(
