@@ -177,6 +177,86 @@ fn local_daemon_managed_context_outbound_shape_is_versioned() {
 }
 
 #[test]
+fn local_daemon_managed_context_completed_receipt_uses_public_camel_case_shape() {
+    use crate::transport::relay_peer::{
+        RelayManagedContextImportReceipt, RelayManagedContextImportedRepository,
+        RelayManagedDevelopmentContextImportReceipt, RelayManagedKernelContextImportReceipt,
+    };
+
+    let response = LocalDaemonResponse::ManagedContextTransferStatus {
+        status: crate::managed_context::outbound_service::ManagedContextOutboundOperationStatus {
+            context_id: "context-1".to_string(),
+            plan_digest: "sha256:plan".to_string(),
+            phase: crate::managed_context::outbound_service::ManagedContextOutboundOperationPhase::Completed,
+            accepted_bytes: 1_024,
+            package_size_bytes: 1_024,
+            receipt: Some(RelayManagedContextImportReceipt {
+                transfer_id: "transfer-1".to_string(),
+                archive_sha256: "a".repeat(64),
+                plan_digest: "sha256:plan".to_string(),
+                development: RelayManagedDevelopmentContextImportReceipt::FromSource {
+                    project_id: "project-1".to_string(),
+                    destination_root: "/managed/context".to_string(),
+                    primary_repository_id: "repository-1".to_string(),
+                    repositories: vec![RelayManagedContextImportedRepository {
+                        workspace_kind:
+                            crate::managed_context::development::DevelopmentWorkspaceKind::Git,
+                        repository_id: "repository-1".to_string(),
+                        role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
+                        target_directory: "primary".to_string(),
+                        destination_path: "/managed/context/primary".to_string(),
+                        head_sha: "b".repeat(40),
+                    }],
+                },
+                kernel_context: RelayManagedKernelContextImportReceipt::FromKernel {
+                    context_id: "context-1".to_string(),
+                    source_kernel_id: "home-kernel".to_string(),
+                    source_key_thumbprint: "c".repeat(64),
+                    snapshot_sha256: "d".repeat(64),
+                    extension_count: 1,
+                    dependency_count: 2,
+                },
+                receipt_sha256: "e".repeat(64),
+            }),
+            failure_code: None,
+            failure_message: None,
+            retryable: false,
+            updated_at_ms: 42,
+        },
+    };
+
+    let serialized = serde_json::to_value(response)
+        .expect("public managed-context response should serialize");
+    let receipt = serialized
+        .pointer("/ManagedContextTransferStatus/status/receipt")
+        .expect("completed response should include its receipt");
+    assert_eq!(receipt.pointer("/transferId"), Some(&serde_json::json!("transfer-1")));
+    assert_eq!(
+        receipt.pointer("/archiveSha256"),
+        Some(&serde_json::json!("a".repeat(64)))
+    );
+    assert_eq!(
+        receipt.pointer("/development/projectId"),
+        Some(&serde_json::json!("project-1"))
+    );
+    assert_eq!(
+        receipt.pointer("/development/repositories/0/targetDirectory"),
+        Some(&serde_json::json!("primary"))
+    );
+    assert_eq!(
+        receipt.pointer("/kernelContext/sourceKernelId"),
+        Some(&serde_json::json!("home-kernel"))
+    );
+    assert_eq!(
+        receipt.pointer("/receiptSha256"),
+        Some(&serde_json::json!("e".repeat(64)))
+    );
+    assert!(receipt.get("transfer_id").is_none());
+    assert!(receipt.pointer("/development/project_id").is_none());
+    assert!(receipt.pointer("/kernel_context/source_kernel_id").is_none());
+}
+
+#[test]
 fn managed_context_launch_target_reads_schema_v4_variant_fields() {
     let development =
         serde_json::from_value::<crate::local::ManagedContextDevelopmentLaunchTarget>(
