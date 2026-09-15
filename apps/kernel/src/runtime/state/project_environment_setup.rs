@@ -22,7 +22,8 @@ use crate::local::{
 };
 use crate::provider::RuntimeProviderRun;
 use crate::runtime::agent_utility_executor::{
-    assert_agent_utility_can_run, run_agent_utility_on_provider_run,
+    assert_agent_utility_can_run,
+    run_agent_utility_on_provider_run_for_project_environment_repair,
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
@@ -1346,7 +1347,7 @@ impl KernelRuntimeState {
             .user_config
             .history
             .archive;
-        let utility_result = run_agent_utility_on_provider_run(
+        let utility_result = run_agent_utility_on_provider_run_for_project_environment_repair(
             self,
             archive_config,
             utility_request,

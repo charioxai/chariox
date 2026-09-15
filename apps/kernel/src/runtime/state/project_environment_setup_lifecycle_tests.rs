@@ -562,8 +562,7 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
         .expect("Ready setup should persist the measured definition");
     if matches!(scenario, DefinitionScenario::SuppliedSetupFailure) {
         assert_eq!(
-            persisted.setup_steps[0].command,
-            "touch setup-repaired; command -v sh",
+            persisted.setup_steps[0].command, "touch setup-repaired; command -v sh",
             "a successful repair must persist the repeatable definition returned by the utility"
         );
 
