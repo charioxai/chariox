@@ -583,7 +583,7 @@ async fn public_setup_persists_generated_recipe_and_reuses_it_on_distinct_leased
         .as_ref()
         .is_some_and(ProjectEnvironmentValidation::passed));
     assert!(
-        worker_a.provider_fixture.diagnostics().contains("prompt_async"),
+        worker_a.provider_fixture.prompt_submission_count() > 0,
         "worker A must invoke the utility for first-use generation: {}",
         worker_a.provider_fixture.diagnostics()
     );
@@ -707,9 +707,10 @@ async fn public_setup_persists_generated_recipe_and_reuses_it_on_distinct_leased
         .as_ref()
         .is_some_and(ProjectEnvironmentValidation::passed));
     assert_eq!(
-        worker_b.provider_fixture.diagnostics(),
-        "<no requests observed>",
-        "worker B must apply the relayed persisted definition without utility"
+        worker_b.provider_fixture.prompt_submission_count(),
+        0,
+        "worker B must apply the relayed persisted definition without utility; provider startup trace: {}",
+        worker_b.provider_fixture.diagnostics()
     );
     assert!(worker_b_workspace.join("recipe-applied").exists());
     assert_eq!(
@@ -4686,6 +4687,18 @@ impl UtilityProviderFixture {
             return "<no requests observed>".to_string();
         }
         state.trace.join(" -> ")
+    }
+
+    fn prompt_submission_count(&self) -> usize {
+        let state = self
+            .state
+            .lock()
+            .expect("provider fixture state should not poison");
+        state
+            .trace
+            .iter()
+            .filter(|entry| entry.starts_with("POST ") && entry.ends_with("/prompt_async"))
+            .count()
     }
 }
 
