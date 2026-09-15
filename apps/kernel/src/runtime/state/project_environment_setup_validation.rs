@@ -197,6 +197,31 @@ pub(super) fn run_worker_validation_command(
     Ok((status.code().unwrap_or(-1), stdout_bytes, stderr_bytes))
 }
 
+pub(super) fn run_worker_setup_steps(
+    commands: &[String],
+    workspace_root: &Path,
+    environment: &BTreeMap<String, String>,
+    should_cancel: impl Fn() -> bool,
+) -> Result<bool, String> {
+    let started = Instant::now();
+    for command in commands {
+        if should_cancel() {
+            return Err("worker setup command cancelled".to_string());
+        }
+        if started.elapsed() >= VALIDATION_TOTAL_TIMEOUT {
+            return Err("worker setup commands timed out".to_string());
+        }
+        let (exit_code, _stdout_bytes, _stderr_bytes) =
+            run_worker_validation_command(command, workspace_root, environment, || {
+                should_cancel()
+            })?;
+        if exit_code != 0 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 #[cfg(unix)]
 fn terminate_validation_process_group(child: &mut std::process::Child) {
     let process_group = child.id() as libc::pid_t;
