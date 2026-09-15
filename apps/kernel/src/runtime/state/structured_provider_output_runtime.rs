@@ -126,7 +126,11 @@ impl KernelRuntimeState {
                             }
                             let retry_attempt = owned
                                 .structured_output_records
-                                .schedule_after_poll_failure(&finished_run_id, now_ms);
+                                .schedule_after_poll_failure_for_prompt(
+                                    &finished_run_id,
+                                    polled_prompt_id.as_deref(),
+                                    now_ms,
+                                );
                             if retry_attempt.is_none() {
                                 let failure_session_id = owned
                                     .provider_store
@@ -213,7 +217,11 @@ impl KernelRuntimeState {
                             }
                             let retry_attempt = owned
                                 .structured_output_records
-                                .schedule_after_poll_failure(&finished_run_id, now_ms);
+                                .schedule_after_poll_failure_for_prompt(
+                                    &finished_run_id,
+                                    polled_prompt_id.as_deref(),
+                                    now_ms,
+                                );
                             if retry_attempt.is_none() {
                                 let failure_session_id = owned
                                     .provider_store

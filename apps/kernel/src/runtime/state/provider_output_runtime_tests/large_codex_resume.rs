@@ -666,24 +666,28 @@ async fn promptless_codex_poll_failure_before_prompt_start_reschedules_and_deliv
                 session_state.active_prompt_for_agent(agent.id()).is_none(),
                 "the new prompt must start only after the third idle failure is processed"
             );
-            let mut app = app.lock().await;
-            let replacement = submit_prompt_for_agent(
-                &mut app,
-                session.id(),
-                attachment.id(),
-                agent.id(),
-                "start only after the idle poll retry budget is exhausted",
-            );
-            app.mark_active_prompt_delivery(
-                session.id(),
-                agent.id(),
-                &replacement,
-                crate::session::DurablePromptDeliveryPhase::Delivered,
-                Some(run.id().to_string()),
-                run.provider_session_id().map(str::to_string),
-            )
-            .expect("the replacement prompt should bind to the same provider run");
-            crate::transport::flow_control::note_prompt_started(&mut app, run.id());
+            let replacement = {
+                let mut app = app.lock().await;
+                submit_prompt_for_agent(
+                    &mut app,
+                    session.id(),
+                    attachment.id(),
+                    agent.id(),
+                    "start only after the idle poll retry budget is exhausted",
+                )
+            };
+            runtime
+                .owned
+                .mark_active_prompt_delivery(
+                    session.id(),
+                    agent.id(),
+                    &replacement,
+                    crate::session::DurablePromptDeliveryPhase::Delivered,
+                    Some(run.id().to_string()),
+                    run.provider_session_id().map(str::to_string),
+                )
+                .expect("the replacement prompt should bind to the same provider run");
+            runtime.owned.note_prompt_started(run.id());
             replacement_prompt_id = Some(replacement);
         }
     }

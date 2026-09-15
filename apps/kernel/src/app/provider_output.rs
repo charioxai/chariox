@@ -603,7 +603,11 @@ impl<'a> ProviderOutputPumpContext<'a> {
                             }
                             let retry_attempt = self
                                 .pending_structured_output_records
-                                .schedule_after_poll_failure(&provider_run_id, now_ms);
+                                .schedule_after_poll_failure_for_prompt(
+                                    &provider_run_id,
+                                    polled_prompt_id.as_deref(),
+                                    now_ms,
+                                );
                             if retry_attempt.is_none() {
                                 let failure_session_id = self
                                     .provider_store
@@ -686,7 +690,11 @@ impl<'a> ProviderOutputPumpContext<'a> {
                             }
                             let retry_attempt = self
                                 .pending_structured_output_records
-                                .schedule_after_poll_failure(&provider_run_id, now_ms);
+                                .schedule_after_poll_failure_for_prompt(
+                                    &provider_run_id,
+                                    polled_prompt_id.as_deref(),
+                                    now_ms,
+                                );
                             if retry_attempt.is_none() {
                                 let failure_session_id = self
                                     .provider_store
