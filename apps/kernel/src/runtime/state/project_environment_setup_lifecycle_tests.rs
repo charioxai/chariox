@@ -567,55 +567,13 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
         );
 
         let utility_trace = provider_fixture.diagnostics();
-        let second_start = runtime
-            .execute_project_environment_setup_request(
-                LocalDaemonRequest::StartProjectEnvironmentSetup(
-                    StartProjectEnvironmentSetupRequest {
-                        operation_id: "setup-lifecycle-followup".into(),
-                        project_id: project_id.clone(),
-                        session_id: session.id().to_string(),
-                        agent_id: agent.id().to_string(),
-                        target_worker_id: "worker-machine".into(),
-                        target_platform: target_platform.clone(),
-                        definition: None,
-                        validation_commands: Vec::new(),
-                    },
-                ),
-                "user-1",
-            )
-            .await
-            .expect("follow-up worker setup should be accepted");
-        let LocalDaemonResponse::ProjectEnvironmentSetupStarted { status } = second_start else {
-            panic!("unexpected follow-up setup start response: {second_start:?}");
-        };
-        assert_eq!(status.phase, ProjectEnvironmentSetupPhase::Requested);
-        assert_eq!(status.attempt, 1);
-
-        let second_ready_deadline = Instant::now() + Duration::from_secs(10);
-        let second_ready = loop {
-            let status = response_status(
-                get_setup_status(
-                    &runtime,
-                    "setup-lifecycle-followup",
-                    "user-1",
-                    "follow-up worker polling",
-                )
-                .await,
-            );
-            match status.phase {
-                ProjectEnvironmentSetupPhase::Ready => break status,
-                ProjectEnvironmentSetupPhase::Failed => {
-                    panic!("follow-up worker setup failed: {status:?}")
-                }
-                _ => {
-                    assert!(
-                        Instant::now() < second_ready_deadline,
-                        "follow-up worker setup did not reach Ready: {status:?}"
-                    );
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                }
-            }
-        };
+        let (second_ready, second_workspace) = run_repaired_definition_on_fresh_worker(
+            &root,
+            persisted.clone(),
+            target_platform.clone(),
+            &provider_fixture,
+        )
+        .await;
         assert_eq!(
             second_ready
                 .validation
@@ -639,7 +597,7 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
             "repaired recipe coverage must cross a fresh worker identity"
         );
         assert!(
-            workspace.join("setup-repaired").exists(),
+            second_workspace.join("setup-repaired").exists(),
             "the follow-up worker must apply the repaired reusable definition"
         );
         assert_eq!(
@@ -662,6 +620,178 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
         }
     );
     drop(provider_fixture);
+}
+
+#[cfg(unix)]
+async fn run_repaired_definition_on_fresh_worker(
+    root: &std::path::Path,
+    definition: ProjectEnvironmentDefinition,
+    target_platform: String,
+    provider_fixture: &UtilityProviderFixture,
+) -> (ProjectEnvironmentSetupStatus, PathBuf) {
+    let fresh_root = root.join("fresh-worker");
+    let fresh_home = fresh_root.join("kernel-home");
+    let fresh_workspace = fresh_root.join("worker-worktree");
+    let fresh_receipt = fresh_root.join("receipt.json");
+    std::fs::create_dir_all(&fresh_home).unwrap();
+    std::fs::create_dir_all(&fresh_workspace).unwrap();
+    std::fs::write(
+        &fresh_receipt,
+        serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 1,
+            "status": "confirmed",
+            "allocationId": "worker-fresh",
+            "machineId": "worker-machine-fresh",
+            "kernelId": "worker-kernel-fresh",
+            "relayPublicKey": "worker-public-key-fresh",
+            "runtimeReleaseDigest": format!("sha256:{}", "b".repeat(64)),
+            "homeCaller": {
+                "accountId": "account-1",
+                "userId": "user-1",
+                "realmId": "realm-1",
+                "machineId": "home-machine",
+                "kernelId": "home-kernel",
+                "relayPublicKey": "home-public-key"
+            },
+            "confirmedAt": "2026-09-14T00:00:00Z"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    std::env::set_var("CHARIOX_HOME", &fresh_home);
+    std::env::set_var("CHARIOX_DISPOSABLE_WORKER_RECEIPT", &fresh_receipt);
+
+    let mut config = DaemonConfig::for_tests();
+    config.daemon_id = "worker-kernel-fresh".into();
+    config.host_machine_id = "worker-machine-fresh".into();
+    config.relay_public_key = "worker-public-key-fresh".into();
+    config.kernel_runtime_role = KernelRuntimeRole::RemoteLeaseWorker;
+    config.accept_remote_leases = true;
+    config.remote_lease_capacity = Some(1);
+    config.lease_worker_home_caller = Some(crate::config::LeaseWorkerHomeCaller {
+        kernel_id: "home-kernel".into(),
+        realm_id: "realm-1".into(),
+        user_id: "user-1".into(),
+        relay_public_key: "home-public-key".into(),
+    });
+    config.cloud_relay = Some(
+        serde_json::from_value(serde_json::json!({
+            "api_url": "https://staging.chariox.com",
+            "email": "owner@example.test",
+            "account_id": "account-1",
+            "user_id": "user-1",
+            "account_slug": "account-1",
+            "realm_id": "realm-1",
+            "relay_url": "wss://relay.example.test",
+            "issuer_id": "issuer-1",
+            "machine_id": "worker-machine-fresh",
+            "machine_credential": format!("mcred_{}", "d".repeat(40))
+        }))
+        .unwrap(),
+    );
+    ensure_worker_validation_boundary(&config).expect("fresh worker receipt should be confirmed");
+
+    let mut app = crate::DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = app
+        .create_session(
+            CreateSessionRequest::new(
+                fresh_workspace.display().to_string(),
+                fresh_workspace.display().to_string(),
+            )
+            .with_owner_user_id("user-1")
+            .with_agent_defaults(crate::session::SessionAgentDefaults::new("opencode")),
+        )
+        .expect("fresh worker session should be created");
+    let project_id = session.project_id().to_string();
+    let launch_request = LaunchProviderRequest::new(
+        session.id(),
+        "opencode",
+        "opencode",
+        "default",
+        "opencode/test-model",
+    )
+    .with_agent_id(agent.id())
+    .with_owner_user_id("user-1");
+    let mut provider_run = RuntimeProviderRun::new(
+        "utility-provider-run-fresh",
+        &launch_request,
+        ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "opencode-project-environment-fresh-worker-fixture".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
+            pty_env_remove: Vec::new(),
+            working_directory: Some(fresh_workspace.clone()),
+            structured_endpoint: Some(provider_fixture.address()),
+        },
+    );
+    provider_run.mark_running();
+    app.providers_mut().insert_run_for_test(provider_run);
+    let runtime =
+        CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 1)
+            .runtime_state();
+    runtime
+        .update_project_environment_definition(&project_id, definition, "user-1")
+        .expect("fresh worker should retain the repaired definition");
+
+    let start = runtime
+        .execute_project_environment_setup_request(
+            LocalDaemonRequest::StartProjectEnvironmentSetup(StartProjectEnvironmentSetupRequest {
+                operation_id: "setup-lifecycle-fresh-worker".into(),
+                project_id: project_id.clone(),
+                session_id: session.id().to_string(),
+                agent_id: agent.id().to_string(),
+                target_worker_id: "worker-machine-fresh".into(),
+                target_platform,
+                definition: None,
+                validation_commands: Vec::new(),
+            }),
+            "user-1",
+        )
+        .await
+        .expect("fresh worker setup should be accepted");
+    let LocalDaemonResponse::ProjectEnvironmentSetupStarted { status } = start else {
+        panic!("unexpected fresh worker setup start response: {start:?}");
+    };
+    assert_eq!(status.phase, ProjectEnvironmentSetupPhase::Requested);
+    assert_eq!(status.attempt, 1);
+
+    let ready_deadline = Instant::now() + Duration::from_secs(10);
+    let ready = loop {
+        let status = response_status(
+            get_setup_status(
+                &runtime,
+                "setup-lifecycle-fresh-worker",
+                "user-1",
+                "fresh worker polling",
+            )
+            .await,
+        );
+        match status.phase {
+            ProjectEnvironmentSetupPhase::Ready => break status,
+            ProjectEnvironmentSetupPhase::Failed => {
+                panic!("fresh worker setup failed: {status:?}")
+            }
+            _ => {
+                assert!(
+                    Instant::now() < ready_deadline,
+                    "fresh worker setup did not reach Ready: {status:?}"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+    };
+    assert_eq!(
+        ready
+            .validation
+            .as_ref()
+            .expect("fresh worker Ready requires validation")
+            .worker_id,
+        "worker-machine-fresh"
+    );
+    (ready, fresh_workspace)
 }
 
 #[cfg(unix)]
