@@ -319,6 +319,32 @@ mod tests {
     }
 
     #[test]
+    fn legacy_unattested_file_backed_definition_is_repairable_but_not_reusable() {
+        let mut definition = definition();
+        definition.source = ProjectEnvironmentDefinitionSource::Devcontainer;
+        definition.source_path = Some(".devcontainer/devcontainer.json".to_string());
+        assert!(definition.validate().is_err());
+        assert!(definition.is_unattested_file_backed());
+        assert_eq!(definition.validate_for_repair(), Ok(()));
+    }
+
+    #[test]
+    fn input_attestation_digests_require_canonical_lowercase_hex() {
+        let mut definition = definition();
+        definition.source = ProjectEnvironmentDefinitionSource::Devcontainer;
+        definition.source_path = Some(".devcontainer/devcontainer.json".to_string());
+        definition.inputs = vec![ProjectEnvironmentInput {
+            kind: ProjectEnvironmentInputKind::Recipe,
+            path: ".devcontainer/devcontainer.json".to_string(),
+            sha256: format!("sha256:{}", "A".repeat(64)),
+        }];
+        assert!(definition
+            .validate()
+            .unwrap_err()
+            .contains("256-bit sha256"));
+    }
+
+    #[test]
     fn input_attestations_are_unique_and_do_not_allow_path_escape() {
         let mut definition = definition();
         definition.inputs = vec![
