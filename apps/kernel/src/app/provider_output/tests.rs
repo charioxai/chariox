@@ -593,7 +593,10 @@ fn app_side_stale_poll_failure_reschedules_replacement_and_delivers_followup_out
     let replacement_prompt_id = replacement_prompt_id.expect("replacement prompt should exist");
     assert!(
         output_store.poll_due(&provider_run_id, u64::MAX),
-        "a stale app-side poll failure must not exhaust the replacement prompt's poll budget"
+        "a stale app-side poll failure must not exhaust the replacement prompt's poll budget; failures={}, due_at_ms={:?}, in_flight_prompt_id={:?}",
+        output_store.poll_failure_attempts_for_test(&provider_run_id),
+        output_store.poll_due_at_ms(&provider_run_id),
+        output_store.in_flight_prompt_id_for_test(&provider_run_id),
     );
     output_store.mark_poll_enqueued(&provider_run_id, Some(replacement_prompt_id.clone()));
     let replacement_output = b"replacement app-side poll output".to_vec();

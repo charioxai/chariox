@@ -106,6 +106,25 @@ impl StructuredOutputRecordStore {
             .copied()
     }
 
+    #[cfg(test)]
+    pub(crate) fn poll_failure_attempts_for_test(&self, provider_run_id: &str) -> u8 {
+        self.consecutive_poll_failures
+            .lock()
+            .expect("structured output poll failure map poisoned")
+            .get(provider_run_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn in_flight_prompt_id_for_test(&self, provider_run_id: &str) -> Option<String> {
+        self.in_flight_prompt_ids
+            .lock()
+            .expect("structured output poll prompt map poisoned")
+            .get(provider_run_id)
+            .cloned()
+    }
+
     pub(crate) fn take_due_provider_run_ids(&self, now_ms: u64) -> BTreeSet<String> {
         let mut schedule = self
             .next_poll_due_at_ms
