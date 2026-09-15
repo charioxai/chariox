@@ -1072,26 +1072,11 @@ impl KernelRuntimeState {
         let definition = request
             .definition
             .or_else(|| project.environment_definition().cloned());
-        if let Some(definition) = &definition {
-            definition
-                .validate()
-                .map_err(|message| setup_error(&message))?;
-            if definition.target_platform != request.target_platform {
-                return Err(setup_error(
-                    "environment definition targets a different platform",
-                ));
-            }
-            if !request.validation_commands.is_empty() {
-                return Err(setup_error(
-                    "additional validation commands are only allowed when no definition exists",
-                ));
-            }
-            if definition.validation_commands.is_empty() {
-                return Err(setup_error(
-                    "environment definition must include at least one validation command",
-                ));
-            }
-        }
+        let definition = validate_setup_definition(
+            definition,
+            &request.target_platform,
+            &request.validation_commands,
+        )?;
         // A home worktree path is not a worker worktree path. The worker
         // derives its canonical backing worktree from the authenticated lease
         // and rejects any non-empty path that does not match it.
@@ -1160,7 +1145,9 @@ impl KernelRuntimeState {
         if !store.update(&execution.operation_id, attempt, |entry| {
             entry.status.phase = ProjectEnvironmentSetupPhase::Preparing;
             entry.status.progress_percent = 10;
-            entry.status.message = Some(if execution.definition.is_some() {
+            entry.status.message = Some(if execution.definition.as_ref().is_some_and(|definition| {
+                !definition.is_unattested_file_backed()
+            }) {
                 "kernel is reusing the stored project environment definition".to_string()
             } else {
                 "utility agent is preparing the target environment".to_string()
@@ -1200,7 +1187,11 @@ impl KernelRuntimeState {
             return;
         }
 
-        if let Some(definition) = execution.definition.as_ref() {
+        if let Some(definition) = execution
+            .definition
+            .as_ref()
+            .filter(|definition| !definition.is_unattested_file_backed())
+        {
             match self
                 .apply_definition_on_worker(&execution, attempt, definition, &provider_run)
                 .await
@@ -1709,7 +1700,8 @@ mod tests {
     use super::*;
     use crate::local::{
         ProjectEnvironmentDefinitionOrigin, ProjectEnvironmentDefinitionSource,
-        ProjectEnvironmentSetupStep, ProjectEnvironmentSetupStepKind,
+        ProjectEnvironmentInput, ProjectEnvironmentInputKind, ProjectEnvironmentSetupStep,
+        ProjectEnvironmentSetupStepKind,
     };
     use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
 
@@ -1774,6 +1766,42 @@ mod tests {
         assert!(error
             .to_string()
             .contains("environment definition targets a different platform"));
+    }
+
+    fn protocol_330_definition_with_uppercase_input_digest() -> ProjectEnvironmentDefinition {
+        let mut definition = execution().definition.expect("test definition");
+        definition.source = ProjectEnvironmentDefinitionSource::Devcontainer;
+        definition.source_path = Some(".devcontainer/devcontainer.json".to_string());
+        definition.inputs = vec![ProjectEnvironmentInput {
+            kind: ProjectEnvironmentInputKind::Recipe,
+            path: ".devcontainer/devcontainer.json".to_string(),
+            sha256: format!("sha256:{}", "A".repeat(64)),
+        }];
+        definition
+    }
+
+    #[test]
+    fn protocol_330_uppercase_input_digest_is_admitted_by_home_and_leased_paths() {
+        let definition = protocol_330_definition_with_uppercase_input_digest();
+        let home_admitted = canonicalize_incoming_setup_definition(definition.clone())
+            .expect("home admission should normalize an equivalent legacy digest");
+        let admitted = validate_setup_definition(Some(definition), "linux-x86_64", &[])
+            .expect("leased admission should normalize an equivalent legacy digest")
+            .expect("definition should remain present");
+        assert_eq!(home_admitted, admitted);
+        assert_eq!(admitted.inputs[0].sha256, format!("sha256:{}", "a".repeat(64)));
+        assert_eq!(admitted.validate(), Ok(()));
+        assert!(!serde_json::to_string(&admitted)
+            .expect("definition should serialize")
+            .contains('A'));
+    }
+
+    #[test]
+    fn malformed_input_digest_remains_rejected_by_home_and_leased_paths() {
+        let mut definition = protocol_330_definition_with_uppercase_input_digest();
+        definition.inputs[0].sha256 = format!("sha256:{}", "G".repeat(64));
+        assert!(canonicalize_incoming_setup_definition(definition.clone()).is_err());
+        assert!(validate_setup_definition(Some(definition), "linux-x86_64", &[]).is_err());
     }
 
     #[test]

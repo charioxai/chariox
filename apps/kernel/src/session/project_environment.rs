@@ -79,6 +79,41 @@ pub struct ProjectEnvironmentDefinition {
 
 impl ProjectEnvironmentDefinition {
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_with_source_attestation(true)
+    }
+
+    pub(crate) fn canonicalize_input_attestations(&self) -> Result<Self, String> {
+        let mut canonical = self.clone();
+        for input in &mut canonical.inputs {
+            input.sha256 = canonicalize_input_digest(&input.sha256, &input.path)?;
+        }
+        Ok(canonical)
+    }
+
+    pub(crate) fn validate_for_repair(&self) -> Result<(), String> {
+        if !self.is_unattested_file_backed() {
+            return self.validate();
+        }
+        self.validate_with_source_attestation(false)
+    }
+
+    pub(crate) fn is_unattested_file_backed(&self) -> bool {
+        matches!(
+            self.source,
+            ProjectEnvironmentDefinitionSource::Dockerfile
+                | ProjectEnvironmentDefinitionSource::Devcontainer
+                | ProjectEnvironmentDefinitionSource::SetupScript
+        ) && self.source_path.as_deref().is_some_and(|source_path| {
+            !self.inputs.iter().any(|input| {
+                input.kind == ProjectEnvironmentInputKind::Recipe && input.path == source_path
+            })
+        })
+    }
+
+    fn validate_with_source_attestation(
+        &self,
+        require_source_attestation: bool,
+    ) -> Result<(), String> {
         if self.schema_version != PROJECT_ENVIRONMENT_DEFINITION_SCHEMA_VERSION {
             return Err(format!(
                 "unsupported project environment definition schema version {}",
@@ -142,14 +177,16 @@ impl ProjectEnvironmentDefinition {
             validate_command(command, "validation command")?;
         }
         validate_inputs(&self.inputs)?;
-        if let Some(source_path) = self.source_path.as_deref() {
-            if !self.inputs.iter().any(|input| {
-                input.kind == ProjectEnvironmentInputKind::Recipe && input.path == source_path
-            }) {
-                return Err(
-                    "file-backed definitions must attest source_path with a recipe input"
-                        .to_string(),
-                );
+        if require_source_attestation {
+            if let Some(source_path) = self.source_path.as_deref() {
+                if !self.inputs.iter().any(|input| {
+                    input.kind == ProjectEnvironmentInputKind::Recipe && input.path == source_path
+                }) {
+                    return Err(
+                        "file-backed definitions must attest source_path with a recipe input"
+                            .to_string(),
+                    );
+                }
             }
         }
         let encoded = serde_json::to_vec(self)
@@ -221,13 +258,7 @@ fn validate_inputs(inputs: &[ProjectEnvironmentInput]) -> Result<(), String> {
                 input.path
             ));
         }
-        let Some(digest) = input.sha256.strip_prefix("sha256:") else {
-            return Err(format!(
-                "environment input digest must use sha256: prefix: {}",
-                input.path
-            ));
-        };
-        if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        if canonicalize_input_digest(&input.sha256, &input.path)? != input.sha256 {
             return Err(format!(
                 "environment input digest must be a 256-bit sha256 value: {}",
                 input.path
@@ -235,6 +266,20 @@ fn validate_inputs(inputs: &[ProjectEnvironmentInput]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn canonicalize_input_digest(value: &str, path: &str) -> Result<String, String> {
+    let Some(digest) = value.strip_prefix("sha256:") else {
+        return Err(format!(
+            "environment input digest must use sha256: prefix: {path}"
+        ));
+    };
+    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!(
+            "environment input digest must be a 256-bit sha256 value: {path}"
+        ));
+    }
+    Ok(format!("sha256:{}", digest.to_ascii_lowercase()))
 }
 
 #[cfg(test)]
@@ -312,6 +357,32 @@ mod tests {
             original_digest,
             "the persisted definition identity must include input content identities"
         );
+        assert!(definition
+            .validate()
+            .unwrap_err()
+            .contains("256-bit sha256"));
+    }
+
+    #[test]
+    fn legacy_unattested_file_backed_definition_is_repairable_but_not_reusable() {
+        let mut definition = definition();
+        definition.source = ProjectEnvironmentDefinitionSource::Devcontainer;
+        definition.source_path = Some(".devcontainer/devcontainer.json".to_string());
+        assert!(definition.validate().is_err());
+        assert!(definition.is_unattested_file_backed());
+        assert_eq!(definition.validate_for_repair(), Ok(()));
+    }
+
+    #[test]
+    fn input_attestation_digests_require_canonical_lowercase_hex() {
+        let mut definition = definition();
+        definition.source = ProjectEnvironmentDefinitionSource::Devcontainer;
+        definition.source_path = Some(".devcontainer/devcontainer.json".to_string());
+        definition.inputs = vec![ProjectEnvironmentInput {
+            kind: ProjectEnvironmentInputKind::Recipe,
+            path: ".devcontainer/devcontainer.json".to_string(),
+            sha256: format!("sha256:{}", "A".repeat(64)),
+        }];
         assert!(definition
             .validate()
             .unwrap_err()

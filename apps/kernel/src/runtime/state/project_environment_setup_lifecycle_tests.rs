@@ -99,9 +99,15 @@ async fn public_setup_lifecycle_reuses_unchanged_recipe_and_lockfile_inputs_with
 
 #[cfg(unix)]
 #[tokio::test]
-async fn public_setup_lifecycle_repairs_or_rejects_stale_and_missing_inputs_before_ready() {
+async fn public_setup_lifecycle_repairs_stale_and_missing_inputs_before_ready() {
     exercise_public_setup_lifecycle(DefinitionScenario::SuppliedStaleInputs).await;
     exercise_public_setup_lifecycle(DefinitionScenario::SuppliedMissingInputs).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn public_setup_lifecycle_repairs_legacy_unattested_definition_before_ready() {
+    exercise_public_setup_lifecycle(DefinitionScenario::SuppliedLegacyUnattested).await;
 }
 
 #[cfg(unix)]
@@ -119,6 +125,7 @@ enum DefinitionScenario {
     SuppliedInputReuse,
     SuppliedStaleInputs,
     SuppliedMissingInputs,
+    SuppliedLegacyUnattested,
 }
 
 #[cfg(unix)]
@@ -138,24 +145,34 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
         DefinitionScenario::SuppliedInputReuse
             | DefinitionScenario::SuppliedStaleInputs
             | DefinitionScenario::SuppliedMissingInputs
+            | DefinitionScenario::SuppliedLegacyUnattested
     );
     let recipe_path = ".devcontainer/devcontainer.json";
-    let recipe_contents = br#"{"image":"mcr.microsoft.com/devcontainers/base:ubuntu"}
+    let recipe_contents: &[u8] = br#"{"image":"mcr.microsoft.com/devcontainers/base:ubuntu"}
 "#;
     let lockfile_path = "Cargo.lock";
-    let lockfile_contents = b"version = 3\n\n[[package]]\nname = \"fixture\"\n";
+    let lockfile_contents: &[u8] = b"version = 3\n\n[[package]]\nname = \"fixture\"\n";
+    let stale_recipe_contents: &[u8] = br#"{"image":"stale-target"}
+"#;
+    let stale_lockfile_contents: &[u8] = b"version = 3\n\n[[package]]\nname = \"stale-fixture\"\n";
     if input_scenario {
         std::fs::create_dir_all(workspace.join(".devcontainer")).unwrap();
-        if !matches!(scenario, DefinitionScenario::SuppliedMissingInputs) {
-            let contents = if matches!(scenario, DefinitionScenario::SuppliedStaleInputs) {
-                br#"{"image":"stale-target"}
-"#
-            } else {
-                recipe_contents
-            };
-            std::fs::write(workspace.join(recipe_path), contents).unwrap();
+        match scenario {
+            DefinitionScenario::SuppliedMissingInputs => {}
+            DefinitionScenario::SuppliedLegacyUnattested => {
+                std::fs::write(workspace.join(recipe_path), recipe_contents).unwrap();
+                std::fs::write(workspace.join(lockfile_path), lockfile_contents).unwrap();
+            }
+            DefinitionScenario::SuppliedStaleInputs => {
+                std::fs::write(workspace.join(recipe_path), stale_recipe_contents).unwrap();
+                std::fs::write(workspace.join(lockfile_path), stale_lockfile_contents).unwrap();
+            }
+            DefinitionScenario::SuppliedInputReuse => {
+                std::fs::write(workspace.join(recipe_path), recipe_contents).unwrap();
+                std::fs::write(workspace.join(lockfile_path), lockfile_contents).unwrap();
+            }
+            _ => unreachable!("non-input scenario entered input materialization"),
         }
-        std::fs::write(workspace.join(lockfile_path), lockfile_contents).unwrap();
     }
     let receipt = root.join("receipt.json");
     std::fs::write(
@@ -212,14 +229,18 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
     std::env::set_var("CHARIOX_HOME", &home);
     std::env::set_var("CHARIOX_DISPOSABLE_WORKER_RECEIPT", &receipt);
 
-    let command = "touch validation-started; sleep 2; command -v sh".to_string();
+    let validation_release = workspace.join("validation-release");
+    let command =
+        "touch validation-started; while [ ! -f validation-release ]; do sleep 0.01; done; command -v sh"
+            .to_string();
     let setup_command = match scenario {
         DefinitionScenario::SuppliedSetupFailure => "false".to_string(),
         DefinitionScenario::Supplied
         | DefinitionScenario::Generated
         | DefinitionScenario::SuppliedInputReuse
         | DefinitionScenario::SuppliedStaleInputs
-        | DefinitionScenario::SuppliedMissingInputs => {
+        | DefinitionScenario::SuppliedMissingInputs
+        | DefinitionScenario::SuppliedLegacyUnattested => {
             "touch setup-started; command -v sh".to_string()
         }
     };
@@ -231,7 +252,8 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
             | DefinitionScenario::SuppliedSetupFailure
             | DefinitionScenario::SuppliedInputReuse
             | DefinitionScenario::SuppliedStaleInputs
-            | DefinitionScenario::SuppliedMissingInputs => {
+            | DefinitionScenario::SuppliedMissingInputs
+            | DefinitionScenario::SuppliedLegacyUnattested => {
                 ProjectEnvironmentDefinitionOrigin::UserAuthored
             }
             DefinitionScenario::Generated => ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
@@ -243,7 +265,9 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
         },
         target_platform: target_platform.clone(),
         source_path: input_scenario.then(|| recipe_path.to_string()),
-        inputs: if input_scenario {
+        inputs: if input_scenario
+            && !matches!(scenario, DefinitionScenario::SuppliedLegacyUnattested)
+        {
             vec![
                 ProjectEnvironmentInput {
                     kind: ProjectEnvironmentInputKind::Recipe,
@@ -265,25 +289,57 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
         }],
         validation_commands: if input_scenario {
             vec![format!(
-                "touch validation-started; test -f {recipe_path} && test -f {lockfile_path}"
+                "touch validation-started; while [ ! -f validation-release ]; do sleep 0.01; done; command -v sh; test -f {recipe_path} && test -f {lockfile_path}"
             )]
         } else {
             vec![command.clone()]
         },
     };
     let utility_definition = match scenario {
-        DefinitionScenario::SuppliedSetupFailure => {
+        DefinitionScenario::SuppliedSetupFailure
+        | DefinitionScenario::SuppliedStaleInputs
+        | DefinitionScenario::SuppliedMissingInputs
+        | DefinitionScenario::SuppliedLegacyUnattested => {
             let mut repaired = definition.clone();
             repaired.setup_steps[0].command = "touch setup-repaired; command -v sh".to_string();
+            if matches!(scenario, DefinitionScenario::SuppliedLegacyUnattested) {
+                repaired.inputs = vec![
+                    ProjectEnvironmentInput {
+                        kind: ProjectEnvironmentInputKind::Recipe,
+                        path: recipe_path.to_string(),
+                        sha256: format!("sha256:{:x}", Sha256::digest(recipe_contents)),
+                    },
+                    ProjectEnvironmentInput {
+                        kind: ProjectEnvironmentInputKind::Lockfile,
+                        path: lockfile_path.to_string(),
+                        sha256: format!("sha256:{:x}", Sha256::digest(lockfile_contents)),
+                    },
+                ];
+            }
             repaired
         }
         DefinitionScenario::Supplied
         | DefinitionScenario::Generated
-        | DefinitionScenario::SuppliedInputReuse
-        | DefinitionScenario::SuppliedStaleInputs
-        | DefinitionScenario::SuppliedMissingInputs => definition.clone(),
+        | DefinitionScenario::SuppliedInputReuse => definition.clone(),
     };
-    let provider_fixture = UtilityProviderFixture::start(utility_definition);
+    let provider_fixture = if matches!(
+        scenario,
+        DefinitionScenario::SuppliedStaleInputs
+            | DefinitionScenario::SuppliedMissingInputs
+            | DefinitionScenario::SuppliedLegacyUnattested
+    ) {
+        UtilityProviderFixture::start_with_repairs(
+            utility_definition,
+            Some(workspace.clone()),
+            BTreeMap::from([
+                (recipe_path.to_string(), recipe_contents.to_vec()),
+                (lockfile_path.to_string(), lockfile_contents.to_vec()),
+                ("setup-repaired".to_string(), Vec::new()),
+            ]),
+        )
+    } else {
+        UtilityProviderFixture::start(utility_definition)
+    };
 
     let mut config = DaemonConfig::for_tests();
     config.daemon_id = "worker-kernel".into();
@@ -368,6 +424,14 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
         runtime
             .update_project_environment_definition(&project_id, definition.clone(), "user-1")
             .expect("the selected project should retain its reusable definition");
+    } else if matches!(scenario, DefinitionScenario::SuppliedLegacyUnattested) {
+        let mut project = runtime
+            .owned
+            .session_store
+            .get_project(&project_id)
+            .expect("legacy fixture project should remain available");
+        project.set_environment_definition(definition.clone());
+        runtime.owned.session_store.restore_projects(vec![project]);
     }
     let start = runtime
         .execute_project_environment_setup_request(
@@ -384,7 +448,8 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
                     | DefinitionScenario::SuppliedSetupFailure
                     | DefinitionScenario::SuppliedInputReuse
                     | DefinitionScenario::SuppliedStaleInputs
-                    | DefinitionScenario::SuppliedMissingInputs => {
+                    | DefinitionScenario::SuppliedMissingInputs
+                    | DefinitionScenario::SuppliedLegacyUnattested => {
                         Vec::new()
                     }
                     DefinitionScenario::Generated => vec![command.clone()],
@@ -401,49 +466,20 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
     assert_eq!(status.attempt, 1);
 
     let validation_marker = workspace.join("validation-started");
-    if matches!(
-        scenario,
-        DefinitionScenario::SuppliedStaleInputs | DefinitionScenario::SuppliedMissingInputs
-    ) {
-        let failed_deadline = Instant::now() + Duration::from_secs(10);
-        let failed = loop {
-            let status = response_status(
-                get_setup_status(&runtime, "setup-lifecycle", "user-1", "input polling").await,
-            );
-            if status.phase == ProjectEnvironmentSetupPhase::Failed {
-                break status;
-            }
-            assert_ne!(
-                status.phase,
-                ProjectEnvironmentSetupPhase::Ready,
-                "stale or missing materialized inputs must not reach Ready: {status:?}"
-            );
-            assert!(
-                Instant::now() < failed_deadline,
-                "stale or missing inputs did not settle through the repair gate: {status:?}"
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        };
-        assert_eq!(
-            failed.failure_code.as_deref(),
-            Some("worker_input_attestation_failed"),
-            "input mismatch must remain distinct from a command validation failure: {failed:?}"
-        );
-        assert_ne!(
-            provider_fixture.diagnostics(),
-            "<no requests observed>",
-            "stale or missing inputs must invoke the existing worker utility for repair"
-        );
-        drop(provider_fixture);
-        return;
-    }
     let validation_deadline = Instant::now() + Duration::from_secs(10);
-    loop {
+    let initial_status = loop {
         let response =
             get_setup_status(&runtime, "setup-lifecycle", "user-1", "validation polling").await;
         let status = response_status(response);
         if status.phase == ProjectEnvironmentSetupPhase::Validating && validation_marker.exists() {
-            break;
+            break status;
+        }
+        if status.phase == ProjectEnvironmentSetupPhase::Ready {
+            assert!(
+                validation_marker.exists(),
+                "Ready must include the completed worker validation marker"
+            );
+            break status;
         }
         assert!(
             !matches!(
@@ -458,9 +494,27 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
             "public Get never observed worker tooling validation: {status:?}"
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    };
 
-    let cancelled = runtime
+    let ready = if matches!(
+        scenario,
+        DefinitionScenario::SuppliedStaleInputs
+            | DefinitionScenario::SuppliedMissingInputs
+            | DefinitionScenario::SuppliedLegacyUnattested
+    ) {
+        if initial_status.phase == ProjectEnvironmentSetupPhase::Validating {
+            std::fs::write(&validation_release, b"").unwrap();
+            wait_for_ready(&runtime, "setup-lifecycle", &provider_fixture).await
+        } else {
+            initial_status
+        }
+    } else {
+        assert_eq!(
+            initial_status.phase,
+            ProjectEnvironmentSetupPhase::Validating,
+            "cancellation coverage requires the worker validation barrier"
+        );
+        let cancelled = runtime
         .execute_project_environment_setup_request(
             LocalDaemonRequest::CancelProjectEnvironmentSetup(
                 CancelProjectEnvironmentSetupRequest {
@@ -479,7 +533,9 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
     );
     assert!(cancelled_status.retryable);
 
-    let retried = runtime
+        std::fs::write(&validation_release, b"").unwrap();
+
+        let retried = runtime
         .execute_project_environment_setup_request(
             LocalDaemonRequest::RetryProjectEnvironmentSetup(RetryProjectEnvironmentSetupRequest {
                 operation_id: "setup-lifecycle".into(),
@@ -496,24 +552,7 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
     );
     assert_eq!(retried_status.attempt, 2);
 
-    let ready_deadline = Instant::now() + Duration::from_secs(10);
-    let ready = loop {
-        let status = response_status(
-            get_setup_status(&runtime, "setup-lifecycle", "user-1", "retry polling").await,
-        );
-        match status.phase {
-            ProjectEnvironmentSetupPhase::Ready => break status,
-            ProjectEnvironmentSetupPhase::Failed => {
-                panic!("retried setup failed: {status:?}")
-            }
-            _ => {
-                assert!(
-                    Instant::now() < ready_deadline,
-                    "setup did not reach Ready: {status:?}"
-                );
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        }
+        wait_for_ready(&runtime, "setup-lifecycle", &provider_fixture).await
     };
     let validation = ready
         .validation
@@ -540,15 +579,16 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
                 "a passing reusable definition must not invoke the utility agent"
             );
         }
-        DefinitionScenario::SuppliedSetupFailure | DefinitionScenario::Generated => {
+        DefinitionScenario::SuppliedSetupFailure
+        | DefinitionScenario::Generated
+        | DefinitionScenario::SuppliedStaleInputs
+        | DefinitionScenario::SuppliedMissingInputs
+        | DefinitionScenario::SuppliedLegacyUnattested => {
             assert_ne!(
                 provider_fixture.diagnostics(),
                 "<no requests observed>",
                 "missing or failed setup must invoke the existing utility agent"
             );
-        }
-        DefinitionScenario::SuppliedStaleInputs | DefinitionScenario::SuppliedMissingInputs => {
-            unreachable!("stale and missing input scenarios return before the Ready assertions")
         }
     }
 
@@ -560,62 +600,65 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
         .environment_definition()
         .cloned()
         .expect("Ready setup should persist the measured definition");
-    if matches!(scenario, DefinitionScenario::SuppliedSetupFailure) {
+    if matches!(
+        scenario,
+        DefinitionScenario::SuppliedSetupFailure
+            | DefinitionScenario::SuppliedStaleInputs
+            | DefinitionScenario::SuppliedMissingInputs
+            | DefinitionScenario::SuppliedLegacyUnattested
+    ) {
         assert_eq!(
             persisted.setup_steps[0].command, "touch setup-repaired; command -v sh",
             "a successful repair must persist the repeatable definition returned by the utility"
         );
 
-        let utility_trace = provider_fixture.diagnostics();
-        let second_start = runtime
-            .execute_project_environment_setup_request(
-                LocalDaemonRequest::StartProjectEnvironmentSetup(
-                    StartProjectEnvironmentSetupRequest {
-                        operation_id: "setup-lifecycle-followup".into(),
-                        project_id: project_id.clone(),
-                        session_id: session.id().to_string(),
-                        agent_id: agent.id().to_string(),
-                        target_worker_id: "worker-machine".into(),
-                        target_platform: target_platform.clone(),
-                        definition: None,
-                        validation_commands: Vec::new(),
-                    },
-                ),
-                "user-1",
-            )
-            .await
-            .expect("follow-up worker setup should be accepted");
-        let LocalDaemonResponse::ProjectEnvironmentSetupStarted { status } = second_start else {
-            panic!("unexpected follow-up setup start response: {second_start:?}");
-        };
-        assert_eq!(status.phase, ProjectEnvironmentSetupPhase::Requested);
-        assert_eq!(status.attempt, 1);
-
-        let second_ready_deadline = Instant::now() + Duration::from_secs(10);
-        let second_ready = loop {
-            let status = response_status(
-                get_setup_status(
-                    &runtime,
-                    "setup-lifecycle-followup",
-                    "user-1",
-                    "follow-up worker polling",
-                )
-                .await,
+        if input_scenario {
+            assert_eq!(
+                std::fs::read(workspace.join(recipe_path)).unwrap(),
+                recipe_contents,
+                "repair must materialize the attested recipe bytes on the target worker"
             );
-            match status.phase {
-                ProjectEnvironmentSetupPhase::Ready => break status,
-                ProjectEnvironmentSetupPhase::Failed => {
-                    panic!("follow-up worker setup failed: {status:?}")
-                }
-                _ => {
-                    assert!(
-                        Instant::now() < second_ready_deadline,
-                        "follow-up worker setup did not reach Ready: {status:?}"
-                    );
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                }
-            }
+            assert_eq!(
+                std::fs::read(workspace.join(lockfile_path)).unwrap(),
+                lockfile_contents,
+                "repair must materialize the attested lockfile bytes on the target worker"
+            );
+            assert_eq!(persisted.inputs.len(), 2);
+            assert_eq!(
+                persisted.inputs[0].sha256,
+                format!("sha256:{:x}", Sha256::digest(recipe_contents))
+            );
+            assert_eq!(
+                persisted.inputs[1].sha256,
+                format!("sha256:{:x}", Sha256::digest(lockfile_contents))
+            );
+        }
+        if matches!(
+            scenario,
+            DefinitionScenario::SuppliedStaleInputs
+                | DefinitionScenario::SuppliedMissingInputs
+                | DefinitionScenario::SuppliedLegacyUnattested
+        ) {
+            assert!(
+                workspace.join("setup-repaired").exists(),
+                "utility repair must execute the repeatable setup steps before validation"
+            );
+        }
+
+        let utility_trace = provider_fixture.diagnostics();
+        let materialized_inputs: Vec<(&str, &[u8])> = if input_scenario {
+            vec![(recipe_path, recipe_contents), (lockfile_path, lockfile_contents)]
+        } else {
+            Vec::new()
         };
+        let (second_ready, second_workspace) = run_repaired_definition_on_fresh_worker(
+            &root,
+            persisted.clone(),
+            target_platform.clone(),
+            &provider_fixture,
+            &materialized_inputs,
+        )
+        .await;
         assert_eq!(
             second_ready
                 .validation
@@ -625,10 +668,35 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
                 .exit_code,
             0
         );
+        assert_ne!(
+            second_ready
+                .validation
+                .as_ref()
+                .expect("fresh-worker Ready requires worker validation")
+                .worker_id,
+            ready
+                .validation
+                .as_ref()
+                .expect("initial Ready requires worker validation")
+                .worker_id,
+            "repaired recipe coverage must cross a fresh worker identity"
+        );
         assert!(
-            workspace.join("setup-repaired").exists(),
+            second_workspace.join("setup-repaired").exists(),
             "the follow-up worker must apply the repaired reusable definition"
         );
+        if input_scenario {
+            assert_eq!(
+                std::fs::read(second_workspace.join(recipe_path)).unwrap(),
+                recipe_contents,
+                "fresh worker must validate the transferred recipe bytes"
+            );
+            assert_eq!(
+                std::fs::read(second_workspace.join(lockfile_path)).unwrap(),
+                lockfile_contents,
+                "fresh worker must validate the transferred lockfile bytes"
+            );
+        }
         assert_eq!(
             provider_fixture.diagnostics(),
             utility_trace,
@@ -642,13 +710,226 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
             | DefinitionScenario::SuppliedSetupFailure
             | DefinitionScenario::SuppliedInputReuse
             | DefinitionScenario::SuppliedStaleInputs
-            | DefinitionScenario::SuppliedMissingInputs => {
+            | DefinitionScenario::SuppliedMissingInputs
+            | DefinitionScenario::SuppliedLegacyUnattested => {
                 ProjectEnvironmentDefinitionOrigin::UserAuthored
             }
             DefinitionScenario::Generated => ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
         }
     );
     drop(provider_fixture);
+}
+
+#[cfg(unix)]
+async fn wait_for_ready(
+    runtime: &crate::runtime::state::KernelRuntimeState,
+    operation_id: &str,
+    provider_fixture: &UtilityProviderFixture,
+) -> ProjectEnvironmentSetupStatus {
+    let ready_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let status = response_status(
+            get_setup_status(runtime, operation_id, "user-1", "ready polling").await,
+        );
+        match status.phase {
+            ProjectEnvironmentSetupPhase::Ready => return status,
+            ProjectEnvironmentSetupPhase::Failed => {
+                panic!(
+                    "setup failed before Ready: {status:?}; provider trace: {}",
+                    provider_fixture.diagnostics()
+                )
+            }
+            _ => {
+                assert!(
+                    Instant::now() < ready_deadline,
+                    "setup did not reach Ready: {status:?}; provider trace: {}",
+                    provider_fixture.diagnostics()
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn run_repaired_definition_on_fresh_worker(
+    root: &std::path::Path,
+    definition: ProjectEnvironmentDefinition,
+    target_platform: String,
+    provider_fixture: &UtilityProviderFixture,
+    materialized_inputs: &[(&str, &[u8])],
+) -> (ProjectEnvironmentSetupStatus, PathBuf) {
+    let fresh_root = root.join("fresh-worker");
+    let fresh_home = fresh_root.join("kernel-home");
+    let fresh_workspace = fresh_root.join("worker-worktree");
+    let fresh_receipt = fresh_root.join("receipt.json");
+    std::fs::create_dir_all(&fresh_home).unwrap();
+    std::fs::create_dir_all(&fresh_workspace).unwrap();
+    for &(relative_path, contents) in materialized_inputs {
+        let target = fresh_workspace.join(relative_path);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(target, contents).unwrap();
+    }
+    std::fs::write(fresh_workspace.join("validation-release"), b"").unwrap();
+    std::fs::write(
+        &fresh_receipt,
+        serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 1,
+            "status": "confirmed",
+            "allocationId": "worker-fresh",
+            "machineId": "worker-machine-fresh",
+            "kernelId": "worker-kernel-fresh",
+            "relayPublicKey": "worker-public-key-fresh",
+            "runtimeReleaseDigest": format!("sha256:{}", "b".repeat(64)),
+            "homeCaller": {
+                "accountId": "account-1",
+                "userId": "user-1",
+                "realmId": "realm-1",
+                "machineId": "home-machine",
+                "kernelId": "home-kernel",
+                "relayPublicKey": "home-public-key"
+            },
+            "confirmedAt": "2026-09-14T00:00:00Z"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    std::env::set_var("CHARIOX_HOME", &fresh_home);
+    std::env::set_var("CHARIOX_DISPOSABLE_WORKER_RECEIPT", &fresh_receipt);
+
+    let mut config = DaemonConfig::for_tests();
+    config.daemon_id = "worker-kernel-fresh".into();
+    config.host_machine_id = "worker-machine-fresh".into();
+    config.relay_public_key = "worker-public-key-fresh".into();
+    config.kernel_runtime_role = KernelRuntimeRole::RemoteLeaseWorker;
+    config.accept_remote_leases = true;
+    config.remote_lease_capacity = Some(1);
+    config.lease_worker_home_caller = Some(crate::config::LeaseWorkerHomeCaller {
+        kernel_id: "home-kernel".into(),
+        realm_id: "realm-1".into(),
+        user_id: "user-1".into(),
+        relay_public_key: "home-public-key".into(),
+    });
+    config.cloud_relay = Some(
+        serde_json::from_value(serde_json::json!({
+            "api_url": "https://staging.chariox.com",
+            "email": "owner@example.test",
+            "account_id": "account-1",
+            "user_id": "user-1",
+            "account_slug": "account-1",
+            "realm_id": "realm-1",
+            "relay_url": "wss://relay.example.test",
+            "issuer_id": "issuer-1",
+            "machine_id": "worker-machine-fresh",
+            "machine_credential": format!("mcred_{}", "d".repeat(40))
+        }))
+        .unwrap(),
+    );
+    ensure_worker_validation_boundary(&config).expect("fresh worker receipt should be confirmed");
+
+    let mut app = crate::DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = app
+        .create_session(
+            CreateSessionRequest::new(
+                fresh_workspace.display().to_string(),
+                fresh_workspace.display().to_string(),
+            )
+            .with_owner_user_id("user-1")
+            .with_agent_defaults(crate::session::SessionAgentDefaults::new("opencode")),
+        )
+        .expect("fresh worker session should be created");
+    let project_id = session.project_id().to_string();
+    let launch_request = LaunchProviderRequest::new(
+        session.id(),
+        "opencode",
+        "opencode",
+        "default",
+        "opencode/test-model",
+    )
+    .with_agent_id(agent.id())
+    .with_owner_user_id("user-1");
+    let mut provider_run = RuntimeProviderRun::new(
+        "utility-provider-run-fresh",
+        &launch_request,
+        ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "opencode-project-environment-fresh-worker-fixture".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
+            pty_env_remove: Vec::new(),
+            working_directory: Some(fresh_workspace.clone()),
+            structured_endpoint: Some(provider_fixture.address()),
+        },
+    );
+    provider_run.mark_running();
+    app.providers_mut().insert_run_for_test(provider_run);
+    let runtime =
+        CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 1)
+            .runtime_state();
+    runtime
+        .update_project_environment_definition(&project_id, definition, "user-1")
+        .expect("fresh worker should retain the repaired definition");
+
+    let start = runtime
+        .execute_project_environment_setup_request(
+            LocalDaemonRequest::StartProjectEnvironmentSetup(StartProjectEnvironmentSetupRequest {
+                operation_id: "setup-lifecycle-fresh-worker".into(),
+                project_id: project_id.clone(),
+                session_id: session.id().to_string(),
+                agent_id: agent.id().to_string(),
+                target_worker_id: "worker-machine-fresh".into(),
+                target_platform,
+                definition: None,
+                validation_commands: Vec::new(),
+            }),
+            "user-1",
+        )
+        .await
+        .expect("fresh worker setup should be accepted");
+    let LocalDaemonResponse::ProjectEnvironmentSetupStarted { status } = start else {
+        panic!("unexpected fresh worker setup start response: {start:?}");
+    };
+    assert_eq!(status.phase, ProjectEnvironmentSetupPhase::Requested);
+    assert_eq!(status.attempt, 1);
+
+    let ready_deadline = Instant::now() + Duration::from_secs(10);
+    let ready = loop {
+        let status = response_status(
+            get_setup_status(
+                &runtime,
+                "setup-lifecycle-fresh-worker",
+                "user-1",
+                "fresh worker polling",
+            )
+            .await,
+        );
+        match status.phase {
+            ProjectEnvironmentSetupPhase::Ready => break status,
+            ProjectEnvironmentSetupPhase::Failed => {
+                panic!("fresh worker setup failed: {status:?}")
+            }
+            _ => {
+                assert!(
+                    Instant::now() < ready_deadline,
+                    "fresh worker setup did not reach Ready: {status:?}"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+    };
+    assert_eq!(
+        ready
+            .validation
+            .as_ref()
+            .expect("fresh worker Ready requires validation")
+            .worker_id,
+        "worker-machine-fresh"
+    );
+    (ready, fresh_workspace)
 }
 
 #[cfg(unix)]
@@ -1533,9 +1814,19 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     // record alive while home Retry advances the authoritative attempt to 2.
     // Recovery must replay through the same authenticated binding after the
     // connector returns; it must not accept a stale Ready/attempt-one record.
+    // Hold attempt one at the worker's active setup boundary until Cancel is
+    // authoritative. A fixed sleep made the retry's setup and validation
+    // phases race the two-second observation deadline.
     let reconnect_operation_id = "setup-retry-before-worker-reconnect";
+    let reconnect_release = workspace.join("reconnect-release");
+    let reconnect_command =
+        "while [ ! -f reconnect-release ]; do sleep 0.01; done; command -v sh".to_string();
+    let mut reconnect_definition = definition.clone();
+    reconnect_definition.setup_steps[0].command = reconnect_command.clone();
+    reconnect_definition.validation_commands = vec![reconnect_command];
     let reconnect_start_request = StartProjectEnvironmentSetupRequest {
         operation_id: reconnect_operation_id.to_string(),
+        definition: Some(reconnect_definition),
         ..start_request.clone()
     };
     let reconnect_started = runtime
@@ -1600,6 +1891,8 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     );
     assert_eq!(reconnect_cancelled_status.attempt, 1);
     assert!(reconnect_cancelled_status.retryable);
+    std::fs::write(&reconnect_release, b"")
+        .expect("connector-recovery worker should be released after authoritative Cancel");
 
     let _ = shutdown_worker_tx.send(true);
     connector_worker
@@ -1776,13 +2069,22 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     // still real and connected after the connector-only recovery. Retry is accepted by the home before its
     // asynchronous worker dispatch is observed; interrupt that dispatch,
     // then restore the same worker durable state with its prior attempt.
+    // Use the same explicit release protocol for the restart branch so its
+    // second attempt is measured after, rather than during, worker execution.
     let worker_registration = {
         let mut app = app_worker.lock().await;
         app.relay_registration()
     };
     let restart_operation_id = "setup-retry-before-worker-restart";
+    let restart_release = workspace.join("restart-release");
+    let restart_command =
+        "while [ ! -f restart-release ]; do sleep 0.01; done; command -v sh".to_string();
+    let mut restart_definition = definition.clone();
+    restart_definition.setup_steps[0].command = restart_command.clone();
+    restart_definition.validation_commands = vec![restart_command];
     let restart_start_request = StartProjectEnvironmentSetupRequest {
         operation_id: restart_operation_id.to_string(),
+        definition: Some(restart_definition),
         ..start_request.clone()
     };
     let restart_started = runtime
@@ -1847,6 +2149,8 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     );
     assert_eq!(cancelled_status.attempt, 1);
     assert!(cancelled_status.retryable);
+    std::fs::write(&restart_release, b"")
+        .expect("restart-recovery worker should be released after authoritative Cancel");
 
     let _ = shutdown_worker_tx.send(true);
     connector_worker
@@ -3156,6 +3460,14 @@ impl UtilityProviderState {
 #[cfg(unix)]
 impl UtilityProviderFixture {
     fn start(definition: ProjectEnvironmentDefinition) -> Self {
+        Self::start_with_repairs(definition, None, BTreeMap::new())
+    }
+
+    fn start_with_repairs(
+        definition: ProjectEnvironmentDefinition,
+        repair_workspace: Option<PathBuf>,
+        repair_files: BTreeMap<String, Vec<u8>>,
+    ) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("provider fixture should bind");
         listener
             .set_nonblocking(true)
@@ -3165,6 +3477,7 @@ impl UtilityProviderFixture {
         let state = Arc::new(Mutex::new(UtilityProviderState::default()));
         let stop_for_server = stop.clone();
         let state_for_server = state.clone();
+        let repairs = repair_workspace.map(|workspace| (workspace, repair_files));
         let join = thread::spawn(move || {
             while !stop_for_server.load(Ordering::SeqCst) {
                 match listener.accept() {
@@ -3172,8 +3485,9 @@ impl UtilityProviderFixture {
                         let stop = stop_for_server.clone();
                         let state = state_for_server.clone();
                         let definition = definition.clone();
+                        let repairs = repairs.clone();
                         thread::spawn(move || {
-                            serve_provider_request(stream, stop, state, definition);
+                            serve_provider_request(stream, stop, state, definition, repairs);
                         });
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -3223,6 +3537,7 @@ fn serve_provider_request(
     stop: Arc<AtomicBool>,
     state: Arc<Mutex<UtilityProviderState>>,
     definition: ProjectEnvironmentDefinition,
+    repairs: Option<(PathBuf, BTreeMap<String, Vec<u8>>)>,
 ) {
     let Some((request_line, body)) = read_provider_request(&mut stream) else {
         return;
@@ -3320,6 +3635,21 @@ fn serve_provider_request(
                 .lock()
                 .expect("provider fixture state should not poison")
                 .prompt_id = prompt_id;
+            if let Some((workspace, files)) = repairs.as_ref() {
+                for (relative_path, contents) in files {
+                    let target = workspace.join(relative_path);
+                    if let Some(parent) = target.parent() {
+                        std::fs::create_dir_all(parent)
+                            .expect("repair fixture should create target parent directories");
+                    }
+                    std::fs::write(&target, contents)
+                        .expect("repair fixture should materialize target input bytes");
+                    state
+                        .lock()
+                        .expect("provider fixture state should not poison")
+                        .record(format!("repair {relative_path}"));
+                }
+            }
             write_empty_response(&mut stream, 204);
         }
         ("GET", "/session/status") => {
