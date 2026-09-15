@@ -478,6 +478,7 @@ mod tests {
                 AgentExecutionMode::Build,
                 AgentPermissionLevel::Yolo,
                 None,
+                &mut Vec::new(),
             );
             drop(socket);
             result
