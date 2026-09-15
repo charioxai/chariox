@@ -1073,13 +1073,7 @@ impl KernelRuntimeState {
             .definition
             .or_else(|| project.environment_definition().cloned());
         if let Some(definition) = &definition {
-            let validation = if definition.is_unattested_file_backed() {
-                definition.validate_for_repair()
-            } else {
-                definition.validate()
-            };
-            validation
-                .map_err(|message| setup_error(&message))?;
+            validate_incoming_setup_definition(definition)?;
             if definition.target_platform != request.target_platform {
                 return Err(setup_error(
                     "environment definition targets a different platform",

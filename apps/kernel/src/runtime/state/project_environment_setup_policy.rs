@@ -42,6 +42,17 @@ pub(super) fn validate_commands(commands: &[String]) -> Result<(), DaemonError> 
     Ok(())
 }
 
+pub(super) fn validate_incoming_setup_definition(
+    definition: &ProjectEnvironmentDefinition,
+) -> Result<(), DaemonError> {
+    let validation = if definition.is_unattested_file_backed() {
+        definition.validate_for_repair()
+    } else {
+        definition.validate()
+    };
+    validation.map_err(|message| setup_error(&message))
+}
+
 pub(super) fn validate_setup_definition(
     definition: Option<ProjectEnvironmentDefinition>,
     target_platform: &str,
@@ -50,9 +61,7 @@ pub(super) fn validate_setup_definition(
     let Some(definition) = definition else {
         return Ok(None);
     };
-    definition
-        .validate()
-        .map_err(|message| setup_error(&message))?;
+    validate_incoming_setup_definition(&definition)?;
     if definition.target_platform != target_platform {
         return Err(setup_error(
             "environment definition targets a different platform",
