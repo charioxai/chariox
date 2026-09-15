@@ -326,6 +326,7 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
         scenario,
         DefinitionScenario::SuppliedStaleInputs
             | DefinitionScenario::SuppliedMissingInputs
+            | DefinitionScenario::SuppliedLegacyUnattested
     ) {
         UtilityProviderFixture::start_with_repairs(
             utility_definition,
@@ -333,6 +334,7 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
             BTreeMap::from([
                 (recipe_path.to_string(), recipe_contents.to_vec()),
                 (lockfile_path.to_string(), lockfile_contents.to_vec()),
+                ("setup-repaired".to_string(), Vec::new()),
             ]),
         )
     } else {
@@ -418,11 +420,18 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
             | DefinitionScenario::SuppliedInputReuse
             | DefinitionScenario::SuppliedStaleInputs
             | DefinitionScenario::SuppliedMissingInputs
-            | DefinitionScenario::SuppliedLegacyUnattested
     ) {
         runtime
             .update_project_environment_definition(&project_id, definition.clone(), "user-1")
             .expect("the selected project should retain its reusable definition");
+    } else if matches!(scenario, DefinitionScenario::SuppliedLegacyUnattested) {
+        let mut project = runtime
+            .owned
+            .session_store
+            .get_project(&project_id)
+            .expect("legacy fixture project should remain available");
+        project.set_environment_definition(definition.clone());
+        runtime.owned.session_store.restore_projects(vec![project]);
     }
     let start = runtime
         .execute_project_environment_setup_request(
@@ -624,6 +633,17 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
                 format!("sha256:{:x}", Sha256::digest(lockfile_contents))
             );
         }
+        if matches!(
+            scenario,
+            DefinitionScenario::SuppliedStaleInputs
+                | DefinitionScenario::SuppliedMissingInputs
+                | DefinitionScenario::SuppliedLegacyUnattested
+        ) {
+            assert!(
+                workspace.join("setup-repaired").exists(),
+                "utility repair must execute the repeatable setup steps before validation"
+            );
+        }
 
         let utility_trace = provider_fixture.diagnostics();
         let (second_ready, second_workspace) = run_repaired_definition_on_fresh_worker(
@@ -744,13 +764,14 @@ async fn run_repaired_definition_on_fresh_worker(
     let fresh_receipt = fresh_root.join("receipt.json");
     std::fs::create_dir_all(&fresh_home).unwrap();
     std::fs::create_dir_all(&fresh_workspace).unwrap();
-    for (relative_path, contents) in materialized_inputs {
+    for &(relative_path, contents) in materialized_inputs {
         let target = fresh_workspace.join(relative_path);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).unwrap();
         }
         std::fs::write(target, contents).unwrap();
     }
+    std::fs::write(fresh_workspace.join("validation-release"), b"").unwrap();
     std::fs::write(
         &fresh_receipt,
         serde_json::to_vec(&serde_json::json!({
