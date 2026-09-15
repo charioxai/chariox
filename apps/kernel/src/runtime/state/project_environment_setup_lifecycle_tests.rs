@@ -140,14 +140,14 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
             | DefinitionScenario::SuppliedMissingInputs
     );
     let recipe_path = ".devcontainer/devcontainer.json";
-    let recipe_contents = br#"{"image":"mcr.microsoft.com/devcontainers/base:ubuntu"}
+    let recipe_contents: &[u8] = br#"{"image":"mcr.microsoft.com/devcontainers/base:ubuntu"}
 "#;
     let lockfile_path = "Cargo.lock";
     let lockfile_contents = b"version = 3\n\n[[package]]\nname = \"fixture\"\n";
     if input_scenario {
         std::fs::create_dir_all(workspace.join(".devcontainer")).unwrap();
         if !matches!(scenario, DefinitionScenario::SuppliedMissingInputs) {
-            let contents = if matches!(scenario, DefinitionScenario::SuppliedStaleInputs) {
+            let contents: &[u8] = if matches!(scenario, DefinitionScenario::SuppliedStaleInputs) {
                 br#"{"image":"stale-target"}
 "#
             } else {
