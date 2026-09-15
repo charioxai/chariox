@@ -267,6 +267,12 @@ mod tests {
         }
     }
 
+    fn definition_with_validation_commands(commands: &[&str]) -> ProjectEnvironmentDefinition {
+        let mut definition = definition();
+        definition.validation_commands = commands.iter().map(|command| (*command).into()).collect();
+        definition
+    }
+
     #[test]
     fn parser_rejects_definition_for_another_platform() {
         let output = serde_json::json!({"definition": definition()});
@@ -334,6 +340,85 @@ mod tests {
             "linux-x86_64",
         )
         .expect_err("ordinary utility output must retain strict selected-definition equality");
+        assert!(error.to_string().contains("changed the selected"));
+    }
+
+    #[test]
+    fn repair_parser_rejects_dropped_original_validation_commands() {
+        let expected = definition_with_validation_commands(&[
+            "cargo check --workspace --locked",
+            "cargo test --workspace --locked",
+        ]);
+        let mut repaired = expected.clone();
+        repaired.setup_steps[0].command =
+            "rustup toolchain install stable --profile minimal".into();
+        repaired.validation_commands.pop();
+
+        let error = parse_project_environment_setup_utility_output_for_repair(
+            &serde_json::json!({"definition": repaired}).to_string(),
+            Some(&expected),
+            "linux-x86_64",
+        )
+        .expect_err("repair must not drop a stored validation command");
+        assert!(error
+            .to_string()
+            .contains("must retain every original validation command"));
+    }
+
+    #[test]
+    fn repair_parser_rejects_replaced_original_validation_commands() {
+        let expected = definition_with_validation_commands(&[
+            "cargo check --workspace --locked",
+            "cargo test --workspace --locked",
+        ]);
+        let mut repaired = expected.clone();
+        repaired.setup_steps[0].command =
+            "rustup toolchain install stable --profile minimal".into();
+        repaired.validation_commands[1] = "true".into();
+
+        let error = parse_project_environment_setup_utility_output_for_repair(
+            &serde_json::json!({"definition": repaired}).to_string(),
+            Some(&expected),
+            "linux-x86_64",
+        )
+        .expect_err("repair must not replace a stored validation command");
+        assert!(error
+            .to_string()
+            .contains("must retain every original validation command"));
+    }
+
+    #[test]
+    fn repair_parser_accepts_expansion_preserving_all_original_validation_commands() {
+        let expected = definition_with_validation_commands(&[
+            "cargo check --workspace --locked",
+            "cargo test --workspace --locked",
+        ]);
+        let mut repaired = expected.clone();
+        repaired.setup_steps[0].command =
+            "rustup toolchain install stable --profile minimal".into();
+        repaired
+            .validation_commands
+            .push("cargo fmt --all -- --check".into());
+
+        let parsed = parse_project_environment_setup_utility_output_for_repair(
+            &serde_json::json!({"definition": repaired.clone()}).to_string(),
+            Some(&expected),
+            "linux-x86_64",
+        )
+        .expect("repair may add validation commands while retaining the stored checks");
+        assert_eq!(parsed.setup_steps, repaired.setup_steps);
+        assert_eq!(parsed.validation_commands, repaired.validation_commands);
+        assert_eq!(
+            parsed.origin,
+            ProjectEnvironmentDefinitionOrigin::UtilityGenerated
+        );
+
+        let error = parse_project_environment_setup_utility_output(
+            &serde_json::json!({"definition": repaired}).to_string(),
+            Some(&expected),
+            "linux-x86_64",
+        )
+        .expect_err("ordinary parser must remain strict about definition revisions");
         assert!(error.to_string().contains("changed the selected"));
     }
 }
