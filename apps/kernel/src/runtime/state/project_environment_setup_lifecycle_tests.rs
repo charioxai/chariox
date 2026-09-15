@@ -1814,9 +1814,19 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     // record alive while home Retry advances the authoritative attempt to 2.
     // Recovery must replay through the same authenticated binding after the
     // connector returns; it must not accept a stale Ready/attempt-one record.
+    // Hold attempt one at the worker's active setup boundary until Cancel is
+    // authoritative. A fixed sleep made the retry's setup and validation
+    // phases race the two-second observation deadline.
     let reconnect_operation_id = "setup-retry-before-worker-reconnect";
+    let reconnect_release = workspace.join("reconnect-release");
+    let reconnect_command =
+        "while [ ! -f reconnect-release ]; do sleep 0.01; done; command -v sh".to_string();
+    let mut reconnect_definition = definition.clone();
+    reconnect_definition.setup_steps[0].command = reconnect_command.clone();
+    reconnect_definition.validation_commands = vec![reconnect_command];
     let reconnect_start_request = StartProjectEnvironmentSetupRequest {
         operation_id: reconnect_operation_id.to_string(),
+        definition: Some(reconnect_definition),
         ..start_request.clone()
     };
     let reconnect_started = runtime
@@ -1881,6 +1891,8 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     );
     assert_eq!(reconnect_cancelled_status.attempt, 1);
     assert!(reconnect_cancelled_status.retryable);
+    std::fs::write(&reconnect_release, b"")
+        .expect("connector-recovery worker should be released after authoritative Cancel");
 
     let _ = shutdown_worker_tx.send(true);
     connector_worker
@@ -2057,13 +2069,22 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     // still real and connected after the connector-only recovery. Retry is accepted by the home before its
     // asynchronous worker dispatch is observed; interrupt that dispatch,
     // then restore the same worker durable state with its prior attempt.
+    // Use the same explicit release protocol for the restart branch so its
+    // second attempt is measured after, rather than during, worker execution.
     let worker_registration = {
         let mut app = app_worker.lock().await;
         app.relay_registration()
     };
     let restart_operation_id = "setup-retry-before-worker-restart";
+    let restart_release = workspace.join("restart-release");
+    let restart_command =
+        "while [ ! -f restart-release ]; do sleep 0.01; done; command -v sh".to_string();
+    let mut restart_definition = definition.clone();
+    restart_definition.setup_steps[0].command = restart_command.clone();
+    restart_definition.validation_commands = vec![restart_command];
     let restart_start_request = StartProjectEnvironmentSetupRequest {
         operation_id: restart_operation_id.to_string(),
+        definition: Some(restart_definition),
         ..start_request.clone()
     };
     let restart_started = runtime
@@ -2128,6 +2149,8 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     );
     assert_eq!(cancelled_status.attempt, 1);
     assert!(cancelled_status.retryable);
+    std::fs::write(&restart_release, b"")
+        .expect("restart-recovery worker should be released after authoritative Cancel");
 
     let _ = shutdown_worker_tx.send(true);
     connector_worker
