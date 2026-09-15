@@ -32,7 +32,10 @@ use crate::runtime::workspace_git_common::same_fs_path;
 use crate::runtime::workspace_worktrees::list_workspace_worktrees;
 use crate::secret::export_transferred_vault_snapshot;
 use crate::transport::relay_client::RelayClientState;
-use crate::transport::relay_peer::RelayManagedContextImportReceipt;
+use crate::transport::relay_peer::{
+    RelayManagedContextImportReceipt, RelayManagedContextImportedRepository,
+    RelayManagedDevelopmentContextImportReceipt, RelayManagedKernelContextImportReceipt,
+};
 
 const OUTBOUND_ARTIFACT_SCHEMA_VERSION: u32 = 2;
 const MAX_OUTBOUND_ARTIFACT_STATE_BYTES: u64 = 128 * 1024;
@@ -62,6 +65,143 @@ pub struct ManagedContextTransferTicket {
     pub target: ManagedContextTransferTarget,
 }
 
+/// Public local-daemon receipt projection. Relay receipt structs intentionally
+/// retain their snake_case wire format; this adapter is the one public
+/// camelCase boundary consumed by Cloud and browser clients.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedContextOutboundImportReceipt {
+    pub transfer_id: String,
+    pub archive_sha256: String,
+    pub plan_digest: String,
+    pub development: ManagedContextOutboundDevelopmentImportReceipt,
+    pub kernel_context: ManagedContextOutboundKernelContextImportReceipt,
+    pub receipt_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ManagedContextOutboundDevelopmentImportReceipt {
+    Empty,
+    FromSource {
+        project_id: String,
+        destination_root: String,
+        primary_repository_id: String,
+        repositories: Vec<ManagedContextOutboundImportedRepository>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedContextOutboundImportedRepository {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::managed_context::development::DevelopmentWorkspaceKind::is_git"
+    )]
+    pub workspace_kind: crate::managed_context::development::DevelopmentWorkspaceKind,
+    pub repository_id: String,
+    pub role: crate::managed_context::development::DevelopmentRepositoryRole,
+    pub target_directory: String,
+    pub workspace_path: String,
+    pub head_sha: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ManagedContextOutboundKernelContextImportReceipt {
+    Empty,
+    FromKernel {
+        context_id: String,
+        source_kernel_id: String,
+        source_key_thumbprint: String,
+        snapshot_sha256: String,
+        extension_count: usize,
+        dependency_count: usize,
+    },
+}
+
+impl From<RelayManagedContextImportReceipt> for ManagedContextOutboundImportReceipt {
+    fn from(receipt: RelayManagedContextImportReceipt) -> Self {
+        Self {
+            transfer_id: receipt.transfer_id,
+            archive_sha256: receipt.archive_sha256,
+            plan_digest: receipt.plan_digest,
+            development: receipt.development.into(),
+            kernel_context: receipt.kernel_context.into(),
+            receipt_sha256: receipt.receipt_sha256,
+        }
+    }
+}
+
+impl From<RelayManagedDevelopmentContextImportReceipt>
+    for ManagedContextOutboundDevelopmentImportReceipt
+{
+    fn from(receipt: RelayManagedDevelopmentContextImportReceipt) -> Self {
+        match receipt {
+            RelayManagedDevelopmentContextImportReceipt::Empty => Self::Empty,
+            RelayManagedDevelopmentContextImportReceipt::FromSource {
+                project_id,
+                destination_root,
+                primary_repository_id,
+                repositories,
+            } => Self::FromSource {
+                project_id,
+                destination_root,
+                primary_repository_id,
+                repositories: repositories.into_iter().map(Into::into).collect(),
+            },
+        }
+    }
+}
+
+impl From<RelayManagedContextImportedRepository> for ManagedContextOutboundImportedRepository {
+    fn from(repository: RelayManagedContextImportedRepository) -> Self {
+        Self {
+            workspace_kind: repository.workspace_kind,
+            repository_id: repository.repository_id,
+            role: repository.role,
+            target_directory: repository.target_directory,
+            workspace_path: repository.destination_path,
+            head_sha: repository.head_sha,
+        }
+    }
+}
+
+impl From<RelayManagedKernelContextImportReceipt>
+    for ManagedContextOutboundKernelContextImportReceipt
+{
+    fn from(receipt: RelayManagedKernelContextImportReceipt) -> Self {
+        match receipt {
+            RelayManagedKernelContextImportReceipt::Empty => Self::Empty,
+            RelayManagedKernelContextImportReceipt::FromKernel {
+                context_id,
+                source_kernel_id,
+                source_key_thumbprint,
+                snapshot_sha256,
+                extension_count,
+                dependency_count,
+            } => Self::FromKernel {
+                context_id,
+                source_kernel_id,
+                source_key_thumbprint,
+                snapshot_sha256,
+                extension_count,
+                dependency_count,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ManagedContextOutboundOperationPhase {
@@ -81,7 +221,7 @@ pub struct ManagedContextOutboundOperationStatus {
     pub accepted_bytes: u64,
     pub package_size_bytes: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub receipt: Option<RelayManagedContextImportReceipt>,
+    pub receipt: Option<ManagedContextOutboundImportReceipt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -489,13 +629,13 @@ pub(crate) fn start_managed_context_outbound_operation(
                     status.phase = ManagedContextOutboundOperationPhase::Completed;
                     status.accepted_bytes = result.package_size_bytes;
                     status.package_size_bytes = result.package_size_bytes;
-                    status.receipt = Some(result.receipt);
+                    status.receipt = Some(result.receipt.into());
                     status.failure_code = None;
                     status.failure_message = None;
                     status.retryable = false;
                 }),
                 Err(error) => task_store.update(&task_context_id, |status| {
-                    status.receipt = Some(result.receipt);
+                    status.receipt = Some(result.receipt.into());
                     fail_status(status, &error);
                 }),
             },

@@ -1,8 +1,9 @@
 use super::*;
 
 pub use crate::managed_context::outbound_service::{
-    ManagedContextOutboundOperationPhase, ManagedContextOutboundOperationStatus,
-    ManagedContextTransferTarget, ManagedContextTransferTicket,
+    ManagedContextOutboundImportReceipt, ManagedContextOutboundOperationPhase,
+    ManagedContextOutboundOperationStatus, ManagedContextTransferTarget,
+    ManagedContextTransferTicket,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

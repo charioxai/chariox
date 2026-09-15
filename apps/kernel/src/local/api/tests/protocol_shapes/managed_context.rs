@@ -6,7 +6,7 @@ fn plain_workspace_launch_and_relay_shapes_are_versioned() {
         DevelopmentRepositoryRole, DevelopmentWorkspaceKind,
     };
     use crate::transport::relay_peer::RelayManagedContextImportedRepository;
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 331);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 332);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         53
@@ -52,7 +52,7 @@ fn plain_workspace_launch_and_relay_shapes_are_versioned() {
 
 #[test]
 fn local_daemon_managed_context_outbound_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 331);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 332);
     let plan = crate::managed_bootstrap::ManagedKernelContextPlan::source_project_for_tests(
         "context-1",
         "realm-1",
@@ -217,7 +217,8 @@ fn local_daemon_managed_context_completed_receipt_uses_public_camel_case_shape()
                     dependency_count: 2,
                 },
                 receipt_sha256: "e".repeat(64),
-            }),
+            }
+            .into()),
             failure_code: None,
             failure_message: None,
             retryable: false,
@@ -225,12 +226,15 @@ fn local_daemon_managed_context_completed_receipt_uses_public_camel_case_shape()
         },
     };
 
-    let serialized = serde_json::to_value(response)
-        .expect("public managed-context response should serialize");
+    let serialized =
+        serde_json::to_value(response).expect("public managed-context response should serialize");
     let receipt = serialized
         .pointer("/ManagedContextTransferStatus/status/receipt")
         .expect("completed response should include its receipt");
-    assert_eq!(receipt.pointer("/transferId"), Some(&serde_json::json!("transfer-1")));
+    assert_eq!(
+        receipt.pointer("/transferId"),
+        Some(&serde_json::json!("transfer-1"))
+    );
     assert_eq!(
         receipt.pointer("/archiveSha256"),
         Some(&serde_json::json!("a".repeat(64)))
@@ -253,7 +257,15 @@ fn local_daemon_managed_context_completed_receipt_uses_public_camel_case_shape()
     );
     assert!(receipt.get("transfer_id").is_none());
     assert!(receipt.pointer("/development/project_id").is_none());
-    assert!(receipt.pointer("/kernel_context/source_kernel_id").is_none());
+    assert!(receipt
+        .pointer("/kernel_context/source_kernel_id")
+        .is_none());
+    let serialized = serde_json::to_string(&serialized)
+        .expect("public managed-context receipt snapshot should encode");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serialized.as_bytes())),
+        "c25c24ec5eab9fb0ed0d5084c77e0fda37f95b31cb971533efd166fda4a31135"
+    );
 }
 
 #[test]

@@ -6,9 +6,8 @@ use crate::local::{
     ProjectEnvironmentDefinitionOrigin, ProjectEnvironmentDefinitionSource,
     ProjectEnvironmentInput, ProjectEnvironmentInputKind, ProjectEnvironmentSetupPhase,
     ProjectEnvironmentSetupStatus, ProjectEnvironmentSetupStep, ProjectEnvironmentSetupStepKind,
-    ProjectEnvironmentValidation,
-    RetryProjectEnvironmentSetupRequest, StartProjectEnvironmentSetupRequest,
-    LOCAL_DAEMON_PROTOCOL_VERSION,
+    ProjectEnvironmentValidation, RetryProjectEnvironmentSetupRequest,
+    StartProjectEnvironmentSetupRequest, LOCAL_DAEMON_PROTOCOL_VERSION,
 };
 
 fn definition() -> ProjectEnvironmentDefinition {
@@ -18,16 +17,18 @@ fn definition() -> ProjectEnvironmentDefinition {
         source: ProjectEnvironmentDefinitionSource::Devcontainer,
         target_platform: "linux-x86_64".to_string(),
         source_path: Some(".devcontainer/devcontainer.json".to_string()),
-        inputs: vec![ProjectEnvironmentInput {
-            kind: ProjectEnvironmentInputKind::Recipe,
-            path: ".devcontainer/devcontainer.json".to_string(),
-            sha256: format!("sha256:{}", "a".repeat(64)),
-        },
-        ProjectEnvironmentInput {
-            kind: ProjectEnvironmentInputKind::Lockfile,
-            path: "Cargo.lock".to_string(),
-            sha256: format!("sha256:{}", "b".repeat(64)),
-        }],
+        inputs: vec![
+            ProjectEnvironmentInput {
+                kind: ProjectEnvironmentInputKind::Recipe,
+                path: ".devcontainer/devcontainer.json".to_string(),
+                sha256: format!("sha256:{}", "a".repeat(64)),
+            },
+            ProjectEnvironmentInput {
+                kind: ProjectEnvironmentInputKind::Lockfile,
+                path: "Cargo.lock".to_string(),
+                sha256: format!("sha256:{}", "b".repeat(64)),
+            },
+        ],
         setup_steps: vec![ProjectEnvironmentSetupStep {
             kind: ProjectEnvironmentSetupStepKind::NativeDependency,
             command: "apt-get install -y pkg-config libssl-dev".to_string(),
@@ -69,7 +70,7 @@ fn status() -> ProjectEnvironmentSetupStatus {
 
 #[test]
 fn project_environment_setup_protocol_shape_is_versioned_and_explicit() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 331);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 332);
     let start =
         LocalDaemonRequest::StartProjectEnvironmentSetup(StartProjectEnvironmentSetupRequest {
             operation_id: "setup-1".to_string(),
