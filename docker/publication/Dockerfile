@@ -26,6 +26,7 @@ RUN pnpm --filter @chariox/tool-display run build \
   && pnpm --filter @chariox/server run build
 
 FROM rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS rust-builder
+ARG CARGO_BUILD_JOBS=1
 ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=332
 WORKDIR /opt/chariox
 COPY --from=ca-bundle /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
@@ -44,7 +45,7 @@ COPY apps/relay apps/relay
 COPY examples/workflow-code examples/workflow-code
 COPY packages/aegs-sdk packages/aegs-sdk
 COPY packages/event-protocol packages/event-protocol
-RUN cargo build --locked --manifest-path apps/kernel/Cargo.toml --release --bin chariox-kernel \
+RUN CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS}" cargo build --locked --manifest-path apps/kernel/Cargo.toml --release --bin chariox-kernel \
   && test "$(target/release/chariox-kernel --print-local-daemon-protocol-version)" = "${CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION}"
 
 FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436
