@@ -34,6 +34,21 @@ const MANAGED_PROTECTED_FILE_ENV_NAMES: &[&str] = &[
     "CHARIOX_DISPOSABLE_WORKER_RECEIPT",
     "CHARIOX_DAEMON_SOCKET",
 ];
+#[cfg(target_os = "linux")]
+const MANAGED_RUNTIME_USER_STARTUP_FILE_NAMES: &[&str] = &[
+    ".bash_profile",
+    ".bash_login",
+    ".profile",
+    ".bashrc",
+    ".bash_logout",
+    ".zshenv",
+    ".zprofile",
+    ".zshrc",
+    ".zlogin",
+    ".zlogout",
+    ".kshrc",
+    ".screenrc",
+];
 
 #[cfg(target_os = "linux")]
 const BWRAP_PATH: &str = "/usr/bin/bwrap";
@@ -363,6 +378,26 @@ fn managed_protected_namespace_files() -> Vec<PathBuf> {
 }
 
 #[cfg(target_os = "linux")]
+fn managed_runtime_user_startup_files_for_home(home: &Path) -> Vec<PathBuf> {
+    if !home.is_absolute() || home == Path::new("/") {
+        return Vec::new();
+    }
+    MANAGED_RUNTIME_USER_STARTUP_FILE_NAMES
+        .iter()
+        .map(|name| home.join(name))
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn managed_runtime_user_startup_files() -> Vec<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .map(|home| managed_runtime_user_startup_files_for_home(&home))
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "linux")]
 fn managed_trusted_read_only_paths() -> Result<Vec<PathBuf>, DaemonError> {
     let mut candidates = Vec::new();
     let default_slice_root = Path::new("/opt/chariox-slice");
@@ -499,6 +534,11 @@ pub(crate) fn apply_managed_provider_isolation(
         let prompt_attachment_root = managed_prompt_attachment_root(request)?;
         let protected_namespace_roots = managed_protected_namespace_directories(&[]);
         let protected_namespace_files = managed_protected_namespace_files();
+        // The provider runs with the outer service user's uid in the user
+        // namespace. Keep that user's ordinary home available, but protect
+        // only the shell/Screen startup files that a later host-side
+        // `bash -lc` or `screen` lifecycle command would execute.
+        let runtime_user_startup_files = managed_runtime_user_startup_files();
         let trusted_read_only_paths = managed_trusted_read_only_paths()?;
 
         let resolver = managed_resolver_binding()?;
@@ -533,6 +573,11 @@ pub(crate) fn apply_managed_provider_isolation(
         append_managed_protected_namespace_files(
             &mut args,
             &protected_namespace_files,
+            &mut created_directories,
+        );
+        append_managed_protected_namespace_files(
+            &mut args,
+            &runtime_user_startup_files,
             &mut created_directories,
         );
         append_managed_trusted_read_only_paths(
@@ -1766,6 +1811,124 @@ mod tests {
             &[],
         ));
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_bwrap_probe_blocks_runtime_home_login_profile_without_blocking_home_files() {
+        let _env = crate::env_lock::lock();
+        let previous_home = std::env::var_os("HOME");
+        let root = std::env::temp_dir().join(format!(
+            "chariox-managed-runtime-home-startup-bwrap-probe-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let home = root.join("slice-home");
+        let ordinary_file = home.join("ordinary-created");
+        let profile_executed = home.join("profile-executed");
+        std::fs::create_dir_all(&home).expect("runtime user home should exist");
+        std::env::set_var("HOME", &home);
+
+        let startup_files = managed_runtime_user_startup_files();
+        let profile = home.join(".bash_profile");
+        assert!(startup_files.contains(&profile));
+        assert!(!startup_files.contains(&home));
+
+        let bwrap = Path::new(BWRAP_PATH);
+        if !bwrap.is_file() {
+            eprintln!(
+                "skipped managed bwrap runtime-home startup probe: {} is unavailable",
+                bwrap.display()
+            );
+            restore_env("HOME", previous_home);
+            let _ = std::fs::remove_dir_all(root);
+            return;
+        }
+
+        let (mut args, mut created) = managed_namespace_args(None, Path::exists, None);
+        append_bind(&mut args, &home, &home, &mut created);
+        append_managed_protected_namespace_files(&mut args, &startup_files, &mut created);
+        let home_text = home.display().to_string();
+        let profile_text = profile.display().to_string();
+        assert!(args
+            .windows(3)
+            .any(|window| { window == ["--bind", home_text.as_str(), home_text.as_str()] }));
+        let home_bind = args
+            .windows(3)
+            .position(|window| window == ["--bind", home_text.as_str(), home_text.as_str()])
+            .expect("runtime user home should remain writable");
+        let profile_mask = args
+            .windows(3)
+            .position(|window| window == ["--ro-bind", "/dev/null", profile_text.as_str()])
+            .expect("login profile should be masked");
+        assert!(home_bind < profile_mask);
+        assert!(!args
+            .windows(2)
+            .any(|window| { window == ["--tmpfs", home_text.as_str()] }));
+
+        args.extend([
+            "--setenv".to_string(),
+            "HOME".to_string(),
+            home_text.clone(),
+            "--".to_string(),
+            "/bin/sh".to_string(),
+            "-eu".to_string(),
+            "-c".to_string(),
+            "if printf 'touch \"$HOME/profile-executed\"\\n' > \"$HOME/.bash_profile\"; then exit 41; fi\nprintf ordinary > \"$HOME/ordinary-created\"".to_string(),
+            "managed-runtime-home-startup-probe".to_string(),
+        ]);
+        let output = match Command::new(bwrap).args(args).output() {
+            Ok(output) => output,
+            Err(error) => {
+                eprintln!("skipped managed bwrap runtime-home startup probe: {error}");
+                restore_env("HOME", previous_home);
+                let _ = std::fs::remove_dir_all(root);
+                return;
+            }
+        };
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("No permissions to create a new namespace")
+            || stderr.contains("Operation not permitted")
+        {
+            eprintln!(
+                "skipped managed bwrap runtime-home startup probe: user namespaces are unavailable"
+            );
+            restore_env("HOME", previous_home);
+            let _ = std::fs::remove_dir_all(root);
+            return;
+        }
+        assert!(
+            output.status.success(),
+            "managed bwrap runtime-home startup probe failed: {stderr}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&ordinary_file).expect("ordinary home file should be written"),
+            "ordinary"
+        );
+        assert!(
+            !profile.exists(),
+            "provider must not plant the login profile"
+        );
+        assert!(!profile_executed.exists());
+
+        // The follow-up lifecycle shape runs outside bwrap. Since the
+        // provider's attempted profile write was masked, outer bash -lc has
+        // no provider-controlled startup code to execute.
+        let outer = Command::new("/bin/bash")
+            .args(["-lc", ":"])
+            .env("HOME", &home)
+            .env_remove("BASH_ENV")
+            .output()
+            .expect("outer bash login probe should start");
+        assert!(
+            outer.status.success(),
+            "outer bash -lc probe failed: {}",
+            String::from_utf8_lossy(&outer.stderr)
+        );
+        assert!(!profile_executed.exists());
+
+        restore_env("HOME", previous_home);
         let _ = std::fs::remove_dir_all(root);
     }
 
