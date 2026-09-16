@@ -2679,8 +2679,8 @@ mod tests {
                 "test ! -e \"$3\"\n",
                 "printf ordinary > \"$4\"\n",
                 "printf leaked > \"$5\"\n",
-                "printf '%s\\n' 'touch \"$HOME/profile-executed\"' > \"$6\"\n",
-                "printf '%s\\n' '<openbox><execute>touch \"$HOME/openbox-executed\"</execute></openbox>' > \"$7\"\n",
+                "if printf '%s\\n' 'touch \"$HOME/profile-executed\"' > \"$6\"; then exit 61; fi\n",
+                "if printf '%s\\n' '<openbox><execute>touch \"$HOME/openbox-executed\"</execute></openbox>' > \"$7\"; then exit 62; fi\n",
                 "printf leaked > \"$8\"\n",
                 "printf leaked > \"$9\"\n",
                 "printf leaked > \"${10}\"\n",
@@ -2721,7 +2721,7 @@ mod tests {
                     && window[2] == workspace_text)
                     .then_some(index)
             })
-            .last()
+            .next()
             .expect("collector-selected runtime-home workspace should be rebound");
         let protected_state_text = protected_state.display().to_string();
         let protected_mask = prepared_args
