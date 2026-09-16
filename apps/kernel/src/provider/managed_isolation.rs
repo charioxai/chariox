@@ -710,6 +710,27 @@ pub(crate) fn apply_managed_provider_isolation(
             Path::exists,
             prompt_attachment_root.as_deref(),
         );
+        // Ordinary workspaces may contain runtime control paths. Bind them
+        // before protection so a home-root repository cannot cover the masks.
+        // Selected children of protected service trees are rebound below,
+        // after their parent mask, as before.
+        let early_workspace_roots = workspace_roots
+            .iter()
+            .filter(|root| {
+                !protected_namespace_roots
+                    .iter()
+                    .chain(trusted_read_only_paths.iter())
+                    .any(|protected| root.starts_with(protected))
+                    && managed_workspace_root_requires_rebind(
+                        root,
+                        &protected_namespace_roots,
+                        &trusted_read_only_paths,
+                    )
+            })
+            .collect::<Vec<_>>();
+        for root in &early_workspace_roots {
+            append_bind(&mut args, root, root, &mut created_directories);
+        }
         append_directory(&mut args, Path::new(SANDBOX_HOME), &mut created_directories);
         append_bind(
             &mut args,
@@ -764,7 +785,7 @@ pub(crate) fn apply_managed_provider_isolation(
             append_bind(&mut args, &root, &root, &mut created_directories);
         }
         for root in &workspace_roots {
-            if managed_workspace_root_requires_rebind(
+            if !early_workspace_roots.contains(&root) && managed_workspace_root_requires_rebind(
                 root,
                 &protected_namespace_roots,
                 &trusted_read_only_paths,
