@@ -373,7 +373,8 @@ mod tests {
     use super::*;
     use crate::local::{
         ProjectEnvironmentDefinitionOrigin, ProjectEnvironmentDefinitionSource,
-        ProjectEnvironmentInput, ProjectEnvironmentInputKind,
+        ProjectEnvironmentInput, ProjectEnvironmentInputKind, ProjectEnvironmentSetupStep,
+        ProjectEnvironmentSetupStepKind,
     };
 
     #[test]
