@@ -2511,11 +2511,14 @@ mod tests {
         let protected_state = home.join(".chariox");
         let config = home.join(".config");
         let openbox = config.join("openbox");
+        let nested_repository = openbox.join("nested-repository");
         let local = home.join(".local");
         let sibling = home_root.join("sibling-home");
         let workspace = match workspace_kind {
             "home" => home.clone(),
             "config" => config.clone(),
+            "openbox" => openbox.clone(),
+            "nested-openbox" => nested_repository.clone(),
             other => panic!("unsupported runtime-home workspace fixture: {other}"),
         };
         let ordinary_repo = workspace.join("ordinary-repository");
@@ -2535,6 +2538,8 @@ mod tests {
         std::fs::create_dir_all(&home).expect("runtime user home should exist");
         std::fs::create_dir_all(&protected_state).expect("protected runtime state should exist");
         std::fs::create_dir_all(&openbox).expect("runtime Openbox directory should exist");
+        std::fs::create_dir_all(&nested_repository)
+            .expect("nested Openbox repository should exist");
         std::fs::create_dir_all(&local).expect("runtime local directory should exist");
         std::fs::create_dir_all(&sibling).expect("sibling home should exist");
         std::fs::create_dir_all(&ordinary_repo).expect("ordinary repository should exist");
@@ -2635,13 +2640,17 @@ mod tests {
         )
         .with_working_directory(workspace.clone())
         .with_workspace_live_sync_roots(vec![workspace.clone()]);
-        let collected_roots = managed_workspace_roots(&request)
-            .expect("selected runtime-home workspace should be collected");
-        assert_eq!(
-            collected_roots,
-            vec![workspace.clone()],
-            "the selected runtime-home ancestor must reach launch assembly"
-        );
+        let collected_roots = managed_workspace_roots(&request);
+        if workspace_kind != "openbox" {
+            let collected_roots = collected_roots
+                .as_ref()
+                .expect("selected runtime-home workspace should be collected");
+            assert_eq!(
+                collected_roots,
+                &vec![workspace.clone()],
+                "the selected runtime-home ancestor must reach launch assembly"
+            );
+        }
 
         let protected_request = LaunchProviderRequest::new(
             format!("managed-protected-runtime-home-{workspace_kind}"),
@@ -2709,8 +2718,21 @@ mod tests {
             working_directory: Some(workspace.clone()),
             structured_endpoint: None,
         };
-        let prepared = apply_managed_provider_isolation(launch, &request)
-            .expect("managed runtime-home ancestor launch should assemble");
+        let prepared = apply_managed_provider_isolation(launch, &request);
+        if workspace_kind == "openbox" {
+            if let Ok(collected_roots) = &collected_roots {
+                assert!(
+                    collected_roots.is_empty(),
+                    "exact runtime command directory must be rejected by managed root collection: {collected_roots:?}"
+                );
+            }
+            assert!(
+                prepared.is_err(),
+                "exact runtime command directory must be rejected by managed launch assembly"
+            );
+            return;
+        }
+        let prepared = prepared.expect("managed runtime-home ancestor launch should assemble");
         let prepared_args = &prepared.pty_args;
         let selected_bind = prepared_args
             .windows(3)
@@ -2749,14 +2771,25 @@ mod tests {
             selected_bind < profile_mask,
             "selected {workspace_kind} workspace bind must not re-expose startup files"
         );
-        assert!(
-            selected_bind < openbox_tmpfs,
-            "selected {workspace_kind} workspace bind must not replace the Openbox boundary"
-        );
-        assert!(
-            selected_bind < openbox_mask,
-            "selected {workspace_kind} workspace bind must not replace Openbox file masks"
-        );
+        if workspace_kind == "nested-openbox" {
+            assert!(
+                openbox_tmpfs < selected_bind,
+                "nested command-directory workspace must be rebound after the Openbox boundary"
+            );
+            assert!(
+                openbox_mask < selected_bind,
+                "nested command-directory workspace must be rebound after Openbox file masks"
+            );
+        } else {
+            assert!(
+                selected_bind < openbox_tmpfs,
+                "selected {workspace_kind} workspace bind must not replace the Openbox boundary"
+            );
+            assert!(
+                selected_bind < openbox_mask,
+                "selected {workspace_kind} workspace bind must not replace Openbox file masks"
+            );
+        }
         for payload in &command_payloads {
             let payload_text = payload.display().to_string();
             let command_directory = payload
@@ -2768,10 +2801,17 @@ mod tests {
                 .windows(2)
                 .position(|window| window == ["--tmpfs", command_directory.as_str()])
                 .expect("runtime command directory should be private");
-            assert!(
-                selected_bind < command_mask,
-                "selected {workspace_kind} workspace bind must not replace {payload_text} mask"
-            );
+            if workspace_kind == "nested-openbox" {
+                assert!(
+                    command_mask < selected_bind,
+                    "nested command-directory workspace must be rebound after {payload_text} mask"
+                );
+            } else {
+                assert!(
+                    selected_bind < command_mask,
+                    "selected {workspace_kind} workspace bind must not replace {payload_text} mask"
+                );
+            }
         }
 
         let mut command = command_from_provider_launch(prepared)
@@ -2849,6 +2889,13 @@ mod tests {
     #[test]
     fn managed_collector_apply_protects_runtime_config_ancestor() {
         run_managed_runtime_home_ancestor_launch_probe("config");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_collector_apply_rejects_exact_and_rebinds_nested_runtime_command_workspaces() {
+        run_managed_runtime_home_ancestor_launch_probe("openbox");
+        run_managed_runtime_home_ancestor_launch_probe("nested-openbox");
     }
 
     #[cfg(target_os = "linux")]
