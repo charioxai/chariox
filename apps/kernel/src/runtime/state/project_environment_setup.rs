@@ -39,7 +39,6 @@ struct WorkerExecutionContext {
     platform: String,
     workspace_root: PathBuf,
     environment: BTreeMap<String, String>,
-    credential_home: WorkerCredentialHome,
 }
 
 fn validation_passed_for_execution(
@@ -1575,7 +1574,6 @@ impl KernelRuntimeState {
             &execution.workspace_id,
             std::env::var_os("CHARIOX_HOME").as_deref(),
         )?;
-        let credential_home = WorkerCredentialHome::new()?;
         let provider_working_directory = provider_run
             .working_directory()
             .cloned()
@@ -1589,15 +1587,20 @@ impl KernelRuntimeState {
                 "prepared provider context uses a different worker worktree",
             ));
         }
+        let preparation_home =
+            WorkerPreparationHome::for_project_worker(
+                &workspace_root,
+                &execution.project_id,
+                &worker_id,
+            )?;
         Ok(WorkerExecutionContext {
             worker_id,
             platform,
             workspace_root,
             environment: worker_validation_environment_with_home(
                 provider_run,
-                Some(credential_home.path()),
+                Some(preparation_home.path()),
             ),
-            credential_home,
         })
     }
 
@@ -1630,7 +1633,6 @@ impl KernelRuntimeState {
         let WorkerExecutionContext {
             workspace_root: context_workspace_root,
             environment,
-            credential_home,
             ..
         } = context;
         let workspace_root = context_workspace_root.clone();
@@ -1642,7 +1644,6 @@ impl KernelRuntimeState {
         let applied = tokio::task::spawn_blocking(move || {
             // The blocking commands own this guard even if their async waiter exits.
             let _guard = guard;
-            let _credential_home = credential_home;
             run_worker_setup_steps(
                 &commands,
                 &context_workspace_root,
@@ -1676,7 +1677,6 @@ impl KernelRuntimeState {
         let operation_id = execution.operation_id.clone();
         let workspace_root = context.workspace_root;
         let environment = context.environment;
-        let credential_home = context.credential_home;
         let cancellation = self.owned.project_environment_setups.clone();
         let guard = cancellation
             .begin_execution(&operation_id, attempt)
@@ -1684,7 +1684,6 @@ impl KernelRuntimeState {
         let validation = tokio::task::spawn_blocking(move || {
             // The blocking command owns this guard even if its async waiter exits.
             let _guard = guard;
-            let _credential_home = credential_home;
             let started = Instant::now();
             let overall_deadline = started + VALIDATION_TOTAL_TIMEOUT;
             let mut results = Vec::with_capacity(commands.len());

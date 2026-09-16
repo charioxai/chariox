@@ -329,12 +329,14 @@ impl ProviderProcessServiceStore {
         visible_user_prompt: &str,
         hidden_system_context: &str,
         timeout: std::time::Duration,
+        policy: super::super::ProviderUtilityExecutionPolicy,
     ) -> Result<String, DaemonError> {
         self.write().run_structured_utility_prompt(
             run,
             visible_user_prompt,
             hidden_system_context,
             timeout,
+            policy,
         )
     }
 

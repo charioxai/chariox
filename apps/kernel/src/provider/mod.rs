@@ -255,12 +255,25 @@ pub(crate) fn provider_run_uses_runtime_structured_utility_prompt(
     run.adapter_key() == "claude" && run.client_interface().is_chariox()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProviderUtilityExecutionPolicy {
+    ExistingRun,
+    ReadOnlyDiscovery,
+}
+
+impl ProviderUtilityExecutionPolicy {
+    pub(crate) fn is_read_only_discovery(self) -> bool {
+        matches!(self, Self::ReadOnlyDiscovery)
+    }
+}
+
 pub(crate) fn run_blocking_provider_utility_prompt(
     run: &RuntimeProviderRun,
     visible_user_prompt: &str,
     hidden_system_context: &str,
     timeout: Duration,
     operation: &'static str,
+    policy: ProviderUtilityExecutionPolicy,
 ) -> Result<String, crate::error::DaemonError> {
     match run.adapter_key() {
         "codex" => codex_runtime::run_codex_utility_prompt(
@@ -268,12 +281,14 @@ pub(crate) fn run_blocking_provider_utility_prompt(
             visible_user_prompt,
             hidden_system_context,
             timeout,
+            policy,
         ),
         "opencode" => opencode_binding::run_opencode_utility_prompt(
             run,
             visible_user_prompt,
             hidden_system_context,
             timeout,
+            policy,
         ),
         adapter_key => Err(crate::error::DaemonError::LocalTransport {
             operation,
@@ -301,7 +316,8 @@ mod tests {
         provider_run_waits_for_workflow_publication_completion, retain_public_inventory_providers,
         retain_public_inventory_providers_with_dev_stub_policy,
         run_blocking_provider_utility_prompt, AgentEndpointMode, LaunchProviderRequest,
-        ProviderClientInterface, ProviderLaunchResult, RuntimeProviderRun,
+        ProviderClientInterface, ProviderLaunchResult, ProviderUtilityExecutionPolicy,
+        RuntimeProviderRun,
     };
 
     #[test]
@@ -499,6 +515,7 @@ mod tests {
             "hidden",
             std::time::Duration::from_secs(1),
             "test utility",
+            ProviderUtilityExecutionPolicy::ExistingRun,
         )
         .expect_err("unsupported adapter should fail before provider I/O");
 

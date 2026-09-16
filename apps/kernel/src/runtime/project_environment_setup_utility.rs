@@ -77,12 +77,15 @@ fn project_environment_setup_utility_visible_prompt(
     schema: &serde_json::Value,
 ) -> String {
     format!(
-        "Prepare the selected project environment in the actual current worker.\n\n\
+        "Discover the selected project environment definition from the actual current worker.\n\n\
 The kernel target identity and platform are fixed by this request; do not substitute another\n\
-machine, host, worktree, or platform. Run the requested setup in the worker before returning.\n\
-The definition in the request is the selected environment recipe. When it is present, reproduce,\n\
-apply, and verify it first; do not discover a different recipe or invoke repair while setup and\n\
-validation pass. Invoke repair only after applying or validating that selected definition fails.\n\
+machine, host, worktree, or platform. This is a discovery-only turn: do not run setup or validation\n\
+commands, mutate files, install tools, or use credentials before returning. The kernel will apply\n\
+and validate the returned definition later through its enforced disposable-worker boundary.\n\
+The definition in the request is the selected environment recipe. When it is present, inspect it\n\
+and its declared inputs without applying or executing it; do not discover a different recipe or\n\
+invoke repair while the selected definition remains usable. Invoke repair only when the kernel has\n\
+reported that applying or validating that selected definition failed.\n\
 When no definition is present, inspect project-declared setup evidence in the actual worktree,\n\
 including but not limited to package manifests and lockfiles (package.json, pyproject.toml,\n\
 go.mod, Cargo.toml), Makefiles/build files, Dockerfiles, devcontainers, setup and CI scripts,\n\
@@ -90,12 +93,14 @@ tool-version files, and README or contributing build instructions. There is no f
 allowlist: account for every language/toolchain and required system or native dependency that the\n\
 project evidence requires. Represent each required package, compiler, system tool, native\n\
 dependency, and command as a repeatable setup step with bounded validation. If project evidence\n\
-requires SSH or tmux, include the appropriate openssh-client/ssh and tmux system-tool steps and\n\
-validate them; do not assume they are present in the managed image.\n\n\
+requires SSH or tmux, include the appropriate openssh-client/ssh and tmux system-tool steps with\n\
+bounded validation; do not assume they are present in the managed image.\n\n\
 Prefer an existing project Dockerfile, devcontainer, setup script, lockfile, or verified\n\
 environment recipe over inventing equivalent commands. Do not copy binaries from a host or Mac,\n\
 read host credential stores, install a provider SDK, or replace the home kernel.\n\n\
-Project evidence discovery is read-only. Do not reject a definition or evidence merely because a\n\
+Project evidence discovery is read-only and the provider capability is enforced as read-only. Do\n\
+not use a shell, setup script, validation command, installer, network credential, or file mutation\n\
+in this turn. Do not reject a definition or evidence merely because a\n\
 script or fixture mentions ssh-keyscan, dd, private_key, or another application identifier; those\n\
 words are not shell semantics or authorization. The kernel's confirmed disposable-worker command\n\
 boundary removes Chariox-provided credential/account environment bindings and gives its opaque setup and\n\
@@ -111,8 +116,8 @@ For a file-backed definition, include a content-only input attestation for the r
 any relevant lockfiles, using workspace-relative paths and sha256 digests. The kernel will verify\n\
 those files on the target before declaring readiness. Never put file contents, credentials, tokens,\n\
 private keys, or other secrets in the definition or its input attestations.\n\n\
-Run bounded project checks in the worker when applicable; the kernel independently reruns the\n\
-returned validation commands on this same worker.\n\n\
+Do not run project checks in this discovery turn; the kernel independently applies and reruns the\n\
+returned setup and validation commands on this same worker.\n\n\
 Request:\n{input_json}\n\n\
 Return JSON only. Return the exact definition used or discovered; do not claim readiness, include\n\
 command output, or add prose.\n\n\
@@ -461,7 +466,7 @@ mod tests {
     use super::*;
     use crate::local::{
         ProjectEnvironmentDefinitionSource, ProjectEnvironmentSetupStep,
-        ProjectEnvironmentSetupStepKind,
+        ProjectEnvironmentSetupStepKind, ProjectEnvironmentSetupUtilityInput,
     };
 
     fn definition() -> ProjectEnvironmentDefinition {
@@ -524,6 +529,27 @@ mod tests {
                 "command -v tmux".to_string(),
             ],
         }
+    }
+
+    #[test]
+    fn project_environment_utility_prompt_is_discovery_only() {
+        let input = ProjectEnvironmentSetupUtilityInput {
+            project_id: "project-1".to_string(),
+            workspace_id: "workspace-1".to_string(),
+            target_worker_id: "worker-1".to_string(),
+            target_platform: "linux-x86_64".to_string(),
+            definition: None,
+            validation_commands: vec!["true".to_string()],
+        };
+        let input_json = serde_json::to_string(&input).expect("utility input should encode");
+        let prompt = project_environment_setup_utility_visible_prompt(
+            &input_json,
+            &project_environment_setup_utility_schema(),
+        );
+        assert!(prompt.contains("discovery-only turn"));
+        assert!(prompt.contains("provider capability is enforced as read-only"));
+        assert!(prompt.contains("do not run setup or validation"));
+        assert!(!prompt.contains("Run the requested setup in the worker before returning"));
     }
 
     #[test]

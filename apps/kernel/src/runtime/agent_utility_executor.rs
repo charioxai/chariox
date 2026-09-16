@@ -11,7 +11,7 @@ use crate::local::{
     ProjectEnvironmentSetupUtilityInput, RunAgentUtilityRequest, SemanticRecallSearchUtilityInput,
     WorkspaceCommitMessageUtilityInput,
 };
-use crate::provider::{ProviderRunState, RuntimeProviderRun};
+use crate::provider::{ProviderRunState, ProviderUtilityExecutionPolicy, RuntimeProviderRun};
 use crate::runtime::history_requests::{
     knn_semantic_recall_search, semantic_recall_request_from_utility_input,
 };
@@ -242,6 +242,7 @@ async fn run_workspace_commit_message_utility(
         provider_run,
         prompt.into(),
         "run workspace commit message utility",
+        ProviderUtilityExecutionPolicy::ExistingRun,
     )
     .await
 }
@@ -268,6 +269,7 @@ async fn run_semantic_recall_search_utility(
         provider_run,
         prompt.into(),
         "run semantic recall search utility",
+        ProviderUtilityExecutionPolicy::ExistingRun,
     )
     .await?;
     let parsed = parse_semantic_recall_search_utility_output(&output, &candidates)?;
@@ -289,6 +291,7 @@ async fn run_project_environment_setup_utility(
         provider_run,
         prompt.into(),
         "run project environment setup utility",
+        ProviderUtilityExecutionPolicy::ReadOnlyDiscovery,
     )
     .await?;
     let definition = if allow_definition_revision {
@@ -320,7 +323,18 @@ async fn run_provider_utility_prompt(
     provider_run: RuntimeProviderRun,
     prompt: AgentUtilityPromptParts,
     operation: &'static str,
+    policy: ProviderUtilityExecutionPolicy,
 ) -> Result<String, DaemonError> {
+    let provider_run = if policy.is_read_only_discovery() {
+        let mut read_only_run = provider_run;
+        read_only_run.set_execution_config(
+            crate::provider::AgentExecutionMode::Plan,
+            crate::provider::AgentPermissionLevel::Required,
+        );
+        read_only_run
+    } else {
+        provider_run
+    };
     if crate::provider::provider_run_uses_runtime_structured_utility_prompt(&provider_run) {
         return runtime_state
             .run_structured_provider_utility_prompt(
@@ -328,6 +342,7 @@ async fn run_provider_utility_prompt(
                 prompt.visible_user_prompt,
                 prompt.hidden_system_context,
                 AGENT_UTILITY_TIMEOUT,
+                policy,
             )
             .await;
     }
@@ -338,6 +353,7 @@ async fn run_provider_utility_prompt(
             &prompt.hidden_system_context,
             AGENT_UTILITY_TIMEOUT,
             operation,
+            policy,
         )
     })
     .await

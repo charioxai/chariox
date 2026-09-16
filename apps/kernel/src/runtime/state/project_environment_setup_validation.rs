@@ -64,54 +64,75 @@ const WORKER_AUTOMATIC_CREDENTIAL_ENV_NAMES: &[&str] = &[
     "SSH_KNOWN_HOSTS",
 ];
 
-pub(super) struct WorkerCredentialHome {
+/// Durable per-project/per-worker HOME for setup and validation commands.
+///
+/// This is intentionally outside the worktree so setup does not add generated
+/// user-tool state to the repository, but it is stable for the lifetime of the
+/// worker and is reused by every apply/validate call for this project. It must
+/// not be deleted at the end of one command: user-scoped rustup/cargo,
+/// Python, npm, and other ordinary project tools may place their installed
+/// state below HOME.
+pub(super) struct WorkerPreparationHome {
     path: PathBuf,
 }
 
-impl WorkerCredentialHome {
-    pub(super) fn new() -> Result<Self, DaemonError> {
-        let temp_root = std::env::temp_dir();
-        for attempt in 0..16_u8 {
-            let path = temp_root.join(format!(
-                "chariox-project-environment-home-{}-{}-{attempt}",
-                std::process::id(),
-                crate::session::unix_epoch_ms()
-            ));
-            match std::fs::create_dir(&path) {
-                Ok(()) => {
-                    #[cfg(unix)]
-                    if let Err(error) = std::fs::set_permissions(
-                        &path,
-                        std::os::unix::fs::PermissionsExt::from_mode(0o700),
-                    ) {
-                        let _ = std::fs::remove_dir_all(&path);
-                        return Err(setup_error(&format!(
-                            "worker credential home permissions could not be secured: {error}"
-                        )));
-                    }
-                    return Ok(Self { path });
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => {
-                    return Err(setup_error(&format!(
-                        "worker credential home could not be created: {error}"
-                    )));
-                }
+impl WorkerPreparationHome {
+    pub(super) fn for_project_worker(
+        workspace_root: &Path,
+        project_id: &str,
+        worker_id: &str,
+    ) -> Result<Self, DaemonError> {
+        let state_root = workspace_root
+            .parent()
+            .ok_or_else(|| setup_error("worker worktree has no durable state parent"))?
+            .join(".chariox-project-environment");
+        let mut digest = Sha256::new();
+        digest.update(workspace_root.as_os_str().to_string_lossy().as_bytes());
+        digest.update([0]);
+        digest.update(project_id.as_bytes());
+        digest.update([0]);
+        digest.update(worker_id.as_bytes());
+        let path = state_root.join(format!("{:x}", digest.finalize()));
+
+        std::fs::create_dir_all(&state_root).map_err(|error| {
+            setup_error(&format!(
+                "durable worker preparation state could not be created: {error}"
+            ))
+        })?;
+        std::fs::create_dir_all(&path).map_err(|error| {
+            setup_error(&format!(
+                "durable worker preparation HOME could not be created: {error}"
+            ))
+        })?;
+        for directory in [&state_root, &path] {
+            let metadata = std::fs::symlink_metadata(directory).map_err(|error| {
+                setup_error(&format!(
+                    "durable worker preparation state could not be inspected: {error}"
+                ))
+            })?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(setup_error(
+                    "durable worker preparation state must be real directories",
+                ));
             }
         }
-        Err(setup_error(
-            "worker credential home could not be allocated without a path collision",
-        ))
+        #[cfg(unix)]
+        for directory in [&state_root, &path] {
+            std::fs::set_permissions(
+                directory,
+                std::os::unix::fs::PermissionsExt::from_mode(0o700),
+            )
+            .map_err(|error| {
+                setup_error(&format!(
+                    "durable worker preparation HOME permissions could not be secured: {error}"
+                ))
+            })?;
+        }
+        Ok(Self { path })
     }
 
     pub(super) fn path(&self) -> &Path {
         &self.path
-    }
-}
-
-impl Drop for WorkerCredentialHome {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
     }
 }
 
@@ -169,15 +190,16 @@ pub(super) fn worker_validation_environment(
 
 pub(super) fn worker_validation_environment_with_home(
     provider_run: &RuntimeProviderRun,
-    credential_home: Option<&Path>,
+    preparation_home: Option<&Path>,
 ) -> BTreeMap<String, String> {
     // This is the credential boundary for both recipe application and
     // validation. Keep ordinary toolchain/project environment values, remove
-    // Chariox-provided credential/account paths, and use an empty HOME for the
-    // command lifetime. The command remains opaque: project tools and scripts
-    // are not parsed, allowlisted, or blocked by shell substrings. This
-    // boundary protects only credentials automatically supplied by Chariox;
-    // it does not claim to sandbox credentials a project provides itself.
+    // Chariox-provided credential/account paths, and use a durable preparation
+    // HOME for this project/worker. The command remains opaque: project tools
+    // and scripts are not parsed, allowlisted, or blocked by shell substrings.
+    // This boundary protects only credentials automatically supplied by
+    // Chariox; it does not claim to sandbox credentials a project provides
+    // itself.
     let mut removed = BTreeSet::new();
     removed.extend(
         crate::provider::managed_provider_control_env_remove()
@@ -197,10 +219,10 @@ pub(super) fn worker_validation_environment_with_home(
             environment.insert(name.clone(), value.clone());
         }
     }
-    if let Some(credential_home) = credential_home {
+    if let Some(preparation_home) = preparation_home {
         environment.insert(
             "HOME".to_string(),
-            credential_home.display().to_string(),
+            preparation_home.display().to_string(),
         );
     }
     environment
@@ -494,6 +516,91 @@ mod tests {
             "an in-flight command must be interrupted by the total budget: {:?}",
             started.elapsed()
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn durable_preparation_home_preserves_install_like_state_across_apply_validation_and_reuse() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-project-environment-durable-home-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("durable-home workspace should exist");
+        let request = crate::provider::LaunchProviderRequest::new(
+            "session-1",
+            "codex",
+            "codex",
+            "default",
+            "default",
+        );
+        let run = crate::provider::RuntimeProviderRun::new(
+            "provider-run-durable-home",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "worker-provider".to_string(),
+                pty_target: None,
+                pty_program: Some("/bin/sh".to_string()),
+                pty_args: Vec::new(),
+                pty_env: BTreeMap::from([("PATH".to_string(), "/usr/bin:/bin".to_string())]),
+                pty_env_remove: Vec::new(),
+                working_directory: Some(workspace.clone()),
+                structured_endpoint: None,
+            },
+        );
+
+        let preparation_home =
+            WorkerPreparationHome::for_project_worker(&workspace, "project-1", "worker-1")
+                .expect("durable preparation HOME should be created");
+        let apply_environment =
+            worker_validation_environment_with_home(&run, Some(preparation_home.path()));
+        let installed = run_worker_setup_steps(
+            &[
+                "set -eu; mkdir -p \"$HOME/.local/bin\"".to_string(),
+                "printf '%s\\n' project-tool > \"$HOME/.local/bin/project-tool\"; chmod 700 \"$HOME/.local/bin/project-tool\"".to_string(),
+            ],
+            &workspace,
+            &apply_environment,
+            || false,
+        )
+        .expect("install-like setup should execute through the worker boundary");
+        assert!(installed);
+
+        let validation_home =
+            WorkerPreparationHome::for_project_worker(&workspace, "project-1", "worker-1")
+                .expect("validation should reuse durable preparation HOME");
+        assert_eq!(validation_home.path(), preparation_home.path());
+        let validation_environment =
+            worker_validation_environment_with_home(&run, Some(validation_home.path()));
+        let validation = run_worker_validation_command(
+            "test -x \"$HOME/.local/bin/project-tool\" && test \"$(cat \"$HOME/.local/bin/project-tool\")\" = project-tool",
+            &workspace,
+            &validation_environment,
+            || false,
+            None,
+        )
+        .expect("validation should see the install-like HOME artifact");
+        assert_eq!(validation.0, 0);
+
+        drop(preparation_home);
+        drop(validation_home);
+        let post_ready_home =
+            WorkerPreparationHome::for_project_worker(&workspace, "project-1", "worker-1")
+                .expect("post-ready reuse should retain durable preparation HOME");
+        let post_ready_environment =
+            worker_validation_environment_with_home(&run, Some(post_ready_home.path()));
+        let post_ready = run_worker_validation_command(
+            "test -x \"$HOME/.local/bin/project-tool\" && test \"$(cat \"$HOME/.local/bin/project-tool\")\" = project-tool",
+            &workspace,
+            &post_ready_environment,
+            || false,
+            None,
+        )
+        .expect("post-ready validation should reuse the installed tool");
+        assert_eq!(post_ready.0, 0);
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -260,6 +260,7 @@ impl ProviderProcessService {
         visible_user_prompt: &str,
         hidden_system_context: &str,
         timeout: std::time::Duration,
+        policy: super::super::ProviderUtilityExecutionPolicy,
     ) -> Result<String, DaemonError> {
         if !self.run_uses_structured_prompt_io(run) {
             return Err(DaemonError::LocalTransport {
@@ -278,7 +279,7 @@ impl ProviderProcessService {
             PromptAssemblyMode::UtilityTurn,
         )?;
         self.run_actor_mailbox
-            .run_utility(run.id().to_string(), run.clone(), envelope, timeout)
+            .run_utility(run.id().to_string(), run.clone(), envelope, timeout, policy)
     }
 
     pub(crate) fn enqueue_structured_prompt_abort(
