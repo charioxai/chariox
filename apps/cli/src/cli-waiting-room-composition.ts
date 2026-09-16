@@ -75,7 +75,11 @@ import type {
 import {
   clearStagedWaitingRoomWorktreeSelection,
 } from "./waiting-room-worktrees.js"
-import { existingProjectSelectionId, type SessionProjectSelection } from "./waiting-room-projects.js"
+import {
+  existingProjectSelectionId,
+  NEW_PROJECT_SELECTION_ID,
+  type SessionProjectSelection,
+} from "./waiting-room-projects.js"
 import {
   managedEnvironmentMachineRef,
 } from "./waiting-room-managed-environments.js"
@@ -581,7 +585,9 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
         selectedKernelRef: prepared.environment.runtimeKernelId ?? "",
         projectSelectionId: projectSelection.kind === "existing"
           ? existingProjectSelectionId(projectSelection.project_id)
-          : "default",
+          : projectSelection.kind === "new"
+            ? NEW_PROJECT_SELECTION_ID
+            : "default",
         worktreeSelectionId: `existing:${prepared.worktreePath}`,
         sliceSelectionId: "none",
       })
