@@ -165,10 +165,10 @@ export type CliWaitingRoomCompositionDeps = {
 }
 
 export function projectSelectionForManagedSession(
-  _requested: WaitingRoomLaunchConfig["projectSelection"],
+  requested: WaitingRoomLaunchConfig["projectSelection"],
   prepared: SessionProjectSelection,
 ): SessionProjectSelection {
-  return prepared
+  return requested?.kind === "new" ? requested : prepared
 }
 
 export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionDeps) {
