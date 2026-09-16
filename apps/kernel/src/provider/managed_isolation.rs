@@ -10,6 +10,9 @@ use crate::error::DaemonError;
 use super::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun};
 
 pub(crate) const MANAGED_PROVIDER_ISOLATION_ENV: &str = "CHARIOX_MANAGED_PROVIDER_ISOLATION";
+pub(crate) const MANAGED_SLICE_SERVICE_ROOT_ENV: &str = "CHARIOX_MANAGED_SLICE_SERVICE_ROOT";
+pub(crate) const MANAGED_SLICE_PUBLICATION_ROOT_ENV: &str =
+    "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT";
 #[cfg(any(target_os = "linux", test))]
 const CLAUDE_SANDBOX_ENV: &str = "IS_SANDBOX";
 #[cfg(target_os = "linux")]
@@ -49,6 +52,8 @@ const CONTROL_ENVIRONMENT_NAMES: &[&str] = &[
     "CHARIOX_MANAGED_PROVIDER_ISOLATION",
     "CHARIOX_MANAGED_VAULT_PATH",
     "CHARIOX_SLICE_ROOT",
+    MANAGED_SLICE_SERVICE_ROOT_ENV,
+    MANAGED_SLICE_PUBLICATION_ROOT_ENV,
     "CHARIOX_MANAGED_RELEASE_SIGNATURE",
     "CHARIOX_MANAGED_RELEASE_PUBLIC_KEY",
 ];
@@ -210,18 +215,30 @@ fn managed_private_namespace_roots(process_temp_root: &Path) -> Vec<PathBuf> {
 }
 
 #[cfg(any(target_os = "linux", test))]
+fn managed_configured_slice_service_root() -> Option<PathBuf> {
+    let configured = std::env::var_os(MANAGED_SLICE_SERVICE_ROOT_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)?;
+    (configured.is_absolute() && configured != Path::new("/")).then_some(configured)
+}
+
+#[cfg(any(target_os = "linux", test))]
 fn managed_configured_slice_publication_root() -> Option<PathBuf> {
+    if let Some(configured) = std::env::var_os(MANAGED_SLICE_PUBLICATION_ROOT_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        return (configured.is_absolute() && configured != Path::new("/")).then_some(configured);
+    }
+
+    // Keep the known host default safe if a pre-contract managed supervisor
+    // starts this kernel without the explicit publication invariant. New
+    // relocated deployments must set MANAGED_SLICE_PUBLICATION_ROOT_ENV;
+    // transport socket topology is deliberately not policy here.
     let slice_root = std::env::var_os("CHARIOX_SLICE_ROOT")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)?;
-    let broker_socket = std::env::var_os("CHARIOX_SLICE_DOCKER_BROKER_SOCKET")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)?;
-    if !slice_root.is_absolute() || !broker_socket.is_absolute() {
-        return None;
-    }
-    let broker_share_root = broker_socket.parent()?.parent()?.parent()?.to_path_buf();
-    (slice_root.parent() == Some(broker_share_root.as_path())).then_some(slice_root)
+    (slice_root == Path::new("/var/lib/chariox-slice-share/slices")).then_some(slice_root)
 }
 
 #[cfg(target_os = "linux")]
@@ -259,14 +276,20 @@ fn managed_protected_namespace_directories(extra: &[PathBuf]) -> Vec<PathBuf> {
         }
     }
 
-    if let Some(publication_root) = managed_configured_slice_publication_root() {
-        paths.push(publication_root);
+    for boundary in [
+        managed_configured_slice_service_root(),
+        managed_configured_slice_publication_root(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        paths.push(boundary);
     }
 
     // Configured support roots are not a provider filesystem allowlist. The
     // ordinary root remains mounted, while trusted helper code is mounted
-    // read-only below. The host's managed publication root is handled above
-    // as service state so only selected publication children are re-exposed.
+    // read-only below. The managed slice service boundary is handled above as
+    // service state so only selected publication children are re-exposed.
     for name in [
         "CHARIOX_CAPABILITY_ISOLATION_ROOT",
         "CHARIOX_MANAGED_PROVIDER_HOME",
@@ -1680,6 +1703,8 @@ mod tests {
         let _env = crate::env_lock::lock();
         let previous_slice_root = std::env::var_os("CHARIOX_SLICE_ROOT");
         let previous_broker = std::env::var_os("CHARIOX_SLICE_DOCKER_BROKER_SOCKET");
+        let previous_service_root = std::env::var_os(MANAGED_SLICE_SERVICE_ROOT_ENV);
+        let previous_publication_root = std::env::var_os(MANAGED_SLICE_PUBLICATION_ROOT_ENV);
         let root = std::env::temp_dir().join(format!(
             "chariox-managed-relocated-slice-boundary-{}-{}",
             std::process::id(),
@@ -1687,10 +1712,13 @@ mod tests {
         ));
         let share_root = root.join("relocated-share");
         let publication_root = share_root.join("configured-publications");
-        let broker_socket = share_root.join(".private-control/control/control.sock");
         std::fs::create_dir_all(&publication_root).expect("configured publication root");
         std::env::set_var("CHARIOX_SLICE_ROOT", &publication_root);
-        std::env::set_var("CHARIOX_SLICE_DOCKER_BROKER_SOCKET", &broker_socket);
+        std::env::set_var(MANAGED_SLICE_SERVICE_ROOT_ENV, &share_root);
+        std::env::set_var(MANAGED_SLICE_PUBLICATION_ROOT_ENV, &publication_root);
+        // This is the environment after the supervisor has handed off the
+        // broker FD. Publication policy must not depend on the transport.
+        std::env::remove_var("CHARIOX_SLICE_DOCKER_BROKER_SOCKET");
 
         let protected = managed_protected_namespace_directories(&[]);
         let trusted = managed_trusted_read_only_paths()
@@ -1699,11 +1727,20 @@ mod tests {
 
         restore_env("CHARIOX_SLICE_ROOT", previous_slice_root);
         restore_env("CHARIOX_SLICE_DOCKER_BROKER_SOCKET", previous_broker);
+        restore_env(MANAGED_SLICE_SERVICE_ROOT_ENV, previous_service_root);
+        restore_env(
+            MANAGED_SLICE_PUBLICATION_ROOT_ENV,
+            previous_publication_root,
+        );
 
+        let service = share_root
+            .canonicalize()
+            .expect("configured service root should canonicalize");
         let publication = publication_root
             .canonicalize()
             .expect("configured publication root should canonicalize");
-        assert!(protected.contains(&publication));
+        assert!(protected.contains(&service));
+        assert!(publication.starts_with(&service));
         assert!(!trusted.contains(&publication));
         assert_eq!(detected, Some(publication.clone()));
         let _ = std::fs::remove_dir_all(root);
@@ -1894,6 +1931,8 @@ mod tests {
         let _env = crate::env_lock::lock();
         let previous_slice_root = std::env::var_os("CHARIOX_SLICE_ROOT");
         let previous_broker = std::env::var_os("CHARIOX_SLICE_DOCKER_BROKER_SOCKET");
+        let previous_service_root = std::env::var_os(MANAGED_SLICE_SERVICE_ROOT_ENV);
+        let previous_publication_root = std::env::var_os(MANAGED_SLICE_PUBLICATION_ROOT_ENV);
         let root = std::env::temp_dir().join(format!(
             "chariox-managed-slice-publication-bwrap-probe-{}-{}",
             std::process::id(),
@@ -1901,7 +1940,6 @@ mod tests {
         ));
         let share_root = root.join("relocated-share");
         let publication = share_root.join("configured-publications");
-        let broker_socket = share_root.join(".private-control/control/control.sock");
         let selected = publication.join("selected");
         let sibling = publication.join("sibling");
         std::fs::create_dir_all(&selected).expect("selected publication should exist");
@@ -1911,7 +1949,9 @@ mod tests {
         std::fs::write(sibling.join("sibling.txt"), "sibling\n")
             .expect("sibling marker should exist");
         std::env::set_var("CHARIOX_SLICE_ROOT", &publication);
-        std::env::set_var("CHARIOX_SLICE_DOCKER_BROKER_SOCKET", &broker_socket);
+        std::env::set_var(MANAGED_SLICE_SERVICE_ROOT_ENV, &share_root);
+        std::env::set_var(MANAGED_SLICE_PUBLICATION_ROOT_ENV, &publication);
+        std::env::remove_var("CHARIOX_SLICE_DOCKER_BROKER_SOCKET");
 
         let request = LaunchProviderRequest::new(
             "managed-slice-publication-probe",
@@ -1941,6 +1981,11 @@ mod tests {
             );
             restore_env("CHARIOX_SLICE_ROOT", previous_slice_root);
             restore_env("CHARIOX_SLICE_DOCKER_BROKER_SOCKET", previous_broker);
+            restore_env(MANAGED_SLICE_SERVICE_ROOT_ENV, previous_service_root);
+            restore_env(
+                MANAGED_SLICE_PUBLICATION_ROOT_ENV,
+                previous_publication_root,
+            );
             let _ = std::fs::remove_dir_all(root);
             return;
         }
@@ -1957,7 +2002,7 @@ mod tests {
             window
                 == [
                     "--tmpfs",
-                    publication.to_str().expect("publication should be utf8"),
+                    share_root.to_str().expect("service root should be utf8"),
                 ]
         }));
         assert!(args.windows(3).any(|window| {
@@ -1989,6 +2034,11 @@ mod tests {
         ]);
         restore_env("CHARIOX_SLICE_ROOT", previous_slice_root);
         restore_env("CHARIOX_SLICE_DOCKER_BROKER_SOCKET", previous_broker);
+        restore_env(MANAGED_SLICE_SERVICE_ROOT_ENV, previous_service_root);
+        restore_env(
+            MANAGED_SLICE_PUBLICATION_ROOT_ENV,
+            previous_publication_root,
+        );
         let output = match Command::new(bwrap).args(args).output() {
             Ok(output) => output,
             Err(error) => {
@@ -2356,6 +2406,8 @@ mod tests {
             MANAGED_WORKSPACE_ROOT_COUNT_ENV,
             "CHARIOX_MANAGED_WORKSPACE_ROOT_0",
             "CHARIOX_MANAGED_WORKSPACE_ROOT_1",
+            MANAGED_SLICE_SERVICE_ROOT_ENV,
+            MANAGED_SLICE_PUBLICATION_ROOT_ENV,
             "GIT_CONFIG_COUNT",
             "GIT_CONFIG_PARAMETERS",
             "GIT_CONFIG_KEY_17",
