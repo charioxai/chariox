@@ -170,9 +170,11 @@ export type CliWaitingRoomCompositionDeps = {
 
 export function projectSelectionForManagedSession(
   requested: WaitingRoomLaunchConfig["projectSelection"],
+  managedEnvironmentKind: NonNullable<WaitingRoomLaunchConfig["managedEnvironment"]>["kind"],
   prepared: SessionProjectSelection,
 ): SessionProjectSelection {
-  return requested?.kind === "new" ? requested : prepared
+  // The managed controller returns `prepared` only after ready-state and target-binding validation.
+  return managedEnvironmentKind === "existing" && requested?.kind === "new" ? requested : prepared
 }
 
 export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionDeps) {
@@ -576,6 +578,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       } = launch
       const projectSelection = projectSelectionForManagedSession(
         launch.projectSelection,
+        selection.kind,
         prepared.projectSelection,
       )
       expectedMachineRef = managedEnvironmentMachineRef(prepared.environment.environmentId)

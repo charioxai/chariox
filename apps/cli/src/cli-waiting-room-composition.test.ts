@@ -40,6 +40,7 @@ test("managed session preparation preserves an explicit New project selection", 
   assert.deepEqual(
     projectSelectionForManagedSession(
       { kind: "new" },
+      "existing",
       { kind: "existing", project_id: "persisted-project" },
     ),
     { kind: "new" },
@@ -47,8 +48,17 @@ test("managed session preparation preserves an explicit New project selection", 
   assert.deepEqual(
     projectSelectionForManagedSession(
       { kind: "default" },
+      "existing",
       { kind: "existing", project_id: "persisted-project" },
     ),
     { kind: "existing", project_id: "persisted-project" },
+  )
+  assert.deepEqual(
+    projectSelectionForManagedSession(
+      { kind: "new" },
+      "new",
+      { kind: "default" },
+    ),
+    { kind: "default" },
   )
 })
