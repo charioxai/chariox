@@ -680,13 +680,20 @@ fn managed_namespace_args(
     ];
     // The ordinary root remains available so providers retain the host's
     // normal filesystem-permission behavior. The kernel's process temp roots
-    // are the exception: every managed provider runs with the same outer
-    // service uid, so a shared /tmp would let sibling runs read or mutate
-    // private runtime files despite their 0700/0600 modes. Current-run
-    // runtime and prompt-attachment directories are rebound below.
-    for path in ["/tmp", "/var/tmp"] {
-        let path = Path::new(path);
-        if path_exists(path) {
+    // (including the configured std::env::temp_dir()) are the exception:
+    // every managed provider runs with the same outer service uid, so shared
+    // temp roots would let sibling runs read or mutate private runtime files
+    // despite their 0700/0600 modes. Current-run runtime and prompt-
+    // attachment directories are rebound below.
+    let mut private_temp_roots = vec![
+        PathBuf::from("/tmp"),
+        PathBuf::from("/var/tmp"),
+        std::env::temp_dir(),
+    ];
+    private_temp_roots.sort();
+    private_temp_roots.dedup();
+    for path in private_temp_roots {
+        if path.is_absolute() && path != Path::new("/") && path_exists(&path) {
             args.extend(["--tmpfs".to_string(), path.display().to_string()]);
         }
     }
@@ -1178,6 +1185,42 @@ mod tests {
                 "/run/systemd/resolve",
             ]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn namespace_args_mask_the_actual_process_temp_root() {
+        let _env = crate::env_lock::lock();
+        let previous_tmpdir = std::env::var_os("TMPDIR");
+        let temp_root = std::env::temp_dir().join(format!(
+            "chariox-managed-isolation-process-temp-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&temp_root).expect("custom process temp root should exist");
+        std::env::set_var("TMPDIR", &temp_root);
+        let process_temp_root = std::env::temp_dir();
+        let (args, _) = managed_namespace_args(
+            None,
+            |path| {
+                path == Path::new("/tmp")
+                    || path == Path::new("/var/tmp")
+                    || path == process_temp_root
+            },
+            None,
+        );
+
+        restore_env("TMPDIR", previous_tmpdir);
+        let _ = std::fs::remove_dir_all(&temp_root);
+
+        assert!(args.windows(2).any(|args| {
+            args == [
+                "--tmpfs",
+                process_temp_root
+                    .to_str()
+                    .expect("temp root should be utf8"),
+            ]
+        }));
     }
 
     #[test]
