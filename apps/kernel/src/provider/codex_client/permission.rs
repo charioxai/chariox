@@ -14,6 +14,27 @@ pub(super) struct CodexPermissionPolicy {
     pub(super) config_overrides: BTreeMap<String, Value>,
 }
 
+pub(super) fn read_only_codex_permission_grant(requested_permissions: &Value) -> Value {
+    let Some(requested) = requested_permissions.as_object() else {
+        return json!({});
+    };
+    let mut granted = serde_json::Map::new();
+    if let Some(network) = requested.get("network") {
+        granted.insert("network".to_string(), network.clone());
+    }
+    if let Some(read) = requested
+        .get("fileSystem")
+        .and_then(Value::as_object)
+        .and_then(|file_system| file_system.get("read"))
+    {
+        granted.insert(
+            "fileSystem".to_string(),
+            json!({ "read": read.clone() }),
+        );
+    }
+    Value::Object(granted)
+}
+
 pub(super) fn codex_permission_policy(
     write_access_mode: ProviderWriteAccessMode,
     execution_mode: AgentExecutionMode,

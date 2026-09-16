@@ -47,6 +47,10 @@ pub struct CodexClient {
     provider_config_overrides: BTreeMap<String, Value>,
     write_access_mode: ProviderWriteAccessMode,
     workspace_live_sync_roots: Vec<PathBuf>,
+    /// Discovery utility turns use the tracked launch mode for Codex's
+    /// read-only sandbox, but must not inherit its ordinary permission reply
+    /// policy. This flag is intentionally client-local and never serialized.
+    read_only_discovery_permissions: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +76,7 @@ impl CodexClient {
             provider_config_overrides: BTreeMap::new(),
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
             workspace_live_sync_roots: Vec::new(),
+            read_only_discovery_permissions: false,
         })
     }
 
@@ -120,6 +125,11 @@ impl CodexClient {
 
     pub fn with_workspace_live_sync_roots(mut self, roots: &[PathBuf]) -> Self {
         self.workspace_live_sync_roots = roots.to_vec();
+        self
+    }
+
+    pub(crate) fn with_read_only_discovery_permissions(mut self) -> Self {
+        self.read_only_discovery_permissions = true;
         self
     }
 
@@ -507,6 +517,42 @@ mod tests {
             client.permissions_approval_response(&message),
             json!({
                 "permissions": {},
+                "scope": "turn"
+            })
+        );
+    }
+
+    #[test]
+    fn read_only_discovery_client_denies_codex_filesystem_write_requests() {
+        let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
+            .expect("client should construct")
+            .with_write_access_mode(ProviderWriteAccessMode::WorkspaceLiveSyncTracked)
+            .with_read_only_discovery_permissions();
+        let message = JsonRpcMessage {
+            id: Some(json!(1)),
+            method: Some("item/permissions/requestApproval".to_string()),
+            params: Some(json!({
+                "permissions": {
+                    "network": true,
+                    "fileSystem": {
+                        "read": ["/repo/selected"],
+                        "write": ["/repo/selected/output"]
+                    }
+                }
+            })),
+            result: None,
+            error: None,
+        };
+
+        assert_eq!(
+            client.permissions_approval_response(&message),
+            json!({
+                "permissions": {
+                    "network": true,
+                    "fileSystem": {
+                        "read": ["/repo/selected"]
+                    }
+                },
                 "scope": "turn"
             })
         );

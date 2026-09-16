@@ -34,7 +34,9 @@ pub fn run_codex_utility_prompt(
         .to_string();
     let client = codex_client_for_run(run, &endpoint, None)?;
     let client = if policy.is_read_only_discovery() {
-        client.with_write_access_mode(ProviderWriteAccessMode::WorkspaceLiveSyncTracked)
+        client
+            .with_write_access_mode(ProviderWriteAccessMode::WorkspaceLiveSyncTracked)
+            .with_read_only_discovery_permissions()
     } else {
         client
     };

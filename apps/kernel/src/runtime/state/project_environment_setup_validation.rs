@@ -239,9 +239,12 @@ pub(super) fn worker_validation_environment_with_home_and_definition(
             .get("PATH")
             .map(String::as_str)
             .unwrap_or_default();
+        let base_path = provider_run
+            .preparation_base_path()
+            .unwrap_or(current_path);
         environment.insert(
             "PATH".to_string(),
-            worker_preparation_path(preparation_home, workspace_root, current_path, definition),
+            worker_preparation_path(preparation_home, workspace_root, base_path, definition),
         );
     }
     environment
@@ -743,6 +746,137 @@ mod tests {
             ]
         );
         assert_eq!(entries.last(), Some(&PathBuf::from("/usr/bin")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worker_path_rebuild_drops_removed_definition_entry_before_validation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "chariox-project-environment-path-rebuild-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let workspace = root.join("workspace");
+        let preparation_home = root.join("preparation-home");
+        let old_bin = preparation_home.join("old/bin");
+        let fresh_bin = workspace.join(".venv/bin");
+        std::fs::create_dir_all(&old_bin).expect("old toolchain directory should exist");
+        std::fs::create_dir_all(&fresh_bin).expect("fresh toolchain directory should exist");
+
+        let old_tool = old_bin.join("project-tool");
+        let fresh_tool = fresh_bin.join("project-tool");
+        std::fs::write(&old_tool, b"#!/bin/sh\nprintf '%s' old\n")
+            .expect("old tool should exist");
+        std::fs::set_permissions(&old_tool, std::fs::Permissions::from_mode(0o755))
+            .expect("old tool should be executable");
+        std::fs::write(&fresh_tool, b"#!/bin/sh\nprintf '%s' fresh\n")
+            .expect("fresh tool should exist");
+        std::fs::set_permissions(&fresh_tool, std::fs::Permissions::from_mode(0o755))
+            .expect("fresh tool should be executable");
+
+        let request = crate::provider::LaunchProviderRequest::new(
+            "session-path-rebuild",
+            "codex",
+            "codex",
+            "default",
+            "default",
+        );
+        let run = crate::provider::RuntimeProviderRun::new(
+            "provider-run-path-rebuild",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "path-rebuild-test".to_string(),
+                pty_target: None,
+                pty_program: Some("/bin/sh".to_string()),
+                pty_args: Vec::new(),
+                pty_env: BTreeMap::from([("PATH".to_string(), "/usr/bin:/bin".to_string())]),
+                pty_env_remove: Vec::new(),
+                working_directory: Some(workspace.clone()),
+                structured_endpoint: None,
+            },
+        );
+        let old_definition = ProjectEnvironmentDefinition {
+            schema_version: 1,
+            origin: ProjectEnvironmentDefinitionOrigin::UserAuthored,
+            source: ProjectEnvironmentDefinitionSource::Commands,
+            target_platform: "linux-x86_64".to_string(),
+            source_path: None,
+            inputs: Vec::new(),
+            path_entries: vec![crate::local::ProjectEnvironmentPathEntry {
+                base: crate::local::ProjectEnvironmentPathBase::PreparationHome,
+                path: "old/bin".to_string(),
+            }],
+            setup_steps: Vec::new(),
+            validation_commands: vec!["true".to_string()],
+        };
+        let old_environment = worker_validation_environment_with_home_and_definition(
+            &run,
+            Some(&preparation_home),
+            Some(&workspace),
+            Some(&old_definition),
+        );
+        let old_path = old_environment
+            .get("PATH")
+            .expect("old definition environment should have PATH")
+            .clone();
+        assert!(
+            std::env::split_paths(std::ffi::OsStr::new(&old_path)).any(|entry| entry == old_bin),
+            "old definition should initially project its toolchain directory"
+        );
+
+        let mut prepared_run = run.clone();
+        prepared_run
+            .set_preparation_environment(
+                old_environment
+                    .get("HOME")
+                    .expect("old definition environment should have HOME")
+                    .clone(),
+                old_path,
+            )
+            .expect("old prepared environment should bind");
+        let fresh_definition = ProjectEnvironmentDefinition {
+            path_entries: vec![crate::local::ProjectEnvironmentPathEntry {
+                base: crate::local::ProjectEnvironmentPathBase::Workspace,
+                path: ".venv/bin".to_string(),
+            }],
+            ..old_definition
+        };
+        let fresh_environment = worker_validation_environment_with_home_and_definition(
+            &prepared_run,
+            Some(&preparation_home),
+            Some(&workspace),
+            Some(&fresh_definition),
+        );
+        let fresh_path = fresh_environment
+            .get("PATH")
+            .expect("fresh definition environment should have PATH");
+        let fresh_entries = std::env::split_paths(std::ffi::OsStr::new(fresh_path))
+            .collect::<Vec<_>>();
+        assert!(
+            !fresh_entries.contains(&old_bin),
+            "a removed definition path must not survive a provider rebind: {fresh_entries:?}"
+        );
+        assert!(
+            fresh_entries.contains(&fresh_bin),
+            "the replacement definition path must reach the fresh validation"
+        );
+        let expected_tool = fresh_tool.display();
+        let (exit_code, _, _) = run_worker_validation_command(
+            &format!(
+                "test \"$(command -v project-tool)\" = \"{expected_tool}\" && test \"$(project-tool)\" = fresh"
+            ),
+            &workspace,
+            &fresh_environment,
+            || false,
+            None,
+        )
+        .expect("fresh worker validation should execute with the replacement PATH");
+        assert_eq!(exit_code, 0);
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(unix)]

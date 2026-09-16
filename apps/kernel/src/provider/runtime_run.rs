@@ -84,6 +84,11 @@ pub struct RuntimeProviderRun {
     write_access_mode: ProviderWriteAccessMode,
     #[serde(skip)]
     workspace_live_sync_roots: Vec<PathBuf>,
+    /// The provider's ordinary PATH before any worker-preparation projection.
+    /// Preparation rebinds must rebuild from this stable base so a previous
+    /// definition's derived directories cannot leak into a later definition.
+    #[serde(skip)]
+    preparation_base_path: Option<String>,
     /// Runtime-only marker for the provider process used for read-only
     /// discovery. Ordinary provider turns must retain explicitly selected
     /// Git/SSH bindings, while discovery must scrub ambient parent controls.
@@ -114,6 +119,7 @@ impl RuntimeProviderRun {
         launch_result: ProviderLaunchResult,
     ) -> Self {
         let now = unix_epoch_ms();
+        let preparation_base_path = launch_result.pty_env.get("PATH").cloned();
         Self {
             id: id.into(),
             session_id: request.session_id.clone(),
@@ -155,6 +161,7 @@ impl RuntimeProviderRun {
             provider_config_overrides: request.provider_config_overrides.clone(),
             write_access_mode: request.write_access_mode,
             workspace_live_sync_roots: request.workspace_live_sync_roots.clone(),
+            preparation_base_path,
             read_only_discovery: false,
             execution_mode: request.execution_mode.unwrap_or_default(),
             permission_level: request.permission_level.unwrap_or_default(),
@@ -220,6 +227,7 @@ impl RuntimeProviderRun {
             provider_config_overrides: BTreeMap::new(),
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
             workspace_live_sync_roots: Vec::new(),
+            preparation_base_path: None,
             read_only_discovery: false,
             execution_mode: AgentExecutionMode::default(),
             permission_level: AgentPermissionLevel::default(),
@@ -327,6 +335,10 @@ impl RuntimeProviderRun {
     }
     pub fn pty_env(&self) -> &BTreeMap<String, String> {
         &self.pty_env
+    }
+
+    pub(crate) fn preparation_base_path(&self) -> Option<&str> {
+        self.preparation_base_path.as_deref()
     }
 
     pub fn pty_env_remove(&self) -> &[String] {

@@ -9,7 +9,9 @@ use super::approval_bodies::{
     file_change_approval_body,
 };
 use super::json_rpc::JsonRpcMessage;
-use super::permission::workspace_live_sync_codex_permission_grant;
+use super::permission::{
+    read_only_codex_permission_grant, workspace_live_sync_codex_permission_grant,
+};
 use super::runtime_mcp::call_runtime_mcp_tool;
 use super::{CodexClient, CodexSocket};
 
@@ -98,6 +100,12 @@ impl CodexClient {
             .and_then(|params| params.get("permissions"))
             .cloned()
             .unwrap_or_else(|| json!({}));
+        if self.read_only_discovery_permissions {
+            return json!({
+                "permissions": read_only_codex_permission_grant(&requested_permissions),
+                "scope": "turn",
+            });
+        }
         match self.write_access_mode {
             ProviderWriteAccessMode::Unrestricted
             | ProviderWriteAccessMode::WorkspaceLiveSyncTracked => json!({
@@ -128,6 +136,9 @@ impl CodexClient {
         &self,
         message: &JsonRpcMessage,
     ) -> Result<Value, DaemonError> {
+        if self.read_only_discovery_permissions {
+            return Ok(json!({ "decision": "decline" }));
+        }
         let params = message
             .params
             .as_ref()
@@ -154,6 +165,9 @@ impl CodexClient {
         &self,
         message: &JsonRpcMessage,
     ) -> Result<Value, DaemonError> {
+        if self.read_only_discovery_permissions {
+            return Ok(json!({ "decision": "decline" }));
+        }
         let params = message
             .params
             .as_ref()
@@ -180,6 +194,9 @@ impl CodexClient {
         &self,
         message: &JsonRpcMessage,
     ) -> Result<Value, DaemonError> {
+        if self.read_only_discovery_permissions {
+            return Ok(json!({ "decision": "decline" }));
+        }
         let params = message
             .params
             .as_ref()
@@ -206,6 +223,9 @@ impl CodexClient {
         &self,
         message: &JsonRpcMessage,
     ) -> Result<Value, DaemonError> {
+        if self.read_only_discovery_permissions {
+            return Ok(json!({ "decision": "decline" }));
+        }
         let params = message
             .params
             .as_ref()
