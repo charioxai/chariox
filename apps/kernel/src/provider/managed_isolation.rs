@@ -486,6 +486,19 @@ fn managed_runtime_user_openbox_files() -> Result<Vec<PathBuf>, DaemonError> {
 }
 
 #[cfg(target_os = "linux")]
+fn managed_runtime_command_roots() -> Result<Vec<PathBuf>, DaemonError> {
+    let Some(home) = managed_runtime_user_home()? else {
+        return Ok(Vec::new());
+    };
+    MANAGED_RUNTIME_USER_COMMAND_DIRECTORY_NAMES
+        .iter()
+        .map(|relative| {
+            validate_boundary_directory(&home.join(relative), "runtime user command directory")
+        })
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
 fn append_managed_runtime_user_openbox_boundary(
     args: &mut Vec<String>,
     home: &Path,
@@ -696,6 +709,7 @@ pub(crate) fn apply_managed_provider_isolation(
             })
             .unwrap_or_default();
         let trusted_read_only_paths = managed_trusted_read_only_paths()?;
+        let runtime_command_roots = managed_runtime_command_roots()?;
 
         let resolver = managed_resolver_binding()?;
         let (mut args, mut created_directories) = managed_namespace_args(
@@ -713,6 +727,7 @@ pub(crate) fn apply_managed_provider_isolation(
                 !protected_namespace_roots
                     .iter()
                     .chain(trusted_read_only_paths.iter())
+                    .chain(runtime_command_roots.iter())
                     .any(|protected| root.starts_with(protected))
                     && managed_workspace_root_requires_rebind(
                         root,
@@ -778,11 +793,13 @@ pub(crate) fn apply_managed_provider_isolation(
             append_bind(&mut args, &root, &root, &mut created_directories);
         }
         for root in &workspace_roots {
-            if !early_workspace_roots.contains(&root) && managed_workspace_root_requires_rebind(
-                root,
-                &protected_namespace_roots,
-                &trusted_read_only_paths,
-            ) {
+            if !early_workspace_roots.contains(&root)
+                && (managed_workspace_root_requires_rebind(
+                    root,
+                    &protected_namespace_roots,
+                    &trusted_read_only_paths,
+                ) || runtime_command_roots.iter().any(|command| root.starts_with(command)))
+            {
                 append_bind(&mut args, root, root, &mut created_directories);
             }
         }
@@ -1239,6 +1256,7 @@ fn managed_workspace_roots_with_private_temp_roots(
         return Ok(Vec::new());
     }
     let protected = managed_protected_namespace_directories(&[])?;
+    let runtime_command_roots = managed_runtime_command_roots()?;
     let host_publication_root = managed_configured_slice_publication_root()?;
     let configured = managed_slice_workspace_roots()?;
     let mut roots = configured.clone();
@@ -1266,6 +1284,14 @@ fn managed_workspace_roots_with_private_temp_roots(
     // on the ordinary root mount with normal filesystem permissions.
     for root in requested {
         let root = canonical_directory(&root, "managed provider workspace")?;
+        if runtime_command_roots.contains(&root) {
+            return Err(isolation_error(
+                "managed provider workspace must not equal a runtime command directory",
+            ));
+        }
+        let below_runtime_command_root = runtime_command_roots
+            .iter()
+            .any(|command| root.starts_with(command));
         let below_private_temp_root = private_temp_roots
             .iter()
             .any(|private| root != *private && root.starts_with(private));
@@ -1280,6 +1306,7 @@ fn managed_workspace_roots_with_private_temp_roots(
             && !below_protected_root;
         if !below_private_temp_root
             && !below_private_home
+            && !below_runtime_command_root
             && !(below_protected_root
                 && (is_managed_transfer_path(&root) || below_host_publication_root))
         {
@@ -1291,6 +1318,11 @@ fn managed_workspace_roots_with_private_temp_roots(
     let mut canonical = Vec::new();
     for root in roots {
         let root = canonical_directory(&root, "managed provider workspace")?;
+        if runtime_command_roots.contains(&root) {
+            return Err(isolation_error(
+                "managed provider workspace must not equal a runtime command directory",
+            ));
+        }
         if canonical.iter().all(|existing| existing != &root) {
             canonical.push(root);
         }
