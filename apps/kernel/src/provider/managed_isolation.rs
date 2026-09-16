@@ -1332,9 +1332,13 @@ fn managed_workspace_root_requires_rebind_with_private_temp_roots(
     {
         return true;
     }
-    private_temp_roots
-        .iter()
-        .any(|path| root != path && root.starts_with(path))
+    // /home is a private synthetic parent, like the process temp roots.
+    // Re-expose the selected workspace after that mask without exposing sibling
+    // homes. Exact protected roots above must still remain inaccessible.
+    (root != Path::new("/home") && root.starts_with("/home"))
+        || private_temp_roots
+            .iter()
+            .any(|path| root != path && root.starts_with(path))
 }
 
 #[cfg(target_os = "linux")]
@@ -2149,6 +2153,132 @@ mod tests {
             &[],
         ));
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_home_workspace_rebind_preserves_selected_children_only() {
+        assert!(managed_workspace_root_requires_rebind(
+            Path::new("/home/developer/project"),
+            &[],
+            &[],
+        ));
+        assert!(!managed_workspace_root_requires_rebind(
+            Path::new("/home"),
+            &[],
+            &[],
+        ));
+        assert!(!managed_workspace_root_requires_rebind(
+            Path::new("/home/developer/private"),
+            &[PathBuf::from("/home/developer/private")],
+            &[],
+        ));
+        assert!(!managed_workspace_root_requires_rebind(
+            Path::new("/home-other/project"),
+            &[],
+            &[],
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_bwrap_reaches_selected_home_workspace_without_sibling_home() {
+        let root = PathBuf::from("/home").join(format!(
+            "chariox-managed-home-workspace-bwrap-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let selected = root.join("selected");
+        let sibling = root.join("sibling");
+        if let Err(error) = std::fs::create_dir_all(&selected) {
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
+            ) {
+                eprintln!(
+                    "skipped managed bwrap selected-home probe: cannot create {}: {error}",
+                    root.display()
+                );
+                return;
+            }
+            panic!(
+                "selected home workspace fixture should be creatable at {}: {error}",
+                root.display()
+            );
+        }
+        if let Err(error) = std::fs::create_dir_all(&sibling) {
+            let _ = std::fs::remove_dir_all(&root);
+            panic!(
+                "sibling home workspace fixture should be creatable at {}: {error}",
+                sibling.display()
+            );
+        }
+        std::fs::write(selected.join("selected.txt"), "selected\n")
+            .expect("selected home marker should exist");
+        std::fs::write(sibling.join("sibling.txt"), "sibling\n")
+            .expect("sibling home marker should exist");
+
+        let selected_text = selected.display().to_string();
+        let sibling_text = sibling.display().to_string();
+        let (mut args, mut created) = managed_namespace_args(None, Path::exists, None);
+        assert!(managed_workspace_root_requires_rebind(&selected, &[], &[],));
+        append_bind(&mut args, &selected, &selected, &mut created);
+        args.extend([
+            "--setenv".to_string(),
+            "HOME".to_string(),
+            selected_text.clone(),
+            "--chdir".to_string(),
+            selected_text.clone(),
+            "--".to_string(),
+            "/bin/sh".to_string(),
+            "-eu".to_string(),
+            "-c".to_string(),
+            concat!(
+                "test \"$(cat selected.txt)\" = 'selected'\n",
+                "test ! -e \"$1/sibling.txt\"\n",
+                "printf provider > selected-write\n",
+            )
+            .to_string(),
+            "managed-home-workspace-bwrap-probe".to_string(),
+            sibling_text,
+        ]);
+
+        let bwrap = Path::new(BWRAP_PATH);
+        if !bwrap.is_file() {
+            eprintln!(
+                "skipped managed bwrap selected-home probe: {} is unavailable",
+                bwrap.display()
+            );
+            let _ = std::fs::remove_dir_all(root);
+            return;
+        }
+        let output = match Command::new(bwrap).args(args).output() {
+            Ok(output) => output,
+            Err(error) => {
+                eprintln!("skipped managed bwrap selected-home probe: {error}");
+                let _ = std::fs::remove_dir_all(root);
+                return;
+            }
+        };
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("No permissions to create a new namespace")
+            || stderr.contains("Operation not permitted")
+        {
+            eprintln!("skipped managed bwrap selected-home probe: user namespaces are unavailable");
+            let _ = std::fs::remove_dir_all(root);
+            return;
+        }
+        assert!(
+            output.status.success(),
+            "managed bwrap selected-home probe failed: {stderr}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(selected.join("selected-write"))
+                .expect("selected home workspace should receive provider write"),
+            "provider"
+        );
+        assert!(!sibling.join("selected-write").exists());
         let _ = std::fs::remove_dir_all(root);
     }
 
