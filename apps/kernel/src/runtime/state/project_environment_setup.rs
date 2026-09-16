@@ -41,6 +41,16 @@ struct WorkerExecutionContext {
     environment: BTreeMap<String, String>,
 }
 
+enum ReusedDefinitionSetupOutcome {
+    ContinueToRepair,
+    Ready(ProjectEnvironmentDefinition),
+    Cancelled,
+    Failed {
+        code: &'static str,
+        message: &'static str,
+    },
+}
+
 fn validation_passed_for_execution(
     execution: &SetupExecution,
     definition: &ProjectEnvironmentDefinition,
@@ -1209,45 +1219,55 @@ impl KernelRuntimeState {
             .filter(|definition| !definition.is_unattested_file_backed());
         if let Some(definition) = reusable_definition {
             match self
-                .apply_definition_on_worker(&execution, attempt, definition, &provider_run)
+                .run_reused_definition_setup(&execution, attempt, definition, &provider_run)
                 .await
             {
-                Ok(true) => {
-                    let _ = store.update(&execution.operation_id, attempt, |entry| {
-                        entry.status.phase = ProjectEnvironmentSetupPhase::Validating;
-                        entry.status.progress_percent = 45;
-                        entry.status.message = Some(
-                            "kernel is validating the reused definition in the target worker"
-                                .to_string(),
-                        );
-                    });
-                    let validation = match self
-                        .validate_definition_on_worker(
+                ReusedDefinitionSetupOutcome::Ready(definition) => {
+                    if self
+                        .restore_provider_run_after_project_environment_discovery(
                             &execution,
-                            attempt,
-                            definition,
                             &provider_run,
+                            Some(&definition),
                         )
                         .await
+                        .is_err()
                     {
-                        Ok(validation) => validation,
-                        Err(_) => {
-                            let _ = self
-                                .restore_provider_run_after_project_environment_discovery(
-                                    &execution,
-                                    &provider_run,
-                                    Some(definition),
-                                )
-                                .await;
-                            store.mark_failed(
-                                &execution.operation_id,
-                                attempt,
-                                "worker_validation_unavailable",
-                                "kernel could not execute target validation commands",
-                            );
-                            return;
-                        }
-                    };
+                        store.mark_failed(
+                            &execution.operation_id,
+                            attempt,
+                            "provider_environment_bind_failed",
+                            "kernel could not bind the prepared environment to the provider run",
+                        );
+                        return;
+                    }
+                    if execution.persist_project_definition
+                        && self
+                            .update_project_environment_definition(
+                                &execution.project_id,
+                                definition,
+                                &execution.owner_user_id,
+                            )
+                            .is_err()
+                    {
+                        store.mark_failed(
+                            &execution.operation_id,
+                            attempt,
+                            "definition_persist_failed",
+                            "kernel could not persist the target environment definition",
+                        );
+                        return;
+                    }
+                    let _ = store.update(&execution.operation_id, attempt, |entry| {
+                        entry.status.phase = ProjectEnvironmentSetupPhase::Ready;
+                        entry.status.progress_percent = 100;
+                        entry.status.retryable = false;
+                        entry.status.message = Some(
+                            "project environment is ready on the validated worker".to_string(),
+                        );
+                    });
+                    return;
+                }
+                ReusedDefinitionSetupOutcome::ContinueToRepair => {
                     if store.is_cancelled(&execution.operation_id, attempt) {
                         let _ = self
                             .restore_provider_run_after_project_environment_discovery(
@@ -1258,91 +1278,6 @@ impl KernelRuntimeState {
                             .await;
                         return;
                     }
-                    let inputs_match = match self.definition_inputs_match_on_worker(
-                        &execution,
-                        definition,
-                        &provider_run,
-                    ) {
-                        Ok(matches) => matches,
-                        Err(_) => {
-                            let _ = self
-                                .restore_provider_run_after_project_environment_discovery(
-                                    &execution,
-                                    &provider_run,
-                                    Some(definition),
-                                )
-                                .await;
-                            store.mark_failed(
-                                &execution.operation_id,
-                                attempt,
-                                "worker_input_attestation_unavailable",
-                                "kernel could not verify project inputs on the target worker",
-                            );
-                            return;
-                        }
-                    };
-                    let validation_passed =
-                        validation_passed_for_execution(&execution, definition, &validation)
-                            && inputs_match;
-                    let _ = store.update(&execution.operation_id, attempt, |entry| {
-                        entry.status.validation = Some(validation);
-                        entry.status.progress_percent = 85;
-                        entry.status.message = Some(if validation_passed {
-                            "reused definition passed kernel validation".to_string()
-                        } else {
-                            "reused definition failed validation; utility agent is repairing the target"
-                                .to_string()
-                        });
-                    });
-                    if validation_passed {
-                        match self
-                            .restore_provider_run_after_project_environment_discovery(
-                                &execution,
-                                &provider_run,
-                                Some(definition),
-                            )
-                            .await
-                        {
-                            Ok(_) => {}
-                            Err(_) => {
-                                store.mark_failed(
-                                    &execution.operation_id,
-                                    attempt,
-                                    "provider_environment_bind_failed",
-                                    "kernel could not bind the prepared environment to the provider run",
-                                );
-                                return;
-                            }
-                        };
-                        if execution.persist_project_definition
-                            && self
-                                .update_project_environment_definition(
-                                    &execution.project_id,
-                                    definition.clone(),
-                                    &execution.owner_user_id,
-                                )
-                                .is_err()
-                        {
-                            store.mark_failed(
-                                &execution.operation_id,
-                                attempt,
-                                "definition_persist_failed",
-                                "kernel could not persist the target environment definition",
-                            );
-                            return;
-                        }
-                        let _ = store.update(&execution.operation_id, attempt, |entry| {
-                            entry.status.phase = ProjectEnvironmentSetupPhase::Ready;
-                            entry.status.progress_percent = 100;
-                            entry.status.retryable = false;
-                            entry.status.message = Some(
-                                "project environment is ready on the validated worker".to_string(),
-                            );
-                        });
-                        return;
-                    }
-                }
-                Ok(false) => {
                     let _ = store.update(&execution.operation_id, attempt, |entry| {
                         entry.status.message = Some(
                             "reused definition setup failed; utility agent is repairing the target"
@@ -1350,7 +1285,7 @@ impl KernelRuntimeState {
                         );
                     });
                 }
-                Err(_) => {
+                ReusedDefinitionSetupOutcome::Cancelled => {
                     let _ = self
                         .restore_provider_run_after_project_environment_discovery(
                             &execution,
@@ -1358,24 +1293,19 @@ impl KernelRuntimeState {
                             Some(definition),
                         )
                         .await;
-                    store.mark_failed(
-                        &execution.operation_id,
-                        attempt,
-                        "worker_setup_unavailable",
-                        "kernel could not execute the stored setup definition",
-                    );
                     return;
                 }
-            }
-            if store.is_cancelled(&execution.operation_id, attempt) {
-                let _ = self
-                    .restore_provider_run_after_project_environment_discovery(
-                        &execution,
-                        &provider_run,
-                        Some(definition),
-                    )
-                    .await;
-                return;
+                ReusedDefinitionSetupOutcome::Failed { code, message } => {
+                    let _ = self
+                        .restore_provider_run_after_project_environment_discovery(
+                            &execution,
+                            &provider_run,
+                            Some(definition),
+                        )
+                        .await;
+                    store.mark_failed(&execution.operation_id, attempt, code, message);
+                    return;
+                }
             }
             let _ = store.update(&execution.operation_id, attempt, |entry| {
                 entry.status.phase = ProjectEnvironmentSetupPhase::Preparing;
@@ -1667,6 +1597,98 @@ impl KernelRuntimeState {
             entry.status.message =
                 Some("project environment is ready on the validated worker".to_string());
         });
+    }
+
+    async fn run_reused_definition_setup(
+        &self,
+        execution: &SetupExecution,
+        attempt: u32,
+        definition: &ProjectEnvironmentDefinition,
+        provider_run: &RuntimeProviderRun,
+    ) -> ReusedDefinitionSetupOutcome {
+        match self
+            .apply_definition_on_worker(execution, attempt, definition, provider_run)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => return ReusedDefinitionSetupOutcome::ContinueToRepair,
+            Err(_) => {
+                return ReusedDefinitionSetupOutcome::Failed {
+                    code: "worker_setup_unavailable",
+                    message: "kernel could not execute the stored setup definition",
+                }
+            }
+        }
+
+        let _ = self
+            .owned
+            .project_environment_setups
+            .update(&execution.operation_id, attempt, |entry| {
+                entry.status.phase = ProjectEnvironmentSetupPhase::Validating;
+                entry.status.progress_percent = 45;
+                entry.status.message = Some(
+                    "kernel is validating the reused definition in the target worker".to_string(),
+                );
+            });
+        let validation = match self
+            .validate_definition_on_worker(execution, attempt, definition, provider_run)
+            .await
+        {
+            Ok(validation) => validation,
+            Err(_) => {
+                return ReusedDefinitionSetupOutcome::Failed {
+                    code: "worker_validation_unavailable",
+                    message: "kernel could not execute target validation commands",
+                }
+            }
+        };
+        if self
+            .owned
+            .project_environment_setups
+            .is_cancelled(&execution.operation_id, attempt)
+        {
+            return ReusedDefinitionSetupOutcome::Cancelled;
+        }
+        let inputs_match = match self.definition_inputs_match_on_worker(
+            execution,
+            definition,
+            provider_run,
+        ) {
+            Ok(matches) => matches,
+            Err(_) => {
+                return ReusedDefinitionSetupOutcome::Failed {
+                    code: "worker_input_attestation_unavailable",
+                    message: "kernel could not verify project inputs on the target worker",
+                }
+            }
+        };
+        let validation_passed =
+            validation_passed_for_execution(execution, definition, &validation) && inputs_match;
+        let _ = self
+            .owned
+            .project_environment_setups
+            .update(&execution.operation_id, attempt, |entry| {
+                entry.status.validation = Some(validation);
+                entry.status.progress_percent = 85;
+                entry.status.message = Some(if validation_passed {
+                    "reused definition passed kernel validation".to_string()
+                } else {
+                    "reused definition failed validation; utility agent is repairing the target"
+                        .to_string()
+                });
+            });
+        if self
+            .owned
+            .project_environment_setups
+            .is_cancelled(&execution.operation_id, attempt)
+        {
+            return ReusedDefinitionSetupOutcome::Cancelled;
+        }
+        if validation_passed {
+            ReusedDefinitionSetupOutcome::Ready(definition.clone())
+        } else {
+            ReusedDefinitionSetupOutcome::ContinueToRepair
+        }
     }
 
     async fn prepare_provider_run_for_project_environment(
