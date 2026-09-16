@@ -49,6 +49,15 @@ const MANAGED_RUNTIME_USER_STARTUP_FILE_NAMES: &[&str] = &[
     ".kshrc",
     ".screenrc",
 ];
+#[cfg(target_os = "linux")]
+// Openbox is started by the host-side desktop lifecycle as the same runtime
+// user. These files are command-bearing configuration, not a reason to mask
+// the user's ordinary configuration or project tree wholesale.
+const MANAGED_RUNTIME_USER_OPENBOX_FILE_NAMES: &[&str] = &[
+    ".config/openbox/rc.xml",
+    ".config/openbox/menu.xml",
+    ".config/openbox/autostart",
+];
 
 #[cfg(target_os = "linux")]
 const BWRAP_PATH: &str = "/usr/bin/bwrap";
@@ -378,22 +387,38 @@ fn managed_protected_namespace_files() -> Vec<PathBuf> {
 }
 
 #[cfg(target_os = "linux")]
-fn managed_runtime_user_startup_files_for_home(home: &Path) -> Vec<PathBuf> {
+fn managed_runtime_user_home() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)?;
+    (home.is_absolute() && home != Path::new("/")).then_some(home)
+}
+
+#[cfg(target_os = "linux")]
+fn managed_runtime_user_files_for_home(home: &Path, names: &[&str]) -> Vec<PathBuf> {
     if !home.is_absolute() || home == Path::new("/") {
         return Vec::new();
     }
-    MANAGED_RUNTIME_USER_STARTUP_FILE_NAMES
-        .iter()
-        .map(|name| home.join(name))
-        .collect()
+    names.iter().map(|name| home.join(name)).collect()
 }
 
 #[cfg(target_os = "linux")]
 fn managed_runtime_user_startup_files() -> Vec<PathBuf> {
-    std::env::var_os("HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .map(|home| managed_runtime_user_startup_files_for_home(&home))
+    managed_runtime_user_home()
+        .as_deref()
+        .map(|home| {
+            managed_runtime_user_files_for_home(home, MANAGED_RUNTIME_USER_STARTUP_FILE_NAMES)
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "linux")]
+fn managed_runtime_user_openbox_files() -> Vec<PathBuf> {
+    managed_runtime_user_home()
+        .as_deref()
+        .map(|home| {
+            managed_runtime_user_files_for_home(home, MANAGED_RUNTIME_USER_OPENBOX_FILE_NAMES)
+        })
         .unwrap_or_default()
 }
 
@@ -536,9 +561,21 @@ pub(crate) fn apply_managed_provider_isolation(
         let protected_namespace_files = managed_protected_namespace_files();
         // The provider runs with the outer service user's uid in the user
         // namespace. Keep that user's ordinary home available, but protect
-        // only the shell/Screen startup files that a later host-side
-        // `bash -lc` or `screen` lifecycle command would execute.
-        let runtime_user_startup_files = managed_runtime_user_startup_files();
+        // only the shell/Screen/Openbox startup files that later host-side
+        // lifecycle commands would execute.
+        let runtime_user_home = managed_runtime_user_home();
+        let runtime_user_startup_files = runtime_user_home
+            .as_deref()
+            .map(|home| {
+                managed_runtime_user_files_for_home(home, MANAGED_RUNTIME_USER_STARTUP_FILE_NAMES)
+            })
+            .unwrap_or_default();
+        let runtime_user_openbox_files = runtime_user_home
+            .as_deref()
+            .map(|home| {
+                managed_runtime_user_files_for_home(home, MANAGED_RUNTIME_USER_OPENBOX_FILE_NAMES)
+            })
+            .unwrap_or_default();
         let trusted_read_only_paths = managed_trusted_read_only_paths()?;
 
         let resolver = managed_resolver_binding()?;
@@ -578,6 +615,11 @@ pub(crate) fn apply_managed_provider_isolation(
         append_managed_protected_namespace_files(
             &mut args,
             &runtime_user_startup_files,
+            &mut created_directories,
+        );
+        append_managed_protected_namespace_files(
+            &mut args,
+            &runtime_user_openbox_files,
             &mut created_directories,
         );
         append_managed_trusted_read_only_paths(
@@ -1816,7 +1858,8 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn managed_bwrap_probe_blocks_runtime_home_login_profile_without_blocking_home_files() {
+    fn managed_bwrap_probe_blocks_runtime_home_startup_and_openbox_commands_without_blocking_home_files(
+    ) {
         let _env = crate::env_lock::lock();
         let previous_home = std::env::var_os("HOME");
         let root = std::env::temp_dir().join(format!(
@@ -1827,18 +1870,23 @@ mod tests {
         let home = root.join("slice-home");
         let ordinary_file = home.join("ordinary-created");
         let profile_executed = home.join("profile-executed");
+        let openbox_executed = home.join("openbox-executed");
         std::fs::create_dir_all(&home).expect("runtime user home should exist");
         std::env::set_var("HOME", &home);
 
         let startup_files = managed_runtime_user_startup_files();
+        let openbox_files = managed_runtime_user_openbox_files();
         let profile = home.join(".bash_profile");
+        let openbox_rc = home.join(".config/openbox/rc.xml");
         assert!(startup_files.contains(&profile));
+        assert!(openbox_files.contains(&openbox_rc));
         assert!(!startup_files.contains(&home));
+        assert!(!openbox_files.contains(&home));
 
         let bwrap = Path::new(BWRAP_PATH);
         if !bwrap.is_file() {
             eprintln!(
-                "skipped managed bwrap runtime-home startup probe: {} is unavailable",
+                "skipped managed bwrap runtime-home startup/Openbox probe: {} is unavailable",
                 bwrap.display()
             );
             restore_env("HOME", previous_home);
@@ -1849,8 +1897,10 @@ mod tests {
         let (mut args, mut created) = managed_namespace_args(None, Path::exists, None);
         append_bind(&mut args, &home, &home, &mut created);
         append_managed_protected_namespace_files(&mut args, &startup_files, &mut created);
+        append_managed_protected_namespace_files(&mut args, &openbox_files, &mut created);
         let home_text = home.display().to_string();
         let profile_text = profile.display().to_string();
+        let openbox_rc_text = openbox_rc.display().to_string();
         assert!(args
             .windows(3)
             .any(|window| { window == ["--bind", home_text.as_str(), home_text.as_str()] }));
@@ -1862,7 +1912,23 @@ mod tests {
             .windows(3)
             .position(|window| window == ["--ro-bind", "/dev/null", profile_text.as_str()])
             .expect("login profile should be masked");
+        let openbox_mask = args
+            .windows(3)
+            .position(|window| window == ["--ro-bind", "/dev/null", openbox_rc_text.as_str()])
+            .expect("Openbox rc.xml should be masked");
         assert!(home_bind < profile_mask);
+        assert!(home_bind < openbox_mask);
+        for name in ["menu.xml", "autostart"] {
+            let path = home.join(".config/openbox").join(name);
+            assert!(args.windows(3).any(|window| {
+                window
+                    == [
+                        "--ro-bind",
+                        "/dev/null",
+                        path.to_str().expect("path should be utf8"),
+                    ]
+            }));
+        }
         assert!(!args
             .windows(2)
             .any(|window| { window == ["--tmpfs", home_text.as_str()] }));
@@ -1875,13 +1941,13 @@ mod tests {
             "/bin/sh".to_string(),
             "-eu".to_string(),
             "-c".to_string(),
-            "if printf 'touch \"$HOME/profile-executed\"\\n' > \"$HOME/.bash_profile\"; then exit 41; fi\nprintf ordinary > \"$HOME/ordinary-created\"".to_string(),
-            "managed-runtime-home-startup-probe".to_string(),
+            "if printf 'touch \"$HOME/profile-executed\"\\n' > \"$HOME/.bash_profile\"; then exit 41; fi\nif printf '<openbox><execute>touch \"$HOME/openbox-executed\"</execute></openbox>\\n' > \"$HOME/.config/openbox/rc.xml\"; then exit 42; fi\nprintf ordinary > \"$HOME/ordinary-created\"".to_string(),
+            "managed-runtime-home-startup-openbox-probe".to_string(),
         ]);
         let output = match Command::new(bwrap).args(args).output() {
             Ok(output) => output,
             Err(error) => {
-                eprintln!("skipped managed bwrap runtime-home startup probe: {error}");
+                eprintln!("skipped managed bwrap runtime-home startup/Openbox probe: {error}");
                 restore_env("HOME", previous_home);
                 let _ = std::fs::remove_dir_all(root);
                 return;
@@ -1892,7 +1958,7 @@ mod tests {
             || stderr.contains("Operation not permitted")
         {
             eprintln!(
-                "skipped managed bwrap runtime-home startup probe: user namespaces are unavailable"
+                "skipped managed bwrap runtime-home startup/Openbox probe: user namespaces are unavailable"
             );
             restore_env("HOME", previous_home);
             let _ = std::fs::remove_dir_all(root);
@@ -1911,10 +1977,15 @@ mod tests {
             "provider must not plant the login profile"
         );
         assert!(!profile_executed.exists());
+        assert!(
+            !openbox_rc.exists(),
+            "provider must not plant Openbox commands"
+        );
+        assert!(!openbox_executed.exists());
 
-        // The follow-up lifecycle shape runs outside bwrap. Since the
-        // provider's attempted profile write was masked, outer bash -lc has
-        // no provider-controlled startup code to execute.
+        // The follow-up lifecycle shapes run outside bwrap. Since the
+        // provider's attempted profile and Openbox writes were masked, outer
+        // bash -lc/Openbox have no provider-controlled startup code to execute.
         let outer = Command::new("/bin/bash")
             .args(["-lc", ":"])
             .env("HOME", &home)
