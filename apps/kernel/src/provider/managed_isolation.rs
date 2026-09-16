@@ -654,7 +654,7 @@ fn managed_resolver_binding() -> Result<Option<PathBuf>, DaemonError> {
 #[cfg(any(target_os = "linux", test))]
 fn managed_namespace_args(
     resolver: Option<&Path>,
-    _path_exists: impl Fn(&Path) -> bool,
+    path_exists: impl Fn(&Path) -> bool,
     prompt_attachment_root: Option<&Path>,
 ) -> (Vec<String>, BTreeSet<PathBuf>) {
     let mut args = vec![
@@ -678,6 +678,18 @@ fn managed_namespace_args(
         "/".to_string(),
         "/".to_string(),
     ];
+    // The ordinary root remains available so providers retain the host's
+    // normal filesystem-permission behavior. The kernel's process temp roots
+    // are the exception: every managed provider runs with the same outer
+    // service uid, so a shared /tmp would let sibling runs read or mutate
+    // private runtime files despite their 0700/0600 modes. Current-run
+    // runtime and prompt-attachment directories are rebound below.
+    for path in ["/tmp", "/var/tmp"] {
+        let path = Path::new(path);
+        if path_exists(path) {
+            args.extend(["--tmpfs".to_string(), path.display().to_string()]);
+        }
+    }
     args.extend([
         "--proc".to_string(),
         "/proc".to_string(),
@@ -1129,7 +1141,7 @@ mod tests {
     }
 
     #[test]
-    fn namespace_args_keep_the_ordinary_root_and_restore_the_resolver() {
+    fn namespace_args_keep_the_ordinary_root_and_private_temp_roots() {
         let resolver = Path::new("/run/systemd/resolve/stub-resolv.conf");
         let (args, _) =
             managed_namespace_args(Some(resolver), |path| path == Path::new("/run"), None);
@@ -1145,6 +1157,8 @@ mod tests {
             })
             .expect("resolver target should be restored read-only");
         assert!(args.windows(3).any(|args| args == ["--bind", "/", "/"]));
+        assert!(args.windows(2).any(|args| args == ["--tmpfs", "/tmp"]));
+        assert!(args.windows(2).any(|args| args == ["--tmpfs", "/var/tmp"]));
         assert!(!args.windows(2).any(|args| args == ["--tmpfs", "/run"]));
         assert_eq!(
             &args[binding - 6..binding],
@@ -1618,6 +1632,113 @@ mod tests {
                 directory_text.as_str(),
             ]
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_namespace_concurrent_runs_keep_sibling_runtime_tokens_invisible() {
+        let temp_root = std::env::temp_dir();
+        let probe_id = format!(
+            "chariox-managed-runtime-sibling-probe-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        );
+        let runtime_a = temp_root.join(format!("{probe_id}-a"));
+        let runtime_b = temp_root.join(format!("{probe_id}-b"));
+        let cleanup = || {
+            let _ = std::fs::remove_dir_all(&runtime_a);
+            let _ = std::fs::remove_dir_all(&runtime_b);
+        };
+        std::fs::create_dir_all(&runtime_a).expect("first runtime directory should exist");
+        std::fs::create_dir_all(&runtime_b).expect("second runtime directory should exist");
+        let token_a = runtime_a.join("mcp-config.json");
+        let token_b = runtime_b.join("mcp-config.json");
+        std::fs::write(&token_a, "Bearer sibling-a").expect("first token should exist");
+        std::fs::write(&token_b, "Bearer sibling-b").expect("second token should exist");
+
+        let bwrap = Path::new(BWRAP_PATH);
+        if !bwrap.is_file() {
+            eprintln!(
+                "skipped managed bwrap sibling probe: {} is unavailable",
+                bwrap.display()
+            );
+            cleanup();
+            return;
+        }
+
+        let make_args = |own_runtime: &Path, sibling_token: &Path, expected_token: &str| {
+            let (mut args, _) = managed_namespace_args(None, Path::exists, None);
+            args.extend([
+                "--setenv".to_string(),
+                MANAGED_PROVIDER_ISOLATION_MARKER_ENV.to_string(),
+                "1".to_string(),
+            ]);
+            expose_runtime_directory_in_managed_namespace(&mut args, own_runtime)
+                .expect("current runtime should be re-exposed");
+            args.extend([
+                "--".to_string(),
+                "/bin/sh".to_string(),
+                "-eu".to_string(),
+                "-c".to_string(),
+                concat!("test \"$(cat \"$1\")\" = \"$3\"\n", "test ! -e \"$2\"\n",).to_string(),
+                "managed-runtime-sibling-probe".to_string(),
+                own_runtime.join("mcp-config.json").display().to_string(),
+                sibling_token.display().to_string(),
+                expected_token.to_string(),
+            ]);
+            args
+        };
+
+        let mut first = Command::new(bwrap);
+        first.args(make_args(&runtime_a, &token_b, "Bearer sibling-a"));
+        let mut second = Command::new(bwrap);
+        second.args(make_args(&runtime_b, &token_a, "Bearer sibling-b"));
+
+        let mut first = match first.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                eprintln!("skipped managed bwrap sibling probe: {error}");
+                cleanup();
+                return;
+            }
+        };
+        let second = match second.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                let _ = first.kill();
+                let _ = first.wait();
+                eprintln!("skipped managed bwrap sibling probe: {error}");
+                cleanup();
+                return;
+            }
+        };
+        let first = first
+            .wait_with_output()
+            .expect("first bwrap sibling probe should finish");
+        let second = second
+            .wait_with_output()
+            .expect("second bwrap sibling probe should finish");
+        let namespace_unavailable = |output: &std::process::Output| {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            stderr.contains("No permissions to create a new namespace")
+                || stderr.contains("Operation not permitted")
+        };
+        if namespace_unavailable(&first) || namespace_unavailable(&second) {
+            eprintln!("skipped managed bwrap sibling probe: user namespaces are unavailable");
+            cleanup();
+            return;
+        }
+        assert!(
+            first.status.success(),
+            "first managed bwrap sibling probe failed: {}",
+            String::from_utf8_lossy(&first.stderr)
+        );
+        assert!(
+            second.status.success(),
+            "second managed bwrap sibling probe failed: {}",
+            String::from_utf8_lossy(&second.stderr)
+        );
+        cleanup();
     }
 
     #[cfg(target_os = "linux")]
