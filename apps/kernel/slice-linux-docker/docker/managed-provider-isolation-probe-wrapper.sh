@@ -14,6 +14,56 @@ fail() {
   exit 1
 }
 
+fail_denied_path() {
+  local path="$1"
+  local path_class="$2"
+  local entry_count="${3:-}"
+  local reason="a denied host path is visible in the provider sandbox"
+  if [[ "$path_class" == "nonempty_directory" ]]; then
+    reason="denied host path contains payload in masked directory"
+  fi
+  local diagnostic="$reason denied_path=$path denied_path_class=$path_class"
+  if [[ -n "$entry_count" ]]; then
+    diagnostic+=" denied_path_entries=$entry_count"
+  fi
+  printf 'managed_provider_isolation=failure\nreason=%s\n' "$diagnostic" >"$result" 2>/dev/null || true
+  chmod 600 "$result" 2>/dev/null || true
+  printf '%s\n' "$diagnostic" >&2
+  exit 1
+}
+
+denied_path_class() {
+  local path="$1"
+  if [[ -L "$path" ]]; then
+    printf 'symlink\n'
+  elif [[ -d "$path" ]]; then
+    printf 'directory\n'
+  elif [[ -f "$path" ]]; then
+    printf 'regular_file\n'
+  elif [[ -S "$path" ]]; then
+    printf 'socket\n'
+  elif [[ -p "$path" ]]; then
+    printf 'fifo\n'
+  elif [[ -b "$path" ]]; then
+    printf 'block_device\n'
+  elif [[ -c "$path" ]]; then
+    printf 'character_device\n'
+  else
+    printf 'other\n'
+  fi
+}
+
+directory_entry_count() {
+  local directory="$1"
+  local -a entries=()
+  [[ -r "$directory" && -x "$directory" ]] || return 1
+  # dotglob makes a hidden protected entry count as payload too.
+  shopt -s nullglob dotglob
+  entries=("$directory"/*)
+  shopt -u dotglob nullglob
+  printf '%s\n' "${#entries[@]}"
+}
+
 case "$assert_mode" in
   baseline|strict) ;;
   *) fail "managed provider isolation assertion mode is invalid" ;;
@@ -63,13 +113,31 @@ if [[ "${CHARIOX_MANAGED_ISOLATION_REQUIRE_NESTED_USERNS_DENIED:-0}" == "1" \
   fail "nested user namespace probe was $nested_userns"
 fi
 
+# Bubblewrap may materialize this protected tmpfs destination as an empty
+# directory. Only that known mask is allowed to exist; any entry is payload.
+empty_masked_denied_path="none"
+allowed_empty_masked_directory=/home/slice/.chariox
 for denied in \
   /var/lib/chariox \
   /home/slice/.chariox \
   /run/chariox-slice-broker.sock \
   /proc/1/root/var/lib/chariox
 do
-  [[ ! -e "$denied" ]] || fail "a denied host path is visible in the provider sandbox"
+  [[ ! -e "$denied" && ! -L "$denied" ]] && continue
+
+  if [[ "$denied" == "$allowed_empty_masked_directory" \
+    && -d "$denied" && ! -L "$denied" ]]; then
+    if ! entry_count="$(directory_entry_count "$denied")"; then
+      fail_denied_path "$denied" inaccessible_directory
+    fi
+    if [[ "$entry_count" == "0" ]]; then
+      empty_masked_denied_path="$denied"
+      continue
+    fi
+    fail_denied_path "$denied" nonempty_directory "$entry_count"
+  fi
+
+  fail_denied_path "$denied" "$(denied_path_class "$denied")"
 done
 
 legacy_control_env=""
@@ -131,10 +199,10 @@ git -C "$outside_repository" -c user.name=probe -c user.email=probe@example.inva
 git clone --quiet "$outside_repository" "$cloned_repository"
 git -C "$cloned_repository" status --porcelain >/dev/null
 
-printf 'managed_provider_isolation=ok\nisolation_assert_mode=%s\nreal_provider=%s\nworkspace=%s\naccount=%s\nprovider_cwd=%s\nnested_userns=%s\nxdg_runtime_dir=%s\nxdg_runtime_assessment=%s\ncontrol_env_scrubbed=%s\nlegacy_control_env=%s\noutside_repository=%s\noutside_clone=%s\n' \
+printf 'managed_provider_isolation=ok\nisolation_assert_mode=%s\nreal_provider=%s\nworkspace=%s\naccount=%s\nprovider_cwd=%s\nnested_userns=%s\nxdg_runtime_dir=%s\nxdg_runtime_assessment=%s\ncontrol_env_scrubbed=%s\nlegacy_control_env=%s\nmasked_empty_denied_path=%s\noutside_repository=%s\noutside_clone=%s\n' \
   "$assert_mode" "$real_provider" "$workspace" "$account" "$provider_cwd" "$nested_userns" \
   "$runtime_dir" "$xdg_runtime_assessment" "$([[ "$assert_mode" == "strict" ]] && echo yes || echo baseline)" \
-  "$legacy_control_env" "$outside_repository" "$cloned_repository" >"$result"
+  "$legacy_control_env" "$empty_masked_denied_path" "$outside_repository" "$cloned_repository" >"$result"
 chmod 600 "$result"
 cleanup
 trap - EXIT
