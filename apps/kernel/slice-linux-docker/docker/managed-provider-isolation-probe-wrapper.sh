@@ -17,19 +17,43 @@ fail() {
 fail_denied_path() {
   local path="$1"
   local path_class="$2"
-  local entry_count="${3:-}"
+  local permission="${3:-unknown}"
+  local entry_count="${4:-not_applicable}"
   local reason="a denied host path is visible in the provider sandbox"
   if [[ "$path_class" == "nonempty_directory" ]]; then
     reason="denied host path contains payload in masked directory"
+  elif [[ "$path_class" == "empty_directory" ]]; then
+    reason="denied host path is readable even though empty"
   fi
-  local diagnostic="$reason denied_path=$path denied_path_class=$path_class"
-  if [[ -n "$entry_count" ]]; then
-    diagnostic+=" denied_path_entries=$entry_count"
-  fi
+  local diagnostic="$reason denied_path=$path denied_path_class=$path_class denied_path_permission=$permission denied_path_entries=$entry_count"
   printf 'managed_provider_isolation=failure\nreason=%s\n' "$diagnostic" >"$result" 2>/dev/null || true
   chmod 600 "$result" 2>/dev/null || true
   printf '%s\n' "$diagnostic" >&2
   exit 1
+}
+
+directory_permission_label() {
+  local directory="$1"
+  if [[ -r "$directory" && -x "$directory" ]]; then
+    printf 'readable\n'
+  elif [[ -r "$directory" ]]; then
+    printf 'listable_not_traversable\n'
+  elif [[ -x "$directory" ]]; then
+    printf 'traversable_not_readable\n'
+  else
+    printf 'inaccessible\n'
+  fi
+}
+
+path_permission_label() {
+  local path="$1"
+  if [[ -r "$path" ]]; then
+    printf 'readable\n'
+  elif [[ -x "$path" ]]; then
+    printf 'traversable_not_readable\n'
+  else
+    printf 'inaccessible\n'
+  fi
 }
 
 denied_path_class() {
@@ -55,13 +79,15 @@ denied_path_class() {
 
 directory_entry_count() {
   local directory="$1"
-  local -a entries=()
   [[ -r "$directory" && -x "$directory" ]] || return 1
-  # dotglob makes a hidden protected entry count as payload too.
-  shopt -s nullglob dotglob
-  entries=("$directory"/*)
-  shopt -u dotglob nullglob
-  printf '%s\n' "${#entries[@]}"
+  local entry_count
+  # Emit one non-secret marker per immediate entry. This counts hidden entries
+  # without exposing names or payload contents, and pipefail preserves a
+  # permission/I/O failure from find instead of turning it into zero entries.
+  if ! entry_count="$(find "$directory" -mindepth 1 -maxdepth 1 -printf . 2>/dev/null | wc -c)"; then
+    return 1
+  fi
+  printf '%s\n' "$entry_count"
 }
 
 case "$assert_mode" in
@@ -113,9 +139,12 @@ if [[ "${CHARIOX_MANAGED_ISOLATION_REQUIRE_NESTED_USERNS_DENIED:-0}" == "1" \
   fail "nested user namespace probe was $nested_userns"
 fi
 
-# Bubblewrap may materialize this protected tmpfs destination as an empty
-# directory. Only that known mask is allowed to exist; any entry is payload.
+# Bubblewrap may materialize protected destinations as directories. A path's
+# existence is not enough to diagnose a boundary: inaccessible directories are
+# recorded as masked, while readable directories are inspected by count only.
+# Only the known /home/slice/.chariox empty mask is allowed to be readable.
 empty_masked_denied_path="none"
+inaccessible_masked_denied_paths="none"
 allowed_empty_masked_directory=/home/slice/.chariox
 for denied in \
   /var/lib/chariox \
@@ -125,19 +154,30 @@ for denied in \
 do
   [[ ! -e "$denied" && ! -L "$denied" ]] && continue
 
-  if [[ "$denied" == "$allowed_empty_masked_directory" \
-    && -d "$denied" && ! -L "$denied" ]]; then
-    if ! entry_count="$(directory_entry_count "$denied")"; then
-      fail_denied_path "$denied" inaccessible_directory
+  if [[ -d "$denied" && ! -L "$denied" ]]; then
+    permission="$(directory_permission_label "$denied")"
+    if [[ "$permission" == "inaccessible" ]]; then
+      if [[ "$inaccessible_masked_denied_paths" == "none" ]]; then
+        inaccessible_masked_denied_paths="$denied"
+      else
+        inaccessible_masked_denied_paths+=",$denied"
+      fi
+      continue
     fi
-    if [[ "$entry_count" == "0" ]]; then
+    if ! entry_count="$(directory_entry_count "$denied")"; then
+      fail_denied_path "$denied" directory "$permission" unavailable
+    fi
+    if [[ "$denied" == "$allowed_empty_masked_directory" && "$entry_count" == "0" ]]; then
       empty_masked_denied_path="$denied"
       continue
     fi
-    fail_denied_path "$denied" nonempty_directory "$entry_count"
+    if [[ "$entry_count" == "0" ]]; then
+      fail_denied_path "$denied" empty_directory "$permission" "$entry_count"
+    fi
+    fail_denied_path "$denied" nonempty_directory "$permission" "$entry_count"
   fi
 
-  fail_denied_path "$denied" "$(denied_path_class "$denied")"
+  fail_denied_path "$denied" "$(denied_path_class "$denied")" "$(path_permission_label "$denied")"
 done
 
 legacy_control_env=""
@@ -199,10 +239,11 @@ git -C "$outside_repository" -c user.name=probe -c user.email=probe@example.inva
 git clone --quiet "$outside_repository" "$cloned_repository"
 git -C "$cloned_repository" status --porcelain >/dev/null
 
-printf 'managed_provider_isolation=ok\nisolation_assert_mode=%s\nreal_provider=%s\nworkspace=%s\naccount=%s\nprovider_cwd=%s\nnested_userns=%s\nxdg_runtime_dir=%s\nxdg_runtime_assessment=%s\ncontrol_env_scrubbed=%s\nlegacy_control_env=%s\nmasked_empty_denied_path=%s\noutside_repository=%s\noutside_clone=%s\n' \
+printf 'managed_provider_isolation=ok\nisolation_assert_mode=%s\nreal_provider=%s\nworkspace=%s\naccount=%s\nprovider_cwd=%s\nnested_userns=%s\nxdg_runtime_dir=%s\nxdg_runtime_assessment=%s\ncontrol_env_scrubbed=%s\nlegacy_control_env=%s\nmasked_empty_denied_path=%s\nmasked_inaccessible_denied_paths=%s\nmasked_inaccessible_denied_path_permission=inaccessible\nmasked_inaccessible_denied_path_entries=unavailable\noutside_repository=%s\noutside_clone=%s\n' \
   "$assert_mode" "$real_provider" "$workspace" "$account" "$provider_cwd" "$nested_userns" \
   "$runtime_dir" "$xdg_runtime_assessment" "$([[ "$assert_mode" == "strict" ]] && echo yes || echo baseline)" \
-  "$legacy_control_env" "$empty_masked_denied_path" "$outside_repository" "$cloned_repository" >"$result"
+  "$legacy_control_env" "$empty_masked_denied_path" "$inaccessible_masked_denied_paths" \
+  "$outside_repository" "$cloned_repository" >"$result"
 chmod 600 "$result"
 cleanup
 trap - EXIT

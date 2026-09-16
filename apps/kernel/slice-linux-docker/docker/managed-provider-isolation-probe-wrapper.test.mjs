@@ -26,21 +26,35 @@ function renderWrapper(source, root) {
     .replaceAll(procRootPath, path.join(root, "proc-root/var/lib/chariox"));
 }
 
-async function makeFixture(root, { seededPayload = false, visibleDeniedPath = "" } = {}) {
+async function makeFixture(
+  root,
+  {
+    deniedPath = "",
+    deniedPathMode = 0o755,
+    seedDeniedPayload = false,
+    seedMaskedPayload = false,
+    payloadMarker = "fixture-protected-payload-marker",
+  } = {},
+) {
   const home = path.join(root, "home/chariox");
   const account = path.join(home, ".provider-account/default");
   const workspace = await mkdtemp(path.join("/dev/shm", "chariox-wrapper-workspace-"));
   const maskedSliceState = path.join(root, "home/slice/.chariox");
+  const deniedRoot = deniedPath ? path.join(root, deniedPath) : "";
   const wrapper = path.join(root, "wrapper.sh");
   const result = path.join(root, "wrapper-result");
 
   await mkdir(account, { recursive: true });
   await mkdir(maskedSliceState, { recursive: true });
-  if (seededPayload) {
-    await writeFile(path.join(maskedSliceState, ".protected-payload"), "must-not-be-visible\n");
+  if (seedMaskedPayload) {
+    await writeFile(path.join(maskedSliceState, ".protected-payload"), `${payloadMarker}\n`);
   }
-  if (visibleDeniedPath) {
-    await mkdir(path.join(root, visibleDeniedPath), { recursive: true });
+  if (deniedRoot) {
+    await mkdir(deniedRoot, { recursive: true });
+    if (seedDeniedPayload) {
+      await writeFile(path.join(deniedRoot, ".protected-payload"), `${payloadMarker}\n`);
+    }
+    await chmod(deniedRoot, deniedPathMode);
   }
 
   const source = await readFile(wrapperSourcePath, "utf8");
@@ -103,7 +117,8 @@ test("allows only an empty masked slice state directory and diagnoses payload", 
     assert.match(emptyRun.result, /masked_empty_denied_path=.*home\/slice\/\.chariox/);
 
     const seededPayload = await makeFixture(path.join(root, "seeded-payload"), {
-      seededPayload: true,
+      seedMaskedPayload: true,
+      payloadMarker: "masked-fixture-secret-marker",
     });
     fixtures.push(seededPayload);
     const payloadRun = await runFixture(seededPayload);
@@ -112,17 +127,54 @@ test("allows only an empty masked slice state directory and diagnoses payload", 
     assert.match(payloadRun.result, /reason=denied host path contains payload in masked directory/);
     assert.match(payloadRun.result, /denied_path=.*home\/slice\/\.chariox/);
     assert.match(payloadRun.result, /denied_path_class=nonempty_directory/);
+    assert.match(payloadRun.result, /denied_path_permission=readable/);
     assert.match(payloadRun.result, /denied_path_entries=1/);
+    assert.doesNotMatch(payloadRun.result, /masked-fixture-secret-marker/);
+    assert.doesNotMatch(payloadRun.stderr, /masked-fixture-secret-marker/);
 
-    const ordinaryDeniedPath = await makeFixture(path.join(root, "ordinary-denied-path"), {
-      visibleDeniedPath: "var/lib/chariox",
+    const readableProtectedPayload = await makeFixture(
+      path.join(root, "readable-protected-payload"),
+      {
+        deniedPath: "var/lib/chariox",
+        seedDeniedPayload: true,
+        payloadMarker: "denied-fixture-secret-marker",
+      },
+    );
+    fixtures.push(readableProtectedPayload);
+    const readablePayloadRun = await runFixture(readableProtectedPayload);
+
+    assert.equal(readablePayloadRun.status, 1, readablePayloadRun.stderr || readablePayloadRun.result);
+    assert.match(readablePayloadRun.result, /denied_path=.*var\/lib\/chariox/);
+    assert.match(readablePayloadRun.result, /denied_path_class=nonempty_directory/);
+    assert.match(readablePayloadRun.result, /denied_path_permission=readable/);
+    assert.match(readablePayloadRun.result, /denied_path_entries=1/);
+    assert.doesNotMatch(readablePayloadRun.result, /denied-fixture-secret-marker/);
+    assert.doesNotMatch(readablePayloadRun.stderr, /denied-fixture-secret-marker/);
+
+    const inaccessibleMountpoint = await makeFixture(path.join(root, "inaccessible-mountpoint"), {
+      deniedPath: "var/lib/chariox",
+      deniedPathMode: 0o000,
     });
-    fixtures.push(ordinaryDeniedPath);
-    const ordinaryDeniedRun = await runFixture(ordinaryDeniedPath);
+    fixtures.push(inaccessibleMountpoint);
+    const inaccessibleRun = await runFixture(inaccessibleMountpoint);
 
-    assert.equal(ordinaryDeniedRun.status, 1, ordinaryDeniedRun.stderr || ordinaryDeniedRun.result);
-    assert.match(ordinaryDeniedRun.result, /denied_path=.*var\/lib\/chariox/);
-    assert.match(ordinaryDeniedRun.result, /denied_path_class=directory/);
+    assert.equal(inaccessibleRun.status, 0, inaccessibleRun.stderr || inaccessibleRun.result);
+    assert.match(inaccessibleRun.result, /masked_inaccessible_denied_paths=.*var\/lib\/chariox/);
+    assert.match(inaccessibleRun.result, /masked_inaccessible_denied_path_permission=inaccessible/);
+    assert.match(inaccessibleRun.result, /masked_inaccessible_denied_path_entries=unavailable/);
+
+    const readableEmptyPath = await makeFixture(path.join(root, "readable-empty-path"), {
+      deniedPath: "var/lib/chariox",
+      deniedPathMode: 0o755,
+    });
+    fixtures.push(readableEmptyPath);
+    const readableEmptyRun = await runFixture(readableEmptyPath);
+
+    assert.equal(readableEmptyRun.status, 1, readableEmptyRun.stderr || readableEmptyRun.result);
+    assert.match(readableEmptyRun.result, /denied_path=.*var\/lib\/chariox/);
+    assert.match(readableEmptyRun.result, /denied_path_class=empty_directory/);
+    assert.match(readableEmptyRun.result, /denied_path_permission=readable/);
+    assert.match(readableEmptyRun.result, /denied_path_entries=0/);
   } finally {
     await Promise.all(
       fixtures.map((fixture) => rm(fixture.workspace, { recursive: true, force: true })),
