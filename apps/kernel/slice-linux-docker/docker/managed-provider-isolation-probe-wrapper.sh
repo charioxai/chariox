@@ -5,6 +5,7 @@ workspace="${CHARIOX_MANAGED_ISOLATION_PROBE_WORKSPACE:?probe workspace is requi
 result="${CHARIOX_MANAGED_ISOLATION_PROBE_RESULT:?probe result is required}"
 real_provider="${CHARIOX_MANAGED_ISOLATION_REAL_PROVIDER:?real provider executable is required}"
 account="${CODEX_HOME:-}"
+assert_mode="${CHARIOX_MANAGED_ISOLATION_ASSERT_MODE:-strict}"
 
 fail() {
   printf 'managed_provider_isolation=failure\nreason=%s\n' "$1" >"$result" 2>/dev/null || true
@@ -12,6 +13,11 @@ fail() {
   printf '%s\n' "$1" >&2
   exit 1
 }
+
+case "$assert_mode" in
+  baseline|strict) ;;
+  *) fail "managed provider isolation assertion mode is invalid" ;;
+esac
 
 [[ "${CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE:-}" == "1" ]] \
   || fail "managed provider isolation marker is unavailable"
@@ -21,8 +27,41 @@ fail() {
   || fail "probe workspace is unavailable or not writable"
 [[ -n "$account" && -d "$account" && -r "$account" && -w "$account" ]] \
   || fail "probe provider account is unavailable or not writable"
+[[ "$account" == /home/chariox/.provider-account/* ]] \
+  || fail "provider account was not rebound into the managed namespace"
 [[ -x "$real_provider" ]] \
   || fail "real provider executable is unavailable"
+[[ "$(command -v "$real_provider" 2>/dev/null || true)" == "$real_provider" ]] \
+  || fail "real provider executable is not visible through PATH resolution"
+
+provider_cwd="$(pwd -P)"
+workspace_cwd="$(cd "$workspace" && pwd -P)"
+[[ "$provider_cwd" == "$workspace_cwd" ]] \
+  || fail "provider working directory was not transferred to the managed namespace"
+
+runtime_dir="${XDG_RUNTIME_DIR:-}"
+xdg_runtime_assessment="absent"
+if [[ -n "$runtime_dir" ]]; then
+  if [[ "$runtime_dir" == /home/chariox/.provider-account/* && -d "$runtime_dir" ]]; then
+    xdg_runtime_assessment="rebound"
+  elif [[ "$assert_mode" == "strict" ]]; then
+    fail "XDG_RUNTIME_DIR was not rebound into the managed namespace"
+  else
+    xdg_runtime_assessment="legacy"
+  fi
+fi
+
+if ! command -v unshare >/dev/null 2>&1; then
+  nested_userns="unavailable"
+elif unshare -Ur true >/dev/null 2>&1; then
+  nested_userns="allowed"
+else
+  nested_userns="denied"
+fi
+if [[ "${CHARIOX_MANAGED_ISOLATION_REQUIRE_NESTED_USERNS_DENIED:-0}" == "1" \
+  && "$nested_userns" != "denied" ]]; then
+  fail "nested user namespace probe was $nested_userns"
+fi
 
 for denied in \
   /var/lib/chariox \
@@ -33,6 +72,7 @@ do
   [[ ! -e "$denied" ]] || fail "a denied host path is visible in the provider sandbox"
 done
 
+legacy_control_env=""
 for secret_name in \
   CHARIOX_RELAY_TOKEN \
   CHARIOX_KERNEL_LOCAL_AUTH_TOKEN \
@@ -45,8 +85,21 @@ for secret_name in \
   CHARIOX_MANAGED_VAULT_PATH \
   CHARIOX_DISPOSABLE_WORKER_BOOTSTRAP_PATH
 do
-  [[ -z "${!secret_name:-}" ]] || fail "a denied control credential is visible in the provider sandbox"
+  if [[ -n "${!secret_name:-}" ]]; then
+    if [[ "$assert_mode" == "strict" ]]; then
+      fail "a denied control credential is visible in the provider sandbox"
+    fi
+    if [[ -n "$legacy_control_env" ]]; then
+      legacy_control_env+=",$secret_name"
+    else
+      legacy_control_env="$secret_name"
+    fi
+  fi
 done
+
+if [[ -z "$legacy_control_env" ]]; then
+  legacy_control_env="none"
+fi
 
 account_probe="$account/.chariox-isolation-account-$$"
 workspace_probe="$workspace/.chariox-isolation-workspace-$$"
@@ -78,8 +131,10 @@ git -C "$outside_repository" -c user.name=probe -c user.email=probe@example.inva
 git clone --quiet "$outside_repository" "$cloned_repository"
 git -C "$cloned_repository" status --porcelain >/dev/null
 
-printf 'managed_provider_isolation=ok\nreal_provider=%s\nworkspace=%s\naccount=%s\noutside_repository=%s\noutside_clone=%s\n' \
-  "$real_provider" "$workspace" "$account" "$outside_repository" "$cloned_repository" >"$result"
+printf 'managed_provider_isolation=ok\nisolation_assert_mode=%s\nreal_provider=%s\nworkspace=%s\naccount=%s\nprovider_cwd=%s\nnested_userns=%s\nxdg_runtime_dir=%s\nxdg_runtime_assessment=%s\ncontrol_env_scrubbed=%s\nlegacy_control_env=%s\noutside_repository=%s\noutside_clone=%s\n' \
+  "$assert_mode" "$real_provider" "$workspace" "$account" "$provider_cwd" "$nested_userns" \
+  "$runtime_dir" "$xdg_runtime_assessment" "$([[ "$assert_mode" == "strict" ]] && echo yes || echo baseline)" \
+  "$legacy_control_env" "$outside_repository" "$cloned_repository" >"$result"
 chmod 600 "$result"
 cleanup
 trap - EXIT

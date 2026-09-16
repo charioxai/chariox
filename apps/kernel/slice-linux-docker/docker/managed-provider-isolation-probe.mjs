@@ -17,13 +17,24 @@ const workspace = process.env.CHARIOX_MANAGED_ISOLATION_PROBE_WORKSPACE ?? "/wor
 const worktree = process.env.CHARIOX_MANAGED_ISOLATION_PROBE_WORKTREE ?? workspace
 const resultPath = process.env.CHARIOX_MANAGED_ISOLATION_PROBE_RESULT ??
   path.join(workspace, ".chariox-managed-isolation-probe.result")
+const launchCapturePath = process.env.CHARIOX_MANAGED_ISOLATION_PROBE_CAPTURE ?? ""
 const accountProfile = process.env.CHARIOX_MANAGED_ISOLATION_PROBE_ACCOUNT ?? "default"
 const model = process.env.CHARIOX_MANAGED_ISOLATION_PROBE_MODEL ?? "gpt-5.4"
+const nativeTui = /^(?:1|true|yes|on)$/i.test(
+  process.env.CHARIOX_MANAGED_ISOLATION_PROBE_NATIVE_TUI ?? "",
+)
+const requireNestedUsernsDenied = /^(?:1|true|yes|on)$/i.test(
+  process.env.CHARIOX_MANAGED_ISOLATION_REQUIRE_NESTED_USERNS_DENIED ?? "",
+)
 const timeoutMs = Number(process.env.CHARIOX_PROBE_TIMEOUT_MS ?? 45_000)
 
 assert.ok(authToken, "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN is required")
 assert.ok(path.isAbsolute(workspace), "probe workspace must be absolute")
 assert.ok(path.isAbsolute(resultPath), "probe result path must be absolute")
+assert.ok(
+  !launchCapturePath || path.isAbsolute(launchCapturePath),
+  "probe launch capture path must be absolute",
+)
 assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs >= 1_000, "probe timeout must be at least one second")
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
@@ -131,7 +142,12 @@ async function waitForProviderRunRunning(providerRunId) {
     const state = String(providerRun.state ?? "").toLowerCase()
     if (state === "running") return
     if (["failed", "ended"].includes(state)) {
-      throw new Error(`isolation probe provider run entered ${providerRun.state}`)
+      const diagnostic = sanitizeProbeDiagnostic(
+        providerRun.terminal_diagnostic ?? providerRun.terminalDiagnostic,
+      )
+      const suffix = diagnostic ? `terminal_diagnostic=${diagnostic}` : ""
+      const renderedSuffix = suffix ? `; ${suffix}` : ""
+      throw new Error(`isolation probe provider run entered ${providerRun.state}${renderedSuffix}`)
     }
     await sleep(100)
   }
@@ -139,6 +155,7 @@ async function waitForProviderRunRunning(providerRunId) {
 }
 
 let sessionId
+let probeSucceeded = false
 try {
   await fs.rm(resultPath, { force: true })
   const created = await send({
@@ -161,7 +178,7 @@ try {
       variant: null,
       structured_endpoint: null,
       provider_session_id: null,
-      native_tui: false,
+      native_tui: nativeTui,
     },
   }, "real Codex provider launch")
   assert.ok(
@@ -172,13 +189,19 @@ try {
   const providerRun = launched.ProviderRunLaunched?.provider_run ??
     launched.ProviderRunLaunchAccepted.provider_run
 
+  await writeLaunchCapture(providerRun)
+
   await waitForProviderRunRunning(providerRun.id)
   const result = await readProbeResult()
   assert.match(result, /^managed_provider_isolation=ok$/m)
   assert.match(result, /^real_provider=\//m)
   assert.match(result, new RegExp(`^workspace=${escapeRegExp(workspace)}$`, "m"))
+  if (requireNestedUsernsDenied) {
+    assert.match(result, /^nested_userns=denied$/m)
+  }
   assert.match(result, /^outside_repository=\/tmp\//m)
   assert.match(result, /^outside_clone=\/tmp\//m)
+  probeSucceeded = true
   process.stdout.write(`${JSON.stringify({
     authenticated: true,
     provider: "codex",
@@ -189,15 +212,121 @@ try {
       "Docker broker",
       "host process roots",
     ],
-  })}\n`)
+    })}\n`)
+} catch (error) {
+  // The wrapper can fail before Codex binds its endpoint. Keep its private
+  // report instead of deleting the only explanation behind a readiness timeout.
+  // Print only the path, never untrusted report contents or provider credentials.
+  if (await fs.lstat(resultPath).then((stat) => stat.isFile(), () => false)) {
+    process.stderr.write(`wrapper_result=${JSON.stringify(resultPath)}\n`)
+  }
+  throw error
 } finally {
   if (sessionId) {
     await send({ EndSession: { session_id: sessionId } }, "probe session cleanup").catch(() => {})
   }
-  await fs.rm(resultPath, { force: true }).catch(() => {})
+  if (probeSucceeded) {
+    await fs.rm(resultPath, { force: true }).catch(() => {})
+  }
   socket.close()
 }
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+async function writeLaunchCapture(providerRun) {
+  if (!launchCapturePath) return
+
+  const args = providerRun.pty_args ?? providerRun.ptyArgs ?? []
+  const environment = providerRun.pty_env ?? providerRun.ptyEnv ?? {}
+  const accountEnvironmentNames = new Set([
+    "CODEX_HOME",
+    "CLAUDE_CONFIG_DIR",
+    "XDG_DATA_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_STATE_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_RUNTIME_DIR",
+    "OPENCODE_CONFIG_DIR",
+  ])
+  const accountEnvironment = Object.fromEntries(
+    Object.entries(environment)
+      .filter(([name]) => accountEnvironmentNames.has(name))
+      .map(([name, value]) => [name, String(value)]),
+  )
+
+  const capture = {
+    schema: 1,
+    provider_run_id: providerRun.id,
+    pty_program: providerRun.pty_program ?? providerRun.ptyProgram ?? null,
+    pty_args: sanitizeLaunchArgs(args),
+    pty_env_account_paths: accountEnvironment,
+    namespace_account_paths: extractSetenvAccountPaths(args),
+    pty_env_remove: providerRun.pty_env_remove ?? providerRun.ptyEnvRemove ?? [],
+    working_directory: providerRun.working_directory ?? providerRun.workingDirectory ?? null,
+    structured_endpoint: providerRun.structured_endpoint ?? providerRun.structuredEndpoint ?? null,
+  }
+  await fs.writeFile(launchCapturePath, `${JSON.stringify(capture, null, 2)}\n`, { mode: 0o600 })
+  await fs.chmod(launchCapturePath, 0o600)
+}
+
+function sanitizeLaunchArgs(args) {
+  const sanitized = []
+  for (let index = 0; index < args.length; index += 1) {
+    const value = String(args[index])
+    const previous = String(args[index - 1] ?? "")
+    if (previous === "--setenv" && isSensitiveEnvironmentName(value)) {
+      sanitized.push(value)
+      if (index + 1 < args.length) {
+        sanitized.push("[redacted]")
+        index += 1
+      }
+      continue
+    }
+    sanitized.push(looksLikeSecret(value) ? "[redacted]" : value)
+  }
+  return sanitized
+}
+
+function isSensitiveEnvironmentName(value) {
+  return /(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH|COOKIE|KEY)/i.test(value)
+}
+
+function extractSetenvAccountPaths(args) {
+  const names = new Set([
+    "CODEX_HOME",
+    "CLAUDE_CONFIG_DIR",
+    "XDG_DATA_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_STATE_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_RUNTIME_DIR",
+    "OPENCODE_CONFIG_DIR",
+  ])
+  const paths = {}
+  for (let index = 0; index + 2 < args.length; index += 1) {
+    if (args[index] === "--setenv" && names.has(String(args[index + 1]))) {
+      paths[String(args[index + 1])] = String(args[index + 2])
+    }
+  }
+  return paths
+}
+
+function looksLikeSecret(value) {
+  return /^(?:sk|sess|key|tok|secret|bearer)[-_][A-Za-z0-9._-]{10,}$/i.test(value) ||
+    /^(?:Bearer|Basic)\s+\S+$/i.test(value)
+}
+
+function sanitizeProbeDiagnostic(value) {
+  if (value === undefined || value === null) return ""
+  let diagnostic = String(value)
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+  diagnostic = diagnostic.replace(
+    /\b(authorization|api[_-]?key|token|secret|password|credential(?:s)?|cookie|prompt|stderr|stdout)\s*[:=]\s*.*?(?=\s+\b[\w.-]+\s*[:=]|$)/gi,
+    "$1=[redacted]",
+  )
+  diagnostic = diagnostic.replace(/\b(Bearer|Basic)\s+\S+/gi, "$1 [redacted]")
+  return diagnostic.slice(0, 1_024)
 }

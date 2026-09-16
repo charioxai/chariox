@@ -217,6 +217,12 @@ impl DaemonApp {
         started: &StartedProviderLaunch,
         error: &DaemonError,
     ) {
+        let pty_tail = self.pty.early_exit_diagnostic(started.run.id());
+        let diagnostic = crate::provider::provider_launch_failure_diagnostic(
+            started.run.id(),
+            error,
+            pty_tail.as_deref(),
+        );
         crate::logging::error_with_fields(
             "daemon.app",
             "provider runtime initialization failed",
@@ -224,6 +230,7 @@ impl DaemonApp {
                 "provider_run_id": started.run.id(),
                 "session_id": started.run.session_id(),
                 "error": error.to_string(),
+                "managed_pty_early_exit_output": pty_tail,
             }),
         );
         let recipients = self
@@ -233,16 +240,7 @@ impl DaemonApp {
             started.run.session_id(),
             Some(started.run.id()),
             recipients,
-            format!(
-                "Provider launch `{}` failed before it became ready: {}",
-                started.run.id(),
-                error
-            ),
-        );
-        let diagnostic = format!(
-            "Provider launch `{}` failed before it became ready: {}",
-            started.run.id(),
-            error
+            diagnostic.clone(),
         );
         if let Ok(run) = self
             .providers

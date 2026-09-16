@@ -52,12 +52,15 @@ impl KernelRuntimeState {
         retry: Option<crate::app::ProviderLaunchFailureRetry>,
     ) {
         let mut advance_workflow_queue = false;
+        let pty_tail = self
+            .with_app_side_effect(|app| app.pty_mut().early_exit_diagnostic(started.run.id()))
+            .await;
         {
             let owned = &self.owned;
-            let diagnostic = format!(
-                "Provider launch `{}` failed before it became ready: {}",
+            let diagnostic = crate::provider::provider_launch_failure_diagnostic(
                 started.run.id(),
-                error
+                error,
+                pty_tail.as_deref(),
             );
             if retry.is_none() {
                 crate::logging::error_with_fields(
@@ -67,6 +70,7 @@ impl KernelRuntimeState {
                         "provider_run_id": started.run.id(),
                         "session_id": started.run.session_id(),
                         "error": error.to_string(),
+                        "managed_pty_early_exit_output": pty_tail,
                     }),
                 );
                 let recipients = owned
