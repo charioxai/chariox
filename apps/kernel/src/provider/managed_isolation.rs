@@ -26,8 +26,6 @@ const BWRAP_PATH: &str = "/usr/bin/bwrap";
 #[cfg(target_os = "linux")]
 const MANAGED_PROVIDER_BWRAP_ENV: &str = "CHARIOX_MANAGED_PROVIDER_BWRAP";
 #[cfg(any(target_os = "linux", test))]
-const MANAGED_HOST_SLICE_PUBLICATION_ROOT: &str = "/var/lib/chariox-slice-share/slices";
-#[cfg(any(target_os = "linux", test))]
 const SANDBOX_HOME: &str = "/home/chariox";
 const SANDBOX_ACCOUNT_ROOT: &str = "/home/chariox/.provider-account";
 
@@ -191,11 +189,11 @@ fn managed_slice_workspace_roots() -> Result<Vec<PathBuf>, DaemonError> {
 }
 
 #[cfg(any(target_os = "linux", test))]
-fn managed_private_temp_roots() -> Vec<PathBuf> {
+fn managed_private_temp_roots(process_temp_root: &Path) -> Vec<PathBuf> {
     let mut roots = vec![
         PathBuf::from("/tmp"),
         PathBuf::from("/var/tmp"),
-        std::env::temp_dir(),
+        process_temp_root.to_path_buf(),
     ];
     roots.sort();
     roots.dedup();
@@ -203,20 +201,27 @@ fn managed_private_temp_roots() -> Vec<PathBuf> {
 }
 
 #[cfg(any(target_os = "linux", test))]
-fn managed_private_namespace_roots() -> Vec<PathBuf> {
+fn managed_private_namespace_roots(process_temp_root: &Path) -> Vec<PathBuf> {
     let mut roots = vec![PathBuf::from("/run")];
-    roots.extend(managed_private_temp_roots());
+    roots.extend(managed_private_temp_roots(process_temp_root));
     roots.sort();
     roots.dedup();
     roots
 }
 
 #[cfg(any(target_os = "linux", test))]
-fn managed_host_slice_publication_root() -> Option<PathBuf> {
-    let configured = std::env::var_os("CHARIOX_SLICE_ROOT")
+fn managed_configured_slice_publication_root() -> Option<PathBuf> {
+    let slice_root = std::env::var_os("CHARIOX_SLICE_ROOT")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)?;
-    (configured == Path::new(MANAGED_HOST_SLICE_PUBLICATION_ROOT)).then_some(configured)
+    let broker_socket = std::env::var_os("CHARIOX_SLICE_DOCKER_BROKER_SOCKET")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)?;
+    if !slice_root.is_absolute() || !broker_socket.is_absolute() {
+        return None;
+    }
+    let broker_share_root = broker_socket.parent()?.parent()?.parent()?.to_path_buf();
+    (slice_root.parent() == Some(broker_share_root.as_path())).then_some(slice_root)
 }
 
 #[cfg(target_os = "linux")]
@@ -254,7 +259,7 @@ fn managed_protected_namespace_directories(extra: &[PathBuf]) -> Vec<PathBuf> {
         }
     }
 
-    if let Some(publication_root) = managed_host_slice_publication_root() {
+    if let Some(publication_root) = managed_configured_slice_publication_root() {
         paths.push(publication_root);
     }
 
@@ -329,7 +334,7 @@ fn managed_trusted_read_only_paths() -> Result<Vec<PathBuf>, DaemonError> {
         if !path.is_absolute() {
             return Err(isolation_error("CHARIOX_SLICE_ROOT must be absolute"));
         }
-        if managed_host_slice_publication_root().as_deref() != Some(path.as_path()) {
+        if managed_configured_slice_publication_root().as_deref() != Some(path.as_path()) {
             candidates.push(path);
         }
     }
@@ -777,6 +782,22 @@ fn managed_namespace_args(
     path_exists: impl Fn(&Path) -> bool,
     prompt_attachment_root: Option<&Path>,
 ) -> (Vec<String>, BTreeSet<PathBuf>) {
+    let process_temp_root = std::env::temp_dir();
+    managed_namespace_args_with_process_temp_root(
+        resolver,
+        path_exists,
+        prompt_attachment_root,
+        &process_temp_root,
+    )
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn managed_namespace_args_with_process_temp_root(
+    resolver: Option<&Path>,
+    path_exists: impl Fn(&Path) -> bool,
+    prompt_attachment_root: Option<&Path>,
+    process_temp_root: &Path,
+) -> (Vec<String>, BTreeSet<PathBuf>) {
     let mut args = vec![
         "--die-with-parent".to_string(),
         "--new-session".to_string(),
@@ -808,7 +829,7 @@ fn managed_namespace_args(
     // GNU Screen and other service-owned control sockets live below /run. It
     // is re-exposed only through explicit resolver/runtime bindings added
     // after this mask.
-    let private_namespace_roots = managed_private_namespace_roots();
+    let private_namespace_roots = managed_private_namespace_roots(process_temp_root);
     for path in private_namespace_roots {
         if path.is_absolute() && path != Path::new("/") && path_exists(&path) {
             args.extend(["--tmpfs".to_string(), path.display().to_string()]);
@@ -887,12 +908,23 @@ fn managed_prompt_attachment_root(
 
 #[cfg(target_os = "linux")]
 fn managed_workspace_roots(request: &LaunchProviderRequest) -> Result<Vec<PathBuf>, DaemonError> {
+    let process_temp_root = std::env::temp_dir();
+    managed_workspace_roots_with_private_temp_roots(
+        request,
+        &managed_private_temp_roots(&process_temp_root),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn managed_workspace_roots_with_private_temp_roots(
+    request: &LaunchProviderRequest,
+    private_temp_roots: &[PathBuf],
+) -> Result<Vec<PathBuf>, DaemonError> {
     if request.session_id == "provider-account" {
         return Ok(Vec::new());
     }
     let protected = managed_protected_namespace_directories(&[]);
-    let private_temp_roots = managed_private_temp_roots();
-    let host_publication_root = managed_host_slice_publication_root();
+    let host_publication_root = managed_configured_slice_publication_root();
     let configured = managed_slice_workspace_roots()?;
     let mut roots = configured.clone();
     let mut requested = request.workspace_live_sync_roots.clone();
@@ -969,6 +1001,22 @@ fn managed_workspace_root_requires_rebind(
     protected: &[PathBuf],
     trusted_read_only: &[PathBuf],
 ) -> bool {
+    let process_temp_root = std::env::temp_dir();
+    managed_workspace_root_requires_rebind_with_private_temp_roots(
+        root,
+        protected,
+        trusted_read_only,
+        &managed_private_temp_roots(&process_temp_root),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn managed_workspace_root_requires_rebind_with_private_temp_roots(
+    root: &Path,
+    protected: &[PathBuf],
+    trusted_read_only: &[PathBuf],
+    private_temp_roots: &[PathBuf],
+) -> bool {
     if protected
         .iter()
         .chain(trusted_read_only)
@@ -983,7 +1031,7 @@ fn managed_workspace_root_requires_rebind(
     {
         return true;
     }
-    managed_private_temp_roots()
+    private_temp_roots
         .iter()
         .any(|path| root != path && root.starts_with(path))
 }
@@ -1385,8 +1433,6 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn managed_launch_rebinds_selected_workspace_below_custom_tmpdir() {
-        let _env = crate::env_lock::lock();
-        let previous_tmpdir = std::env::var_os("TMPDIR");
         let root = std::env::temp_dir().join(format!(
             "chariox-managed-selected-temp-workspace-{}-{}",
             std::process::id(),
@@ -1395,7 +1441,6 @@ mod tests {
         let custom_tmpdir = root.join("custom-tmp");
         let workspace = custom_tmpdir.join("selected-repository");
         std::fs::create_dir_all(&workspace).expect("selected temp workspace should exist");
-        std::env::set_var("TMPDIR", &custom_tmpdir);
 
         let request = LaunchProviderRequest::new(
             "selected-temp-workspace-session",
@@ -1406,16 +1451,22 @@ mod tests {
         )
         .with_working_directory(workspace.clone())
         .with_workspace_live_sync_roots(vec![workspace.clone()]);
-        let roots = managed_workspace_roots(&request)
+        let private_temp_roots = managed_private_temp_roots(&custom_tmpdir);
+        let roots = managed_workspace_roots_with_private_temp_roots(&request, &private_temp_roots)
             .expect("selected workspace below custom TMPDIR should resolve");
         let protected = managed_protected_namespace_directories(&[]);
-        let trusted =
-            managed_trusted_read_only_paths().expect("configured trusted paths should resolve");
-        let (mut args, mut created) = managed_namespace_args(None, Path::exists, None);
+        let trusted = Vec::new();
+        let (mut args, mut created) =
+            managed_namespace_args_with_process_temp_root(None, Path::exists, None, &custom_tmpdir);
         append_managed_protected_namespace_directories(&mut args, &protected, &mut created);
         append_managed_trusted_read_only_paths(&mut args, &trusted, &mut created);
         for root in &roots {
-            if managed_workspace_root_requires_rebind(root, &protected, &trusted) {
+            if managed_workspace_root_requires_rebind_with_private_temp_roots(
+                root,
+                &protected,
+                &trusted,
+                &private_temp_roots,
+            ) {
                 append_bind(&mut args, root, root, &mut created);
             }
         }
@@ -1426,7 +1477,6 @@ mod tests {
         let custom_tmpdir = custom_tmpdir
             .canonicalize()
             .expect("custom TMPDIR should canonicalize");
-        restore_env("TMPDIR", previous_tmpdir);
         let _ = std::fs::remove_dir_all(root);
 
         assert_eq!(roots, vec![workspace.clone()]);
@@ -1626,22 +1676,37 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn managed_host_slice_publication_is_protected_not_trusted_wholesale() {
+    fn managed_configured_slice_publication_is_protected_not_trusted_wholesale() {
         let _env = crate::env_lock::lock();
         let previous_slice_root = std::env::var_os("CHARIOX_SLICE_ROOT");
-        std::env::set_var("CHARIOX_SLICE_ROOT", MANAGED_HOST_SLICE_PUBLICATION_ROOT);
+        let previous_broker = std::env::var_os("CHARIOX_SLICE_DOCKER_BROKER_SOCKET");
+        let root = std::env::temp_dir().join(format!(
+            "chariox-managed-relocated-slice-boundary-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let share_root = root.join("relocated-share");
+        let publication_root = share_root.join("configured-publications");
+        let broker_socket = share_root.join(".private-control/control/control.sock");
+        std::fs::create_dir_all(&publication_root).expect("configured publication root");
+        std::env::set_var("CHARIOX_SLICE_ROOT", &publication_root);
+        std::env::set_var("CHARIOX_SLICE_DOCKER_BROKER_SOCKET", &broker_socket);
 
         let protected = managed_protected_namespace_directories(&[]);
         let trusted = managed_trusted_read_only_paths()
-            .expect("host publication path should not need a trusted bind");
-        let detected = managed_host_slice_publication_root();
+            .expect("configured publication path should not need a trusted bind");
+        let detected = managed_configured_slice_publication_root();
 
         restore_env("CHARIOX_SLICE_ROOT", previous_slice_root);
+        restore_env("CHARIOX_SLICE_DOCKER_BROKER_SOCKET", previous_broker);
 
-        let publication = PathBuf::from(MANAGED_HOST_SLICE_PUBLICATION_ROOT);
+        let publication = publication_root
+            .canonicalize()
+            .expect("configured publication root should canonicalize");
         assert!(protected.contains(&publication));
         assert!(!trusted.contains(&publication));
-        assert_eq!(detected, Some(publication));
+        assert_eq!(detected, Some(publication.clone()));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(target_os = "linux")]
@@ -1826,12 +1891,17 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn managed_bwrap_probe_hides_unselected_slice_publication_siblings() {
+        let _env = crate::env_lock::lock();
+        let previous_slice_root = std::env::var_os("CHARIOX_SLICE_ROOT");
+        let previous_broker = std::env::var_os("CHARIOX_SLICE_DOCKER_BROKER_SOCKET");
         let root = std::env::temp_dir().join(format!(
             "chariox-managed-slice-publication-bwrap-probe-{}-{}",
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));
-        let publication = root.join("publication");
+        let share_root = root.join("relocated-share");
+        let publication = share_root.join("configured-publications");
+        let broker_socket = share_root.join(".private-control/control/control.sock");
         let selected = publication.join("selected");
         let sibling = publication.join("sibling");
         std::fs::create_dir_all(&selected).expect("selected publication should exist");
@@ -1840,6 +1910,28 @@ mod tests {
             .expect("selected marker should exist");
         std::fs::write(sibling.join("sibling.txt"), "sibling\n")
             .expect("sibling marker should exist");
+        std::env::set_var("CHARIOX_SLICE_ROOT", &publication);
+        std::env::set_var("CHARIOX_SLICE_DOCKER_BROKER_SOCKET", &broker_socket);
+
+        let request = LaunchProviderRequest::new(
+            "managed-slice-publication-probe",
+            "codex",
+            "codex",
+            "default",
+            "gpt-5.6-luna",
+        )
+        .with_working_directory(selected.clone())
+        .with_workspace_live_sync_roots(vec![selected.clone()]);
+        let workspace_roots = managed_workspace_roots(&request)
+            .expect("selected configured publication should resolve");
+        let protected = managed_protected_namespace_directories(&[]);
+        let trusted = managed_trusted_read_only_paths()
+            .expect("configured publication should not be trusted wholesale");
+        assert_eq!(
+            managed_configured_slice_publication_root(),
+            Some(publication.clone())
+        );
+        assert_eq!(workspace_roots, vec![selected.canonicalize().unwrap()]);
 
         let bwrap = Path::new(BWRAP_PATH);
         if !bwrap.is_file() {
@@ -1847,17 +1939,43 @@ mod tests {
                 "skipped managed bwrap slice-publication probe: {} is unavailable",
                 bwrap.display()
             );
+            restore_env("CHARIOX_SLICE_ROOT", previous_slice_root);
+            restore_env("CHARIOX_SLICE_DOCKER_BROKER_SOCKET", previous_broker);
             let _ = std::fs::remove_dir_all(root);
             return;
         }
 
         let (mut args, mut created) = managed_namespace_args(None, Path::exists, None);
-        append_managed_protected_namespace_directories(
-            &mut args,
-            std::slice::from_ref(&publication),
-            &mut created,
-        );
-        append_bind(&mut args, &selected, &selected, &mut created);
+        append_managed_protected_namespace_directories(&mut args, &protected, &mut created);
+        append_managed_trusted_read_only_paths(&mut args, &trusted, &mut created);
+        for root in &workspace_roots {
+            if managed_workspace_root_requires_rebind(root, &protected, &trusted) {
+                append_bind(&mut args, root, root, &mut created);
+            }
+        }
+        assert!(args.windows(2).any(|window| {
+            window
+                == [
+                    "--tmpfs",
+                    publication.to_str().expect("publication should be utf8"),
+                ]
+        }));
+        assert!(args.windows(3).any(|window| {
+            window
+                == [
+                    "--bind",
+                    selected.to_str().expect("selected path should be utf8"),
+                    selected.to_str().expect("selected path should be utf8"),
+                ]
+        }));
+        assert!(!args.windows(3).any(|window| {
+            window
+                == [
+                    "--ro-bind",
+                    publication.to_str().expect("publication should be utf8"),
+                    publication.to_str().expect("publication should be utf8"),
+                ]
+        }));
         args.extend([
             "--".to_string(),
             "/bin/sh".to_string(),
@@ -1869,6 +1987,8 @@ mod tests {
             selected.display().to_string(),
             sibling.display().to_string(),
         ]);
+        restore_env("CHARIOX_SLICE_ROOT", previous_slice_root);
+        restore_env("CHARIOX_SLICE_DOCKER_BROKER_SOCKET", previous_broker);
         let output = match Command::new(bwrap).args(args).output() {
             Ok(output) => output,
             Err(error) => {
