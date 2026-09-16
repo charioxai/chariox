@@ -1,5 +1,28 @@
 use super::{validate_non_empty, CharioxUserConfig, DaemonConfig};
 use crate::error::DaemonError;
+use std::path::{Path, PathBuf};
+
+fn validate_credential_vault_path(path: &str) -> Result<(), DaemonError> {
+    let expanded = if path == "~" {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(path))
+    } else if let Some(suffix) = path.strip_prefix("~/") {
+        std::env::var_os("HOME")
+            .map(|home| PathBuf::from(home).join(suffix))
+            .unwrap_or_else(|| PathBuf::from(path))
+    } else {
+        PathBuf::from(path)
+    };
+    if expanded == Path::new("/") || expanded.parent() == Some(Path::new("/")) {
+        return Err(DaemonError::InvalidConfig {
+            field: "credential_vault.path",
+            message:
+                "path must not be a direct child of filesystem root; use a protected directory",
+        });
+    }
+    Ok(())
+}
 
 impl DaemonConfig {
     pub fn validate(&self) -> Result<(), DaemonError> {
@@ -200,6 +223,7 @@ impl CharioxUserConfig {
         self.slices.validate()?;
         validate_non_empty("credential_vault.service", &self.credential_vault.service)?;
         validate_non_empty("credential_vault.path", &self.credential_vault.path)?;
+        validate_credential_vault_path(&self.credential_vault.path)?;
         if self.credential_vault.default_ttl_minutes == 0 {
             return Err(DaemonError::InvalidConfig {
                 field: "credential_vault.default_ttl_minutes",

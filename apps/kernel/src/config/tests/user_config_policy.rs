@@ -142,6 +142,19 @@ backend = "process_memory"
 }
 
 #[test]
+fn user_config_rejects_root_level_credential_vault_path() {
+    let mut config = CharioxUserConfig::default();
+    config.credential_vault.path = "/managed-vault.json".to_string();
+
+    let error = config
+        .validate()
+        .expect_err("root-level Vault paths must protect their derived companion files");
+    assert!(error
+        .to_string()
+        .contains("direct child of filesystem root"));
+}
+
+#[test]
 fn user_config_rejects_unimplemented_credential_vault_unlock_scopes() {
     for unlock_policy in ["session", "agent"] {
         let payload = format!(
