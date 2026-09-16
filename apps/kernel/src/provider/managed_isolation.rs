@@ -190,7 +190,7 @@ fn managed_slice_workspace_roots() -> Result<Vec<PathBuf>, DaemonError> {
 
 #[cfg(target_os = "linux")]
 fn managed_protected_namespace_directories(extra: &[PathBuf]) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
+    let mut paths = vec![PathBuf::from("/run")];
     let chariox_home = std::env::var_os("CHARIOX_HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
@@ -224,9 +224,10 @@ fn managed_protected_namespace_directories(extra: &[PathBuf]) -> Vec<PathBuf> {
     }
 
     // CHARIOX_SLICE_ROOT identifies the disposable image's support tree in
-    // Docker and the slice publication tree on a host. It is not itself a
-    // secret or kernel-state path, so it must remain ordinary filesystem
-    // space; the broker's private ancestors below are protected separately.
+    // Docker and the slice publication tree on a host. It is not service
+    // state, so it is intentionally not included in this protected-cwd
+    // policy. Its trusted helper code is mounted read-only below, while a
+    // requested repository root can still be rebound read-write.
     for name in [
         "CHARIOX_CAPABILITY_ISOLATION_ROOT",
         "CHARIOX_MANAGED_PROVIDER_HOME",
@@ -281,14 +282,82 @@ fn managed_protected_namespace_directories(extra: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 #[cfg(target_os = "linux")]
+fn managed_trusted_read_only_paths() -> Result<Vec<PathBuf>, DaemonError> {
+    let mut candidates = Vec::new();
+    let default_slice_root = Path::new("/opt/chariox-slice");
+    if default_slice_root.exists() {
+        candidates.push(default_slice_root.to_path_buf());
+    }
+    if let Some(path) = std::env::var_os("CHARIOX_SLICE_ROOT")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        if !path.is_absolute() {
+            return Err(isolation_error("CHARIOX_SLICE_ROOT must be absolute"));
+        }
+        candidates.push(path);
+    }
+    if let Some(path) = std::env::var_os(MANAGED_PROVIDER_BWRAP_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        if !path.is_absolute() {
+            return Err(isolation_error(
+                "CHARIOX_MANAGED_PROVIDER_BWRAP must be absolute",
+            ));
+        }
+        candidates.push(path);
+    }
+
+    let mut paths = candidates
+        .into_iter()
+        .map(|path| {
+            path.canonicalize().map_err(|error| {
+                isolation_error(format!(
+                    "managed trusted runtime path {} could not be resolved: {error}",
+                    path.display()
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    paths.sort_by_key(|path| path.components().count());
+    paths.dedup();
+    let mut compact = Vec::with_capacity(paths.len());
+    for path in paths {
+        if path == Path::new("/") || compact.iter().any(|parent| path.starts_with(parent)) {
+            continue;
+        }
+        compact.push(path);
+    }
+    Ok(compact)
+}
+
+#[cfg(target_os = "linux")]
 fn append_managed_protected_namespace_directories(
     args: &mut Vec<String>,
     directories: &[PathBuf],
     created: &mut BTreeSet<PathBuf>,
 ) {
     for directory in directories {
+        // /run is masked while the root namespace is assembled, before
+        // resolver and current-run runtime paths are re-exposed. Reapplying
+        // a tmpfs here would hide those legitimate later bindings.
+        if directory == Path::new("/run") {
+            continue;
+        }
         append_directory(args, directory, created);
         args.extend(["--tmpfs".to_string(), directory.display().to_string()]);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn append_managed_trusted_read_only_paths(
+    args: &mut Vec<String>,
+    paths: &[PathBuf],
+    created: &mut BTreeSet<PathBuf>,
+) {
+    for path in paths {
+        append_read_only_bind(args, path, path, created);
     }
 }
 
@@ -330,6 +399,7 @@ pub(crate) fn apply_managed_provider_isolation(
         let program = rewrite_managed_program_path(&program, &provider_home, &account_bindings);
         let prompt_attachment_root = managed_prompt_attachment_root(request)?;
         let protected_namespace_roots = managed_protected_namespace_directories(&[]);
+        let trusted_read_only_paths = managed_trusted_read_only_paths()?;
 
         let resolver = managed_resolver_binding()?;
         let (mut args, mut created_directories) = managed_namespace_args(
@@ -360,11 +430,20 @@ pub(crate) fn apply_managed_provider_isolation(
             &protected_directories,
             &mut created_directories,
         );
+        append_managed_trusted_read_only_paths(
+            &mut args,
+            &trusted_read_only_paths,
+            &mut created_directories,
+        );
         for root in runtime_roots {
             append_bind(&mut args, &root, &root, &mut created_directories);
         }
         for root in &workspace_roots {
-            if managed_workspace_root_requires_rebind(root, &protected_namespace_roots) {
+            if managed_workspace_root_requires_rebind(
+                root,
+                &protected_namespace_roots,
+                &trusted_read_only_paths,
+            ) {
                 append_bind(&mut args, root, root, &mut created_directories);
             }
         }
@@ -602,6 +681,11 @@ fn managed_bubblewrap_binary() -> Result<PathBuf, DaemonError> {
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(BWRAP_PATH));
+    if !path.is_absolute() {
+        return Err(isolation_error(
+            "managed provider isolation needs an absolute Bubblewrap launcher path",
+        ));
+    }
     let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
         isolation_error(format!(
             "managed provider isolation needs {}: {error}",
@@ -685,14 +769,18 @@ fn managed_namespace_args(
     // temp roots would let sibling runs read or mutate private runtime files
     // despite their 0700/0600 modes. Current-run runtime and prompt-
     // attachment directories are rebound below.
-    let mut private_temp_roots = vec![
+    let mut private_namespace_roots = vec![
+        // GNU Screen and other service-owned control sockets live below this
+        // tree. It is re-exposed only through explicit resolver/runtime
+        // bindings added after this mask.
+        PathBuf::from("/run"),
         PathBuf::from("/tmp"),
         PathBuf::from("/var/tmp"),
         std::env::temp_dir(),
     ];
-    private_temp_roots.sort();
-    private_temp_roots.dedup();
-    for path in private_temp_roots {
+    private_namespace_roots.sort();
+    private_namespace_roots.dedup();
+    for path in private_namespace_roots {
         if path.is_absolute() && path != Path::new("/") && path_exists(&path) {
             args.extend(["--tmpfs".to_string(), path.display().to_string()]);
         }
@@ -837,8 +925,15 @@ fn is_managed_transfer_path(path: &Path) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-fn managed_workspace_root_requires_rebind(root: &Path, protected: &[PathBuf]) -> bool {
-    protected.iter().any(|path| root.starts_with(path))
+fn managed_workspace_root_requires_rebind(
+    root: &Path,
+    protected: &[PathBuf],
+    trusted_read_only: &[PathBuf],
+) -> bool {
+    protected
+        .iter()
+        .chain(trusted_read_only)
+        .any(|path| root != path && root.starts_with(path))
 }
 
 #[cfg(target_os = "linux")]
@@ -855,12 +950,17 @@ fn managed_working_directory(
         .ok_or_else(|| isolation_error("managed provider launch has no working directory"))?;
     let directory = canonical_directory(directory, "managed provider working directory")?;
     let protected = managed_protected_namespace_directories(&[]);
-    if protected.iter().any(|path| directory.starts_with(path))
-        && !roots.iter().any(|root| directory.starts_with(root))
-    {
-        return Err(isolation_error(
-            "managed provider working directory is inside protected managed service state",
-        ));
+    if let Some(protected_root) = protected.iter().find(|path| directory.starts_with(path)) {
+        let reexposed_child = roots.iter().any(|root| {
+            root != protected_root
+                && root.starts_with(protected_root)
+                && directory.starts_with(root)
+        });
+        if !reexposed_child {
+            return Err(isolation_error(
+                "managed provider working directory is inside protected managed service state",
+            ));
+        }
     }
     Ok(directory)
 }
@@ -1173,7 +1273,14 @@ mod tests {
         assert!(args.windows(3).any(|args| args == ["--bind", "/", "/"]));
         assert!(args.windows(2).any(|args| args == ["--tmpfs", "/tmp"]));
         assert!(args.windows(2).any(|args| args == ["--tmpfs", "/var/tmp"]));
-        assert!(!args.windows(2).any(|args| args == ["--tmpfs", "/run"]));
+        let run_mask = args
+            .windows(2)
+            .position(|args| args == ["--tmpfs", "/run"])
+            .expect("the service runtime tree must be masked");
+        assert!(
+            run_mask < binding,
+            "resolver must be re-exposed after /run is masked"
+        );
         assert_eq!(
             &args[binding - 6..binding],
             [
@@ -1229,6 +1336,220 @@ mod tests {
 
         assert_eq!(args.iter().filter(|arg| *arg == "--ro-bind").count(), 0);
         assert!(!args.iter().any(|arg| arg == "/etc/resolv.conf"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_namespace_rebinds_current_runtime_after_trusted_paths_and_run_mask() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-managed-trusted-runtime-order-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let slice_root = root.join("slice-code");
+        let helper = root.join("helper/bin/bwrap");
+        std::fs::create_dir_all(&slice_root).expect("trusted slice root should exist");
+        std::fs::create_dir_all(helper.parent().expect("helper parent should exist"))
+            .expect("helper parent should exist");
+        std::fs::write(&helper, "trusted helper\n").expect("helper should exist");
+
+        let _env = crate::env_lock::lock();
+        let previous_slice_root = std::env::var_os("CHARIOX_SLICE_ROOT");
+        let previous_bwrap = std::env::var_os(MANAGED_PROVIDER_BWRAP_ENV);
+        std::env::set_var("CHARIOX_SLICE_ROOT", &slice_root);
+        std::env::set_var(MANAGED_PROVIDER_BWRAP_ENV, &helper);
+
+        let (mut args, mut created) = managed_namespace_args(None, Path::exists, None);
+        let trusted =
+            managed_trusted_read_only_paths().expect("configured trusted paths should resolve");
+        append_managed_trusted_read_only_paths(&mut args, &trusted, &mut created);
+        let current_runtime = Path::new("/run/chariox-current-runtime");
+        append_bind(&mut args, current_runtime, current_runtime, &mut created);
+
+        restore_env("CHARIOX_SLICE_ROOT", previous_slice_root);
+        restore_env(MANAGED_PROVIDER_BWRAP_ENV, previous_bwrap);
+
+        let slice_root = slice_root
+            .canonicalize()
+            .expect("slice root should canonicalize");
+        let trusted_bind = args
+            .windows(3)
+            .position(|window| {
+                window
+                    == [
+                        "--ro-bind",
+                        slice_root.to_str().expect("slice path should be utf8"),
+                        slice_root.to_str().expect("slice path should be utf8"),
+                    ]
+            })
+            .expect("configured slice code should be read-only mounted");
+        let run_mask = args
+            .windows(2)
+            .position(|window| window == ["--tmpfs", "/run"])
+            .expect("service runtime tree should be masked");
+        let runtime_bind = args
+            .windows(3)
+            .position(|window| {
+                window
+                    == [
+                        "--bind",
+                        "/run/chariox-current-runtime",
+                        "/run/chariox-current-runtime",
+                    ]
+            })
+            .expect("current-run runtime should be re-exposed read-write");
+        assert!(
+            run_mask < trusted_bind,
+            "trusted paths must be mounted after /run is masked"
+        );
+        assert!(
+            trusted_bind < runtime_bind,
+            "current-run runtime must win after trusted mounts"
+        );
+        assert!(!args.windows(2).any(|window| {
+            window
+                == [
+                    "--tmpfs",
+                    slice_root.to_str().expect("slice path should be utf8"),
+                ]
+        }));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_custom_claude_runtime_root_remains_rebindable_after_masks() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-managed-custom-runtime-root-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&root).expect("custom runtime root should exist");
+        let launch = ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "managed-runtime-root-test".to_string(),
+            pty_target: None,
+            pty_program: Some("/bin/sh".to_string()),
+            pty_args: Vec::new(),
+            pty_env: BTreeMap::from([(
+                "CHARIOX_CLAUDE_NATIVE_RUNTIME".to_string(),
+                root.display().to_string(),
+            )]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        };
+        let runtime_roots =
+            managed_runtime_roots(&launch).expect("custom Claude runtime root should be accepted");
+        let (mut args, mut created) = managed_namespace_args(None, Path::exists, None);
+        for runtime_root in &runtime_roots {
+            append_bind(&mut args, runtime_root, runtime_root, &mut created);
+        }
+
+        let runtime_root = root
+            .canonicalize()
+            .expect("runtime root should canonicalize");
+        let run_mask = args
+            .windows(2)
+            .position(|window| window == ["--tmpfs", "/run"])
+            .expect("service runtime tree should be masked");
+        let temp_mask = args
+            .windows(2)
+            .position(|window| window == ["--tmpfs", "/tmp"])
+            .expect("shared temp tree should be masked");
+        let runtime_bind = args
+            .windows(3)
+            .position(|window| {
+                window
+                    == [
+                        "--bind",
+                        runtime_root.to_str().expect("runtime path should be utf8"),
+                        runtime_root.to_str().expect("runtime path should be utf8"),
+                    ]
+            })
+            .expect("current configured runtime should be rebound read-write");
+        assert!(run_mask < runtime_bind);
+        assert!(temp_mask < runtime_bind);
+        let protected_run = vec![PathBuf::from("/run")];
+        assert!(!managed_workspace_root_requires_rebind(
+            Path::new("/run"),
+            &protected_run,
+            &[],
+        ));
+        assert!(managed_workspace_root_requires_rebind(
+            Path::new("/run/chariox-current-runtime"),
+            &protected_run,
+            &[],
+        ));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_bwrap_probe_blocks_trusted_helper_writes_and_run_screen_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-managed-trusted-bwrap-probe-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let slice_root = root.join("slice-code");
+        let helper = slice_root.join("bin/chariox-kernel");
+        std::fs::create_dir_all(helper.parent().expect("helper parent should exist"))
+            .expect("helper parent should exist");
+        std::fs::write(&helper, "trusted helper\n").expect("helper should exist");
+
+        let bwrap = Path::new(BWRAP_PATH);
+        if !bwrap.is_file() {
+            eprintln!(
+                "skipped managed bwrap trusted-helper probe: {} is unavailable",
+                bwrap.display()
+            );
+            let _ = std::fs::remove_dir_all(root);
+            return;
+        }
+
+        let (mut args, mut created) = managed_namespace_args(None, Path::exists, None);
+        append_managed_trusted_read_only_paths(
+            &mut args,
+            &[slice_root
+                .canonicalize()
+                .expect("slice root should canonicalize")],
+            &mut created,
+        );
+        args.extend([
+            "--".to_string(),
+            "/bin/sh".to_string(),
+            "-eu".to_string(),
+            "-c".to_string(),
+            "test \"$(cat \"$1\")\" = 'trusted helper'\nif printf attacker > \"$1\"; then exit 12; fi\ntest \"$(cat \"$1\")\" = 'trusted helper'\ntest ! -e /run/screen/S-slice".to_string(),
+            "managed-trusted-bwrap-probe".to_string(),
+            helper.display().to_string(),
+        ]);
+        let output = match Command::new(bwrap).args(args).output() {
+            Ok(output) => output,
+            Err(error) => {
+                eprintln!("skipped managed bwrap trusted-helper probe: {error}");
+                let _ = std::fs::remove_dir_all(root);
+                return;
+            }
+        };
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("No permissions to create a new namespace")
+            || stderr.contains("Operation not permitted")
+        {
+            eprintln!(
+                "skipped managed bwrap trusted-helper probe: user namespaces are unavailable"
+            );
+            let _ = std::fs::remove_dir_all(root);
+            return;
+        }
+        assert!(
+            output.status.success(),
+            "managed bwrap trusted-helper probe failed: {stderr}"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1357,9 +1678,15 @@ mod tests {
             chariox_home.join(".chariox/state/managed-context-workspaces/publication/selected");
         let outside_repository = root.join("ordinary/new-repository");
         let cloned_repository = root.join("ordinary/cloned-repository");
+        let slice_code = root.join("slice-code");
+        let custom_helper = root.join("custom-helper/bin/bwrap");
         let broker_socket = root.join("slice-share/.broker-private/control/control.sock");
         std::fs::create_dir_all(&transferred_repository).expect("transferred repository");
         std::fs::create_dir_all(&outside_repository).expect("outside repository");
+        std::fs::create_dir_all(&slice_code).expect("trusted slice code directory");
+        std::fs::create_dir_all(custom_helper.parent().expect("helper parent"))
+            .expect("custom helper directory");
+        std::fs::write(&custom_helper, "trusted helper\n").expect("custom helper should exist");
         std::fs::create_dir_all(broker_socket.parent().expect("broker socket parent"))
             .expect("broker control directory");
 
@@ -1369,6 +1696,7 @@ mod tests {
         let previous_vault = std::env::var_os("CHARIOX_MANAGED_VAULT_PATH");
         let previous_broker = std::env::var_os("CHARIOX_SLICE_DOCKER_BROKER_SOCKET");
         let previous_slice_root = std::env::var_os("CHARIOX_SLICE_ROOT");
+        let previous_bwrap = std::env::var_os(MANAGED_PROVIDER_BWRAP_ENV);
         let previous_workspace_count = std::env::var_os(MANAGED_WORKSPACE_ROOT_COUNT_ENV);
         std::env::set_var("CHARIOX_HOME", &chariox_home);
         std::env::set_var(
@@ -1380,7 +1708,8 @@ mod tests {
             chariox_home.join(".chariox/vault/vault.json"),
         );
         std::env::set_var("CHARIOX_SLICE_DOCKER_BROKER_SOCKET", &broker_socket);
-        std::env::set_var("CHARIOX_SLICE_ROOT", root.join("slice-code"));
+        std::env::set_var("CHARIOX_SLICE_ROOT", &slice_code);
+        std::env::set_var(MANAGED_PROVIDER_BWRAP_ENV, &custom_helper);
         std::env::remove_var(MANAGED_WORKSPACE_ROOT_COUNT_ENV);
 
         let request = LaunchProviderRequest::new(
@@ -1396,11 +1725,14 @@ mod tests {
         let working_directory = managed_working_directory(&request, &roots)
             .expect("ordinary paths outside service state should remain valid cwd");
         let protected = managed_protected_namespace_directories(&[]);
+        let trusted_read_only =
+            managed_trusted_read_only_paths().expect("configured trusted paths should resolve");
         let mut args = managed_namespace_args(None, |_| true, None).0;
         let mut created = BTreeSet::new();
         append_managed_protected_namespace_directories(&mut args, &protected, &mut created);
+        append_managed_trusted_read_only_paths(&mut args, &trusted_read_only, &mut created);
         for root in &roots {
-            if managed_workspace_root_requires_rebind(root, &protected) {
+            if managed_workspace_root_requires_rebind(root, &protected, &trusted_read_only) {
                 append_bind(&mut args, root, root, &mut created);
             }
         }
@@ -1413,6 +1745,7 @@ mod tests {
         restore_env("CHARIOX_MANAGED_VAULT_PATH", previous_vault);
         restore_env("CHARIOX_SLICE_DOCKER_BROKER_SOCKET", previous_broker);
         restore_env("CHARIOX_SLICE_ROOT", previous_slice_root);
+        restore_env(MANAGED_PROVIDER_BWRAP_ENV, previous_bwrap);
         restore_env(MANAGED_WORKSPACE_ROOT_COUNT_ENV, previous_workspace_count);
 
         assert_eq!(
@@ -1431,8 +1764,26 @@ mod tests {
             .any(|root| outside_repository.starts_with(root)));
         assert!(protected.contains(&chariox_home.join(".chariox")));
         assert!(protected.contains(&root.join("slice-share/.broker-private")));
-        assert!(!protected.contains(&root.join("slice-code")));
+        assert!(!protected.contains(&slice_code));
+        assert!(trusted_read_only.contains(&slice_code.canonicalize().unwrap()));
+        assert!(trusted_read_only.contains(&custom_helper.canonicalize().unwrap()));
         assert!(args.windows(3).any(|window| window == ["--bind", "/", "/"]));
+        assert!(args.windows(3).any(|window| {
+            window
+                == [
+                    "--ro-bind",
+                    slice_code.to_str().expect("slice path utf8"),
+                    slice_code.to_str().expect("slice path utf8"),
+                ]
+        }));
+        assert!(args.windows(3).any(|window| {
+            window
+                == [
+                    "--ro-bind",
+                    custom_helper.to_str().expect("helper path utf8"),
+                    custom_helper.to_str().expect("helper path utf8"),
+                ]
+        }));
         assert!(args.windows(3).any(|window| {
             window
                 == [
@@ -1455,11 +1806,7 @@ mod tests {
                 ]
         }));
         assert!(!args.windows(2).any(|window| {
-            window
-                == [
-                    "--tmpfs",
-                    root.join("slice-code").to_str().expect("slice path utf8"),
-                ]
+            window == ["--tmpfs", slice_code.to_str().expect("slice path utf8")]
         }));
 
         let status = Command::new("git")
