@@ -865,7 +865,7 @@ fn linux_docker_slice_support_refresh_includes_runtime_dependencies() {
 }
 
 #[test]
-fn managed_provider_isolation_probe_allows_selected_publication_ancestors() {
+fn managed_provider_isolation_probe_preserves_ordinary_filesystem_outside_publication() {
     let docker_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("slice-linux-docker/docker");
     let runtime = std::fs::read_to_string(docker_root.join("start-runtime.sh"))
         .expect("slice runtime script should be readable");
@@ -880,14 +880,11 @@ fn managed_provider_isolation_probe_allows_selected_publication_ancestors() {
         std::fs::read_to_string(docker_root.join("managed-provider-isolation-probe-wrapper.sh"))
             .expect("managed provider probe wrapper should be readable");
 
-    assert!(runtime.contains(
-        "provider_probe_unselected=\"${CHARIOX_MANAGED_WORKSPACE_ROOT_0%/*}/.chariox-managed-isolation-unselected-repository\""
-    ));
-    assert!(runtime.contains("mkdir -p \"$provider_probe_unselected\""));
-    assert!(provisioner.contains("prepare_managed_provider_probe_unselected_path"));
-    assert!(provisioner.contains("install -d -m 0755 \"$provider_probe_unselected\""));
-    assert!(provisioner.contains("cleanup_managed_provider_probe_unselected_path"));
-    assert!(wrapper.contains("\"$unselected\""));
+    assert!(!runtime.contains("provider_probe_unselected"));
+    assert!(!provisioner.contains("prepare_managed_provider_probe_unselected_path"));
+    assert!(wrapper.contains("outside managed workspace"));
+    assert!(wrapper.contains("git clone --quiet"));
+    assert!(wrapper.contains("/var/lib/chariox"));
     assert!(wrapper.contains("managed_provider_isolation=failure"));
     assert!(
         !wrapper

@@ -30,6 +30,8 @@ const SANDBOX_HOME: &str = "/home/chariox";
 const SANDBOX_ACCOUNT_ROOT: &str = "/home/chariox/.provider-account";
 
 const CONTROL_ENVIRONMENT_NAMES: &[&str] = &[
+    "CHARIOX_HOME",
+    "CHARIOX_CAPABILITY_ISOLATION_ROOT",
     "CHARIOX_RELAY_TOKEN",
     "CHARIOX_CLOUD_RELAY_CONFIG_JSON",
     "CHARIOX_CLOUD_RELAY_CONFIG_PATH",
@@ -40,8 +42,13 @@ const CONTROL_ENVIRONMENT_NAMES: &[&str] = &[
     "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED",
     "CHARIOX_MANAGED_BOOTSTRAP_PATH",
     "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
+    "CHARIOX_DISPOSABLE_WORKER_BOOTSTRAP_PATH",
     "CHARIOX_DISPOSABLE_WORKER_RECEIPT",
     "CHARIOX_MANAGED_PROVIDER_BWRAP",
+    "CHARIOX_MANAGED_PROVIDER_HOME",
+    "CHARIOX_MANAGED_PROVIDER_ISOLATION",
+    "CHARIOX_MANAGED_VAULT_PATH",
+    "CHARIOX_SLICE_ROOT",
     "CHARIOX_MANAGED_RELEASE_SIGNATURE",
     "CHARIOX_MANAGED_RELEASE_PUBLIC_KEY",
 ];
@@ -144,10 +151,10 @@ pub(crate) fn provider_reported_path_on_kernel(
 
 #[cfg(any(target_os = "linux", test))]
 fn managed_slice_workspace_roots() -> Result<Vec<PathBuf>, DaemonError> {
-    // The trusted slice provisioner injects the individually validated
-    // development publication mounts into the worker kernel environment.
-    // Hidden leased sessions have no local Project row, so this is their
-    // source of approved provider-sandbox roots.
+    // These are trusted mounts for workspace data that lives below a masked
+    // service-state tree. They are not the provider's filesystem allowlist:
+    // the managed namespace keeps the ordinary host filesystem mounted and
+    // only uses these roots to re-expose transferred data after masking.
     let Some(raw_count) = std::env::var_os(MANAGED_WORKSPACE_ROOT_COUNT_ENV) else {
         return Ok(Vec::new());
     };
@@ -179,6 +186,110 @@ fn managed_slice_workspace_roots() -> Result<Vec<PathBuf>, DaemonError> {
         }
     }
     Ok(roots)
+}
+
+#[cfg(target_os = "linux")]
+fn managed_protected_namespace_directories(extra: &[PathBuf]) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let chariox_home = std::env::var_os("CHARIOX_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .map(|home| home.join(".chariox"))
+        });
+
+    if let Some(home) = chariox_home {
+        if home.is_absolute() {
+            if home.file_name() == Some(std::ffi::OsStr::new(".chariox")) {
+                paths.push(home);
+            } else {
+                for relative in [
+                    ".chariox",
+                    "kernels",
+                    "state",
+                    "managed-context",
+                    "managed-runtime-auth",
+                    "managed",
+                    "sessions",
+                    "daemon",
+                    "machine",
+                ] {
+                    paths.push(home.join(relative));
+                }
+            }
+        }
+    }
+
+    // CHARIOX_SLICE_ROOT identifies the disposable image's support tree in
+    // Docker and the slice publication tree on a host. It is not itself a
+    // secret or kernel-state path, so it must remain ordinary filesystem
+    // space; the broker's private ancestors below are protected separately.
+    for name in [
+        "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+        "CHARIOX_MANAGED_PROVIDER_HOME",
+    ] {
+        if let Some(path) = std::env::var_os(name)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+        {
+            paths.push(path);
+        }
+    }
+    for name in [
+        "CHARIOX_MANAGED_VAULT_PATH",
+        "CHARIOX_SLICE_DOCKER_BROKER_SOCKET",
+        "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE",
+        "CHARIOX_MANAGED_BOOTSTRAP_PATH",
+        "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
+        "CHARIOX_DISPOSABLE_WORKER_BOOTSTRAP_PATH",
+        "CHARIOX_DISPOSABLE_WORKER_RECEIPT",
+        "CHARIOX_DAEMON_SOCKET",
+    ] {
+        let Some(path) = std::env::var_os(name)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+        else {
+            continue;
+        };
+        if let Some(parent) = path.parent().map(Path::to_path_buf) {
+            paths.push(parent.clone());
+            if name == "CHARIOX_SLICE_DOCKER_BROKER_SOCKET"
+                && parent.file_name() == Some(std::ffi::OsStr::new("control"))
+            {
+                if let Some(private_root) = parent.parent() {
+                    paths.push(private_root.to_path_buf());
+                }
+            }
+        }
+    }
+    paths.extend(extra.iter().filter(|path| path.is_absolute()).cloned());
+    paths.sort_by_key(|path| path.components().count());
+    paths.dedup();
+    let mut compact = Vec::with_capacity(paths.len());
+    for path in paths {
+        if path == Path::new("/") || compact.iter().any(|parent| path.starts_with(parent)) {
+            continue;
+        }
+        compact.push(path);
+    }
+    compact
+}
+
+#[cfg(target_os = "linux")]
+fn append_managed_protected_namespace_directories(
+    args: &mut Vec<String>,
+    directories: &[PathBuf],
+    created: &mut BTreeSet<PathBuf>,
+) {
+    for directory in directories {
+        append_directory(args, directory, created);
+        args.extend(["--tmpfs".to_string(), directory.display().to_string()]);
+    }
 }
 
 pub(crate) fn apply_managed_provider_isolation(
@@ -218,6 +329,7 @@ pub(crate) fn apply_managed_provider_isolation(
         let account_bindings = managed_account_bindings(&mut launch.pty_env)?;
         let program = rewrite_managed_program_path(&program, &provider_home, &account_bindings);
         let prompt_attachment_root = managed_prompt_attachment_root(request)?;
+        let protected_namespace_roots = managed_protected_namespace_directories(&[]);
 
         let resolver = managed_resolver_binding()?;
         let (mut args, mut created_directories) = managed_namespace_args(
@@ -237,14 +349,24 @@ pub(crate) fn apply_managed_provider_isolation(
             Path::new(SANDBOX_ACCOUNT_ROOT),
             &mut created_directories,
         );
-        for (source, destination) in account_bindings {
-            append_bind(&mut args, &source, &destination, &mut created_directories);
+        for (source, destination) in &account_bindings {
+            append_bind(&mut args, source, destination, &mut created_directories);
         }
+        let mut protected_directories = protected_namespace_roots.clone();
+        protected_directories.push(provider_home.clone());
+        protected_directories.extend(account_bindings.iter().map(|(source, _)| source.clone()));
+        append_managed_protected_namespace_directories(
+            &mut args,
+            &protected_directories,
+            &mut created_directories,
+        );
         for root in runtime_roots {
             append_bind(&mut args, &root, &root, &mut created_directories);
         }
         for root in &workspace_roots {
-            append_bind(&mut args, root, root, &mut created_directories);
+            if managed_workspace_root_requires_rebind(root, &protected_namespace_roots) {
+                append_bind(&mut args, root, root, &mut created_directories);
+            }
         }
 
         append_managed_namespace_environment(&mut args, request);
@@ -337,10 +459,11 @@ fn append_managed_git_safe_directory_environment(
     if workspace_roots.is_empty() {
         return;
     }
+    let safe_directory_count = workspace_roots.len().saturating_mul(2);
     args.extend([
         "--setenv".to_string(),
         "GIT_CONFIG_COUNT".to_string(),
-        workspace_roots.len().saturating_add(1).to_string(),
+        safe_directory_count.saturating_add(1).to_string(),
         "--setenv".to_string(),
         "GIT_CONFIG_KEY_0".to_string(),
         "safe.directory".to_string(),
@@ -349,15 +472,23 @@ fn append_managed_git_safe_directory_environment(
         String::new(),
     ]);
     for (index, root) in workspace_roots.iter().enumerate() {
-        let index = index.saturating_add(1);
-        args.extend([
-            "--setenv".to_string(),
-            format!("GIT_CONFIG_KEY_{index}"),
-            "safe.directory".to_string(),
-            "--setenv".to_string(),
-            format!("GIT_CONFIG_VALUE_{index}"),
-            root.display().to_string(),
-        ]);
+        for (offset, value) in [root.display().to_string(), format!("{}/*", root.display())]
+            .into_iter()
+            .enumerate()
+        {
+            let index = index
+                .saturating_mul(2)
+                .saturating_add(offset)
+                .saturating_add(1);
+            args.extend([
+                "--setenv".to_string(),
+                format!("GIT_CONFIG_KEY_{index}"),
+                "safe.directory".to_string(),
+                "--setenv".to_string(),
+                format!("GIT_CONFIG_VALUE_{index}"),
+                value,
+            ]);
+        }
     }
 }
 
@@ -523,7 +654,7 @@ fn managed_resolver_binding() -> Result<Option<PathBuf>, DaemonError> {
 #[cfg(any(target_os = "linux", test))]
 fn managed_namespace_args(
     resolver: Option<&Path>,
-    path_exists: impl Fn(&Path) -> bool,
+    _path_exists: impl Fn(&Path) -> bool,
     prompt_attachment_root: Option<&Path>,
 ) -> (Vec<String>, BTreeSet<PathBuf>) {
     let mut args = vec![
@@ -540,25 +671,13 @@ fn managed_namespace_args(
         "0".to_string(),
         "--cap-drop".to_string(),
         "ALL".to_string(),
-        "--ro-bind".to_string(),
+        // Managed isolation must preserve ordinary filesystem permission
+        // checks. Protected service paths are masked separately below; the
+        // rest of the host/container root remains available to the provider.
+        "--bind".to_string(),
         "/".to_string(),
         "/".to_string(),
     ];
-
-    for path in ["/home", "/tmp", "/run", "/var/lib", "/var/tmp"] {
-        if path_exists(Path::new(path)) {
-            args.extend(["--tmpfs".to_string(), path.to_string()]);
-        }
-    }
-    for path in ["/workspace", "/root", "/mnt", "/media"] {
-        if path_exists(Path::new(path)) {
-            args.extend(["--tmpfs".to_string(), path.to_string()]);
-        }
-    }
-    let slice_logs = Path::new("/opt/chariox-slice/logs");
-    if path_exists(slice_logs) {
-        args.extend(["--tmpfs".to_string(), slice_logs.display().to_string()]);
-    }
     args.extend([
         "--proc".to_string(),
         "/proc".to_string(),
@@ -635,42 +754,72 @@ fn managed_workspace_roots(request: &LaunchProviderRequest) -> Result<Vec<PathBu
     if request.session_id == "provider-account" {
         return Ok(Vec::new());
     }
-    let mut roots = request.workspace_live_sync_roots.clone();
-    for root in managed_slice_workspace_roots()? {
-        if roots.iter().all(|existing| existing != &root) {
-            roots.push(root);
-        }
-    }
-    if roots.is_empty() {
+    let protected = managed_protected_namespace_directories(&[]);
+    let configured = managed_slice_workspace_roots()?;
+    let mut roots = configured.clone();
+    let mut requested = request.workspace_live_sync_roots.clone();
+    if requested.is_empty() {
         let working_directory = request
             .working_directory
             .as_ref()
             .ok_or_else(|| isolation_error("managed provider launch has no workspace"))?;
-        roots
+        requested
             .push(resolve_git_root(working_directory).unwrap_or_else(|| working_directory.clone()));
     }
+
+    // A protected service tree may contain a transferred repository. Rebind
+    // only the repository's containing publication directory after masking
+    // that service tree. This is an exception for bootstrap data, not a
+    // filesystem allowlist: paths outside protected trees remain available
+    // under their normal host/container permissions.
+    for root in requested {
+        let Ok(root) = canonical_directory(&root, "managed provider workspace") else {
+            continue;
+        };
+        if !protected
+            .iter()
+            .any(|protected| root.starts_with(protected))
+        {
+            continue;
+        }
+        if !is_managed_transfer_path(&root) {
+            continue;
+        }
+        let Some(publication_root) = root.parent() else {
+            continue;
+        };
+        if publication_root != Path::new("/") {
+            roots.push(publication_root.to_path_buf());
+        }
+    }
+
     let mut canonical = Vec::new();
     for root in roots {
-        let root = canonical_directory(&root, "managed provider workspace")?;
+        let Ok(root) = canonical_directory(&root, "managed provider workspace") else {
+            continue;
+        };
         if canonical.iter().all(|existing| existing != &root) {
             canonical.push(root);
         }
     }
-    for (index, root) in canonical.iter().enumerate() {
-        if canonical.iter().enumerate().any(|(other_index, other)| {
-            index != other_index && (root.starts_with(other) || other.starts_with(root))
-        }) {
-            return Err(isolation_error(
-                "managed provider workspace roots must be separate repository mounts",
-            ));
-        }
-    }
-    if canonical.is_empty() {
-        return Err(isolation_error(
-            "managed provider launch has no approved repository roots",
-        ));
-    }
     Ok(canonical)
+}
+
+#[cfg(target_os = "linux")]
+fn is_managed_transfer_path(path: &Path) -> bool {
+    path.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::Normal(name)
+                if name == std::ffi::OsStr::new("managed-context-workspaces")
+                    || name == std::ffi::OsStr::new("managed-context-empty-workspaces")
+        )
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn managed_workspace_root_requires_rebind(root: &Path, protected: &[PathBuf]) -> bool {
+    protected.iter().any(|path| root.starts_with(path))
 }
 
 #[cfg(target_os = "linux")]
@@ -686,9 +835,12 @@ fn managed_working_directory(
         .as_ref()
         .ok_or_else(|| isolation_error("managed provider launch has no working directory"))?;
     let directory = canonical_directory(directory, "managed provider working directory")?;
-    if !roots.iter().any(|root| directory.starts_with(root)) {
+    let protected = managed_protected_namespace_directories(&[]);
+    if protected.iter().any(|path| directory.starts_with(path))
+        && !roots.iter().any(|root| directory.starts_with(root))
+    {
         return Err(isolation_error(
-            "managed provider working directory is outside the approved repositories",
+            "managed provider working directory is inside protected managed service state",
         ));
     }
     Ok(directory)
@@ -977,15 +1129,11 @@ mod tests {
     }
 
     #[test]
-    fn namespace_args_restore_the_resolver_after_masking_run() {
+    fn namespace_args_keep_the_ordinary_root_and_restore_the_resolver() {
         let resolver = Path::new("/run/systemd/resolve/stub-resolv.conf");
         let (args, _) =
             managed_namespace_args(Some(resolver), |path| path == Path::new("/run"), None);
 
-        let mask = args
-            .windows(2)
-            .position(|args| args == ["--tmpfs", "/run"])
-            .expect("run should be masked");
         let binding = args
             .windows(3)
             .position(|args| {
@@ -996,7 +1144,8 @@ mod tests {
                 ]
             })
             .expect("resolver target should be restored read-only");
-        assert!(binding > mask);
+        assert!(args.windows(3).any(|args| args == ["--bind", "/", "/"]));
+        assert!(!args.windows(2).any(|args| args == ["--tmpfs", "/run"]));
         assert_eq!(
             &args[binding - 6..binding],
             [
@@ -1011,10 +1160,10 @@ mod tests {
     }
 
     #[test]
-    fn namespace_args_do_not_bind_a_resolver_outside_masked_run() {
+    fn namespace_args_do_not_bind_a_resolver_without_a_runtime_target() {
         let (args, _) = managed_namespace_args(None, |path| path == Path::new("/run"), None);
 
-        assert_eq!(args.iter().filter(|arg| *arg == "--ro-bind").count(), 1);
+        assert_eq!(args.iter().filter(|arg| *arg == "--ro-bind").count(), 0);
         assert!(!args.iter().any(|arg| arg == "/etc/resolv.conf"));
     }
 
@@ -1059,7 +1208,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_git_trusts_only_approved_workspace_roots() {
+    fn managed_git_trusts_bootstrap_workspace_roots_without_global_trust() {
         let root = std::env::temp_dir().join(format!(
             "chariox-managed-git-safe-directory-{}-{}",
             std::process::id(),
@@ -1129,6 +1278,210 @@ mod tests {
         assert!(String::from_utf8_lossy(&denied.stderr).contains("dubious ownership"));
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_isolation_keeps_ordinary_repositories_outside_transfer_roots() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-managed-isolation-ordinary-filesystem-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let chariox_home = root.join("chariox-home");
+        let transferred_repository =
+            chariox_home.join(".chariox/state/managed-context-workspaces/publication/selected");
+        let outside_repository = root.join("ordinary/new-repository");
+        let cloned_repository = root.join("ordinary/cloned-repository");
+        let broker_socket = root.join("slice-share/.broker-private/control/control.sock");
+        std::fs::create_dir_all(&transferred_repository).expect("transferred repository");
+        std::fs::create_dir_all(&outside_repository).expect("outside repository");
+        std::fs::create_dir_all(broker_socket.parent().expect("broker socket parent"))
+            .expect("broker control directory");
+
+        let _env = crate::env_lock::lock();
+        let previous_home = std::env::var_os("CHARIOX_HOME");
+        let previous_capability_root = std::env::var_os("CHARIOX_CAPABILITY_ISOLATION_ROOT");
+        let previous_vault = std::env::var_os("CHARIOX_MANAGED_VAULT_PATH");
+        let previous_broker = std::env::var_os("CHARIOX_SLICE_DOCKER_BROKER_SOCKET");
+        let previous_slice_root = std::env::var_os("CHARIOX_SLICE_ROOT");
+        let previous_workspace_count = std::env::var_os(MANAGED_WORKSPACE_ROOT_COUNT_ENV);
+        std::env::set_var("CHARIOX_HOME", &chariox_home);
+        std::env::set_var(
+            "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+            chariox_home.join("managed-context/kernel"),
+        );
+        std::env::set_var(
+            "CHARIOX_MANAGED_VAULT_PATH",
+            chariox_home.join(".chariox/vault/vault.json"),
+        );
+        std::env::set_var("CHARIOX_SLICE_DOCKER_BROKER_SOCKET", &broker_socket);
+        std::env::set_var("CHARIOX_SLICE_ROOT", root.join("slice-code"));
+        std::env::remove_var(MANAGED_WORKSPACE_ROOT_COUNT_ENV);
+
+        let request = LaunchProviderRequest::new(
+            "ordinary-filesystem-session",
+            "codex",
+            "codex",
+            "default",
+            "gpt-5.6-luna",
+        )
+        .with_working_directory(outside_repository.clone())
+        .with_workspace_live_sync_roots(vec![transferred_repository.clone()]);
+        let roots = managed_workspace_roots(&request).expect("managed roots should resolve");
+        let working_directory = managed_working_directory(&request, &roots)
+            .expect("ordinary paths outside service state should remain valid cwd");
+        let protected = managed_protected_namespace_directories(&[]);
+        let mut args = managed_namespace_args(None, |_| true, None).0;
+        let mut created = BTreeSet::new();
+        append_managed_protected_namespace_directories(&mut args, &protected, &mut created);
+        for root in &roots {
+            if managed_workspace_root_requires_rebind(root, &protected) {
+                append_bind(&mut args, root, root, &mut created);
+            }
+        }
+
+        restore_env("CHARIOX_HOME", previous_home);
+        restore_env(
+            "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+            previous_capability_root,
+        );
+        restore_env("CHARIOX_MANAGED_VAULT_PATH", previous_vault);
+        restore_env("CHARIOX_SLICE_DOCKER_BROKER_SOCKET", previous_broker);
+        restore_env("CHARIOX_SLICE_ROOT", previous_slice_root);
+        restore_env(MANAGED_WORKSPACE_ROOT_COUNT_ENV, previous_workspace_count);
+
+        assert_eq!(
+            roots,
+            vec![chariox_home
+                .join(".chariox/state/managed-context-workspaces/publication")
+                .canonicalize()
+                .expect("publication root should canonicalize"),]
+        );
+        assert_eq!(
+            working_directory,
+            outside_repository.canonicalize().unwrap()
+        );
+        assert!(!roots
+            .iter()
+            .any(|root| outside_repository.starts_with(root)));
+        assert!(protected.contains(&chariox_home.join(".chariox")));
+        assert!(protected.contains(&root.join("slice-share/.broker-private")));
+        assert!(!protected.contains(&root.join("slice-code")));
+        assert!(args.windows(3).any(|window| window == ["--bind", "/", "/"]));
+        assert!(args.windows(3).any(|window| {
+            window
+                == [
+                    "--bind",
+                    chariox_home
+                        .join(".chariox/state/managed-context-workspaces/publication")
+                        .to_str()
+                        .expect("publication root should be utf8"),
+                    chariox_home
+                        .join(".chariox/state/managed-context-workspaces/publication")
+                        .to_str()
+                        .expect("publication root should be utf8"),
+                ]
+        }));
+        assert!(!args.windows(2).any(|window| {
+            window
+                == [
+                    "--tmpfs",
+                    outside_repository.to_str().expect("outside path utf8"),
+                ]
+        }));
+        assert!(!args.windows(2).any(|window| {
+            window
+                == [
+                    "--tmpfs",
+                    root.join("slice-code").to_str().expect("slice path utf8"),
+                ]
+        }));
+
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&outside_repository)
+            .args(["init", "--quiet"])
+            .status()
+            .expect("Git should start outside the transfer root");
+        assert!(status.success());
+        std::fs::write(
+            outside_repository.join("README.md"),
+            "ordinary filesystem\n",
+        )
+        .expect("ordinary repository should be writable");
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&outside_repository)
+            .args(["add", "README.md"])
+            .status()
+            .expect("Git add should start outside the transfer root");
+        assert!(status.success());
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&outside_repository)
+            .args([
+                "-c",
+                "user.name=probe",
+                "-c",
+                "user.email=probe@example.invalid",
+            ])
+            .args(["commit", "--quiet", "-m", "probe"])
+            .status()
+            .expect("Git commit should start outside the transfer root");
+        assert!(status.success());
+        let status = Command::new("git")
+            .args(["clone", "--quiet"])
+            .arg(&outside_repository)
+            .arg(&cloned_repository)
+            .status()
+            .expect("Git clone should start outside the transfer root");
+        assert!(status.success());
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&cloned_repository)
+            .args(["status", "--porcelain"])
+            .status()
+            .expect("Git status should start outside the transfer root");
+        assert!(status.success());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ordinary_kernel_keeps_provider_launch_unwrapped() {
+        let _env = crate::env_lock::lock();
+        let previous_isolation = std::env::var_os(MANAGED_PROVIDER_ISOLATION_ENV);
+        std::env::remove_var(MANAGED_PROVIDER_ISOLATION_ENV);
+        let launch = ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "ordinary-provider".to_string(),
+            pty_target: None,
+            pty_program: Some("/bin/sh".to_string()),
+            pty_args: vec!["-c".to_string(), "printf ordinary".to_string()],
+            pty_env: BTreeMap::from([(String::from("ORDINARY_FS"), String::from("1"))]),
+            pty_env_remove: Vec::new(),
+            working_directory: Some(PathBuf::from("/tmp")),
+            structured_endpoint: None,
+        };
+        let request = LaunchProviderRequest::new(
+            "ordinary-kernel-session",
+            "codex",
+            "codex",
+            "default",
+            "gpt-5.6-luna",
+        );
+        let prepared = apply_managed_provider_isolation(launch, &request)
+            .expect("ordinary kernel launch should not require managed isolation");
+        restore_env(MANAGED_PROVIDER_ISOLATION_ENV, previous_isolation);
+
+        assert_eq!(prepared.pty_program.as_deref(), Some("/bin/sh"));
+        assert_eq!(prepared.pty_args, ["-c", "printf ordinary"]);
+        assert_eq!(prepared.working_directory, Some(PathBuf::from("/tmp")));
+        assert!(!prepared
+            .pty_args
+            .windows(3)
+            .any(|window| window == ["--setenv", MANAGED_PROVIDER_ISOLATION_MARKER_ENV, "1"]));
     }
 
     #[test]

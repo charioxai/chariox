@@ -49,7 +49,7 @@ test("provider isolation probe authenticates and launches Codex through the kern
       if (frame.request.LaunchProviderRun) {
         await writeFile(
           path.join(workspace, ".chariox-managed-isolation-probe.result"),
-          `managed_provider_isolation=ok\nreal_provider=/opt/chariox-toolchain/bin/codex\nworkspace=${workspace}\n`,
+          `managed_provider_isolation=ok\nreal_provider=/opt/chariox-toolchain/bin/codex\nworkspace=${workspace}\noutside_repository=/tmp/chariox-managed-isolation-outside-probe/repository\noutside_clone=/tmp/chariox-managed-isolation-outside-probe/cloned\n`,
         )
         socket.send(response(frame.request_id, {
           ProviderRunLaunched: { provider_run: { id: "provider-run-1" } },
@@ -84,11 +84,8 @@ test("provider isolation probe authenticates and launches Codex through the kern
     accountProfile: "default",
     workspace,
     denied: [
-      "kernel state",
-      "Vault and other provider accounts",
-      "slice publication root",
+      "kernel state and vault",
       "Docker broker",
-      "unselected repository",
       "host process roots",
     ],
   })
@@ -165,7 +162,6 @@ test("provider isolation wrapper identifies an unavailable workspace", async (t)
     CHARIOX_MANAGED_ISOLATION_PROBE_WORKSPACE: path.join(root, "missing-workspace"),
     CHARIOX_MANAGED_ISOLATION_PROBE_RESULT: path.join(root, "result"),
     CHARIOX_MANAGED_ISOLATION_REAL_PROVIDER: "/bin/true",
-    CHARIOX_MANAGED_ISOLATION_PROBE_UNSELECTED_REPOSITORY: path.join(root, "unselected"),
   })
 
   assert.notEqual(result.code, 0)

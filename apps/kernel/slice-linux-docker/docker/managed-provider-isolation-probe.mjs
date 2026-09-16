@@ -177,17 +177,16 @@ try {
   assert.match(result, /^managed_provider_isolation=ok$/m)
   assert.match(result, /^real_provider=\//m)
   assert.match(result, new RegExp(`^workspace=${escapeRegExp(workspace)}$`, "m"))
+  assert.match(result, /^outside_repository=\/tmp\//m)
+  assert.match(result, /^outside_clone=\/tmp\//m)
   process.stdout.write(`${JSON.stringify({
     authenticated: true,
     provider: "codex",
     accountProfile,
     workspace,
     denied: [
-      "kernel state",
-      "Vault and other provider accounts",
-      "slice publication root",
+      "kernel state and vault",
       "Docker broker",
-      "unselected repository",
       "host process roots",
     ],
   })}\n`)
