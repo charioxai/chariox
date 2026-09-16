@@ -23,15 +23,18 @@ include the appropriate openssh-client/ssh and tmux system-tool steps and bounde
 not assume the managed image already provides them. Prefer the project's existing setup recipe and
 verify its reuse on the selected worker.
 
-Use only explicitly selected and already materialized credential mechanisms, such as the selected
-Git credential helper or an SSH agent socket and the worker's configured host verification. Never
-copy SSH private keys, include credential values in a definition or attestation, use ssh-keyscan,
-disable StrictHostKeyChecking (no, off, or accept-new), write known_hosts data, or trust an
-arbitrary host. If a selected credential, host verification, project configuration, or toolchain
-input is genuinely missing, return `missing_user_inputs` with only one of its fixed categories
-(`selected_credential`, `host_verification`, `project_configuration`, or `toolchain`) and a short
-non-secret label. Never return the missing value; the kernel will keep setup failed until the user
-supplies it.
+Project evidence discovery is read-only. Do not reject a project definition or evidence merely
+because a script or fixture mentions `ssh-keyscan`, `dd`, `private_key`, or another application
+identifier; those words are not shell semantics or authorization. The attested commands run only
+through the existing confirmed worker execution boundary, which keeps selected credentials and
+the worker's configured host verification scoped to that worker. Use only explicitly selected and
+already materialized mechanisms, such as the selected Git credential helper or an SSH agent socket.
+Do not copy SSH private-key bytes, include credential values in a definition or attestation, bypass
+the selected host verification, or trust an arbitrary host. If a selected credential, host
+verification, project configuration, or toolchain input is genuinely missing, return
+`missing_user_inputs` with only one of its fixed categories (`selected_credential`,
+`host_verification`, `project_configuration`, or `toolchain`) and a short non-secret label. Never
+return the missing value; the kernel will keep setup failed until the user supplies it.
 
 For file-backed definitions, include workspace-relative recipe and relevant lockfile inputs with
 their content-only sha256 identities. Do not put file contents, credentials, tokens, private keys,

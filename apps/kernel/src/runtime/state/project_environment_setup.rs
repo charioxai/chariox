@@ -2444,6 +2444,19 @@ mod tests {
             "/worker/kernel-home/auth-token".to_string(),
         );
         provider_env.insert("OPENAI_API_KEY".to_string(), "must-not-cross".to_string());
+        provider_env.insert("SSH_PRIVATE_KEY".to_string(), "must-not-cross".to_string());
+        provider_env.insert(
+            "SSH_AUTH_SOCK".to_string(),
+            "/run/user/1000/ssh-agent.sock".to_string(),
+        );
+        provider_env.insert(
+            "GIT_SSH_COMMAND".to_string(),
+            "ssh -o StrictHostKeyChecking=no".to_string(),
+        );
+        provider_env.insert(
+            "SSH_ASKPASS".to_string(),
+            "/tmp/unselected-askpass".to_string(),
+        );
         let request =
             LaunchProviderRequest::new("session-1", "codex", "codex", "default", "default");
         let run = RuntimeProviderRun::new(
@@ -2472,12 +2485,20 @@ mod tests {
             "CHARIOX_MANAGED_VAULT_PATH",
             "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE",
             "OPENAI_API_KEY",
+            "SSH_PRIVATE_KEY",
+            "GIT_SSH_COMMAND",
+            "SSH_ASKPASS",
         ] {
             assert!(
                 !environment.contains_key(name),
                 "{name} must not reach validation"
             );
         }
+        assert_eq!(
+            environment.get("SSH_AUTH_SOCK").map(String::as_str),
+            Some("/run/user/1000/ssh-agent.sock"),
+            "an explicitly selected SSH agent mechanism remains available without exposing key material"
+        );
     }
 
     #[cfg(unix)]

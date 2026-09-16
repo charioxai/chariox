@@ -161,16 +161,22 @@ and `public_setup_lifecycle_repairs_stale_and_missing_inputs_before_ready` in
 
 Credential setup is limited to explicitly selected, already materialized
 mechanisms such as the selected Git credential helper, an SSH agent socket, and
-the worker's existing host verification. The utility and definition validator
-reject private-key copying, `ssh-keyscan`, disabled host checking, and writes to
-`known_hosts`; missing selected credentials, host verification, project
+the worker's existing host verification. Evidence discovery and definition
+validation do not interpret opaque shell text: a script or application fixture
+may legitimately mention `ssh-keyscan`, `dd`, or `private_key`. The attested
+commands are executed only through the existing confirmed worker boundary,
+which keeps selected credentials and host verification scoped to that worker;
+credential values and private-key bytes never enter the definition or
+attestation. Missing selected credentials, host verification, project
 configuration, or toolchain inputs are returned only as fixed-category
 `missing_user_inputs` diagnostics with no values. The parser regression
-`parser_reports_missing_user_input_categories_without_echoing_labels` and the
-command-safety regressions in
-`apps/kernel/src/session/project_environment.rs` cover these boundaries. The
-kernel projects the category-only diagnostic as a retryable setup failure; it
-does not claim readiness.
+`parser_reports_missing_user_input_categories_without_echoing_labels`, the
+script-backed execution regression
+`script_backed_setup_keeps_project_evidence_and_private_key_fixtures_opaque`,
+and the worker environment-boundary regression in
+`apps/kernel/src/runtime/state/project_environment_setup.rs` cover these
+seams. The kernel projects the category-only diagnostic as a retryable setup
+failure; it does not claim readiness.
 
 The local red-green contract tests must cover both definition branches, each
 observable phase, failure, cancellation, retry, reconnect, cache invalidation,

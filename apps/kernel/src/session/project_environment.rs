@@ -220,75 +220,7 @@ fn validate_command(command: &str, label: &str) -> Result<(), String> {
             "{label} cannot exceed {MAX_COMMAND_CHARS} characters"
         ));
     }
-    validate_command_safety(command, label)?;
     Ok(())
-}
-
-fn validate_command_safety(command: &str, label: &str) -> Result<(), String> {
-    let lower = command.to_ascii_lowercase();
-    let compact = lower
-        .chars()
-        .filter(|character| !character.is_ascii_whitespace())
-        .collect::<String>();
-
-    if lower.contains(".ssh/id_")
-        || lower.contains("ssh_private_key")
-        || lower.contains("private_key")
-        || compact.contains("privatekey")
-        || compact.contains("beginopensshprivatekey")
-        || compact.contains("beginrsaprivatekey")
-        || compact.contains("beginprivatekey")
-    {
-        return Err(format!(
-            "{label} must use an explicitly selected credential mechanism instead of copying SSH private key material"
-        ));
-    }
-
-    if lower.contains("ssh-keyscan")
-        || [
-            "stricthostkeychecking=no",
-            "stricthostkeycheckingno",
-            "stricthostkeychecking=off",
-            "stricthostkeycheckingoff",
-            "stricthostkeychecking=0",
-            "stricthostkeychecking0",
-            "stricthostkeychecking=false",
-            "stricthostkeycheckingfalse",
-            "stricthostkeychecking=accept-new",
-            "stricthostkeycheckingaccept-new",
-            "userknownhostsfile=/dev/null",
-            "userknownhostsfile/dev/null",
-            "globalknownhostsfile=/dev/null",
-            "globalknownhostsfile/dev/null",
-        ]
-        .iter()
-        .any(|pattern| compact.contains(pattern))
-    {
-        return Err(format!(
-            "{label} must use existing host verification instead of trusting an arbitrary SSH host"
-        ));
-    }
-
-    if (lower.contains("known_hosts") || lower.contains("known-hosts"))
-        && (command.contains('>')
-            || contains_command_token(&lower, "tee")
-            || contains_command_token(&lower, "install")
-            || contains_command_token(&lower, "cp")
-            || contains_command_token(&lower, "mv"))
-    {
-        return Err(format!(
-            "{label} must not create or rewrite SSH host verification data"
-        ));
-    }
-    Ok(())
-}
-
-fn contains_command_token(command: &str, token: &str) -> bool {
-    command
-        .split(|character: char| {
-            !(character.is_ascii_alphanumeric() || character == '_' || character == '-')
-        })
-        .any(|part| part == token)
 }
 
 const MAX_PROJECT_ENVIRONMENT_INPUTS: usize = 64;
@@ -485,31 +417,25 @@ mod tests {
     }
 
     #[test]
-    fn setup_commands_reject_private_ssh_material_and_unverified_hosts() {
-        for command in [
-            "cp ~/.ssh/id_ed25519 /tmp/project-key",
-            "ssh -o StrictHostKeyChecking=no git@example.test true",
-            "ssh -o StrictHostKeyChecking=accept-new git@example.test true",
-            "ssh -o UserKnownHostsFile=/dev/null git@example.test true",
-            "ssh-keyscan example.test >> ~/.ssh/known_hosts",
-            "printf '%s' \"$SSH_PRIVATE_KEY\" > ~/.ssh/id_ed25519",
-        ] {
-            let mut invalid = definition();
-            invalid.setup_steps[0].command = command.to_string();
-            let error = invalid
-                .validate()
-                .expect_err("unsafe SSH setup must be rejected");
-            assert!(
-                error.contains("explicitly selected credential")
-                    || error.contains("arbitrary SSH host")
-                    || error.contains("host verification"),
-                "unexpected safe diagnostic: {error}"
-            );
-            assert!(
-                !error.contains("id_ed25519") && !error.contains("SSH_PRIVATE_KEY"),
-                "secret-bearing command text must not be echoed"
-            );
-        }
+    fn file_backed_script_and_application_private_key_fixture_remain_usable() {
+        let mut valid = definition();
+        valid.source = ProjectEnvironmentDefinitionSource::SetupScript;
+        valid.source_path = Some("scripts/setup.sh".to_string());
+        valid.inputs = vec![ProjectEnvironmentInput {
+            kind: ProjectEnvironmentInputKind::Recipe,
+            path: "scripts/setup.sh".to_string(),
+            sha256: format!("sha256:{}", "a".repeat(64)),
+        }];
+        valid.setup_steps[0].command = "./scripts/setup.sh".to_string();
+        valid.validation_commands = vec![
+            "test -f testdata/private_key.pem".to_string(),
+            "printf '%s' ssh-keyscan > setup-evidence.txt".to_string(),
+        ];
+        assert_eq!(
+            valid.validate(),
+            Ok(()),
+            "opaque scripts and application fixture names are not SSH credential operations"
+        );
     }
 
     #[test]

@@ -94,14 +94,17 @@ validate them; do not assume they are present in the managed image.\n\n\
 Prefer an existing project Dockerfile, devcontainer, setup script, lockfile, or verified\n\
 environment recipe over inventing equivalent commands. Do not copy binaries from a host or Mac,\n\
 read host credential stores, install a provider SDK, or replace the home kernel.\n\n\
-Use only explicitly selected and already materialized credential mechanisms, such as the selected\n\
-Git credential helper or an SSH agent socket and the worker's configured host verification. Never\n\
-copy SSH private keys, include credential values in the definition or attestations, use\n\
-ssh-keyscan, disable StrictHostKeyChecking (no, off, or accept-new), write known_hosts data, or\n\
-trust an arbitrary host. If a selected credential, host verification, project configuration, or\n\
-toolchain input is genuinely missing, return missing_user_inputs with only its fixed category and\n\
-a short non-secret label; never return the missing value. The kernel will keep setup failed until\n\
-that user input is supplied.\n\n\
+Project evidence discovery is read-only. Do not reject a definition or evidence merely because a\n\
+script or fixture mentions ssh-keyscan, dd, private_key, or another application identifier; those\n\
+words are not shell semantics or authorization. The attested commands run only through the\n\
+existing confirmed worker execution boundary, which keeps selected credentials and the worker's\n\
+configured host verification scoped to that worker. Use only explicitly selected and already\n\
+materialized mechanisms, such as the selected Git credential helper or an SSH agent socket. Do\n\
+not copy SSH private-key bytes, include credential values in the definition or attestations, bypass\n\
+the selected host verification, or trust an arbitrary host. If a selected credential, host\n\
+verification, project configuration, or toolchain input is genuinely missing, return\n\
+missing_user_inputs with only its fixed category and a short non-secret label; never return the\n\
+missing value. The kernel will keep setup failed until that user input is supplied.\n\n\
 For a file-backed definition, include a content-only input attestation for the recipe source and\n\
 any relevant lockfiles, using workspace-relative paths and sha256 digests. The kernel will verify\n\
 those files on the target before declaring readiness. Never put file contents, credentials, tokens,\n\
@@ -703,8 +706,10 @@ mod tests {
             "Git credential helper",
             "SSH agent socket",
             "missing_user_inputs",
+            "do not reject",
             "ssh-keyscan",
-            "StrictHostKeyChecking",
+            "private_key",
+            "dd",
             "configured host verification",
         ] {
             assert!(prompt.contains(fragment), "prompt omitted `{fragment}`");

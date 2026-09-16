@@ -27,6 +27,19 @@ const WORKER_KERNEL_ENV_NAMES: &[&str] = &[
     "CHARIOX_LEASE_WORKER_HOME_CALLER",
 ];
 
+// These ambient Git/SSH hooks can redirect credential lookup or host
+// verification to an unselected helper. They are execution-environment
+// controls, not project command syntax. The selected SSH agent socket remains
+// available, and a project may still choose its normal Git/SSH configuration
+// from the worker. This mirrors the existing isolated-Git command boundary.
+const WORKER_UNSELECTED_CREDENTIAL_CONTROL_ENV_NAMES: &[&str] = &[
+    "GIT_SSH",
+    "GIT_SSH_COMMAND",
+    "GIT_ASKPASS",
+    "SSH_ASKPASS",
+    "SSH_AGENT_PID",
+];
+
 pub(super) fn ensure_worker_validation_boundary(config: &DaemonConfig) -> Result<(), DaemonError> {
     if config.kernel_runtime_role != KernelRuntimeRole::RemoteLeaseWorker {
         return Err(setup_error(
@@ -76,6 +89,12 @@ pub(super) fn canonical_worker_workspace(
 pub(super) fn worker_validation_environment(
     provider_run: &RuntimeProviderRun,
 ) -> BTreeMap<String, String> {
+    // This is the credential boundary for both recipe application and
+    // validation. Keep ordinary toolchain/project environment values, retain
+    // an explicitly selected SSH agent socket, and remove secret-bearing
+    // values plus ambient Git/SSH hooks that could redirect credential or
+    // host-verification lookup. The command itself remains opaque and is
+    // executed only after the confirmed-worker/context checks above it.
     let mut removed = BTreeSet::new();
     removed.extend(
         crate::provider::managed_provider_control_env_remove()
@@ -184,6 +203,7 @@ fn worker_validation_environment_allowed(name: &str, removed: &BTreeSet<String>)
     !removed.contains(name)
         && !crate::secret::secret_like_env_name(name)
         && !WORKER_KERNEL_ENV_NAMES.contains(&name)
+        && !WORKER_UNSELECTED_CREDENTIAL_CONTROL_ENV_NAMES.contains(&name)
         && !name.starts_with("CHARIOX_")
 }
 
@@ -380,6 +400,94 @@ mod tests {
             started.elapsed() < Duration::from_millis(500),
             "an in-flight command must be interrupted by the total budget: {:?}",
             started.elapsed()
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn script_backed_setup_keeps_project_evidence_and_private_key_fixtures_opaque() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "chariox-project-environment-script-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let scripts = root.join("scripts");
+        let testdata = root.join("testdata");
+        std::fs::create_dir_all(&scripts).expect("script directory should exist");
+        std::fs::create_dir_all(&testdata).expect("application fixture directory should exist");
+        let fixture_contents = b"application test fixture, not an SSH credential\n";
+        std::fs::write(testdata.join("private_key.pem"), fixture_contents)
+            .expect("application private_key fixture should exist");
+
+        // The worker executes the attested script as one opaque project
+        // command. Its source may contain ordinary project evidence words and
+        // tools such as ssh-keyscan or dd without the definition layer trying
+        // to interpret shell syntax or reject unrelated application fixtures.
+        let script = scripts.join("setup.sh");
+        let script_contents = b"#!/bin/sh\nset -eu\ntest -f testdata/private_key.pem\nprintf '%s\\n' 'ssh-keyscan appears here as project evidence' | dd of=setup-evidence.txt 2>/dev/null\n";
+        std::fs::write(&script, script_contents).expect("project setup script should exist");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("project setup script should be executable");
+
+        let definition = ProjectEnvironmentDefinition {
+            schema_version: 1,
+            origin: ProjectEnvironmentDefinitionOrigin::UserAuthored,
+            source: ProjectEnvironmentDefinitionSource::SetupScript,
+            target_platform: "linux-x86_64".to_string(),
+            source_path: Some("scripts/setup.sh".to_string()),
+            inputs: vec![
+                ProjectEnvironmentInput {
+                    kind: ProjectEnvironmentInputKind::Recipe,
+                    path: "scripts/setup.sh".to_string(),
+                    sha256: format!("sha256:{:x}", Sha256::digest(script_contents)),
+                },
+                ProjectEnvironmentInput {
+                    kind: ProjectEnvironmentInputKind::Recipe,
+                    path: "testdata/private_key.pem".to_string(),
+                    sha256: format!("sha256:{:x}", Sha256::digest(fixture_contents)),
+                },
+            ],
+            setup_steps: vec![ProjectEnvironmentSetupStep {
+                kind: ProjectEnvironmentSetupStepKind::Command,
+                command: "./scripts/setup.sh".to_string(),
+            }],
+            validation_commands: vec!["test -f testdata/private_key.pem".to_string()],
+        };
+        assert_eq!(definition.validate(), Ok(()));
+        assert_eq!(verify_project_environment_inputs(&root, &definition), Ok(()));
+
+        let environment = BTreeMap::from([
+            (
+                String::from("HOME"),
+                root.join("home").display().to_string(),
+            ),
+            (String::from("PATH"), String::from("/usr/bin:/bin")),
+        ]);
+        let applied = run_worker_setup_steps(
+            &["./scripts/setup.sh".to_string()],
+            &root,
+            &environment,
+            || false,
+        )
+        .expect("script-backed setup should execute at the worker boundary");
+        assert!(applied);
+        let (exit_code, _, _) = run_worker_validation_command(
+            "test -f testdata/private_key.pem",
+            &root,
+            &environment,
+            || false,
+            None,
+        )
+        .expect("fixture validation should execute at the worker boundary");
+        assert_eq!(exit_code, 0);
+        assert_eq!(
+            std::fs::read_to_string(root.join("setup-evidence.txt"))
+                .expect("script evidence should be written in the project worktree")
+                .trim(),
+            "ssh-keyscan appears here as project evidence"
         );
         let _ = std::fs::remove_dir_all(root);
     }
