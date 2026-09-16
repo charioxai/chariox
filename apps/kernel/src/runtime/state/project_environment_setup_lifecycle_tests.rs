@@ -175,8 +175,10 @@ async fn exercise_public_setup_lifecycle_with_options(
         crate::session::unix_epoch_ms()
     ));
     let home = root.join("kernel-home");
+    let provider_home = root.join("provider-home");
     let workspace = root.join("worker-worktree");
     std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&provider_home).unwrap();
     std::fs::create_dir_all(&workspace).unwrap();
     let input_scenario = matches!(
         scenario,
@@ -441,6 +443,7 @@ async fn exercise_public_setup_lifecycle_with_options(
             pty_program: Some("/bin/sh".into()),
             pty_args: vec!["-c".into(), "sleep 60".into()],
             pty_env: BTreeMap::from([
+                ("HOME".into(), provider_home.display().to_string()),
                 ("PATH".into(), "/usr/bin:/bin".into()),
                 ("GIT_SSH_COMMAND".into(), "selected-ssh".into()),
                 ("SSH_AUTH_SOCK".into(), "selected-agent".into()),
