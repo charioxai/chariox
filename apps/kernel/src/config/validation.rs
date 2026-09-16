@@ -1,6 +1,6 @@
 use super::{validate_non_empty, CharioxUserConfig, DaemonConfig};
 use crate::error::DaemonError;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 fn validate_credential_vault_path(path: &str) -> Result<(), DaemonError> {
     let expanded = if path == "~" {
@@ -14,6 +14,17 @@ fn validate_credential_vault_path(path: &str) -> Result<(), DaemonError> {
     } else {
         PathBuf::from(path)
     };
+    if !expanded.is_absolute()
+        || expanded
+            .components()
+            .any(|component| component == Component::ParentDir)
+    {
+        return Err(DaemonError::InvalidConfig {
+            field: "credential_vault.path",
+            message:
+                "path must be absolute (or use ~) and must not contain parent-directory components",
+        });
+    }
     if expanded == Path::new("/") || expanded.parent() == Some(Path::new("/")) {
         return Err(DaemonError::InvalidConfig {
             field: "credential_vault.path",

@@ -152,6 +152,12 @@ fn user_config_rejects_root_level_credential_vault_path() {
     assert!(error
         .to_string()
         .contains("direct child of filesystem root"));
+
+    config.credential_vault.path = "/tmp/../managed-vault.json".to_string();
+    let error = config
+        .validate()
+        .expect_err("root-equivalent Vault paths must not bypass the root check");
+    assert!(error.to_string().contains("parent-directory components"));
 }
 
 #[test]
