@@ -1250,9 +1250,9 @@ fn managed_workspace_roots_with_private_temp_roots(
     }
 
     // A protected service tree may contain a selected repository. Rebind only
-    // that exact repository after masking the service tree. A private temp
-    // root is the other exception: rebind the selected child, while leaving
-    // sibling temp paths hidden. Paths outside these actual masked roots stay
+    // that exact repository after masking the service tree. Private temp and
+    // home roots also need their selected children rebound, while leaving
+    // siblings hidden. Paths outside these actual masked roots stay
     // on the ordinary root mount with normal filesystem permissions.
     for root in requested {
         let root = canonical_directory(&root, "managed provider workspace")?;
@@ -1265,7 +1265,11 @@ fn managed_workspace_roots_with_private_temp_roots(
         let below_protected_root = protected
             .iter()
             .any(|protected| root.starts_with(protected));
+        let below_private_home = root != Path::new("/home")
+            && root.starts_with("/home")
+            && !below_protected_root;
         if !below_private_temp_root
+            && !below_private_home
             && !(below_protected_root
                 && (is_managed_transfer_path(&root) || below_host_publication_root))
         {
@@ -2179,6 +2183,270 @@ mod tests {
             &[],
             &[],
         ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_collector_rebinds_selected_home_workspace_in_launch_args() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _env = crate::env_lock::lock();
+        let scratch = std::env::temp_dir().join(format!(
+            "chariox-managed-home-workspace-collector-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let provider_home = scratch.join("provider-home");
+        let chariox_home = scratch.join("chariox-home");
+        let runtime_home = scratch.join("runtime-home");
+        std::fs::create_dir_all(&provider_home).expect("provider home should exist");
+        std::fs::create_dir_all(&chariox_home).expect("CHARIOX_HOME should exist");
+        std::fs::create_dir_all(&runtime_home).expect("runtime user home should exist");
+        let bwrap_copy = scratch.join("bwrap");
+        if let Err(error) = std::fs::copy(BWRAP_PATH, &bwrap_copy) {
+            let _ = std::fs::remove_dir_all(&scratch);
+            eprintln!("skipped managed home workspace launch assembly: cannot copy bwrap: {error}");
+            return;
+        }
+        std::fs::set_permissions(&bwrap_copy, std::fs::Permissions::from_mode(0o755))
+            .expect("private bwrap copy should be executable");
+
+        let home_root = PathBuf::from("/home").join(format!(
+            "chariox-managed-home-workspace-collector-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let selected = home_root.join("selected");
+        let sibling = home_root.join("sibling");
+        let protected_home = home_root.join(".chariox");
+        let protected_workspace = protected_home.join("protected-workspace");
+        if let Err(error) = std::fs::create_dir_all(&selected) {
+            let _ = std::fs::remove_dir_all(&home_root);
+            let _ = std::fs::remove_dir_all(&scratch);
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
+            ) {
+                eprintln!(
+                    "skipped managed home workspace collector probe: cannot create {}: {error}",
+                    home_root.display()
+                );
+                return;
+            }
+            panic!(
+                "selected home workspace fixture should be creatable at {}: {error}",
+                home_root.display()
+            );
+        }
+        std::fs::create_dir_all(&sibling).expect("sibling home workspace should exist");
+        std::fs::create_dir_all(&protected_workspace)
+            .expect("protected home workspace should exist");
+        std::fs::set_permissions(&home_root, std::fs::Permissions::from_mode(0o755))
+            .expect("home workspace parent should be traversable");
+        std::fs::set_permissions(&selected, std::fs::Permissions::from_mode(0o777))
+            .expect("selected home workspace should be writable");
+        std::fs::set_permissions(&sibling, std::fs::Permissions::from_mode(0o777))
+            .expect("sibling home workspace should be writable");
+        std::fs::set_permissions(&protected_home, std::fs::Permissions::from_mode(0o755))
+            .expect("protected home should be traversable");
+        std::fs::write(selected.join("selected.txt"), "selected\n")
+            .expect("selected marker should exist");
+        std::fs::write(sibling.join("sibling.txt"), "sibling\n")
+            .expect("sibling marker should exist");
+
+        let mut environment_names = vec![
+            MANAGED_PROVIDER_ISOLATION_ENV,
+            MANAGED_PROVIDER_HOME_ENV,
+            "CHARIOX_HOME",
+            "HOME",
+            "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+            "CHARIOX_SLICE_ROOT",
+            MANAGED_SLICE_SERVICE_ROOT_ENV,
+            MANAGED_SLICE_PUBLICATION_ROOT_ENV,
+            "CHARIOX_SLICE_DOCKER_BROKER_SOCKET",
+            MANAGED_PROVIDER_BWRAP_ENV,
+            MANAGED_WORKSPACE_ROOT_COUNT_ENV,
+            "CHARIOX_MANAGED_WORKSPACE_ROOT_0",
+        ];
+        environment_names.extend(MANAGED_PROTECTED_FILE_ENV_NAMES);
+        let previous_environment = environment_names
+            .iter()
+            .map(|name| (*name, std::env::var_os(name)))
+            .collect::<Vec<_>>();
+        for name in &environment_names {
+            std::env::remove_var(*name);
+        }
+        std::env::set_var(MANAGED_PROVIDER_ISOLATION_ENV, "1");
+        std::env::set_var(MANAGED_PROVIDER_HOME_ENV, &provider_home);
+        std::env::set_var("CHARIOX_HOME", &chariox_home);
+        std::env::set_var("HOME", &runtime_home);
+        std::env::set_var(MANAGED_PROVIDER_BWRAP_ENV, &bwrap_copy);
+
+        let selected = selected
+            .canonicalize()
+            .expect("selected home workspace should canonicalize");
+        let sibling = sibling
+            .canonicalize()
+            .expect("sibling home workspace should canonicalize");
+        let request = LaunchProviderRequest::new(
+            "managed-home-workspace-collector",
+            "codex",
+            "codex",
+            "default",
+            "gpt-5.6-luna",
+        )
+        .with_working_directory(selected.clone())
+        .with_workspace_live_sync_roots(vec![selected.clone()]);
+        let collected_roots = managed_workspace_roots(&request)
+            .expect("selected home workspace should survive managed root collection");
+        let previous_probe_home = std::env::var_os("CHARIOX_HOME");
+        std::env::set_var("CHARIOX_HOME", &protected_home);
+        let protected_request = LaunchProviderRequest::new(
+            "managed-protected-home-workspace-collector",
+            "codex",
+            "codex",
+            "default",
+            "gpt-5.6-luna",
+        )
+        .with_working_directory(protected_workspace.clone())
+        .with_workspace_live_sync_roots(vec![protected_workspace.clone()]);
+        let protected_roots = managed_workspace_roots(&protected_request);
+        restore_env("CHARIOX_HOME", previous_probe_home);
+        let protected_roots = protected_roots
+            .expect("protected home workspace should be inspected by managed root collection");
+        let launch = ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "managed-home-workspace-collector".to_string(),
+            pty_target: None,
+            pty_program: Some("/bin/sh".to_string()),
+            pty_args: vec![
+                "-eu".to_string(),
+                "-c".to_string(),
+                concat!(
+                    "test \"$(cat selected.txt)\" = 'selected'\n",
+                    "test ! -e \"$1/sibling.txt\"\n",
+                    "printf provider > selected-write\n",
+                )
+                .to_string(),
+                "managed-home-workspace-collector-probe".to_string(),
+                sibling.display().to_string(),
+            ],
+            pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: Some(selected.clone()),
+            structured_endpoint: None,
+        };
+        let prepared = apply_managed_provider_isolation(launch, &request);
+
+        for (name, previous) in previous_environment {
+            restore_env(name, previous);
+        }
+
+        if !protected_roots.is_empty() {
+            let _ = std::fs::remove_dir_all(&home_root);
+            let _ = std::fs::remove_dir_all(&scratch);
+            panic!(
+                "protected home workspace must stay excluded from managed root collection: {protected_roots:?}"
+            );
+        }
+        if collected_roots != vec![selected.clone()] {
+            let _ = std::fs::remove_dir_all(&home_root);
+            let _ = std::fs::remove_dir_all(&scratch);
+            panic!(
+                "selected home workspace should survive managed root collection: {collected_roots:?}"
+            );
+        }
+
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(error)
+                if error
+                    .to_string()
+                    .contains("root-owned, non-writable Bubblewrap launcher") =>
+            {
+                let _ = std::fs::remove_dir_all(&home_root);
+                let _ = std::fs::remove_dir_all(&scratch);
+                eprintln!(
+                    "skipped managed home workspace launch assembly: private bwrap copy is not root-owned"
+                );
+                return;
+            }
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&home_root);
+                let _ = std::fs::remove_dir_all(&scratch);
+                panic!("managed home workspace launch assembly should succeed: {error}");
+            }
+        };
+        let prepared_args = prepared.pty_args.clone();
+        let selected_text = selected.display().to_string();
+        let home_mask = prepared_args
+            .windows(2)
+            .position(|window| window == ["--tmpfs", "/home"])
+            .expect("managed launch should mask the host home parent");
+        let selected_bind = prepared_args
+            .windows(3)
+            .position(|window| {
+                window == ["--bind", selected_text.as_str(), selected_text.as_str()]
+            })
+            .expect("collector-selected home workspace should be rebound in launch args");
+        assert!(
+            home_mask < selected_bind,
+            "selected home workspace must be rebound after the synthetic home mask"
+        );
+        assert!(!prepared_args.windows(3).any(|window| {
+            window
+                == [
+                    "--bind",
+                    sibling.to_str().expect("sibling path should be utf8"),
+                    sibling.to_str().expect("sibling path should be utf8"),
+                ]
+        }));
+        assert_eq!(
+            prepared.working_directory,
+            Some(selected.clone()),
+            "managed launch should preserve the selected workspace as cwd"
+        );
+
+        let bwrap = prepared
+            .pty_program
+            .as_deref()
+            .expect("managed launch should select bubblewrap");
+        let output = match Command::new(bwrap)
+            .args(&prepared_args)
+            .current_dir(&selected)
+            .output()
+        {
+            Ok(output) => output,
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&home_root);
+                let _ = std::fs::remove_dir_all(&scratch);
+                panic!("managed home workspace bwrap probe should start: {error}");
+            }
+        };
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("No permissions to create a new namespace")
+            || stderr.contains("Operation not permitted")
+        {
+            eprintln!(
+                "skipped managed home workspace collector bwrap probe: user namespaces are unavailable"
+            );
+            let _ = std::fs::remove_dir_all(&home_root);
+            let _ = std::fs::remove_dir_all(&scratch);
+            return;
+        }
+        assert!(
+            output.status.success(),
+            "managed home workspace collector bwrap probe failed: {}",
+            stderr.trim()
+        );
+        assert_eq!(
+            std::fs::read_to_string(selected.join("selected-write"))
+                .expect("selected workspace should receive provider write"),
+            "provider"
+        );
+        assert!(!sibling.join("selected-write").exists());
+        let _ = std::fs::remove_dir_all(&home_root);
+        let _ = std::fs::remove_dir_all(&scratch);
     }
 
     #[cfg(target_os = "linux")]
