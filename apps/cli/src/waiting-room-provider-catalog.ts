@@ -8,6 +8,7 @@ import type { WaitingRoomState } from "./waiting-room-types.js"
 export type WaitingRoomCatalogSelection = {
   providerId: string
   accountProfileId?: string | null
+  executionLocation?: ProviderCatalogExecutionLocation
 }
 
 export function providerCatalogExecutionLocation(
@@ -46,6 +47,6 @@ export function loadProviderCatalogForKernel(
   return getProviderCatalog(client, logger, {
     provider: selection.providerId,
     accountProfile: selection.accountProfileId ?? "default",
-    executionLocation: { kind: "local" },
+    executionLocation: selection.executionLocation ?? { kind: "local" },
   }, false)
 }

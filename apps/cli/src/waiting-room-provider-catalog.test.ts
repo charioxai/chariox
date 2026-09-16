@@ -100,6 +100,32 @@ test("target-kernel catalog hydration surfaces discovery failure without fallbac
   )
 })
 
+test("remote pivot preserves existing slice catalog materialization scope", async () => {
+  const requests: unknown[] = []
+  await loadProviderCatalogForKernel(
+    clientReturning({
+      ProviderCatalog: { catalog: recordedOpenCodeNativeCatalog() },
+    }, requests),
+    undefined,
+    {
+      providerId: "opencode",
+      accountProfileId: "managed-account",
+      executionLocation: providerCatalogExecutionLocation({
+        selectedKernelRef: "kernel-b",
+        sliceSelectionId: "slice-b",
+      }, "kernel-b"),
+    },
+  )
+
+  assert.deepEqual(requests, [{
+    GetProviderCatalog: {
+      provider: "opencode",
+      account_profiles: { opencode: "managed-account" },
+      execution_location: { kind: "slice", slice_ref: "slice-b" },
+    },
+  }])
+})
+
 test("pivot then self-target/account change, other-kernel selection, and slice resolve catalog location", async () => {
   const requests: unknown[] = []
   const pendingRefreshes: Promise<ProviderCatalog>[] = []

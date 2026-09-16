@@ -396,10 +396,15 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     let targetCatalog: ProviderCatalog
     try {
       targetInventory = await getWaitingRoomInventory(nextClient)
+      const targetState = deps.waitingRoomState()
       targetCatalog = await loadProviderCatalogForKernel(
         nextClient,
         deps.appLogger,
-        deps.waitingRoomState(),
+        {
+          providerId: targetState.providerId,
+          accountProfileId: targetState.accountProfileId,
+          executionLocation: providerCatalogExecutionLocation(targetState, targetInventory.kernelId),
+        },
       )
     } catch (error) {
       await nextClient.close()
