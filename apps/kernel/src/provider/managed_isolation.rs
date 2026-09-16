@@ -2450,6 +2450,387 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
+    struct ManagedRuntimeHomeAncestorProbeCleanup {
+        paths: Vec<PathBuf>,
+        previous_environment: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Drop for ManagedRuntimeHomeAncestorProbeCleanup {
+        fn drop(&mut self) {
+            for (name, previous) in self.previous_environment.drain(..) {
+                restore_env(name, previous);
+            }
+            for path in self.paths.drain(..) {
+                let _ = std::fs::remove_dir_all(path);
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn run_managed_runtime_home_ancestor_launch_probe(workspace_kind: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _env = crate::env_lock::lock();
+        let nonce = format!(
+            "{}-{}-{}",
+            workspace_kind,
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        );
+        let home_root = PathBuf::from("/home").join(format!(
+            "chariox-managed-runtime-home-ancestor-{nonce}"
+        ));
+        let scratch = std::env::temp_dir().join(format!(
+            "chariox-managed-runtime-home-ancestor-{nonce}"
+        ));
+        let provider_home = scratch.join("provider-home");
+        let bwrap_copy = scratch.join("bwrap");
+        let home = home_root.join("runtime-home");
+        let protected_state = home.join(".chariox");
+        let config = home.join(".config");
+        let openbox = config.join("openbox");
+        let local = home.join(".local");
+        let sibling = home_root.join("sibling-home");
+        let workspace = match workspace_kind {
+            "home" => home.clone(),
+            "config" => config.clone(),
+            other => panic!("unsupported runtime-home workspace fixture: {other}"),
+        };
+        let ordinary_repo = workspace.join("ordinary-repository");
+        let ordinary_seed = ordinary_repo.join("seed.txt");
+        let ordinary_write = ordinary_repo.join("provider-write.txt");
+        let protected_payload = protected_state.join("payload.json");
+        let profile = home.join(".bash_profile");
+        let openbox_rc = openbox.join("rc.xml");
+        let profile_executed = home.join("profile-executed");
+        let openbox_executed = home.join("openbox-executed");
+        let command_payloads = MANAGED_RUNTIME_USER_COMMAND_DIRECTORY_NAMES
+            .iter()
+            .map(|relative| home.join(relative).join("provider-payload"))
+            .collect::<Vec<_>>();
+
+        std::fs::create_dir_all(&provider_home).expect("provider home should exist");
+        std::fs::create_dir_all(&home).expect("runtime user home should exist");
+        std::fs::create_dir_all(&protected_state).expect("protected runtime state should exist");
+        std::fs::create_dir_all(&openbox).expect("runtime Openbox directory should exist");
+        std::fs::create_dir_all(&local).expect("runtime local directory should exist");
+        std::fs::create_dir_all(&sibling).expect("sibling home should exist");
+        std::fs::create_dir_all(&ordinary_repo).expect("ordinary repository should exist");
+        for relative in MANAGED_RUNTIME_USER_COMMAND_DIRECTORY_NAMES {
+            std::fs::create_dir_all(home.join(relative))
+                .expect("runtime command directory should exist");
+        }
+        std::fs::set_permissions(&home_root, std::fs::Permissions::from_mode(0o755))
+            .expect("home root should be traversable");
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o777))
+            .expect("runtime home should be writable");
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o777))
+            .expect("runtime config should be writable");
+        std::fs::set_permissions(&ordinary_repo, std::fs::Permissions::from_mode(0o777))
+            .expect("ordinary repository should be writable");
+        std::fs::write(&ordinary_seed, "seed\n").expect("ordinary repository seed should exist");
+        std::fs::write(&sibling.join("sibling.txt"), "sibling\n")
+            .expect("sibling marker should exist");
+        std::fs::write(&protected_payload, "protected baseline\n")
+            .expect("protected payload should exist");
+        for name in MANAGED_RUNTIME_USER_STARTUP_FILE_NAMES {
+            let path = home.join(name);
+            std::fs::write(path, "safe startup\n").expect("startup file should exist");
+        }
+        for name in MANAGED_RUNTIME_USER_OPENBOX_FILE_NAMES {
+            let path = home.join(name);
+            std::fs::write(path, "safe Openbox config\n")
+                .expect("Openbox file should exist");
+        }
+        for path in &command_payloads {
+            std::fs::write(path, "safe command payload\n")
+                .expect("command payload should exist");
+        }
+
+        std::fs::copy(BWRAP_PATH, &bwrap_copy).expect("private Bubblewrap copy should exist");
+        std::fs::set_permissions(&bwrap_copy, std::fs::Permissions::from_mode(0o755))
+            .expect("private Bubblewrap copy should be executable");
+
+        let mut environment_names = vec![
+            MANAGED_PROVIDER_ISOLATION_ENV,
+            MANAGED_PROVIDER_HOME_ENV,
+            "CHARIOX_HOME",
+            "HOME",
+            "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+            "CHARIOX_SLICE_ROOT",
+            MANAGED_SLICE_SERVICE_ROOT_ENV,
+            MANAGED_SLICE_PUBLICATION_ROOT_ENV,
+            "CHARIOX_SLICE_DOCKER_BROKER_SOCKET",
+            MANAGED_PROVIDER_BWRAP_ENV,
+            MANAGED_WORKSPACE_ROOT_COUNT_ENV,
+            "CHARIOX_MANAGED_WORKSPACE_ROOT_0",
+        ];
+        environment_names.extend(MANAGED_PROTECTED_FILE_ENV_NAMES);
+        let previous_environment = environment_names
+            .iter()
+            .map(|name| (*name, std::env::var_os(name)))
+            .collect::<Vec<_>>();
+        let _cleanup = ManagedRuntimeHomeAncestorProbeCleanup {
+            paths: vec![home_root.clone(), scratch.clone()],
+            previous_environment,
+        };
+        for name in &environment_names {
+            std::env::remove_var(*name);
+        }
+        std::env::set_var(MANAGED_PROVIDER_ISOLATION_ENV, "1");
+        std::env::set_var(MANAGED_PROVIDER_HOME_ENV, &provider_home);
+        std::env::set_var("CHARIOX_HOME", &protected_state);
+        std::env::set_var("HOME", &home);
+        std::env::set_var(MANAGED_PROVIDER_BWRAP_ENV, &bwrap_copy);
+
+        let home = home
+            .canonicalize()
+            .expect("runtime home should canonicalize");
+        let protected_state = protected_state
+            .canonicalize()
+            .expect("protected runtime state should canonicalize");
+        let workspace = workspace
+            .canonicalize()
+            .expect("selected runtime-home workspace should canonicalize");
+        let sibling = sibling
+            .canonicalize()
+            .expect("sibling home should canonicalize");
+        let ordinary_seed = ordinary_seed
+            .canonicalize()
+            .expect("ordinary repository seed should canonicalize");
+        let ordinary_write = ordinary_write;
+        let protected_payload = protected_payload;
+        let profile = profile;
+        let openbox_rc = openbox_rc;
+        let command_payloads = command_payloads;
+
+        let request = LaunchProviderRequest::new(
+            format!("managed-runtime-home-{workspace_kind}"),
+            "codex",
+            "codex",
+            "default",
+            "gpt-5.6-luna",
+        )
+        .with_working_directory(workspace.clone())
+        .with_workspace_live_sync_roots(vec![workspace.clone()]);
+        let collected_roots = managed_workspace_roots(&request)
+            .expect("selected runtime-home workspace should be collected");
+        assert_eq!(
+            collected_roots,
+            vec![workspace.clone()],
+            "the selected runtime-home ancestor must reach launch assembly"
+        );
+
+        let protected_request = LaunchProviderRequest::new(
+            format!("managed-protected-runtime-home-{workspace_kind}"),
+            "codex",
+            "codex",
+            "default",
+            "gpt-5.6-luna",
+        )
+        .with_working_directory(protected_state.clone())
+        .with_workspace_live_sync_roots(vec![protected_state.clone()]);
+        assert!(
+            managed_workspace_roots(&protected_request)
+                .expect("protected runtime state should be inspected")
+                .is_empty(),
+            "protected runtime state must not become a selected workspace root"
+        );
+
+        let workspace_text = workspace.display().to_string();
+        let sibling_text = sibling.join("sibling.txt").display().to_string();
+        let ordinary_seed_text = ordinary_seed.display().to_string();
+        let ordinary_write_text = ordinary_write.display().to_string();
+        let protected_payload_text = protected_payload.display().to_string();
+        let profile_text = profile.display().to_string();
+        let openbox_rc_text = openbox_rc.display().to_string();
+        let command_payload_texts = command_payloads
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>();
+        let mut pty_args = vec![
+            "-eu".to_string(),
+            "-c".to_string(),
+            concat!(
+                "test \"$(pwd)\" = \"$1\"\n",
+                "test \"$(cat \"$2\")\" = 'seed'\n",
+                "test ! -e \"$3\"\n",
+                "printf ordinary > \"$4\"\n",
+                "printf leaked > \"$5\"\n",
+                "printf '%s\\n' 'touch \"$HOME/profile-executed\"' > \"$6\"\n",
+                "printf '%s\\n' '<openbox><execute>touch \"$HOME/openbox-executed\"</execute></openbox>' > \"$7\"\n",
+                "printf leaked > \"$8\"\n",
+                "printf leaked > \"$9\"\n",
+                "printf leaked > \"${10}\"\n",
+                "printf leaked > \"${11}\"\n",
+                "printf leaked > \"${12}\"\n",
+            )
+            .to_string(),
+            format!("managed-runtime-home-{workspace_kind}-ancestor-probe"),
+            workspace_text.clone(),
+            ordinary_seed_text,
+            sibling_text,
+            ordinary_write_text,
+            protected_payload_text,
+            profile_text.clone(),
+            openbox_rc_text.clone(),
+        ];
+        pty_args.extend(command_payload_texts);
+        let launch = ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: format!("managed-runtime-home-{workspace_kind}"),
+            pty_target: None,
+            pty_program: Some("/bin/sh".to_string()),
+            pty_args,
+            pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: Some(workspace.clone()),
+            structured_endpoint: None,
+        };
+        let prepared = apply_managed_provider_isolation(launch, &request)
+            .expect("managed runtime-home ancestor launch should assemble");
+        let prepared_args = &prepared.pty_args;
+        let selected_bind = prepared_args
+            .windows(3)
+            .enumerate()
+            .filter_map(|(index, window)| {
+                (window[0] == "--bind"
+                    && window[1] == workspace_text
+                    && window[2] == workspace_text)
+                    .then_some(index)
+            })
+            .last()
+            .expect("collector-selected runtime-home workspace should be rebound");
+        let protected_state_text = protected_state.display().to_string();
+        let protected_mask = prepared_args
+            .windows(2)
+            .position(|window| window == ["--tmpfs", protected_state_text.as_str()])
+            .expect("managed runtime state should be masked");
+        let profile_mask = prepared_args
+            .windows(3)
+            .position(|window| window == ["--ro-bind", "/dev/null", profile_text.as_str()])
+            .expect("runtime startup profile should be masked");
+        let openbox_text = openbox.display().to_string();
+        let openbox_tmpfs = prepared_args
+            .windows(2)
+            .position(|window| window == ["--tmpfs", openbox_text.as_str()])
+            .expect("runtime Openbox directory should be private");
+        let openbox_mask = prepared_args
+            .windows(3)
+            .position(|window| window == ["--ro-bind", "/dev/null", openbox_rc_text.as_str()])
+            .expect("runtime Openbox config should be masked");
+        assert!(
+            selected_bind < protected_mask,
+            "selected {workspace_kind} workspace bind must not re-expose protected runtime state"
+        );
+        assert!(
+            selected_bind < profile_mask,
+            "selected {workspace_kind} workspace bind must not re-expose startup files"
+        );
+        assert!(
+            selected_bind < openbox_tmpfs,
+            "selected {workspace_kind} workspace bind must not replace the Openbox boundary"
+        );
+        assert!(
+            selected_bind < openbox_mask,
+            "selected {workspace_kind} workspace bind must not replace Openbox file masks"
+        );
+        for payload in &command_payloads {
+            let payload_text = payload.display().to_string();
+            let command_directory = payload
+                .parent()
+                .expect("command payload should have a directory")
+                .display()
+                .to_string();
+            let command_mask = prepared_args
+                .windows(2)
+                .position(|window| window == ["--tmpfs", command_directory.as_str()])
+                .expect("runtime command directory should be private");
+            assert!(
+                selected_bind < command_mask,
+                "selected {workspace_kind} workspace bind must not replace {payload_text} mask"
+            );
+        }
+
+        let mut command = command_from_provider_launch(prepared)
+            .expect("managed runtime-home launch should convert to a command");
+        let output = command
+            .output()
+            .expect("managed runtime-home bwrap probe should start");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("No permissions to create a new namespace")
+            || stderr.contains("Operation not permitted")
+        {
+            eprintln!(
+                "skipped managed {workspace_kind} runtime-home bwrap probe: user namespaces are unavailable"
+            );
+            return;
+        }
+        assert!(
+            output.status.success(),
+            "managed {workspace_kind} runtime-home bwrap probe failed: {}",
+            stderr.trim()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&ordinary_write)
+                .expect("ordinary selected repository write should exist"),
+            "ordinary"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&protected_payload)
+                .expect("protected runtime payload should remain inspectable"),
+            "protected baseline\n",
+            "protected runtime state must not receive provider payload"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&profile).expect("startup profile should remain inspectable"),
+            "safe startup\n",
+            "provider must not replace a host startup file"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&openbox_rc)
+                .expect("Openbox config should remain inspectable"),
+            "safe Openbox config\n",
+            "provider must not replace host Openbox configuration"
+        );
+        for path in &command_payloads {
+            assert_eq!(
+                std::fs::read_to_string(path).expect("command payload should remain inspectable"),
+                "safe command payload\n",
+                "provider must not replace a runtime command payload"
+            );
+        }
+        assert!(!profile_executed.exists());
+        assert!(!openbox_executed.exists());
+
+        let outer = Command::new("/bin/bash")
+            .args(["-lc", ":"])
+            .env("HOME", &home)
+            .env_remove("BASH_ENV")
+            .output()
+            .expect("outer login-shell startup probe should start");
+        assert!(
+            outer.status.success(),
+            "outer login-shell startup probe failed: {}",
+            String::from_utf8_lossy(&outer.stderr)
+        );
+        assert!(!profile_executed.exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_collector_apply_protects_runtime_home_ancestor() {
+        run_managed_runtime_home_ancestor_launch_probe("home");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_collector_apply_protects_runtime_config_ancestor() {
+        run_managed_runtime_home_ancestor_launch_probe("config");
+    }
+
+    #[cfg(target_os = "linux")]
     #[test]
     fn managed_bwrap_reaches_selected_home_workspace_without_sibling_home() {
         let root = PathBuf::from("/home").join(format!(
