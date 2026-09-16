@@ -211,6 +211,23 @@ impl ProviderProcessServiceStore {
             .update_run_read_only_discovery(run_id, enabled)
     }
 
+    pub(crate) fn restore_run_snapshot_after_restart_failure(
+        &self,
+        snapshot: RuntimeProviderRun,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.write()
+            .restore_run_snapshot_after_restart_failure(snapshot)
+    }
+
+    pub(crate) fn mark_run_ended_provider_only(
+        &self,
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<ProviderRunEndedOutcome, DaemonError> {
+        self.write()
+            .mark_run_ended_provider_only(session_id, run_id)
+    }
+
     pub(crate) fn update_run_remote_extension_manifest(
         &self,
         run_id: &str,

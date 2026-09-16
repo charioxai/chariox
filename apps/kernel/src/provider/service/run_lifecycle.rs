@@ -288,6 +288,22 @@ impl ProviderProcessService {
         Ok(run.clone())
     }
 
+    pub(crate) fn restore_run_snapshot_after_restart_failure(
+        &mut self,
+        snapshot: RuntimeProviderRun,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let current = self.get_run(snapshot.id())?;
+        if current.state() != ProviderRunState::Running {
+            return Err(DaemonError::InvalidProviderRunState {
+                provider_run_id: snapshot.id().to_string(),
+                state: current.state(),
+                operation: "restore provider after restart failure",
+            });
+        }
+        self.runs.insert(snapshot.id().to_string(), snapshot.clone());
+        Ok(snapshot)
+    }
+
     pub(crate) fn reconcile_run_liveness_provider_only(
         &mut self,
         session_id: &str,

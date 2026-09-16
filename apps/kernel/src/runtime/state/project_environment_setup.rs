@@ -1203,11 +1203,11 @@ impl KernelRuntimeState {
             }
         };
 
-        if let Some(definition) = execution
+        let reusable_definition = execution
             .definition
             .as_ref()
-            .filter(|definition| !definition.is_unattested_file_backed())
-        {
+            .filter(|definition| !definition.is_unattested_file_backed());
+        if let Some(definition) = reusable_definition {
             match self
                 .apply_definition_on_worker(&execution, attempt, definition, &provider_run)
                 .await
@@ -1232,6 +1232,13 @@ impl KernelRuntimeState {
                     {
                         Ok(validation) => validation,
                         Err(_) => {
+                            let _ = self
+                                .restore_provider_run_after_project_environment_discovery(
+                                    &execution,
+                                    &provider_run,
+                                    Some(definition),
+                                )
+                                .await;
                             store.mark_failed(
                                 &execution.operation_id,
                                 attempt,
@@ -1242,6 +1249,13 @@ impl KernelRuntimeState {
                         }
                     };
                     if store.is_cancelled(&execution.operation_id, attempt) {
+                        let _ = self
+                            .restore_provider_run_after_project_environment_discovery(
+                                &execution,
+                                &provider_run,
+                                Some(definition),
+                            )
+                            .await;
                         return;
                     }
                     let inputs_match = match self.definition_inputs_match_on_worker(
@@ -1251,6 +1265,13 @@ impl KernelRuntimeState {
                     ) {
                         Ok(matches) => matches,
                         Err(_) => {
+                            let _ = self
+                                .restore_provider_run_after_project_environment_discovery(
+                                    &execution,
+                                    &provider_run,
+                                    Some(definition),
+                                )
+                                .await;
                             store.mark_failed(
                                 &execution.operation_id,
                                 attempt,
@@ -1330,6 +1351,13 @@ impl KernelRuntimeState {
                     });
                 }
                 Err(_) => {
+                    let _ = self
+                        .restore_provider_run_after_project_environment_discovery(
+                            &execution,
+                            &provider_run,
+                            Some(definition),
+                        )
+                        .await;
                     store.mark_failed(
                         &execution.operation_id,
                         attempt,
@@ -1340,6 +1368,13 @@ impl KernelRuntimeState {
                 }
             }
             if store.is_cancelled(&execution.operation_id, attempt) {
+                let _ = self
+                    .restore_provider_run_after_project_environment_discovery(
+                        &execution,
+                        &provider_run,
+                        Some(definition),
+                    )
+                    .await;
                 return;
             }
             let _ = store.update(&execution.operation_id, attempt, |entry| {
@@ -1385,7 +1420,7 @@ impl KernelRuntimeState {
                 .restore_provider_run_after_project_environment_discovery(
                     &execution,
                     &provider_run,
-                    None,
+                    reusable_definition,
                 )
                 .await;
             return;
@@ -1398,7 +1433,7 @@ impl KernelRuntimeState {
                         .restore_provider_run_after_project_environment_discovery(
                             &execution,
                             &provider_run,
-                            None,
+                            reusable_definition,
                         )
                         .await;
                     store.mark_failed(
@@ -1415,7 +1450,7 @@ impl KernelRuntimeState {
                     .restore_provider_run_after_project_environment_discovery(
                         &execution,
                         &provider_run,
-                        None,
+                        reusable_definition,
                     )
                     .await;
                 if let Some(message) =
@@ -1449,7 +1484,7 @@ impl KernelRuntimeState {
                 .restore_provider_run_after_project_environment_discovery(
                     &execution,
                     &provider_run,
-                    None,
+                    reusable_definition,
                 )
                 .await;
             store.mark_failed(
@@ -1471,7 +1506,7 @@ impl KernelRuntimeState {
                     .restore_provider_run_after_project_environment_discovery(
                         &execution,
                         &provider_run,
-                        None,
+                        reusable_definition,
                     )
                     .await;
                 store.mark_failed(
@@ -1665,6 +1700,7 @@ impl KernelRuntimeState {
             provider_run,
             definition,
         )?;
+        let original_run = self.owned.provider_store.get_run(provider_run.id())?;
         let home = context
             .environment
             .get("HOME")
@@ -1694,8 +1730,8 @@ impl KernelRuntimeState {
             ));
         }
 
-        let needs_restart = provider_run.read_only_discovery() != read_only_discovery
-            || !provider_run.preparation_environment_matches(&home, &path)
+        let needs_restart = original_run.read_only_discovery() != read_only_discovery
+            || !original_run.preparation_environment_matches(&home, &path)
             || (restartable_server
                 && !self
                     .owned
@@ -1717,7 +1753,7 @@ impl KernelRuntimeState {
                 .provider_store
                 .update_run_preparation_environment(provider_run.id(), home, path)?
         } else {
-            provider_run.clone()
+            original_run.clone()
         };
         let updated = if updated.read_only_discovery() != read_only_discovery {
             self.owned
@@ -1746,7 +1782,23 @@ impl KernelRuntimeState {
             })
             .await;
         if let Err(error) = spawn_result {
-            self.cleanup_restarted_provider_run(updated.id()).await;
+            if let Err(recovery_error) = self
+                .recover_provider_run_after_restart_failure(
+                    &original_run,
+                    &updated,
+                    &credentials,
+                )
+                .await
+            {
+                crate::logging::error_with_fields(
+                    "daemon.provider",
+                    "provider restart rollback failed after spawn failure",
+                    serde_json::json!({
+                        "provider_run_id": updated.id(),
+                        "error": recovery_error.to_string(),
+                    }),
+                );
+            }
             return Err(error);
         }
 
@@ -1762,14 +1814,47 @@ impl KernelRuntimeState {
         {
             Ok(Ok(binding)) => binding,
             Ok(Err(error)) => {
-                self.cleanup_restarted_provider_run(updated.id()).await;
+                if let Err(recovery_error) = self
+                    .recover_provider_run_after_restart_failure(
+                        &original_run,
+                        &updated,
+                        &credentials,
+                    )
+                    .await
+                {
+                    crate::logging::error_with_fields(
+                        "daemon.provider",
+                        "provider restart rollback failed after binding failure",
+                        serde_json::json!({
+                            "provider_run_id": updated.id(),
+                            "error": recovery_error.to_string(),
+                        }),
+                    );
+                }
                 return Err(error);
             }
             Err(error) => {
-                self.cleanup_restarted_provider_run(updated.id()).await;
-                return Err(setup_error(&format!(
+                let setup_error = setup_error(&format!(
                     "provider restart binding task failed: {error}"
-                )));
+                ));
+                if let Err(recovery_error) = self
+                    .recover_provider_run_after_restart_failure(
+                        &original_run,
+                        &updated,
+                        &credentials,
+                    )
+                    .await
+                {
+                    crate::logging::error_with_fields(
+                        "daemon.provider",
+                        "provider restart rollback failed after binding task failure",
+                        serde_json::json!({
+                            "provider_run_id": updated.id(),
+                            "error": recovery_error.to_string(),
+                        }),
+                    );
+                }
+                return Err(setup_error);
             }
         };
         if let Some(binding) = binding {
@@ -1778,7 +1863,23 @@ impl KernelRuntimeState {
                 .provider_store
                 .apply_runtime_binding(updated.id(), binding)
             {
-                self.cleanup_restarted_provider_run(updated.id()).await;
+                if let Err(recovery_error) = self
+                    .recover_provider_run_after_restart_failure(
+                        &original_run,
+                        &updated,
+                        &credentials,
+                    )
+                    .await
+                {
+                    crate::logging::error_with_fields(
+                        "daemon.provider",
+                        "provider restart rollback failed after runtime binding apply failure",
+                        serde_json::json!({
+                            "provider_run_id": updated.id(),
+                            "error": recovery_error.to_string(),
+                        }),
+                    );
+                }
                 return Err(error);
             }
         }
@@ -1793,6 +1894,91 @@ impl KernelRuntimeState {
         let _ = self
             .with_app_side_effect(move |app| {
                 crate::app::ProviderProcessTracker::new(app).remove_run(&cleanup_run_id)
+            })
+            .await;
+    }
+
+    async fn recover_provider_run_after_restart_failure(
+        &self,
+        original_run: &RuntimeProviderRun,
+        failed_run: &RuntimeProviderRun,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.cleanup_restarted_provider_run(failed_run.id()).await;
+        let result = self
+            .relaunch_provider_run_after_restart_failure(original_run, credentials)
+            .await;
+        if result.is_err() {
+            self.terminate_provider_run_after_restart_recovery_failure(original_run)
+                .await;
+        }
+        result
+    }
+
+    async fn relaunch_provider_run_after_restart_failure(
+        &self,
+        original_run: &RuntimeProviderRun,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let restored = self
+            .owned
+            .provider_store
+            .restore_run_snapshot_after_restart_failure(original_run.clone())?;
+        self.owned.provider_run_projection.update(restored.clone());
+
+        let run_for_spawn = restored.clone();
+        let spawn_credentials = credentials.clone();
+        self.with_app_side_effect(move |app| {
+            let _ = crate::app::ProviderProcessTracker::new(app)
+                .remove_run(run_for_spawn.id())?;
+            crate::app::ProviderLaunchProcessRuntime::new(app)
+                .spawn_for_launch_with_credentials(&run_for_spawn, &spawn_credentials)
+        })
+        .await?;
+
+        let run_for_binding = restored.clone();
+        let binding_credentials = credentials.clone();
+        let binding = tokio::task::spawn_blocking(move || {
+            ProviderProcessService::initialize_runtime_binding_with_credentials(
+                &run_for_binding,
+                &binding_credentials,
+            )
+        })
+        .await
+        .map_err(|error| setup_error(&format!("provider rollback binding task failed: {error}")))??;
+        if let Some(binding) = binding {
+            self.owned
+                .provider_store
+                .apply_runtime_binding(restored.id(), binding)?;
+        }
+        let rebound = self.owned.provider_store.get_run(restored.id())?;
+        self.owned.provider_run_projection.update(rebound.clone());
+        Ok(rebound)
+    }
+
+    async fn terminate_provider_run_after_restart_recovery_failure(
+        &self,
+        provider_run: &RuntimeProviderRun,
+    ) {
+        self.cleanup_restarted_provider_run(provider_run.id()).await;
+        let Ok(outcome) = self
+            .owned
+            .provider_store
+            .mark_run_ended_provider_only(provider_run.session_id(), provider_run.id())
+        else {
+            return;
+        };
+        let ended = outcome.into_run();
+        let session_id = ended.session_id().to_string();
+        let provider_run_id = ended.id().to_string();
+        self.owned.provider_run_projection.update(ended);
+        let _ = self
+            .with_app_side_effect(move |app| {
+                crate::app::clear_active_provider_run_session_pointer(
+                    app,
+                    &session_id,
+                    &provider_run_id,
+                )
             })
             .await;
     }

@@ -56,7 +56,8 @@ use crate::local::{
 };
 #[cfg(unix)]
 use crate::provider::{
-    AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
+    AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult,
+    ProviderLifecycleFailureInjection, ProviderLifecycleFailureStage, RuntimeProviderRun,
 };
 #[cfg(unix)]
 use crate::runtime::router::CommandRouter;
@@ -116,6 +117,34 @@ async fn public_setup_lifecycle_repairs_definition_for_followup_worker_without_u
     exercise_public_setup_lifecycle(DefinitionScenario::SuppliedSetupFailure).await;
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn public_setup_cancellation_restores_ordinary_provider_without_retry() {
+    exercise_public_setup_lifecycle_with_options(DefinitionScenario::Supplied, false, None).await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn public_setup_restart_spawn_failure_restores_the_previous_provider_child() {
+    exercise_public_setup_lifecycle_with_options(
+        DefinitionScenario::Supplied,
+        true,
+        Some(ProviderLifecycleFailureStage::Spawn),
+    )
+    .await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn public_setup_restart_binding_failure_restores_the_previous_provider_child() {
+    exercise_public_setup_lifecycle_with_options(
+        DefinitionScenario::Supplied,
+        true,
+        Some(ProviderLifecycleFailureStage::Bind),
+    )
+    .await;
+}
+
 #[cfg(unix)]
 #[derive(Clone, Copy)]
 enum DefinitionScenario {
@@ -130,6 +159,15 @@ enum DefinitionScenario {
 
 #[cfg(unix)]
 async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
+    exercise_public_setup_lifecycle_with_options(scenario, true, None).await;
+}
+
+#[cfg(unix)]
+async fn exercise_public_setup_lifecycle_with_options(
+    scenario: DefinitionScenario,
+    retry_after_cancel: bool,
+    failure_stage: Option<ProviderLifecycleFailureStage>,
+) {
     let _environment_lock = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
         "chariox-project-environment-lifecycle-{}-{}",
@@ -402,7 +440,11 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
             pty_target: None,
             pty_program: Some("/bin/sh".into()),
             pty_args: vec!["-c".into(), "sleep 60".into()],
-            pty_env: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
+            pty_env: BTreeMap::from([
+                ("PATH".into(), "/usr/bin:/bin".into()),
+                ("GIT_SSH_COMMAND".into(), "selected-ssh".into()),
+                ("SSH_AUTH_SOCK".into(), "selected-agent".into()),
+            ]),
             pty_env_remove: Vec::new(),
             working_directory: Some(workspace.clone()),
             structured_endpoint: Some(provider_fixture.address()),
@@ -414,6 +456,8 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
     let runtime =
         CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 1)
             .runtime_state();
+    let _failure_injection = failure_stage
+        .map(|stage| ProviderLifecycleFailureInjection::install("utility-provider-run", stage));
     if matches!(
         scenario,
         DefinitionScenario::Supplied
@@ -467,6 +511,54 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
     assert_eq!(status.attempt, 1);
 
     let validation_marker = workspace.join("validation-started");
+    if failure_stage.is_some() {
+        let failure_deadline = Instant::now() + Duration::from_secs(10);
+        let failed_status = loop {
+            let status = response_status(
+                get_setup_status(&runtime, "setup-lifecycle", "user-1", "failure polling")
+                    .await,
+            );
+            if status.phase == ProjectEnvironmentSetupPhase::Failed {
+                break status;
+            }
+            assert_ne!(
+                status.phase,
+                ProjectEnvironmentSetupPhase::Ready,
+                "injected provider restart failure must fail setup, not report Ready"
+            );
+            assert!(
+                Instant::now() < failure_deadline,
+                "injected provider restart failure did not settle: {status:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert_eq!(
+            failed_status.failure_code.as_deref(),
+            Some("provider_environment_bind_failed")
+        );
+        let (provider_run, _provider_pid, provider_environment) =
+            wait_for_ordinary_provider_child(&runtime, "utility-provider-run").await;
+        assert_eq!(provider_run.state(), crate::provider::ProviderRunState::Running);
+        assert!(!provider_run.read_only_discovery());
+        assert_eq!(
+            provider_environment.get("HOME"),
+            provider_run.pty_env().get("HOME")
+        );
+        assert_eq!(
+            provider_environment.get("PATH"),
+            provider_run.pty_env().get("PATH")
+        );
+        assert_eq!(
+            provider_environment.get("GIT_SSH_COMMAND").map(String::as_str),
+            Some("selected-ssh")
+        );
+        assert_eq!(
+            provider_environment.get("SSH_AUTH_SOCK").map(String::as_str),
+            Some("selected-agent")
+        );
+        drop(provider_fixture);
+        return;
+    }
     let validation_deadline = Instant::now() + Duration::from_secs(10);
     let initial_status = loop {
         let response =
@@ -533,6 +625,38 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
         ProjectEnvironmentSetupPhase::Cancelled
     );
     assert!(cancelled_status.retryable);
+
+        if !retry_after_cancel {
+            let (provider_run, _provider_pid, provider_environment) =
+                wait_for_ordinary_provider_child(&runtime, "utility-provider-run").await;
+            assert_eq!(provider_run.state(), crate::provider::ProviderRunState::Running);
+            assert!(!provider_run.read_only_discovery());
+            assert_eq!(
+                provider_environment.get("HOME"),
+                provider_run.pty_env().get("HOME")
+            );
+            assert_eq!(
+                provider_environment.get("PATH"),
+                provider_run.pty_env().get("PATH")
+            );
+            assert!(
+                runtime
+                    .owned
+                    .provider_store
+                    .structured_runtime_state_bound_for_tests(provider_run.id()),
+                "cancellation without retry must retain a bound provider runtime"
+            );
+            assert_eq!(
+                provider_environment.get("GIT_SSH_COMMAND").map(String::as_str),
+                Some("selected-ssh")
+            );
+            assert_eq!(
+                provider_environment.get("SSH_AUTH_SOCK").map(String::as_str),
+                Some("selected-agent")
+            );
+            drop(provider_fixture);
+            return;
+        }
 
         std::fs::write(&validation_release, b"").unwrap();
 
@@ -750,6 +874,68 @@ async fn wait_for_ready(
             }
         }
     }
+}
+
+#[cfg(unix)]
+async fn wait_for_ordinary_provider_child(
+    runtime: &crate::runtime::state::KernelRuntimeState,
+    provider_run_id: &str,
+) -> (RuntimeProviderRun, u32, BTreeMap<String, String>) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let provider_run = runtime
+            .owned
+            .provider_store
+            .get_run(provider_run_id)
+            .expect("provider run should remain available while setup settles");
+        let process_id = {
+            let app = runtime.app.lock().await;
+            app.pty().process_id(provider_run_id).ok().flatten()
+        };
+        if provider_run.state() == crate::provider::ProviderRunState::Running
+            && !provider_run.read_only_discovery()
+            && runtime
+                .owned
+                .provider_store
+                .structured_runtime_state_bound_for_tests(provider_run_id)
+        {
+            if let Some(process_id) = process_id {
+                let environment = provider_child_environment(process_id);
+                if environment
+                    .get("GIT_SSH_COMMAND")
+                    .is_some_and(|value| value == "selected-ssh")
+                    && environment
+                        .get("SSH_AUTH_SOCK")
+                        .is_some_and(|value| value == "selected-agent")
+                {
+                    return (provider_run, process_id, environment);
+                }
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "ordinary provider child did not return after setup lifecycle: {provider_run:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn provider_child_environment(process_id: u32) -> BTreeMap<String, String> {
+    std::fs::read(format!("/proc/{process_id}/environ"))
+        .unwrap_or_default()
+        .split(|byte| *byte == 0)
+        .filter_map(|entry| {
+            let entry = std::str::from_utf8(entry).ok()?;
+            let (name, value) = entry.split_once('=')?;
+            Some((name.to_string(), value.to_string()))
+        })
+        .collect()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn provider_child_environment(_process_id: u32) -> BTreeMap<String, String> {
+    BTreeMap::new()
 }
 
 #[cfg(unix)]

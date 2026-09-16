@@ -120,7 +120,9 @@ pub(crate) use provider_launch_policy::{
     resolve_mcp_credentials_for_launch, sanitize_resume_state_for_launch,
     workspace_live_sync_protected_roots,
 };
-pub(crate) use provider_liveness::ProviderRunExitSessionSummary;
+pub(crate) use provider_liveness::{
+    clear_active_provider_run_session_pointer, ProviderRunExitSessionSummary,
+};
 pub(crate) use provider_processes::{
     ProviderLaunchProcessRuntime, ProviderProcessReapSummary, ProviderProcessTracker,
 };

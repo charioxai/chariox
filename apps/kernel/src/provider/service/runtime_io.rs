@@ -44,6 +44,17 @@ impl ProviderProcessService {
         credentials: &crate::provider::ProviderCredentialEnvironment,
     ) -> Result<Option<ProviderRuntimeBinding>, DaemonError> {
         #[cfg(test)]
+        if crate::provider::take_provider_lifecycle_failure_for_test(
+            run.id(),
+            crate::provider::ProviderLifecycleFailureStage::Bind,
+        ) {
+            return Err(DaemonError::ProviderProtocol {
+                provider_run_id: run.id().to_string(),
+                operation: "injected_provider_restart_binding",
+                message: "injected provider restart binding failure".to_string(),
+            });
+        }
+        #[cfg(test)]
         if crate::provider::record_provider_credential_delivery_for_test(
             run.id(),
             "runtime_binding",

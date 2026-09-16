@@ -12,7 +12,9 @@ mod command_catalog;
 mod credential_environment;
 #[cfg(test)]
 pub(crate) use credential_environment::{
-    record_provider_credential_delivery_for_test, ProviderCredentialDeliveryProbe,
+    record_provider_credential_delivery_for_test, take_provider_lifecycle_failure_for_test,
+    ProviderCredentialDeliveryProbe, ProviderLifecycleFailureInjection,
+    ProviderLifecycleFailureStage,
 };
 mod executable_resolution;
 mod external_observation;
