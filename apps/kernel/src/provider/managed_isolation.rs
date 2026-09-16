@@ -1118,6 +1118,11 @@ fn managed_namespace_args_with_process_temp_root(
         "--bind".to_string(),
         "/".to_string(),
         "/".to_string(),
+        // The synthetic provider HOME is rebound below. Its parent must be
+        // private and writable while bwrap constructs /home/chariox: the outer
+        // service uid cannot create that directory in a root-owned host /home.
+        "--tmpfs".to_string(),
+        "/home".to_string(),
     ];
     // The ordinary root remains available so providers retain the host's
     // normal filesystem-permission behavior. The kernel's process temp roots
@@ -1810,6 +1815,7 @@ mod tests {
             .expect("resolver target should be restored read-only");
         assert!(args.windows(3).any(|args| args == ["--bind", "/", "/"]));
         assert!(args.iter().any(|arg| arg == "--disable-userns"));
+        assert!(args.windows(2).any(|args| args == ["--tmpfs", "/home"]));
         assert!(args.windows(2).any(|args| args == ["--tmpfs", "/tmp"]));
         assert!(args.windows(2).any(|args| args == ["--tmpfs", "/var/tmp"]));
         let run_mask = args
