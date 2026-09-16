@@ -1972,15 +1972,22 @@ mod tests {
             std::fs::read_to_string(&ordinary_file).expect("ordinary home file should be written"),
             "ordinary"
         );
-        assert!(
-            !profile.exists(),
-            "provider must not plant the login profile"
-        );
+        // Bubblewrap may materialize an empty host-side mountpoint when a
+        // masked destination did not exist before the namespace was built.
+        // That artifact is harmless; any bytes would prove that the provider
+        // wrote through the mask and must fail the probe.
+        let assert_no_masked_payload = |path: &Path, label: &str| match std::fs::read(path) {
+            Ok(contents) => assert!(
+                contents.is_empty(),
+                "{label} contains provider payload after the bwrap run ({} bytes)",
+                contents.len()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("{label} could not be inspected after the bwrap run: {error}"),
+        };
+        assert_no_masked_payload(&profile, "login profile");
         assert!(!profile_executed.exists());
-        assert!(
-            !openbox_rc.exists(),
-            "provider must not plant Openbox commands"
-        );
+        assert_no_masked_payload(&openbox_rc, "Openbox rc.xml");
         assert!(!openbox_executed.exists());
 
         // The follow-up lifecycle shapes run outside bwrap. Since the
