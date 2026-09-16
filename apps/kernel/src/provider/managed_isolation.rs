@@ -48,6 +48,10 @@ const MANAGED_RUNTIME_USER_STARTUP_FILE_NAMES: &[&str] = &[
     ".zlogout",
     ".kshrc",
     ".screenrc",
+    ".xsession",
+    ".xsessionrc",
+    ".xinitrc",
+    ".xprofile",
 ];
 #[cfg(target_os = "linux")]
 // Openbox is started by the host-side desktop lifecycle as the same runtime
@@ -57,6 +61,14 @@ const MANAGED_RUNTIME_USER_OPENBOX_FILE_NAMES: &[&str] = &[
     ".config/openbox/rc.xml",
     ".config/openbox/menu.xml",
     ".config/openbox/autostart",
+];
+#[cfg(target_os = "linux")]
+const MANAGED_RUNTIME_USER_COMMAND_DIRECTORY_NAMES: &[&str] = &[
+    ".config/openbox",
+    ".config/autostart",
+    ".config/systemd/user",
+    ".config/environment.d",
+    ".local/share/applications",
 ];
 
 #[cfg(target_os = "linux")]
@@ -86,6 +98,7 @@ const CONTROL_ENVIRONMENT_NAMES: &[&str] = &[
     "CHARIOX_MANAGED_PROVIDER_HOME",
     "CHARIOX_MANAGED_PROVIDER_ISOLATION",
     "CHARIOX_MANAGED_VAULT_PATH",
+    "CHARIOX_DAEMON_SOCKET",
     "CHARIOX_SLICE_ROOT",
     MANAGED_SLICE_SERVICE_ROOT_ENV,
     MANAGED_SLICE_PUBLICATION_ROOT_ENV,
@@ -101,6 +114,7 @@ const PROVIDER_ACCOUNT_PATH_ENVIRONMENT: &[&str] = &[
     "XDG_CONFIG_HOME",
     "XDG_STATE_HOME",
     "XDG_CACHE_HOME",
+    "XDG_RUNTIME_DIR",
     "OPENCODE_CONFIG_DIR",
 ];
 
@@ -120,6 +134,12 @@ pub(crate) fn managed_provider_control_env_remove() -> Vec<String> {
         .iter()
         .map(|name| (*name).to_string())
         .collect::<Vec<_>>();
+    #[cfg(target_os = "linux")]
+    names.extend(
+        PROVIDER_ACCOUNT_PATH_ENVIRONMENT
+            .iter()
+            .map(|name| (*name).to_string()),
+    );
     names.extend([
         MANAGED_WORKSPACE_ROOT_COUNT_ENV.to_string(),
         "GIT_CONFIG_COUNT".to_string(),
@@ -250,20 +270,25 @@ fn managed_private_namespace_roots(process_temp_root: &Path) -> Vec<PathBuf> {
 }
 
 #[cfg(any(target_os = "linux", test))]
-fn managed_configured_slice_service_root() -> Option<PathBuf> {
-    let configured = std::env::var_os(MANAGED_SLICE_SERVICE_ROOT_ENV)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)?;
-    (configured.is_absolute() && configured != Path::new("/")).then_some(configured)
+fn managed_configured_slice_service_root() -> Result<Option<PathBuf>, DaemonError> {
+    configured_managed_boundary_directory(
+        MANAGED_SLICE_SERVICE_ROOT_ENV,
+        "managed slice service root",
+    )
 }
 
 #[cfg(any(target_os = "linux", test))]
-fn managed_configured_slice_publication_root() -> Option<PathBuf> {
-    if let Some(configured) = std::env::var_os(MANAGED_SLICE_PUBLICATION_ROOT_ENV)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-    {
-        return (configured.is_absolute() && configured != Path::new("/")).then_some(configured);
+fn managed_configured_slice_publication_root() -> Result<Option<PathBuf>, DaemonError> {
+    if let Some(raw) = std::env::var_os(MANAGED_SLICE_PUBLICATION_ROOT_ENV) {
+        if raw.is_empty() {
+            return Err(isolation_error(format!(
+                "{MANAGED_SLICE_PUBLICATION_ROOT_ENV} must not be empty"
+            )));
+        }
+        return Ok(Some(validate_boundary_directory(
+            &PathBuf::from(raw),
+            "managed slice publication root",
+        )?));
     }
 
     // Keep the known host default safe if a pre-contract managed supervisor
@@ -272,48 +297,68 @@ fn managed_configured_slice_publication_root() -> Option<PathBuf> {
     // transport socket topology is deliberately not policy here.
     let slice_root = std::env::var_os("CHARIOX_SLICE_ROOT")
         .filter(|value| !value.is_empty())
-        .map(PathBuf::from)?;
-    (slice_root == Path::new("/var/lib/chariox-slice-share/slices")).then_some(slice_root)
+        .map(PathBuf::from);
+    let Some(slice_root) = slice_root else {
+        return Ok(None);
+    };
+    if slice_root != Path::new("/var/lib/chariox-slice-share/slices") {
+        return Ok(None);
+    }
+    Ok(Some(validate_boundary_directory(
+        &slice_root,
+        "managed slice publication root",
+    )?))
 }
 
 #[cfg(target_os = "linux")]
-fn managed_protected_namespace_directories(extra: &[PathBuf]) -> Vec<PathBuf> {
+fn managed_protected_namespace_directories(
+    extra: &[PathBuf],
+) -> Result<Vec<PathBuf>, DaemonError> {
     let mut paths = vec![PathBuf::from("/run")];
-    let chariox_home = std::env::var_os("CHARIOX_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from)
-                .map(|home| home.join(".chariox"))
-        });
+    let chariox_home = if let Some(raw) = std::env::var_os("CHARIOX_HOME") {
+        if raw.is_empty() {
+            return Err(isolation_error("CHARIOX_HOME must not be empty"));
+        }
+        Some(validate_boundary_directory(
+            &PathBuf::from(raw),
+            "CHARIOX_HOME",
+        )?)
+    } else if let Some(raw) = std::env::var_os("HOME") {
+        if raw.is_empty() {
+            return Err(isolation_error("HOME must not be empty"));
+        }
+        let home = validate_boundary_directory(&PathBuf::from(raw), "HOME")?;
+        Some(home.join(".chariox"))
+    } else {
+        None
+    };
 
     if let Some(home) = chariox_home {
-        if home.is_absolute() {
-            if home.file_name() == Some(std::ffi::OsStr::new(".chariox")) {
-                paths.push(home);
-            } else {
-                for relative in [
-                    ".chariox",
-                    "kernels",
-                    "state",
-                    "managed-context",
-                    "managed-runtime-auth",
-                    "managed",
-                    "sessions",
-                    "daemon",
-                    "machine",
-                ] {
-                    paths.push(home.join(relative));
-                }
+        if home.file_name() == Some(std::ffi::OsStr::new(".chariox")) {
+            paths.push(validate_boundary_directory(&home, "managed Chariox state")?);
+        } else {
+            for relative in [
+                ".chariox",
+                "kernels",
+                "state",
+                "managed-context",
+                "managed-runtime-auth",
+                "managed",
+                "sessions",
+                "daemon",
+                "machine",
+            ] {
+                paths.push(validate_boundary_directory(
+                    &home.join(relative),
+                    "managed Chariox state",
+                )?);
             }
         }
     }
 
     for boundary in [
-        managed_configured_slice_service_root(),
-        managed_configured_slice_publication_root(),
+        managed_configured_slice_service_root()?,
+        managed_configured_slice_publication_root()?,
     ]
     .into_iter()
     .flatten()
@@ -329,22 +374,24 @@ fn managed_protected_namespace_directories(extra: &[PathBuf]) -> Vec<PathBuf> {
         "CHARIOX_CAPABILITY_ISOLATION_ROOT",
         "CHARIOX_MANAGED_PROVIDER_HOME",
     ] {
-        if let Some(path) = std::env::var_os(name)
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-        {
-            paths.push(path);
+        if let Some(raw) = std::env::var_os(name) {
+            if raw.is_empty() {
+                return Err(isolation_error(format!("{name} must not be empty")));
+            }
+            paths.push(validate_boundary_directory(
+                &PathBuf::from(raw),
+                name,
+            )?);
         }
     }
     for name in MANAGED_PROTECTED_FILE_ENV_NAMES {
-        let Some(path) = std::env::var_os(name)
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-        else {
+        let Some(raw) = std::env::var_os(name) else {
             continue;
         };
+        if raw.is_empty() {
+            return Err(isolation_error(format!("{name} must not be empty")));
+        }
+        let path = validate_control_file_path(&PathBuf::from(raw), name)?;
         if let Some(parent) = path.parent().map(Path::to_path_buf) {
             paths.push(parent.clone());
             if *name == "CHARIOX_SLICE_DOCKER_BROKER_SOCKET"
@@ -356,7 +403,12 @@ fn managed_protected_namespace_directories(extra: &[PathBuf]) -> Vec<PathBuf> {
             }
         }
     }
-    paths.extend(extra.iter().filter(|path| path.is_absolute()).cloned());
+    for path in extra {
+        paths.push(validate_boundary_directory(
+            path,
+            "managed protected namespace directory",
+        )?);
+    }
     paths.sort_by_key(|path| path.components().count());
     paths.dedup();
     let mut compact = Vec::with_capacity(paths.len());
@@ -366,32 +418,41 @@ fn managed_protected_namespace_directories(extra: &[PathBuf]) -> Vec<PathBuf> {
         }
         compact.push(path);
     }
-    compact
+    Ok(compact)
 }
 
 #[cfg(target_os = "linux")]
-fn managed_protected_namespace_files() -> Vec<PathBuf> {
-    let mut files = MANAGED_PROTECTED_FILE_ENV_NAMES
-        .iter()
-        .filter_map(|name| {
-            let path = std::env::var_os(name)
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from)
-                .filter(|path| path.is_absolute())?;
-            (path.parent() == Some(Path::new("/"))).then_some(path)
-        })
-        .collect::<Vec<_>>();
+fn managed_protected_namespace_files() -> Result<Vec<PathBuf>, DaemonError> {
+    let mut files = Vec::new();
+    for name in MANAGED_PROTECTED_FILE_ENV_NAMES {
+        let Some(raw) = std::env::var_os(name) else {
+            continue;
+        };
+        if raw.is_empty() {
+            return Err(isolation_error(format!("{name} must not be empty")));
+        }
+        let path = validate_control_file_path(&PathBuf::from(raw), name)?;
+        if path.parent() == Some(Path::new("/")) {
+            files.push(path);
+        }
+    }
     files.sort();
     files.dedup();
-    files
+    Ok(files)
 }
 
 #[cfg(target_os = "linux")]
-fn managed_runtime_user_home() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)?;
-    (home.is_absolute() && home != Path::new("/")).then_some(home)
+fn managed_runtime_user_home() -> Result<Option<PathBuf>, DaemonError> {
+    let Some(raw) = std::env::var_os("HOME") else {
+        return Ok(None);
+    };
+    if raw.is_empty() {
+        return Err(isolation_error("HOME must not be empty"));
+    }
+    Ok(Some(canonical_directory(
+        &PathBuf::from(raw),
+        "managed runtime user HOME",
+    )?))
 }
 
 #[cfg(target_os = "linux")]
@@ -403,23 +464,23 @@ fn managed_runtime_user_files_for_home(home: &Path, names: &[&str]) -> Vec<PathB
 }
 
 #[cfg(target_os = "linux")]
-fn managed_runtime_user_startup_files() -> Vec<PathBuf> {
-    managed_runtime_user_home()
+fn managed_runtime_user_startup_files() -> Result<Vec<PathBuf>, DaemonError> {
+    Ok(managed_runtime_user_home()?
         .as_deref()
         .map(|home| {
             managed_runtime_user_files_for_home(home, MANAGED_RUNTIME_USER_STARTUP_FILE_NAMES)
         })
-        .unwrap_or_default()
+        .unwrap_or_default())
 }
 
 #[cfg(target_os = "linux")]
-fn managed_runtime_user_openbox_files() -> Vec<PathBuf> {
-    managed_runtime_user_home()
+fn managed_runtime_user_openbox_files() -> Result<Vec<PathBuf>, DaemonError> {
+    Ok(managed_runtime_user_home()?
         .as_deref()
         .map(|home| {
             managed_runtime_user_files_for_home(home, MANAGED_RUNTIME_USER_OPENBOX_FILE_NAMES)
         })
-        .unwrap_or_default()
+        .unwrap_or_default())
 }
 
 #[cfg(target_os = "linux")]
@@ -427,27 +488,50 @@ fn append_managed_runtime_user_openbox_boundary(
     args: &mut Vec<String>,
     home: &Path,
     created: &mut BTreeSet<PathBuf>,
-) {
+) -> Result<(), DaemonError> {
     let config = home.join(".config");
-    if config.is_dir() {
-        // A same-path bind makes .config a mountpoint. The provider can
-        // still modify ordinary config entries, but cannot rename the
-        // ancestor underneath the protected Openbox mount.
-        append_bind(args, &config, &config, created);
-        let openbox = config.join("openbox");
-        // Keep Openbox's whole directory private to this namespace. This
-        // also creates a stable mountpoint when the host has not created the
-        // directory yet; the per-file masks below prevent writes even to the
-        // private replacement tree.
-        append_directory(args, &openbox, created);
-        args.extend(["--tmpfs".to_string(), openbox.display().to_string()]);
-    } else {
-        // A fresh runtime home has no ordinary .config contents to preserve.
-        // Fail closed by keeping the entire newly-created config tree inside
-        // the provider namespace rather than exposing a renameable path.
-        append_directory(args, &config, created);
-        args.extend(["--tmpfs".to_string(), config.display().to_string()]);
+    append_managed_runtime_user_anchor(args, &config, "runtime user .config", created)?;
+    let local = home.join(".local");
+    append_managed_runtime_user_anchor(args, &local, "runtime user .local", created)?;
+    for relative in MANAGED_RUNTIME_USER_COMMAND_DIRECTORY_NAMES {
+        let command_directory = validate_boundary_directory(
+            &home.join(relative),
+            "runtime user command directory",
+        )?;
+        append_directory(args, &command_directory, created);
+        args.extend([
+            "--tmpfs".to_string(),
+            command_directory.display().to_string(),
+        ]);
     }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn append_managed_runtime_user_anchor(
+    args: &mut Vec<String>,
+    path: &Path,
+    label: &str,
+    created: &mut BTreeSet<PathBuf>,
+) -> Result<(), DaemonError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => {
+            let path = canonical_directory(path, label)?;
+            // A same-path bind makes the ancestor a mountpoint. The provider
+            // can still modify ordinary entries below it, but cannot rename
+            // the ancestor underneath protected command directories.
+            append_bind(args, &path, &path, created);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            append_directory(args, path, created);
+        }
+        Err(error) => {
+            return Err(isolation_error(format!(
+                "failed to inspect {label}: {error}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -457,21 +541,25 @@ fn managed_trusted_read_only_paths() -> Result<Vec<PathBuf>, DaemonError> {
     if default_slice_root.exists() {
         candidates.push(default_slice_root.to_path_buf());
     }
-    if let Some(path) = std::env::var_os("CHARIOX_SLICE_ROOT")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-    {
+    if let Some(raw) = std::env::var_os("CHARIOX_SLICE_ROOT") {
+        if raw.is_empty() {
+            return Err(isolation_error("CHARIOX_SLICE_ROOT must not be empty"));
+        }
+        let path = PathBuf::from(raw);
         if !path.is_absolute() {
             return Err(isolation_error("CHARIOX_SLICE_ROOT must be absolute"));
         }
-        if managed_configured_slice_publication_root().as_deref() != Some(path.as_path()) {
+        if managed_configured_slice_publication_root()?.as_deref() != Some(path.as_path()) {
             candidates.push(path);
         }
     }
-    if let Some(path) = std::env::var_os(MANAGED_PROVIDER_BWRAP_ENV)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-    {
+    if let Some(raw) = std::env::var_os(MANAGED_PROVIDER_BWRAP_ENV) {
+        if raw.is_empty() {
+            return Err(isolation_error(format!(
+                "{MANAGED_PROVIDER_BWRAP_ENV} must not be empty"
+            )));
+        }
+        let path = PathBuf::from(raw);
         if !path.is_absolute() {
             return Err(isolation_error(
                 "CHARIOX_MANAGED_PROVIDER_BWRAP must be absolute",
@@ -483,12 +571,11 @@ fn managed_trusted_read_only_paths() -> Result<Vec<PathBuf>, DaemonError> {
     let mut paths = candidates
         .into_iter()
         .map(|path| {
-            path.canonicalize().map_err(|error| {
-                isolation_error(format!(
-                    "managed trusted runtime path {} could not be resolved: {error}",
-                    path.display()
-                ))
-            })
+            if path.is_dir() {
+                canonical_directory(&path, "managed trusted runtime directory")
+            } else {
+                canonical_file(&path, "managed trusted runtime file")
+            }
         })
         .collect::<Result<Vec<_>, _>>()?;
     paths.sort_by_key(|path| path.components().count());
@@ -585,13 +672,13 @@ pub(crate) fn apply_managed_provider_isolation(
         let account_bindings = managed_account_bindings(&mut launch.pty_env)?;
         let program = rewrite_managed_program_path(&program, &provider_home, &account_bindings);
         let prompt_attachment_root = managed_prompt_attachment_root(request)?;
-        let protected_namespace_roots = managed_protected_namespace_directories(&[]);
-        let protected_namespace_files = managed_protected_namespace_files();
+        let protected_namespace_roots = managed_protected_namespace_directories(&[])?;
+        let protected_namespace_files = managed_protected_namespace_files()?;
         // The provider runs with the outer service user's uid in the user
         // namespace. Keep that user's ordinary home available, but protect
         // only the shell/Screen/Openbox startup files that later host-side
         // lifecycle commands would execute.
-        let runtime_user_home = managed_runtime_user_home();
+        let runtime_user_home = managed_runtime_user_home()?;
         let runtime_user_startup_files = runtime_user_home
             .as_deref()
             .map(|home| {
@@ -646,7 +733,11 @@ pub(crate) fn apply_managed_provider_isolation(
             &mut created_directories,
         );
         if let Some(home) = runtime_user_home.as_deref() {
-            append_managed_runtime_user_openbox_boundary(&mut args, home, &mut created_directories);
+            append_managed_runtime_user_openbox_boundary(
+                &mut args,
+                home,
+                &mut created_directories,
+            )?;
         }
         append_managed_protected_namespace_files(
             &mut args,
@@ -683,6 +774,20 @@ pub(crate) fn apply_managed_provider_isolation(
             args.extend(["--unsetenv".to_string(), name.clone()]);
             if !launch.pty_env_remove.iter().any(|value| value == &name) {
                 launch.pty_env_remove.push(name);
+            }
+        }
+        // Account paths are scrubbed from the inherited kernel environment,
+        // then restored only to their validated, namespace-local destinations.
+        // This keeps an inherited XDG_RUNTIME_DIR (or provider-specific home)
+        // from pointing back into the host while preserving the account
+        // binding requested by the launch.
+        for name in PROVIDER_ACCOUNT_PATH_ENVIRONMENT {
+            if let Some(value) = launch.pty_env.get(*name) {
+                args.extend([
+                    "--setenv".to_string(),
+                    (*name).to_string(),
+                    value.clone(),
+                ]);
             }
         }
         append_managed_git_safe_directory_environment(&mut args, &workspace_roots);
@@ -909,7 +1014,8 @@ fn managed_bubblewrap_binary() -> Result<PathBuf, DaemonError> {
             "managed provider isolation needs an absolute Bubblewrap launcher path",
         ));
     }
-    let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
+    let path = canonical_file(&path, "managed provider Bubblewrap launcher")?;
+    let metadata = std::fs::metadata(&path).map_err(|error| {
         isolation_error(format!(
             "managed provider isolation needs {}: {error}",
             path.display()
@@ -984,6 +1090,7 @@ fn managed_namespace_args_with_process_temp_root(
         "--die-with-parent".to_string(),
         "--new-session".to_string(),
         "--unshare-user".to_string(),
+        "--disable-userns".to_string(),
         "--unshare-pid".to_string(),
         "--unshare-ipc".to_string(),
         "--unshare-uts".to_string(),
@@ -1105,8 +1212,8 @@ fn managed_workspace_roots_with_private_temp_roots(
     if request.session_id == "provider-account" {
         return Ok(Vec::new());
     }
-    let protected = managed_protected_namespace_directories(&[]);
-    let host_publication_root = managed_configured_slice_publication_root();
+    let protected = managed_protected_namespace_directories(&[])?;
+    let host_publication_root = managed_configured_slice_publication_root()?;
     let configured = managed_slice_workspace_roots()?;
     let mut roots = configured.clone();
     let mut requested = request.workspace_live_sync_roots.clone();
@@ -1132,9 +1239,7 @@ fn managed_workspace_roots_with_private_temp_roots(
     // sibling temp paths hidden. Paths outside these actual masked roots stay
     // on the ordinary root mount with normal filesystem permissions.
     for root in requested {
-        let Ok(root) = canonical_directory(&root, "managed provider workspace") else {
-            continue;
-        };
+        let root = canonical_directory(&root, "managed provider workspace")?;
         let below_private_temp_root = private_temp_roots
             .iter()
             .any(|private| root != *private && root.starts_with(private));
@@ -1155,9 +1260,7 @@ fn managed_workspace_roots_with_private_temp_roots(
 
     let mut canonical = Vec::new();
     for root in roots {
-        let Ok(root) = canonical_directory(&root, "managed provider workspace") else {
-            continue;
-        };
+        let root = canonical_directory(&root, "managed provider workspace")?;
         if canonical.iter().all(|existing| existing != &root) {
             canonical.push(root);
         }
@@ -1231,7 +1334,7 @@ fn managed_working_directory(
         .as_ref()
         .ok_or_else(|| isolation_error("managed provider launch has no working directory"))?;
     let directory = canonical_directory(directory, "managed provider working directory")?;
-    let protected = managed_protected_namespace_directories(&[]);
+    let protected = managed_protected_namespace_directories(&[])?;
     if let Some(protected_root) = protected.iter().find(|path| directory.starts_with(path)) {
         let reexposed_child = roots.iter().any(|root| {
             root != protected_root
@@ -1323,18 +1426,160 @@ fn rewrite_managed_program_path(
     program.to_string()
 }
 
+#[cfg(any(target_os = "linux", test))]
+fn configured_managed_boundary_directory(
+    name: &str,
+    label: &str,
+) -> Result<Option<PathBuf>, DaemonError> {
+    let Some(raw) = std::env::var_os(name) else {
+        return Ok(None);
+    };
+    if raw.is_empty() {
+        return Err(isolation_error(format!("{name} must not be empty")));
+    }
+    Ok(Some(validate_boundary_directory(
+        &PathBuf::from(raw),
+        label,
+    )?))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn validate_directory_ancestors(path: &Path, label: &str) -> Result<(), DaemonError> {
+    if !path.is_absolute() {
+        return Err(isolation_error(format!("{label} must be absolute")));
+    }
+    if path.components().any(|component| {
+        matches!(component, std::path::Component::ParentDir)
+    }) {
+        return Err(isolation_error(format!(
+            "{label} must not contain a parent-directory component"
+        )));
+    }
+
+    let mut current = path.to_path_buf();
+    loop {
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() {
+                    return Err(isolation_error(format!(
+                        "{label} must not traverse symlinked directories"
+                    )));
+                }
+                if !metadata.is_dir() {
+                    return Err(isolation_error(format!(
+                        "{label} has a non-directory ancestor"
+                    )));
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(isolation_error(format!(
+                    "failed to inspect an ancestor of {label}: {error}"
+                )));
+            }
+        }
+        if current == Path::new("/") {
+            break;
+        }
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        current = parent.to_path_buf();
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn validate_boundary_directory(path: &Path, label: &str) -> Result<PathBuf, DaemonError> {
+    if !path.is_absolute() {
+        return Err(isolation_error(format!("{label} must be absolute")));
+    }
+    if path == Path::new("/") {
+        return Err(isolation_error(format!("{label} must not be the root directory")));
+    }
+    validate_directory_ancestors(path, label)?;
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => path
+            .canonicalize()
+            .map_err(|error| isolation_error(format!("failed to canonicalize {label}: {error}")))
+            .and_then(|canonical| {
+                if canonical == Path::new("/") {
+                    Err(isolation_error(format!("{label} must not resolve to the root directory")))
+                } else {
+                    Ok(canonical)
+                }
+            }),
+        Ok(_) => Err(isolation_error(format!("{label} must be a directory"))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(path.to_path_buf()),
+        Err(error) => Err(isolation_error(format!("failed to inspect {label}: {error}"))),
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn validate_control_file_path(path: &Path, label: &str) -> Result<PathBuf, DaemonError> {
+    if !path.is_absolute() {
+        return Err(isolation_error(format!("{label} must be absolute")));
+    }
+    if path == Path::new("/") {
+        return Err(isolation_error(format!("{label} must not be the root directory")));
+    }
+    let parent = path.parent().unwrap_or(Path::new("/"));
+    validate_directory_ancestors(parent, label)?;
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(isolation_error(format!(
+            "{label} must not be a symlink"
+        ))),
+        Ok(metadata) if metadata.is_dir() => Err(isolation_error(format!(
+            "{label} must name a file or socket"
+        ))),
+        Ok(_) => path
+            .canonicalize()
+            .map_err(|error| isolation_error(format!("failed to canonicalize {label}: {error}"))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(path.to_path_buf()),
+        Err(error) => Err(isolation_error(format!("failed to inspect {label}: {error}"))),
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn canonical_file(path: &Path, label: &str) -> Result<PathBuf, DaemonError> {
+    if !path.is_absolute() {
+        return Err(isolation_error(format!("{label} must be absolute")));
+    }
+    if path == Path::new("/") {
+        return Err(isolation_error(format!("{label} must not be the root directory")));
+    }
+    let parent = path.parent().unwrap_or(Path::new("/"));
+    validate_directory_ancestors(parent, label)?;
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| isolation_error(format!("failed to inspect {label}: {error}")))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(isolation_error(format!("{label} must be a real file")));
+    }
+    path.canonicalize()
+        .map_err(|error| isolation_error(format!("failed to canonicalize {label}: {error}")))
+}
+
 #[cfg(target_os = "linux")]
 fn canonical_directory(path: &Path, label: &str) -> Result<PathBuf, DaemonError> {
     if !path.is_absolute() {
         return Err(isolation_error(format!("{label} must be absolute")));
     }
+    if path == Path::new("/") {
+        return Err(isolation_error(format!("{label} must not be the root directory")));
+    }
+    validate_directory_ancestors(path, label)?;
     let metadata = std::fs::symlink_metadata(path)
         .map_err(|error| isolation_error(format!("failed to inspect {label}: {error}")))?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Err(isolation_error(format!("{label} must be a real directory")));
     }
-    path.canonicalize()
-        .map_err(|error| isolation_error(format!("failed to canonicalize {label}: {error}")))
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| isolation_error(format!("failed to canonicalize {label}: {error}")))?;
+    if canonical == Path::new("/") {
+        return Err(isolation_error(format!("{label} must not resolve to the root directory")));
+    }
+    Ok(canonical)
 }
 
 #[cfg(target_os = "linux")]
@@ -1553,6 +1798,7 @@ mod tests {
             })
             .expect("resolver target should be restored read-only");
         assert!(args.windows(3).any(|args| args == ["--bind", "/", "/"]));
+        assert!(args.iter().any(|arg| arg == "--disable-userns"));
         assert!(args.windows(2).any(|args| args == ["--tmpfs", "/tmp"]));
         assert!(args.windows(2).any(|args| args == ["--tmpfs", "/var/tmp"]));
         let run_mask = args
@@ -1636,7 +1882,8 @@ mod tests {
         let private_temp_roots = managed_private_temp_roots(&custom_tmpdir);
         let roots = managed_workspace_roots_with_private_temp_roots(&request, &private_temp_roots)
             .expect("selected workspace below custom TMPDIR should resolve");
-        let protected = managed_protected_namespace_directories(&[]);
+        let protected = managed_protected_namespace_directories(&[])
+            .expect("managed protected roots should resolve");
         let trusted = Vec::new();
         let (mut args, mut created) =
             managed_namespace_args_with_process_temp_root(None, Path::exists, None, &custom_tmpdir);
@@ -1722,8 +1969,9 @@ mod tests {
         let vault = PathBuf::from("/managed-vault.json");
         std::env::set_var("CHARIOX_MANAGED_VAULT_PATH", &vault);
 
-        let protected = managed_protected_namespace_directories(&[]);
-        let files = managed_protected_namespace_files();
+        let protected = managed_protected_namespace_directories(&[])
+            .expect("managed protected roots should resolve");
+        let files = managed_protected_namespace_files().expect("managed protected files resolve");
         let (mut args, mut created) = managed_namespace_args(None, Path::exists, None);
         append_managed_protected_namespace_directories(&mut args, &protected, &mut created);
         append_managed_protected_namespace_files(&mut args, &files, &mut created);
@@ -1907,8 +2155,10 @@ mod tests {
             .expect("runtime user Openbox config directory should exist");
         std::env::set_var("HOME", &home);
 
-        let startup_files = managed_runtime_user_startup_files();
-        let openbox_files = managed_runtime_user_openbox_files();
+        let startup_files = managed_runtime_user_startup_files()
+            .expect("runtime user startup paths should resolve");
+        let openbox_files = managed_runtime_user_openbox_files()
+            .expect("runtime user Openbox paths should resolve");
         let profile = home.join(".bash_profile");
         let openbox_rc = home.join(".config/openbox/rc.xml");
         assert!(startup_files.contains(&profile));
@@ -1930,7 +2180,8 @@ mod tests {
         let (mut args, mut created) = managed_namespace_args(None, Path::exists, None);
         append_bind(&mut args, &home, &home, &mut created);
         append_managed_protected_namespace_files(&mut args, &startup_files, &mut created);
-        append_managed_runtime_user_openbox_boundary(&mut args, &home, &mut created);
+        append_managed_runtime_user_openbox_boundary(&mut args, &home, &mut created)
+            .expect("runtime user command directories should resolve");
         append_managed_protected_namespace_files(&mut args, &openbox_files, &mut created);
         let home_text = home.display().to_string();
         let config = home.join(".config");
@@ -1977,6 +2228,23 @@ mod tests {
                     ]
             }));
         }
+        for name in [".xsession", ".xsessionrc", ".xinitrc", ".xprofile"] {
+            let path = home.join(name);
+            assert!(args.windows(3).any(|window| {
+                window
+                    == [
+                        "--ro-bind",
+                        "/dev/null",
+                        path.to_str().expect("startup path should be utf8"),
+                    ]
+            }));
+        }
+        for relative in MANAGED_RUNTIME_USER_COMMAND_DIRECTORY_NAMES {
+            let path = home.join(relative);
+            assert!(args.windows(2).any(|window| {
+                window == ["--tmpfs", path.to_str().expect("command path should be utf8")]
+            }));
+        }
         assert!(!args
             .windows(2)
             .any(|window| { window == ["--tmpfs", home_text.as_str()] }));
@@ -1989,7 +2257,27 @@ mod tests {
             "/bin/sh".to_string(),
             "-eu".to_string(),
             "-c".to_string(),
-            "if mv \"$HOME/.config\" \"$HOME/.config-renamed\"; then exit 43; fi\nif mv \"$HOME/.config/openbox\" \"$HOME/.config/openbox-renamed\"; then exit 44; fi\nif printf 'touch \"$HOME/profile-executed\"\\n' > \"$HOME/.bash_profile\"; then exit 41; fi\nif printf '<openbox><execute>touch \"$HOME/openbox-executed\"</execute></openbox>\\n' > \"$HOME/.config/openbox/rc.xml\"; then exit 42; fi\nprintf ordinary > \"$HOME/ordinary-created\"".to_string(),
+            concat!(
+                "if mv \"$HOME/.config\" \"$HOME/.config-renamed\"; then exit 43; fi\n",
+                "if mv \"$HOME/.config/openbox\" \"$HOME/.config/openbox-renamed\"; then exit 44; fi\n",
+                "if mv \"$HOME/.config/autostart\" \"$HOME/.config/autostart-renamed\"; then exit 45; fi\n",
+                "if mv \"$HOME/.config/systemd/user\" \"$HOME/.config/systemd-user-renamed\"; then exit 46; fi\n",
+                "if mv \"$HOME/.config/environment.d\" \"$HOME/.config/environment-renamed\"; then exit 47; fi\n",
+                "if mv \"$HOME/.local/share/applications\" \"$HOME/.local/share/applications-renamed\"; then exit 48; fi\n",
+                "if printf 'touch \"$HOME/profile-executed\"\\n' > \"$HOME/.bash_profile\"; then exit 41; fi\n",
+                "if printf 'touch \"$HOME/xsession-executed\"\\n' > \"$HOME/.xsession\"; then exit 49; fi\n",
+                "if printf 'touch \"$HOME/xsessionrc-executed\"\\n' > \"$HOME/.xsessionrc\"; then exit 50; fi\n",
+                "if printf 'touch \"$HOME/xinitrc-executed\"\\n' > \"$HOME/.xinitrc\"; then exit 51; fi\n",
+                "if printf 'touch \"$HOME/xprofile-executed\"\\n' > \"$HOME/.xprofile\"; then exit 52; fi\n",
+                "if printf '<openbox><execute>touch \"$HOME/openbox-executed\"</execute></openbox>\\n' > \"$HOME/.config/openbox/rc.xml\"; then exit 42; fi\n",
+                "printf ordinary > \"$HOME/ordinary-created\"\n",
+                "printf ordinary-config > \"$HOME/.config/ordinary-config\"\n",
+                "printf private > \"$HOME/.config/autostart/provider-created\"\n",
+                "printf private > \"$HOME/.config/systemd/user/provider-created\"\n",
+                "printf private > \"$HOME/.config/environment.d/provider-created\"\n",
+                "printf private > \"$HOME/.local/share/applications/provider-created\"\n",
+            )
+            .to_string(),
             "managed-runtime-home-startup-openbox-probe".to_string(),
         ]);
         let output = match Command::new(bwrap).args(args).output() {
@@ -2020,6 +2308,18 @@ mod tests {
             std::fs::read_to_string(&ordinary_file).expect("ordinary home file should be written"),
             "ordinary"
         );
+        assert_eq!(
+            std::fs::read_to_string(home.join(".config/ordinary-config"))
+                .expect("ordinary config file should be written"),
+            "ordinary-config"
+        );
+        for relative in MANAGED_RUNTIME_USER_COMMAND_DIRECTORY_NAMES {
+            assert!(
+                !home.join(relative).join("provider-created").exists(),
+                "provider command payload escaped {}",
+                relative
+            );
+        }
         // Bubblewrap may materialize an empty host-side mountpoint when a
         // masked destination did not exist before the namespace was built.
         // That artifact is harmless; any bytes would prove that the provider
@@ -2037,6 +2337,11 @@ mod tests {
         assert!(!profile_executed.exists());
         assert_no_masked_payload(&openbox_rc, "Openbox rc.xml");
         assert!(!openbox_executed.exists());
+        for name in [".xsession", ".xsessionrc", ".xinitrc", ".xprofile"] {
+            let path = home.join(name);
+            assert_no_masked_payload(&path, name);
+            assert!(!home.join(format!("{name}-executed")).exists());
+        }
 
         // The follow-up lifecycle shapes run outside bwrap. Since the
         // provider's attempted profile and Openbox writes were masked, outer
@@ -2081,10 +2386,12 @@ mod tests {
         // broker FD. Publication policy must not depend on the transport.
         std::env::remove_var("CHARIOX_SLICE_DOCKER_BROKER_SOCKET");
 
-        let protected = managed_protected_namespace_directories(&[]);
+        let protected = managed_protected_namespace_directories(&[])
+            .expect("managed protected roots should resolve");
         let trusted = managed_trusted_read_only_paths()
             .expect("configured publication path should not need a trusted bind");
-        let detected = managed_configured_slice_publication_root();
+        let detected = managed_configured_slice_publication_root()
+            .expect("configured publication root should resolve");
 
         restore_env("CHARIOX_SLICE_ROOT", previous_slice_root);
         restore_env("CHARIOX_SLICE_DOCKER_BROKER_SOCKET", previous_broker);
@@ -2198,6 +2505,214 @@ mod tests {
         assert!(!args
             .windows(3)
             .any(|args| args == ["--setenv", CLAUDE_SANDBOX_ENV, "1"]));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_provider_control_environment_scrubs_daemon_and_account_paths() {
+        let removed = managed_provider_control_env_remove();
+        for name in [
+            "CHARIOX_DAEMON_SOCKET",
+            "XDG_RUNTIME_DIR",
+            "XDG_CONFIG_HOME",
+            "CODEX_HOME",
+        ] {
+            assert!(removed.iter().any(|removed| removed == name),
+                "managed provider control environment must scrub {name}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_relocated_daemon_socket_is_scrubbed_and_mount_masked() {
+        let _env = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-managed-daemon-socket-boundary-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let socket = root.join("service/control/daemon.sock");
+        std::fs::create_dir_all(socket.parent().expect("daemon socket parent should exist"))
+            .expect("daemon socket parent should exist");
+
+        let names = [
+            "HOME",
+            "CHARIOX_HOME",
+            "CHARIOX_SLICE_ROOT",
+            MANAGED_SLICE_SERVICE_ROOT_ENV,
+            MANAGED_SLICE_PUBLICATION_ROOT_ENV,
+            "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+            "CHARIOX_MANAGED_PROVIDER_HOME",
+        ];
+        let mut previous = names
+            .iter()
+            .map(|name| (*name, std::env::var_os(name)))
+            .collect::<Vec<_>>();
+        previous.extend(
+            MANAGED_PROTECTED_FILE_ENV_NAMES
+                .iter()
+                .map(|name| (*name, std::env::var_os(name))),
+        );
+        for name in names {
+            std::env::remove_var(name);
+        }
+        for name in MANAGED_PROTECTED_FILE_ENV_NAMES {
+            std::env::remove_var(name);
+        }
+        std::env::set_var("CHARIOX_DAEMON_SOCKET", &socket);
+
+        let protected = managed_protected_namespace_directories(&[])
+            .expect("relocated daemon socket should validate");
+        let files =
+            managed_protected_namespace_files().expect("daemon socket files should validate");
+        let (mut args, mut created) = managed_namespace_args(None, Path::exists, None);
+        append_managed_protected_namespace_directories(&mut args, &protected, &mut created);
+        append_managed_protected_namespace_files(&mut args, &files, &mut created);
+
+        for (name, value) in previous {
+            restore_env(name, value);
+        }
+
+        let socket_parent = socket
+            .parent()
+            .expect("daemon socket should have a parent")
+            .to_path_buf();
+        assert!(protected.contains(&socket_parent));
+        assert!(args.windows(2).any(|window| {
+            window
+                == [
+                    "--tmpfs",
+                    socket_parent.to_str().expect("socket parent should be utf8"),
+                ]
+        }));
+        assert!(managed_provider_control_env_remove()
+            .iter()
+            .any(|name| name == "CHARIOX_DAEMON_SOCKET"));
+        assert!(files.is_empty(), "relocated control socket needs its parent mask");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_boundary_paths_reject_root_leaf_and_ancestor_symlink_shapes() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-managed-boundary-validation-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let real = root.join("real");
+        let real_child = real.join("child");
+        let leaf_link = root.join("leaf-link");
+        let ancestor_link = root.join("ancestor-link");
+        std::fs::create_dir_all(&real_child).expect("boundary fixture should exist");
+        std::os::unix::fs::symlink(&real, &leaf_link).expect("leaf symlink should exist");
+        std::os::unix::fs::symlink(&real, &ancestor_link)
+            .expect("ancestor symlink should exist");
+
+        assert!(canonical_directory(Path::new("/"), "boundary root").is_err());
+        assert!(canonical_directory(&leaf_link, "boundary leaf symlink").is_err());
+        assert!(canonical_directory(
+            &ancestor_link.join("child"),
+            "boundary ancestor symlink"
+        )
+        .is_err());
+        assert!(validate_boundary_directory(Path::new("/"), "configured boundary root").is_err());
+        assert!(validate_boundary_directory(&leaf_link, "configured leaf symlink").is_err());
+        assert!(validate_boundary_directory(
+            &ancestor_link.join("child"),
+            "configured ancestor symlink"
+        )
+        .is_err());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_configured_roots_fail_closed_at_each_provider_boundary() {
+        let _env = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-managed-configured-root-validation-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let real = root.join("real");
+        let leaf_link = root.join("leaf-link");
+        let ancestor_link = root.join("ancestor-link");
+        std::fs::create_dir_all(real.join("child")).expect("configured root fixture should exist");
+        std::os::unix::fs::symlink(&real, &leaf_link).expect("leaf symlink should exist");
+        std::os::unix::fs::symlink(&real, &ancestor_link)
+            .expect("ancestor symlink should exist");
+
+        let names = [
+            "HOME",
+            "CHARIOX_HOME",
+            MANAGED_PROVIDER_HOME_ENV,
+            "CODEX_HOME",
+            MANAGED_SLICE_SERVICE_ROOT_ENV,
+            MANAGED_SLICE_PUBLICATION_ROOT_ENV,
+            "CHARIOX_SLICE_ROOT",
+            "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+            "CHARIOX_DAEMON_SOCKET",
+        ];
+        let mut previous = names
+            .iter()
+            .map(|name| (*name, std::env::var_os(name)))
+            .collect::<Vec<_>>();
+        previous.extend(
+            MANAGED_PROTECTED_FILE_ENV_NAMES
+                .iter()
+                .map(|name| (*name, std::env::var_os(name))),
+        );
+        for name in names {
+            std::env::remove_var(name);
+        }
+        for name in MANAGED_PROTECTED_FILE_ENV_NAMES {
+            std::env::remove_var(name);
+        }
+
+        let shapes = [
+            ("root", PathBuf::from("/")),
+            ("leaf symlink", leaf_link),
+            ("ancestor symlink", ancestor_link.join("child")),
+        ];
+        for (label, path) in shapes {
+            std::env::set_var(MANAGED_PROVIDER_HOME_ENV, &path);
+            assert!(managed_provider_home().is_err(), "provider HOME accepted {label}");
+            std::env::remove_var(MANAGED_PROVIDER_HOME_ENV);
+
+            let mut account_environment = BTreeMap::from([(
+                "CODEX_HOME".to_string(),
+                path.display().to_string(),
+            )]);
+            assert!(
+                managed_account_bindings(&mut account_environment).is_err(),
+                "account path accepted {label}"
+            );
+
+            std::env::set_var("HOME", &path);
+            assert!(managed_runtime_user_home().is_err(), "runtime HOME accepted {label}");
+            std::env::remove_var("HOME");
+
+            std::env::set_var(MANAGED_SLICE_SERVICE_ROOT_ENV, &path);
+            assert!(
+                managed_configured_slice_service_root().is_err(),
+                "service root accepted {label}"
+            );
+            std::env::remove_var(MANAGED_SLICE_SERVICE_ROOT_ENV);
+
+            std::env::set_var("CHARIOX_DAEMON_SOCKET", &path);
+            assert!(
+                managed_protected_namespace_directories(&[]).is_err(),
+                "daemon control path accepted {label}"
+            );
+            std::env::remove_var("CHARIOX_DAEMON_SOCKET");
+        }
+
+        for (name, value) in previous {
+            restore_env(name, value);
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -2325,11 +2840,13 @@ mod tests {
         .with_workspace_live_sync_roots(vec![selected.clone()]);
         let workspace_roots = managed_workspace_roots(&request)
             .expect("selected configured publication should resolve");
-        let protected = managed_protected_namespace_directories(&[]);
+        let protected = managed_protected_namespace_directories(&[])
+            .expect("managed protected roots should resolve");
         let trusted = managed_trusted_read_only_paths()
             .expect("configured publication should not be trusted wholesale");
         assert_eq!(
-            managed_configured_slice_publication_root(),
+            managed_configured_slice_publication_root()
+                .expect("configured publication root should resolve"),
             Some(publication.clone())
         );
         assert_eq!(workspace_roots, vec![selected.canonicalize().unwrap()]);
@@ -2486,7 +3003,8 @@ mod tests {
         let roots = managed_workspace_roots(&request).expect("managed roots should resolve");
         let working_directory = managed_working_directory(&request, &roots)
             .expect("ordinary paths outside service state should remain valid cwd");
-        let protected = managed_protected_namespace_directories(&[]);
+        let protected = managed_protected_namespace_directories(&[])
+            .expect("managed protected roots should resolve");
         let trusted_read_only =
             managed_trusted_read_only_paths().expect("configured trusted paths should resolve");
         let mut args = managed_namespace_args(None, |_| true, None).0;
@@ -2872,7 +3390,13 @@ mod tests {
             args.extend([
                 "-eu".to_string(),
                 "-c".to_string(),
-                concat!("test \"$(cat \"$1\")\" = \"$3\"\n", "test ! -e \"$2\"\n",).to_string(),
+                concat!(
+                    "test \"$(cat \"$1\")\" = \"$3\"\n",
+                    "test ! -e \"$2\"\n",
+                    "command -v unshare >/dev/null\n",
+                    "if unshare -Ur true 2>/dev/null; then exit 46; fi\n",
+                )
+                .to_string(),
                 "managed-runtime-sibling-probe".to_string(),
                 own_runtime.join("mcp-config.json").display().to_string(),
                 sibling_token.display().to_string(),
