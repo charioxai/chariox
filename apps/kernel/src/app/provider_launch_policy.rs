@@ -240,6 +240,29 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ordinary_provider_child_retains_xdg_runtime_directory() {
+        let mut child = std::process::Command::new("/bin/sh");
+        child
+            .env_clear()
+            .env("XDG_RUNTIME_DIR", "/ordinary-provider-runtime");
+        for name in default_provider_env_remove(&DaemonConfig::for_tests()) {
+            child.env_remove(name);
+        }
+        let status = child
+            .args([
+                "-c",
+                "test \"$XDG_RUNTIME_DIR\" = /ordinary-provider-runtime",
+            ])
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "ordinary provider launches must retain their XDG runtime directory"
+        );
+    }
+
     fn opencode_run_with_resume_state() -> RuntimeProviderRun {
         let mut run = RuntimeProviderRun::from_control_capability_inference(
             "provider-run-1",

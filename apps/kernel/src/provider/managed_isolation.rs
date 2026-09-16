@@ -134,12 +134,6 @@ pub(crate) fn managed_provider_control_env_remove() -> Vec<String> {
         .iter()
         .map(|name| (*name).to_string())
         .collect::<Vec<_>>();
-    #[cfg(target_os = "linux")]
-    names.extend(
-        PROVIDER_ACCOUNT_PATH_ENVIRONMENT
-            .iter()
-            .map(|name| (*name).to_string()),
-    );
     names.extend([
         MANAGED_WORKSPACE_ROOT_COUNT_ENV.to_string(),
         "GIT_CONFIG_COUNT".to_string(),
@@ -152,6 +146,19 @@ pub(crate) fn managed_provider_control_env_remove() -> Vec<String> {
             || name.starts_with("GIT_CONFIG_VALUE_"))
         .then_some(name)
     }));
+    names.sort();
+    names.dedup();
+    names
+}
+
+pub(crate) fn managed_provider_isolation_env_remove() -> Vec<String> {
+    let mut names = managed_provider_control_env_remove();
+    #[cfg(target_os = "linux")]
+    names.extend(
+        PROVIDER_ACCOUNT_PATH_ENVIRONMENT
+            .iter()
+            .map(|name| (*name).to_string()),
+    );
     names.sort();
     names.dedup();
     names
@@ -524,6 +531,10 @@ fn append_managed_runtime_user_anchor(
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             append_directory(args, path, created);
+            // A missing anchor must become a mountpoint, not merely a
+            // namespace-created directory. Otherwise the provider can rename
+            // it and recreate the path in the writable root below.
+            args.extend(["--tmpfs".to_string(), path.display().to_string()]);
         }
         Err(error) => {
             return Err(isolation_error(format!(
@@ -763,7 +774,7 @@ pub(crate) fn apply_managed_provider_isolation(
         }
 
         append_managed_namespace_environment(&mut args, request);
-        let mut environment_remove = managed_provider_control_env_remove();
+        let mut environment_remove = managed_provider_isolation_env_remove();
         environment_remove.extend(launch.pty_env.keys().filter_map(|name| {
             (name.starts_with("GIT_CONFIG_KEY_") || name.starts_with("GIT_CONFIG_VALUE_"))
                 .then_some(name.clone())
@@ -959,7 +970,7 @@ pub(crate) fn managed_isolated_utility_launch(
         pty_program: Some(program.into()),
         pty_args: args,
         pty_env: environment,
-        pty_env_remove: managed_provider_control_env_remove(),
+        pty_env_remove: managed_provider_isolation_env_remove(),
         working_directory,
         structured_endpoint: None,
     };
@@ -2137,6 +2148,94 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn managed_runtime_user_missing_config_and_local_anchors_are_mount_boundaries() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-managed-runtime-user-missing-anchor-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let home = root.join("slice-home");
+        std::fs::create_dir_all(&home).expect("runtime user home should exist");
+
+        let (mut args, mut created) = managed_namespace_args(None, Path::exists, None);
+        append_bind(&mut args, &home, &home, &mut created);
+        append_managed_runtime_user_openbox_boundary(&mut args, &home, &mut created)
+            .expect("runtime user command directories should resolve");
+
+        let home_text = home.display().to_string();
+        for relative in [".config", ".local"] {
+            let path = home.join(relative);
+            let path_text = path.display().to_string();
+            let directory = args
+                .windows(2)
+                .position(|window| window == ["--dir", path_text.as_str()])
+                .unwrap_or_else(|| panic!("missing namespace directory for {relative}"));
+            let tmpfs = args
+                .windows(2)
+                .position(|window| window == ["--tmpfs", path_text.as_str()])
+                .unwrap_or_else(|| panic!("missing private mount for {relative}"));
+            assert!(
+                directory < tmpfs,
+                "missing runtime-user anchor {relative} must be created before its tmpfs mount"
+            );
+        }
+
+        let bwrap = Path::new(BWRAP_PATH);
+        if !bwrap.is_file() {
+            eprintln!(
+                "skipped managed bwrap missing-anchor probe: {} is unavailable",
+                bwrap.display()
+            );
+            let _ = std::fs::remove_dir_all(root);
+            return;
+        }
+
+        args.extend([
+            "--setenv".to_string(),
+            "HOME".to_string(),
+            home_text,
+            "--".to_string(),
+            "/bin/sh".to_string(),
+            "-eu".to_string(),
+            "-c".to_string(),
+            concat!(
+                "if mv \"$HOME/.config\" \"$HOME/.config-renamed\"; then exit 41; fi\n",
+                "if rmdir \"$HOME/.config\"; then exit 42; fi\n",
+                "if mv \"$HOME/.local\" \"$HOME/.local-renamed\"; then exit 43; fi\n",
+                "if rmdir \"$HOME/.local\"; then exit 44; fi\n",
+            )
+            .to_string(),
+            "managed-runtime-user-missing-anchor-probe".to_string(),
+        ]);
+        let output = match Command::new(bwrap).args(args).output() {
+            Ok(output) => output,
+            Err(error) => {
+                eprintln!("skipped managed bwrap missing-anchor probe: {error}");
+                let _ = std::fs::remove_dir_all(root);
+                return;
+            }
+        };
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("No permissions to create a new namespace")
+            || stderr.contains("Operation not permitted")
+        {
+            eprintln!(
+                "skipped managed bwrap missing-anchor probe: user namespaces are unavailable"
+            );
+            let _ = std::fs::remove_dir_all(root);
+            return;
+        }
+        assert!(
+            output.status.success(),
+            "managed bwrap missing-anchor probe failed: {stderr}"
+        );
+        assert!(!home.join(".config-renamed").exists());
+        assert!(!home.join(".local-renamed").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn managed_bwrap_probe_blocks_runtime_home_startup_and_openbox_commands_without_blocking_home_files(
     ) {
         let _env = crate::env_lock::lock();
@@ -2509,16 +2608,23 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn managed_provider_control_environment_scrubs_daemon_and_account_paths() {
+    fn managed_provider_control_environment_scrubs_kernel_controls_not_account_paths() {
         let removed = managed_provider_control_env_remove();
-        for name in [
-            "CHARIOX_DAEMON_SOCKET",
-            "XDG_RUNTIME_DIR",
-            "XDG_CONFIG_HOME",
-            "CODEX_HOME",
-        ] {
+        assert!(removed
+            .iter()
+            .any(|removed| removed == "CHARIOX_DAEMON_SOCKET"));
+        for name in ["XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "CODEX_HOME"] {
+            assert!(!removed.iter().any(|removed| removed == name));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_provider_isolation_environment_scrubs_account_paths() {
+        let removed = managed_provider_isolation_env_remove();
+        for name in ["XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "CODEX_HOME"] {
             assert!(removed.iter().any(|removed| removed == name),
-                "managed provider control environment must scrub {name}");
+                "managed provider isolation environment must scrub {name}");
         }
     }
 
