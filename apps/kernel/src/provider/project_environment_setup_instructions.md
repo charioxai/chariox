@@ -7,9 +7,31 @@ reruns the returned validation commands in this same worker.
 
 Honor the requested target worker identity and platform. Never copy host or Mac binaries, read host
 credential stores, install a provider SDK, persist provider credentials, or replace the home kernel.
-User-authored Dockerfiles, devcontainers, and setup scripts are inputs to reproduce on the target;
-when no definition exists, discover a repeatable recipe and report its package, system-tool,
-compiler, native-dependency, or command steps.
+The definition in the request is the selected environment recipe. When it is present, reproduce,
+apply, and verify it before doing anything else; do not discover a different recipe or invoke
+repair while setup and validation pass. Invoke repair only after applying or validating that
+selected definition fails. User-authored Dockerfiles, devcontainers, setup scripts, lockfiles, and
+verified environment recipes are inputs to reproduce on the target.
+
+When no definition exists, inspect project-declared setup evidence in the actual worktree,
+including but not limited to package manifests and lockfiles (package.json, pyproject.toml,
+go.mod, Cargo.toml), Makefiles/build files, Dockerfiles, devcontainers, setup and CI scripts,
+tool-version files, and README or contributing build instructions. There is no finite language
+allowlist. Account for every language/toolchain and required package, compiler, system tool, native
+dependency, and command indicated by the project evidence. If the project requires SSH or tmux,
+include the appropriate openssh-client/ssh and tmux system-tool steps and bounded validation; do
+not assume the managed image already provides them. Prefer the project's existing setup recipe and
+verify its reuse on the selected worker.
+
+Use only explicitly selected and already materialized credential mechanisms, such as the selected
+Git credential helper or an SSH agent socket and the worker's configured host verification. Never
+copy SSH private keys, include credential values in a definition or attestation, use ssh-keyscan,
+disable StrictHostKeyChecking (no, off, or accept-new), write known_hosts data, or trust an
+arbitrary host. If a selected credential, host verification, project configuration, or toolchain
+input is genuinely missing, return `missing_user_inputs` with only one of its fixed categories
+(`selected_credential`, `host_verification`, `project_configuration`, or `toolchain`) and a short
+non-secret label. Never return the missing value; the kernel will keep setup failed until the user
+supplies it.
 
 For file-backed definitions, include workspace-relative recipe and relevant lockfile inputs with
 their content-only sha256 identities. Do not put file contents, credentials, tokens, private keys,
@@ -17,4 +39,5 @@ or other secrets in a definition or attestation; the kernel reads and verifies t
 itself before readiness.
 
 Return only the JSON object requested by the caller. Do not return command output or a readiness
-claim. The kernel owns persistence, validation, cancellation, retry, and readiness.
+claim. The kernel owns persistence, validation, cancellation, retry, and readiness, and independently
+reruns every returned validation command on this same worker.

@@ -25,6 +25,7 @@ use crate::runtime::agent_utility_executor::{
     assert_agent_utility_can_run,
     run_agent_utility_on_provider_run_for_project_environment_repair,
 };
+use crate::runtime::project_environment_setup_utility::project_environment_setup_utility_missing_input_message;
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
 use crate::transport::relay_peer::{
@@ -1361,13 +1362,24 @@ impl KernelRuntimeState {
                     return;
                 }
             },
-            Err(_) => {
-                store.mark_failed(
-                    &execution.operation_id,
-                    attempt,
-                    "utility_failed",
-                    "utility agent could not prepare the target environment",
-                );
+            Err(error) => {
+                if let Some(message) =
+                    project_environment_setup_utility_missing_input_message(&error)
+                {
+                    store.mark_failed(
+                        &execution.operation_id,
+                        attempt,
+                        "utility_missing_user_input",
+                        message,
+                    );
+                } else {
+                    store.mark_failed(
+                        &execution.operation_id,
+                        attempt,
+                        "utility_failed",
+                        "utility agent could not prepare the target environment",
+                    );
+                }
                 return;
             }
         };
