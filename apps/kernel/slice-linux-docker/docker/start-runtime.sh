@@ -129,21 +129,15 @@ dd if=/dev/urandom bs=48 count=1 status=none | base64 | tr -d '\n' >"$KERNEL_LOC
 chmod 600 "$KERNEL_LOCAL_AUTH_FILE"
 
 provider_probe_kernel_env=()
-provider_probe_unselected="/tmp/chariox-managed-isolation-unselected-repository"
 provider_probe_result="/workspace/.chariox-managed-isolation-probe.result"
 if [[ "$PROVIDER_ISOLATION_PROBE" == "1" ]]; then
   real_codex="$(command -v codex)"
   [[ -x "$real_codex" ]] || { printf '[slice-runtime] real Codex executable is unavailable\n' >&2; exit 1; }
-  if [[ -n "${CHARIOX_MANAGED_WORKSPACE_ROOT_0:-}" ]]; then
-    provider_probe_unselected="${CHARIOX_MANAGED_WORKSPACE_ROOT_0%/*}/.chariox-managed-isolation-unselected-repository"
-  fi
-  mkdir -p "$provider_probe_unselected"
   provider_probe_kernel_env=(
     CHARIOX_CODEX_BIN="$ROOT/managed-provider-isolation-probe-wrapper.sh"
     CHARIOX_MANAGED_ISOLATION_REAL_PROVIDER="$real_codex"
     CHARIOX_MANAGED_ISOLATION_PROBE_WORKSPACE="/workspace"
     CHARIOX_MANAGED_ISOLATION_PROBE_RESULT="$provider_probe_result"
-    CHARIOX_MANAGED_ISOLATION_PROBE_UNSELECTED_REPOSITORY="$provider_probe_unselected"
   )
 fi
 
@@ -192,11 +186,9 @@ if [[ "$PROVIDER_ISOLATION_PROBE" == "1" ]]; then
     cat "$provider_probe_log" >&2
     screen -S chariox-slice-kernel -X quit >/dev/null 2>&1 || true
     unset KERNEL_LOCAL_AUTH_TOKEN
-    rmdir "$provider_probe_unselected" >/dev/null 2>&1 || true
     exit 1
   fi
   cat "$provider_probe_log"
-  rmdir "$provider_probe_unselected" >/dev/null 2>&1 || true
 fi
 unset KERNEL_LOCAL_AUTH_TOKEN
 screen -ls | sed -n '/chariox-slice-/p'
