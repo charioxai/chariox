@@ -1239,9 +1239,9 @@ fn managed_workspace_roots_with_private_temp_roots(
     }
 
     // A protected service tree may contain a selected repository. Rebind only
-    // that exact repository after masking the service tree. A private temp
-    // root is the other exception: rebind the selected child, while leaving
-    // sibling temp paths hidden. Paths outside these actual masked roots stay
+    // that exact repository after masking the service tree. Private temp and
+    // home roots also need their selected children rebound, while leaving
+    // siblings hidden. Paths outside these actual masked roots stay
     // on the ordinary root mount with normal filesystem permissions.
     for root in requested {
         let root = canonical_directory(&root, "managed provider workspace")?;
@@ -1254,7 +1254,11 @@ fn managed_workspace_roots_with_private_temp_roots(
         let below_protected_root = protected
             .iter()
             .any(|protected| root.starts_with(protected));
+        let below_private_home = root != Path::new("/home")
+            && root.starts_with("/home")
+            && !below_protected_root;
         if !below_private_temp_root
+            && !below_private_home
             && !(below_protected_root
                 && (is_managed_transfer_path(&root) || below_host_publication_root))
         {
