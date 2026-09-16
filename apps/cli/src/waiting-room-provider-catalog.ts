@@ -1,11 +1,31 @@
 import type { LocalIpcClient } from "./ipc.js"
 import type { CharioxLogger } from "./logging.js"
+import type { ProviderCatalogExecutionLocation } from "./ipc-requests.js"
 import { getProviderCatalog } from "./provider-api.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
+import type { WaitingRoomState } from "./waiting-room-types.js"
 
 export type WaitingRoomCatalogSelection = {
   providerId: string
   accountProfileId?: string | null
+}
+
+export function providerCatalogExecutionLocation(
+  state: Pick<WaitingRoomState, "sliceSelectionId" | "selectedKernelRef">,
+  activeDirectTargetKernelId?: string | null,
+): ProviderCatalogExecutionLocation {
+  const sliceRef = state.sliceSelectionId?.trim()
+  if (sliceRef && !["none", "new"].includes(sliceRef)) {
+    return { kind: "slice", slice_ref: sliceRef }
+  }
+  if (activeDirectTargetKernelId?.trim()) {
+    return { kind: "local" }
+  }
+  const kernelRef = state.selectedKernelRef?.trim()
+  if (kernelRef && kernelRef !== "local") {
+    return { kind: "worker", kernel_ref: kernelRef }
+  }
+  return { kind: "local" }
 }
 
 /**

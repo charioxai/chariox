@@ -83,7 +83,10 @@ import {
   beginMutableLocalIpcClientPivot,
   type MutableLocalIpcClientPivot,
 } from "./mutable-local-ipc-client.js"
-import { loadProviderCatalogForKernel } from "./waiting-room-provider-catalog.js"
+import {
+  loadProviderCatalogForKernel,
+  providerCatalogExecutionLocation,
+} from "./waiting-room-provider-catalog.js"
 
 type AnyFn = (...args: any[]) => any
 
@@ -248,11 +251,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       const catalogClient = typeof deps.client.currentClient === "function"
         ? deps.client.currentClient()
         : deps.client
-      const executionLocation = state.sliceSelectionId && !["none", "new"].includes(state.sliceSelectionId)
-        ? { kind: "slice" as const, slice_ref: state.sliceSelectionId }
-        : state.selectedKernelRef && state.selectedKernelRef !== "local"
-          ? { kind: "worker" as const, kernel_ref: state.selectedKernelRef }
-          : { kind: "local" as const }
+      const executionLocation = providerCatalogExecutionLocation(state, directTargetKernelId)
       void getProviderCatalog(catalogClient, deps.appLogger, {
         provider: state.providerId,
         accountProfile: state.accountProfileId ?? "default",

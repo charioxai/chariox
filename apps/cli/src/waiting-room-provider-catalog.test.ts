@@ -3,10 +3,18 @@ import test from "node:test"
 
 import { buildModelItems } from "./command-center-dynamic-items.js"
 import type { LocalIpcClient } from "./ipc.js"
+import { getProviderCatalog } from "./provider-api.js"
 import { catalogModelOptions, selectConfiguredModel, type ProviderCatalog } from "./provider-catalog.js"
 import { createWaitingRoomState } from "./waiting-room-state.js"
 import { waitingRoomRows } from "./waiting-room-rows.js"
-import { loadProviderCatalogForKernel } from "./waiting-room-provider-catalog.js"
+import {
+  loadProviderCatalogForKernel,
+  providerCatalogExecutionLocation,
+} from "./waiting-room-provider-catalog.js"
+import { createWaitingRoomReconcileController } from "./waiting-room-reconcile-controller.js"
+import type { WaitingRoomRemoteState } from "./waiting-room-types.js"
+import type { SessionListEntry } from "./sessions.js"
+import type { ThemeRegistry } from "./theme-registry.js"
 
 test("target-kernel catalog hydration keeps discovered model efforts and qualified routing", async () => {
   const requests: unknown[] = []
@@ -87,6 +95,101 @@ test("target-kernel catalog hydration surfaces discovery failure without fallbac
       accountProfileId: "managed-account",
     }),
     /target catalog unavailable/,
+  )
+})
+
+test("pivot then account/provider change resolves catalog against the active client", async () => {
+  const requests: unknown[] = []
+  const pendingRefreshes: Promise<ProviderCatalog>[] = []
+  const targetClient = clientRejectingWorker(requests)
+  let activeDirectTargetKernelId: string | null = null
+  let currentState = createWaitingRoomState(
+    [],
+    recordedOpenCodeNativeCatalog(),
+    "opencode",
+    "opencode/big-pickle",
+    "",
+  )
+  const controller = createWaitingRoomReconcileController({
+    getCurrentState: () => currentState,
+    setWaitingRoomState: (nextState) => {
+      currentState = nextState
+    },
+    getSessions: () => [] as SessionListEntry[],
+    getProviderCatalog: () => recordedOpenCodeNativeCatalog(),
+    getRemoteState: () => ({}) as WaitingRoomRemoteState,
+    getThemeRegistry: () => ({}) as ThemeRegistry,
+    getCurrentProvider: () => currentState.providerId,
+    getCurrentModel: () => currentState.modelId,
+    setProviderDefaults: () => {},
+    applyTheme: (themeId) => themeId,
+    resetTranscriptSyntax: () => {},
+    bumpThemeRevision: () => {},
+    saveUiThemePreference: () => {},
+    mergeUiThemePreference: () => {},
+    applyResponseLayout: () => {},
+    renderCommandCenter: () => {},
+    saveProviderPreferences: () => {},
+    isAttached: () => false,
+    rebuildTranscript: () => {},
+    updateSessionChrome: () => {},
+    syncCommandCenter: () => {},
+    refreshProviderCatalogForSelection: (state) => {
+      pendingRefreshes.push(getProviderCatalog(targetClient, undefined, {
+        provider: state.providerId,
+        accountProfile: state.accountProfileId ?? "default",
+        executionLocation: providerCatalogExecutionLocation(state, activeDirectTargetKernelId),
+      }, false))
+    },
+    deriveStateUpdate: ({ nextState }) => ({
+      normalizedState: nextState,
+      nextProvider: nextState.providerId,
+      nextModel: nextState.modelId,
+      nextEffort: nextState.effort,
+      shouldPersistProviderPreferences: false,
+    }),
+  })
+
+  // replaceClientForKernel records this direct target when the pivot commits.
+  activeDirectTargetKernelId = "kernel-target"
+  controller.reconcile({
+    ...currentState,
+    selectedKernelRef: "kernel-target",
+  })
+  controller.reconcile({
+    ...currentState,
+    providerId: "codex",
+    accountProfileId: "imported-codex",
+    modelId: "gpt-5.6-luna",
+    effort: "high",
+  })
+  controller.reconcile({
+    ...currentState,
+    sliceSelectionId: "slice-1",
+  })
+
+  await Promise.all(pendingRefreshes)
+  assert.deepEqual(
+    requests.map((request) => (request as {
+      GetProviderCatalog: { provider: string; account_profiles: Record<string, string>; execution_location: unknown }
+    }).GetProviderCatalog),
+    [
+      {
+        provider: "opencode",
+        account_profiles: { opencode: "default" },
+        execution_location: { kind: "local" },
+      },
+      {
+        provider: "codex",
+        account_profiles: { codex: "imported-codex" },
+        execution_location: { kind: "local" },
+      },
+      {
+        provider: "codex",
+        account_profiles: { codex: "imported-codex" },
+        execution_location: { kind: "slice", slice_ref: "slice-1" },
+      },
+    ],
   )
 })
 
@@ -204,6 +307,23 @@ function clientRejecting(error: Error): LocalIpcClient {
   return {
     send: async () => {
       throw error
+    },
+  } as unknown as LocalIpcClient
+}
+
+function clientRejectingWorker(requests: unknown[]): LocalIpcClient {
+  return {
+    send: async (request: unknown) => {
+      requests.push(request)
+      const location = (request as {
+        GetProviderCatalog?: { execution_location?: { kind?: string } }
+      }).GetProviderCatalog?.execution_location
+      if (location?.kind === "worker") {
+        throw new Error("target rejects worker:self for a directly active kernel")
+      }
+      return {
+        ProviderCatalog: { catalog: recordedOpenCodeNativeCatalog() },
+      }
     },
   } as unknown as LocalIpcClient
 }
