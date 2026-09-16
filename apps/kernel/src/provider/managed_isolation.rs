@@ -1143,8 +1143,15 @@ mod tests {
     #[test]
     fn namespace_args_keep_the_ordinary_root_and_private_temp_roots() {
         let resolver = Path::new("/run/systemd/resolve/stub-resolv.conf");
-        let (args, _) =
-            managed_namespace_args(Some(resolver), |path| path == Path::new("/run"), None);
+        let (args, _) = managed_namespace_args(
+            Some(resolver),
+            |path| {
+                path == Path::new("/run")
+                    || path == Path::new("/tmp")
+                    || path == Path::new("/var/tmp")
+            },
+            None,
+        );
 
         let binding = args
             .windows(3)
@@ -1655,6 +1662,19 @@ mod tests {
         let token_b = runtime_b.join("mcp-config.json");
         std::fs::write(&token_a, "Bearer sibling-a").expect("first token should exist");
         std::fs::write(&token_b, "Bearer sibling-b").expect("second token should exist");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            for runtime in [&runtime_a, &runtime_b] {
+                std::fs::set_permissions(runtime, std::fs::Permissions::from_mode(0o700))
+                    .expect("runtime directory should be private");
+            }
+            for token in [&token_a, &token_b] {
+                std::fs::set_permissions(token, std::fs::Permissions::from_mode(0o600))
+                    .expect("runtime token should be private");
+            }
+        }
 
         let bwrap = Path::new(BWRAP_PATH);
         if !bwrap.is_file() {
@@ -1672,12 +1692,12 @@ mod tests {
                 "--setenv".to_string(),
                 MANAGED_PROVIDER_ISOLATION_MARKER_ENV.to_string(),
                 "1".to_string(),
+                "--".to_string(),
+                "/bin/sh".to_string(),
             ]);
             expose_runtime_directory_in_managed_namespace(&mut args, own_runtime)
                 .expect("current runtime should be re-exposed");
             args.extend([
-                "--".to_string(),
-                "/bin/sh".to_string(),
                 "-eu".to_string(),
                 "-c".to_string(),
                 concat!("test \"$(cat \"$1\")\" = \"$3\"\n", "test ! -e \"$2\"\n",).to_string(),
@@ -1690,9 +1710,15 @@ mod tests {
         };
 
         let mut first = Command::new(bwrap);
-        first.args(make_args(&runtime_a, &token_b, "Bearer sibling-a"));
+        first
+            .args(make_args(&runtime_a, &token_b, "Bearer sibling-a"))
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
         let mut second = Command::new(bwrap);
-        second.args(make_args(&runtime_b, &token_a, "Bearer sibling-b"));
+        second
+            .args(make_args(&runtime_b, &token_a, "Bearer sibling-b"))
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
 
         let mut first = match first.spawn() {
             Ok(child) => child,
