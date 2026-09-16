@@ -47,7 +47,8 @@ struct ProjectEnvironmentSetupMissingUserInput {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProjectEnvironmentSetupUtilityOutput {
-    definition: ProjectEnvironmentDefinition,
+    #[serde(default)]
+    definition: Option<ProjectEnvironmentDefinition>,
     #[serde(default)]
     missing_user_inputs: Vec<ProjectEnvironmentSetupMissingUserInput>,
 }
@@ -96,15 +97,16 @@ environment recipe over inventing equivalent commands. Do not copy binaries from
 read host credential stores, install a provider SDK, or replace the home kernel.\n\n\
 Project evidence discovery is read-only. Do not reject a definition or evidence merely because a\n\
 script or fixture mentions ssh-keyscan, dd, private_key, or another application identifier; those\n\
-words are not shell semantics or authorization. The attested commands run only through the\n\
-existing confirmed worker execution boundary, which keeps selected credentials and the worker's\n\
-configured host verification scoped to that worker. Use only explicitly selected and already\n\
-materialized mechanisms, such as the selected Git credential helper or an SSH agent socket. Do\n\
-not copy SSH private-key bytes, include credential values in the definition or attestations, bypass\n\
-the selected host verification, or trust an arbitrary host. If a selected credential, host\n\
-verification, project configuration, or toolchain input is genuinely missing, return\n\
-missing_user_inputs with only its fixed category and a short non-secret label; never return the\n\
-missing value. The kernel will keep setup failed until that user input is supplied.\n\n\
+words are not shell semantics or authorization. The kernel's confirmed disposable-worker command\n\
+boundary removes Chariox-provided credential/account environment bindings and gives its opaque setup and\n\
+validation reruns an isolated HOME. This protects only credentials automatically supplied by\n\
+Chariox; it does not sandbox arbitrary project commands or make guarantees about credentials the\n\
+project itself supplies. Do not copy SSH private-key bytes, include credential values in the\n\
+definition or attestations, or claim that an opaque script is host-authority safe without an\n\
+enforced boundary. If the selected credential, host verification, project configuration, or\n\
+toolchain input is unavailable at the enforced boundary, return missing_user_inputs with only its\n\
+fixed category and a short non-secret label; never return the missing value. The kernel will keep\n\
+setup failed until that user input is supplied.\n\n\
 For a file-backed definition, include a content-only input attestation for the recipe source and\n\
 any relevant lockfiles, using workspace-relative paths and sha256 digests. The kernel will verify\n\
 those files on the target before declaring readiness. Never put file contents, credentials, tokens,\n\
@@ -156,18 +158,29 @@ fn parse_project_environment_setup_utility_output_with_policy(
         operation: "run project environment setup utility",
         message: "project environment setup utility did not return a JSON object".to_string(),
     })?;
-    // Keep the rejection diagnostic stable when the schema validator reports
-    // only its generic `minItems` failure. An empty list is still rejected
-    // before parsing or accepting the utility definition.
-    if serde_json::from_str::<serde_json::Value>(json)
+    // Keep the rejection diagnostic stable for a malformed success response,
+    // while allowing a definition-free missing-input response to reach its
+    // category-only branch below. A missing-input response never needs to
+    // inspect a definition field.
+    let missing_user_inputs_present = serde_json::from_str::<serde_json::Value>(json)
         .ok()
         .and_then(|value| {
             value
-                .pointer("/definition/validation_commands")
+                .get("missing_user_inputs")
                 .and_then(serde_json::Value::as_array)
-                .map(Vec::is_empty)
+                .map(|inputs| !inputs.is_empty())
         })
-        == Some(true)
+        .unwrap_or(false);
+    if !missing_user_inputs_present
+        && serde_json::from_str::<serde_json::Value>(json)
+            .ok()
+            .and_then(|value| {
+                value
+                    .pointer("/definition/validation_commands")
+                    .and_then(serde_json::Value::as_array)
+                    .map(Vec::is_empty)
+            })
+            == Some(true)
     {
         return Err(DaemonError::LocalTransport {
             operation: "run project environment setup utility",
@@ -198,14 +211,20 @@ fn parse_project_environment_setup_utility_output_with_policy(
     if !parsed.missing_user_inputs.is_empty() {
         return Err(missing_user_input_error(&parsed.missing_user_inputs));
     }
-    parsed
-        .definition
+    let Some(definition) = parsed.definition else {
+        return Err(DaemonError::LocalTransport {
+            operation: "run project environment setup utility",
+            message: "utility output must include a definition when no user inputs are missing"
+                .to_string(),
+        });
+    };
+    definition
         .validate()
         .map_err(|message| DaemonError::LocalTransport {
             operation: "run project environment setup utility",
             message,
         })?;
-    if parsed.definition.target_platform != target_platform {
+    if definition.target_platform != target_platform {
         return Err(DaemonError::LocalTransport {
             operation: "run project environment setup utility",
             message: "utility returned a definition for a different target platform".to_string(),
@@ -215,7 +234,7 @@ fn parse_project_environment_setup_utility_output_with_policy(
         if let Some(expected) = expected {
             if !validation_commands_include_original(
                 &expected.validation_commands,
-                &parsed.definition.validation_commands,
+                &definition.validation_commands,
             ) {
                 return Err(DaemonError::LocalTransport {
                     operation: "run project environment setup utility",
@@ -228,7 +247,7 @@ fn parse_project_environment_setup_utility_output_with_policy(
     }
     let definition = match expected {
         Some(expected) => {
-            let returned = parsed.definition.with_origin(expected.origin);
+            let returned = definition.with_origin(expected.origin);
             if !allow_definition_revision && returned != *expected {
                 return Err(DaemonError::LocalTransport {
                     operation: "run project environment setup utility",
@@ -237,9 +256,7 @@ fn parse_project_environment_setup_utility_output_with_policy(
             }
             returned
         }
-        None => parsed
-            .definition
-            .with_origin(ProjectEnvironmentDefinitionOrigin::UtilityGenerated),
+        None => definition.with_origin(ProjectEnvironmentDefinitionOrigin::UtilityGenerated),
     };
     if definition.validation_commands.is_empty() {
         return Err(DaemonError::LocalTransport {
@@ -311,89 +328,110 @@ pub(crate) fn project_environment_setup_utility_missing_input_message(
 }
 
 fn project_environment_setup_utility_schema() -> serde_json::Value {
-    serde_json::json!({
+    let definition = serde_json::json!({
         "type": "object",
-        "required": ["definition"],
+        "required": [
+            "schema_version", "origin", "source", "target_platform",
+            "source_path", "setup_steps", "validation_commands"
+        ],
         "additionalProperties": false,
         "properties": {
-            "definition": {
-                "type": "object",
-                "required": [
-                    "schema_version", "origin", "source", "target_platform",
-                    "source_path", "setup_steps", "validation_commands"
-                ],
-                "additionalProperties": false,
-                "properties": {
-                    "schema_version": {"type": "integer", "const": 1},
-                    "origin": {"type": "string", "enum": ["user_authored", "utility_generated"]},
-                    "source": {"type": "string", "enum": ["commands", "dockerfile", "devcontainer", "setup_script"]},
-                    "target_platform": {"type": "string", "minLength": 1, "maxLength": 128},
-                    "source_path": {"type": ["string", "null"]},
-                    "inputs": {
-                        "type": "array",
-                        "maxItems": 64,
-                        "items": {
-                            "type": "object",
-                            "required": ["kind", "path", "sha256"],
-                            "additionalProperties": false,
-                            "properties": {
-                                "kind": {"type": "string", "enum": ["recipe", "lockfile"]},
-                                "path": {"type": "string", "minLength": 1, "maxLength": 512},
-                                "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
-                            }
-                        }
-                    },
-                    "setup_steps": {
-                        "type": "array",
-                        "maxItems": 64,
-                        "items": {
-                            "type": "object",
-                            "required": ["kind", "command"],
-                            "additionalProperties": false,
-                            "properties": {
-                                "kind": {
-                                    "type": "string",
-                                    "enum": [
-                                        "package",
-                                        "system_tool",
-                                        "compiler",
-                                        "native_dependency",
-                                        "command"
-                                    ]
-                                },
-                                "command": {
-                                    "type": "string",
-                                    "minLength": 1,
-                                    "maxLength": 8192
-                                }
-                            }
-                        }
-                    },
-                    "validation_commands": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"type": "string", "minLength": 1, "maxLength": 8192}}
-                }
-            },
-            "missing_user_inputs": {
+            "schema_version": {"type": "integer", "const": 1},
+            "origin": {"type": "string", "enum": ["user_authored", "utility_generated"]},
+            "source": {"type": "string", "enum": ["commands", "dockerfile", "devcontainer", "setup_script"]},
+            "target_platform": {"type": "string", "minLength": 1, "maxLength": 128},
+            "source_path": {"type": ["string", "null"]},
+            "inputs": {
                 "type": "array",
-                "maxItems": MAX_MISSING_USER_INPUTS,
+                "maxItems": 64,
                 "items": {
                     "type": "object",
-                    "required": ["kind"],
+                    "required": ["kind", "path", "sha256"],
+                    "additionalProperties": false,
+                    "properties": {
+                        "kind": {"type": "string", "enum": ["recipe", "lockfile"]},
+                        "path": {"type": "string", "minLength": 1, "maxLength": 512},
+                        "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+                    }
+                }
+            },
+            "setup_steps": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                    "type": "object",
+                    "required": ["kind", "command"],
                     "additionalProperties": false,
                     "properties": {
                         "kind": {
                             "type": "string",
                             "enum": [
-                                "selected_credential",
-                                "host_verification",
-                                "project_configuration",
-                                "toolchain"
+                                "package",
+                                "system_tool",
+                                "compiler",
+                                "native_dependency",
+                                "command"
                             ]
                         },
-                        "label": {"type": "string", "minLength": 1, "maxLength": MAX_MISSING_USER_INPUT_LABEL_CHARS}
+                        "command": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 8192
+                        }
+                    }
+                }
+            },
+            "validation_commands": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"type": "string", "minLength": 1, "maxLength": 8192}}
+        }
+    });
+    let missing_user_inputs = serde_json::json!({
+        "type": "array",
+        "maxItems": MAX_MISSING_USER_INPUTS,
+        "items": {
+            "type": "object",
+            "required": ["kind"],
+            "additionalProperties": false,
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": [
+                        "selected_credential",
+                        "host_verification",
+                        "project_configuration",
+                        "toolchain"
+                    ]
+                },
+                "label": {"type": "string", "minLength": 1, "maxLength": MAX_MISSING_USER_INPUT_LABEL_CHARS}
+            }
+        }
+    });
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "definition": {"type": ["object", "null"]},
+            "missing_user_inputs": {"type": "array"}
+        },
+        "oneOf": [
+            {
+                "required": ["definition"],
+                "properties": {
+                    "definition": definition,
+                    "missing_user_inputs": {"type": "array", "maxItems": 0}
+                }
+            },
+            {
+                "required": ["missing_user_inputs"],
+                "properties": {
+                    "definition": {
+                        "oneOf": [definition.clone(), {"type": "null"}]
+                    },
+                    "missing_user_inputs": {
+                        "allOf": [missing_user_inputs, {"minItems": 1}]
                     }
                 }
             }
-        }
+        ]
     })
 }
 
@@ -694,7 +732,7 @@ mod tests {
         );
         for fragment in [
             "selected environment recipe",
-            "invoke repair only after",
+            "Invoke repair only after",
             "package.json",
             "pyproject.toml",
             "go.mod",
@@ -703,14 +741,15 @@ mod tests {
             "no finite language",
             "openssh-client/ssh",
             "tmux",
-            "Git credential helper",
-            "SSH agent socket",
+            "credential/account environment bindings",
+            "isolated HOME",
+            "does not sandbox",
             "missing_user_inputs",
-            "do not reject",
+            "Do not reject",
             "ssh-keyscan",
             "private_key",
             "dd",
-            "configured host verification",
+            "enforced boundary",
         ] {
             assert!(prompt.contains(fragment), "prompt omitted `{fragment}`");
         }
@@ -719,7 +758,6 @@ mod tests {
     #[test]
     fn parser_reports_missing_user_input_categories_without_echoing_labels() {
         let output = serde_json::json!({
-            "definition": definition(),
             "missing_user_inputs": [
                 {"kind": "selected_credential", "label": "GitHub credential"},
                 {"kind": "host_verification"}
@@ -743,9 +781,41 @@ mod tests {
     }
 
     #[test]
+    fn parser_accepts_definition_free_missing_user_input_report() {
+        for output in [
+            serde_json::json!({"missing_user_inputs": [{"kind": "toolchain"}]}),
+            serde_json::json!({
+                "definition": null,
+                "missing_user_inputs": [{"kind": "toolchain"}]
+            }),
+        ] {
+            let error = parse_project_environment_setup_utility_output(
+                &output.to_string(),
+                None,
+                "linux-x86_64",
+            )
+            .expect_err("a definition-free missing-input report should reach the intended branch");
+            assert_eq!(
+                project_environment_setup_utility_missing_input_message(&error),
+                Some("project environment setup requires user input: toolchain input")
+            );
+        }
+    }
+
+    #[test]
+    fn parser_requires_definition_when_no_user_inputs_are_missing() {
+        let error = parse_project_environment_setup_utility_output(
+            "{\"missing_user_inputs\":[]}",
+            None,
+            "linux-x86_64",
+        )
+        .expect_err("a successful utility response must include its definition");
+        assert!(error.to_string().contains("failed validation"));
+    }
+
+    #[test]
     fn parser_rejects_secret_bearing_missing_input_labels_without_echoing_them() {
         let output = serde_json::json!({
-            "definition": definition(),
             "missing_user_inputs": [
                 {"kind": "selected_credential", "label": "token=super-secret"}
             ]

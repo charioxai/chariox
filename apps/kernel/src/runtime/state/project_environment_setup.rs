@@ -39,6 +39,7 @@ struct WorkerExecutionContext {
     platform: String,
     workspace_root: PathBuf,
     environment: BTreeMap<String, String>,
+    credential_home: WorkerCredentialHome,
 }
 
 fn validation_passed_for_execution(
@@ -1574,6 +1575,7 @@ impl KernelRuntimeState {
             &execution.workspace_id,
             std::env::var_os("CHARIOX_HOME").as_deref(),
         )?;
+        let credential_home = WorkerCredentialHome::new()?;
         let provider_working_directory = provider_run
             .working_directory()
             .cloned()
@@ -1591,7 +1593,11 @@ impl KernelRuntimeState {
             worker_id,
             platform,
             workspace_root,
-            environment: worker_validation_environment(provider_run),
+            environment: worker_validation_environment_with_home(
+                provider_run,
+                Some(credential_home.path()),
+            ),
+            credential_home,
         })
     }
 
@@ -1621,7 +1627,13 @@ impl KernelRuntimeState {
             .iter()
             .map(|step| step.command.clone())
             .collect::<Vec<_>>();
-        let workspace_root = context.workspace_root.clone();
+        let WorkerExecutionContext {
+            workspace_root: context_workspace_root,
+            environment,
+            credential_home,
+            ..
+        } = context;
+        let workspace_root = context_workspace_root.clone();
         let operation_id = execution.operation_id.clone();
         let cancellation = self.owned.project_environment_setups.clone();
         let guard = cancellation
@@ -1630,10 +1642,11 @@ impl KernelRuntimeState {
         let applied = tokio::task::spawn_blocking(move || {
             // The blocking commands own this guard even if their async waiter exits.
             let _guard = guard;
+            let _credential_home = credential_home;
             run_worker_setup_steps(
                 &commands,
-                &context.workspace_root,
-                &context.environment,
+                &context_workspace_root,
+                &environment,
                 || cancellation.is_cancelled(&operation_id, attempt),
             )
         })
@@ -1663,6 +1676,7 @@ impl KernelRuntimeState {
         let operation_id = execution.operation_id.clone();
         let workspace_root = context.workspace_root;
         let environment = context.environment;
+        let credential_home = context.credential_home;
         let cancellation = self.owned.project_environment_setups.clone();
         let guard = cancellation
             .begin_execution(&operation_id, attempt)
@@ -1670,6 +1684,7 @@ impl KernelRuntimeState {
         let validation = tokio::task::spawn_blocking(move || {
             // The blocking command owns this guard even if its async waiter exits.
             let _guard = guard;
+            let _credential_home = credential_home;
             let started = Instant::now();
             let overall_deadline = started + VALIDATION_TOTAL_TIMEOUT;
             let mut results = Vec::with_capacity(commands.len());
@@ -2486,6 +2501,7 @@ mod tests {
             "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE",
             "OPENAI_API_KEY",
             "SSH_PRIVATE_KEY",
+            "SSH_AUTH_SOCK",
             "GIT_SSH_COMMAND",
             "SSH_ASKPASS",
         ] {
@@ -2494,11 +2510,100 @@ mod tests {
                 "{name} must not reach validation"
             );
         }
-        assert_eq!(
-            environment.get("SSH_AUTH_SOCK").map(String::as_str),
-            Some("/run/user/1000/ssh-agent.sock"),
-            "an explicitly selected SSH agent mechanism remains available without exposing key material"
+        assert!(
+            !environment.contains_key("SSH_AUTH_SOCK"),
+            "automatically supplied SSH agent authority must not reach opaque commands"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opaque_commands_write_only_isolated_home_without_automatic_ssh_authority() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-project-environment-credential-boundary-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let automatic_home = root.join("automatic-home");
+        let isolated_home = root.join("isolated-home");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(automatic_home.join(".ssh"))
+            .expect("automatic credential home should exist");
+        std::fs::create_dir_all(&workspace).expect("worker workspace should exist");
+        std::fs::write(
+            automatic_home.join(".ssh/known_hosts"),
+            "selected-host.example ssh-ed25519 AAAA-selected\n",
+        )
+        .expect("selected host verification should exist");
+
+        let mut provider_env = BTreeMap::new();
+        provider_env.insert("PATH".to_string(), "/usr/bin:/bin".to_string());
+        provider_env.insert("HOME".to_string(), automatic_home.display().to_string());
+        provider_env.insert(
+            "SSH_AUTH_SOCK".to_string(),
+            "/run/user/1000/selected-agent.sock".to_string(),
+        );
+        provider_env.insert(
+            "SSH_CONFIG".to_string(),
+            automatic_home.join(".ssh/config").display().to_string(),
+        );
+        provider_env.insert(
+            "SSH_KNOWN_HOSTS".to_string(),
+            automatic_home
+                .join(".ssh/known_hosts")
+                .display()
+                .to_string(),
+        );
+        provider_env.insert(
+            "XDG_CONFIG_HOME".to_string(),
+            automatic_home.join(".config").display().to_string(),
+        );
+        provider_env.insert(
+            "CODEX_HOME".to_string(),
+            automatic_home.join(".codex").display().to_string(),
+        );
+        let request =
+            LaunchProviderRequest::new("session-1", "codex", "codex", "default", "default");
+        let run = RuntimeProviderRun::new(
+            "provider-run-credential-boundary",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "worker-provider".to_string(),
+                pty_target: None,
+                pty_program: Some("/bin/sh".to_string()),
+                pty_args: Vec::new(),
+                pty_env: provider_env,
+                pty_env_remove: Vec::new(),
+                working_directory: Some(workspace.clone()),
+                structured_endpoint: None,
+            },
+        );
+        let environment = worker_validation_environment_with_home(&run, Some(&isolated_home));
+        let command = format!(
+            "set -eu; test -z \"${{SSH_AUTH_SOCK:-}}\"; test \"$HOME\" = '{}'; mkdir -p \"$HOME/.ssh\"; printf '%s\\n' bypass > \"$HOME/.ssh/known_hosts\"; test \"$(cat \"$HOME/.ssh/known_hosts\")\" = bypass",
+            isolated_home.display()
+        );
+        let (exit_code, _, _) = run_worker_validation_command(
+            &command,
+            &workspace,
+            &environment,
+            || false,
+            None,
+        )
+        .expect("opaque project command should execute with ordinary shell semantics");
+        assert_eq!(exit_code, 0);
+        assert_eq!(
+            std::fs::read_to_string(automatic_home.join(".ssh/known_hosts"))
+                .expect("automatic host verification should remain readable"),
+            "selected-host.example ssh-ed25519 AAAA-selected\n",
+            "an opaque command writing its inherited HOME must not rewrite Chariox-provided host verification"
+        );
+        assert!(
+            !environment.contains_key("SSH_AUTH_SOCK"),
+            "the automatically provided agent must not be available to opaque commands"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(unix)]

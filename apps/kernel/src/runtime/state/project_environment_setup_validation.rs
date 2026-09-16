@@ -29,9 +29,9 @@ const WORKER_KERNEL_ENV_NAMES: &[&str] = &[
 
 // These ambient Git/SSH hooks can redirect credential lookup or host
 // verification to an unselected helper. They are execution-environment
-// controls, not project command syntax. The selected SSH agent socket remains
-// available, and a project may still choose its normal Git/SSH configuration
-// from the worker. This mirrors the existing isolated-Git command boundary.
+// controls, not project command syntax. The project command remains opaque and
+// may still use its own tools and configuration; only automatically supplied
+// credential controls are removed at this boundary.
 const WORKER_UNSELECTED_CREDENTIAL_CONTROL_ENV_NAMES: &[&str] = &[
     "GIT_SSH",
     "GIT_SSH_COMMAND",
@@ -39,6 +39,81 @@ const WORKER_UNSELECTED_CREDENTIAL_CONTROL_ENV_NAMES: &[&str] = &[
     "SSH_ASKPASS",
     "SSH_AGENT_PID",
 ];
+
+// These paths are supplied by Chariox/provider account setup. They are not
+// project tooling inputs, so opaque project commands must not inherit them.
+// The command boundary below supplies a fresh HOME instead of trying to
+// interpret shell syntax or maintain a repository/tool allowlist.
+const WORKER_AUTOMATIC_CREDENTIAL_ENV_NAMES: &[&str] = &[
+    "HOME",
+    "CODEX_HOME",
+    "CLAUDE_CONFIG_DIR",
+    "XDG_DATA_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_STATE_HOME",
+    "XDG_CACHE_HOME",
+    "OPENCODE_CONFIG_DIR",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_NOSYSTEM",
+    "SSH_AUTH_SOCK",
+    "SSH_CONFIG",
+    "SSH_CONFIG_FILE",
+    "SSH_KNOWN_HOSTS",
+];
+
+pub(super) struct WorkerCredentialHome {
+    path: PathBuf,
+}
+
+impl WorkerCredentialHome {
+    pub(super) fn new() -> Result<Self, DaemonError> {
+        let temp_root = std::env::temp_dir();
+        for attempt in 0..16_u8 {
+            let path = temp_root.join(format!(
+                "chariox-project-environment-home-{}-{}-{attempt}",
+                std::process::id(),
+                crate::session::unix_epoch_ms()
+            ));
+            match std::fs::create_dir(&path) {
+                Ok(()) => {
+                    #[cfg(unix)]
+                    if let Err(error) = std::fs::set_permissions(
+                        &path,
+                        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+                    ) {
+                        let _ = std::fs::remove_dir_all(&path);
+                        return Err(setup_error(&format!(
+                            "worker credential home permissions could not be secured: {error}"
+                        )));
+                    }
+                    return Ok(Self { path });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(setup_error(&format!(
+                        "worker credential home could not be created: {error}"
+                    )));
+                }
+            }
+        }
+        Err(setup_error(
+            "worker credential home could not be allocated without a path collision",
+        ))
+    }
+
+    pub(super) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for WorkerCredentialHome {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
 
 pub(super) fn ensure_worker_validation_boundary(config: &DaemonConfig) -> Result<(), DaemonError> {
     if config.kernel_runtime_role != KernelRuntimeRole::RemoteLeaseWorker {
@@ -89,12 +164,20 @@ pub(super) fn canonical_worker_workspace(
 pub(super) fn worker_validation_environment(
     provider_run: &RuntimeProviderRun,
 ) -> BTreeMap<String, String> {
+    worker_validation_environment_with_home(provider_run, None)
+}
+
+pub(super) fn worker_validation_environment_with_home(
+    provider_run: &RuntimeProviderRun,
+    credential_home: Option<&Path>,
+) -> BTreeMap<String, String> {
     // This is the credential boundary for both recipe application and
-    // validation. Keep ordinary toolchain/project environment values, retain
-    // an explicitly selected SSH agent socket, and remove secret-bearing
-    // values plus ambient Git/SSH hooks that could redirect credential or
-    // host-verification lookup. The command itself remains opaque and is
-    // executed only after the confirmed-worker/context checks above it.
+    // validation. Keep ordinary toolchain/project environment values, remove
+    // Chariox-provided credential/account paths, and use an empty HOME for the
+    // command lifetime. The command remains opaque: project tools and scripts
+    // are not parsed, allowlisted, or blocked by shell substrings. This
+    // boundary protects only credentials automatically supplied by Chariox;
+    // it does not claim to sandbox credentials a project provides itself.
     let mut removed = BTreeSet::new();
     removed.extend(
         crate::provider::managed_provider_control_env_remove()
@@ -113,6 +196,12 @@ pub(super) fn worker_validation_environment(
         if worker_validation_environment_allowed(name, &removed) {
             environment.insert(name.clone(), value.clone());
         }
+    }
+    if let Some(credential_home) = credential_home {
+        environment.insert(
+            "HOME".to_string(),
+            credential_home.display().to_string(),
+        );
     }
     environment
 }
@@ -203,7 +292,10 @@ fn worker_validation_environment_allowed(name: &str, removed: &BTreeSet<String>)
     !removed.contains(name)
         && !crate::secret::secret_like_env_name(name)
         && !WORKER_KERNEL_ENV_NAMES.contains(&name)
+        && !WORKER_AUTOMATIC_CREDENTIAL_ENV_NAMES.contains(&name)
         && !WORKER_UNSELECTED_CREDENTIAL_CONTROL_ENV_NAMES.contains(&name)
+        && !name.starts_with("GIT_CONFIG_KEY_")
+        && !name.starts_with("GIT_CONFIG_VALUE_")
         && !name.starts_with("CHARIOX_")
 }
 
