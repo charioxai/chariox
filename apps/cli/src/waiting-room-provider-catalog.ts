@@ -18,14 +18,16 @@ export function providerCatalogExecutionLocation(
   if (sliceRef && !["none", "new"].includes(sliceRef)) {
     return { kind: "slice", slice_ref: sliceRef }
   }
-  if (activeDirectTargetKernelId?.trim()) {
+  const kernelRef = state.selectedKernelRef?.trim()
+  const activeTargetKernelRef = activeDirectTargetKernelId?.trim()
+  if (
+    !kernelRef
+    || kernelRef === "local"
+    || (activeTargetKernelRef && kernelRef === activeTargetKernelRef)
+  ) {
     return { kind: "local" }
   }
-  const kernelRef = state.selectedKernelRef?.trim()
-  if (kernelRef && kernelRef !== "local") {
-    return { kind: "worker", kernel_ref: kernelRef }
-  }
-  return { kind: "local" }
+  return { kind: "worker", kernel_ref: kernelRef }
 }
 
 /**
