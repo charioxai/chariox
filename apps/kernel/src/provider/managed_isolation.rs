@@ -2795,15 +2795,15 @@ mod tests {
             .windows(3)
             .position(|window| window == ["--ro-bind", "/dev/null", openbox_rc_text.as_str()])
             .expect("runtime Openbox config should be masked");
-        assert!(
-            selected_bind < protected_mask,
-            "selected {workspace_kind} workspace bind must not re-expose protected runtime state"
-        );
-        assert!(
-            selected_bind < profile_mask,
-            "selected {workspace_kind} workspace bind must not re-expose startup files"
-        );
         if workspace_kind == "nested-openbox" {
+            assert!(
+                protected_mask < selected_bind,
+                "nested command-directory workspace must be rebound after protected runtime state"
+            );
+            assert!(
+                profile_mask < selected_bind,
+                "nested command-directory workspace must be rebound after startup file masks"
+            );
             assert!(
                 openbox_tmpfs < selected_bind,
                 "nested command-directory workspace must be rebound after the Openbox boundary"
@@ -2813,6 +2813,14 @@ mod tests {
                 "nested command-directory workspace must be rebound after Openbox file masks"
             );
         } else {
+            assert!(
+                selected_bind < protected_mask,
+                "selected {workspace_kind} workspace bind must not re-expose protected runtime state"
+            );
+            assert!(
+                selected_bind < profile_mask,
+                "selected {workspace_kind} workspace bind must not re-expose startup files"
+            );
             assert!(
                 selected_bind < openbox_tmpfs,
                 "selected {workspace_kind} workspace bind must not replace the Openbox boundary"
