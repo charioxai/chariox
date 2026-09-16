@@ -3,7 +3,7 @@ import type {
   BackendProviderId,
   ProviderCatalog,
 } from "./provider-catalog.js"
-import { normalizeBackendProviderId } from "./provider-catalog.js"
+import { catalogModelOptions, normalizeBackendProviderId } from "./provider-catalog.js"
 import type { SessionListEntry } from "./sessions.js"
 import {
   deriveWaitingRoomActivationDecision,
@@ -25,6 +25,7 @@ import {
   waitingRoomExecutionMode,
   waitingRoomPermissionLevel,
 } from "./waiting-room-state.js"
+import { normalizeWaitingRoomState } from "./waiting-room-state.js"
 
 export type WaitingRoomCreateSessionLaunch = WaitingRoomLaunchConfig & {
   account_profile: string | null
@@ -81,7 +82,7 @@ export type WaitingRoomActivationControllerDeps = {
   startSlice?: (sliceRef: string) => Promise<SliceRecord>
   deleteSlice?: (sliceRef: string) => Promise<unknown>
   updateSlices?: (slice: SliceRecord) => void
-  prepareSessionOwnerClient?: (launch: WaitingRoomLaunchConfig) => Promise<void>
+  prepareSessionOwnerClient?: (launch: WaitingRoomLaunchConfig) => Promise<ProviderCatalog | void>
   prepareManagedSessionLaunch?: (
     launch: WaitingRoomLaunchConfig,
   ) => Promise<WaitingRoomPreparedManagedLaunch>
@@ -278,11 +279,38 @@ export function createWaitingRoomActivationController(
     let createdSliceRef: string | null = null
     let workspacePath = ""
     try {
-      const preparedLaunch = prepared.launch
+      let preparedLaunch = prepared.launch
       prepared.assertActive()
       if (!managedLaunch) {
-        await deps.prepareSessionOwnerClient?.(preparedLaunch)
+        const targetCatalog = await deps.prepareSessionOwnerClient?.(preparedLaunch)
         prepared.assertActive()
+        if (targetCatalog) {
+          const targetState = normalizeWaitingRoomState(
+            deps.getWaitingRoomState(),
+            deps.getAvailableSessions(),
+            targetCatalog,
+            undefined,
+            deps.getRemoteState(),
+          )
+          const targetDecision = deriveCreateSessionDecision({
+            state: targetState,
+            catalog: targetCatalog,
+            currentProvider: deps.getCurrentProvider(),
+            currentModel: deps.getCurrentModel(),
+            remote: deps.getRemoteState(),
+          })
+          if (targetDecision.action === "error") {
+            throw new Error(targetDecision.message)
+          }
+          if (!catalogModelOptions(targetCatalog, targetDecision.launch.provider)
+            .some((option) => option.id === targetDecision.launch.model)) {
+            throw new Error(
+              `selected model ${targetDecision.launch.model} is unavailable on the prepared kernel`,
+            )
+          }
+          preparedLaunch = targetDecision.launch
+          prepared.assertActive()
+        }
       }
       const sliceRef = await prepareSliceForLaunch(preparedLaunch, (sliceRef) => {
         createdSliceRef = sliceRef

@@ -702,7 +702,10 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       ])
     },
     prepareSessionOwnerClient: async (launch) => {
-      await replaceClientForKernel(launch.ownerKernelRef, launch.ownerMachineRef)
+      if (!await replaceClientForKernel(launch.ownerKernelRef, launch.ownerMachineRef)) {
+        return
+      }
+      return deps.providerCatalogState() as ProviderCatalog
     },
     prepareManagedSessionLaunch,
     prepareExistingSessionClient: async (session) => {
