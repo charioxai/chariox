@@ -23,6 +23,17 @@ const MANAGED_WORKSPACE_ROOT_COUNT_ENV: &str = "CHARIOX_MANAGED_WORKSPACE_ROOT_C
 const MANAGED_WORKSPACE_ROOT_ENV_PREFIX: &str = "CHARIOX_MANAGED_WORKSPACE_ROOT_";
 #[cfg(any(target_os = "linux", test))]
 const MAX_MANAGED_WORKSPACE_ROOTS: usize = 128;
+#[cfg(target_os = "linux")]
+const MANAGED_PROTECTED_FILE_ENV_NAMES: &[&str] = &[
+    "CHARIOX_MANAGED_VAULT_PATH",
+    "CHARIOX_SLICE_DOCKER_BROKER_SOCKET",
+    "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE",
+    "CHARIOX_MANAGED_BOOTSTRAP_PATH",
+    "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
+    "CHARIOX_DISPOSABLE_WORKER_BOOTSTRAP_PATH",
+    "CHARIOX_DISPOSABLE_WORKER_RECEIPT",
+    "CHARIOX_DAEMON_SOCKET",
+];
 
 #[cfg(target_os = "linux")]
 const BWRAP_PATH: &str = "/usr/bin/bwrap";
@@ -302,16 +313,7 @@ fn managed_protected_namespace_directories(extra: &[PathBuf]) -> Vec<PathBuf> {
             paths.push(path);
         }
     }
-    for name in [
-        "CHARIOX_MANAGED_VAULT_PATH",
-        "CHARIOX_SLICE_DOCKER_BROKER_SOCKET",
-        "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE",
-        "CHARIOX_MANAGED_BOOTSTRAP_PATH",
-        "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
-        "CHARIOX_DISPOSABLE_WORKER_BOOTSTRAP_PATH",
-        "CHARIOX_DISPOSABLE_WORKER_RECEIPT",
-        "CHARIOX_DAEMON_SOCKET",
-    ] {
+    for name in MANAGED_PROTECTED_FILE_ENV_NAMES {
         let Some(path) = std::env::var_os(name)
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
@@ -321,7 +323,7 @@ fn managed_protected_namespace_directories(extra: &[PathBuf]) -> Vec<PathBuf> {
         };
         if let Some(parent) = path.parent().map(Path::to_path_buf) {
             paths.push(parent.clone());
-            if name == "CHARIOX_SLICE_DOCKER_BROKER_SOCKET"
+            if *name == "CHARIOX_SLICE_DOCKER_BROKER_SOCKET"
                 && parent.file_name() == Some(std::ffi::OsStr::new("control"))
             {
                 if let Some(private_root) = parent.parent() {
@@ -341,6 +343,23 @@ fn managed_protected_namespace_directories(extra: &[PathBuf]) -> Vec<PathBuf> {
         compact.push(path);
     }
     compact
+}
+
+#[cfg(target_os = "linux")]
+fn managed_protected_namespace_files() -> Vec<PathBuf> {
+    let mut files = MANAGED_PROTECTED_FILE_ENV_NAMES
+        .iter()
+        .filter_map(|name| {
+            let path = std::env::var_os(name)
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())?;
+            (path.parent() == Some(Path::new("/"))).then_some(path)
+        })
+        .collect::<Vec<_>>();
+    files.sort();
+    files.dedup();
+    files
 }
 
 #[cfg(target_os = "linux")]
@@ -415,6 +434,22 @@ fn append_managed_protected_namespace_directories(
 }
 
 #[cfg(target_os = "linux")]
+fn append_managed_protected_namespace_files(
+    args: &mut Vec<String>,
+    files: &[PathBuf],
+    created: &mut BTreeSet<PathBuf>,
+) {
+    for file in files {
+        append_directory(args, file.parent().unwrap_or(Path::new("/")), created);
+        args.extend([
+            "--ro-bind".to_string(),
+            "/dev/null".to_string(),
+            file.display().to_string(),
+        ]);
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn append_managed_trusted_read_only_paths(
     args: &mut Vec<String>,
     paths: &[PathBuf],
@@ -463,6 +498,7 @@ pub(crate) fn apply_managed_provider_isolation(
         let program = rewrite_managed_program_path(&program, &provider_home, &account_bindings);
         let prompt_attachment_root = managed_prompt_attachment_root(request)?;
         let protected_namespace_roots = managed_protected_namespace_directories(&[]);
+        let protected_namespace_files = managed_protected_namespace_files();
         let trusted_read_only_paths = managed_trusted_read_only_paths()?;
 
         let resolver = managed_resolver_binding()?;
@@ -492,6 +528,11 @@ pub(crate) fn apply_managed_provider_isolation(
         append_managed_protected_namespace_directories(
             &mut args,
             &protected_directories,
+            &mut created_directories,
+        );
+        append_managed_protected_namespace_files(
+            &mut args,
+            &protected_namespace_files,
             &mut created_directories,
         );
         append_managed_trusted_read_only_paths(
@@ -1547,6 +1588,37 @@ mod tests {
 
         assert_eq!(args.iter().filter(|arg| *arg == "--ro-bind").count(), 0);
         assert!(!args.iter().any(|arg| arg == "/etc/resolv.conf"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_root_level_control_file_is_masked_without_masking_the_root() {
+        let _env = crate::env_lock::lock();
+        let previous = MANAGED_PROTECTED_FILE_ENV_NAMES
+            .iter()
+            .map(|name| (*name, std::env::var_os(name)))
+            .collect::<Vec<_>>();
+        for name in MANAGED_PROTECTED_FILE_ENV_NAMES {
+            std::env::remove_var(name);
+        }
+        let vault = PathBuf::from("/managed-vault.json");
+        std::env::set_var("CHARIOX_MANAGED_VAULT_PATH", &vault);
+
+        let protected = managed_protected_namespace_directories(&[]);
+        let files = managed_protected_namespace_files();
+        let (mut args, mut created) = managed_namespace_args(None, Path::exists, None);
+        append_managed_protected_namespace_directories(&mut args, &protected, &mut created);
+        append_managed_protected_namespace_files(&mut args, &files, &mut created);
+
+        for (name, value) in previous {
+            restore_env(name, value);
+        }
+
+        assert!(!protected.contains(&PathBuf::from("/")));
+        assert_eq!(files, vec![vault.clone()]);
+        assert!(args
+            .windows(3)
+            .any(|window| window == ["--ro-bind", "/dev/null", "/managed-vault.json"]));
     }
 
     #[cfg(target_os = "linux")]
