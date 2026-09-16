@@ -250,6 +250,24 @@ impl ProviderProcessService {
         Ok(run.clone())
     }
 
+    pub(crate) fn update_run_preparation_environment(
+        &mut self,
+        run_id: &str,
+        home: impl Into<String>,
+        path: impl Into<String>,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let run = self.get_run_mut(run_id)?;
+        if run.state() != ProviderRunState::Running {
+            return Err(DaemonError::InvalidProviderRunState {
+                provider_run_id: run_id.to_string(),
+                state: run.state(),
+                operation: "bind prepared provider environment",
+            });
+        }
+        run.set_preparation_environment(home, path);
+        Ok(run.clone())
+    }
+
     pub(crate) fn reconcile_run_liveness_provider_only(
         &mut self,
         session_id: &str,

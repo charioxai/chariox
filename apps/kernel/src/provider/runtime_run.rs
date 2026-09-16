@@ -384,6 +384,16 @@ impl RuntimeProviderRun {
         self.touch_activity();
     }
 
+    pub(crate) fn set_preparation_environment(
+        &mut self,
+        home: impl Into<String>,
+        path: impl Into<String>,
+    ) {
+        self.pty_env.insert("HOME".to_string(), home.into());
+        self.pty_env.insert("PATH".to_string(), path.into());
+        self.touch_activity();
+    }
+
     pub fn requires_workspace_live_sync(&self) -> bool {
         self.write_access_mode.requires_workspace_live_sync()
     }

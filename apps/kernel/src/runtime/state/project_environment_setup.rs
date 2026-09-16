@@ -1259,6 +1259,18 @@ impl KernelRuntimeState {
                         });
                     });
                     if validation_passed {
+                        if self
+                            .bind_prepared_provider_environment(&execution, &provider_run)
+                            .is_err()
+                        {
+                            store.mark_failed(
+                                &execution.operation_id,
+                                attempt,
+                                "provider_environment_bind_failed",
+                                "kernel could not bind the prepared environment to the provider run",
+                            );
+                            return;
+                        }
                         if execution.persist_project_definition
                             && self
                                 .update_project_environment_definition(
@@ -1504,6 +1516,18 @@ impl KernelRuntimeState {
             );
             return;
         }
+        if self
+            .bind_prepared_provider_environment(&execution, &provider_run)
+            .is_err()
+        {
+            store.mark_failed(
+                &execution.operation_id,
+                attempt,
+                "provider_environment_bind_failed",
+                "kernel could not bind the prepared environment to the provider run",
+            );
+            return;
+        }
         if execution.persist_project_definition
             && self
                 .update_project_environment_definition(
@@ -1528,6 +1552,30 @@ impl KernelRuntimeState {
             entry.status.message =
                 Some("project environment is ready on the validated worker".to_string());
         });
+    }
+
+    fn bind_prepared_provider_environment(
+        &self,
+        execution: &SetupExecution,
+        provider_run: &RuntimeProviderRun,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let context = self.prepare_worker_execution_context(execution, provider_run)?;
+        let home = context
+            .environment
+            .get("HOME")
+            .cloned()
+            .ok_or_else(|| setup_error("prepared worker environment has no HOME"))?;
+        let path = context
+            .environment
+            .get("PATH")
+            .cloned()
+            .ok_or_else(|| setup_error("prepared worker environment has no PATH"))?;
+        let updated = self
+            .owned
+            .provider_store
+            .update_run_preparation_environment(provider_run.id(), home, path)?;
+        self.owned.provider_run_projection.update(updated.clone());
+        Ok(updated)
     }
 
     fn prepare_worker_execution_context(

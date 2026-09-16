@@ -224,8 +224,44 @@ pub(super) fn worker_validation_environment_with_home(
             "HOME".to_string(),
             preparation_home.display().to_string(),
         );
+        let current_path = environment
+            .get("PATH")
+            .map(String::as_str)
+            .unwrap_or_default();
+        environment.insert(
+            "PATH".to_string(),
+            worker_preparation_path(preparation_home, current_path),
+        );
     }
     environment
+}
+
+fn worker_preparation_path(preparation_home: &Path, current_path: &str) -> String {
+    let local_bin = preparation_home.join(".local").join("bin");
+    let cargo_bin = preparation_home.join(".cargo").join("bin");
+    let mut entries = Vec::new();
+    for entry in [local_bin, cargo_bin]
+        .into_iter()
+        .chain(std::env::split_paths(std::ffi::OsStr::new(current_path)))
+    {
+        if !entries.contains(&entry) {
+            entries.push(entry);
+        }
+    }
+    match std::env::join_paths(entries) {
+        Ok(path) => path.to_string_lossy().into_owned(),
+        Err(_) => {
+            let separator = if cfg!(windows) { ';' } else { ':' };
+            format!(
+                "{}{}{}{}{}",
+                preparation_home.join(".local").join("bin").display(),
+                separator,
+                preparation_home.join(".cargo").join("bin").display(),
+                separator,
+                current_path
+            )
+        }
+    }
 }
 
 const MAX_PROJECT_ENVIRONMENT_INPUT_BYTES: u64 = 64 * 1024 * 1024;
@@ -521,7 +557,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn durable_preparation_home_preserves_install_like_state_across_apply_validation_and_reuse() {
+    fn durable_preparation_home_preserves_install_like_state_across_apply_and_validation() {
         let root = std::env::temp_dir().join(format!(
             "chariox-project-environment-durable-home-{}-{}",
             std::process::id(),
@@ -585,22 +621,132 @@ mod tests {
         .expect("validation should see the install-like HOME artifact");
         assert_eq!(validation.0, 0);
 
-        drop(preparation_home);
-        drop(validation_home);
-        let post_ready_home =
-            WorkerPreparationHome::for_project_worker(&workspace, "project-1", "worker-1")
-                .expect("post-ready reuse should retain durable preparation HOME");
-        let post_ready_environment =
-            worker_validation_environment_with_home(&run, Some(post_ready_home.path()));
-        let post_ready = run_worker_validation_command(
-            "test -x \"$HOME/.local/bin/project-tool\" && test \"$(cat \"$HOME/.local/bin/project-tool\")\" = project-tool",
-            &workspace,
-            &post_ready_environment,
-            || false,
-            None,
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepared_home_and_path_reach_a_real_post_ready_provider_command() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-project-environment-provider-home-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace)
+            .expect("provider environment workspace should exist");
+        let trace = root.join("provider-command.log");
+        let child_script = r#"
+set -eu
+while IFS= read -r request; do
+  tool_path="$(command -v "$PROJECT_TEST_TOOL")"
+  printf 'tool=%s\n' "$tool_path" >> "$PROJECT_TEST_TRACE"
+  "$tool_path" >> "$PROJECT_TEST_TRACE"
+  printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"post-ready provider command succeeded"}]}}'
+  printf '%s\n' '{"type":"result","subtype":"success","is_error":false}'
+done
+"#;
+        let request = crate::provider::LaunchProviderRequest::new(
+            "session-1",
+            "claude",
+            "claude",
+            "default",
+            "sonnet",
         )
-        .expect("post-ready validation should reuse the installed tool");
-        assert_eq!(post_ready.0, 0);
+        .with_execution_mode(crate::provider::AgentExecutionMode::Build)
+        .with_permission_level(crate::provider::AgentPermissionLevel::Yolo)
+        .with_working_directory(workspace.clone());
+        let run = crate::provider::RuntimeProviderRun::new(
+            "provider-run-post-ready-provider",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::External,
+                process_label: "test-claude".to_string(),
+                pty_target: None,
+                pty_program: Some("/bin/sh".to_string()),
+                pty_args: vec!["-c".to_string(), child_script.to_string()],
+                pty_env: BTreeMap::from([
+                    ("HOME".to_string(), root.join("old-home").display().to_string()),
+                    ("PATH".to_string(), "/usr/bin:/bin".to_string()),
+                    ("PROJECT_TEST_TRACE".to_string(), trace.display().to_string()),
+                    ("PROJECT_TEST_TOOL".to_string(), "project-tool".to_string()),
+                ]),
+                pty_env_remove: Vec::new(),
+                working_directory: Some(workspace.clone()),
+                structured_endpoint: None,
+            },
+        );
+
+        let preparation_home =
+            WorkerPreparationHome::for_project_worker(&workspace, "project-1", "worker-1")
+                .expect("durable provider preparation HOME should be created");
+        let prepared_environment =
+            worker_validation_environment_with_home(&run, Some(preparation_home.path()));
+        let prepared_path = prepared_environment
+            .get("PATH")
+            .expect("prepared worker environment should have PATH");
+        assert!(prepared_path.starts_with(
+            &preparation_home
+                .path()
+                .join(".local")
+                .join("bin")
+                .display()
+                .to_string()
+        ));
+        run_worker_setup_steps(
+            &[r#"set -eu; mkdir -p "$HOME/.local/bin"; printf '%s\n' '#!/bin/sh' 'printf "%s\n" installed-from-post-ready-provider' > "$HOME/.local/bin/project-tool"; chmod 700 "$HOME/.local/bin/project-tool""#.to_string()],
+            &workspace,
+            &prepared_environment,
+            || false,
+        )
+        .expect("worker setup should install the provider command");
+
+        let mut prepared_run = run.clone();
+        prepared_run.set_preparation_environment(
+            prepared_environment
+                .get("HOME")
+                .expect("prepared worker environment should have HOME")
+                .clone(),
+            prepared_path.clone(),
+        );
+        let mut binding = crate::provider::initialize_claude_runtime(&run)
+            .expect("real provider child should start with the original context");
+        let envelope = crate::prompt_assembly::PromptEnvelope::new(
+            "invoke the installed project tool",
+            "",
+            Vec::new(),
+            crate::prompt_assembly::PromptManifest::default(),
+        );
+        crate::provider::submit_claude_prompt(&prepared_run, &mut binding.state, &envelope)
+            .expect("post-ready provider command should use the prepared context");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut completed = false;
+        while Instant::now() < deadline {
+            let batch = crate::provider::drain_claude_events(&prepared_run, &mut binding.state)
+                .expect("provider child output should be readable");
+            if batch.prompt_completed {
+                completed = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(completed, "real provider child should complete its command");
+        let trace_contents = std::fs::read_to_string(&trace)
+            .expect("real provider child should record its command result");
+        assert!(trace_contents.contains(
+            &preparation_home
+                .path()
+                .join(".local")
+                .join("bin")
+                .join("project-tool")
+                .display()
+                .to_string()
+        ));
+        assert!(trace_contents.contains("installed-from-post-ready-provider"));
+
+        drop(binding);
+        drop(preparation_home);
         let _ = std::fs::remove_dir_all(root);
     }
 

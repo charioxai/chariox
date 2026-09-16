@@ -118,6 +118,10 @@ pub(crate) use run_actor::{
     ProviderPromptSubmitAcknowledgement, ProviderRunActorCompletionSignal, ProviderRunActorMailbox,
     ProviderRunOperationLanes,
 };
+#[cfg(test)]
+pub(crate) use claude_runtime::{
+    drain_claude_events, initialize_claude_runtime, submit_claude_prompt,
+};
 pub(crate) use runtime_run::{
     projected_leased_provider_run_id, worker_provider_run_id_from_projected_leased_id,
 };

@@ -10,7 +10,9 @@ use crate::error::DaemonError;
 use crate::prompt_assembly::PromptEnvelope;
 use crate::terminal::TerminalOutputKind;
 
-use super::claude::materialize_runtime_claude_mcp_config;
+use super::claude::{
+    claude_args_with_execution_config, materialize_runtime_claude_mcp_config,
+};
 use super::managed_isolation::expose_runtime_directory_in_managed_namespace;
 use super::{
     AgentExecutionMode, AgentPermissionLevel, ProviderPromptSignalBatch, RuntimeProviderRun,
@@ -407,6 +409,9 @@ fn claude_runtime_selection_changed(run: &RuntimeProviderRun, state: &ClaudeRunt
         || state.active_variant.as_deref() != run.variant()
         || state.active_execution_mode != run.execution_mode()
         || state.active_permission_level != run.permission_level()
+        || state.env != *run.pty_env()
+        || state.env_remove != run.pty_env_remove()
+        || state.working_directory.as_ref() != run.working_directory()
 }
 
 fn claude_runtime_child_exited(state: &mut ClaudeRuntimeState) -> bool {
@@ -430,25 +435,35 @@ fn restart_claude_runtime(
         .session_id
         .as_deref()
         .or_else(|| run.resume_state().claude_session_id());
-    let base_args = claude_args_without_resume(&state.args);
+    let base_args = claude_args_with_execution_config(
+        &claude_args_without_resume(&state.args),
+        run.execution_mode(),
+        run.permission_level(),
+    );
     let mut args = base_args.clone();
     if let Some(session_id) = resume_session_id {
         args.extend(["--resume".to_string(), session_id.to_string()]);
     }
+    let env = run.pty_env().clone();
+    let env_remove = run.pty_env_remove().to_vec();
+    let working_directory = run.working_directory().cloned();
     let (child, stdin, receiver) = spawn_claude_child(
         run.id(),
         &state.program,
         &args,
-        &state.env,
+        &env,
         &state.provider_credential_env,
-        &state.env_remove,
-        state.working_directory.as_ref(),
+        &env_remove,
+        working_directory.as_ref(),
         operation,
     )?;
     state.child = child;
     state.stdin = stdin;
     state.receiver = receiver;
     state.args = base_args;
+    state.env = env;
+    state.env_remove = env_remove;
+    state.working_directory = working_directory;
     state.active_model = run.model().to_string();
     state.active_variant = run.variant().map(str::to_string);
     state.active_execution_mode = run.execution_mode();
@@ -535,6 +550,8 @@ mod tests {
     mod tool_results;
 
     #[cfg(unix)]
+    use std::collections::BTreeMap;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     use base64::Engine as _;
@@ -551,7 +568,7 @@ mod tests {
     use super::{
         apply_claude_stderr, claude_args_without_resume, events::apply_claude_message,
         handle_claude_tool_uses, initialize_claude_runtime, input::claude_user_content,
-        new_claude_session_id, restart_claude_runtime, ClaudeRuntimeState,
+        new_claude_session_id, restart_claude_runtime, submit_claude_prompt, ClaudeRuntimeState,
         ProviderPromptSignalBatch,
     };
 
@@ -666,6 +683,104 @@ mod tests {
                 "/tmp/mcp.json".to_string(),
             ]
         );
+    }
+
+    #[cfg(unix)]
+    fn wait_for_trace_lines(path: &std::path::Path, expected: usize) -> String {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let contents = std::fs::read_to_string(path).unwrap_or_default();
+            if contents.lines().count() >= expected {
+                return contents;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "provider child did not write {expected} trace lines: {contents:?}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_restart_launches_plan_permissions_in_the_real_provider_child() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-claude-plan-restart-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&root).expect("plan restart fixture root should exist");
+        let trace = root.join("argv.log");
+        let child_script = r#"
+set -eu
+{
+  printf 'argv'
+  printf '\t%s' "$0"
+  for arg in "$@"; do printf '\t%s' "$arg"; done
+  printf '\n'
+} >> "$CLAUDE_TEST_TRACE"
+cat >/dev/null
+"#;
+        let request = LaunchProviderRequest::new(
+            "session-1",
+            "claude",
+            "claude",
+            "default",
+            "sonnet",
+        )
+        .with_execution_mode(AgentExecutionMode::Build)
+        .with_permission_level(AgentPermissionLevel::Yolo);
+        let run = RuntimeProviderRun::new(
+            "provider-run-plan-restart",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::External,
+                process_label: "test-claude".to_string(),
+                pty_target: None,
+                pty_program: Some("/bin/sh".to_string()),
+                pty_args: vec![
+                    "-c".to_string(),
+                    child_script.to_string(),
+                    "--permission-mode".to_string(),
+                    "bypassPermissions".to_string(),
+                    "--allow-dangerously-skip-permissions".to_string(),
+                ],
+                pty_env: BTreeMap::from([(
+                    "CLAUDE_TEST_TRACE".to_string(),
+                    trace.display().to_string(),
+                )]),
+                pty_env_remove: Vec::new(),
+                working_directory: Some(root.clone()),
+                structured_endpoint: None,
+            },
+        );
+
+        let mut binding = initialize_claude_runtime(&run).expect("fixture Claude child should start");
+        let _ = wait_for_trace_lines(&trace, 1);
+
+        let mut plan_run = run.clone();
+        plan_run.set_execution_config(AgentExecutionMode::Plan, AgentPermissionLevel::Required);
+        let envelope = crate::prompt_assembly::PromptEnvelope::new(
+            "read-only discovery",
+            "",
+            Vec::new(),
+            crate::prompt_assembly::PromptManifest::default(),
+        );
+        submit_claude_prompt(&plan_run, &mut binding.state, &envelope)
+            .expect("plan utility prompt should restart the real provider child");
+
+        let trace_contents = wait_for_trace_lines(&trace, 2);
+        let launches = trace_contents
+            .lines()
+            .filter(|line| line.starts_with("argv\t"))
+            .collect::<Vec<_>>();
+        let latest = launches.last().expect("restarted child should log argv");
+        assert!(latest.contains("\t--permission-mode\tplan"));
+        assert!(!latest.contains("bypassPermissions"));
+        assert!(!latest.contains("--allow-dangerously-skip-permissions"));
+
+        drop(binding);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

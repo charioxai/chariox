@@ -188,6 +188,16 @@ impl ProviderProcessServiceStore {
             .update_run_execution_config(run_id, execution_mode, permission_level)
     }
 
+    pub(crate) fn update_run_preparation_environment(
+        &self,
+        run_id: &str,
+        home: impl Into<String>,
+        path: impl Into<String>,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.write()
+            .update_run_preparation_environment(run_id, home, path)
+    }
+
     pub(crate) fn update_run_remote_extension_manifest(
         &self,
         run_id: &str,
