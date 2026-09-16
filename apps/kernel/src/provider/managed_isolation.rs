@@ -318,9 +318,7 @@ fn managed_configured_slice_publication_root() -> Result<Option<PathBuf>, Daemon
 }
 
 #[cfg(target_os = "linux")]
-fn managed_protected_namespace_directories(
-    extra: &[PathBuf],
-) -> Result<Vec<PathBuf>, DaemonError> {
+fn managed_protected_namespace_directories(extra: &[PathBuf]) -> Result<Vec<PathBuf>, DaemonError> {
     let mut paths = vec![PathBuf::from("/run")];
     let chariox_home = if let Some(raw) = std::env::var_os("CHARIOX_HOME") {
         if raw.is_empty() {
@@ -385,10 +383,7 @@ fn managed_protected_namespace_directories(
             if raw.is_empty() {
                 return Err(isolation_error(format!("{name} must not be empty")));
             }
-            paths.push(validate_boundary_directory(
-                &PathBuf::from(raw),
-                name,
-            )?);
+            paths.push(validate_boundary_directory(&PathBuf::from(raw), name)?);
         }
     }
     for name in MANAGED_PROTECTED_FILE_ENV_NAMES {
@@ -501,10 +496,8 @@ fn append_managed_runtime_user_openbox_boundary(
     let local = home.join(".local");
     append_managed_runtime_user_anchor(args, &local, "runtime user .local", created)?;
     for relative in MANAGED_RUNTIME_USER_COMMAND_DIRECTORY_NAMES {
-        let command_directory = validate_boundary_directory(
-            &home.join(relative),
-            "runtime user command directory",
-        )?;
+        let command_directory =
+            validate_boundary_directory(&home.join(relative), "runtime user command directory")?;
         append_directory(args, &command_directory, created);
         args.extend([
             "--tmpfs".to_string(),
@@ -794,11 +787,7 @@ pub(crate) fn apply_managed_provider_isolation(
         // binding requested by the launch.
         for name in PROVIDER_ACCOUNT_PATH_ENVIRONMENT {
             if let Some(value) = launch.pty_env.get(*name) {
-                args.extend([
-                    "--setenv".to_string(),
-                    (*name).to_string(),
-                    value.clone(),
-                ]);
+                args.extend(["--setenv".to_string(), (*name).to_string(), value.clone()]);
             }
         }
         append_managed_git_safe_directory_environment(&mut args, &workspace_roots);
@@ -1332,9 +1321,13 @@ fn managed_workspace_root_requires_rebind_with_private_temp_roots(
     {
         return true;
     }
-    private_temp_roots
-        .iter()
-        .any(|path| root != path && root.starts_with(path))
+    // /home is a private synthetic parent, like the process temp roots.
+    // Re-expose the selected workspace after that mask without exposing sibling
+    // homes. Exact protected roots above must still remain inaccessible.
+    (root != Path::new("/home") && root.starts_with("/home"))
+        || private_temp_roots
+            .iter()
+            .any(|path| root != path && root.starts_with(path))
 }
 
 #[cfg(target_os = "linux")]
@@ -1464,9 +1457,10 @@ fn validate_directory_ancestors(path: &Path, label: &str) -> Result<(), DaemonEr
     if !path.is_absolute() {
         return Err(isolation_error(format!("{label} must be absolute")));
     }
-    if path.components().any(|component| {
-        matches!(component, std::path::Component::ParentDir)
-    }) {
+    if path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
         return Err(isolation_error(format!(
             "{label} must not contain a parent-directory component"
         )));
@@ -1511,7 +1505,9 @@ fn validate_boundary_directory(path: &Path, label: &str) -> Result<PathBuf, Daem
         return Err(isolation_error(format!("{label} must be absolute")));
     }
     if path == Path::new("/") {
-        return Err(isolation_error(format!("{label} must not be the root directory")));
+        return Err(isolation_error(format!(
+            "{label} must not be the root directory"
+        )));
     }
     validate_directory_ancestors(path, label)?;
     match std::fs::symlink_metadata(path) {
@@ -1520,14 +1516,18 @@ fn validate_boundary_directory(path: &Path, label: &str) -> Result<PathBuf, Daem
             .map_err(|error| isolation_error(format!("failed to canonicalize {label}: {error}")))
             .and_then(|canonical| {
                 if canonical == Path::new("/") {
-                    Err(isolation_error(format!("{label} must not resolve to the root directory")))
+                    Err(isolation_error(format!(
+                        "{label} must not resolve to the root directory"
+                    )))
                 } else {
                     Ok(canonical)
                 }
             }),
         Ok(_) => Err(isolation_error(format!("{label} must be a directory"))),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(path.to_path_buf()),
-        Err(error) => Err(isolation_error(format!("failed to inspect {label}: {error}"))),
+        Err(error) => Err(isolation_error(format!(
+            "failed to inspect {label}: {error}"
+        ))),
     }
 }
 
@@ -1537,14 +1537,16 @@ fn validate_control_file_path(path: &Path, label: &str) -> Result<PathBuf, Daemo
         return Err(isolation_error(format!("{label} must be absolute")));
     }
     if path == Path::new("/") {
-        return Err(isolation_error(format!("{label} must not be the root directory")));
+        return Err(isolation_error(format!(
+            "{label} must not be the root directory"
+        )));
     }
     let parent = path.parent().unwrap_or(Path::new("/"));
     validate_directory_ancestors(parent, label)?;
     match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => Err(isolation_error(format!(
-            "{label} must not be a symlink"
-        ))),
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err(isolation_error(format!("{label} must not be a symlink")))
+        }
         Ok(metadata) if metadata.is_dir() => Err(isolation_error(format!(
             "{label} must name a file or socket"
         ))),
@@ -1552,7 +1554,9 @@ fn validate_control_file_path(path: &Path, label: &str) -> Result<PathBuf, Daemo
             .canonicalize()
             .map_err(|error| isolation_error(format!("failed to canonicalize {label}: {error}"))),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(path.to_path_buf()),
-        Err(error) => Err(isolation_error(format!("failed to inspect {label}: {error}"))),
+        Err(error) => Err(isolation_error(format!(
+            "failed to inspect {label}: {error}"
+        ))),
     }
 }
 
@@ -1562,7 +1566,9 @@ fn canonical_file(path: &Path, label: &str) -> Result<PathBuf, DaemonError> {
         return Err(isolation_error(format!("{label} must be absolute")));
     }
     if path == Path::new("/") {
-        return Err(isolation_error(format!("{label} must not be the root directory")));
+        return Err(isolation_error(format!(
+            "{label} must not be the root directory"
+        )));
     }
     let parent = path.parent().unwrap_or(Path::new("/"));
     validate_directory_ancestors(parent, label)?;
@@ -1581,7 +1587,9 @@ fn canonical_directory(path: &Path, label: &str) -> Result<PathBuf, DaemonError>
         return Err(isolation_error(format!("{label} must be absolute")));
     }
     if path == Path::new("/") {
-        return Err(isolation_error(format!("{label} must not be the root directory")));
+        return Err(isolation_error(format!(
+            "{label} must not be the root directory"
+        )));
     }
     validate_directory_ancestors(path, label)?;
     let metadata = std::fs::symlink_metadata(path)
@@ -1593,7 +1601,9 @@ fn canonical_directory(path: &Path, label: &str) -> Result<PathBuf, DaemonError>
         .canonicalize()
         .map_err(|error| isolation_error(format!("failed to canonicalize {label}: {error}")))?;
     if canonical == Path::new("/") {
-        return Err(isolation_error(format!("{label} must not resolve to the root directory")));
+        return Err(isolation_error(format!(
+            "{label} must not resolve to the root directory"
+        )));
     }
     Ok(canonical)
 }
@@ -2154,6 +2164,31 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn managed_home_workspace_rebind_preserves_selected_children_only() {
+        assert!(managed_workspace_root_requires_rebind(
+            Path::new("/home/developer/project"),
+            &[],
+            &[],
+        ));
+        assert!(!managed_workspace_root_requires_rebind(
+            Path::new("/home"),
+            &[],
+            &[],
+        ));
+        assert!(!managed_workspace_root_requires_rebind(
+            Path::new("/home/developer/private"),
+            &[PathBuf::from("/home/developer/private")],
+            &[],
+        ));
+        assert!(!managed_workspace_root_requires_rebind(
+            Path::new("/home-other/project"),
+            &[],
+            &[],
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn managed_runtime_user_missing_config_and_local_anchors_are_mount_boundaries() {
         let root = std::env::temp_dir().join(format!(
             "chariox-managed-runtime-user-missing-anchor-{}-{}",
@@ -2347,7 +2382,11 @@ mod tests {
         for relative in MANAGED_RUNTIME_USER_COMMAND_DIRECTORY_NAMES {
             let path = home.join(relative);
             assert!(args.windows(2).any(|window| {
-                window == ["--tmpfs", path.to_str().expect("command path should be utf8")]
+                window
+                    == [
+                        "--tmpfs",
+                        path.to_str().expect("command path should be utf8"),
+                    ]
             }));
         }
         assert!(!args
@@ -2629,8 +2668,10 @@ mod tests {
     fn managed_provider_isolation_environment_scrubs_account_paths() {
         let removed = managed_provider_isolation_env_remove();
         for name in ["XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "CODEX_HOME"] {
-            assert!(removed.iter().any(|removed| removed == name),
-                "managed provider isolation environment must scrub {name}");
+            assert!(
+                removed.iter().any(|removed| removed == name),
+                "managed provider isolation environment must scrub {name}"
+            );
         }
     }
 
@@ -2694,13 +2735,18 @@ mod tests {
             window
                 == [
                     "--tmpfs",
-                    socket_parent.to_str().expect("socket parent should be utf8"),
+                    socket_parent
+                        .to_str()
+                        .expect("socket parent should be utf8"),
                 ]
         }));
         assert!(managed_provider_control_env_remove()
             .iter()
             .any(|name| name == "CHARIOX_DAEMON_SOCKET"));
-        assert!(files.is_empty(), "relocated control socket needs its parent mask");
+        assert!(
+            files.is_empty(),
+            "relocated control socket needs its parent mask"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2718,16 +2764,13 @@ mod tests {
         let ancestor_link = root.join("ancestor-link");
         std::fs::create_dir_all(&real_child).expect("boundary fixture should exist");
         std::os::unix::fs::symlink(&real, &leaf_link).expect("leaf symlink should exist");
-        std::os::unix::fs::symlink(&real, &ancestor_link)
-            .expect("ancestor symlink should exist");
+        std::os::unix::fs::symlink(&real, &ancestor_link).expect("ancestor symlink should exist");
 
         assert!(canonical_directory(Path::new("/"), "boundary root").is_err());
         assert!(canonical_directory(&leaf_link, "boundary leaf symlink").is_err());
-        assert!(canonical_directory(
-            &ancestor_link.join("child"),
-            "boundary ancestor symlink"
-        )
-        .is_err());
+        assert!(
+            canonical_directory(&ancestor_link.join("child"), "boundary ancestor symlink").is_err()
+        );
         assert!(validate_boundary_directory(Path::new("/"), "configured boundary root").is_err());
         assert!(validate_boundary_directory(&leaf_link, "configured leaf symlink").is_err());
         assert!(validate_boundary_directory(
@@ -2753,8 +2796,7 @@ mod tests {
         let ancestor_link = root.join("ancestor-link");
         std::fs::create_dir_all(real.join("child")).expect("configured root fixture should exist");
         std::os::unix::fs::symlink(&real, &leaf_link).expect("leaf symlink should exist");
-        std::os::unix::fs::symlink(&real, &ancestor_link)
-            .expect("ancestor symlink should exist");
+        std::os::unix::fs::symlink(&real, &ancestor_link).expect("ancestor symlink should exist");
 
         let names = [
             "HOME",
@@ -2790,20 +2832,24 @@ mod tests {
         ];
         for (label, path) in shapes {
             std::env::set_var(MANAGED_PROVIDER_HOME_ENV, &path);
-            assert!(managed_provider_home().is_err(), "provider HOME accepted {label}");
+            assert!(
+                managed_provider_home().is_err(),
+                "provider HOME accepted {label}"
+            );
             std::env::remove_var(MANAGED_PROVIDER_HOME_ENV);
 
-            let mut account_environment = BTreeMap::from([(
-                "CODEX_HOME".to_string(),
-                path.display().to_string(),
-            )]);
+            let mut account_environment =
+                BTreeMap::from([("CODEX_HOME".to_string(), path.display().to_string())]);
             assert!(
                 managed_account_bindings(&mut account_environment).is_err(),
                 "account path accepted {label}"
             );
 
             std::env::set_var("HOME", &path);
-            assert!(managed_runtime_user_home().is_err(), "runtime HOME accepted {label}");
+            assert!(
+                managed_runtime_user_home().is_err(),
+                "runtime HOME accepted {label}"
+            );
             std::env::remove_var("HOME");
 
             std::env::set_var(MANAGED_SLICE_SERVICE_ROOT_ENV, &path);
