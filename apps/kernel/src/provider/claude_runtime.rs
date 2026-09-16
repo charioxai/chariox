@@ -76,7 +76,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
     let context_file = env.get("CHARIOX_CLAUDE_NATIVE_CONTEXT").map(PathBuf::from);
     let settings_file = env.get("CHARIOX_CLAUDE_SETTINGS_FILE").map(PathBuf::from);
     let usage_file = env.get("CHARIOX_CLAUDE_USAGE_FILE").map(PathBuf::from);
-    let env_remove = run.pty_env_remove().to_vec();
+    let env_remove = claude_env_remove(run);
     let working_directory = run.working_directory().cloned();
     let (child, stdin, receiver) = spawn_claude_child(
         run.id(),
@@ -410,8 +410,22 @@ fn claude_runtime_selection_changed(run: &RuntimeProviderRun, state: &ClaudeRunt
         || state.active_execution_mode != run.execution_mode()
         || state.active_permission_level != run.permission_level()
         || state.env != *run.pty_env()
-        || state.env_remove != run.pty_env_remove()
+        || state.env_remove != claude_env_remove(run)
         || state.working_directory.as_ref() != run.working_directory()
+}
+
+fn claude_env_remove(run: &RuntimeProviderRun) -> Vec<String> {
+    let mut env_remove = run.pty_env_remove().to_vec();
+    if run.read_only_discovery() {
+        env_remove.extend(
+            crate::provider::managed_provider_parent_credential_env_remove()
+                .iter()
+                .map(|name| (*name).to_string()),
+        );
+        env_remove.sort();
+        env_remove.dedup();
+    }
+    env_remove
 }
 
 fn claude_runtime_child_exited(state: &mut ClaudeRuntimeState) -> bool {
@@ -445,7 +459,7 @@ fn restart_claude_runtime(
         args.extend(["--resume".to_string(), session_id.to_string()]);
     }
     let env = run.pty_env().clone();
-    let env_remove = run.pty_env_remove().to_vec();
+    let env_remove = claude_env_remove(run);
     let working_directory = run.working_directory().cloned();
     let (child, stdin, receiver) = spawn_claude_child(
         run.id(),

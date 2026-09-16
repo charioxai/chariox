@@ -133,44 +133,63 @@ pub(crate) fn apply_preparation_home_to_managed_launch(
     }
 
     let host_home = canonical_preparation_home(host_home)?;
+    let host_home_text = host_home.display().to_string();
     let home = args[..separator]
         .windows(3)
         .position(|window| {
             window[0] == "--setenv"
                 && window[1] == "HOME"
-                && matches!(window[2].as_str(), SANDBOX_HOME | SANDBOX_PREPARATION_HOME)
+                && (matches!(window[2].as_str(), SANDBOX_HOME | SANDBOX_PREPARATION_HOME)
+                    || window[2] == host_home_text)
         })
         .ok_or_else(|| isolation_error("managed provider launch is missing its HOME binding"))?;
-    args[home + 2] = SANDBOX_PREPARATION_HOME.to_string();
+    args[home + 2] = host_home_text.clone();
 
-    let sandbox_path = rewrite_preparation_path(&host_home, host_path);
     if let Some(path) = args[..separator]
         .windows(3)
         .position(|window| window[0] == "--setenv" && window[1] == "PATH")
     {
-        args[path + 2] = sandbox_path;
+        args[path + 2] = host_path.to_string();
     } else {
         args.splice(
             separator..separator,
-            ["--setenv".to_string(), "PATH".to_string(), sandbox_path],
+            [
+                "--setenv".to_string(),
+                "PATH".to_string(),
+                host_path.to_string(),
+            ],
         );
     }
 
-    let existing_binding = args[..separator]
-        .windows(3)
-        .position(|window| window[0] == "--bind" && window[2] == SANDBOX_PREPARATION_HOME);
+    let existing_binding = args[..separator].windows(3).position(|window| {
+        (window[0] == "--bind" && window[2] == SANDBOX_PREPARATION_HOME)
+            || (window[0] == "--bind" && window[1] == host_home_text && window[2] == host_home_text)
+    });
+
+    let mut mount = Vec::new();
+    let mut ancestors = host_home.ancestors().collect::<Vec<_>>();
+    ancestors.reverse();
+    for ancestor in ancestors {
+        if ancestor == Path::new("/")
+            || args[..separator]
+                .windows(2)
+                .any(|window| window[0] == "--dir" && window[1] == ancestor.display().to_string())
+        {
+            continue;
+        }
+        mount.extend(["--dir".to_string(), ancestor.display().to_string()]);
+    }
     if let Some(index) = existing_binding {
-        args[index + 1] = host_home.display().to_string();
+        args[index + 1] = host_home_text.clone();
+        args[index + 2] = host_home_text;
+        // A provider run restored from the previous synthetic namespace may
+        // already have the bind, but not the parent directories for the
+        // durable host pathname. Put any missing parents immediately before
+        // the bind so bubblewrap sees them in order.
+        args.splice(index..index, mount);
         return Ok(());
     }
-
-    let mount = vec![
-        "--dir".to_string(),
-        SANDBOX_PREPARATION_HOME.to_string(),
-        "--bind".to_string(),
-        host_home.display().to_string(),
-        SANDBOX_PREPARATION_HOME.to_string(),
-    ];
+    mount.extend(["--bind".to_string(), host_home_text.clone(), host_home_text]);
     args.splice(separator..separator, mount);
     Ok(())
 }
@@ -189,34 +208,17 @@ pub(crate) fn managed_launch_has_preparation_home(args: &[String], host_home: &P
     let Ok(host_home) = canonical_preparation_home(host_home) else {
         return false;
     };
-    args[..separator].windows(3).any(|window| {
-        window[0] == "--setenv" && window[1] == "HOME" && window[2] == SANDBOX_PREPARATION_HOME
-    }) && args[..separator].windows(3).any(|window| {
-        window[0] == "--bind"
-            && window[1] == host_home.display().to_string()
-            && window[2] == SANDBOX_PREPARATION_HOME
-    })
+    let host_home = host_home.display().to_string();
+    args[..separator]
+        .windows(3)
+        .any(|window| window[0] == "--setenv" && window[1] == "HOME" && window[2] == host_home)
+        && args[..separator]
+            .windows(3)
+            .any(|window| window[0] == "--bind" && window[1] == host_home && window[2] == host_home)
 }
 
 pub(crate) fn is_kernel_preparation_home(path: &Path) -> bool {
     canonical_preparation_home(path).is_ok()
-}
-
-fn rewrite_preparation_path(host_home: &Path, host_path: &str) -> String {
-    std::env::join_paths(std::env::split_paths(host_path).map(|entry| {
-        entry
-            .strip_prefix(host_home)
-            .map(|relative| {
-                if relative.as_os_str().is_empty() {
-                    PathBuf::from(SANDBOX_PREPARATION_HOME)
-                } else {
-                    Path::new(SANDBOX_PREPARATION_HOME).join(relative)
-                }
-            })
-            .unwrap_or(entry)
-    }))
-    .map(|path| path.to_string_lossy().into_owned())
-    .unwrap_or_else(|_| host_path.to_string())
 }
 
 fn canonical_preparation_home(path: &Path) -> Result<PathBuf, DaemonError> {
@@ -435,11 +437,6 @@ pub(crate) fn apply_managed_provider_isolation(
 
         append_managed_namespace_environment(&mut args, request);
         let mut environment_remove = managed_provider_control_env_remove();
-        environment_remove.extend(
-            AMBIENT_PROVIDER_CREDENTIAL_ENVIRONMENT
-                .iter()
-                .map(|name| (*name).to_string()),
-        );
         environment_remove.extend(launch.pty_env.keys().filter_map(|name| {
             (name.starts_with("GIT_CONFIG_KEY_") || name.starts_with("GIT_CONFIG_VALUE_"))
                 .then_some(name.clone())
@@ -1528,7 +1525,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_namespace_rewrites_preparation_home_and_path_idempotently() {
+    fn managed_namespace_keeps_preparation_home_path_stable_and_idempotent() {
         let root = std::env::temp_dir().join(format!(
             "chariox-managed-preparation-home-{}-{}",
             std::process::id(),
@@ -1560,14 +1557,16 @@ mod tests {
             .expect("managed launch should receive the worker preparation environment");
         assert!(managed_launch_has_preparation_home(&args, &host_home));
         assert!(args.windows(3).any(|window| {
-            window[0] == "--setenv" && window[1] == "HOME" && window[2] == SANDBOX_PREPARATION_HOME
+            window[0] == "--setenv"
+                && window[1] == "HOME"
+                && window[2] == host_home.display().to_string()
         }));
         let expected_path = std::env::join_paths([
-            PathBuf::from(SANDBOX_PREPARATION_HOME).join(".local/bin"),
-            PathBuf::from(SANDBOX_PREPARATION_HOME).join(".cargo/bin"),
+            host_home.join(".local/bin"),
+            host_home.join(".cargo/bin"),
             PathBuf::from("/usr/bin"),
         ])
-        .expect("sandbox preparation PATH should encode")
+        .expect("stable preparation PATH should encode")
         .to_string_lossy()
         .into_owned();
         assert!(args.windows(3).any(|window| {
@@ -1576,13 +1575,40 @@ mod tests {
         assert!(args.windows(3).any(|window| {
             window[0] == "--bind"
                 && window[1] == host_home.display().to_string()
-                && window[2] == SANDBOX_PREPARATION_HOME
+                && window[2] == host_home.display().to_string()
         }));
 
         let prepared_args = args.clone();
         apply_preparation_home_to_managed_launch(&mut args, &host_home, &host_path)
             .expect("preparation environment binding should be idempotent");
         assert_eq!(args, prepared_args);
+
+        let mut legacy_args = vec![
+            "--dir".to_string(),
+            SANDBOX_PREPARATION_HOME.to_string(),
+            "--setenv".to_string(),
+            "HOME".to_string(),
+            SANDBOX_HOME.to_string(),
+            "--setenv".to_string(),
+            MANAGED_PROVIDER_ISOLATION_MARKER_ENV.to_string(),
+            "1".to_string(),
+            "--bind".to_string(),
+            host_home.display().to_string(),
+            SANDBOX_PREPARATION_HOME.to_string(),
+            "--".to_string(),
+            "/usr/bin/opencode".to_string(),
+        ];
+        apply_preparation_home_to_managed_launch(&mut legacy_args, &host_home, &host_path)
+            .expect("legacy synthetic preparation binding should migrate");
+        assert!(managed_launch_has_preparation_home(
+            &legacy_args,
+            &host_home
+        ));
+        assert!(legacy_args.windows(3).any(|window| {
+            window[0] == "--bind"
+                && window[1] == host_home.display().to_string()
+                && window[2] == host_home.display().to_string()
+        }));
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -50,6 +50,24 @@ pub enum ProjectEnvironmentInputKind {
     Lockfile,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectEnvironmentPathBase {
+    PreparationHome,
+    Workspace,
+}
+
+/// A relative directory that setup is expected to make available for named
+/// commands after the definition has been applied. The base is explicit so
+/// the worker can resolve it without interpreting shell syntax or trusting a
+/// provider-provided absolute path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct ProjectEnvironmentPathEntry {
+    pub base: ProjectEnvironmentPathBase,
+    pub path: String,
+}
+
 /// A content-only attestation for a project file that the worker must observe
 /// in its already-materialized worktree. The path and digest are safe to
 /// persist and transfer; file bytes and credentials never cross this seam.
@@ -78,6 +96,8 @@ pub struct ProjectEnvironmentDefinition {
     pub source_path: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<ProjectEnvironmentInput>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path_entries: Vec<ProjectEnvironmentPathEntry>,
     pub setup_steps: Vec<ProjectEnvironmentSetupStep>,
     pub validation_commands: Vec<String>,
 }
@@ -196,6 +216,7 @@ impl ProjectEnvironmentDefinition {
         for command in &self.validation_commands {
             validate_command(command, "validation command")?;
         }
+        validate_path_entries(&self.path_entries)?;
         validate_inputs(&self.inputs, allow_kernel_attestations)?;
         if require_source_attestation {
             if let Some(source_path) = self.source_path.as_deref() {
@@ -245,6 +266,45 @@ fn validate_command(command: &str, label: &str) -> Result<(), String> {
 
 const MAX_PROJECT_ENVIRONMENT_INPUTS: usize = 64;
 const MAX_PROJECT_ENVIRONMENT_INPUT_PATH_CHARS: usize = 512;
+const MAX_PROJECT_ENVIRONMENT_PATH_ENTRIES: usize = 64;
+const MAX_PROJECT_ENVIRONMENT_PATH_CHARS: usize = 512;
+
+fn validate_path_entries(entries: &[ProjectEnvironmentPathEntry]) -> Result<(), String> {
+    if entries.len() > MAX_PROJECT_ENVIRONMENT_PATH_ENTRIES {
+        return Err(format!(
+            "environment definition cannot contain more than {MAX_PROJECT_ENVIRONMENT_PATH_ENTRIES} executable path entries"
+        ));
+    }
+    let mut paths = BTreeSet::new();
+    for entry in entries {
+        let path = Path::new(&entry.path);
+        if entry.path.trim().is_empty()
+            || entry.path.chars().count() > MAX_PROJECT_ENVIRONMENT_PATH_CHARS
+            || entry.path.chars().any(|character| character == '\0')
+            || path.is_absolute()
+            || path.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::ParentDir
+                        | std::path::Component::RootDir
+                        | std::path::Component::Prefix(_)
+                )
+            })
+        {
+            return Err(
+                "environment executable path must be a non-empty relative path without `..`"
+                    .to_string(),
+            );
+        }
+        if !paths.insert((entry.base, entry.path.clone())) {
+            return Err(format!(
+                "environment executable path is listed more than once: {}",
+                entry.path
+            ));
+        }
+    }
+    Ok(())
+}
 
 fn validate_inputs(
     inputs: &[ProjectEnvironmentInput],
@@ -319,6 +379,7 @@ mod tests {
             target_platform: "linux-x86_64".to_string(),
             source_path: None,
             inputs: Vec::new(),
+            path_entries: Vec::new(),
             setup_steps: vec![ProjectEnvironmentSetupStep {
                 kind: ProjectEnvironmentSetupStepKind::Compiler,
                 command: "rustup toolchain install stable".to_string(),
@@ -356,6 +417,36 @@ mod tests {
             .validate()
             .unwrap_err()
             .contains("relative path"));
+    }
+
+    #[test]
+    fn definition_validates_definition_derived_executable_paths() {
+        let mut definition = definition();
+        definition.path_entries = vec![
+            ProjectEnvironmentPathEntry {
+                base: ProjectEnvironmentPathBase::PreparationHome,
+                path: "go/bin".to_string(),
+            },
+            ProjectEnvironmentPathEntry {
+                base: ProjectEnvironmentPathBase::Workspace,
+                path: ".venv/bin".to_string(),
+            },
+        ];
+        assert!(definition.validate().is_ok());
+
+        let mut escaped = definition.clone();
+        escaped.path_entries[0].path = "../go/bin".to_string();
+        assert!(escaped.validate().unwrap_err().contains("relative path"));
+
+        let mut duplicate = definition;
+        duplicate.path_entries.push(ProjectEnvironmentPathEntry {
+            base: ProjectEnvironmentPathBase::PreparationHome,
+            path: "go/bin".to_string(),
+        });
+        assert!(duplicate
+            .validate()
+            .unwrap_err()
+            .contains("listed more than once"));
     }
 
     #[test]

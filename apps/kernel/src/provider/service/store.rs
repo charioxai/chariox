@@ -202,6 +202,15 @@ impl ProviderProcessServiceStore {
             .update_run_preparation_environment(run_id, home, path)
     }
 
+    pub(crate) fn update_run_read_only_discovery(
+        &self,
+        run_id: &str,
+        enabled: bool,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.write()
+            .update_run_read_only_discovery(run_id, enabled)
+    }
+
     pub(crate) fn update_run_remote_extension_manifest(
         &self,
         run_id: &str,

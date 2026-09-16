@@ -271,6 +271,23 @@ impl ProviderProcessService {
         Ok(run.clone())
     }
 
+    pub(crate) fn update_run_read_only_discovery(
+        &mut self,
+        run_id: &str,
+        enabled: bool,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let run = self.get_run_mut(run_id)?;
+        if run.state() != ProviderRunState::Running {
+            return Err(DaemonError::InvalidProviderRunState {
+                provider_run_id: run_id.to_string(),
+                state: run.state(),
+                operation: "update provider discovery isolation",
+            });
+        }
+        run.set_read_only_discovery(enabled);
+        Ok(run.clone())
+    }
+
     pub(crate) fn reconcile_run_liveness_provider_only(
         &mut self,
         session_id: &str,

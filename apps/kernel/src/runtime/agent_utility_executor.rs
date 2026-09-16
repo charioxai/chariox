@@ -331,6 +331,7 @@ async fn run_provider_utility_prompt(
             crate::provider::AgentExecutionMode::Plan,
             crate::provider::AgentPermissionLevel::Required,
         );
+        read_only_run.set_read_only_discovery(true);
         read_only_run
     } else {
         provider_run

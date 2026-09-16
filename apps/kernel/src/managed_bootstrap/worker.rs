@@ -1773,6 +1773,7 @@ mod tests {
             target_platform: target_platform.clone(),
             source_path: Some(".devcontainer/devcontainer.json".to_string()),
             inputs: Vec::new(),
+            path_entries: Vec::new(),
             setup_steps: vec![crate::local::ProjectEnvironmentSetupStep {
                 kind: crate::local::ProjectEnvironmentSetupStepKind::Command,
                 command: "command -v sh".to_string(),

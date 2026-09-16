@@ -192,6 +192,20 @@ pub(super) fn worker_validation_environment_with_home(
     provider_run: &RuntimeProviderRun,
     preparation_home: Option<&Path>,
 ) -> BTreeMap<String, String> {
+    worker_validation_environment_with_home_and_definition(
+        provider_run,
+        preparation_home,
+        None,
+        None,
+    )
+}
+
+pub(super) fn worker_validation_environment_with_home_and_definition(
+    provider_run: &RuntimeProviderRun,
+    preparation_home: Option<&Path>,
+    workspace_root: Option<&Path>,
+    definition: Option<&ProjectEnvironmentDefinition>,
+) -> BTreeMap<String, String> {
     // This is the credential boundary for both recipe application and
     // validation. Keep ordinary toolchain/project environment values, remove
     // Chariox-provided credential/account paths, and use a durable preparation
@@ -227,36 +241,52 @@ pub(super) fn worker_validation_environment_with_home(
             .unwrap_or_default();
         environment.insert(
             "PATH".to_string(),
-            worker_preparation_path(preparation_home, current_path),
+            worker_preparation_path(preparation_home, workspace_root, current_path, definition),
         );
     }
     environment
 }
 
-fn worker_preparation_path(preparation_home: &Path, current_path: &str) -> String {
+fn worker_preparation_path(
+    preparation_home: &Path,
+    workspace_root: Option<&Path>,
+    current_path: &str,
+    definition: Option<&ProjectEnvironmentDefinition>,
+) -> String {
     let local_bin = preparation_home.join(".local").join("bin");
     let cargo_bin = preparation_home.join(".cargo").join("bin");
     let mut entries = Vec::new();
-    for entry in [local_bin, cargo_bin]
-        .into_iter()
-        .chain(std::env::split_paths(std::ffi::OsStr::new(current_path)))
-    {
+    if let (Some(workspace_root), Some(definition)) = (workspace_root, definition) {
+        for path_entry in &definition.path_entries {
+            let root = match path_entry.base {
+                crate::local::ProjectEnvironmentPathBase::PreparationHome => preparation_home,
+                crate::local::ProjectEnvironmentPathBase::Workspace => workspace_root,
+            };
+            let entry = root.join(&path_entry.path);
+            if !entries.contains(&entry) {
+                entries.push(entry);
+            }
+        }
+    }
+    for entry in [local_bin, cargo_bin] {
         if !entries.contains(&entry) {
             entries.push(entry);
         }
     }
-    match std::env::join_paths(entries) {
+    for entry in std::env::split_paths(std::ffi::OsStr::new(current_path)) {
+        if !entries.contains(&entry) {
+            entries.push(entry);
+        }
+    }
+    match std::env::join_paths(entries.iter().map(|entry| entry.as_os_str())) {
         Ok(path) => path.to_string_lossy().into_owned(),
         Err(_) => {
-            let separator = if cfg!(windows) { ';' } else { ':' };
-            format!(
-                "{}{}{}{}{}",
-                preparation_home.join(".local").join("bin").display(),
-                separator,
-                preparation_home.join(".cargo").join("bin").display(),
-                separator,
-                current_path
-            )
+            let separator = if cfg!(windows) { ";" } else { ":" };
+            entries
+                .iter()
+                .map(|entry| entry.display().to_string())
+                .collect::<Vec<_>>()
+                .join(separator)
         }
     }
 }
@@ -646,6 +676,75 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn worker_path_includes_definition_derived_home_and_workspace_toolchain_dirs() {
+        let preparation_home = Path::new("/tmp/chariox-preparation-home");
+        let workspace_root = Path::new("/tmp/project-workspace");
+        let definition = ProjectEnvironmentDefinition {
+            schema_version: 1,
+            origin: ProjectEnvironmentDefinitionOrigin::UserAuthored,
+            source: ProjectEnvironmentDefinitionSource::Commands,
+            target_platform: "linux-x86_64".to_string(),
+            source_path: None,
+            inputs: Vec::new(),
+            path_entries: vec![
+                crate::local::ProjectEnvironmentPathEntry {
+                    base: crate::local::ProjectEnvironmentPathBase::PreparationHome,
+                    path: "go/bin".to_string(),
+                },
+                crate::local::ProjectEnvironmentPathEntry {
+                    base: crate::local::ProjectEnvironmentPathBase::Workspace,
+                    path: ".venv/bin".to_string(),
+                },
+            ],
+            setup_steps: Vec::new(),
+            validation_commands: vec!["true".to_string()],
+        };
+        let request = crate::provider::LaunchProviderRequest::new(
+            "session-path-entry",
+            "codex",
+            "codex",
+            "default",
+            "default",
+        );
+        let run = crate::provider::RuntimeProviderRun::new(
+            "provider-run-path-entry",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "path-entry-test".to_string(),
+                pty_target: None,
+                pty_program: Some("/bin/sh".to_string()),
+                pty_args: Vec::new(),
+                pty_env: BTreeMap::from([("PATH".to_string(), "/usr/bin".to_string())]),
+                pty_env_remove: Vec::new(),
+                working_directory: Some(workspace_root.to_path_buf()),
+                structured_endpoint: None,
+            },
+        );
+
+        let environment = worker_validation_environment_with_home_and_definition(
+            &run,
+            Some(preparation_home),
+            Some(workspace_root),
+            Some(&definition),
+        );
+        let path = environment
+            .get("PATH")
+            .expect("derived worker environment should have PATH");
+        let entries = std::env::split_paths(std::ffi::OsStr::new(path)).collect::<Vec<_>>();
+        assert_eq!(
+            &entries[..4],
+            [
+                preparation_home.join("go/bin"),
+                workspace_root.join(".venv/bin"),
+                preparation_home.join(".local/bin"),
+                preparation_home.join(".cargo/bin"),
+            ]
+        );
+        assert_eq!(entries.last(), Some(&PathBuf::from("/usr/bin")));
+    }
+
     #[cfg(unix)]
     #[test]
     fn prepared_home_and_path_reach_a_real_post_ready_provider_command() {
@@ -707,21 +806,33 @@ done
         let preparation_home =
             WorkerPreparationHome::for_project_worker(&workspace, "project-1", "worker-1")
                 .expect("durable provider preparation HOME should be created");
-        let prepared_environment =
-            worker_validation_environment_with_home(&run, Some(preparation_home.path()));
+        let definition = ProjectEnvironmentDefinition {
+            schema_version: 1,
+            origin: ProjectEnvironmentDefinitionOrigin::UserAuthored,
+            source: ProjectEnvironmentDefinitionSource::Commands,
+            target_platform: "linux-x86_64".to_string(),
+            source_path: None,
+            inputs: Vec::new(),
+            path_entries: vec![crate::local::ProjectEnvironmentPathEntry {
+                base: crate::local::ProjectEnvironmentPathBase::PreparationHome,
+                path: "go/bin".to_string(),
+            }],
+            setup_steps: Vec::new(),
+            validation_commands: vec!["project-tool".to_string()],
+        };
+        let prepared_environment = worker_validation_environment_with_home_and_definition(
+            &run,
+            Some(preparation_home.path()),
+            Some(&workspace),
+            Some(&definition),
+        );
         let prepared_path = prepared_environment
             .get("PATH")
             .expect("prepared worker environment should have PATH");
-        assert!(prepared_path.starts_with(
-            &preparation_home
-                .path()
-                .join(".local")
-                .join("bin")
-                .display()
-                .to_string()
-        ));
+        assert!(prepared_path
+            .starts_with(&preparation_home.path().join("go/bin").display().to_string()));
         run_worker_setup_steps(
-            &[r#"set -eu; mkdir -p "$HOME/.local/bin"; printf '%s\n' '#!/bin/sh' 'printf "%s\n" installed-from-post-ready-provider' > "$HOME/.local/bin/project-tool"; chmod 700 "$HOME/.local/bin/project-tool""#.to_string()],
+            &[r#"set -eu; mkdir -p "$HOME/go/bin"; printf '%s\n' '#!/bin/sh' 'printf "%s\n" installed-from-post-ready-provider' > "$HOME/go/bin/inner-tool"; chmod 700 "$HOME/go/bin/inner-tool"; printf '#!%s\n' "$HOME/go/bin/inner-tool" > "$HOME/go/bin/project-tool"; chmod 700 "$HOME/go/bin/project-tool""#.to_string()],
             &workspace,
             &prepared_environment,
             || false,
@@ -738,8 +849,8 @@ done
                 prepared_path.clone(),
             )
             .expect("prepared provider environment should bind");
-        let mut binding = crate::provider::initialize_claude_runtime(&run)
-            .expect("real provider child should start with the original context");
+        let mut binding = crate::provider::initialize_claude_runtime(&prepared_run)
+            .expect("real provider child should start with the prepared context");
         let envelope = crate::prompt_assembly::PromptEnvelope::new(
             "invoke the installed project tool",
             "",
@@ -766,7 +877,7 @@ done
         assert!(trace_contents.contains(
             &preparation_home
                 .path()
-                .join(".local")
+                .join("go")
                 .join("bin")
                 .join("project-tool")
                 .display()
@@ -825,6 +936,7 @@ done
                     sha256: format!("sha256:{:x}", Sha256::digest(fixture_contents)),
                 },
             ],
+            path_entries: Vec::new(),
             setup_steps: vec![ProjectEnvironmentSetupStep {
                 kind: ProjectEnvironmentSetupStepKind::Command,
                 command: "./scripts/setup.sh".to_string(),
@@ -893,6 +1005,7 @@ done
                 path: "package.json".to_string(),
                 sha256: format!("sha256:{:x}", Sha256::digest(contents)),
             }],
+            path_entries: Vec::new(),
             setup_steps: Vec::new(),
             validation_commands: vec!["true".to_string()],
         };
@@ -937,6 +1050,7 @@ done
                 path: ".devcontainer/devcontainer.json".to_string(),
                 sha256: crate::session::KERNEL_COMPUTED_INPUT_ATTESTATION.to_string(),
             }],
+            path_entries: Vec::new(),
             setup_steps: Vec::new(),
             validation_commands: vec!["true".to_string()],
         };

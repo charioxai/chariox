@@ -1274,18 +1274,25 @@ impl KernelRuntimeState {
                         });
                     });
                     if validation_passed {
-                        if self
-                            .bind_prepared_provider_environment(&execution, &provider_run)
-                            .is_err()
+                        match self
+                            .restore_provider_run_after_project_environment_discovery(
+                                &execution,
+                                &provider_run,
+                                Some(definition),
+                            )
+                            .await
                         {
-                            store.mark_failed(
-                                &execution.operation_id,
-                                attempt,
-                                "provider_environment_bind_failed",
-                                "kernel could not bind the prepared environment to the provider run",
-                            );
-                            return;
-                        }
+                            Ok(_) => {}
+                            Err(_) => {
+                                store.mark_failed(
+                                    &execution.operation_id,
+                                    attempt,
+                                    "provider_environment_bind_failed",
+                                    "kernel could not bind the prepared environment to the provider run",
+                                );
+                                return;
+                            }
+                        };
                         if execution.persist_project_definition
                             && self
                                 .update_project_environment_definition(
@@ -1374,12 +1381,26 @@ impl KernelRuntimeState {
         )
         .await;
         if store.is_cancelled(&execution.operation_id, attempt) {
+            let _ = self
+                .restore_provider_run_after_project_environment_discovery(
+                    &execution,
+                    &provider_run,
+                    None,
+                )
+                .await;
             return;
         }
         let definition = match utility_result {
             Ok(result) => match result.output {
                 AgentUtilityOutput::ProjectEnvironmentSetup { definition } => definition,
                 _ => {
+                    let _ = self
+                        .restore_provider_run_after_project_environment_discovery(
+                            &execution,
+                            &provider_run,
+                            None,
+                        )
+                        .await;
                     store.mark_failed(
                         &execution.operation_id,
                         attempt,
@@ -1390,6 +1411,13 @@ impl KernelRuntimeState {
                 }
             },
             Err(error) => {
+                let _ = self
+                    .restore_provider_run_after_project_environment_discovery(
+                        &execution,
+                        &provider_run,
+                        None,
+                    )
+                    .await;
                 if let Some(message) =
                     project_environment_setup_utility_missing_input_message(&error)
                 {
@@ -1417,6 +1445,13 @@ impl KernelRuntimeState {
                 .iter()
                 .any(|command| !definition.validation_commands.contains(command))
         {
+            let _ = self
+                .restore_provider_run_after_project_environment_discovery(
+                    &execution,
+                    &provider_run,
+                    None,
+                )
+                .await;
             store.mark_failed(
                 &execution.operation_id,
                 attempt,
@@ -1432,11 +1467,37 @@ impl KernelRuntimeState {
         ) {
             Ok(definition) => definition,
             Err(_) => {
+                let _ = self
+                    .restore_provider_run_after_project_environment_discovery(
+                        &execution,
+                        &provider_run,
+                        None,
+                    )
+                    .await;
                 store.mark_failed(
                     &execution.operation_id,
                     attempt,
                     "worker_input_attestation_failed",
                     "kernel could not compute the exact project input attestations on the target worker",
+                );
+                return;
+            }
+        };
+        let provider_run = match self
+            .restore_provider_run_after_project_environment_discovery(
+                &execution,
+                &provider_run,
+                Some(&definition),
+            )
+            .await
+        {
+            Ok(provider_run) => provider_run,
+            Err(_) => {
+                store.mark_failed(
+                    &execution.operation_id,
+                    attempt,
+                    "provider_environment_bind_failed",
+                    "kernel could not restore the ordinary provider environment after discovery",
                 );
                 return;
             }
@@ -1547,18 +1608,6 @@ impl KernelRuntimeState {
             );
             return;
         }
-        if self
-            .bind_prepared_provider_environment(&execution, &provider_run)
-            .is_err()
-        {
-            store.mark_failed(
-                &execution.operation_id,
-                attempt,
-                "provider_environment_bind_failed",
-                "kernel could not bind the prepared environment to the provider run",
-            );
-            return;
-        }
         if execution.persist_project_definition
             && self
                 .update_project_environment_definition(
@@ -1585,36 +1634,37 @@ impl KernelRuntimeState {
         });
     }
 
-    fn bind_prepared_provider_environment(
-        &self,
-        execution: &SetupExecution,
-        provider_run: &RuntimeProviderRun,
-    ) -> Result<RuntimeProviderRun, DaemonError> {
-        let context = self.prepare_worker_execution_context(execution, provider_run)?;
-        let home = context
-            .environment
-            .get("HOME")
-            .cloned()
-            .ok_or_else(|| setup_error("prepared worker environment has no HOME"))?;
-        let path = context
-            .environment
-            .get("PATH")
-            .cloned()
-            .ok_or_else(|| setup_error("prepared worker environment has no PATH"))?;
-        let updated = self
-            .owned
-            .provider_store
-            .update_run_preparation_environment(provider_run.id(), home, path)?;
-        self.owned.provider_run_projection.update(updated.clone());
-        Ok(updated)
-    }
-
     async fn prepare_provider_run_for_project_environment(
         &self,
         execution: &SetupExecution,
         provider_run: &RuntimeProviderRun,
     ) -> Result<RuntimeProviderRun, DaemonError> {
-        let context = self.prepare_worker_execution_context(execution, provider_run)?;
+        self.rebind_provider_run_for_project_environment(execution, provider_run, None, true)
+            .await
+    }
+
+    async fn restore_provider_run_after_project_environment_discovery(
+        &self,
+        execution: &SetupExecution,
+        provider_run: &RuntimeProviderRun,
+        definition: Option<&ProjectEnvironmentDefinition>,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.rebind_provider_run_for_project_environment(execution, provider_run, definition, false)
+            .await
+    }
+
+    async fn rebind_provider_run_for_project_environment(
+        &self,
+        execution: &SetupExecution,
+        provider_run: &RuntimeProviderRun,
+        definition: Option<&ProjectEnvironmentDefinition>,
+        read_only_discovery: bool,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let context = self.prepare_worker_execution_context_with_definition(
+            execution,
+            provider_run,
+            definition,
+        )?;
         let home = context
             .environment
             .get("HOME")
@@ -1644,7 +1694,8 @@ impl KernelRuntimeState {
             ));
         }
 
-        let needs_restart = !provider_run.preparation_environment_matches(&home, &path)
+        let needs_restart = provider_run.read_only_discovery() != read_only_discovery
+            || !provider_run.preparation_environment_matches(&home, &path)
             || (restartable_server
                 && !self
                     .owned
@@ -1667,6 +1718,13 @@ impl KernelRuntimeState {
                 .update_run_preparation_environment(provider_run.id(), home, path)?
         } else {
             provider_run.clone()
+        };
+        let updated = if updated.read_only_discovery() != read_only_discovery {
+            self.owned
+                .provider_store
+                .update_run_read_only_discovery(updated.id(), read_only_discovery)?
+        } else {
+            updated
         };
         self.owned.provider_run_projection.update(updated.clone());
         if !restartable_server || !needs_restart {
@@ -1755,6 +1813,15 @@ impl KernelRuntimeState {
         execution: &SetupExecution,
         provider_run: &RuntimeProviderRun,
     ) -> Result<WorkerExecutionContext, DaemonError> {
+        self.prepare_worker_execution_context_with_definition(execution, provider_run, None)
+    }
+
+    fn prepare_worker_execution_context_with_definition(
+        &self,
+        execution: &SetupExecution,
+        provider_run: &RuntimeProviderRun,
+        definition: Option<&ProjectEnvironmentDefinition>,
+    ) -> Result<WorkerExecutionContext, DaemonError> {
         // Both recipe application and validation are worker-kernel operations.
         // Keep the confirmed receipt, provider binding, canonical worktree, and
         // sanitized environment checks shared so a reuse path cannot weaken the
@@ -1784,6 +1851,7 @@ impl KernelRuntimeState {
             || current_provider_run.state() != crate::provider::ProviderRunState::Running
             || current_provider_run.pty_env() != provider_run.pty_env()
             || current_provider_run.pty_env_remove() != provider_run.pty_env_remove()
+            || current_provider_run.read_only_discovery() != provider_run.read_only_discovery()
             || current_provider_run.working_directory() != provider_run.working_directory()
         {
             return Err(setup_error(
@@ -1817,9 +1885,11 @@ impl KernelRuntimeState {
             worker_id,
             platform,
             workspace_root,
-            environment: worker_validation_environment_with_home(
+            environment: worker_validation_environment_with_home_and_definition(
                 provider_run,
                 Some(preparation_home.path()),
+                Some(&workspace_root),
+                definition,
             ),
         })
     }
@@ -1830,7 +1900,11 @@ impl KernelRuntimeState {
         definition: &ProjectEnvironmentDefinition,
         provider_run: &RuntimeProviderRun,
     ) -> Result<bool, DaemonError> {
-        let context = self.prepare_worker_execution_context(execution, provider_run)?;
+        let context = self.prepare_worker_execution_context_with_definition(
+            execution,
+            provider_run,
+            Some(definition),
+        )?;
         Ok(verify_project_environment_inputs(&context.workspace_root, definition).is_ok())
     }
 
@@ -1841,7 +1915,11 @@ impl KernelRuntimeState {
         definition: &ProjectEnvironmentDefinition,
         provider_run: &RuntimeProviderRun,
     ) -> Result<bool, DaemonError> {
-        let context = self.prepare_worker_execution_context(execution, provider_run)?;
+        let context = self.prepare_worker_execution_context_with_definition(
+            execution,
+            provider_run,
+            Some(definition),
+        )?;
         if verify_project_environment_inputs(&context.workspace_root, definition).is_err() {
             return Ok(false);
         }
@@ -1890,7 +1968,11 @@ impl KernelRuntimeState {
         definition: &ProjectEnvironmentDefinition,
         provider_run: &RuntimeProviderRun,
     ) -> Result<ProjectEnvironmentValidation, DaemonError> {
-        let context = self.prepare_worker_execution_context(execution, provider_run)?;
+        let context = self.prepare_worker_execution_context_with_definition(
+            execution,
+            provider_run,
+            Some(definition),
+        )?;
         let worker_id = context.worker_id;
         let platform = context.platform;
         let commands = definition.validation_commands.clone();
@@ -1991,6 +2073,7 @@ mod tests {
                 target_platform: "linux-x86_64".to_string(),
                 source_path: None,
                 inputs: Vec::new(),
+                path_entries: Vec::new(),
                 setup_steps: vec![ProjectEnvironmentSetupStep {
                     kind: ProjectEnvironmentSetupStepKind::Compiler,
                     command: "rustup toolchain install stable".to_string(),

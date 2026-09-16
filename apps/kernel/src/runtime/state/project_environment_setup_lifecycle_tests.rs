@@ -283,6 +283,7 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
         } else {
             Vec::new()
         },
+        path_entries: Vec::new(),
         setup_steps: vec![ProjectEnvironmentSetupStep {
             kind: ProjectEnvironmentSetupStepKind::Command,
             command: setup_command,
@@ -1201,6 +1202,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         target_platform: target_platform.clone(),
         source_path: None,
         inputs: Vec::new(),
+        path_entries: Vec::new(),
         setup_steps: vec![ProjectEnvironmentSetupStep {
             kind: ProjectEnvironmentSetupStepKind::Command,
             command: validation_command.clone(),

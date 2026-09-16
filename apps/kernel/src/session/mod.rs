@@ -40,6 +40,7 @@ pub(crate) use project_environment::KERNEL_COMPUTED_INPUT_ATTESTATION;
 pub use project_environment::{
     ProjectEnvironmentDefinition, ProjectEnvironmentDefinitionOrigin,
     ProjectEnvironmentDefinitionSource, ProjectEnvironmentInput, ProjectEnvironmentInputKind,
+    ProjectEnvironmentPathBase, ProjectEnvironmentPathEntry,
     ProjectEnvironmentSetupStep, ProjectEnvironmentSetupStepKind,
     PROJECT_ENVIRONMENT_DEFINITION_SCHEMA_VERSION,
 };

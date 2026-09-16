@@ -94,7 +94,7 @@ allowlist: account for every language/toolchain and required system or native de
 project evidence requires. Represent each required package, compiler, system tool, native\n\
 dependency, and command as a repeatable setup step with bounded validation. If project evidence\n\
 requires SSH or tmux, include the appropriate openssh-client/ssh and tmux system-tool steps with\n\
-bounded validation; do not assume they are present in the managed image.\n\n\
+bounded validation; do not assume they are present in the managed image. Return explicit relative path_entries for any named executable directories setup creates.\n\n\
 Prefer an existing project Dockerfile, devcontainer, setup script, lockfile, or verified\n\
 environment recipe over inventing equivalent commands. Do not copy binaries from a host or Mac,\n\
 read host credential stores, install a provider SDK, or replace the home kernel.\n\n\
@@ -362,6 +362,20 @@ fn project_environment_setup_utility_schema() -> serde_json::Value {
                     }
                 }
             },
+            "path_entries": {
+                "type": "array",
+                "description": "Relative executable directories created by setup; use preparation_home for durable HOME paths and workspace for worktree paths.",
+                "maxItems": 64,
+                "items": {
+                    "type": "object",
+                    "required": ["base", "path"],
+                    "additionalProperties": false,
+                    "properties": {
+                        "base": {"type": "string", "enum": ["preparation_home", "workspace"]},
+                        "path": {"type": "string", "minLength": 1, "maxLength": 512}
+                    }
+                }
+            },
             "setup_steps": {
                 "type": "array",
                 "maxItems": 64,
@@ -468,8 +482,8 @@ mod tests {
     use super::*;
     use crate::local::{
         ProjectEnvironmentDefinitionSource, ProjectEnvironmentInput, ProjectEnvironmentInputKind,
-        ProjectEnvironmentSetupStep, ProjectEnvironmentSetupStepKind,
-        ProjectEnvironmentSetupUtilityInput,
+        ProjectEnvironmentPathBase, ProjectEnvironmentPathEntry, ProjectEnvironmentSetupStep,
+        ProjectEnvironmentSetupStepKind, ProjectEnvironmentSetupUtilityInput,
     };
 
     fn definition() -> ProjectEnvironmentDefinition {
@@ -480,6 +494,10 @@ mod tests {
             target_platform: "linux-x86_64".to_string(),
             source_path: None,
             inputs: Vec::new(),
+            path_entries: vec![ProjectEnvironmentPathEntry {
+                base: ProjectEnvironmentPathBase::PreparationHome,
+                path: "go/bin".to_string(),
+            }],
             setup_steps: vec![ProjectEnvironmentSetupStep {
                 kind: ProjectEnvironmentSetupStepKind::Compiler,
                 command: "rustup toolchain install stable".to_string(),
@@ -502,6 +520,16 @@ mod tests {
             target_platform: "linux-x86_64".to_string(),
             source_path: None,
             inputs: Vec::new(),
+            path_entries: vec![
+                ProjectEnvironmentPathEntry {
+                    base: ProjectEnvironmentPathBase::PreparationHome,
+                    path: "go/bin".to_string(),
+                },
+                ProjectEnvironmentPathEntry {
+                    base: ProjectEnvironmentPathBase::Workspace,
+                    path: ".venv/bin".to_string(),
+                },
+            ],
             setup_steps: vec![
                 ProjectEnvironmentSetupStep {
                     kind: ProjectEnvironmentSetupStepKind::Package,
@@ -774,6 +802,19 @@ mod tests {
             .validation_commands
             .iter()
             .any(|command| command == "command -v tmux"));
+        assert_eq!(
+            parsed.path_entries,
+            vec![
+                ProjectEnvironmentPathEntry {
+                    base: ProjectEnvironmentPathBase::PreparationHome,
+                    path: "go/bin".to_string(),
+                },
+                ProjectEnvironmentPathEntry {
+                    base: ProjectEnvironmentPathBase::Workspace,
+                    path: ".venv/bin".to_string(),
+                },
+            ]
+        );
     }
 
     #[test]

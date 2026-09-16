@@ -84,6 +84,11 @@ pub struct RuntimeProviderRun {
     write_access_mode: ProviderWriteAccessMode,
     #[serde(skip)]
     workspace_live_sync_roots: Vec<PathBuf>,
+    /// Runtime-only marker for the provider process used for read-only
+    /// discovery. Ordinary provider turns must retain explicitly selected
+    /// Git/SSH bindings, while discovery must scrub ambient parent controls.
+    #[serde(skip)]
+    read_only_discovery: bool,
     #[serde(default, skip_serializing_if = "AgentExecutionMode::is_build")]
     execution_mode: AgentExecutionMode,
     #[serde(default, skip_serializing_if = "AgentPermissionLevel::is_yolo")]
@@ -150,6 +155,7 @@ impl RuntimeProviderRun {
             provider_config_overrides: request.provider_config_overrides.clone(),
             write_access_mode: request.write_access_mode,
             workspace_live_sync_roots: request.workspace_live_sync_roots.clone(),
+            read_only_discovery: false,
             execution_mode: request.execution_mode.unwrap_or_default(),
             permission_level: request.permission_level.unwrap_or_default(),
             control_capabilities: default_provider_control_capabilities(
@@ -214,6 +220,7 @@ impl RuntimeProviderRun {
             provider_config_overrides: BTreeMap::new(),
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
             workspace_live_sync_roots: Vec::new(),
+            read_only_discovery: false,
             execution_mode: AgentExecutionMode::default(),
             permission_level: AgentPermissionLevel::default(),
             control_capabilities: default_provider_control_capabilities(
@@ -382,6 +389,15 @@ impl RuntimeProviderRun {
     ) {
         self.execution_mode = execution_mode;
         self.permission_level = permission_level;
+        self.touch_activity();
+    }
+
+    pub(crate) fn read_only_discovery(&self) -> bool {
+        self.read_only_discovery
+    }
+
+    pub(crate) fn set_read_only_discovery(&mut self, enabled: bool) {
+        self.read_only_discovery = enabled;
         self.touch_activity();
     }
 

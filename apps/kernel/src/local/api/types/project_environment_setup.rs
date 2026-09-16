@@ -3,6 +3,7 @@ use super::*;
 pub use crate::session::{
     ProjectEnvironmentDefinition, ProjectEnvironmentDefinitionOrigin,
     ProjectEnvironmentDefinitionSource, ProjectEnvironmentInput, ProjectEnvironmentInputKind,
+    ProjectEnvironmentPathBase, ProjectEnvironmentPathEntry,
     ProjectEnvironmentSetupStep, ProjectEnvironmentSetupStepKind,
 };
 

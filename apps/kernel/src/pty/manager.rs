@@ -240,6 +240,11 @@ impl PtyManager {
         })?;
 
         let mut env = run.pty_env().clone();
+        if run.read_only_discovery() {
+            for name in crate::provider::managed_provider_parent_credential_env_remove() {
+                env.remove(*name);
+            }
+        }
         env.insert(
             "CHARIOX_MANAGED_PROVIDER_PROCESS".to_string(),
             "1".to_string(),
@@ -250,25 +255,36 @@ impl PtyManager {
             process_key.clone(),
         );
 
+        let mut env_remove = run.pty_env_remove().to_vec();
+        if run.read_only_discovery() {
+            env_remove.extend(
+                crate::provider::managed_provider_parent_credential_env_remove()
+                    .iter()
+                    .map(|name| (*name).to_string()),
+            );
+            env_remove.sort();
+            env_remove.dedup();
+        }
         let request = PtySpawnRequest {
             process_key,
             provider_run_id: run.id().to_string(),
             program: program.to_string(),
             args: run.pty_args().to_vec(),
             env,
-            env_remove: run.pty_env_remove().to_vec(),
+            env_remove,
             working_directory: run.working_directory().cloned(),
             cols: 120,
             rows: 40,
         };
 
-        self.spawn_with_credentials(request, credentials)
+        self.spawn_with_credentials(request, credentials, false)
     }
 
     pub fn spawn(&mut self, request: PtySpawnRequest) -> Result<(), DaemonError> {
         self.spawn_with_credentials(
             request,
             &crate::provider::ProviderCredentialEnvironment::default(),
+            true,
         )
     }
 
@@ -276,6 +292,7 @@ impl PtyManager {
         &mut self,
         request: PtySpawnRequest,
         credentials: &crate::provider::ProviderCredentialEnvironment,
+        scrub_ambient_credentials: bool,
     ) -> Result<(), DaemonError> {
         if let Some(process_key) = self.process_aliases.get(&request.provider_run_id) {
             self.output_signal
@@ -320,8 +337,10 @@ impl PtyManager {
         for (key, value) in request.env {
             command.env(key, value);
         }
-        for name in crate::provider::managed_provider_parent_credential_env_remove() {
-            command.env_remove(name);
+        if scrub_ambient_credentials {
+            for name in crate::provider::managed_provider_parent_credential_env_remove() {
+                command.env_remove(name);
+            }
         }
         for (key, value) in credentials.iter() {
             command.env(key, value);
@@ -921,6 +940,49 @@ mod tests {
         )
     }
 
+    fn environment_probe_run(
+        id: &str,
+        read_only_discovery: bool,
+        include_selected_bindings: bool,
+    ) -> RuntimeProviderRun {
+        let request = LaunchProviderRequest::new(
+            "session-environment-probe",
+            "dev-stub",
+            "claude-code",
+            "default",
+            "sonnet",
+        );
+        let mut run = RuntimeProviderRun::new(
+            id,
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: format!("dev-stub:{id}"),
+                pty_target: None,
+                pty_program: Some("/bin/sh".to_string()),
+                pty_args: vec![
+                    "-lc".to_string(),
+                    "printf '%s|%s\\n' \"${GIT_SSH_COMMAND:-}\" \"${SSH_AUTH_SOCK:-}\"".to_string(),
+                ],
+                pty_env: if include_selected_bindings {
+                    std::collections::BTreeMap::from([
+                        ("GIT_SSH_COMMAND".to_string(), "selected-ssh".to_string()),
+                        ("SSH_AUTH_SOCK".to_string(), "selected-agent".to_string()),
+                    ])
+                } else {
+                    std::collections::BTreeMap::new()
+                },
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        if read_only_discovery {
+            run.set_read_only_discovery(true);
+        }
+        run
+    }
+
     fn shared_target_run(id: &str) -> RuntimeProviderRun {
         RuntimeProviderRun::new(
             id,
@@ -974,6 +1036,64 @@ mod tests {
             .remove_process(run.id())
             .expect("pty process cleanup should succeed");
         assert!(!manager.has_process(run.id()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ordinary_managed_pty_preserves_selected_ssh_bindings_while_discovery_scrubs_them() {
+        let _environment = crate::env_lock::lock();
+        let previous_git_ssh_command = std::env::var_os("GIT_SSH_COMMAND");
+        let previous_ssh_auth_sock = std::env::var_os("SSH_AUTH_SOCK");
+        std::env::set_var("GIT_SSH_COMMAND", "ambient-ssh");
+        std::env::set_var("SSH_AUTH_SOCK", "ambient-agent");
+
+        let ordinary_run = environment_probe_run("provider-run-ordinary-env", false, true);
+        let discovery_run = environment_probe_run("provider-run-discovery-env", true, false);
+        let mut ordinary_manager = PtyManager::new();
+        let mut discovery_manager = PtyManager::new();
+
+        ordinary_manager
+            .spawn_for_run(&ordinary_run)
+            .expect("ordinary managed PTY should spawn");
+        discovery_manager
+            .spawn_for_run(&discovery_run)
+            .expect("discovery managed PTY should spawn");
+
+        let ordinary_output = wait_for_output(&mut ordinary_manager, ordinary_run.id())
+            .into_iter()
+            .flat_map(|chunk| chunk.bytes)
+            .collect::<Vec<_>>();
+        let discovery_output = wait_for_output(&mut discovery_manager, discovery_run.id())
+            .into_iter()
+            .flat_map(|chunk| chunk.bytes)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            String::from_utf8_lossy(&ordinary_output).trim(),
+            "selected-ssh|selected-agent",
+            "ordinary managed providers must retain selected Git/SSH bindings",
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&discovery_output).trim(),
+            "|",
+            "read-only discovery must not inherit Git/SSH controls",
+        );
+
+        ordinary_manager
+            .remove_process(ordinary_run.id())
+            .expect("ordinary managed PTY should clean up");
+        discovery_manager
+            .remove_process(discovery_run.id())
+            .expect("discovery managed PTY should clean up");
+
+        match previous_git_ssh_command {
+            Some(value) => std::env::set_var("GIT_SSH_COMMAND", value),
+            None => std::env::remove_var("GIT_SSH_COMMAND"),
+        }
+        match previous_ssh_auth_sock {
+            Some(value) => std::env::set_var("SSH_AUTH_SOCK", value),
+            None => std::env::remove_var("SSH_AUTH_SOCK"),
+        }
     }
 
     #[cfg(target_os = "linux")]
