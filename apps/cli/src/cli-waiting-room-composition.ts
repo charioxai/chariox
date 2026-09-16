@@ -83,6 +83,10 @@ import {
   beginMutableLocalIpcClientPivot,
   type MutableLocalIpcClientPivot,
 } from "./mutable-local-ipc-client.js"
+import {
+  loadProviderCatalogForKernel,
+  providerCatalogExecutionLocation,
+} from "./waiting-room-provider-catalog.js"
 
 type AnyFn = (...args: any[]) => any
 
@@ -244,23 +248,29 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     syncCommandCenter: () => deps.syncCommandCenter(),
     refreshProviderCatalogForSelection: (state) => {
       const revision = ++providerCatalogSelectionRevision
-      const executionLocation = state.sliceSelectionId && !["none", "new"].includes(state.sliceSelectionId)
-        ? { kind: "slice" as const, slice_ref: state.sliceSelectionId }
-        : state.selectedKernelRef && state.selectedKernelRef !== "local"
-          ? { kind: "worker" as const, kernel_ref: state.selectedKernelRef }
-          : { kind: "local" as const }
-      void getProviderCatalog(deps.client, deps.appLogger, {
+      const catalogClient = typeof deps.client.currentClient === "function"
+        ? deps.client.currentClient()
+        : deps.client
+      const executionLocation = providerCatalogExecutionLocation(state, directTargetKernelId)
+      void getProviderCatalog(catalogClient, deps.appLogger, {
         provider: state.providerId,
         accountProfile: state.accountProfileId ?? "default",
         executionLocation,
       }, false).then((catalog) => {
         if (revision !== providerCatalogSelectionRevision) return
+        const activeClient = typeof deps.client.currentClient === "function"
+          ? deps.client.currentClient()
+          : deps.client
+        if (catalogClient !== activeClient) return
         deps.setProviderCatalogState(catalog)
         reconcileWaitingRoomProjection(deps.waitingRoomState())
       }).catch((error) => {
+        if (revision !== providerCatalogSelectionRevision) return
+        const message = deps.formatError(error)
         deps.appLogger?.warn("failed to refresh provider catalog for account selection", {
-          error: deps.formatError(error),
+          error: message,
         })
+        deps.flashFooter(`provider catalog refresh failed: ${message}`, "error")
       })
     },
   })
@@ -358,6 +368,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       }
       return isActive()
     }
+    providerCatalogSelectionRevision += 1
     const localPresence = loadLocalKernelPresences()
       .find((presence) => presence.kernelId === targetKernelRef)
     const connection = localPresence
@@ -382,8 +393,19 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       throw new Error("kernel client pivot is unavailable in this build")
     }
     let targetInventory: WaitingRoomInventory
+    let targetCatalog: ProviderCatalog
     try {
       targetInventory = await getWaitingRoomInventory(nextClient)
+      const targetState = deps.waitingRoomState()
+      targetCatalog = await loadProviderCatalogForKernel(
+        nextClient,
+        deps.appLogger,
+        {
+          providerId: targetState.providerId,
+          accountProfileId: targetState.accountProfileId,
+          executionLocation: providerCatalogExecutionLocation(targetState, targetInventory.kernelId),
+        },
+      )
     } catch (error) {
       await nextClient.close()
       throw error
@@ -391,6 +413,11 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     if (!isActive()) {
       await nextClient.close()
       return false
+    }
+    const sourceCatalog = deps.providerCatalogState() as ProviderCatalog
+    const applyTargetCatalog = () => {
+      deps.setProviderCatalogState(targetCatalog)
+      reconcileWaitingRoomProjection(deps.waitingRoomState())
     }
     if (retainPrevious) {
       if (typeof deps.client.swapClient !== "function") {
@@ -400,6 +427,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       const pivot = beginMutableLocalIpcClientPivot(deps.client, nextClient)
       try {
         directTargetKernelId = targetInventory.kernelId
+        applyTargetCatalog()
         connected?.(targetInventory)
         retainPrevious({
           commit: () => pivot.commit(),
@@ -408,6 +436,8 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
               await pivot.rollback()
             } finally {
               directTargetKernelId = sourceTargetKernelId
+              deps.setProviderCatalogState(sourceCatalog)
+              reconcileWaitingRoomProjection(deps.waitingRoomState())
               waitingRoomInventoryRefreshController.invalidate()
             }
           },
@@ -417,12 +447,15 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
           await pivot.rollback()
         } finally {
           directTargetKernelId = sourceTargetKernelId
+          deps.setProviderCatalogState(sourceCatalog)
+          reconcileWaitingRoomProjection(deps.waitingRoomState())
         }
         throw error
       }
     } else {
       await deps.client.replaceClient(nextClient)
       directTargetKernelId = targetInventory.kernelId
+      applyTargetCatalog()
       connected?.(targetInventory)
     }
     waitingRoomInventoryRefreshController.invalidate()
@@ -674,7 +707,10 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       ])
     },
     prepareSessionOwnerClient: async (launch) => {
-      await replaceClientForKernel(launch.ownerKernelRef, launch.ownerMachineRef)
+      if (!await replaceClientForKernel(launch.ownerKernelRef, launch.ownerMachineRef)) {
+        return
+      }
+      return deps.providerCatalogState() as ProviderCatalog
     },
     prepareManagedSessionLaunch,
     prepareExistingSessionClient: async (session) => {
