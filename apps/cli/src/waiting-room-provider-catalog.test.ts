@@ -1,8 +1,11 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
+import { buildModelItems } from "./command-center-dynamic-items.js"
 import type { LocalIpcClient } from "./ipc.js"
 import { catalogModelOptions, selectConfiguredModel, type ProviderCatalog } from "./provider-catalog.js"
+import { createWaitingRoomState } from "./waiting-room-state.js"
+import { waitingRoomRows } from "./waiting-room-rows.js"
 import { loadProviderCatalogForKernel } from "./waiting-room-provider-catalog.js"
 
 test("target-kernel catalog hydration keeps discovered model efforts and qualified routing", async () => {
@@ -86,6 +89,107 @@ test("target-kernel catalog hydration surfaces discovery failure without fallbac
     /target catalog unavailable/,
   )
 })
+
+test("recorded OpenCode native discovery reaches selectors without inventing Go entitlement", async () => {
+  const catalog = await loadProviderCatalogForKernel(
+    clientReturning({
+      ProviderCatalog: { catalog: recordedOpenCodeNativeCatalog() },
+    }, []),
+    undefined,
+    { providerId: "opencode", accountProfileId: "default" },
+  )
+
+  assert.equal(catalog.source, "daemon")
+  assert.deepEqual(catalog.connected, ["opencode"])
+
+  const entitledZenOptions = catalogModelOptions(catalog, "opencode")
+  assert.deepEqual(entitledZenOptions.map((option) => option.id), ["opencode/big-pickle"])
+
+  const state = createWaitingRoomState([], catalog, "opencode", "opencode/big-pickle", "")
+  assert.equal(
+    waitingRoomRows(state, [], catalog).find((row) => row.id === "model")?.value,
+    "OpenCode Zen Big Pickle",
+  )
+  assert.deepEqual(
+    buildModelItems("/model big", {
+      providerCatalog: catalog,
+      currentProvider: "opencode",
+      currentModel: "opencode/big-pickle",
+      currentVariant: "",
+    }).map((item) => ({ label: item.label, value: item.value })),
+    [{ label: "OpenCode Zen Big Pickle", value: "opencode/big-pickle" }],
+  )
+
+  // The installed server reports Go in `all` but not `connected` without a
+  // Go entitlement. A separate connected fixture only checks rendering and
+  // routing for that entitlement; it does not make the live account claim it.
+  const entitledBoth = { ...catalog, connected: ["opencode", "opencode-go"] }
+  const goOption = catalogModelOptions(entitledBoth, "opencode")
+    .find((option) => option.id === "opencode-go/gpt-5.6-luna")
+  assert.deepEqual(
+    goOption && { id: goOption.id, providerName: goOption.providerName, variants: goOption.variants },
+    {
+      id: "opencode-go/gpt-5.6-luna",
+      providerName: "OpenCode Go",
+      variants: ["none", "low", "medium", "high", "xhigh", "max"],
+    },
+  )
+  assert.deepEqual(
+    buildModelItems("/model luna", {
+      providerCatalog: entitledBoth,
+      currentProvider: "opencode",
+      currentModel: "opencode-go/gpt-5.6-luna",
+      currentVariant: "max",
+    }).map((item) => ({ label: item.label, value: item.value })),
+    [{ label: "OpenCode Go GPT-5.6 Luna", value: "opencode-go/gpt-5.6-luna" }],
+  )
+})
+
+function recordedOpenCodeNativeCatalog(): ProviderCatalog {
+  // These native ids, names, defaults, and variants were recorded from the
+  // installed OpenCode 1.18.23 `/provider` response. Only the two native
+  // plan entries needed by this selector regression are retained here.
+  return {
+    all: [
+      {
+        id: "opencode",
+        name: "OpenCode Zen",
+        models: {
+          "big-pickle": {
+            id: "big-pickle",
+            name: "Big Pickle",
+            status: "active",
+            variants: {},
+          },
+        },
+      },
+      {
+        id: "opencode-go",
+        name: "OpenCode Go",
+        models: {
+          "gpt-5.6-luna": {
+            id: "gpt-5.6-luna",
+            name: "GPT-5.6 Luna",
+            status: "active",
+            variants: {
+              none: {},
+              low: {},
+              medium: {},
+              high: {},
+              xhigh: {},
+              max: {},
+            },
+          },
+        },
+      },
+    ],
+    default: {
+      opencode: "big-pickle",
+      "opencode-go": "gpt-5.6-luna",
+    },
+    connected: ["opencode"],
+  }
+}
 
 function clientReturning(response: Record<string, unknown>, requests: unknown[]): LocalIpcClient {
   return {
