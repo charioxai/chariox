@@ -5,6 +5,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub const PROJECT_ENVIRONMENT_DEFINITION_SCHEMA_VERSION: u32 = 1;
+/// Requests that the worker kernel calculate the file digest from its
+/// materialized worktree. This is used by read-only provider discovery when
+/// the provider cannot execute a hashing command (for example, OpenCode's
+/// discovery policy denies bash).
+pub(crate) const KERNEL_COMPUTED_INPUT_ATTESTATION: &str = "sha256:kernel";
 
 const MAX_TARGET_PLATFORM_CHARS: usize = 128;
 const MAX_SETUP_STEPS: usize = 64;
@@ -97,6 +102,10 @@ impl ProjectEnvironmentDefinition {
         self.validate_with_source_attestation(false)
     }
 
+    pub(crate) fn validate_for_utility_output(&self) -> Result<(), String> {
+        self.validate_with_source_attestation_and_kernel_attestations(true, true)
+    }
+
     pub(crate) fn is_unattested_file_backed(&self) -> bool {
         matches!(
             self.source,
@@ -113,6 +122,17 @@ impl ProjectEnvironmentDefinition {
     fn validate_with_source_attestation(
         &self,
         require_source_attestation: bool,
+    ) -> Result<(), String> {
+        self.validate_with_source_attestation_and_kernel_attestations(
+            require_source_attestation,
+            false,
+        )
+    }
+
+    fn validate_with_source_attestation_and_kernel_attestations(
+        &self,
+        require_source_attestation: bool,
+        allow_kernel_attestations: bool,
     ) -> Result<(), String> {
         if self.schema_version != PROJECT_ENVIRONMENT_DEFINITION_SCHEMA_VERSION {
             return Err(format!(
@@ -176,7 +196,7 @@ impl ProjectEnvironmentDefinition {
         for command in &self.validation_commands {
             validate_command(command, "validation command")?;
         }
-        validate_inputs(&self.inputs)?;
+        validate_inputs(&self.inputs, allow_kernel_attestations)?;
         if require_source_attestation {
             if let Some(source_path) = self.source_path.as_deref() {
                 if !self.inputs.iter().any(|input| {
@@ -226,7 +246,10 @@ fn validate_command(command: &str, label: &str) -> Result<(), String> {
 const MAX_PROJECT_ENVIRONMENT_INPUTS: usize = 64;
 const MAX_PROJECT_ENVIRONMENT_INPUT_PATH_CHARS: usize = 512;
 
-fn validate_inputs(inputs: &[ProjectEnvironmentInput]) -> Result<(), String> {
+fn validate_inputs(
+    inputs: &[ProjectEnvironmentInput],
+    allow_kernel_attestations: bool,
+) -> Result<(), String> {
     if inputs.len() > MAX_PROJECT_ENVIRONMENT_INPUTS {
         return Err(format!(
             "environment definition cannot contain more than {MAX_PROJECT_ENVIRONMENT_INPUTS} recipe or lockfile inputs"
@@ -248,8 +271,7 @@ fn validate_inputs(inputs: &[ProjectEnvironmentInput]) -> Result<(), String> {
             })
         {
             return Err(
-                "environment input path must be a non-empty relative path without `..`"
-                    .to_string(),
+                "environment input path must be a non-empty relative path without `..`".to_string(),
             );
         }
         if !paths.insert(input.path.clone()) {
@@ -257,6 +279,9 @@ fn validate_inputs(inputs: &[ProjectEnvironmentInput]) -> Result<(), String> {
                 "environment input path is listed more than once: {}",
                 input.path
             ));
+        }
+        if allow_kernel_attestations && input.sha256 == KERNEL_COMPUTED_INPUT_ATTESTATION {
+            continue;
         }
         if canonicalize_input_digest(&input.sha256, &input.path)? != input.sha256 {
             return Err(format!(
@@ -390,6 +415,21 @@ mod tests {
     }
 
     #[test]
+    fn kernel_input_attestation_marker_is_utility_only() {
+        let mut definition = definition();
+        definition.source = ProjectEnvironmentDefinitionSource::Devcontainer;
+        definition.source_path = Some(".devcontainer/devcontainer.json".to_string());
+        definition.inputs = vec![ProjectEnvironmentInput {
+            kind: ProjectEnvironmentInputKind::Recipe,
+            path: ".devcontainer/devcontainer.json".to_string(),
+            sha256: KERNEL_COMPUTED_INPUT_ATTESTATION.to_string(),
+        }];
+
+        assert!(definition.validate().is_err());
+        assert_eq!(definition.validate_for_utility_output(), Ok(()));
+    }
+
+    #[test]
     fn input_attestations_are_unique_and_do_not_allow_path_escape() {
         let mut definition = definition();
         definition.inputs = vec![
@@ -410,10 +450,7 @@ mod tests {
             .contains("listed more than once"));
 
         definition.inputs[1].path = "../Cargo.toml".to_string();
-        assert!(definition
-            .validate()
-            .unwrap_err()
-            .contains("relative path"));
+        assert!(definition.validate().unwrap_err().contains("relative path"));
     }
 
     #[test]

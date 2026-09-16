@@ -113,8 +113,10 @@ toolchain input is unavailable at the enforced boundary, return missing_user_inp
 fixed category and a short non-secret label; never return the missing value. The kernel will keep\n\
 setup failed until that user input is supplied.\n\n\
 For a file-backed definition, include a content-only input attestation for the recipe source and\n\
-any relevant lockfiles, using workspace-relative paths and sha256 digests. The kernel will verify\n\
-those files on the target before declaring readiness. Never put file contents, credentials, tokens,\n\
+any relevant lockfiles, using workspace-relative paths and sha256 digests. If the exact digest\n\
+cannot be computed with the read-only provider tools (for example, when OpenCode discovery cannot\n\
+use bash), set that input's sha256 to `sha256:kernel`; the target kernel computes and verifies the\n\
+exact digest from its materialized worktree before declaring readiness. Never put file contents, credentials, tokens,\n\
 private keys, or other secrets in the definition or its input attestations.\n\n\
 Do not run project checks in this discovery turn; the kernel independently applies and reruns the\n\
 returned setup and validation commands on this same worker.\n\n\
@@ -224,7 +226,7 @@ fn parse_project_environment_setup_utility_output_with_policy(
         });
     };
     definition
-        .validate()
+        .validate_for_utility_output()
         .map_err(|message| DaemonError::LocalTransport {
             operation: "run project environment setup utility",
             message,
@@ -356,7 +358,7 @@ fn project_environment_setup_utility_schema() -> serde_json::Value {
                     "properties": {
                         "kind": {"type": "string", "enum": ["recipe", "lockfile"]},
                         "path": {"type": "string", "minLength": 1, "maxLength": 512},
-                        "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+                        "sha256": {"type": "string", "pattern": "^sha256:(?:[0-9a-f]{64}|kernel)$"}
                     }
                 }
             },
@@ -465,8 +467,9 @@ fn validation_commands_include_original(original: &[String], revised: &[String])
 mod tests {
     use super::*;
     use crate::local::{
-        ProjectEnvironmentDefinitionSource, ProjectEnvironmentSetupStep,
-        ProjectEnvironmentSetupStepKind, ProjectEnvironmentSetupUtilityInput,
+        ProjectEnvironmentDefinitionSource, ProjectEnvironmentInput, ProjectEnvironmentInputKind,
+        ProjectEnvironmentSetupStep, ProjectEnvironmentSetupStepKind,
+        ProjectEnvironmentSetupUtilityInput,
     };
 
     fn definition() -> ProjectEnvironmentDefinition {
@@ -589,6 +592,29 @@ mod tests {
         )
         .expect_err("readiness without a validation command should fail");
         assert!(error.to_string().contains("at least one validation"));
+    }
+
+    #[test]
+    fn parser_accepts_kernel_computed_file_attestation_for_read_only_discovery() {
+        let mut definition = definition();
+        definition.source = ProjectEnvironmentDefinitionSource::Devcontainer;
+        definition.source_path = Some(".devcontainer/devcontainer.json".to_string());
+        definition.inputs = vec![ProjectEnvironmentInput {
+            kind: ProjectEnvironmentInputKind::Recipe,
+            path: ".devcontainer/devcontainer.json".to_string(),
+            sha256: crate::session::KERNEL_COMPUTED_INPUT_ATTESTATION.to_string(),
+        }];
+
+        let parsed = parse_project_environment_setup_utility_output(
+            &serde_json::json!({"definition": definition}).to_string(),
+            None,
+            "linux-x86_64",
+        )
+        .expect("read-only utility output may delegate exact hashing to the kernel");
+        assert_eq!(
+            parsed.inputs[0].sha256,
+            crate::session::KERNEL_COMPUTED_INPUT_ATTESTATION
+        );
     }
 
     #[test]

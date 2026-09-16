@@ -165,6 +165,10 @@ impl ProviderProcessServiceStore {
         self.read().structured_prompt_io_in_flight(provider_run_id)
     }
 
+    pub(crate) fn structured_runtime_state_bound(&self, provider_run_id: &str) -> bool {
+        self.read().structured_runtime_state_bound(provider_run_id)
+    }
+
     pub fn record_run_activity(&self, run_id: &str) -> Result<(), DaemonError> {
         self.write().record_run_activity(run_id)
     }

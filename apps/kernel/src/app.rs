@@ -121,7 +121,9 @@ pub(crate) use provider_launch_policy::{
     workspace_live_sync_protected_roots,
 };
 pub(crate) use provider_liveness::ProviderRunExitSessionSummary;
-pub(crate) use provider_processes::{ProviderLaunchProcessRuntime, ProviderProcessReapSummary};
+pub(crate) use provider_processes::{
+    ProviderLaunchProcessRuntime, ProviderProcessReapSummary, ProviderProcessTracker,
+};
 pub(crate) use provider_run_read::ProviderRunReadService;
 #[cfg(test)]
 pub(crate) use remote_lease::ProviderCleanupFailurePoint;

@@ -320,6 +320,9 @@ impl PtyManager {
         for (key, value) in request.env {
             command.env(key, value);
         }
+        for name in crate::provider::managed_provider_parent_credential_env_remove() {
+            command.env_remove(name);
+        }
         for (key, value) in credentials.iter() {
             command.env(key, value);
         }

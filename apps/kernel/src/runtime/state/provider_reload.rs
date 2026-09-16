@@ -284,7 +284,7 @@ fn policy_reload_launch_request(
     agent_id: &str,
     durable_resume_state: crate::provider::ProviderResumeState,
 ) -> crate::provider::LaunchProviderRequest {
-    crate::provider::LaunchProviderRequest::new(
+    let request = crate::provider::LaunchProviderRequest::new(
         run.session_id(),
         run.adapter_key(),
         run.provider(),
@@ -294,7 +294,12 @@ fn policy_reload_launch_request(
     .with_agent_id(agent_id)
     .with_owner_user_id(run.owner_user_id().to_string())
     .with_variant(run.variant().map(str::to_string))
-    .with_resume_state(durable_resume_state)
+    .with_resume_state(durable_resume_state);
+    if let Some((home, path)) = run.preparation_environment() {
+        request.with_preparation_environment(home, path)
+    } else {
+        request
+    }
 }
 
 fn user_config_path_requires_provider_reload(path: &str) -> bool {
@@ -359,6 +364,31 @@ mod tests {
                 .and_then(ProviderResumeState::claude_session_id),
             Some("confirmed-session")
         );
+    }
+
+    #[test]
+    fn provider_reload_carries_the_kernel_preparation_environment() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-provider-reload-preparation-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms(),
+        ));
+        let home = root
+            .join(".chariox-project-environment")
+            .join("b".repeat(64));
+        std::fs::create_dir_all(&home).expect("preparation home should exist");
+        let path = format!("{}/.local/bin:/usr/bin", home.display());
+        let mut run = provider_run("run-prepared", "session-1", Some("agent-1"));
+        run.set_preparation_environment(home.display().to_string(), path.clone())
+            .expect("preparation environment should bind to the run");
+
+        let request = policy_reload_launch_request(&run, "agent-1", ProviderResumeState::default());
+
+        assert_eq!(
+            request.preparation_environment,
+            Some((home.display().to_string(), path))
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

@@ -56,7 +56,10 @@ impl ProviderProcessService {
                 "pty_env_keys": launch_result.pty_env.keys().cloned().collect::<Vec<_>>(),
             }),
         );
-        let run = RuntimeProviderRun::new(run_id.clone(), &request, launch_result);
+        let mut run = RuntimeProviderRun::new(run_id.clone(), &request, launch_result);
+        if let Some((home, path)) = request.preparation_environment.clone() {
+            run.set_preparation_environment(home, path)?;
+        }
 
         self.runs.insert(run_id, run.clone());
 
@@ -264,7 +267,7 @@ impl ProviderProcessService {
                 operation: "bind prepared provider environment",
             });
         }
-        run.set_preparation_environment(home, path);
+        run.set_preparation_environment(home, path)?;
         Ok(run.clone())
     }
 

@@ -25,9 +25,27 @@ const MAX_MANAGED_WORKSPACE_ROOTS: usize = 128;
 const BWRAP_PATH: &str = "/usr/bin/bwrap";
 #[cfg(target_os = "linux")]
 const MANAGED_PROVIDER_BWRAP_ENV: &str = "CHARIOX_MANAGED_PROVIDER_BWRAP";
-#[cfg(any(target_os = "linux", test))]
 const SANDBOX_HOME: &str = "/home/chariox";
 const SANDBOX_ACCOUNT_ROOT: &str = "/home/chariox/.provider-account";
+const SANDBOX_PREPARATION_HOME: &str = "/home/chariox/.chariox-preparation";
+
+// These values are inherited from the kernel's process environment unless a
+// provider launch explicitly supplies a replacement. They must never become
+// ambient discovery credentials or host-side Git/SSH control knobs.
+const AMBIENT_PROVIDER_CREDENTIAL_ENVIRONMENT: &[&str] = &[
+    "GIT_SSH",
+    "GIT_SSH_COMMAND",
+    "GIT_ASKPASS",
+    "SSH_ASKPASS",
+    "SSH_AGENT_PID",
+    "SSH_AUTH_SOCK",
+    "SSH_CONFIG",
+    "SSH_CONFIG_FILE",
+    "SSH_KNOWN_HOSTS",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_NOSYSTEM",
+];
 
 const CONTROL_ENVIRONMENT_NAMES: &[&str] = &[
     "CHARIOX_RELAY_TOKEN",
@@ -88,6 +106,174 @@ pub(crate) fn managed_provider_control_env_remove() -> Vec<String> {
     names.sort();
     names.dedup();
     names
+}
+
+pub(crate) fn managed_provider_parent_credential_env_remove() -> &'static [&'static str] {
+    AMBIENT_PROVIDER_CREDENTIAL_ENVIRONMENT
+}
+
+/// Replace the fixed managed-provider HOME with the durable worker
+/// preparation HOME and mount that host directory into the namespace. The
+/// marker is intentionally accepted only for the kernel-created preparation
+/// directory shape; an arbitrary HOME must not cause a host directory to be
+/// mounted into a provider sandbox.
+pub(crate) fn apply_preparation_home_to_managed_launch(
+    args: &mut Vec<String>,
+    host_home: &Path,
+    host_path: &str,
+) -> Result<(), DaemonError> {
+    let separator = args.iter().position(|arg| arg == "--").ok_or_else(|| {
+        isolation_error("managed provider launch is missing its command separator")
+    })?;
+    let managed = args[..separator]
+        .windows(3)
+        .any(|window| window == ["--setenv", MANAGED_PROVIDER_ISOLATION_MARKER_ENV, "1"]);
+    if !managed {
+        return Ok(());
+    }
+
+    let host_home = canonical_preparation_home(host_home)?;
+    let home = args[..separator]
+        .windows(3)
+        .position(|window| {
+            window[0] == "--setenv"
+                && window[1] == "HOME"
+                && matches!(window[2].as_str(), SANDBOX_HOME | SANDBOX_PREPARATION_HOME)
+        })
+        .ok_or_else(|| isolation_error("managed provider launch is missing its HOME binding"))?;
+    args[home + 2] = SANDBOX_PREPARATION_HOME.to_string();
+
+    let sandbox_path = rewrite_preparation_path(&host_home, host_path);
+    if let Some(path) = args[..separator]
+        .windows(3)
+        .position(|window| window[0] == "--setenv" && window[1] == "PATH")
+    {
+        args[path + 2] = sandbox_path;
+    } else {
+        args.splice(
+            separator..separator,
+            ["--setenv".to_string(), "PATH".to_string(), sandbox_path],
+        );
+    }
+
+    let existing_binding = args[..separator]
+        .windows(3)
+        .position(|window| window[0] == "--bind" && window[2] == SANDBOX_PREPARATION_HOME);
+    if let Some(index) = existing_binding {
+        args[index + 1] = host_home.display().to_string();
+        return Ok(());
+    }
+
+    let mount = vec![
+        "--dir".to_string(),
+        SANDBOX_PREPARATION_HOME.to_string(),
+        "--bind".to_string(),
+        host_home.display().to_string(),
+        SANDBOX_PREPARATION_HOME.to_string(),
+    ];
+    args.splice(separator..separator, mount);
+    Ok(())
+}
+
+pub(crate) fn managed_launch_has_preparation_home(args: &[String], host_home: &Path) -> bool {
+    let separator = args
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(args.len());
+    let managed = args[..separator]
+        .windows(3)
+        .any(|window| window == ["--setenv", MANAGED_PROVIDER_ISOLATION_MARKER_ENV, "1"]);
+    if !managed {
+        return true;
+    }
+    let Ok(host_home) = canonical_preparation_home(host_home) else {
+        return false;
+    };
+    args[..separator].windows(3).any(|window| {
+        window[0] == "--setenv" && window[1] == "HOME" && window[2] == SANDBOX_PREPARATION_HOME
+    }) && args[..separator].windows(3).any(|window| {
+        window[0] == "--bind"
+            && window[1] == host_home.display().to_string()
+            && window[2] == SANDBOX_PREPARATION_HOME
+    })
+}
+
+pub(crate) fn is_kernel_preparation_home(path: &Path) -> bool {
+    canonical_preparation_home(path).is_ok()
+}
+
+fn rewrite_preparation_path(host_home: &Path, host_path: &str) -> String {
+    std::env::join_paths(std::env::split_paths(host_path).map(|entry| {
+        entry
+            .strip_prefix(host_home)
+            .map(|relative| {
+                if relative.as_os_str().is_empty() {
+                    PathBuf::from(SANDBOX_PREPARATION_HOME)
+                } else {
+                    Path::new(SANDBOX_PREPARATION_HOME).join(relative)
+                }
+            })
+            .unwrap_or(entry)
+    }))
+    .map(|path| path.to_string_lossy().into_owned())
+    .unwrap_or_else(|_| host_path.to_string())
+}
+
+fn canonical_preparation_home(path: &Path) -> Result<PathBuf, DaemonError> {
+    if !path.is_absolute() {
+        return Err(isolation_error(
+            "worker preparation HOME must be an absolute path",
+        ));
+    }
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+        isolation_error(format!(
+            "worker preparation HOME could not be inspected: {error}"
+        ))
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(isolation_error(
+            "worker preparation HOME must be a real directory",
+        ));
+    }
+    let state_root = path
+        .parent()
+        .ok_or_else(|| isolation_error("worker preparation HOME has no durable state parent"))?;
+    let state_metadata = std::fs::symlink_metadata(state_root).map_err(|error| {
+        isolation_error(format!(
+            "worker preparation state root could not be inspected: {error}"
+        ))
+    })?;
+    if state_metadata.file_type().is_symlink() || !state_metadata.is_dir() {
+        return Err(isolation_error(
+            "worker preparation state root must be a real directory",
+        ));
+    }
+    let canonical = path.canonicalize().map_err(|error| {
+        isolation_error(format!("worker preparation HOME is unavailable: {error}"))
+    })?;
+    let canonical_state_root = state_root.canonicalize().map_err(|error| {
+        isolation_error(format!(
+            "worker preparation state root is unavailable: {error}"
+        ))
+    })?;
+    if canonical.parent() != Some(canonical_state_root.as_path()) {
+        return Err(isolation_error(
+            "worker preparation HOME has an inconsistent durable state parent",
+        ));
+    }
+    if state_root.file_name().and_then(|name| name.to_str()) != Some(".chariox-project-environment")
+        || canonical
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_none_or(|name| {
+                name.len() != 64 || !name.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+    {
+        return Err(isolation_error(
+            "worker preparation HOME is outside the durable project state boundary",
+        ));
+    }
+    Ok(canonical)
 }
 
 pub(crate) fn provider_reported_path_on_kernel(
@@ -249,6 +435,11 @@ pub(crate) fn apply_managed_provider_isolation(
 
         append_managed_namespace_environment(&mut args, request);
         let mut environment_remove = managed_provider_control_env_remove();
+        environment_remove.extend(
+            AMBIENT_PROVIDER_CREDENTIAL_ENVIRONMENT
+                .iter()
+                .map(|name| (*name).to_string()),
+        );
         environment_remove.extend(launch.pty_env.keys().filter_map(|name| {
             (name.starts_with("GIT_CONFIG_KEY_") || name.starts_with("GIT_CONFIG_VALUE_"))
                 .then_some(name.clone())
@@ -257,6 +448,7 @@ pub(crate) fn apply_managed_provider_isolation(
         environment_remove.dedup();
         for name in environment_remove {
             args.extend(["--unsetenv".to_string(), name.clone()]);
+            launch.pty_env.remove(&name);
             if !launch.pty_env_remove.iter().any(|value| value == &name) {
                 launch.pty_env_remove.push(name);
             }
@@ -456,7 +648,14 @@ pub(crate) fn command_from_provider_launch(
     for name in launch.pty_env_remove {
         command.env_remove(name);
     }
-    command.envs(launch.pty_env);
+    for name in AMBIENT_PROVIDER_CREDENTIAL_ENVIRONMENT {
+        command.env_remove(name);
+    }
+    let mut environment = launch.pty_env;
+    for name in AMBIENT_PROVIDER_CREDENTIAL_ENVIRONMENT {
+        environment.remove(*name);
+    }
+    command.envs(environment);
     if let Some(directory) = launch.working_directory {
         command.current_dir(directory);
     }
@@ -1326,6 +1525,119 @@ mod tests {
                 .parent()
                 .expect("attachment root should have a session parent"),
         );
+    }
+
+    #[test]
+    fn managed_namespace_rewrites_preparation_home_and_path_idempotently() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-managed-preparation-home-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms(),
+        ));
+        let host_home = root
+            .join(".chariox-project-environment")
+            .join("a".repeat(64));
+        std::fs::create_dir_all(&host_home).expect("preparation home should exist");
+        let host_path = std::env::join_paths([
+            host_home.join(".local/bin"),
+            host_home.join(".cargo/bin"),
+            PathBuf::from("/usr/bin"),
+        ])
+        .expect("preparation PATH should encode");
+        let host_path = host_path.to_string_lossy().into_owned();
+        let mut args = vec![
+            "--setenv".to_string(),
+            "HOME".to_string(),
+            SANDBOX_HOME.to_string(),
+            "--setenv".to_string(),
+            MANAGED_PROVIDER_ISOLATION_MARKER_ENV.to_string(),
+            "1".to_string(),
+            "--".to_string(),
+            "/usr/bin/opencode".to_string(),
+        ];
+
+        apply_preparation_home_to_managed_launch(&mut args, &host_home, &host_path)
+            .expect("managed launch should receive the worker preparation environment");
+        assert!(managed_launch_has_preparation_home(&args, &host_home));
+        assert!(args.windows(3).any(|window| {
+            window[0] == "--setenv" && window[1] == "HOME" && window[2] == SANDBOX_PREPARATION_HOME
+        }));
+        let expected_path = std::env::join_paths([
+            PathBuf::from(SANDBOX_PREPARATION_HOME).join(".local/bin"),
+            PathBuf::from(SANDBOX_PREPARATION_HOME).join(".cargo/bin"),
+            PathBuf::from("/usr/bin"),
+        ])
+        .expect("sandbox preparation PATH should encode")
+        .to_string_lossy()
+        .into_owned();
+        assert!(args.windows(3).any(|window| {
+            window[0] == "--setenv" && window[1] == "PATH" && window[2] == expected_path
+        }));
+        assert!(args.windows(3).any(|window| {
+            window[0] == "--bind"
+                && window[1] == host_home.display().to_string()
+                && window[2] == SANDBOX_PREPARATION_HOME
+        }));
+
+        let prepared_args = args.clone();
+        apply_preparation_home_to_managed_launch(&mut args, &host_home, &host_path)
+            .expect("preparation environment binding should be idempotent");
+        assert_eq!(args, prepared_args);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn managed_namespace_rejects_arbitrary_preparation_home() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-managed-preparation-home-rejected-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms(),
+        ));
+        std::fs::create_dir_all(&root).expect("fixture home should exist");
+        let mut args = vec![
+            "--setenv".to_string(),
+            "HOME".to_string(),
+            SANDBOX_HOME.to_string(),
+            "--setenv".to_string(),
+            MANAGED_PROVIDER_ISOLATION_MARKER_ENV.to_string(),
+            "1".to_string(),
+            "--".to_string(),
+            "/usr/bin/codex".to_string(),
+        ];
+
+        let error = apply_preparation_home_to_managed_launch(&mut args, &root, "/usr/bin")
+            .expect_err("managed provider must not mount an arbitrary host HOME");
+        assert!(error
+            .to_string()
+            .contains("outside the durable project state boundary"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn managed_utility_command_drops_ambient_credential_controls() {
+        let launch = ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "ambient-credential-regression".to_string(),
+            pty_target: None,
+            pty_program: Some("/bin/sh".to_string()),
+            pty_args: vec![
+                "-c".to_string(),
+                "test -z \"${GIT_SSH_COMMAND:-}\"; test -z \"${SSH_AUTH_SOCK:-}\"; test \"$CHARIOX_TEST_SELECTED\" = selected".to_string(),
+            ],
+            pty_env: BTreeMap::from([
+                ("GIT_SSH_COMMAND".to_string(), "/tmp/unselected-ssh".to_string()),
+                ("SSH_AUTH_SOCK".to_string(), "/tmp/unselected-agent".to_string()),
+                ("CHARIOX_TEST_SELECTED".to_string(), "selected".to_string()),
+            ]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        };
+        let status = command_from_provider_launch(launch)
+            .expect("managed utility command should be constructed")
+            .status()
+            .expect("managed utility credential probe should run");
+        assert!(status.success());
     }
 
     fn restore_env(name: &str, previous: Option<std::ffi::OsString>) {

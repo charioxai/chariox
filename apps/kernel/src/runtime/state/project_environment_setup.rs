@@ -20,7 +20,7 @@ use crate::local::{
     ProjectEnvironmentValidation, RetryProjectEnvironmentSetupRequest, RunAgentUtilityRequest,
     StartProjectEnvironmentSetupRequest,
 };
-use crate::provider::RuntimeProviderRun;
+use crate::provider::{ProviderProcessService, RuntimeProviderRun};
 use crate::runtime::agent_utility_executor::{
     assert_agent_utility_can_run,
     run_agent_utility_on_provider_run_for_project_environment_repair,
@@ -1187,6 +1187,21 @@ impl KernelRuntimeState {
             );
             return;
         }
+        let provider_run = match self
+            .prepare_provider_run_for_project_environment(&execution, &provider_run)
+            .await
+        {
+            Ok(provider_run) => provider_run,
+            Err(_) => {
+                store.mark_failed(
+                    &execution.operation_id,
+                    attempt,
+                    "provider_environment_bind_failed",
+                    "kernel could not bind a restartable prepared environment to the provider discovery process",
+                );
+                return;
+            }
+        };
 
         if let Some(definition) = execution
             .definition
@@ -1410,6 +1425,22 @@ impl KernelRuntimeState {
             );
             return;
         }
+        let definition = match self.resolve_project_environment_definition_inputs_on_worker(
+            &execution,
+            &definition,
+            &provider_run,
+        ) {
+            Ok(definition) => definition,
+            Err(_) => {
+                store.mark_failed(
+                    &execution.operation_id,
+                    attempt,
+                    "worker_input_attestation_failed",
+                    "kernel could not compute the exact project input attestations on the target worker",
+                );
+                return;
+            }
+        };
         if !store.update(&execution.operation_id, attempt, |entry| {
             entry.execution.definition = Some(definition.clone());
             entry.status.definition_digest = Some(definition.digest());
@@ -1576,6 +1607,147 @@ impl KernelRuntimeState {
             .update_run_preparation_environment(provider_run.id(), home, path)?;
         self.owned.provider_run_projection.update(updated.clone());
         Ok(updated)
+    }
+
+    async fn prepare_provider_run_for_project_environment(
+        &self,
+        execution: &SetupExecution,
+        provider_run: &RuntimeProviderRun,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let context = self.prepare_worker_execution_context(execution, provider_run)?;
+        let home = context
+            .environment
+            .get("HOME")
+            .cloned()
+            .ok_or_else(|| setup_error("prepared worker environment has no HOME"))?;
+        let path = context
+            .environment
+            .get("PATH")
+            .cloned()
+            .ok_or_else(|| setup_error("prepared worker environment has no PATH"))?;
+        let restartable_server = matches!(provider_run.adapter_key(), "codex" | "opencode");
+        if restartable_server
+            && provider_run.endpoint_mode() != crate::provider::AgentEndpointMode::Managed
+        {
+            return Err(setup_error(
+                "read-only provider discovery requires a managed Codex or OpenCode server that can be restarted with the prepared environment",
+            ));
+        }
+        if restartable_server
+            && self
+                .owned
+                .provider_store
+                .structured_prompt_io_in_flight(provider_run.id())
+        {
+            return Err(setup_error(
+                "cannot restart a provider discovery server while structured provider I/O is in flight",
+            ));
+        }
+
+        let needs_restart = !provider_run.preparation_environment_matches(&home, &path)
+            || (restartable_server
+                && !self
+                    .owned
+                    .provider_store
+                    .structured_runtime_state_bound(provider_run.id()));
+        let credentials = if restartable_server && needs_restart {
+            Some(
+                self.resolve_provider_account_credentials_for_run_with_vault(
+                    provider_run,
+                    "prepare project environment provider",
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let updated = if needs_restart {
+            self.owned
+                .provider_store
+                .update_run_preparation_environment(provider_run.id(), home, path)?
+        } else {
+            provider_run.clone()
+        };
+        self.owned.provider_run_projection.update(updated.clone());
+        if !restartable_server || !needs_restart {
+            return Ok(updated);
+        }
+
+        let credentials = credentials.ok_or_else(|| {
+            setup_error("restartable provider credentials were not prepared")
+        })?;
+        self.owned.provider_store.clear_runtime(updated.id());
+        let run_for_spawn = updated.clone();
+        let spawn_credentials = credentials.clone();
+        let spawn_result = self
+            .with_app_side_effect(move |app| {
+                let _ = crate::app::ProviderProcessTracker::new(app)
+                    .remove_run(run_for_spawn.id())?;
+                crate::app::ProviderLaunchProcessRuntime::new(app)
+                    .spawn_for_launch_with_credentials(&run_for_spawn, &spawn_credentials)
+            })
+            .await;
+        if let Err(error) = spawn_result {
+            self.cleanup_restarted_provider_run(updated.id()).await;
+            return Err(error);
+        }
+
+        let run_for_binding = updated.clone();
+        let binding_credentials = credentials.clone();
+        let binding = match tokio::task::spawn_blocking(move || {
+            ProviderProcessService::initialize_runtime_binding_with_credentials(
+                &run_for_binding,
+                &binding_credentials,
+            )
+        })
+        .await
+        {
+            Ok(Ok(binding)) => binding,
+            Ok(Err(error)) => {
+                self.cleanup_restarted_provider_run(updated.id()).await;
+                return Err(error);
+            }
+            Err(error) => {
+                self.cleanup_restarted_provider_run(updated.id()).await;
+                return Err(setup_error(&format!(
+                    "provider restart binding task failed: {error}"
+                )));
+            }
+        };
+        if let Some(binding) = binding {
+            if let Err(error) = self
+                .owned
+                .provider_store
+                .apply_runtime_binding(updated.id(), binding)
+            {
+                self.cleanup_restarted_provider_run(updated.id()).await;
+                return Err(error);
+            }
+        }
+        let rebound = self.owned.provider_store.get_run(updated.id())?;
+        self.owned.provider_run_projection.update(rebound.clone());
+        Ok(rebound)
+    }
+
+    async fn cleanup_restarted_provider_run(&self, provider_run_id: &str) {
+        self.owned.provider_store.clear_runtime(provider_run_id);
+        let cleanup_run_id = provider_run_id.to_string();
+        let _ = self
+            .with_app_side_effect(move |app| {
+                crate::app::ProviderProcessTracker::new(app).remove_run(&cleanup_run_id)
+            })
+            .await;
+    }
+
+    fn resolve_project_environment_definition_inputs_on_worker(
+        &self,
+        execution: &SetupExecution,
+        definition: &ProjectEnvironmentDefinition,
+        provider_run: &RuntimeProviderRun,
+    ) -> Result<ProjectEnvironmentDefinition, DaemonError> {
+        let context = self.prepare_worker_execution_context(execution, provider_run)?;
+        resolve_project_environment_input_attestations(&context.workspace_root, definition)
+            .map_err(|message| setup_error(&message))
     }
 
     fn prepare_worker_execution_context(

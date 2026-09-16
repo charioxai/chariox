@@ -1,9 +1,10 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::DaemonError;
 use crate::mcp::CharioxMcpServerConfig;
 use crate::session::unix_epoch_ms;
 
@@ -388,10 +389,38 @@ impl RuntimeProviderRun {
         &mut self,
         home: impl Into<String>,
         path: impl Into<String>,
-    ) {
-        self.pty_env.insert("HOME".to_string(), home.into());
-        self.pty_env.insert("PATH".to_string(), path.into());
+    ) -> Result<(), DaemonError> {
+        let home = home.into();
+        let path = path.into();
+        let mut pty_args = self.pty_args.clone();
+        super::managed_isolation::apply_preparation_home_to_managed_launch(
+            &mut pty_args,
+            Path::new(&home),
+            &path,
+        )?;
+        self.pty_args = pty_args;
+        self.pty_env.insert("HOME".to_string(), home);
+        self.pty_env.insert("PATH".to_string(), path);
         self.touch_activity();
+        Ok(())
+    }
+
+    pub(crate) fn preparation_environment_matches(&self, home: &str, path: &str) -> bool {
+        self.pty_env.get("HOME").is_some_and(|value| value == home)
+            && self.pty_env.get("PATH").is_some_and(|value| value == path)
+            && super::managed_isolation::managed_launch_has_preparation_home(
+                &self.pty_args,
+                Path::new(home),
+            )
+    }
+
+    pub(crate) fn preparation_environment(&self) -> Option<(String, String)> {
+        let home = self.pty_env.get("HOME")?;
+        if !super::managed_isolation::is_kernel_preparation_home(Path::new(home)) {
+            return None;
+        }
+        let path = self.pty_env.get("PATH")?;
+        Some((home.clone(), path.clone()))
     }
 
     pub fn requires_workspace_live_sync(&self) -> bool {

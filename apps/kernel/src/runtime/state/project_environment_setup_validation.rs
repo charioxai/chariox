@@ -220,10 +220,7 @@ pub(super) fn worker_validation_environment_with_home(
         }
     }
     if let Some(preparation_home) = preparation_home {
-        environment.insert(
-            "HOME".to_string(),
-            preparation_home.display().to_string(),
-        );
+        environment.insert("HOME".to_string(), preparation_home.display().to_string());
         let current_path = environment
             .get("PATH")
             .map(String::as_str)
@@ -267,15 +264,18 @@ fn worker_preparation_path(preparation_home: &Path, current_path: &str) -> Strin
 const MAX_PROJECT_ENVIRONMENT_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_PROJECT_ENVIRONMENT_INPUT_BYTES_TOTAL: u64 = 128 * 1024 * 1024;
 
-/// Verify the content-only inputs in a definition against the worker's
-/// already-materialized project worktree. This deliberately reads files but
-/// never executes them or returns their contents across the setup seam.
-pub(super) fn verify_project_environment_inputs(
+/// Resolve provider-requested input attestations against the worker's
+/// already-materialized project worktree. A provider may use the kernel marker
+/// when its read-only tool policy cannot run a hashing command; only this
+/// function can turn that marker into a persisted exact digest.
+pub(super) fn resolve_project_environment_input_attestations(
     workspace_root: &Path,
     definition: &ProjectEnvironmentDefinition,
-) -> Result<(), String> {
+) -> Result<ProjectEnvironmentDefinition, String> {
+    definition.validate_for_utility_output()?;
+    let mut resolved = definition.clone();
     let mut total_bytes_read = 0_u64;
-    for input in &definition.inputs {
+    for input in &mut resolved.inputs {
         let candidate = workspace_root.join(&input.path);
         let metadata = std::fs::symlink_metadata(&candidate).map_err(|error| {
             format!(
@@ -336,12 +336,34 @@ pub(super) fn verify_project_environment_inputs(
             digest.update(&buffer[..read]);
         }
         let actual = format!("sha256:{:x}", digest.finalize());
-        if actual != input.sha256 {
+        if input.sha256 == crate::session::KERNEL_COMPUTED_INPUT_ATTESTATION {
+            input.sha256 = actual;
+        } else if actual != input.sha256 {
             return Err(format!(
                 "worker project input does not match its attested content: {}",
                 input.path
             ));
         }
+    }
+    resolved.validate().map_err(|message| {
+        format!("worker project input attestation could not be canonicalized: {message}")
+    })?;
+    Ok(resolved)
+}
+
+/// Verify the content-only inputs in a definition against the worker's
+/// already-materialized project worktree. This deliberately reads files but
+/// never executes them or returns their contents across the setup seam.
+pub(super) fn verify_project_environment_inputs(
+    workspace_root: &Path,
+    definition: &ProjectEnvironmentDefinition,
+) -> Result<(), String> {
+    let resolved = resolve_project_environment_input_attestations(workspace_root, definition)?;
+    if resolved != *definition {
+        return Err(
+            "worker project input attestation must be kernel-resolved before verification"
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -633,8 +655,7 @@ mod tests {
             crate::session::unix_epoch_ms()
         ));
         let workspace = root.join("workspace");
-        std::fs::create_dir_all(&workspace)
-            .expect("provider environment workspace should exist");
+        std::fs::create_dir_all(&workspace).expect("provider environment workspace should exist");
         let trace = root.join("provider-command.log");
         let child_script = r#"
 set -eu
@@ -666,9 +687,15 @@ done
                 pty_program: Some("/bin/sh".to_string()),
                 pty_args: vec!["-c".to_string(), child_script.to_string()],
                 pty_env: BTreeMap::from([
-                    ("HOME".to_string(), root.join("old-home").display().to_string()),
+                    (
+                        "HOME".to_string(),
+                        root.join("old-home").display().to_string(),
+                    ),
                     ("PATH".to_string(), "/usr/bin:/bin".to_string()),
-                    ("PROJECT_TEST_TRACE".to_string(), trace.display().to_string()),
+                    (
+                        "PROJECT_TEST_TRACE".to_string(),
+                        trace.display().to_string(),
+                    ),
                     ("PROJECT_TEST_TOOL".to_string(), "project-tool".to_string()),
                 ]),
                 pty_env_remove: Vec::new(),
@@ -702,13 +729,15 @@ done
         .expect("worker setup should install the provider command");
 
         let mut prepared_run = run.clone();
-        prepared_run.set_preparation_environment(
-            prepared_environment
-                .get("HOME")
-                .expect("prepared worker environment should have HOME")
-                .clone(),
-            prepared_path.clone(),
-        );
+        prepared_run
+            .set_preparation_environment(
+                prepared_environment
+                    .get("HOME")
+                    .expect("prepared worker environment should have HOME")
+                    .clone(),
+                prepared_path.clone(),
+            )
+            .expect("prepared provider environment should bind");
         let mut binding = crate::provider::initialize_claude_runtime(&run)
             .expect("real provider child should start with the original context");
         let envelope = crate::prompt_assembly::PromptEnvelope::new(
@@ -803,7 +832,10 @@ done
             validation_commands: vec!["test -f testdata/private_key.pem".to_string()],
         };
         assert_eq!(definition.validate(), Ok(()));
-        assert_eq!(verify_project_environment_inputs(&root, &definition), Ok(()));
+        assert_eq!(
+            verify_project_environment_inputs(&root, &definition),
+            Ok(())
+        );
 
         let environment = BTreeMap::from([
             (
@@ -868,10 +900,62 @@ done
             verify_project_environment_inputs(&root, &definition),
             Ok(())
         );
-        std::fs::write(&path, br#"{"name":"changed"}
-"#)
+        std::fs::write(
+            &path,
+            br#"{"name":"changed"}
+"#,
+        )
         .expect("input fixture mutation should be written");
         assert!(verify_project_environment_inputs(&root, &definition)
+            .unwrap_err()
+            .contains("does not match"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn worker_resolves_kernel_computed_input_attestation_before_persisting() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-project-environment-kernel-attestation-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&root).expect("input fixture workspace should exist");
+        let path = root.join(".devcontainer/devcontainer.json");
+        let contents = br#"{"name":"kernel-attested"}
+"#;
+        std::fs::create_dir_all(path.parent().expect("fixture should have a parent"))
+            .expect("recipe directory should exist");
+        std::fs::write(&path, contents).expect("input fixture should be written");
+        let definition = ProjectEnvironmentDefinition {
+            schema_version: 1,
+            origin: ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
+            source: ProjectEnvironmentDefinitionSource::Devcontainer,
+            target_platform: "linux-x86_64".to_string(),
+            source_path: Some(".devcontainer/devcontainer.json".to_string()),
+            inputs: vec![ProjectEnvironmentInput {
+                kind: ProjectEnvironmentInputKind::Recipe,
+                path: ".devcontainer/devcontainer.json".to_string(),
+                sha256: crate::session::KERNEL_COMPUTED_INPUT_ATTESTATION.to_string(),
+            }],
+            setup_steps: Vec::new(),
+            validation_commands: vec!["true".to_string()],
+        };
+
+        let resolved = resolve_project_environment_input_attestations(&root, &definition)
+            .expect("the worker kernel should compute the exact input digest");
+        assert_eq!(
+            resolved.inputs[0].sha256,
+            format!("sha256:{:x}", Sha256::digest(contents))
+        );
+        assert_eq!(verify_project_environment_inputs(&root, &resolved), Ok(()));
+
+        std::fs::write(
+            &path,
+            br#"{"name":"changed"}
+"#,
+        )
+        .expect("input fixture mutation should be written");
+        assert!(verify_project_environment_inputs(&root, &resolved)
             .unwrap_err()
             .contains("does not match"));
         let _ = std::fs::remove_dir_all(root);
