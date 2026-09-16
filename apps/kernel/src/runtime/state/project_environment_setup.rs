@@ -2089,16 +2089,17 @@ impl KernelRuntimeState {
                 &execution.project_id,
                 &worker_id,
             )?;
+        let environment = worker_validation_environment_with_home_and_definition(
+            provider_run,
+            Some(preparation_home.path()),
+            Some(&workspace_root),
+            definition,
+        );
         Ok(WorkerExecutionContext {
             worker_id,
             platform,
             workspace_root,
-            environment: worker_validation_environment_with_home_and_definition(
-                provider_run,
-                Some(preparation_home.path()),
-                Some(&workspace_root),
-                definition,
-            ),
+            environment,
         })
     }
 

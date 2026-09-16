@@ -154,7 +154,7 @@ pub(super) fn poll_provider_run_process_exit(
     ProviderRunLivenessProcesses::poll_process_exit(app, provider_run_id)
 }
 
-pub(super) fn clear_active_provider_run_session_pointer(
+pub(crate) fn clear_active_provider_run_session_pointer(
     app: &mut DaemonApp,
     session_id: &str,
     provider_run_id: &str,
