@@ -139,6 +139,7 @@ async function waitForProviderRunRunning(providerRunId) {
 }
 
 let sessionId
+let probePassed = false
 try {
   await fs.rm(resultPath, { force: true })
   const created = await send({
@@ -190,11 +191,20 @@ try {
       "host process roots",
     ],
   })}\n`)
+  probePassed = true
+} catch (error) {
+  // The wrapper can fail before Codex binds its endpoint. Keep its private
+  // report instead of deleting the only explanation behind a readiness timeout.
+  // Print only the path, never untrusted report contents or provider credentials.
+  if (await fs.lstat(resultPath).then((stat) => stat.isFile(), () => false)) {
+    process.stderr.write(`wrapper_result=${JSON.stringify(resultPath)}\n`)
+  }
+  throw error
 } finally {
   if (sessionId) {
     await send({ EndSession: { session_id: sessionId } }, "probe session cleanup").catch(() => {})
   }
-  await fs.rm(resultPath, { force: true }).catch(() => {})
+  if (probePassed) await fs.rm(resultPath, { force: true }).catch(() => {})
   socket.close()
 }
 
