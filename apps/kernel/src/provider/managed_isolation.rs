@@ -423,6 +423,34 @@ fn managed_runtime_user_openbox_files() -> Vec<PathBuf> {
 }
 
 #[cfg(target_os = "linux")]
+fn append_managed_runtime_user_openbox_boundary(
+    args: &mut Vec<String>,
+    home: &Path,
+    created: &mut BTreeSet<PathBuf>,
+) {
+    let config = home.join(".config");
+    if config.is_dir() {
+        // A same-path bind makes .config a mountpoint. The provider can
+        // still modify ordinary config entries, but cannot rename the
+        // ancestor underneath the protected Openbox mount.
+        append_bind(args, &config, &config, created);
+        let openbox = config.join("openbox");
+        // Keep Openbox's whole directory private to this namespace. This
+        // also creates a stable mountpoint when the host has not created the
+        // directory yet; the per-file masks below prevent writes even to the
+        // private replacement tree.
+        append_directory(args, &openbox, created);
+        args.extend(["--tmpfs".to_string(), openbox.display().to_string()]);
+    } else {
+        // A fresh runtime home has no ordinary .config contents to preserve.
+        // Fail closed by keeping the entire newly-created config tree inside
+        // the provider namespace rather than exposing a renameable path.
+        append_directory(args, &config, created);
+        args.extend(["--tmpfs".to_string(), config.display().to_string()]);
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn managed_trusted_read_only_paths() -> Result<Vec<PathBuf>, DaemonError> {
     let mut candidates = Vec::new();
     let default_slice_root = Path::new("/opt/chariox-slice");
@@ -617,6 +645,9 @@ pub(crate) fn apply_managed_provider_isolation(
             &runtime_user_startup_files,
             &mut created_directories,
         );
+        if let Some(home) = runtime_user_home.as_deref() {
+            append_managed_runtime_user_openbox_boundary(&mut args, home, &mut created_directories);
+        }
         append_managed_protected_namespace_files(
             &mut args,
             &runtime_user_openbox_files,
@@ -1872,6 +1903,8 @@ mod tests {
         let profile_executed = home.join("profile-executed");
         let openbox_executed = home.join("openbox-executed");
         std::fs::create_dir_all(&home).expect("runtime user home should exist");
+        std::fs::create_dir_all(home.join(".config/openbox"))
+            .expect("runtime user Openbox config directory should exist");
         std::env::set_var("HOME", &home);
 
         let startup_files = managed_runtime_user_startup_files();
@@ -1897,8 +1930,13 @@ mod tests {
         let (mut args, mut created) = managed_namespace_args(None, Path::exists, None);
         append_bind(&mut args, &home, &home, &mut created);
         append_managed_protected_namespace_files(&mut args, &startup_files, &mut created);
+        append_managed_runtime_user_openbox_boundary(&mut args, &home, &mut created);
         append_managed_protected_namespace_files(&mut args, &openbox_files, &mut created);
         let home_text = home.display().to_string();
+        let config = home.join(".config");
+        let config_text = config.display().to_string();
+        let openbox_dir = config.join("openbox");
+        let openbox_dir_text = openbox_dir.display().to_string();
         let profile_text = profile.display().to_string();
         let openbox_rc_text = openbox_rc.display().to_string();
         assert!(args
@@ -1912,12 +1950,22 @@ mod tests {
             .windows(3)
             .position(|window| window == ["--ro-bind", "/dev/null", profile_text.as_str()])
             .expect("login profile should be masked");
+        let config_anchor = args
+            .windows(3)
+            .position(|window| window == ["--bind", config_text.as_str(), config_text.as_str()])
+            .expect("runtime user config ancestor should be anchored");
+        let openbox_tmpfs = args
+            .windows(2)
+            .position(|window| window == ["--tmpfs", openbox_dir_text.as_str()])
+            .expect("Openbox directory should be private");
         let openbox_mask = args
             .windows(3)
             .position(|window| window == ["--ro-bind", "/dev/null", openbox_rc_text.as_str()])
             .expect("Openbox rc.xml should be masked");
         assert!(home_bind < profile_mask);
-        assert!(home_bind < openbox_mask);
+        assert!(home_bind < config_anchor);
+        assert!(config_anchor < openbox_tmpfs);
+        assert!(openbox_tmpfs < openbox_mask);
         for name in ["menu.xml", "autostart"] {
             let path = home.join(".config/openbox").join(name);
             assert!(args.windows(3).any(|window| {
@@ -1941,7 +1989,7 @@ mod tests {
             "/bin/sh".to_string(),
             "-eu".to_string(),
             "-c".to_string(),
-            "if printf 'touch \"$HOME/profile-executed\"\\n' > \"$HOME/.bash_profile\"; then exit 41; fi\nif printf '<openbox><execute>touch \"$HOME/openbox-executed\"</execute></openbox>\\n' > \"$HOME/.config/openbox/rc.xml\"; then exit 42; fi\nprintf ordinary > \"$HOME/ordinary-created\"".to_string(),
+            "if mv \"$HOME/.config\" \"$HOME/.config-renamed\"; then exit 43; fi\nif mv \"$HOME/.config/openbox\" \"$HOME/.config/openbox-renamed\"; then exit 44; fi\nif printf 'touch \"$HOME/profile-executed\"\\n' > \"$HOME/.bash_profile\"; then exit 41; fi\nif printf '<openbox><execute>touch \"$HOME/openbox-executed\"</execute></openbox>\\n' > \"$HOME/.config/openbox/rc.xml\"; then exit 42; fi\nprintf ordinary > \"$HOME/ordinary-created\"".to_string(),
             "managed-runtime-home-startup-openbox-probe".to_string(),
         ]);
         let output = match Command::new(bwrap).args(args).output() {
