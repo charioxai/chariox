@@ -122,15 +122,18 @@ pub(crate) fn apply_preparation_home_to_managed_launch(
     host_home: &Path,
     host_path: &str,
 ) -> Result<(), DaemonError> {
-    let separator = args.iter().position(|arg| arg == "--").ok_or_else(|| {
-        isolation_error("managed provider launch is missing its command separator")
-    })?;
-    let managed = args[..separator]
-        .windows(3)
-        .any(|window| window == ["--setenv", MANAGED_PROVIDER_ISOLATION_MARKER_ENV, "1"]);
+    let separator = args.iter().position(|arg| arg == "--");
+    let managed = separator.is_some_and(|separator| {
+        args[..separator]
+            .windows(3)
+            .any(|window| window == ["--setenv", MANAGED_PROVIDER_ISOLATION_MARKER_ENV, "1"])
+    });
     if !managed {
         return Ok(());
     }
+    let separator = separator.ok_or_else(|| {
+        isolation_error("managed provider launch is missing its command separator")
+    })?;
 
     let host_home = canonical_preparation_home(host_home)?;
     let host_home_text = host_home.display().to_string();
