@@ -365,7 +365,7 @@ mod tests {
             )
             .expect("params should build");
 
-        assert_eq!(params.get("ephemeral"), None);
+        assert_eq!(params.get("ephemeral"), Some(&json!(false)));
         assert_eq!(params.get("persistExtendedHistory"), Some(&json!(true)));
         assert_eq!(params.get("serviceName"), Some(&json!("chariox")));
         assert_eq!(params.get("cwd"), Some(&json!("/tmp/worktree")));

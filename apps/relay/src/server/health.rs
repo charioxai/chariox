@@ -52,6 +52,8 @@ pub(crate) async fn handle_health_connection(
     };
     let guard = registry.read().await;
     let backpressure = guard.backpressure_metrics();
+    let (pressured_subscription_count, subscription_queue_max_depth) =
+        guard.subscription_queue_pressure();
     let mut body = json!({
         "status": status,
         "draining": is_draining,
@@ -64,6 +66,8 @@ pub(crate) async fn handle_health_connection(
         "backpressure": {
             "target_queue_full_count": backpressure.target_queue_full_count,
             "slow_subscription_close_count": backpressure.slow_subscription_close_count,
+            "pressured_subscription_count": pressured_subscription_count,
+            "subscription_queue_max_depth": subscription_queue_max_depth,
         },
     });
     drop(guard);

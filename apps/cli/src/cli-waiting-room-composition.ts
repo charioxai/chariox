@@ -75,7 +75,11 @@ import type {
 import {
   clearStagedWaitingRoomWorktreeSelection,
 } from "./waiting-room-worktrees.js"
-import { existingProjectSelectionId } from "./waiting-room-projects.js"
+import {
+  existingProjectSelectionId,
+  NEW_PROJECT_SELECTION_ID,
+  type SessionProjectSelection,
+} from "./waiting-room-projects.js"
 import {
   managedEnvironmentMachineRef,
 } from "./waiting-room-managed-environments.js"
@@ -162,6 +166,15 @@ export type CliWaitingRoomCompositionDeps = {
   applySessionState: AnyFn
   setProviderRunState: AnyFn
   appendNotice: AnyFn
+}
+
+export function projectSelectionForManagedSession(
+  requested: WaitingRoomLaunchConfig["projectSelection"],
+  managedEnvironmentKind: NonNullable<WaitingRoomLaunchConfig["managedEnvironment"]>["kind"],
+  prepared: SessionProjectSelection,
+): SessionProjectSelection {
+  // The managed controller returns `prepared` only after ready-state and target-binding validation.
+  return managedEnvironmentKind === "existing" && requested?.kind === "new" ? requested : prepared
 }
 
 export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionDeps) {
@@ -563,14 +576,21 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
         projectSelection: _projectSelection,
         ...ordinaryLaunch
       } = launch
+      const projectSelection = projectSelectionForManagedSession(
+        launch.projectSelection,
+        selection.kind,
+        prepared.projectSelection,
+      )
       expectedMachineRef = managedEnvironmentMachineRef(prepared.environment.environmentId)
       deps.setWaitingRoomState({
         ...deps.waitingRoomState(),
         selectedMachineRef: expectedMachineRef,
         selectedKernelRef: prepared.environment.runtimeKernelId ?? "",
-        projectSelectionId: prepared.projectSelection.kind === "existing"
-          ? existingProjectSelectionId(prepared.projectSelection.project_id)
-          : "default",
+        projectSelectionId: projectSelection.kind === "existing"
+          ? existingProjectSelectionId(projectSelection.project_id)
+          : projectSelection.kind === "new"
+            ? NEW_PROJECT_SELECTION_ID
+            : "default",
         worktreeSelectionId: `existing:${prepared.worktreePath}`,
         sliceSelectionId: "none",
       })
@@ -581,7 +601,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
           ...ordinaryLaunch,
           ownerMachineRef: prepared.environment.runtimeMachineId,
           ownerKernelRef: prepared.environment.runtimeKernelId,
-          projectSelection: prepared.projectSelection,
+          projectSelection,
         },
         assertActive,
         commit: prepared.commit,
@@ -666,6 +686,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     },
     createSlice: (options) => createSlice(deps.client, cliWaitingRoomSliceApiOptions(options)),
     startSlice: (sliceRef) => startSlice(deps.client, sliceRef),
+    deleteSlice: (sliceRef) => deleteSlice(deps.client, sliceRef),
     updateSlices: (slice) => {
       deps.setSlicesState((current: any[] = []) => [
         slice,

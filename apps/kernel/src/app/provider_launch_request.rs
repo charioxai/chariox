@@ -9,8 +9,8 @@ use crate::provider::{LaunchProviderRequest, RuntimeMcpBinding};
 
 use super::provider_launch_policy::{
     apply_metaagent_launch_policy, default_provider_env_remove, generate_runtime_mcp_auth_token,
-    granted_mcp_servers_for_agent_launch, registered_workflow_runtime_worktree_root,
-    resolve_mcp_credentials_for_launch, sanitize_resume_state_for_launch,
+    granted_mcp_servers_for_agent_launch, resolve_mcp_credentials_for_launch,
+    sanitize_resume_state_for_launch,
 };
 
 const PROVIDER_USAGE_REFRESH_RETRY_AFTER_MS: u64 = 5 * 60 * 1_000;
@@ -144,8 +144,19 @@ impl DaemonApp {
                 &request.provider,
                 &profile.profile_id,
             )?;
+            let provider_credential_env =
+                crate::provider::resolve_provider_account_credentials_for_launch(
+                    &self.config,
+                    &self.provider_account_profiles,
+                    &account_owner_user_id,
+                    &request.provider,
+                    &profile.profile_id,
+                    request.client_interface,
+                )?;
             request.account_profile = profile.profile_id;
-            request = request.with_provider_account_env(provider_account_env);
+            request = request
+                .with_provider_account_env(provider_account_env)
+                .with_provider_credential_env(provider_credential_env);
         }
         if request.resume_state.is_none() {
             if let Some(agent) = agent.as_ref() {
@@ -170,32 +181,6 @@ impl DaemonApp {
                 &self.config.daemon_id,
             );
             request = request.with_workspace_live_sync_roots(workspace_live_sync_roots);
-        }
-        if crate::provider::managed_provider_isolation_required()
-            && !session.project_id().is_empty()
-        {
-            let project = self.sessions.get_project(session.project_id())?;
-            let mut roots = project
-                .workspace_ids()
-                .iter()
-                .filter(|workspace| !workspace.trim().is_empty())
-                .map(PathBuf::from)
-                .collect::<Vec<_>>();
-            if let Some(root) = registered_workflow_runtime_worktree_root(
-                &session,
-                request.agent_id.as_deref(),
-                request.working_directory.as_deref(),
-            ) {
-                if !roots.iter().any(|existing| existing == &root) {
-                    roots.push(root);
-                }
-            }
-            for root in std::mem::take(&mut request.workspace_live_sync_roots) {
-                if !roots.iter().any(|existing| existing == &root) {
-                    roots.push(root);
-                }
-            }
-            request = request.with_workspace_live_sync_roots(roots);
         }
         if request.runtime_mcp_binding.is_none() {
             let shared_auth_token = request

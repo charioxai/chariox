@@ -17,6 +17,7 @@ import { sessionFocusedAgentId } from "@chariox/kernel-client/session-runtime-tr
 import { sessionAgentHasTurnWork } from "@chariox/kernel-client/session-prompt-work"
 import { formatTranscriptPreview } from "@chariox/kernel-client/session-history-preview"
 import { reindexTranscriptEntries } from "@chariox/kernel-client/transcript-entry-state"
+import { retainRoomActivityNotices } from "./room-activity-notice-state.js"
 
 type AgentPaneRefreshControllerDeps = {
   getCurrentAgents: () => readonly AgentInstance[]
@@ -89,11 +90,19 @@ export function createAgentPaneRefreshController(
       preserveCollapsedTurnIds: true,
     })
 
-    return nextPaneState
+    // Read current notices after history I/O: events may arrive while it loads.
+    const paneEntries = Object.fromEntries(Object.entries(nextPaneState.paneEntries).map(([agentId, entries]) => [
+      agentId, retainRoomActivityNotices(entries, deps.currentAgentPaneEntries(agentId), session.id),
+    ]))
+    return { ...nextPaneState, paneEntries,
+      visibleEntries: nextPaneState.visibleAgentId ? paneEntries[nextPaneState.visibleAgentId] ?? [] : [],
+      previews: Object.fromEntries(Object.entries(paneEntries).map(([id, entries]) => [id, formatTranscriptPreview(entries)])),
+    }
   }
 
   const refresh = async (session: RuntimeSession) => {
     const nextPaneState = await loadPaneState(session, session.agents)
+    if (!deps.isCurrentSession(session.id)) return
 
     deps.pruneAuxiliaryAgentPanes(session)
     deps.setCollapsedTurnIdsByAgent(nextPaneState.collapsedTurnIdsByAgent)

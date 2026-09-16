@@ -37,6 +37,7 @@ pub(in crate::provider) fn drain_opencode_events(
     let mut completions = Vec::new();
     let mut prompt_completed = false;
     let mut terminal_failure = None;
+    let mut explicit_provider_error = false;
     let mut notices = Vec::new();
     let mut resolved_model = None;
     let mut resolved_model_source = None;
@@ -83,6 +84,8 @@ pub(in crate::provider) fn drain_opencode_events(
                             &mut completions,
                             &mut notices,
                             &mut terminal_failure,
+                            &mut explicit_provider_error,
+                            true,
                             &mut prompt_completed,
                             drain_active_user_message_id.as_deref(),
                         );
@@ -167,19 +170,22 @@ pub(in crate::provider) fn drain_opencode_events(
                         &mut completions,
                         &mut notices,
                         &mut terminal_failure,
+                        &mut explicit_provider_error,
+                        true,
                         &mut prompt_completed,
                         drain_active_user_message_id.as_deref(),
                     );
                 }
             }
-            Ok(OpenCodeEvent::SessionStatus { session_id, kind }) => {
+            Ok(OpenCodeEvent::SessionStatus { session_id, status }) => {
                 if session_id == state.session_id {
-                    if state.last_status_kind.as_deref() != Some(kind.as_str()) {
-                        state.last_status_kind = Some(kind.clone());
+                    let kind = &status.kind;
+                    if state.last_status.as_ref() != Some(&status) {
+                        state.last_status = Some(status.clone());
                         chunks.push(OpenCodeOutputChunk {
                             kind: TerminalOutputKind::ProviderStatus,
-                            merge_key: Some(session_status_merge_key(&kind).to_string()),
-                            bytes: format_session_status(&kind).into_bytes(),
+                            merge_key: Some(session_status_merge_key(kind).to_string()),
+                            bytes: format_session_status(&status).into_bytes(),
                         });
                     }
                     if state.active_user_message_id.is_some() {
@@ -207,6 +213,8 @@ pub(in crate::provider) fn drain_opencode_events(
                                     &mut completions,
                                     &mut notices,
                                     &mut terminal_failure,
+                                    &mut explicit_provider_error,
+                                    true,
                                     &mut prompt_completed,
                                     drain_active_user_message_id.as_deref(),
                                 );
@@ -283,11 +291,13 @@ pub(in crate::provider) fn drain_opencode_events(
                         &snapshot.messages,
                     );
                     chunks.extend(snapshot_chunks.chunks);
-                    if state.last_status_kind.as_deref() != Some(snapshot.status.as_str()) {
-                        state.last_status_kind = Some(snapshot.status.clone());
+                    if state.last_status.as_ref() != Some(&snapshot.status) {
+                        state.last_status = Some(snapshot.status.clone());
                         chunks.push(OpenCodeOutputChunk {
                             kind: TerminalOutputKind::ProviderStatus,
-                            merge_key: Some(session_status_merge_key(&snapshot.status).to_string()),
+                            merge_key: Some(
+                                session_status_merge_key(&snapshot.status.kind).to_string(),
+                            ),
                             bytes: format_session_status(&snapshot.status).into_bytes(),
                         });
                     }
@@ -304,6 +314,8 @@ pub(in crate::provider) fn drain_opencode_events(
                             &mut completions,
                             &mut notices,
                             &mut terminal_failure,
+                            &mut explicit_provider_error,
+                            true,
                             &mut prompt_completed,
                             drain_active_user_message_id.as_deref(),
                         );
@@ -313,13 +325,13 @@ pub(in crate::provider) fn drain_opencode_events(
                         if !snapshot_completions.is_empty() {
                             completions.extend(snapshot_completions);
                         }
-                        if snapshot.status == "idle"
+                        if snapshot.status.kind == "idle"
                             && opencode_messages_complete_active_prompt(state, &snapshot.messages)
                         {
                             prompt_completed = true;
                             state.active_terminal_assistant_message_id = None;
                             state.active_user_message_id = None;
-                        } else if snapshot.status == "idle"
+                        } else if snapshot.status.kind == "idle"
                             && state.active_terminal_assistant_message_id.is_some()
                         {
                             prompt_completed = true;
@@ -335,12 +347,12 @@ pub(in crate::provider) fn drain_opencode_events(
     if state.active_user_message_id.is_some() && !prompt_completed {
         let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
         if let Ok(status) = client.session_status(&state.session_id) {
-            if status != "idle" {
-                if state.last_status_kind.as_deref() != Some(status.as_str()) {
-                    state.last_status_kind = Some(status.clone());
+            if status.kind != "idle" {
+                if state.last_status.as_ref() != Some(&status) {
+                    state.last_status = Some(status.clone());
                     chunks.push(OpenCodeOutputChunk {
                         kind: TerminalOutputKind::ProviderStatus,
-                        merge_key: Some(session_status_merge_key(&status).to_string()),
+                        merge_key: Some(session_status_merge_key(&status.kind).to_string()),
                         bytes: format_session_status(&status).into_bytes(),
                     });
                 }
@@ -391,6 +403,8 @@ pub(in crate::provider) fn drain_opencode_events(
                             &mut completions,
                             &mut notices,
                             &mut terminal_failure,
+                            &mut explicit_provider_error,
+                            true,
                             &mut prompt_completed,
                             drain_active_user_message_id.as_deref(),
                         );
@@ -413,16 +427,18 @@ pub(in crate::provider) fn drain_opencode_events(
                         &mut completions,
                         &mut notices,
                         &mut terminal_failure,
+                        &mut explicit_provider_error,
+                        false,
                         &mut prompt_completed,
                         drain_active_user_message_id.as_deref(),
                     );
                 }
                 if !prompt_completed && completion_confirmed {
-                    if state.last_status_kind.as_deref() != Some(status.as_str()) {
-                        state.last_status_kind = Some(status.clone());
+                    if state.last_status.as_ref() != Some(&status) {
+                        state.last_status = Some(status.clone());
                         chunks.push(OpenCodeOutputChunk {
                             kind: TerminalOutputKind::ProviderStatus,
-                            merge_key: Some(session_status_merge_key(&status).to_string()),
+                            merge_key: Some(session_status_merge_key(&status.kind).to_string()),
                             bytes: format_session_status(&status).into_bytes(),
                         });
                     }
@@ -439,6 +455,7 @@ pub(in crate::provider) fn drain_opencode_events(
         completions,
         prompt_completed,
         terminal_failure,
+        explicit_provider_error,
         notices,
         resolved_model,
         resolved_model_source,
@@ -455,12 +472,21 @@ fn record_terminal_failure(
     completions: &mut Vec<OpenCodeAssistantCompletion>,
     notices: &mut Vec<String>,
     terminal_failure: &mut Option<String>,
+    explicit_provider_error: &mut bool,
+    is_explicit_provider_error: bool,
     prompt_completed: &mut bool,
     drain_active_user_message_id: Option<&str>,
 ) {
     if terminal_failure.is_some() || drain_active_user_message_id.is_none() {
         return;
     }
+    let message = crate::provider::sanitize_provider_diagnostic(&message);
+    let message = if message.is_empty() {
+        "provider reported an explicit error".to_string()
+    } else {
+        message
+    };
+    *explicit_provider_error = is_explicit_provider_error;
     completions.clear();
     chunks.push(OpenCodeOutputChunk {
         kind: TerminalOutputKind::ProviderError,

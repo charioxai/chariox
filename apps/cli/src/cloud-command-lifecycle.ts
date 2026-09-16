@@ -1,4 +1,5 @@
 import type { RelayCloudProfile } from "./preferences.js"
+export { buildHostedCloudViewUrl } from "@chariox/kernel-client/slice-screen-viewer"
 
 export type RelayStatus = {
   configured: boolean

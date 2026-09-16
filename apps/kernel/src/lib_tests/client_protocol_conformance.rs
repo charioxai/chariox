@@ -230,10 +230,19 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
             BTreeMap::from([
                 (
                     "protocol_snapshots",
-                    vec![evidence(
-                        "apps/kernel/src/transport/relay_client/tests/subscriptions.rs",
-                        &["resume_from_event_id", "transport_resumed", "replay_gap"],
-                    )],
+                    vec![
+                        evidence(
+                            "apps/kernel/src/transport/relay_client/tests/subscriptions.rs",
+                            &["resume_from_event_id", "transport_resumed", "replay_gap"],
+                        ),
+                        evidence(
+                            "apps/kernel/src/transport/relay_client/request_errors.rs",
+                            &[
+                                "room_environment_state_uses_the_shared_relay_request_path",
+                                "environment.state.get",
+                            ],
+                        ),
+                    ],
                 ),
                 (
                     "version_rules",
@@ -283,14 +292,77 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
             BTreeMap::from([
                 (
                     "protocol_snapshots",
-                    vec![evidence(
-                        "apps/kernel/tests/kernel_websocket_integration/replay_resume.rs",
-                        &[
-                            "AttachToSessionRequest",
-                            "resume_from_event_id",
-                            "replay_gap",
-                        ],
-                    )],
+                    vec![
+                        evidence(
+                            "apps/kernel/tests/kernel_websocket_integration/replay_resume.rs",
+                            &[
+                                "AttachToSessionRequest",
+                                "resume_from_event_id",
+                                "replay_gap",
+                            ],
+                        ),
+                        evidence(
+                            "apps/kernel/src/local/api/tests/protocol_shapes/room_environment.rs",
+                            &[
+                                "LOCAL_DAEMON_PROTOCOL_VERSION",
+                                "GetRoomEnvironmentState",
+                                "GetRoomEnvironmentEvents",
+                                "StartRoomEnvironment",
+                                "StopRoomEnvironment",
+                                "RetryRoomEnvironment",
+                                "UpdateRoomEnvironmentViewport",
+                                "UpdateRoomEnvironmentPointer",
+                                "RequestRoomEnvironmentInputTakeover",
+                                "ReleaseRoomEnvironmentInput",
+                                "CancelRoomEnvironmentAction",
+                                "RoomEnvironmentState",
+                                "RoomEnvironmentEvents",
+                                "RoomEnvironmentUpdated",
+                                "RoomEnvironmentTakeoverUpdated",
+                                "RoomEnvironmentInputReleased",
+                                "RoomEnvironmentActionCancellationUpdated",
+                                "ListRoomEnvironmentActionHistory",
+                                "RoomEnvironmentActionHistoryListed",
+                                "submitted_at_ms",
+                                "process_lost",
+                                "presentation_color",
+                                "PointersChanged",
+                            ],
+                        ),
+                        evidence(
+                            "apps/kernel/src/local/api/tests/protocol_shapes/managed_context.rs",
+                            &[
+                                "LOCAL_DAEMON_PROTOCOL_VERSION",
+                                "ManagedContextTransferStatus",
+                                "completed_receipt_uses_public_camel_case_shape",
+                                "transferId",
+                                "archiveSha256",
+                                "receiptSha256",
+                            ],
+                        ),
+                        evidence(
+                            "packages/kernel-client/src/ipc-room-environment-requests.test.ts",
+                            &[
+                                "LOCAL_DAEMON_PROTOCOL_VERSION",
+                                "GetRoomEnvironmentState",
+                                "GetRoomEnvironmentEvents",
+                                "StartRoomEnvironment",
+                                "StopRoomEnvironment",
+                                "RetryRoomEnvironment",
+                                "UpdateRoomEnvironmentViewport",
+                                "UpdateRoomEnvironmentPointer",
+                                "RequestRoomEnvironmentInputTakeover",
+                                "ReleaseRoomEnvironmentInput",
+                                "CancelRoomEnvironmentAction",
+                                "listRoomEnvironmentActionHistoryRequest",
+                                "RoomEnvironmentActionHistoryResponse",
+                                "submitted_at_ms",
+                                "status: \"completed\"",
+                                "presentation_color",
+                                "PointersChanged",
+                            ],
+                        ),
+                    ],
                 ),
                 (
                     "version_rules",

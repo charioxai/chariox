@@ -151,13 +151,14 @@ The implemented drill modes are:
 
 `worker-resume` supports two worker-state modes:
 
-- `--worker-state shared`, the default, shares the normal provider home,
-  credential, data, and cache directories with the worker kernel.
+- `--worker-state shared`, the default, shares the normal ambient provider
+  environment with the worker daemon. Remote provider execution still uses the
+  distinct account profile materialized by the kernel, so the requested thread
+  state is transferred into that profile before launch.
 - `--worker-state isolated` gives the worker an isolated provider home, data,
   state, and cache root, then copies only temporary provider auth material into
-  a non-artifact temp directory. This is not a real slice, but it distinguishes
-  provider thread ids that are resumable with credentials only from provider
-  thread ids that require provider-local session state transfer.
+  a non-artifact temp directory. This is not a real slice; exact thread state is
+  still transferred into the kernel-materialized execution profile.
 
 Validated evidence on June 13, 2026:
 
@@ -311,11 +312,27 @@ Current executable conclusion:
 
 ```text
 same provider thread, different local provider process: yes for OpenCode and Codex
-same provider thread after same-host worker resume with shared state: yes for OpenCode and Codex
-same provider thread after same-host worker resume with isolated worker state: yes for Codex, no for OpenCode
+same provider thread after same-host worker resume into a kernel-materialized account profile: yes for OpenCode and Codex with exact thread-state transfer
 same provider thread after real slice save/restart with same Chariox agent record: yes for OpenCode and Codex
 same provider thread after live migration from local unsliced execution into a slice: yes for OpenCode, Codex, and Claude Code
 ```
+
+2026-09-05 revalidation supersedes the older shared-directory assumption for
+same-host workers. Remote account materialization intentionally gives the
+worker a distinct credential profile, even when the worker daemon inherits the
+same ambient provider directories. The drill now transfers only the requested
+thread after account materialization and before provider launch:
+
+- Codex copied one 53,782-byte rollout and passed exact-id resume plus marker
+  recall. Evidence:
+  `/Users/miguel/.codex/evidence/browser-computer-use/provider-thread-transfer/1788566636404-98359/matrix.json`.
+- OpenCode used its official `export` and `import` commands for one 8,620-byte
+  session export and passed exact-id resume plus marker recall. It did not copy
+  the 2.4 GB OpenCode database. Evidence:
+  `/Users/miguel/.codex/evidence/browser-computer-use/provider-thread-transfer/1788566852328-99346/matrix.json`.
+- Both drills removed their temporary credential and runtime roots. Neither
+  copies an entire provider home, data tree, cache, database, or unrelated
+  thread.
 
 Harness findings that matter for later drills:
 
@@ -344,10 +361,11 @@ Harness findings that matter for later drills:
   provider-local state. If it is missing, the existing binding creates a fresh
   session. The final transfer implementation must make that fallback
   non-silent for server-compliance moves.
-- Codex passed a credentials-only isolated worker resume in this environment
-  and then passed the real slice save/restart drill. The real slice pass
-  required the home kernel to project the worker provider run snapshot from
-  relay peer protocol version `3`.
+- The current Codex CLI requires its local rollout for `thread/resume`; a
+  credentials-only worker now fails with `no rollout found`. The exact rollout
+  transfer replaces the earlier credentials-only conclusion. The real slice
+  pass also requires the home kernel to project the worker provider run
+  snapshot from relay peer protocol version `3`.
 - OpenCode passed the real slice save/restart drill when provider-local slice
   state was preserved across `SaveSliceState(restart_agents)`.
 - The real slice save/restart drill proves continuity inside a slice lifecycle.

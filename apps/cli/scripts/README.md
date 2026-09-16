@@ -181,6 +181,141 @@ pnpm --filter @chariox/cli run multi-user-workflow:drill
 
 It launches a scoped-token relay plus a local kernel, connects three relay clients with different `user_id`s, joins them into one session through an invite, and verifies the live transport path for per-user agent visibility, workflow node ownership, cross-owner edge creation, unrelated edge-removal denial, stale workflow revision rejection, endpoint-owner invocation denial, incident-edge removal by node owner, and private node-instruction redaction. It uses `dev-stub` agents only, so it does not spend provider turns.
 
+## Room Environment M1 Drill
+
+Use this after changing the shared Room Environment contract, relay routing, actor reconciliation, event replay, or Action-history reads:
+
+```bash
+CARGO_TARGET_DIR=/absolute/shared/cargo-target \
+  pnpm --filter @chariox/cli run room-environment:m1-drill
+```
+
+Build `chariox-kernel` and `chariox-relay` in the selected Cargo target first. The drill launches one scoped-token relay, a home kernel, and a worker kernel on the same host. Two authenticated clients join one Room, then create one local and one worker-backed `dev-stub` agent. It proves both clients observe the same Environment identity, actors, canonical viewport, ordered event cursor, empty M1 Action history, and reconnect snapshot without duplicate events. Evidence and resource samples are stored under `~/.codex/evidence/browser-computer-use/m1/`; all drill-owned state, processes, and listeners are cleaned on success and failure.
+
+## Active browser, controller, and stream soak
+
+Run the deterministic short gate before starting the full eight-hour soak:
+
+```bash
+pnpm --filter @chariox/cli run browser-computer:soak -- --preflight
+pnpm --filter @chariox/cli run browser-computer:soak -- --smoke
+pnpm --filter @chariox/cli run browser-computer:soak -- --detach
+```
+
+Run all three commands from the same clean checkout and final runtime image,
+with the same limit flags and evidence root. Set `CHARIOX_SLICE_IMAGE` to the
+engine-local final-image tag (or digest) and `CHARIOX_SLICE_IMAGE_SIGNATURE_KEY`
+to its Cosign public key. Before preflight, each command resolves the image's
+immutable engine `RepoDigest`, verifies its Cosign signature, and verifies a
+signed `slsaprovenance` attestation bound to that digest. Set
+`CHARIOX_SOAK_RUNTIME_CONTAINER_ID` to the current container ID and make the
+selected container engine's inspect endpoint available in that container. The
+runner requires its hostname to be a prefix of that ID, then proves the running
+container's engine image ID and configured digest are the verified values. It also
+requires the image's `io.chariox.runtime-source-revision` label to match the clean
+checkout commit. The runner always launches Browser Controller, Selkies, and their
+runtime assets from `/opt/chariox-slice` and `/opt/chariox-selkies` in that image,
+never from the mounted checkout. All three gates therefore exercise that exact
+digest-bound container. A declared
+`CHARIOX_SLICE_IMAGE_ID`, a tag alone, and runtime file metadata are never
+accepted as image proof. Preflight and smoke receipts expire after one hour;
+detach refuses missing, stale, dirty, or mismatched source/tree, verified image,
+viewer backend, protocol, or limit evidence. Final detach additionally requires
+Selkies, source protocol 322 or newer, and at least 28,800 seconds.
+
+The real mode defaults to 28,800 seconds. `--duration-seconds` configures a
+bounded duration up to 24 hours; `--activity-interval-seconds` and
+`--sample-interval-seconds` control browser activity and resource sampling.
+The runner owns an isolated X display, Chromium profile and debugging port,
+one long-lived Browser Controller, and one read-only display-stream consumer.
+Every activity cycle changes the deterministic fixture through a stable
+controller reference, verifies the physical browser effect, performs physical
+Computer pointer input, reads the pointer before and after, and requires the
+requested coordinates independently of the animated page before requesting a
+video keyframe and capturing the screen.
+Monotonic cadence and final controller/stream freshness are mandatory. Samples
+bound owned CPU, RSS, process and open-file counts, owned disk inventory, and
+network-interface deltas only when every process sharing the runner's Linux
+network namespace belongs to its sampled process tree. Preflight fails closed
+when that attributable network isolation is unavailable.
+
+Evidence defaults to
+`~/.chariox/dev/browser-computer-use-soak/<run-id>/`. It contains the exact
+source identity and command, preflight baseline, runner and child logs,
+`runner.pid`, atomic `status.json`, monotonic JSONL activity and resource
+samples, `result.json`, a
+failure marker when applicable, and an explicit cleanup ledger. SIGINT,
+SIGTERM, assertion failures, and timeouts all use the same PID-scoped cleanup.
+The cleanup ledger uses PID start identity, verifies every owned listener and X
+display, and performs a bounded post-cleanup leak scan. The runner records its
+viewer backend without changing any serialized product protocol. noVNC evidence
+is diagnostic only and cannot close the final gate; Selkies becomes final-gate
+eligible exactly when local daemon protocol 322 is integrated. The runner never
+adopts or prunes an existing display, browser, or streamer.
+
+## Computer secret input protocol drill
+
+Use this after changing Computer credential policy, approval, relay resolution,
+desktop input transport, or Room Environment action recording:
+
+```bash
+CARGO_TARGET_DIR=/absolute/shared/cargo-target \
+  pnpm --filter @chariox/cli run computer-secret-input:drill
+```
+
+The drill first invokes the slice desktop helper with a one-time canary and
+proves it types into the existing X11 focus without the clipboard or browser
+controller. It then runs the public runtime-MCP path, including deny and allow
+approval outcomes, exact secret delivery, redacted MCP/action history, actor
+attribution, and the versioned remote-home credential proxy shape. Disposable
+state containing the canary is always deleted. Non-secret reports and test logs
+are written under
+`~/.codex/evidence/browser-computer-use/computer-secret-input/`.
+
+## Computer clipboard X11 drill
+
+Use this after changing the Computer clipboard helper or its container runtime:
+
+```bash
+pnpm --filter @chariox/cli run computer-clipboard:x11-drill
+```
+
+The drill reuses the existing slice image under explicit CPU, memory, process,
+and network limits. It runs the production helper against real Xvfb, Chromium,
+and `xclip`; checks exact empty, Unicode, whitespace, trailing-newline,
+repeat-read, and 256 KiB boundary behavior; forces an `xclip` write failure;
+scans helper output and slice logs; and verifies removal of the container and
+all plaintext temporary files. Retained evidence contains only digests, sizes,
+resource samples, and cleanup results under
+`~/.codex/evidence/browser-computer-use/computer-clipboard-x11/`.
+
+For an interruption-cleanup drill, set
+`CHARIOX_COMPUTER_CLIPBOARD_INTERRUPT_WINDOW_MS=30000`, start the command, and
+send `SIGINT` after the container starts. The command must fail with an
+interruption diagnostic, and its retained report must still record
+`containerRemoved: true` and `tempRootRemoved: true`. The window is test-only
+and bounded to 60 seconds.
+
+## Room clipboard end-to-end drill
+
+Use this after changing the Room clipboard authority, relay route, TUI Action
+projection, or physical slice adapter:
+
+```bash
+CARGO_TARGET_DIR=/absolute/shared/cargo-target \
+  pnpm --filter @chariox/cli run computer-clipboard:room-e2e-drill
+```
+
+The drill starts a local kernel, a scoped relay, a headed Selkies slice, one
+slice-bound agent, and direct local plus relay-attached remote TUIs. It proves
+that an agent clipboard write crosses the home-owned Room Action path to the
+real X11 clipboard, that human takeover rejects an agent write, and that a
+human write and read use the same physical clipboard without creating a read
+Action. Room history and both TUIs retain attribution and byte/character counts
+without retaining clipboard text. The run scans all disposable state and
+evidence for its clipboard canaries and removes its container, volume,
+processes, listeners, and temporary files on success or failure.
+
 ## Hosted Cloud Relay Drill
 
 Use this after touching Chariox Cloud device login, cloud relay pairing, hosted relay token issuance, or CLI/kernel relay setup:

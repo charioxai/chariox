@@ -99,7 +99,14 @@ pub fn export_development_context(
     }
 
     let manifest = DevelopmentContextManifest {
-        schema_version: DEVELOPMENT_CONTEXT_SCHEMA_VERSION,
+        schema_version: if repositories
+            .iter()
+            .any(|repository| !repository.workspace_kind.is_git())
+        {
+            DIRECTORY_CONTEXT_SCHEMA_VERSION
+        } else {
+            DEVELOPMENT_CONTEXT_SCHEMA_VERSION
+        },
         project_id: request.project_id,
         repositories,
     };
@@ -241,6 +248,20 @@ fn export_repository(
     ),
     DaemonError,
 > {
+    match fs::symlink_metadata(worktree.join(".git")) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return super::directory::export_directory(
+                selection,
+                worktree,
+                staging_root,
+                repository_ids,
+                target_directories,
+                manifest_budget,
+            );
+        }
+        Err(error) => return Err(context_io_error("inspect Git workspace metadata", error)),
+        Ok(_) => {}
+    }
     ensure_worktree_root(worktree)?;
     let source_before = repository_source_state(worktree)?;
     let source_estimate = inspect_export_repository(worktree)?;
@@ -321,6 +342,8 @@ fn export_repository(
 
     Ok((
         DevelopmentRepositoryManifest {
+            workspace_kind: DevelopmentWorkspaceKind::Git,
+            directories: Vec::new(),
             repository_id: repository_id.clone(),
             source_binding_sha256: source_repository_binding_sha256(
                 &DevelopmentSourceRepositoryBinding {
@@ -372,7 +395,7 @@ fn repository_source_state(worktree: &Path) -> Result<RepositorySourceState, Dae
     })
 }
 
-fn repository_logical_name(worktree: &Path, origin_url: Option<&str>) -> String {
+pub(super) fn repository_logical_name(worktree: &Path, origin_url: Option<&str>) -> String {
     let candidate = origin_url
         .and_then(|origin| origin.trim_end_matches('/').rsplit('/').next())
         .map(|name| name.trim_end_matches(".git"))
@@ -382,7 +405,7 @@ fn repository_logical_name(worktree: &Path, origin_url: Option<&str>) -> String 
     sanitize_directory_name(candidate)
 }
 
-fn unique_repository_id(
+pub(super) fn unique_repository_id(
     origin_url: Option<&str>,
     head_sha: &str,
     logical_name: &str,
@@ -408,7 +431,7 @@ fn unique_repository_id(
     unreachable!("repository id suffix space is unbounded")
 }
 
-fn unique_target_directory(
+pub(super) fn unique_target_directory(
     logical_name: &str,
     repository_id: &str,
     occupied: &mut BTreeSet<String>,

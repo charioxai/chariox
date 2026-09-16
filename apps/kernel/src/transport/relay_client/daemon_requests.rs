@@ -14,12 +14,26 @@ use crate::runtime_transport::command_cache::{
     request_is_cacheable, CommandFingerprint, CommandReservation, CommandResultCache,
 };
 use crate::transport::kernel_protocol::{
-    map_kernel_error, KernelOutgoingFrame, KernelTransportError,
+    map_kernel_error, BrowserImportRelayResponse, KernelOutgoingFrame, KernelTransportError,
 };
 use crate::transport::relay_crypto;
 
 use super::request_errors::{relay_error, relay_request_kind};
-use super::sender_identity::validate_bound_service_sender;
+use super::sender_identity::{
+    is_browser_import_request, require_browser_import_sender, validate_bound_service_sender,
+    validate_browser_import_sender,
+};
+
+const MAX_BROWSER_IMPORT_ENCRYPTED_BYTES: usize = 768 * 1024;
+const MAX_ACTIVE_BROWSER_IMPORT_DELIVERIES: usize = 32;
+static ACTIVE_BROWSER_IMPORT_DELIVERIES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+struct BrowserImportDeliveryGuard;
+impl Drop for BrowserImportDeliveryGuard {
+    fn drop(&mut self) {
+        ACTIVE_BROWSER_IMPORT_DELIVERIES.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(super) struct RelayRequestOutcome {
@@ -34,6 +48,21 @@ pub(super) async fn handle_daemon_request(
     encrypted_request: EncryptedRelayPayload,
     command_result_cache: &Arc<CommandResultCache>,
 ) -> RelayRequestOutcome {
+    if relay_crypto::validate_encrypted_payload_shape(
+        &encrypted_request,
+        MAX_BROWSER_IMPORT_ENCRYPTED_BYTES,
+    )
+    .is_err()
+    {
+        return RelayRequestOutcome {
+            encrypted_response: None,
+            error: Some(relay_error(
+                "invalid_request",
+                "invalid relay request payload",
+                false,
+            )),
+        };
+    }
     if let Err(error) = validate_bound_service_sender(caller_identity.as_ref(), &encrypted_request)
     {
         return RelayRequestOutcome {
@@ -41,7 +70,7 @@ pub(super) async fn handle_daemon_request(
             error: Some(error),
         };
     }
-    let (request, command_id, client_public_key, daemon_private_key) = {
+    let (message, client_public_key, daemon_private_key) = {
         let daemon_private_key = router.relay_private_key();
         let decrypted = match relay_crypto::decrypt_payload_for_private_key(
             &daemon_private_key,
@@ -72,14 +101,104 @@ pub(super) async fn handle_daemon_request(
                 };
             }
         };
-        (
-            request.request,
-            request.command_id,
-            decrypted.sender_public_key,
-            daemon_private_key,
-        )
+        (request, decrypted.sender_public_key, daemon_private_key)
     };
-    let request_kind = relay_request_kind(&request);
+    let (request_kind, command_id, bind_import_response, result) = match message {
+        ParsedRelayClientMessage::Request(request) => {
+            if let Err(error) = validate_browser_import_sender(
+                &request.request,
+                caller_identity.as_ref(),
+                &encrypted_request,
+            ) {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(error),
+                };
+            }
+            let request_kind = relay_request_kind(&request.request);
+            let bind_import_response = is_browser_import_request(&request.request);
+            let result = dispatch_relay_client_request(
+                router,
+                command_sequence,
+                caller_identity,
+                request.request,
+                request.command_id.clone(),
+                command_result_cache,
+            )
+            .await;
+            (
+                request_kind,
+                request.command_id,
+                bind_import_response,
+                result,
+            )
+        }
+        ParsedRelayClientMessage::BrowserImportDelivery(request) => {
+            if ACTIVE_BROWSER_IMPORT_DELIVERIES
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                    (active < MAX_ACTIVE_BROWSER_IMPORT_DELIVERIES).then_some(active + 1)
+                })
+                .is_err()
+            {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(relay_error(
+                        "browser_import_busy",
+                        "browser import capacity is exhausted",
+                        true,
+                    )),
+                };
+            }
+            let _delivery_guard = BrowserImportDeliveryGuard;
+            let identity =
+                match require_browser_import_sender(caller_identity.as_ref(), &encrypted_request) {
+                    Ok(identity) => identity.clone(),
+                    Err(error) => {
+                        return RelayRequestOutcome {
+                            encrypted_response: None,
+                            error: Some(error),
+                        }
+                    }
+                };
+            let command_id = format!(
+                "browser-import-delivery-{}-{}",
+                crate::session::unix_epoch_ms(),
+                command_sequence.fetch_add(1, Ordering::Relaxed)
+            );
+            let selection = request.selection.clone();
+            let metadata_request = LocalDaemonRequest::AuthorizeBrowserImportSource(
+                crate::local::BrowserImportSourceRequest {
+                    request_id: request.request_id.clone(),
+                    selection,
+                },
+            );
+            let command = KernelCommand::from_local_request_with_caller(
+                command_id.clone(),
+                KernelCommandSource::RelayClient,
+                KernelCaller::from_relay_identity(identity),
+                None,
+                None,
+                &metadata_request,
+            );
+            let result = router
+                .runtime_state()
+                .execute_browser_import_delivery(&command, request)
+                .await
+                .map(|results| {
+                    RelayDispatchOutcome::Response(serde_json::json!({
+                        "BrowserImportDelivered": {"results": results}
+                    }))
+                })
+                .unwrap_or_else(|_| {
+                    RelayDispatchOutcome::RelayError(relay_error(
+                        "browser_import_failed",
+                        "browser import failed or requires recovery",
+                        false,
+                    ))
+                });
+            ("browser_import_delivery", Some(command_id), true, result)
+        }
+    };
     let quiet_success_request =
         crate::runtime::command_latency::is_quiet_success_command_type(request_kind);
     if !quiet_success_request {
@@ -92,15 +211,6 @@ pub(super) async fn handle_daemon_request(
             }),
         );
     }
-    let result = dispatch_relay_client_request(
-        router,
-        command_sequence,
-        caller_identity,
-        request,
-        command_id,
-        command_result_cache,
-    )
-    .await;
     match result {
         RelayDispatchOutcome::Response(response) => {
             if !quiet_success_request {
@@ -112,7 +222,15 @@ pub(super) async fn handle_daemon_request(
                     }),
                 );
             }
-            let plaintext = match serde_json::to_vec(&response) {
+            let serialized = if bind_import_response {
+                serde_json::to_vec(&BrowserImportRelayResponse {
+                    request_nonce: encrypted_request.nonce.clone(),
+                    response,
+                })
+            } else {
+                serde_json::to_vec(&response)
+            };
+            let plaintext = match serialized {
                 Ok(bytes) => bytes,
                 Err(error) => {
                     return RelayRequestOutcome {
@@ -174,33 +292,53 @@ pub(super) async fn handle_daemon_request(
 }
 
 #[derive(Debug)]
+enum ParsedRelayClientMessage {
+    Request(ParsedRelayClientRequest),
+    BrowserImportDelivery(crate::runtime::browser_import_payload::BrowserImportDeliveryRequest),
+}
+
+#[derive(Debug)]
 struct ParsedRelayClientRequest {
     command_id: Option<String>,
     request: LocalDaemonRequest,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RelayClientRequestEnvelope {
     #[serde(default)]
     command_id: Option<String>,
     request: LocalDaemonRequest,
 }
 
-fn parse_relay_client_request(bytes: &[u8]) -> Result<ParsedRelayClientRequest, serde_json::Error> {
-    let value = serde_json::from_slice::<Value>(bytes)?;
-    if value.get("request").is_some() {
-        let envelope = serde_json::from_value::<RelayClientRequestEnvelope>(value)?;
-        return Ok(ParsedRelayClientRequest {
-            command_id: envelope
-                .command_id
-                .filter(|command_id| !command_id.trim().is_empty()),
-            request: envelope.request,
-        });
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrowserImportDeliveryEnvelope {
+    browser_import_delivery: crate::runtime::browser_import_payload::BrowserImportDeliveryRequest,
+}
+
+fn parse_relay_client_request(bytes: &[u8]) -> Result<ParsedRelayClientMessage, serde_json::Error> {
+    if let Ok(envelope) = serde_json::from_slice::<BrowserImportDeliveryEnvelope>(bytes) {
+        return Ok(ParsedRelayClientMessage::BrowserImportDelivery(
+            envelope.browser_import_delivery,
+        ));
     }
-    Ok(ParsedRelayClientRequest {
-        command_id: None,
-        request: serde_json::from_value(value)?,
-    })
+    if let Ok(envelope) = serde_json::from_slice::<RelayClientRequestEnvelope>(bytes) {
+        return Ok(ParsedRelayClientMessage::Request(
+            ParsedRelayClientRequest {
+                command_id: envelope
+                    .command_id
+                    .filter(|command_id| !command_id.trim().is_empty()),
+                request: envelope.request,
+            },
+        ));
+    }
+    Ok(ParsedRelayClientMessage::Request(
+        ParsedRelayClientRequest {
+            command_id: None,
+            request: serde_json::from_slice(bytes)?,
+        },
+    ))
 }
 
 enum RelayDispatchOutcome {
@@ -310,9 +448,51 @@ fn cached_relay_dispatch_outcome(
 }
 
 #[cfg(test)]
+#[path = "daemon_requests_browser_import_tests.rs"]
+mod browser_import_tests;
+
+#[cfg(test)]
 mod tests {
     use crate::agent::{AgentInstance, GridPosition, RemoteAgentBinding};
     use crate::local::LocalDaemonResponse;
+    use base64::Engine;
+
+    #[test]
+    fn encrypted_delivery_parser_keeps_cookie_payload_out_of_daemon_requests_and_debug() {
+        let generated_value = format!("generated-{}", crate::session::unix_epoch_ms());
+        let payload = serde_json::json!([{
+            "name":"session", "value":generated_value, "domain":"example.test", "path":"/"
+        }])
+        .to_string();
+        let envelope = serde_json::json!({
+            "browser_import_delivery": {
+                "request_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "selection": {
+                    "session_id":"room-1", "attachment_id":"attachment-1",
+                    "environment_id":"environment-1", "runtime_generation":1,
+                    "tab_id":"tab-1", "document_revision":1, "source_store_id":"normal",
+                    "domains":["example.test"], "partition_sites":[], "overwrite":false
+                },
+                "payload_base64":base64::engine::general_purpose::STANDARD.encode(payload.as_bytes())
+            }
+        });
+        let parsed = super::parse_relay_client_request(envelope.to_string().as_bytes()).unwrap();
+        let super::ParsedRelayClientMessage::BrowserImportDelivery(delivery) = parsed else {
+            panic!("delivery must not parse as a local daemon request")
+        };
+        assert!(!format!("{delivery:?}").contains(&generated_value));
+        let (_, _, decoded) = delivery.into_parts();
+        assert!(decoded.as_str().contains(&generated_value));
+
+        let mut public_request = envelope["browser_import_delivery"].clone();
+        public_request["selection"]["cookies"] = serde_json::json!([{}]);
+        assert!(super::parse_relay_client_request(
+            serde_json::json!({"request":public_request})
+                .to_string()
+                .as_bytes()
+        )
+        .is_err());
+    }
 
     #[test]
     fn relay_client_response_projection_redacts_remote_relay_token() {

@@ -69,9 +69,21 @@ impl std::fmt::Debug for RelayManagedSliceToken {
     }
 }
 
-/// Version 25 requires the home-selected execution profile on every leased prompt
-/// and retires the separate workflow-provider failure RPC.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 25;
+/// Version 44 requires cancellable uploads and upload execution receipt recovery.
+/// Version 45 requires cancellable browser configuration and execution receipt recovery.
+/// Version 46 requires cancellable browser lifecycle operations and receipt recovery.
+/// Version 47 carries the workspace kind in managed-context import receipts.
+/// Version 48 carries private browser-cookie import commands and bounded results.
+/// Version 50 carries bounded provider-run termination metadata across leased execution.
+/// Version 51 carries kernel-owned project-environment setup dispatch and status.
+/// Version 52 carries the source-selected managed-context plan in import arm requests.
+/// Version 53 carries the home-authoritative setup attempt on worker redispatch.
+/// Version 54 carries recipe and lockfile input attestations for worker setup.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 54;
+pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
+    "provider_launch_credential_required";
+pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
+pub const PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE: &str = "project_environment_setup_rejected";
 
 /// Home-selected execution identity for a leased prompt. Contains no credentials.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +92,16 @@ pub struct RelayAgentExecutionProfile {
     pub account_profile: String,
     pub model: Option<String>,
     pub effort: Option<String>,
+}
+
+/// Status returned by the worker for a project-environment setup operation.
+/// The definition is returned separately from the public status so the home
+/// kernel can persist it only after the worker reports measured validation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayProjectEnvironmentSetupStatus {
+    pub status: crate::local::ProjectEnvironmentSetupStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub definition: Option<crate::session::ProjectEnvironmentDefinition>,
 }
 
 impl From<&crate::agent::AgentInstance> for RelayAgentExecutionProfile {
@@ -105,6 +127,11 @@ pub enum RelayManagedContextTransferPhase {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayManagedContextImportedRepository {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::managed_context::development::DevelopmentWorkspaceKind::is_git"
+    )]
+    pub workspace_kind: crate::managed_context::development::DevelopmentWorkspaceKind,
     pub repository_id: String,
     pub role: crate::managed_context::development::DevelopmentRepositoryRole,
     pub target_directory: String,
@@ -226,11 +253,129 @@ pub struct RemoteExtensionInvocationContext {
     pub worker_machine_id: Option<String>,
 }
 
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteRoomBrowserRuntimeToolCall {
+    pub tool_name: String,
+    pub arguments: serde_json::Value,
+}
+
+impl std::fmt::Debug for RemoteRoomBrowserRuntimeToolCall {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RemoteRoomBrowserRuntimeToolCall")
+            .field("tool_name", &self.tool_name)
+            .field("arguments", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RemoteRoomBrowserRuntimeToolResult(
+    pub crate::transport::runtime_tools::RuntimeToolResult,
+);
+
+impl std::fmt::Debug for RemoteRoomBrowserRuntimeToolResult {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RemoteRoomBrowserRuntimeToolResult(<redacted>)")
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RemoteRoomComputerObservationCall {
+    ScreenStatus,
+    Ocr {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        artifact_id: Option<String>,
+    },
+    FindText {
+        query: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        artifact_id: Option<String>,
+    },
+}
+
+impl std::fmt::Debug for RemoteRoomComputerObservationCall {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ScreenStatus => formatter.write_str("ScreenStatus"),
+            Self::Ocr { .. } => formatter.write_str("Ocr(<redacted>)"),
+            Self::FindText { .. } => formatter.write_str("FindText(<redacted>)"),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RemoteRoomComputerObservationResult(
+    pub crate::transport::runtime_tools::RuntimeToolResult,
+);
+
+impl std::fmt::Debug for RemoteRoomComputerObservationResult {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RemoteRoomComputerObservationResult(<redacted>)")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RemoteCredentialSecretInjection {
     Browser { target_url: String },
+    Computer,
     Pty,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RemoteCredentialSecretInput(String);
+
+impl RemoteCredentialSecretInput {
+    pub fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    pub fn from_zeroizing(mut value: zeroize::Zeroizing<String>) -> Self {
+        Self(std::mem::take(&mut *value))
+    }
+
+    pub fn into_zeroizing(mut self) -> zeroize::Zeroizing<String> {
+        zeroize::Zeroizing::new(std::mem::take(&mut self.0))
+    }
+}
+
+impl Drop for RemoteCredentialSecretInput {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
+impl std::fmt::Debug for RemoteCredentialSecretInput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("[redacted remote credential secret input]")
+    }
+}
+
+/// One provider launch secret carried only inside an encrypted kernel-to-kernel
+/// request. The worker validates the provider/profile binding, moves the value
+/// into its in-memory launch environment, and never writes it to a provider
+/// credential file or durable kernel state.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteProviderLaunchCredential {
+    pub provider: String,
+    pub account_profile: String,
+    pub secret_input: RemoteCredentialSecretInput,
+}
+
+impl std::fmt::Debug for RemoteProviderLaunchCredential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RemoteProviderLaunchCredential")
+            .field("provider", &self.provider)
+            .field("account_profile", &self.account_profile)
+            .field("secret_input", &"[redacted]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -371,6 +516,32 @@ fn default_workspace_live_sync_invocation_attempt() -> u32 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerRequest {
+    RoomBrowserController {
+        session_id: String,
+        slice_id: String,
+        command: super::room_browser_controller::RoomBrowserControllerCommand,
+    },
+    OpenRoomDisplay {
+        session_id: String,
+        slice_id: String,
+        viewer_public_key: String,
+    },
+    CaptureRoomScreenshot {
+        session_id: String,
+        slice_id: String,
+    },
+    ReadRoomScreenshotChunk {
+        session_id: String,
+        slice_id: String,
+        artifact_id: String,
+        offset: u64,
+        max_bytes: u32,
+    },
+    ObserveRoomComputer {
+        session_id: String,
+        slice_id: String,
+        call: RemoteRoomComputerObservationCall,
+    },
     Ping {
         value: String,
     },
@@ -467,6 +638,8 @@ pub enum RelayPeerRequest {
             skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
         )]
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_launch_credential: Option<RemoteProviderLaunchCredential>,
     },
     SendLeasedNativeProviderInput {
         leased_agent_id: String,
@@ -501,6 +674,8 @@ pub enum RelayPeerRequest {
             skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
         )]
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_launch_credential: Option<RemoteProviderLaunchCredential>,
     },
     SteerLeasedPrompt {
         leased_agent_id: String,
@@ -529,6 +704,40 @@ pub enum RelayPeerRequest {
     },
     CancelLeasedPrompt {
         leased_agent_id: String,
+    },
+    StartLeasedProjectEnvironmentSetup {
+        leased_agent_id: String,
+        operation_id: String,
+        attempt: u32,
+        project_id: String,
+        home_session_id: String,
+        home_agent_id: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        workspace_id: String,
+        target_worker_id: String,
+        target_platform: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        definition: Option<crate::session::ProjectEnvironmentDefinition>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        validation_commands: Vec<String>,
+    },
+    GetLeasedProjectEnvironmentSetupStatus {
+        leased_agent_id: String,
+        operation_id: String,
+        home_session_id: String,
+        home_agent_id: String,
+    },
+    CancelLeasedProjectEnvironmentSetup {
+        leased_agent_id: String,
+        operation_id: String,
+        home_session_id: String,
+        home_agent_id: String,
+    },
+    RetryLeasedProjectEnvironmentSetup {
+        leased_agent_id: String,
+        operation_id: String,
+        home_session_id: String,
+        home_agent_id: String,
     },
     ForwardWorkflowRuntimeTool {
         context: RemoteWorkflowTurnContext,
@@ -559,6 +768,10 @@ pub enum RelayPeerRequest {
         context: RemoteWorkspaceLiveSyncContext,
         tool_name: String,
         arguments: serde_json::Value,
+    },
+    ForwardRoomBrowserRuntimeTool {
+        context: RemoteExtensionInvocationContext,
+        call: RemoteRoomBrowserRuntimeToolCall,
     },
     InvokeHomeExtensionTool {
         context: RemoteExtensionInvocationContext,
@@ -611,8 +824,7 @@ pub enum RelayPeerRequest {
         required_mcps: Vec<RequiredRemoteMcp>,
     },
     ArmManagedContextImport {
-        context_id: String,
-        plan_digest: String,
+        plan: crate::managed_context::package::ManagedContextPlanBinding,
         target_environment_id: String,
         target_kernel_id: String,
         target_key_thumbprint: String,
@@ -641,9 +853,34 @@ pub enum RelayPeerRequest {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerResponse {
+    RoomBrowserController {
+        session_id: String,
+        slice_id: String,
+        result: super::room_browser_controller::RoomBrowserControllerResult,
+    },
+    RoomDisplayOpened {
+        session_id: String,
+        slice_id: String,
+        endpoint: crate::slice::SliceDisplayEndpoint,
+    },
+    RoomScreenshotCaptured {
+        session_id: String,
+        slice_id: String,
+        artifact: crate::local::RoomEnvironmentScreenshotArtifact,
+    },
+    RoomScreenshotChunk {
+        session_id: String,
+        slice_id: String,
+        chunk: crate::local::RoomEnvironmentScreenshotChunk,
+    },
+    RoomComputerObserved {
+        session_id: String,
+        slice_id: String,
+        result: RemoteRoomComputerObservationResult,
+    },
     Pong {
         value: String,
         daemon_id: String,
@@ -724,6 +961,8 @@ pub enum RelayPeerResponse {
         provider_run_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_diagnostic: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_termination: Option<crate::provider::ProviderRunTermination>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         git_observations: Vec<RemoteGitObservation>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -739,6 +978,18 @@ pub enum RelayPeerResponse {
     },
     LeasedPromptCancelled {
         cancellation: PromptCancellation,
+    },
+    LeasedProjectEnvironmentSetupStarted {
+        setup: RelayProjectEnvironmentSetupStatus,
+    },
+    LeasedProjectEnvironmentSetupStatus {
+        setup: RelayProjectEnvironmentSetupStatus,
+    },
+    LeasedProjectEnvironmentSetupCancelled {
+        setup: RelayProjectEnvironmentSetupStatus,
+    },
+    LeasedProjectEnvironmentSetupRetried {
+        setup: RelayProjectEnvironmentSetupStatus,
     },
     WorkflowRuntimeToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,
@@ -761,6 +1012,9 @@ pub enum RelayPeerResponse {
     MetaRuntimeToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,
     },
+    RoomBrowserRuntimeToolHandled {
+        result: RemoteRoomBrowserRuntimeToolResult,
+    },
     HomeExtensionToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,
     },
@@ -776,7 +1030,7 @@ pub enum RelayPeerResponse {
     },
     HomeCredentialSecretResolved {
         credential_id: String,
-        secret_input: String,
+        secret_input: RemoteCredentialSecretInput,
     },
     WorkspaceLiveSyncChangeApplied {
         target_result: crate::git_observer::WorkspaceLiveSyncTargetResult,
@@ -824,6 +1078,8 @@ pub struct RelayProjectedCompletion {
     pub completed_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_prompt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_termination: Option<crate::provider::ProviderRunTermination>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -852,6 +1108,187 @@ pub enum RelayPeerEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn leased_completion_provider_termination_shape_is_versioned() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 54);
+        let completion = RelayProjectedCompletion {
+            message_id: "assistant-msg-1".to_string(),
+            completed_at_ms: 1_234,
+            home_prompt_id: Some("home-prompt-1".to_string()),
+            provider_termination: Some(crate::provider::ProviderRunTermination::process_exit(
+                137, 1_234,
+            )),
+        };
+        let snapshot = serde_json::to_value(completion).expect("completion should serialize");
+        assert_eq!(
+            snapshot.pointer("/provider_termination/category"),
+            Some(&serde_json::json!("process_exit")),
+        );
+        assert_eq!(
+            snapshot.pointer("/provider_termination/reason"),
+            Some(&serde_json::json!(
+                "provider process exited with status 137"
+            )),
+        );
+        assert_eq!(
+            snapshot.pointer("/provider_termination/timestamp_ms"),
+            Some(&serde_json::json!(1_234)),
+        );
+        let serialized = serde_json::to_string(&snapshot).expect("completion should encode");
+        let hash = Sha256::digest(serialized.as_bytes());
+        assert_eq!(
+            format!("{hash:x}"),
+            "33a761cae057a2577bc65fad2c73a002d42cabd29919aff086cea248f156a238",
+        );
+    }
+
+    #[test]
+    fn leased_completion_provider_termination_categories_are_wire_distinct() {
+        let cases = [
+            (
+                crate::provider::ProviderRunTermination::signal("SIGTERM", 1_234),
+                "signal",
+            ),
+            (
+                crate::provider::ProviderRunTermination::explicit_provider_error(
+                    "provider rejected request",
+                    1_235,
+                ),
+                "explicit_provider_error",
+            ),
+        ];
+
+        for (provider_termination, category) in cases {
+            let completion = RelayProjectedCompletion {
+                message_id: "assistant-msg-1".to_string(),
+                completed_at_ms: provider_termination.timestamp_ms,
+                home_prompt_id: Some("home-prompt-1".to_string()),
+                provider_termination: Some(provider_termination),
+            };
+            let snapshot = serde_json::to_value(completion)
+                .expect("termination category completion should serialize");
+            assert_eq!(
+                snapshot.pointer("/provider_termination/category"),
+                Some(&serde_json::json!(category)),
+            );
+        }
+    }
+
+    #[test]
+    fn project_environment_setup_relay_shapes_round_trip_at_protocol_54() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 54);
+        let definition = crate::session::ProjectEnvironmentDefinition {
+            schema_version: 1,
+            origin: crate::session::ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
+            source: crate::session::ProjectEnvironmentDefinitionSource::Devcontainer,
+            target_platform: "linux-x86_64".to_string(),
+            source_path: Some(".devcontainer/devcontainer.json".to_string()),
+            inputs: vec![
+                crate::session::ProjectEnvironmentInput {
+                    kind: crate::session::ProjectEnvironmentInputKind::Recipe,
+                    path: ".devcontainer/devcontainer.json".to_string(),
+                    sha256: format!("sha256:{}", "a".repeat(64)),
+                },
+                crate::session::ProjectEnvironmentInput {
+                    kind: crate::session::ProjectEnvironmentInputKind::Lockfile,
+                    path: "Cargo.lock".to_string(),
+                    sha256: format!("sha256:{}", "b".repeat(64)),
+                },
+            ],
+            setup_steps: vec![crate::session::ProjectEnvironmentSetupStep {
+                kind: crate::session::ProjectEnvironmentSetupStepKind::Command,
+                command: "command -v sh".to_string(),
+            }],
+            validation_commands: vec!["command -v sh".to_string()],
+        };
+        let requests = vec![
+            RelayPeerRequest::StartLeasedProjectEnvironmentSetup {
+                leased_agent_id: "leased-agent-1".to_string(),
+                operation_id: "setup-1".to_string(),
+                attempt: 2,
+                project_id: "project-1".to_string(),
+                home_session_id: "home-session-1".to_string(),
+                home_agent_id: "home-agent-1".to_string(),
+                workspace_id: "worker-worktree-1".to_string(),
+                target_worker_id: "worker-machine-1".to_string(),
+                target_platform: "linux-x86_64".to_string(),
+                definition: Some(definition.clone()),
+                validation_commands: Vec::new(),
+            },
+            RelayPeerRequest::GetLeasedProjectEnvironmentSetupStatus {
+                leased_agent_id: "leased-agent-1".to_string(),
+                operation_id: "setup-1".to_string(),
+                home_session_id: "home-session-1".to_string(),
+                home_agent_id: "home-agent-1".to_string(),
+            },
+            RelayPeerRequest::CancelLeasedProjectEnvironmentSetup {
+                leased_agent_id: "leased-agent-1".to_string(),
+                operation_id: "setup-1".to_string(),
+                home_session_id: "home-session-1".to_string(),
+                home_agent_id: "home-agent-1".to_string(),
+            },
+            RelayPeerRequest::RetryLeasedProjectEnvironmentSetup {
+                leased_agent_id: "leased-agent-1".to_string(),
+                operation_id: "setup-1".to_string(),
+                home_session_id: "home-session-1".to_string(),
+                home_agent_id: "home-agent-1".to_string(),
+            },
+        ];
+        let start_wire = serde_json::to_value(&requests[0]).expect("setup Start should encode");
+        assert_eq!(
+            start_wire.pointer("/attempt"),
+            Some(&serde_json::json!(2)),
+            "recovery Start must carry the home-authoritative attempt",
+        );
+        for request in requests {
+            let encoded = serde_json::to_value(&request).expect("setup request should encode");
+            let decoded: RelayPeerRequest =
+                serde_json::from_value(encoded).expect("setup request should decode");
+            assert_eq!(decoded, request);
+        }
+
+        let setup = RelayProjectEnvironmentSetupStatus {
+            status: crate::local::ProjectEnvironmentSetupStatus {
+                operation_id: "setup-1".to_string(),
+                project_id: "project-1".to_string(),
+                session_id: "home-session-1".to_string(),
+                agent_id: "home-agent-1".to_string(),
+                worker_id: "worker-machine-1".to_string(),
+                platform: "linux-x86_64".to_string(),
+                phase: crate::local::ProjectEnvironmentSetupPhase::Ready,
+                attempt: 1,
+                progress_percent: 100,
+                definition_digest: Some("sha256:definition".to_string()),
+                validation: None,
+                message: Some("ready".to_string()),
+                failure_code: None,
+                failure_message: None,
+                retryable: false,
+                created_at_ms: 1,
+                updated_at_ms: 2,
+            },
+            definition: Some(definition),
+        };
+        for response in [
+            RelayPeerResponse::LeasedProjectEnvironmentSetupStarted {
+                setup: setup.clone(),
+            },
+            RelayPeerResponse::LeasedProjectEnvironmentSetupStatus {
+                setup: setup.clone(),
+            },
+            RelayPeerResponse::LeasedProjectEnvironmentSetupCancelled {
+                setup: setup.clone(),
+            },
+            RelayPeerResponse::LeasedProjectEnvironmentSetupRetried { setup },
+        ] {
+            let encoded = serde_json::to_value(&response).expect("setup response should encode");
+            let decoded: RelayPeerResponse =
+                serde_json::from_value(encoded).expect("setup response should decode");
+            assert_eq!(decoded, response);
+        }
+    }
 
     #[test]
     fn retired_workflow_failure_forwarding_is_not_an_accepted_peer_protocol_path() {

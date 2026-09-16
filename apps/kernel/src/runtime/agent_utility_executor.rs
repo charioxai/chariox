@@ -8,11 +8,17 @@ use crate::error::DaemonError;
 use crate::local::{
     AgentUtilityInput, AgentUtilityKind, AgentUtilityOutput, AgentUtilityResult,
     GenerateWorkspaceCommitMessageRequest, LocalDaemonRequest, LocalDaemonResponse,
-    RunAgentUtilityRequest, SemanticRecallSearchUtilityInput, WorkspaceCommitMessageUtilityInput,
+    ProjectEnvironmentSetupUtilityInput, RunAgentUtilityRequest, SemanticRecallSearchUtilityInput,
+    WorkspaceCommitMessageUtilityInput,
 };
 use crate::provider::{ProviderRunState, RuntimeProviderRun};
 use crate::runtime::history_requests::{
     knn_semantic_recall_search, semantic_recall_request_from_utility_input,
+};
+use crate::runtime::project_environment_setup_utility::{
+    parse_project_environment_setup_utility_output,
+    parse_project_environment_setup_utility_output_for_repair,
+    project_environment_setup_utility_prompt_assembly,
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::semantic_recall_utility::{
@@ -103,6 +109,57 @@ pub(crate) async fn run_agent_utility(
         &request.kind,
     )
     .await?;
+    run_agent_utility_on_provider_run(runtime_state, archive_config, request, provider_run).await
+}
+
+pub(crate) async fn run_agent_utility_on_provider_run(
+    runtime_state: &KernelRuntimeState,
+    archive_config: UserArchiveHistoryConfig,
+    request: RunAgentUtilityRequest,
+    provider_run: RuntimeProviderRun,
+) -> Result<AgentUtilityResult, DaemonError> {
+    run_agent_utility_on_provider_run_with_policy(
+        runtime_state,
+        archive_config,
+        request,
+        provider_run,
+        false,
+    )
+    .await
+}
+
+pub(crate) async fn run_agent_utility_on_provider_run_for_project_environment_repair(
+    runtime_state: &KernelRuntimeState,
+    archive_config: UserArchiveHistoryConfig,
+    request: RunAgentUtilityRequest,
+    provider_run: RuntimeProviderRun,
+) -> Result<AgentUtilityResult, DaemonError> {
+    run_agent_utility_on_provider_run_with_policy(
+        runtime_state,
+        archive_config,
+        request,
+        provider_run,
+        true,
+    )
+    .await
+}
+
+async fn run_agent_utility_on_provider_run_with_policy(
+    runtime_state: &KernelRuntimeState,
+    archive_config: UserArchiveHistoryConfig,
+    request: RunAgentUtilityRequest,
+    provider_run: RuntimeProviderRun,
+    allow_project_environment_repair: bool,
+) -> Result<AgentUtilityResult, DaemonError> {
+    if provider_run.session_id() != request.session_id.as_str()
+        || provider_run.agent_instance_id() != Some(request.agent_id.as_str())
+        || provider_run.state() != ProviderRunState::Running
+    {
+        return Err(DaemonError::LocalTransport {
+            operation: agent_utility_operation(&request.kind),
+            message: "pinned provider runtime does not match the utility target".to_string(),
+        });
+    }
     let output = match (&request.kind, request.input) {
         (
             AgentUtilityKind::WorkspaceCommitMessage,
@@ -117,6 +174,18 @@ pub(crate) async fn run_agent_utility(
         ) => {
             run_semantic_recall_search_utility(runtime_state, archive_config, provider_run, input)
                 .await?
+        }
+        (
+            AgentUtilityKind::ProjectEnvironmentSetup,
+            AgentUtilityInput::ProjectEnvironmentSetup(input),
+        ) => {
+            run_project_environment_setup_utility(
+                runtime_state,
+                provider_run,
+                input,
+                allow_project_environment_repair,
+            )
+            .await?
         }
         (kind, _) => {
             return Err(DaemonError::LocalTransport {
@@ -135,7 +204,7 @@ pub(crate) async fn run_agent_utility(
     })
 }
 
-async fn assert_agent_utility_can_run(
+pub(crate) async fn assert_agent_utility_can_run(
     runtime_state: &KernelRuntimeState,
     session_id: &str,
     agent_id: &str,
@@ -208,10 +277,41 @@ async fn run_semantic_recall_search_utility(
     })
 }
 
+async fn run_project_environment_setup_utility(
+    runtime_state: &KernelRuntimeState,
+    provider_run: RuntimeProviderRun,
+    input: ProjectEnvironmentSetupUtilityInput,
+    allow_definition_revision: bool,
+) -> Result<AgentUtilityOutput, DaemonError> {
+    let prompt = project_environment_setup_utility_prompt_assembly(&input)?;
+    let output = run_provider_utility_prompt(
+        runtime_state,
+        provider_run,
+        prompt.into(),
+        "run project environment setup utility",
+    )
+    .await?;
+    let definition = if allow_definition_revision {
+        parse_project_environment_setup_utility_output_for_repair(
+            &output,
+            input.definition.as_ref(),
+            &input.target_platform,
+        )?
+    } else {
+        parse_project_environment_setup_utility_output(
+            &output,
+            input.definition.as_ref(),
+            &input.target_platform,
+        )?
+    };
+    Ok(AgentUtilityOutput::ProjectEnvironmentSetup { definition })
+}
+
 fn agent_utility_operation(kind: &AgentUtilityKind) -> &'static str {
     match kind {
         AgentUtilityKind::WorkspaceCommitMessage => "run workspace commit message utility",
         AgentUtilityKind::SemanticRecallSearch => "run semantic recall search utility",
+        AgentUtilityKind::ProjectEnvironmentSetup => "run project environment setup utility",
     }
 }
 
@@ -278,6 +378,19 @@ impl From<crate::runtime::semantic_recall_utility::SemanticRecallSearchUtilityPr
     }
 }
 
+impl From<crate::runtime::project_environment_setup_utility::ProjectEnvironmentSetupUtilityPrompt>
+    for AgentUtilityPromptParts
+{
+    fn from(
+        value: crate::runtime::project_environment_setup_utility::ProjectEnvironmentSetupUtilityPrompt,
+    ) -> Self {
+        Self {
+            visible_user_prompt: value.visible_user_prompt,
+            hidden_system_context: value.hidden_system_context,
+        }
+    }
+}
+
 fn random_hex_id() -> String {
     let mut bytes = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut bytes);
@@ -304,6 +417,10 @@ mod tests {
         assert_eq!(
             agent_utility_operation(&AgentUtilityKind::SemanticRecallSearch),
             "run semantic recall search utility"
+        );
+        assert_eq!(
+            agent_utility_operation(&AgentUtilityKind::ProjectEnvironmentSetup),
+            "run project environment setup utility"
         );
     }
 }

@@ -1,5 +1,5 @@
 [Unit]
-Description=Chariox managed rootless Docker daemon
+Description=Chariox managed rootless Docker lifecycle
 After=network-online.target
 Wants=network-online.target
 
@@ -11,23 +11,27 @@ Environment=HOME=/var/lib/chariox-docker/home
 Environment=XDG_RUNTIME_DIR=/run/chariox-docker
 Environment=DOCKER_HOST=unix:///run/chariox-docker/docker.sock
 Environment=PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
-ExecStart=/usr/share/docker.io/contrib/dockerd-rootless.sh --host=unix:///run/chariox-docker/docker.sock --data-root=/var/lib/chariox-docker/data --exec-opt native.cgroupdriver=cgroupfs
-Restart=on-failure
+ExecStartPre=+/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-rootless-service.sh prepare
+ExecStart=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-rootless-service.sh start
+ExecStartPost=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-rootless-service.sh ready
+# ExecStopPost also runs when startup fails or the adapter is killed.
+ExecStopPost=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-rootless-service.sh stop
+Restart=always
 RestartSec=2s
 KillMode=mixed
-Delegate=yes
+TimeoutStopSec=75s
+TimeoutStartSec=80s
 RuntimeDirectory=chariox-docker
 RuntimeDirectoryMode=0700
 StateDirectory=chariox-docker
 StateDirectoryMode=0700
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
+ProtectHome=read-only
 ProtectKernelTunables=false
 ProtectKernelModules=true
-# OCI layers may contain setuid/setgid metadata. The daemon remains an
-# unprivileged user inside its rootless user namespace.
-RestrictSUIDSGID=false
+NoNewPrivileges=true
+RestrictSUIDSGID=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 ReadWritePaths=/var/lib/chariox-docker /var/lib/chariox-slice-share/.broker-private /var/lib/chariox-slice-share/slices/development /run/chariox-docker
 UMask=0077

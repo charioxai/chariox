@@ -10,7 +10,7 @@ use super::provider_run_read::ProviderRunReadService;
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum ProviderRunExitPromptSettlement {
     FinalizeCancellation,
-    CompleteActivePrompt,
+    FailActivePrompt,
     SyncIdleProvider,
 }
 
@@ -18,7 +18,7 @@ impl ProviderRunExitPromptSettlement {
     fn from_active_prompt_status(active_prompt_status: Option<PromptStatus>) -> Self {
         match active_prompt_status {
             Some(PromptStatus::Cancelling) => Self::FinalizeCancellation,
-            Some(_) => Self::CompleteActivePrompt,
+            Some(_) => Self::FailActivePrompt,
             None => Self::SyncIdleProvider,
         }
     }
@@ -34,6 +34,7 @@ struct ProviderRunLivenessOutcome {
     session_id: String,
     provider_run_id: String,
     agent_id: String,
+    provider_termination: Option<crate::provider::ProviderRunTermination>,
     transition: ProviderRunLivenessTransition,
 }
 
@@ -59,15 +60,41 @@ pub(crate) struct ProviderRunExitSessionSummary {
 
 struct ProviderRunLivenessProcesses;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderProcessExit {
+    pub(crate) exit_code: Option<u32>,
+    pub(crate) signal: Option<String>,
+    pub(crate) terminal_diagnostic: Option<String>,
+}
+
 impl ProviderRunLivenessProcesses {
-    fn poll_process_running(
+    fn poll_process_exit(
         app: &mut DaemonApp,
         provider_run_id: &str,
-    ) -> Result<bool, DaemonError> {
+    ) -> Result<Option<ProviderProcessExit>, DaemonError> {
         match app.pty.poll_process_state(provider_run_id) {
-            Ok(PtyProcessState::Running) => Ok(true),
-            Ok(PtyProcessState::Exited) => Ok(false),
-            Err(DaemonError::PtyProcessNotFound { .. }) => Ok(false),
+            Ok(PtyProcessState::Running) => Ok(None),
+            Ok(PtyProcessState::Exited { exit_code, signal }) => {
+                let terminal_diagnostic = app
+                    .pty
+                    .drain_output(provider_run_id)?
+                    .into_iter()
+                    .map(|chunk| String::from_utf8_lossy(&chunk.bytes).into_owned())
+                    .collect::<String>();
+                let terminal_diagnostic =
+                    crate::provider::sanitize_provider_diagnostic(&terminal_diagnostic);
+                Ok(Some(ProviderProcessExit {
+                    exit_code,
+                    signal,
+                    terminal_diagnostic: (!terminal_diagnostic.is_empty())
+                        .then_some(terminal_diagnostic),
+                }))
+            }
+            Err(DaemonError::PtyProcessNotFound { .. }) => Ok(Some(ProviderProcessExit {
+                exit_code: None,
+                signal: None,
+                terminal_diagnostic: None,
+            })),
             Err(error) => Err(error),
         }
     }
@@ -120,11 +147,11 @@ impl ProviderRunLivenessState {
     }
 }
 
-pub(super) fn poll_provider_run_process_running(
+pub(super) fn poll_provider_run_process_exit(
     app: &mut DaemonApp,
     provider_run_id: &str,
-) -> Result<bool, DaemonError> {
-    ProviderRunLivenessProcesses::poll_process_running(app, provider_run_id)
+) -> Result<Option<ProviderProcessExit>, DaemonError> {
+    ProviderRunLivenessProcesses::poll_process_exit(app, provider_run_id)
 }
 
 pub(super) fn clear_active_provider_run_session_pointer(
@@ -180,11 +207,12 @@ impl ProviderRunLivenessSessionEffects {
                 )?
                 .started_next
                 .is_some(),
-            ProviderRunExitPromptSettlement::CompleteActivePrompt => app
-                .complete_active_prompt(
+            ProviderRunExitPromptSettlement::FailActivePrompt => app
+                .fail_active_prompt_with_termination(
                     &outcome.session_id,
                     &outcome.agent_id,
                     Some(&outcome.provider_run_id),
+                    outcome.provider_termination.clone(),
                 )?
                 .started_next
                 .is_some(),
@@ -231,7 +259,7 @@ impl<'a> ProviderRunLivenessRuntime<'a> {
 
         let session_outcome =
             ProviderRunLivenessSessionEffects::apply_provider_exit(self.app, &outcome)?;
-        if session_outcome.cancelled_prompt {
+        if !session_outcome.had_active_prompt || session_outcome.cancelled_prompt {
             return Ok(true);
         }
         ProviderRunLivenessNotices::record_provider_exit(
@@ -242,14 +270,10 @@ impl<'a> ProviderRunLivenessRuntime<'a> {
                 "Provider run `{}` for `{}` ended unexpectedly. {}",
                 outcome.provider_run_id,
                 outcome.ended_run.provider(),
-                if session_outcome.had_active_prompt {
-                    if session_outcome.started_next_prompt {
-                        "The active prompt was closed and Chariox advanced the queued backlog onto the next available provider run."
-                    } else {
-                        "The active prompt was closed without starting the queued backlog."
-                    }
+                if session_outcome.started_next_prompt {
+                    "The active prompt was closed and Chariox advanced the queued backlog onto the next available provider run."
                 } else {
-                    "No active prompt was running."
+                    "The active prompt was closed without starting the queued backlog."
                 }
             ),
         );
@@ -287,6 +311,7 @@ impl<'a> ProviderRunLivenessRuntime<'a> {
                     session_id: session_id.to_string(),
                     provider_run_id: provider_run_id.to_string(),
                     agent_id,
+                    provider_termination: None,
                     transition: ProviderRunLivenessTransition::AlreadyEnded,
                 }));
             }
@@ -295,13 +320,23 @@ impl<'a> ProviderRunLivenessRuntime<'a> {
             ProviderRunLivenessReconciliation::StillRunning(_) => {}
         }
 
-        let process_running =
-            ProviderRunLivenessProcesses::poll_process_running(self.app, provider_run_id)?;
+        let process_exit =
+            ProviderRunLivenessProcesses::poll_process_exit(self.app, provider_run_id)?;
+        if let Some(diagnostic) = process_exit
+            .as_ref()
+            .and_then(|exit| exit.terminal_diagnostic.as_deref())
+        {
+            let run = self
+                .app
+                .providers
+                .record_terminal_diagnostic(provider_run_id, diagnostic.to_string())?;
+            self.app.update_provider_run_projection(run);
+        }
         let ended_run = match ProviderRunLivenessState::reconcile_run_liveness(
             self.app,
             session_id,
             provider_run_id,
-            Some(process_running),
+            Some(process_exit.is_none()),
         )? {
             ProviderRunLivenessReconciliation::AlreadyEnded(run)
             | ProviderRunLivenessReconciliation::NewlyEnded(run) => run,
@@ -310,12 +345,28 @@ impl<'a> ProviderRunLivenessRuntime<'a> {
         };
         self.app.update_provider_run_projection(ended_run.clone());
         let _ = ProviderRunLivenessProcesses::remove_tracked_process(self.app, provider_run_id)?;
+        let provider_termination = process_exit.as_ref().map(|process_exit| {
+            match (process_exit.exit_code, process_exit.signal.as_deref()) {
+                (Some(exit_code), _) => crate::provider::ProviderRunTermination::process_exit(
+                    exit_code,
+                    crate::session::unix_epoch_ms(),
+                ),
+                (None, Some(signal)) => crate::provider::ProviderRunTermination::signal(
+                    signal,
+                    crate::session::unix_epoch_ms(),
+                ),
+                (None, None) => crate::provider::ProviderRunTermination::unknown_process_exit(
+                    crate::session::unix_epoch_ms(),
+                ),
+            }
+        });
 
         Ok(Some(ProviderRunLivenessOutcome {
             ended_run,
             session_id: session_id.to_string(),
             provider_run_id: provider_run_id.to_string(),
             agent_id,
+            provider_termination,
             transition: ProviderRunLivenessTransition::UnexpectedExit,
         }))
     }
@@ -384,6 +435,7 @@ mod tests {
             session_id: session.id().to_string(),
             provider_run_id: run.id().to_string(),
             agent_id: agent.id().to_string(),
+            provider_termination: None,
             transition: ProviderRunLivenessTransition::UnexpectedExit,
         };
 
@@ -419,3 +471,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod terminal_diagnostic_loss;

@@ -27,10 +27,13 @@ SLICE_OWNER_KERNEL_ID="${CHARIOX_SLICE_OWNER_KERNEL_ID:-}"
 SLICE_OWNER_MACHINE_ID="${CHARIOX_SLICE_OWNER_MACHINE_ID:-}"
 SLICE_OWNER_PUBLIC_KEY="${CHARIOX_SLICE_OWNER_PUBLIC_KEY:-}"
 CAPABILITY_ISOLATION_ROOT="${CHARIOX_SLICE_CAPABILITY_ISOLATION_ROOT:-$HOME/.chariox/managed-capabilities}"
-PROVIDER_HOME="${CHARIOX_MANAGED_PROVIDER_HOME:-$HOME/provider-home}"
+BROWSER_DOWNLOAD_DIR="${CHARIOX_BROWSER_DOWNLOAD_DIR:-$HOME/Downloads}"
+BROWSER_UPLOAD_ROOTS="${CHARIOX_BROWSER_UPLOAD_ROOTS:-/workspace:$BROWSER_DOWNLOAD_DIR}"
+PROVIDER_HOME="${CHARIOX_MANAGED_PROVIDER_HOME:-$HOME/.chariox/provider-home}"
 PROVIDER_ISOLATION_PROBE="${CHARIOX_MANAGED_PROVIDER_ISOLATION_PROBE:-0}"
 mkdir -p "$LOGS"
 mkdir -p "$CAPABILITY_ISOLATION_ROOT"
+mkdir -p "$BROWSER_DOWNLOAD_DIR"
 mkdir -p "$HOME/.chariox" /tmp/chariox-slice-state
 mkdir -p "$HOME/.chariox/daemon"
 install -d -m 0700 "$PROVIDER_HOME" "$ROOT/private"
@@ -126,18 +129,15 @@ dd if=/dev/urandom bs=48 count=1 status=none | base64 | tr -d '\n' >"$KERNEL_LOC
 chmod 600 "$KERNEL_LOCAL_AUTH_FILE"
 
 provider_probe_kernel_env=()
-provider_probe_unselected="/tmp/chariox-managed-isolation-unselected-repository"
 provider_probe_result="/workspace/.chariox-managed-isolation-probe.result"
 if [[ "$PROVIDER_ISOLATION_PROBE" == "1" ]]; then
   real_codex="$(command -v codex)"
   [[ -x "$real_codex" ]] || { printf '[slice-runtime] real Codex executable is unavailable\n' >&2; exit 1; }
-  mkdir -p "$provider_probe_unselected"
   provider_probe_kernel_env=(
     CHARIOX_CODEX_BIN="$ROOT/managed-provider-isolation-probe-wrapper.sh"
     CHARIOX_MANAGED_ISOLATION_REAL_PROVIDER="$real_codex"
     CHARIOX_MANAGED_ISOLATION_PROBE_WORKSPACE="/workspace"
     CHARIOX_MANAGED_ISOLATION_PROBE_RESULT="$provider_probe_result"
-    CHARIOX_MANAGED_ISOLATION_PROBE_UNSELECTED_REPOSITORY="$provider_probe_unselected"
   )
 fi
 
@@ -158,8 +158,13 @@ screen -dmS chariox-slice-kernel env \
   CHARIOX_SLICE_OWNER_MACHINE_ID="$SLICE_OWNER_MACHINE_ID" \
   CHARIOX_MANAGED_SLICE_RELAY_OWNER_PUBLIC_KEY="$SLICE_OWNER_PUBLIC_KEY" \
   CHARIOX_CAPABILITY_ISOLATION_ROOT="$CAPABILITY_ISOLATION_ROOT" \
+  CHARIOX_BROWSER_CONTROLLER_SCRIPT="$ROOT/browser-controller.mjs" \
+  CHARIOX_BROWSER_IMPORT_MODULE="$ROOT/browser-session-import/production-destination.mjs" \
+  CHARIOX_BROWSER_DOWNLOAD_DIR="$BROWSER_DOWNLOAD_DIR" \
+  CHARIOX_BROWSER_UPLOAD_ROOTS="$BROWSER_UPLOAD_ROOTS" \
   CHARIOX_MANAGED_PROVIDER_ISOLATION=1 \
   CHARIOX_MANAGED_PROVIDER_HOME="$PROVIDER_HOME" \
+  CHARIOX_MANAGED_PROVIDER_BWRAP="/usr/local/libexec/chariox/managed-provider-bwrap" \
   CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE="$KERNEL_LOCAL_AUTH_FILE" \
   "${provider_probe_kernel_env[@]}" \
   CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT=1 \
@@ -181,11 +186,9 @@ if [[ "$PROVIDER_ISOLATION_PROBE" == "1" ]]; then
     cat "$provider_probe_log" >&2
     screen -S chariox-slice-kernel -X quit >/dev/null 2>&1 || true
     unset KERNEL_LOCAL_AUTH_TOKEN
-    rmdir "$provider_probe_unselected" >/dev/null 2>&1 || true
     exit 1
   fi
   cat "$provider_probe_log"
-  rmdir "$provider_probe_unselected" >/dev/null 2>&1 || true
 fi
 unset KERNEL_LOCAL_AUTH_TOKEN
 screen -ls | sed -n '/chariox-slice-/p'

@@ -1,5 +1,60 @@
 use super::*;
 
+#[tokio::test]
+async fn failed_turn_history_request_preserves_settlement_after_store_reopen() {
+    let path = std::env::temp_dir().join(format!(
+        "chariox-failed-history-{}-{}.db", std::process::id(), rand::random::<u64>()
+    ));
+    let context = HistoryEventTurnContext {
+        session_id: Some("session-1".into()),
+        agent_id: Some("agent-1".into()),
+        turn_id: Some("prompt-1".into()),
+        prompt_id: Some("prompt-1".into()),
+        provider_run_id: Some("run-1".into()),
+        ..HistoryEventTurnContext::default()
+    };
+    {
+        let store = OperationalHistoryStore::open(path.clone()).expect("open history");
+        let mut prompt = HistoryEvent::transcript(
+            1,
+            &SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "run check"),
+            context.clone(),
+        );
+        prompt.timestamp_ms = 9_000;
+        let settlement = HistoryEvent::operational(
+            2,
+            HistoryEventKind::ProviderStatus,
+            Some(crate::history::HistoryEventRole::System),
+            None,
+            BTreeMap::from([
+                (crate::history::PROMPT_SETTLED_AT_MS_METADATA_KEY.into(), serde_json::json!(9_876)),
+                (crate::history::PROMPT_SETTLEMENT_STATUS_METADATA_KEY.into(), serde_json::json!("failed")),
+            ]),
+            context,
+        );
+        store.append_many(&[prompt, settlement]).expect("persist failed turn");
+    }
+    let store = OperationalHistoryStore::open(path.clone()).expect("reopen history");
+    let response = execute_session_history_outline_request(store, GetSessionHistoryOutlineRequest {
+        session_id: "session-1".into(),
+        agent_ids: Some(vec!["agent-1".into()]),
+        latest_prompt_count: Some(4),
+        cursor: None,
+    }).await.expect("history response");
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    let LocalDaemonResponse::SessionHistoryOutline { agents } = response else {
+        panic!("expected history outline");
+    };
+    assert_eq!(agents.len(), 1);
+    assert_eq!(agents[0].turns.len(), 1);
+    let turn = &agents[0].turns[0];
+    assert_eq!(serde_json::to_value(turn).expect("serialize turn")["lifecycle"], "failed");
+    assert_eq!(turn.completed_at_ms, Some(9_876));
+    assert!(turn.summary.is_none());
+}
+
 #[test]
 fn outline_turn_joins_trailing_assistant_fragments_into_complete_summary() {
     let context = HistoryEventTurnContext {

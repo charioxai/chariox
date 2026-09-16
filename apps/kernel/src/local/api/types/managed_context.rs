@@ -1,8 +1,9 @@
 use super::*;
 
 pub use crate::managed_context::outbound_service::{
-    ManagedContextOutboundOperationPhase, ManagedContextOutboundOperationStatus,
-    ManagedContextTransferTarget, ManagedContextTransferTicket,
+    ManagedContextOutboundImportReceipt, ManagedContextOutboundOperationPhase,
+    ManagedContextOutboundOperationStatus, ManagedContextTransferTarget,
+    ManagedContextTransferTicket,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,6 +61,11 @@ pub enum ManagedContextDevelopmentLaunchTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedContextRepositoryLaunchTarget {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::managed_context::development::DevelopmentWorkspaceKind::is_git"
+    )]
+    pub workspace_kind: crate::managed_context::development::DevelopmentWorkspaceKind,
     pub repository_id: String,
     pub role: crate::managed_context::development::DevelopmentRepositoryRole,
     pub target_directory: String,
