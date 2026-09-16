@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
+import { projectSelectionForManagedSession } from "./cli-waiting-room-composition.js"
 import { cliWaitingRoomSliceApiOptions } from "./waiting-room-slice-api-options.js"
 
 test("production Waiting Room composition forwards slice Project development setup", () => {
@@ -33,4 +34,21 @@ test("production Waiting Room composition forwards slice Project development set
       ],
     },
   })
+})
+
+test("managed session preparation preserves an explicit New project selection", () => {
+  assert.deepEqual(
+    projectSelectionForManagedSession(
+      { kind: "new" },
+      { kind: "existing", project_id: "persisted-project" },
+    ),
+    { kind: "new" },
+  )
+  assert.deepEqual(
+    projectSelectionForManagedSession(
+      { kind: "default" },
+      { kind: "existing", project_id: "persisted-project" },
+    ),
+    { kind: "existing", project_id: "persisted-project" },
+  )
 })

@@ -75,7 +75,7 @@ import type {
 import {
   clearStagedWaitingRoomWorktreeSelection,
 } from "./waiting-room-worktrees.js"
-import { existingProjectSelectionId } from "./waiting-room-projects.js"
+import { existingProjectSelectionId, type SessionProjectSelection } from "./waiting-room-projects.js"
 import {
   managedEnvironmentMachineRef,
 } from "./waiting-room-managed-environments.js"
@@ -162,6 +162,13 @@ export type CliWaitingRoomCompositionDeps = {
   applySessionState: AnyFn
   setProviderRunState: AnyFn
   appendNotice: AnyFn
+}
+
+export function projectSelectionForManagedSession(
+  _requested: WaitingRoomLaunchConfig["projectSelection"],
+  prepared: SessionProjectSelection,
+): SessionProjectSelection {
+  return prepared
 }
 
 export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionDeps) {
@@ -563,13 +570,17 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
         projectSelection: _projectSelection,
         ...ordinaryLaunch
       } = launch
+      const projectSelection = projectSelectionForManagedSession(
+        launch.projectSelection,
+        prepared.projectSelection,
+      )
       expectedMachineRef = managedEnvironmentMachineRef(prepared.environment.environmentId)
       deps.setWaitingRoomState({
         ...deps.waitingRoomState(),
         selectedMachineRef: expectedMachineRef,
         selectedKernelRef: prepared.environment.runtimeKernelId ?? "",
-        projectSelectionId: prepared.projectSelection.kind === "existing"
-          ? existingProjectSelectionId(prepared.projectSelection.project_id)
+        projectSelectionId: projectSelection.kind === "existing"
+          ? existingProjectSelectionId(projectSelection.project_id)
           : "default",
         worktreeSelectionId: `existing:${prepared.worktreePath}`,
         sliceSelectionId: "none",
@@ -581,7 +592,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
           ...ordinaryLaunch,
           ownerMachineRef: prepared.environment.runtimeMachineId,
           ownerKernelRef: prepared.environment.runtimeKernelId,
-          projectSelection: prepared.projectSelection,
+          projectSelection,
         },
         assertActive,
         commit: prepared.commit,
