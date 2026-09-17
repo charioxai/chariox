@@ -4257,6 +4257,14 @@ impl UtilityProviderFixture {
         }
         state.trace.join(" -> ")
     }
+
+    fn trace_entries(&self) -> Vec<String> {
+        self.state
+            .lock()
+            .expect("provider fixture state should not poison")
+            .trace
+            .clone()
+    }
 }
 
 #[cfg(unix)]
@@ -4267,6 +4275,368 @@ impl Drop for UtilityProviderFixture {
             let _ = join.join();
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn pr364_opencode_discovery_rejects_source_mcp_and_restores_ordinary_config() {
+    let _environment_lock = crate::env_lock::lock();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-opencode-discovery-mcp-lifecycle-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let home = root.join("kernel-home");
+    let provider_home = root.join("provider-home");
+    let workspace = root.join("worker-worktree");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&provider_home).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+
+    let receipt = root.join("receipt.json");
+    std::fs::write(
+        &receipt,
+        serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 1,
+            "status": "confirmed",
+            "allocationId": "worker-1",
+            "machineId": "worker-machine",
+            "kernelId": "worker-kernel",
+            "relayPublicKey": "worker-public-key",
+            "runtimeReleaseDigest": format!("sha256:{}", "a".repeat(64)),
+            "homeCaller": {
+                "accountId": "account-1",
+                "userId": "user-1",
+                "realmId": "realm-1",
+                "machineId": "home-machine",
+                "kernelId": "home-kernel",
+                "relayPublicKey": "home-public-key"
+            },
+            "confirmedAt": "2026-09-14T00:00:00Z"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    struct Cleanup {
+        root: PathBuf,
+        home: Option<std::ffi::OsString>,
+        receipt: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for (key, value) in [
+                ("CHARIOX_HOME", &self.home),
+                ("CHARIOX_DISPOSABLE_WORKER_RECEIPT", &self.receipt),
+            ] {
+                if let Some(value) = value {
+                    std::env::set_var(key, value);
+                } else {
+                    std::env::remove_var(key);
+                }
+            }
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    let _cleanup = Cleanup {
+        root: root.clone(),
+        home: std::env::var_os("CHARIOX_HOME"),
+        receipt: std::env::var_os("CHARIOX_DISPOSABLE_WORKER_RECEIPT"),
+    };
+    std::env::set_var("CHARIOX_HOME", &home);
+    std::env::set_var("CHARIOX_DISPOSABLE_WORKER_RECEIPT", &receipt);
+
+    let validation_command =
+        "touch validation-started; while [ ! -f validation-release ]; do sleep 0.01; done; command -v sh"
+            .to_string();
+    let target_platform = actual_worker_platform();
+    let definition = ProjectEnvironmentDefinition {
+        schema_version: 1,
+        origin: ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
+        source: ProjectEnvironmentDefinitionSource::Commands,
+        target_platform: target_platform.clone(),
+        source_path: None,
+        inputs: Vec::new(),
+        path_entries: Vec::new(),
+        setup_steps: vec![ProjectEnvironmentSetupStep {
+            kind: ProjectEnvironmentSetupStepKind::Command,
+            command: "touch setup-started; command -v sh".to_string(),
+        }],
+        validation_commands: vec![validation_command.clone()],
+    };
+    let (provider_fixture, release_prompt) =
+        UtilityProviderFixture::start_with_repairs_and_prompt_gate(
+            definition.clone(),
+            None,
+            BTreeMap::new(),
+        );
+
+    let runtime_mcp_url = "http://127.0.0.1:43120/mcp";
+    let granted_mcp_url = "http://127.0.0.1:43121/mcp";
+    let source_mcp_config = serde_json::json!({
+        "mcp": {
+            "chariox": {
+                "type": "remote",
+                "url": runtime_mcp_url,
+                "enabled": true,
+                "oauth": false,
+                "timeout": 300000,
+                "headers": {"Authorization": "Bearer token-123"}
+            },
+            "mutating-tool": {
+                "type": "remote",
+                "url": granted_mcp_url,
+                "enabled": true,
+                "oauth": false,
+                "timeout": 45000,
+                "headers": {}
+            }
+        }
+    })
+    .to_string();
+
+    let mut config = DaemonConfig::for_tests();
+    config.daemon_id = "worker-kernel".into();
+    config.host_machine_id = "worker-machine".into();
+    config.relay_public_key = "worker-public-key".into();
+    config.kernel_runtime_role = KernelRuntimeRole::RemoteLeaseWorker;
+    config.accept_remote_leases = true;
+    config.remote_lease_capacity = Some(1);
+    config.lease_worker_home_caller = Some(crate::config::LeaseWorkerHomeCaller {
+        kernel_id: "home-kernel".into(),
+        realm_id: "realm-1".into(),
+        user_id: "user-1".into(),
+        relay_public_key: "home-public-key".into(),
+    });
+    config.cloud_relay = Some(
+        serde_json::from_value(serde_json::json!({
+            "api_url": "https://staging.chariox.com",
+            "email": "owner@example.test",
+            "account_id": "account-1",
+            "user_id": "user-1",
+            "account_slug": "account-1",
+            "realm_id": "realm-1",
+            "relay_url": "wss://relay.example.test",
+            "issuer_id": "issuer-1",
+            "machine_id": "worker-machine",
+            "machine_credential": format!("mcred_{}", "c".repeat(40))
+        }))
+        .unwrap(),
+    );
+    ensure_worker_validation_boundary(&config).expect("fixture is a confirmed worker");
+
+    let mut app = crate::DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = app
+        .create_session(
+            CreateSessionRequest::new(
+                workspace.display().to_string(),
+                workspace.display().to_string(),
+            )
+            .with_owner_user_id("user-1")
+            .with_agent_defaults(crate::session::SessionAgentDefaults::new("opencode")),
+        )
+        .expect("fresh worker session should be created");
+    let project_id = session.project_id().to_string();
+    let launch_request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "opencode",
+        "opencode",
+        "default",
+        "opencode/test-model",
+    )
+    .with_agent_id(agent.id())
+    .with_owner_user_id("user-1")
+    .with_runtime_mcp_binding(crate::provider::RuntimeMcpBinding::new(
+        runtime_mcp_url,
+        "token-123",
+    ))
+    .with_mcp_servers(vec![crate::mcp::CharioxMcpServerConfig::streamable_http(
+        "mutating-tool",
+        granted_mcp_url,
+    )]);
+    let mut pty_env = BTreeMap::from([
+        ("HOME".into(), provider_home.display().to_string()),
+        ("PATH".into(), "/usr/bin:/bin".into()),
+        ("GIT_SSH_COMMAND".into(), "selected-ssh".into()),
+        ("SSH_AUTH_SOCK".into(), "selected-agent".into()),
+    ]);
+    pty_env.insert("OPENCODE_CONFIG_CONTENT".into(), source_mcp_config.clone());
+    let mut provider_run = RuntimeProviderRun::new(
+        "utility-provider-run",
+        &launch_request,
+        ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "opencode-discovery-mcp-fixture".into(),
+            pty_target: None,
+            pty_program: Some("/bin/sh".into()),
+            pty_args: vec!["-c".into(), "sleep 60".into()],
+            pty_env,
+            pty_env_remove: Vec::new(),
+            working_directory: Some(workspace.clone()),
+            structured_endpoint: Some(provider_fixture.address()),
+        },
+    );
+    provider_run.mark_running();
+    assert_eq!(
+        provider_opencode_mcp_names(provider_run.pty_env()),
+        vec!["chariox".to_string(), "mutating-tool".to_string()],
+        "the source ordinary provider run must begin with both MCP servers"
+    );
+    assert_eq!(
+        provider_run.runtime_mcp_server_url(),
+        Some(runtime_mcp_url),
+        "the source ordinary provider run must retain its runtime MCP binding"
+    );
+    app.providers_mut().insert_run_for_test(provider_run);
+    let runtime =
+        CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 1)
+            .runtime_state();
+
+    let start = runtime
+        .execute_project_environment_setup_request(
+            LocalDaemonRequest::StartProjectEnvironmentSetup(StartProjectEnvironmentSetupRequest {
+                operation_id: "setup-opencode-discovery-mcp".into(),
+                project_id,
+                session_id: session.id().to_string(),
+                agent_id: agent.id().to_string(),
+                target_worker_id: "worker-machine".into(),
+                target_platform,
+                definition: None,
+                validation_commands: vec![validation_command],
+            }),
+            "user-1",
+        )
+        .await
+        .expect("public setup start should be accepted");
+    let LocalDaemonResponse::ProjectEnvironmentSetupStarted { status } = start else {
+        panic!("unexpected public setup start response: {start:?}");
+    };
+    assert_eq!(status.phase, ProjectEnvironmentSetupPhase::Requested);
+    assert_eq!(status.attempt, 1);
+
+    let prompt_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let trace = provider_fixture.trace_entries();
+        if trace.iter().any(|entry| entry.contains("prompt_async")) {
+            break;
+        }
+        let status = response_status(
+            get_setup_status(
+                &runtime,
+                "setup-opencode-discovery-mcp",
+                "user-1",
+                "OpenCode discovery prompt gate",
+            )
+            .await,
+        );
+        assert!(
+            !matches!(
+                status.phase,
+                ProjectEnvironmentSetupPhase::Failed | ProjectEnvironmentSetupPhase::Ready
+            ),
+            "setup settled before its discovery prompt: {status:?}"
+        );
+        assert!(
+            Instant::now() < prompt_deadline,
+            "OpenCode discovery prompt did not reach the fixture: {status:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let discovery_run = runtime
+        .owned
+        .provider_store
+        .get_run("utility-provider-run")
+        .expect("discovery provider run should remain available while prompt is gated");
+    assert!(
+        discovery_run.read_only_discovery(),
+        "the gated utility prompt must run on the read-only discovery restart"
+    );
+    let discovery_pid = {
+        let app = runtime.app.lock().await;
+        app.pty()
+            .process_id("utility-provider-run")
+            .ok()
+            .flatten()
+            .expect("discovery provider child should be running")
+    };
+    let discovery_environment = provider_child_environment(discovery_pid);
+    assert_eq!(
+        provider_opencode_mcp_names(&discovery_environment),
+        Vec::<String>::new(),
+        "read-only discovery must not expose source runtime/granted MCP config"
+    );
+    let discovery_trace = provider_fixture.trace_entries();
+    assert!(
+        discovery_trace
+            .iter()
+            .all(|entry| !(entry.starts_with("POST /mcp/") && entry.ends_with("/connect"))),
+        "read-only discovery must not connect source MCP servers before its prompt: {discovery_trace:?}"
+    );
+
+    release_prompt.store(true, Ordering::Release);
+    let validation_release = workspace.join("validation-release");
+    std::fs::write(&validation_release, b"").unwrap();
+    let ready = wait_for_ready(&runtime, "setup-opencode-discovery-mcp", &provider_fixture).await;
+    assert_eq!(
+        ready.phase,
+        ProjectEnvironmentSetupPhase::Ready,
+        "ordinary restoration must complete setup"
+    );
+
+    let (ordinary_run, _ordinary_pid, ordinary_environment) =
+        wait_for_ordinary_provider_child(&runtime, "utility-provider-run").await;
+    assert!(
+        !ordinary_run.read_only_discovery(),
+        "ordinary provider restoration must leave discovery mode"
+    );
+    assert_eq!(
+        provider_opencode_mcp_names(&ordinary_environment),
+        vec!["chariox".to_string(), "mutating-tool".to_string()],
+        "ordinary provider child must regain the source MCP config"
+    );
+    assert_eq!(
+        provider_opencode_mcp_names(ordinary_run.pty_env()),
+        vec!["chariox".to_string(), "mutating-tool".to_string()],
+        "ordinary provider run must retain the source MCP config"
+    );
+    let final_trace = provider_fixture.trace_entries();
+    let prompt_index = final_trace
+        .iter()
+        .position(|entry| entry.contains("prompt_async"))
+        .expect("the gated discovery prompt should be recorded");
+    let reconnects = final_trace
+        .iter()
+        .enumerate()
+        .filter(|(index, entry)| {
+            *index > prompt_index && entry.starts_with("POST /mcp/") && entry.ends_with("/connect")
+        })
+        .count();
+    assert_eq!(
+        reconnects, 2,
+        "ordinary restoration should reconnect both source MCP servers after discovery: {final_trace:?}"
+    );
+
+    drop(provider_fixture);
+}
+
+#[cfg(target_os = "linux")]
+fn provider_opencode_mcp_names(environment: &BTreeMap<String, String>) -> Vec<String> {
+    let Some(config) = environment
+        .get("OPENCODE_CONFIG_CONTENT")
+        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+    else {
+        return Vec::new();
+    };
+    let mut names = config
+        .get("mcp")
+        .and_then(serde_json::Value::as_object)
+        .map(|mcp| mcp.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    names.sort();
+    names
 }
 
 #[cfg(unix)]
@@ -4299,7 +4669,10 @@ fn serve_provider_request(
             write_json_response(
                 &mut stream,
                 200,
-                &serde_json::json!({"chariox": {"status": "connected"}}),
+                &serde_json::json!({
+                    "chariox": {"status": "connected"},
+                    "mutating-tool": {"status": "connected"}
+                }),
             );
         }
         ("POST", "/session") => {
