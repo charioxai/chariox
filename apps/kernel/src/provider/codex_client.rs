@@ -47,6 +47,7 @@ pub struct CodexClient {
     provider_config_overrides: BTreeMap<String, Value>,
     write_access_mode: ProviderWriteAccessMode,
     workspace_live_sync_roots: Vec<PathBuf>,
+    discovery_read_root: Option<PathBuf>,
     /// Discovery utility turns use the tracked launch mode for Codex's
     /// read-only sandbox, but must not inherit its ordinary permission reply
     /// policy. This flag is intentionally client-local and never serialized.
@@ -76,6 +77,7 @@ impl CodexClient {
             provider_config_overrides: BTreeMap::new(),
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
             workspace_live_sync_roots: Vec::new(),
+            discovery_read_root: None,
             read_only_discovery_permissions: false,
         })
     }
@@ -136,6 +138,11 @@ impl CodexClient {
         self.runtime_mcp_server_url = None;
         self.runtime_mcp_auth_token = None;
         self.mcp_servers.clear();
+        self
+    }
+
+    pub(crate) fn with_discovery_read_root(mut self, root: Option<&std::path::Path>) -> Self {
+        self.discovery_read_root = root.map(std::path::Path::to_path_buf);
         self
     }
 

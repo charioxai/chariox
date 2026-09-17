@@ -17,6 +17,7 @@ pub(super) fn codex_client_for_run(
         .with_mcp_servers(run.mcp_servers())
         .with_provider_config_overrides(run.provider_config_overrides())
         .with_write_access_mode(run.write_access_mode())
+        .with_discovery_read_root(run.working_directory())
         .with_workspace_live_sync_roots(run.workspace_live_sync_roots()))
 }
 
