@@ -109,6 +109,13 @@ mod tests {
     use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
 
     fn run(discovery: bool) -> RuntimeProviderRun {
+        run_with_program(discovery, None)
+    }
+
+    fn run_with_program(
+        discovery: bool,
+        pty_program: Option<&str>,
+    ) -> RuntimeProviderRun {
         let request =
             LaunchProviderRequest::new("session", "opencode", "opencode", "default", "model");
         let mut run = RuntimeProviderRun::new(
@@ -118,7 +125,7 @@ mod tests {
                 endpoint_mode: AgentEndpointMode::Managed,
                 process_label: "discovery-policy-test".into(),
                 pty_target: None,
-                pty_program: None,
+                pty_program: pty_program.map(str::to_owned),
                 pty_args: Vec::new(),
                 pty_env: BTreeMap::new(),
                 pty_env_remove: Vec::new(),
@@ -128,6 +135,50 @@ mod tests {
         );
         run.set_read_only_discovery(discovery);
         run
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_discovery_spawn_cleans_isolated_configuration_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-discovery-failed-spawn-{:032x}",
+            rand::random::<u128>()
+        ));
+        let home = root
+            .join(".chariox-project-environment")
+            .join("a".repeat(64));
+        std::fs::create_dir_all(&home).unwrap();
+
+        let mut provider = run_with_program(true, Some("/definitely/not/a/provider"));
+        provider
+            .set_preparation_environment(home.display().to_string(), "/usr/bin")
+            .unwrap();
+
+        let mut manager = crate::pty::PtyManager::new();
+        let error = manager
+            .spawn_for_run(&provider)
+            .expect_err("an invalid provider executable must fail to spawn");
+        assert!(
+            error.to_string().contains("failed to spawn PTY"),
+            "unexpected failed-spawn error: {error}"
+        );
+
+        let leftovers = std::fs::read_dir(&home)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("opencode-discovery-"))
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            leftovers.is_empty(),
+            "failed discovery spawn left isolated config directories: {leftovers:?}"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

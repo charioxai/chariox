@@ -4375,6 +4375,8 @@ async fn pr364_opencode_discovery_rejects_source_mcp_and_restores_ordinary_confi
 
     let runtime_mcp_url = "http://127.0.0.1:43120/mcp";
     let granted_mcp_url = "http://127.0.0.1:43121/mcp";
+    let original_provider_home = provider_home.display().to_string();
+    let original_provider_path = "/usr/bin:/bin".to_string();
     let source_mcp_config = serde_json::json!({
         "mcp": {
             "chariox": {
@@ -4457,8 +4459,8 @@ async fn pr364_opencode_discovery_rejects_source_mcp_and_restores_ordinary_confi
         granted_mcp_url,
     )]);
     let mut pty_env = BTreeMap::from([
-        ("HOME".into(), provider_home.display().to_string()),
-        ("PATH".into(), "/usr/bin:/bin".into()),
+        ("HOME".into(), original_provider_home.clone()),
+        ("PATH".into(), original_provider_path.clone()),
         ("GIT_SSH_COMMAND".into(), "selected-ssh".into()),
         ("SSH_AUTH_SOCK".into(), "selected-agent".into()),
     ]);
@@ -4575,8 +4577,57 @@ async fn pr364_opencode_discovery_rejects_source_mcp_and_restores_ordinary_confi
             .all(|entry| !(entry.starts_with("POST /mcp/") && entry.ends_with("/connect"))),
         "read-only discovery must not connect source MCP servers before its prompt: {discovery_trace:?}"
     );
+    let mcp_connect_count = |trace: &[String]| {
+        trace
+            .iter()
+            .filter(|entry| entry.starts_with("POST /mcp/") && entry.ends_with("/connect"))
+            .count()
+    };
+    assert_eq!(
+        mcp_connect_count(&discovery_trace),
+        0,
+        "read-only discovery must have zero MCP connections: {discovery_trace:?}"
+    );
 
     release_prompt.store(true, Ordering::Release);
+    let validation_started = workspace.join("validation-started");
+    let validation_start_deadline = Instant::now() + Duration::from_secs(10);
+    while !validation_started.exists() {
+        assert!(
+            Instant::now() < validation_start_deadline,
+            "gated validation did not start after discovery: {}",
+            provider_fixture.diagnostics()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let (gated_ordinary_run, _gated_ordinary_pid, gated_environment) =
+        wait_for_ordinary_provider_child(&runtime, "utility-provider-run").await;
+    assert_eq!(
+        gated_environment.get("HOME").map(String::as_str),
+        Some(original_provider_home.as_str()),
+        "ordinary restoration must restore the original HOME while validation is gated"
+    );
+    assert_eq!(
+        gated_environment.get("PATH").map(String::as_str),
+        Some(original_provider_path.as_str()),
+        "ordinary restoration must restore the original PATH while validation is gated"
+    );
+    assert_eq!(
+        gated_ordinary_run.pty_env().get("HOME").map(String::as_str),
+        Some(original_provider_home.as_str())
+    );
+    assert_eq!(
+        gated_ordinary_run.pty_env().get("PATH").map(String::as_str),
+        Some(original_provider_path.as_str())
+    );
+    let gated_trace = provider_fixture.trace_entries();
+    assert_eq!(
+        mcp_connect_count(&gated_trace),
+        2,
+        "the original ordinary restore should reconnect both source MCP servers before validation completes: {gated_trace:?}"
+    );
+
     let validation_release = workspace.join("validation-release");
     std::fs::write(&validation_release, b"").unwrap();
     let ready = wait_for_ready(&runtime, "setup-opencode-discovery-mcp", &provider_fixture).await;
@@ -4602,6 +4653,43 @@ async fn pr364_opencode_discovery_rejects_source_mcp_and_restores_ordinary_confi
         vec!["chariox".to_string(), "mutating-tool".to_string()],
         "ordinary provider run must retain the source MCP config"
     );
+    let (prepared_home, prepared_path) = ordinary_run
+        .preparation_environment()
+        .expect("Ready ordinary run must carry the validated preparation environment");
+    let prepared_home_path = std::path::Path::new(&prepared_home);
+    assert!(
+        prepared_home_path.starts_with(&root),
+        "validated preparation HOME must remain in the worker root: {prepared_home}"
+    );
+    assert_ne!(
+        prepared_home, original_provider_home,
+        "Ready must rebind the ordinary provider away from its original HOME"
+    );
+    let prepared_path_prefix = format!(
+        "{prepared_home}/.local/bin:{prepared_home}/.cargo/bin:"
+    );
+    assert!(
+        prepared_path.starts_with(&prepared_path_prefix),
+        "validated PATH must expose preparation-home tool directories: {prepared_path}"
+    );
+    assert_eq!(
+        ordinary_environment.get("HOME").map(String::as_str),
+        Some(prepared_home.as_str()),
+        "Ready ordinary child must see the validated preparation HOME"
+    );
+    assert_eq!(
+        ordinary_environment.get("PATH").map(String::as_str),
+        Some(prepared_path.as_str()),
+        "Ready ordinary child must see the validated preparation PATH"
+    );
+    assert_eq!(
+        ordinary_run.pty_env().get("HOME").map(String::as_str),
+        Some(prepared_home.as_str())
+    );
+    assert_eq!(
+        ordinary_run.pty_env().get("PATH").map(String::as_str),
+        Some(prepared_path.as_str())
+    );
     let final_trace = provider_fixture.trace_entries();
     let prompt_index = final_trace
         .iter()
@@ -4615,8 +4703,13 @@ async fn pr364_opencode_discovery_rejects_source_mcp_and_restores_ordinary_confi
         })
         .count();
     assert_eq!(
-        reconnects, 2,
-        "ordinary restoration should reconnect both source MCP servers after discovery: {final_trace:?}"
+        reconnects, 4,
+        "ordinary restoration and the validated Ready rebind should reconnect both source MCP servers per phase: {final_trace:?}"
+    );
+    assert_eq!(
+        mcp_connect_count(&final_trace),
+        4,
+        "the integrated lifecycle should emit two reconnects for each ordinary phase: {final_trace:?}"
     );
 
     drop(provider_fixture);
