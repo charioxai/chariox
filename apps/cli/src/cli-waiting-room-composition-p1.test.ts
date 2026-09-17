@@ -39,6 +39,14 @@ test("waiting room start awaits a failed account catalog refresh for an already-
       selectedKernelRef: "kernel-current",
     }
     let catalogRequests = 0
+    let resolveCatalogRefreshStarted: (() => void) | undefined
+    let rejectCatalogRefresh: ((error: Error) => void) | undefined
+    const catalogRefreshStarted = new Promise<void>((resolve) => {
+      resolveCatalogRefreshStarted = resolve
+    })
+    const pendingCatalogRefresh = new Promise<never>((_, reject) => {
+      rejectCatalogRefresh = reject
+    })
     let createdSessions = 0
     const createdLaunches: unknown[] = []
     const options: Record<string, unknown> = {
@@ -55,7 +63,8 @@ test("waiting room start awaits a failed account catalog refresh for an already-
           if (catalogRequests === 1) {
             return { ProviderCatalog: { catalog: workCatalog } }
           }
-          throw new Error("selected account catalog unavailable")
+          resolveCatalogRefreshStarted?.()
+          return pendingCatalogRefresh
         }
         if (typeof request === "object" && request !== null && "CreateSession" in request) {
           createdSessions += 1
@@ -201,16 +210,23 @@ test("waiting room start awaits a failed account catalog refresh for an already-
     } as never)
 
     await composition.applyAccountSelection("Work")
-    assert.equal(catalogRequests, 2, "account selection and its detached refresh should both discover")
+    await catalogRefreshStarted
+    assert.ok(catalogRequests >= 2, "account selection must start a detached catalog refresh")
 
-    await assert.rejects(
-      composition.startSessionFromWaitingRoomDefaults(),
-      /selected account catalog unavailable/,
+    let startSettled = false
+    const startPromise = composition.startSessionFromWaitingRoomDefaults()
+    void startPromise.then(
+      () => { startSettled = true },
+      () => { startSettled = true },
     )
-    assert.equal(catalogRequests, 3, "Start must await the selected account catalog for the current owner")
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    assert.equal(startSettled, false, "Start must await the selected account catalog for the current owner")
+    assert.equal(createdSessions, 0, "Start must not create a session before catalog discovery completes")
+
+    rejectCatalogRefresh?.(new Error("selected account catalog unavailable"))
+    await assert.rejects(startPromise, /selected account catalog unavailable/)
     assert.equal(createdSessions, 0, "Start must abort before creating a session when discovery fails")
     assert.deepEqual(createdLaunches, [])
-
   } finally {
     __setWaitingRoomWorktreeInventoryForTest(null)
   }
