@@ -21,6 +21,29 @@ const scriptDir = path.dirname(scriptPath)
 const repoRoot = path.resolve(scriptDir, '../../..')
 const fakeMcp = path.join(scriptDir, 'fake-mcp-server.mjs')
 const executable = process.env.CHARIOX_OPENCODE_BIN?.trim() || '/usr/local/bin/opencode'
+const emittedEnvironmentFile = process.argv.find((argument) => argument.startsWith('--emitted-child-env='))?.slice('--emitted-child-env='.length)
+  || process.env.CHARIOX_EMITTED_CHILD_ENV_FILE?.trim()
+
+const replayEnvironmentKeys = new Set([
+  'CHARIOX_MANAGED_PROVIDER_PROCESS',
+  'CHARIOX_PROVIDER_PROCESS_KEY',
+  'CHARIOX_PROVIDER_RUN_ID',
+  'GIT_SSH_COMMAND',
+  'HOME',
+  'LANG',
+  'LC_ALL',
+  'OPENCODE_CONFIG',
+  'OPENCODE_CONFIG_CONTENT',
+  'OPENCODE_CONFIG_DIR',
+  'OPENCODE_DISABLE_PROJECT_CONFIG',
+  'PATH',
+  'SSH_AUTH_SOCK',
+  'TERM',
+  'XDG_CACHE_HOME',
+  'XDG_CONFIG_HOME',
+  'XDG_DATA_HOME',
+  'XDG_STATE_HOME',
+])
 
 function reservePort() {
   return new Promise((resolve, reject) => {
@@ -43,12 +66,13 @@ function safeEnvironment(root, {
   inlineConfig,
   disableProjectConfig = false,
   pluginMarkerPath,
+  xdgConfigHome,
 } = {}) {
   const env = {
     PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin',
     HOME: path.join(root, 'home'),
     TMPDIR: path.join(root, 'tmp'),
-    XDG_CONFIG_HOME: path.join(root, 'xdg-config'),
+    XDG_CONFIG_HOME: xdgConfigHome || path.join(root, 'home', 'xdg-config'),
     // Keep the provider's real auth/data root. No auth file is opened by this
     // harness because it never creates a session or sends a model prompt.
     XDG_DATA_HOME: realProviderDataHome,
@@ -63,6 +87,123 @@ function safeEnvironment(root, {
   if (disableProjectConfig) env.OPENCODE_DISABLE_PROJECT_CONFIG = 'true'
   if (pluginMarkerPath !== undefined) env.CHARIOX_NATIVE_PLUGIN_MARKER = pluginMarkerPath
   return env
+}
+
+function parseEnvironmentSnapshot(value) {
+  if (!value || typeof value !== 'string') return null
+  const text = value.trim()
+  if (!text) return null
+  try {
+    const parsed = JSON.parse(text)
+    if (Array.isArray(parsed)) return Object.fromEntries(parsed)
+    if (parsed?.environment && typeof parsed.environment === 'object') return parsed.environment
+    if (parsed?.child_environment && typeof parsed.child_environment === 'object') return parsed.child_environment
+    if (parsed && typeof parsed === 'object') return parsed
+  } catch {}
+  const entries = value.split(/\0|\r?\n/).filter(Boolean)
+  const environment = {}
+  for (const entry of entries) {
+    const separator = entry.indexOf('=')
+    if (separator > 0) environment[entry.slice(0, separator)] = entry.slice(separator + 1)
+  }
+  return Object.keys(environment).length > 0 ? environment : null
+}
+
+async function readEnvironmentSnapshot(filePath) {
+  if (!filePath) return null
+  const contents = filePath === '-' ? await new Promise((resolve, reject) => {
+    let value = ''
+    process.stdin.setEncoding('utf8')
+    process.stdin.on('data', (chunk) => { value += chunk })
+    process.stdin.once('end', () => resolve(value))
+    process.stdin.once('error', reject)
+  }) : await fs.readFile(filePath, 'utf8')
+  return parseEnvironmentSnapshot(contents)
+}
+
+function redactEnvironmentValue(name, value) {
+  if (value === undefined) return null
+  if (name === 'OPENCODE_CONFIG_CONTENT') {
+    try {
+      const config = JSON.parse(value)
+      return {
+        kind: 'json',
+        keys: Object.keys(config).sort(),
+        mcp_names: Object.keys(config?.mcp ?? {}).sort(),
+        plugin_count: Array.isArray(config?.plugin) ? config.plugin.length : 0,
+        sha256_like: value.length,
+      }
+    } catch {
+      return { kind: 'invalid-json', length: value.length }
+    }
+  }
+  if (/AUTH|TOKEN|SECRET|PASSWORD|CREDENTIAL|COOKIE|KEY/i.test(name)) return '[redacted]'
+  return value
+}
+
+function summarizeEnvironment(environment) {
+  return Object.fromEntries(Object.keys(environment || {}).sort().map((name) => [
+    name,
+    redactEnvironmentValue(name, environment[name]),
+  ]))
+}
+
+function selectedEnvironment(environment) {
+  return Object.fromEntries(Object.entries(environment || {}).filter(([name, value]) => replayEnvironmentKeys.has(name) && typeof value === 'string'))
+}
+
+function rewriteFixturePath(value, replacements) {
+  if (typeof value !== 'string') return value
+  return replacements.reduce((result, [from, to]) => from ? result.split(from).join(to) : result, value)
+}
+
+function replayEnvironment(root, snapshot, configFixture, pluginEventsPath, statePath) {
+  const freshXdgConfigHome = path.join(root, 'home', 'opencode-discovery-xdg')
+  const source = selectedEnvironment(snapshot)
+  const env = safeEnvironment(root, { pluginMarkerPath: pluginEventsPath, xdgConfigHome: freshXdgConfigHome })
+  for (const name of replayEnvironmentKeys) {
+    if (source[name] !== undefined) env[name] = source[name]
+  }
+  // Re-home only disposable fixture paths. Do not copy ambient credentials or
+  // data/auth files from the production child snapshot.
+  const replacements = [
+    [path.dirname(configFixture.globalConfigPath), configFixture.inheritedGlobalDir],
+  ]
+  for (const name of ['HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME']) {
+    if (name === 'HOME' || name === 'XDG_CONFIG_HOME') env[name] = name === 'HOME'
+      ? path.join(root, 'home')
+      : freshXdgConfigHome
+    else if (name === 'XDG_STATE_HOME') env[name] = path.join(root, 'xdg-state')
+    else env[name] = path.join(root, 'xdg-cache')
+  }
+  for (const name of ['OPENCODE_CONFIG', 'OPENCODE_CONFIG_DIR']) {
+    if (env[name] !== undefined) {
+      env[name] = name === 'OPENCODE_CONFIG'
+        ? configFixture.globalConfigPath
+        : configFixture.inheritedGlobalDir
+    }
+  }
+  let substitutedMcpNames = []
+  if (typeof env.OPENCODE_CONFIG_CONTENT === 'string') {
+    try {
+      const inlineConfig = JSON.parse(env.OPENCODE_CONFIG_CONTENT)
+      if (inlineConfig?.mcp && typeof inlineConfig.mcp === 'object' && !Array.isArray(inlineConfig.mcp)) {
+        substitutedMcpNames = Object.keys(inlineConfig.mcp).sort()
+        inlineConfig.mcp = Object.fromEntries(substitutedMcpNames.map((name) => [
+          name,
+          marker(name, 'emitted', statePath),
+        ]))
+        env.OPENCODE_CONFIG_CONTENT = JSON.stringify(inlineConfig)
+      }
+    } catch {
+      // The replay still reports the malformed inline content; OpenCode will
+      // reject it without any network-capable MCP definition being invented.
+    }
+  }
+  for (const name of Object.keys(env)) env[name] = rewriteFixturePath(env[name], replacements)
+  env.XDG_DATA_HOME = realProviderDataHome
+  env.CHARIOX_NATIVE_PLUGIN_MARKER = pluginEventsPath
+  return { env, freshXdgConfigHome, source, substitutedMcpNames }
 }
 
 async function requestJson(baseUrl, pathname, { method = 'GET', body, timeoutMs = 5000 } = {}) {
@@ -230,14 +371,13 @@ function marker(name, mode, statePath) {
 
 async function writeFixture(root, statePath, pluginEventsPath) {
   const inheritedGlobalDir = path.join(root, 'inherited-global')
-  const isolatedGlobalDir = path.join(root, 'xdg-config', 'opencode')
+  const isolatedGlobalDir = path.join(root, 'home', 'xdg-config', 'opencode')
   const projectDir = path.join(root, 'project')
   const disabledProjectDir = path.join(root, 'project-disabled')
   const pluginPath = path.join(root, 'native-marker-plugin.mjs')
   for (const directory of [
     path.join(root, 'home'),
     path.join(root, 'tmp'),
-    path.join(root, 'xdg-config'),
     path.join(root, 'xdg-data'),
     path.join(root, 'xdg-state'),
     path.join(root, 'xdg-cache'),
@@ -369,6 +509,38 @@ async function killRecordedMarkers(state) {
   for (const pid of pids) {
     try { process.kill(pid, 'SIGTERM') } catch (error) { if (error.code !== 'ESRCH') throw error }
   }
+  return pids
+}
+
+function livePids(pids) {
+  return pids.filter((pid) => {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch (error) {
+      if (error.code === 'ESRCH') return false
+      if (error.code === 'EPERM') return true
+      throw error
+    }
+  })
+}
+
+async function cleanupRecordedMarkers(state) {
+  const pids = await killRecordedMarkers(state)
+  const deadline = Date.now() + 1500
+  let live = livePids(pids)
+  while (live.length > 0 && Date.now() < deadline) {
+    await sleep(50)
+    live = livePids(pids)
+  }
+  if (live.length > 0) {
+    for (const pid of live) {
+      try { process.kill(pid, 'SIGKILL') } catch (error) { if (error.code !== 'ESRCH') throw error }
+    }
+    await sleep(50)
+    live = livePids(live)
+  }
+  return { recorded_pids: pids, live_pids_after_exit: live }
 }
 
 async function runCase({ label, cwd, statePath, pluginEventsPath, env, pure = false }) {
@@ -390,7 +562,7 @@ async function runCase({ label, cwd, statePath, pluginEventsPath, env, pure = fa
     const state = await readState(statePath)
     result.markers = summarizeMarkers(state)
     result.plugin = summarizePluginEvents(await readPluginEvents(pluginEventsPath))
-    await killRecordedMarkers(state)
+    result.cleanup = await cleanupRecordedMarkers(state)
   }
   return result
 }
@@ -408,13 +580,14 @@ async function main() {
   const statePath = path.join(root, 'marker-state.json')
   const report = {
     schema: 'chariox.opencode_native_config_acceptance.v1',
-    command: `node ${path.relative(repoRoot, scriptPath)}`,
+    command: `node ${path.relative(repoRoot, scriptPath)}${emittedEnvironmentFile ? ` --emitted-child-env=${emittedEnvironmentFile}` : ''}`,
     executable,
     version: null,
     fixture_root: root,
     fixture_cleaned: false,
     no_cargo: true,
     no_model_prompt: true,
+    emitted_child_environment_input: emittedEnvironmentFile || null,
     cases: {},
   }
   let configFixture
@@ -435,6 +608,16 @@ async function main() {
       global_precedence_source: 'disposable inherited-global/opencode.json via OPENCODE_CONFIG_DIR',
       project_precedence_source: 'project/opencode.json in server cwd',
     }
+    const sourceEnv = safeEnvironment(root, {
+      configDir: configFixture.inheritedGlobalDir,
+      configFile: configFixture.globalConfigPath,
+      pluginMarkerPath: pluginEventsPath,
+    })
+    const isolatedXdgConfigHome = path.join(root, 'home', 'opencode-discovery-xdg')
+    const isolatedEnv = safeEnvironment(root, {
+      pluginMarkerPath: pluginEventsPath,
+      xdgConfigHome: isolatedXdgConfigHome,
+    })
     report.provider_auth_boundary = {
       parent_home: realHome,
       preserved_xdg_data_home: realProviderDataHome,
@@ -445,13 +628,13 @@ async function main() {
       credentials_copied_or_deleted: false,
       isolated_config_env_removes: ['OPENCODE_CONFIG_DIR', 'OPENCODE_CONFIG'],
     }
-    const sourceEnv = safeEnvironment(root, {
-      configDir: configFixture.inheritedGlobalDir,
-      pluginMarkerPath: pluginEventsPath,
-    })
-    const isolatedEnv = safeEnvironment(root, {
-      pluginMarkerPath: pluginEventsPath,
-    })
+    report.parent_config_environment = {
+      OPENCODE_CONFIG: sourceEnv.OPENCODE_CONFIG,
+      OPENCODE_CONFIG_DIR: sourceEnv.OPENCODE_CONFIG_DIR,
+      XDG_CONFIG_HOME: sourceEnv.XDG_CONFIG_HOME,
+      XDG_DATA_HOME: sourceEnv.XDG_DATA_HOME,
+    }
+    report.fresh_discovery_xdg_config_home = isolatedXdgConfigHome
     report.debug_paths = execFileSync(executable, ['debug', 'paths'], {
       cwd: path.join(root, 'project'),
       env: sourceEnv,
@@ -474,6 +657,7 @@ async function main() {
       pluginEventsPath,
       env: safeEnvironment(root, {
         configDir: configFixture.inheritedGlobalDir,
+        configFile: configFixture.globalConfigPath,
         inlineConfig: { mcp: {} },
         pluginMarkerPath: pluginEventsPath,
       }),
@@ -499,6 +683,7 @@ async function main() {
       pluginEventsPath,
       env: safeEnvironment(root, {
         configDir: configFixture.inheritedGlobalDir,
+        configFile: configFixture.globalConfigPath,
         inlineConfig: {
           mcp: {},
           permission: discoveryPermissions,
@@ -532,6 +717,7 @@ async function main() {
       pluginEventsPath,
       env: safeEnvironment(root, {
         configDir: configFixture.inheritedGlobalDir,
+        configFile: configFixture.globalConfigPath,
         pluginMarkerPath: pluginEventsPath,
       }),
     })
@@ -548,6 +734,7 @@ async function main() {
       pluginEventsPath,
       env: safeEnvironment(root, {
         configDir: configFixture.inheritedGlobalDir,
+        configFile: configFixture.globalConfigPath,
         inlineConfig: {
           mcp: explicitDisabledMcp,
           permission: discoveryPermissions,
@@ -558,12 +745,68 @@ async function main() {
       }),
     })
 
+    report.cases.inline_plugin_inheritance = await runCase({
+      label: 'red-inline-plugin-inheritance-with-fresh-xdg',
+      cwd: path.join(root, 'project'),
+      statePath,
+      pluginEventsPath,
+      env: safeEnvironment(root, {
+        inlineConfig: {
+          mcp: {},
+          plugin: [configFixture.pluginUrl],
+          permission: discoveryPermissions,
+          agent: { plan: { permission: discoveryPermissions } },
+        },
+        disableProjectConfig: true,
+        pluginMarkerPath: pluginEventsPath,
+        xdgConfigHome: isolatedXdgConfigHome,
+      }),
+    })
+
+    if (emittedEnvironmentFile) {
+      const snapshot = await readEnvironmentSnapshot(emittedEnvironmentFile)
+      if (!snapshot) throw new Error(`could not parse emitted child environment snapshot ${emittedEnvironmentFile}`)
+      const replay = replayEnvironment(root, snapshot, configFixture, pluginEventsPath, statePath)
+      const actualXdg = snapshot.XDG_CONFIG_HOME
+      const actualHome = snapshot.HOME
+      const actualData = snapshot.XDG_DATA_HOME
+      const actualConfigKeys = ['OPENCODE_CONFIG', 'OPENCODE_CONFIG_DIR', 'OPENCODE_CONFIG_CONTENT', 'OPENCODE_DISABLE_PROJECT_CONFIG']
+        .filter((name) => snapshot[name] !== undefined)
+      report.actual_emitted_child_environment = {
+        source_file: emittedEnvironmentFile,
+        observed: summarizeEnvironment(snapshot),
+        config_keys_present: actualConfigKeys,
+        config_overrides_absent: snapshot.OPENCODE_CONFIG === undefined && snapshot.OPENCODE_CONFIG_DIR === undefined,
+        xdg_config_under_home: typeof actualXdg === 'string' && typeof actualHome === 'string'
+          ? path.relative(actualHome, actualXdg) !== '' && !path.relative(actualHome, actualXdg).startsWith('..')
+          : false,
+        xdg_data_unchanged: actualData === realProviderDataHome,
+        replay_projection: {
+          home: replay.env.HOME,
+          xdg_config_home: replay.freshXdgConfigHome,
+          xdg_data_home: replay.env.XDG_DATA_HOME,
+          inherited_config_vars_replayed: ['OPENCODE_CONFIG', 'OPENCODE_CONFIG_DIR'].filter((name) => replay.env[name] !== undefined),
+          inline_mcp_names_substituted_to_local_markers: replay.substitutedMcpNames,
+          credentials_copied: false,
+        },
+      }
+      report.cases.actual_emitted_child_environment = await runCase({
+        label: 'actual-emitted-child-environment-replay',
+        cwd: path.join(root, 'project'),
+        statePath,
+        pluginEventsPath,
+        env: replay.env,
+      })
+    }
+
     const ordinary = report.cases.ordinary
     const inlineEmpty = report.cases.inline_empty
     const discovery = report.cases.discovery_policy
     const isolated = report.cases.isolated_xdg
     const explicitProjectDisabled = report.cases.explicit_project_disabled
     const explicitInlineDisabled = report.cases.explicit_inline_disabled
+    const inlinePluginInheritance = report.cases.inline_plugin_inheritance
+    const actualEmitted = report.cases.actual_emitted_child_environment
     const ordinaryNames = ordinary.debug_config?.resolved?.names ?? []
     const ordinarySharedMode = ordinary.debug_config?.resolved?.entries?.['shared-marker']?.marker_mode
     const discoveryGlobalStarts = markerCount(discovery, 'global', 'global-marker') + markerCount(discovery, 'global', 'shared-marker')
@@ -603,6 +846,13 @@ async function main() {
       explicit_inline_disabled_project_mcp_starts: projectStarts(explicitInlineDisabled),
       explicit_inline_disabled_plugin_loads: explicitInlineDisabled.plugin?.loads ?? 0,
       explicit_inline_disabled_plan_permission: explicitInlineDisabled.debug_config?.resolved?.plan_permission_star ?? null,
+      inline_plugin_inheritance_loads: inlinePluginInheritance.plugin?.loads ?? 0,
+      inline_plugin_inheritance_is_red: (inlinePluginInheritance.plugin?.loads ?? 0) > 0,
+      inline_plugin_inheritance_mcp_starts: globalStarts(inlinePluginInheritance) + projectStarts(inlinePluginInheritance),
+      actual_emitted_global_mcp_starts: actualEmitted ? globalStarts(actualEmitted) : null,
+      actual_emitted_project_mcp_starts: actualEmitted ? projectStarts(actualEmitted) : null,
+      actual_emitted_plugin_loads: actualEmitted?.plugin?.loads ?? null,
+      actual_emitted_marker_cleanup: actualEmitted ? actualEmitted.cleanup?.live_pids_after_exit?.length === 0 : null,
     }
     const isolatedBoundaryPasses = globalStarts(isolated) === 0
       && isolated.plugin?.loads === 0
@@ -619,8 +869,19 @@ async function main() {
       && discoveryProjectStarts === 0
       && discoveryToolCalls === 0
       && discoveryGlobalStarts === 0
+      && (report.actual_emitted_child_environment === undefined
+        || (report.actual_emitted_child_environment.config_overrides_absent
+          && report.actual_emitted_child_environment.xdg_config_under_home
+          && report.actual_emitted_child_environment.xdg_data_unchanged
+          && globalStarts(actualEmitted) === 0
+          && projectStarts(actualEmitted) === 0
+          && actualEmitted.plugin?.loads === 0
+          && actualEmitted.cleanup?.live_pids_after_exit?.length === 0))
     if (discoveryGlobalStarts > 0) {
       report.residual_gap = 'The exact discovery-style inline mcp={} plus OPENCODE_DISABLE_PROJECT_CONFIG=true still autostarted a marker from the inherited global config; inline mcp removal does not prove native global MCP isolation.'
+    }
+    if (inlinePluginInheritance.plugin?.loads > 0) {
+      report.inline_plugin_residual_gap = 'An inline plugin in OPENCODE_CONFIG_CONTENT still loaded with fresh XDG config and no OPENCODE_CONFIG/OPENCODE_CONFIG_DIR; the native boundary covers global config sources, not inherited inline plugins.'
     }
   } catch (error) {
     report.passed = false

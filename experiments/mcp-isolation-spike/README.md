@@ -59,6 +59,9 @@ node src/scenarios.mjs opencode-agent-triggered-grant
 node src/scenarios.mjs scale-matrix
 node src/scenarios.mjs overlap-isolation
 node src/opencode-native-config-acceptance.mjs
+# Optional: replay a JSON object, JSON {"environment": {...}}, or NUL/newline
+# KEY=VALUE snapshot captured from the compiled discovery child (use `-` for stdin).
+node src/opencode-native-config-acceptance.mjs --emitted-child-env=/path/to/child-env.json
 ```
 
 Or with npm/pnpm script runners:
@@ -77,6 +80,16 @@ npm run scenario:scale-matrix
 npm run scenario:overlap-isolation
 npm run scenario:opencode-native-config-acceptance
 ```
+
+The optional emitted-child snapshot is used only for the actual relevant
+configuration keys; credentials are never copied into the replay environment.
+The harness re-homes disposable HOME/XDG state, keeps the real provider
+`XDG_DATA_HOME` unchanged, and reports whether the captured child omitted
+`OPENCODE_CONFIG` and `OPENCODE_CONFIG_DIR`, placed `XDG_CONFIG_HOME` below
+HOME, and left marker/plugin processes dead after OpenCode exits. The separate
+`inline_plugin_inheritance` case is intentionally RED evidence: an inline
+plugin in `OPENCODE_CONFIG_CONTENT` can still load even when global/project
+configuration sources are isolated.
 
 ## Artifacts
 
