@@ -4665,9 +4665,7 @@ async fn pr364_opencode_discovery_rejects_source_mcp_and_restores_ordinary_confi
         prepared_home, original_provider_home,
         "Ready must rebind the ordinary provider away from its original HOME"
     );
-    let prepared_path_prefix = format!(
-        "{prepared_home}/.local/bin:{prepared_home}/.cargo/bin:"
-    );
+    let prepared_path_prefix = format!("{prepared_home}/.local/bin:{prepared_home}/.cargo/bin:");
     assert!(
         prepared_path.starts_with(&prepared_path_prefix),
         "validated PATH must expose preparation-home tool directories: {prepared_path}"
