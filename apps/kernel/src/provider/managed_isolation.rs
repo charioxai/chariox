@@ -1005,6 +1005,15 @@ pub(crate) fn apply_managed_provider_isolation(
         }));
         environment_remove.sort();
         environment_remove.dedup();
+        let account_environment = PROVIDER_ACCOUNT_PATH_ENVIRONMENT
+            .iter()
+            .filter_map(|name| {
+                launch
+                    .pty_env
+                    .get(*name)
+                    .map(|value| ((*name).to_string(), value.clone()))
+            })
+            .collect::<Vec<_>>();
         for name in environment_remove {
             args.extend(["--unsetenv".to_string(), name.clone()]);
             launch.pty_env.remove(&name);
@@ -1017,10 +1026,8 @@ pub(crate) fn apply_managed_provider_isolation(
         // This keeps an inherited XDG_RUNTIME_DIR (or provider-specific home)
         // from pointing back into the host while preserving the account
         // binding requested by the launch.
-        for name in PROVIDER_ACCOUNT_PATH_ENVIRONMENT {
-            if let Some(value) = launch.pty_env.get(*name) {
-                args.extend(["--setenv".to_string(), (*name).to_string(), value.clone()]);
-            }
+        for (name, value) in account_environment {
+            args.extend(["--setenv".to_string(), name, value]);
         }
         append_managed_git_safe_directory_environment(&mut args, &workspace_roots);
         args.extend([
