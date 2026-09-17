@@ -696,6 +696,10 @@ mod tests {
                     path: "go/bin".to_string(),
                 },
                 crate::local::ProjectEnvironmentPathEntry {
+                    base: crate::local::ProjectEnvironmentPathBase::PreparationHome,
+                    path: ".local/share/pnpm".to_string(),
+                },
+                crate::local::ProjectEnvironmentPathEntry {
                     base: crate::local::ProjectEnvironmentPathBase::Workspace,
                     path: ".venv/bin".to_string(),
                 },
@@ -719,13 +723,15 @@ mod tests {
                 pty_target: None,
                 pty_program: Some("/bin/sh".to_string()),
                 pty_args: Vec::new(),
-                pty_env: BTreeMap::from([("PATH".to_string(), "/usr/bin".to_string())]),
+                // Provider launches inherit PATH from the kernel process;
+                // definition-derived entries must still be prepended to that
+                // effective base for preparation and validation.
+                pty_env: BTreeMap::new(),
                 pty_env_remove: Vec::new(),
                 working_directory: Some(workspace_root.to_path_buf()),
                 structured_endpoint: None,
             },
         );
-
         let environment = worker_validation_environment_with_home_and_definition(
             &run,
             Some(preparation_home),
@@ -736,16 +742,25 @@ mod tests {
             .get("PATH")
             .expect("derived worker environment should have PATH");
         let entries = std::env::split_paths(std::ffi::OsStr::new(path)).collect::<Vec<_>>();
+        let inherited_path = std::env::var("PATH").expect("test process should have PATH");
         assert_eq!(
-            &entries[..4],
-            [
-                preparation_home.join("go/bin"),
-                workspace_root.join(".venv/bin"),
-                preparation_home.join(".local/bin"),
-                preparation_home.join(".cargo/bin"),
-            ]
+            run.preparation_base_path(),
+            Some(inherited_path.as_str()),
+            "provider construction must snapshot inherited PATH before preparation"
         );
-        assert_eq!(entries.last(), Some(&PathBuf::from("/usr/bin")));
+        let mut expected_entries = vec![
+            preparation_home.join("go/bin"),
+            preparation_home.join(".local/share/pnpm"),
+            workspace_root.join(".venv/bin"),
+            preparation_home.join(".local/bin"),
+            preparation_home.join(".cargo/bin"),
+        ];
+        for entry in std::env::split_paths(std::ffi::OsStr::new(&inherited_path)) {
+            if !expected_entries.contains(&entry) {
+                expected_entries.push(entry);
+            }
+        }
+        assert_eq!(entries, expected_entries);
     }
 
     #[cfg(unix)]
@@ -792,11 +807,19 @@ mod tests {
                 pty_target: None,
                 pty_program: Some("/bin/sh".to_string()),
                 pty_args: Vec::new(),
-                pty_env: BTreeMap::from([("PATH".to_string(), "/usr/bin:/bin".to_string())]),
+                // Production provider launches inherit PATH from the kernel
+                // process instead of repeating it in pty_env.
+                pty_env: BTreeMap::new(),
                 pty_env_remove: Vec::new(),
                 working_directory: Some(workspace.clone()),
                 structured_endpoint: None,
             },
+        );
+        let inherited_path = std::env::var("PATH").expect("test process should have PATH");
+        assert_eq!(
+            run.preparation_base_path(),
+            Some(inherited_path.as_str()),
+            "provider construction must snapshot inherited PATH before preparation"
         );
         let old_definition = ProjectEnvironmentDefinition {
             schema_version: 1,

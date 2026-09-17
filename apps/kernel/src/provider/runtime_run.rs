@@ -119,7 +119,7 @@ impl RuntimeProviderRun {
         launch_result: ProviderLaunchResult,
     ) -> Self {
         let now = unix_epoch_ms();
-        let preparation_base_path = launch_result.pty_env.get("PATH").cloned();
+        let preparation_base_path = provider_preparation_base_path(&launch_result);
         Self {
             id: id.into(),
             session_id: request.session_id.clone(),
@@ -614,6 +614,23 @@ impl RuntimeProviderRun {
             self.projected_for_home_agent_with_id(projected_id, session_id, agent_id);
         (worker_provider_run_id, projected_run)
     }
+}
+
+fn provider_preparation_base_path(launch_result: &ProviderLaunchResult) -> Option<String> {
+    if let Some(path) = launch_result.pty_env.get("PATH") {
+        return Some(path.clone());
+    }
+    if launch_result
+        .pty_env_remove
+        .iter()
+        .any(|name| name == "PATH")
+    {
+        // An explicitly removed PATH is still a stable preparation base: use
+        // an empty value so a later rebind cannot fall back to its prior
+        // projected PATH and retain definition-derived directories.
+        return Some(String::new());
+    }
+    std::env::var_os("PATH").map(|path| path.to_string_lossy().into_owned())
 }
 
 pub(crate) fn projected_leased_provider_run_id(

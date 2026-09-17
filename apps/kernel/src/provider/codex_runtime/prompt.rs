@@ -26,6 +26,11 @@ pub fn submit_codex_prompt(
     envelope: &PromptEnvelope,
 ) -> Result<(), DaemonError> {
     let client = codex_client_for_run(run, state.endpoint(), None)?;
+    let client = if state.read_only_discovery_permissions() || run.read_only_discovery() {
+        client.with_read_only_discovery_permissions()
+    } else {
+        client
+    };
     let cwd = run
         .working_directory()
         .map(|path| path.to_string_lossy().to_string());

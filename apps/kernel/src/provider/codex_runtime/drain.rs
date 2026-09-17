@@ -18,6 +18,11 @@ pub fn drain_codex_events(
     native_interaction_bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
 ) -> Result<CodexPollResult, DaemonError> {
     let client = codex_client_for_run(run, state.endpoint(), native_interaction_bridge)?;
+    let client = if state.read_only_discovery_permissions() || run.read_only_discovery() {
+        client.with_read_only_discovery_permissions()
+    } else {
+        client
+    };
     let mut chunks = Vec::new();
     let mut completions = Vec::new();
     let mut notices = Vec::new();
@@ -160,4 +165,213 @@ pub(super) fn codex_turn_should_backfill(
         drained_to_quiet,
     )
     .is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    use serde_json::{json, Value};
+    use tokio_tungstenite::tungstenite::{accept, connect, Message};
+
+    use crate::provider::{
+        AgentEndpointMode, AgentExecutionMode, AgentPermissionLevel, CodexClient,
+        LaunchProviderRequest, ProviderLaunchResult, ProviderWriteAccessMode, RuntimeProviderRun,
+    };
+
+    use super::super::state::CodexRuntimeState;
+    use super::drain_codex_events;
+
+    #[test]
+    fn read_only_discovery_policy_survives_event_drain_reconstruction_after_turn_start() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind Codex websocket fixture");
+        let address = listener
+            .local_addr()
+            .expect("resolve Codex websocket fixture");
+        let (turn_start_returned_tx, turn_start_returned_rx) = mpsc::channel();
+        let (permission_sent_tx, permission_sent_rx) = mpsc::channel();
+        let (response_received_tx, response_received_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept Codex websocket client");
+            let mut socket = accept(stream).expect("upgrade Codex websocket fixture");
+
+            let thread_start = read_json_request(&mut socket, "thread/start");
+            socket
+                .send(Message::Text(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": thread_start["id"],
+                        "result": {
+                            "thread": {"id": "thread-discovery"},
+                            "model": "gpt-5.5"
+                        }
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("send thread/start response");
+
+            let turn_start = read_json_request(&mut socket, "turn/start");
+            socket
+                .send(Message::Text(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": turn_start["id"],
+                        "result": {"turn": {"id": "turn-discovery"}}
+                    })
+                .to_string()
+                .into(),
+                ))
+                .expect("send turn/start response");
+            turn_start_returned_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("client should finish turn/start before permission request");
+            socket
+                .send(Message::Text(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": 42,
+                        "method": "item/permissions/requestApproval",
+                        "params": {
+                            "permissions": {
+                                "network": true,
+                                "fileSystem": {
+                                    "read": ["README.md"],
+                                    "write": ["MUTATE"]
+                                }
+                            }
+                        }
+                    })
+                .to_string()
+                .into(),
+                ))
+                .expect("send post-turn-start permission request");
+            // `drain_codex_events` intentionally performs a bounded
+            // nonblocking read. Give the loopback peer time to deliver the
+            // frame before releasing the client-side barrier below.
+            thread::sleep(Duration::from_millis(50));
+            permission_sent_tx
+                .send(())
+                .expect("notify client that permission request was sent");
+
+            let response = socket.read().expect("read permission response");
+            let Message::Text(response) = response else {
+                panic!("expected permission response text frame");
+            };
+            let response: Value =
+                serde_json::from_str(&response).expect("parse permission response");
+            assert_eq!(response["id"], json!(42));
+            assert_eq!(response["result"]["scope"], "turn");
+            assert_eq!(response["result"]["permissions"]["network"], true);
+            assert_eq!(
+                response["result"]["permissions"]["fileSystem"]["read"],
+                json!(["README.md"])
+            );
+            assert!(response["result"]["permissions"]["fileSystem"]
+                .get("write")
+                .is_none());
+            response_received_tx
+                .send(())
+                .expect("notify client that permission response was received");
+        });
+
+        let endpoint = format!("ws://{address}");
+        let (mut socket, _) = connect(&endpoint).expect("connect Codex websocket client");
+        let mut request = LaunchProviderRequest::new(
+            "session-discovery-drain",
+            "codex",
+            "codex",
+            "default",
+            "default",
+        );
+        request.write_access_mode = ProviderWriteAccessMode::WorkspaceLiveSyncTracked;
+        let run = RuntimeProviderRun::new(
+            "provider-run-discovery-drain",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "codex-test".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some(endpoint.clone()),
+            },
+        );
+        let client = CodexClient::new(run.id(), endpoint.as_str())
+            .expect("client should construct")
+            .with_write_access_mode(ProviderWriteAccessMode::WorkspaceLiveSyncTracked)
+            .with_read_only_discovery_permissions();
+        let mut next_request_id = 1;
+        let thread = client
+            .thread_start(
+                &mut socket,
+                &mut next_request_id,
+                None,
+                None,
+                ProviderWriteAccessMode::WorkspaceLiveSyncTracked,
+                AgentExecutionMode::Plan,
+                AgentPermissionLevel::Required,
+                None,
+            )
+            .expect("thread/start should succeed");
+        let mut state = CodexRuntimeState::new(
+            endpoint,
+            thread.thread.id,
+            socket,
+            next_request_id,
+        );
+        state.set_read_only_discovery_permissions(true);
+        let thread_id = state.thread_id().to_string();
+        client
+            .turn_start(
+                &mut state.socket,
+                &mut state.next_request_id,
+                &thread_id,
+                None,
+                None,
+                None,
+                ProviderWriteAccessMode::WorkspaceLiveSyncTracked,
+                AgentExecutionMode::Plan,
+                AgentPermissionLevel::Required,
+                None,
+                vec![json!({"type": "text", "text": "discover"})],
+                &mut state.buffered_notifications,
+            )
+            .expect("turn/start should succeed");
+        turn_start_returned_tx
+            .send(())
+            .expect("notify server that turn/start returned");
+        permission_sent_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("server should send the permission request");
+
+        let poll = drain_codex_events(&run, &mut state, None).expect("event drain should succeed");
+        assert!(poll.terminal_failure.is_none());
+        assert!(!poll.prompt_completed);
+        response_received_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("server should receive the read-only permission response");
+        drop(state);
+        server.join().expect("join Codex websocket fixture");
+    }
+
+    fn read_json_request(
+        socket: &mut tokio_tungstenite::tungstenite::WebSocket<std::net::TcpStream>,
+        expected_method: &str,
+    ) -> Value {
+        let message = socket.read().expect("read Codex request");
+        let Message::Text(text) = message else {
+            panic!("expected Codex request text frame");
+        };
+        let request: Value = serde_json::from_str(&text).expect("parse Codex request");
+        assert_eq!(request["method"], expected_method);
+        request
+    }
 }

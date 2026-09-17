@@ -76,6 +76,9 @@ pub fn run_codex_utility_prompt(
         hidden_context_for_provider(hidden_system_context),
     )?;
     let mut state = CodexRuntimeState::new(endpoint, thread.thread.id, socket, next_request_id);
+    if policy.is_read_only_discovery() {
+        state.set_read_only_discovery_permissions(true);
+    }
     let input = codex_input(prompt, &[]);
     let thread_id = state.thread_id().to_string();
     let response = client.turn_start(

@@ -130,6 +130,12 @@ impl CodexClient {
 
     pub(crate) fn with_read_only_discovery_permissions(mut self) -> Self {
         self.read_only_discovery_permissions = true;
+        // Discovery never needs provider MCPs. Clear both the direct and
+        // runtime bindings so an accidental server request cannot reach a
+        // mutating tool even if it arrives after thread/start.
+        self.runtime_mcp_server_url = None;
+        self.runtime_mcp_auth_token = None;
+        self.mcp_servers.clear();
         self
     }
 
@@ -556,6 +562,39 @@ mod tests {
                 "scope": "turn"
             })
         );
+    }
+
+    #[test]
+    fn read_only_discovery_thread_config_omits_runtime_and_granted_mcp_bindings() {
+        let mut server =
+            CharioxMcpServerConfig::stdio("mutating-tool", "project-mcp", vec!["serve".into()]);
+        server.required = true;
+        let mut provider_overrides = std::collections::BTreeMap::new();
+        provider_overrides.insert(
+            "mcp_servers.injected.command".to_string(),
+            json!("arbitrary-mcp"),
+        );
+        provider_overrides.insert("features.multi_agent".to_string(), json!(false));
+        let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
+            .expect("client should construct")
+            .with_runtime_mcp_binding(Some("http://127.0.0.1:43120/mcp"), Some("token-123"))
+            .with_mcp_servers(&[server])
+            .with_provider_config_overrides(&provider_overrides)
+            .with_read_only_discovery_permissions();
+        let policy = codex_permission_policy(
+            ProviderWriteAccessMode::WorkspaceLiveSyncTracked,
+            AgentExecutionMode::Plan,
+            AgentPermissionLevel::Required,
+        );
+
+        let overrides = client
+            .thread_config_overrides(&policy)
+            .expect("read-only discovery config should render");
+
+        assert_eq!(overrides.get("features.multi_agent"), Some(&json!(false)));
+        assert!(overrides
+            .keys()
+            .all(|key| key != "mcp_servers" && !key.starts_with("mcp_servers.")));
     }
 
     #[test]
