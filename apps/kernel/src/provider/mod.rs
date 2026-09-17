@@ -94,6 +94,7 @@ pub(crate) use mcp_proxy::{
 };
 pub(crate) use opencode::{
     apply_opencode_discovery_environment,
+    isolate_opencode_discovery_configuration, OpenCodeDiscoveryConfigDirectory,
     ensure_opencode_account_endpoint, invalidate_opencode_account_endpoint,
     shutdown_opencode_account_endpoints,
 };
