@@ -181,6 +181,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   const cachedWaitingRoomInventories = waitingRoomInventoryCache.load()
   let directTargetKernelId = deps.options.targetDaemonId?.trim() || null
   let providerCatalogSelectionRevision = 0
+  let providerCatalogIntentRevision = 0
   let managedEnvironmentCatalog: ManagedEnvironmentCatalog | undefined
   let sourceLaunchTarget: { workspaceId: string; worktreeId: string } | null | undefined
   const managedWaitingRoomRemote = () => ({
@@ -247,6 +248,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     updateSessionChrome: () => deps.updateSessionChrome(),
     syncCommandCenter: () => deps.syncCommandCenter(),
     refreshProviderCatalogForSelection: (state) => {
+      providerCatalogIntentRevision += 1
       const revision = ++providerCatalogSelectionRevision
       const catalogClient = typeof deps.client.currentClient === "function"
         ? deps.client.currentClient()
@@ -707,30 +709,60 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       ])
     },
     prepareSessionOwnerClient: async (launch) => {
-      if (!await replaceClientForKernel(launch.ownerKernelRef, launch.ownerMachineRef)) {
-        return
+      const selection = deps.waitingRoomState()
+      const intentRevision = providerCatalogIntentRevision
+      const ownershipRevision = deps.waitingRoomLaunchOwnershipRevision()
+      const isActive = () => (
+        intentRevision === providerCatalogIntentRevision
+        && ownershipRevision === deps.waitingRoomLaunchOwnershipRevision()
+        && selection.selectedKernelRef === deps.waitingRoomState().selectedKernelRef
+        && selection.selectedMachineRef === deps.waitingRoomState().selectedMachineRef
+      )
+      const assertActive = () => {
+        if (!isActive()) {
+          throw new Error("session launch was cancelled because the Waiting Room selection changed")
+        }
       }
-      const revision = ++providerCatalogSelectionRevision
-      const state = deps.waitingRoomState()
-      const catalogClient = typeof deps.client.currentClient === "function"
-        ? deps.client.currentClient()
-        : deps.client
-      const catalog = await loadProviderCatalogForKernel(catalogClient, deps.appLogger, {
-        providerId: state.providerId,
-        accountProfileId: state.accountProfileId,
-        executionLocation: providerCatalogExecutionLocation(
-          state,
-          directTargetKernelId ?? deps.relayStatusState()?.daemon_id,
-        ),
-      })
-      const activeClient = typeof deps.client.currentClient === "function"
-        ? deps.client.currentClient()
-        : deps.client
-      if (revision !== providerCatalogSelectionRevision || catalogClient !== activeClient) {
-        throw new Error("provider selection changed while preparing the session; try again")
+      const transaction: { pivot: MutableLocalIpcClientPivot | null } = { pivot: null }
+      try {
+        if (!await replaceClientForKernel(
+          launch.ownerKernelRef,
+          launch.ownerMachineRef,
+          isActive,
+          undefined,
+          (pivot) => { transaction.pivot = pivot },
+        )) {
+          throw new Error("session launch was cancelled because the Waiting Room selection changed")
+        }
+        assertActive()
+        const revision = ++providerCatalogSelectionRevision
+        const state = deps.waitingRoomState()
+        const catalogClient = typeof deps.client.currentClient === "function"
+          ? deps.client.currentClient()
+          : deps.client
+        const catalog = await loadProviderCatalogForKernel(catalogClient, deps.appLogger, {
+          providerId: state.providerId,
+          accountProfileId: state.accountProfileId,
+          executionLocation: providerCatalogExecutionLocation(
+            state,
+            directTargetKernelId ?? deps.relayStatusState()?.daemon_id,
+          ),
+        })
+        const activeClient = typeof deps.client.currentClient === "function"
+          ? deps.client.currentClient()
+          : deps.client
+        assertActive()
+        if (revision !== providerCatalogSelectionRevision || catalogClient !== activeClient) {
+          throw new Error("provider selection changed while preparing the session; try again")
+        }
+        await transaction.pivot?.commit()
+        assertActive()
+        deps.setProviderCatalogState(catalog)
+        return catalog
+      } catch (error) {
+        await transaction.pivot?.rollback()
+        throw error
       }
-      deps.setProviderCatalogState(catalog)
-      return catalog
     },
     prepareManagedSessionLaunch,
     prepareExistingSessionClient: async (session) => {
