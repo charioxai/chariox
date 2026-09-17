@@ -3949,6 +3949,214 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn managed_account_paths_are_restored_only_inside_namespace() {
+        let _env = crate::env_lock::lock();
+        let nonce = format!(
+            "{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        );
+        let scratch = std::env::temp_dir().join(format!(
+            "chariox-managed-account-env-regression-{nonce}"
+        ));
+        let provider_home = scratch.join("provider-home");
+        let outer_home = scratch.join("outer-home");
+        let workspace = scratch.join("workspace");
+        let account_root = scratch.join("accounts");
+        let bwrap_copy = scratch.join("bwrap");
+        std::fs::create_dir_all(&provider_home).expect("provider home should exist");
+        std::fs::create_dir_all(&outer_home).expect("outer home should exist");
+        std::fs::create_dir_all(&workspace).expect("workspace should exist");
+        std::fs::create_dir_all(&account_root).expect("account root should exist");
+        std::fs::copy(BWRAP_PATH, &bwrap_copy).expect("private Bubblewrap copy should exist");
+
+        let account_names = [
+            "CODEX_HOME",
+            "CLAUDE_CONFIG_DIR",
+            "XDG_DATA_HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_STATE_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_RUNTIME_DIR",
+            "OPENCODE_CONFIG_DIR",
+        ];
+        let mut environment = BTreeMap::new();
+        for (ordinal, name) in account_names.iter().enumerate() {
+            let path = account_root.join(format!("account-{ordinal}"));
+            std::fs::create_dir_all(&path).expect("account directory should exist");
+            environment.insert((*name).to_string(), path.display().to_string());
+        }
+
+        let mut environment_names = vec![
+            MANAGED_PROVIDER_ISOLATION_ENV,
+            MANAGED_PROVIDER_HOME_ENV,
+            "CHARIOX_HOME",
+            "HOME",
+            "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+            "CHARIOX_SLICE_ROOT",
+            MANAGED_SLICE_SERVICE_ROOT_ENV,
+            MANAGED_SLICE_PUBLICATION_ROOT_ENV,
+            MANAGED_PROVIDER_BWRAP_ENV,
+            MANAGED_WORKSPACE_ROOT_COUNT_ENV,
+            "CHARIOX_MANAGED_WORKSPACE_ROOT_0",
+        ]
+        .into_iter()
+        .map(|name| name.to_string())
+        .collect::<Vec<_>>();
+        environment_names.extend(
+            MANAGED_PROTECTED_FILE_ENV_NAMES
+                .iter()
+                .map(|name| (*name).to_string()),
+        );
+        environment_names.extend(
+            PROVIDER_ACCOUNT_PATH_ENVIRONMENT
+                .iter()
+                .map(|name| (*name).to_string()),
+        );
+        environment_names.extend(
+            std::env::vars_os()
+                .filter_map(|(name, _)| name.into_string().ok())
+                .filter(|name| {
+                    name.starts_with(MANAGED_WORKSPACE_ROOT_ENV_PREFIX)
+                        || name.starts_with("GIT_CONFIG_KEY_")
+                        || name.starts_with("GIT_CONFIG_VALUE_")
+                }),
+        );
+        environment_names.sort_unstable();
+        environment_names.dedup();
+        let previous_environment = environment_names
+            .iter()
+            .map(|name| (name.clone(), std::env::var_os(name)))
+            .collect::<Vec<_>>();
+        struct ManagedAccountEnvironmentCleanup {
+            previous_environment: Vec<(String, Option<std::ffi::OsString>)>,
+            scratch: PathBuf,
+        }
+        impl Drop for ManagedAccountEnvironmentCleanup {
+            fn drop(&mut self) {
+                for (name, value) in self.previous_environment.drain(..) {
+                    restore_env(&name, value);
+                }
+                let _ = std::fs::remove_dir_all(&self.scratch);
+            }
+        }
+        let _cleanup = ManagedAccountEnvironmentCleanup {
+            previous_environment,
+            scratch: scratch.clone(),
+        };
+        for name in &environment_names {
+            std::env::remove_var(name);
+        }
+        std::env::set_var(MANAGED_PROVIDER_ISOLATION_ENV, "1");
+        std::env::set_var(MANAGED_PROVIDER_HOME_ENV, &provider_home);
+        std::env::set_var("HOME", &outer_home);
+        std::env::set_var(MANAGED_PROVIDER_BWRAP_ENV, &bwrap_copy);
+
+        let child_script = r#"
+set -eu
+check_account() {
+    name="$1"
+    expected="$2"
+    actual="$3"
+    if [ "$actual" != "$expected" ] || [ ! -d "$actual" ]; then
+        printf 'namespace account env %s=%s expected=%s\n' "$name" "$actual" "$expected" >&2
+        exit 71
+    fi
+}
+check_account CODEX_HOME /home/chariox/.provider-account/root-0 "${CODEX_HOME-}"
+check_account CLAUDE_CONFIG_DIR /home/chariox/.provider-account/root-1 "${CLAUDE_CONFIG_DIR-}"
+check_account XDG_DATA_HOME /home/chariox/.provider-account/root-2 "${XDG_DATA_HOME-}"
+check_account XDG_CONFIG_HOME /home/chariox/.provider-account/root-3 "${XDG_CONFIG_HOME-}"
+check_account XDG_STATE_HOME /home/chariox/.provider-account/root-4 "${XDG_STATE_HOME-}"
+check_account XDG_CACHE_HOME /home/chariox/.provider-account/root-5 "${XDG_CACHE_HOME-}"
+check_account XDG_RUNTIME_DIR /home/chariox/.provider-account/root-6 "${XDG_RUNTIME_DIR-}"
+check_account OPENCODE_CONFIG_DIR /home/chariox/.provider-account/root-7 "${OPENCODE_CONFIG_DIR-}"
+if [ "$PWD" != "$1" ]; then
+    printf 'namespace working directory %s expected=%s\n' "$PWD" "$1" >&2
+    exit 72
+fi
+printf 'managed account environment probe passed\n'
+"#;
+        let launch = managed_isolated_utility_launch(
+            "/bin/sh",
+            vec![
+                "-eu".to_string(),
+                "-c".to_string(),
+                child_script.to_string(),
+                "managed-account-environment-probe".to_string(),
+                workspace.display().to_string(),
+            ],
+            environment,
+            Some(workspace.clone()),
+            "managed-account-environment-regression",
+        )
+        .expect("managed account environment launch should be prepared");
+
+        for name in &account_names {
+            assert!(
+                !launch.pty_env.contains_key(*name),
+                "{name} must be absent from the outer launch environment"
+            );
+            assert!(
+                launch
+                    .pty_env_remove
+                    .iter()
+                    .any(|removed| removed == *name),
+                "{name} must be removed from the outer command environment"
+            );
+        }
+        for (ordinal, name) in account_names.iter().enumerate() {
+            let destination = format!("{SANDBOX_ACCOUNT_ROOT}/root-{ordinal}");
+            let unset_positions = launch
+                .pty_args
+                .windows(2)
+                .enumerate()
+                .filter_map(|(index, window)| {
+                    (window[0] == "--unsetenv" && window[1] == *name).then_some(index)
+                })
+                .collect::<Vec<_>>();
+            let set_positions = launch
+                .pty_args
+                .windows(3)
+                .enumerate()
+                .filter_map(|(index, window)| {
+                    (window[0] == "--setenv"
+                        && window[1] == *name
+                        && window[2] == destination.as_str())
+                        .then_some(index)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                unset_positions.len(),
+                1,
+                "{name} must have exactly one namespace --unsetenv"
+            );
+            assert_eq!(
+                set_positions.len(),
+                1,
+                "{name} must be restored with --setenv {name} {destination} after scrubbing"
+            );
+            assert!(
+                unset_positions[0] < set_positions[0],
+                "{name} namespace --setenv must follow --unsetenv"
+            );
+        }
+
+        let output = command_from_provider_launch(launch)
+            .expect("managed account environment command should be constructed")
+            .output()
+            .expect("managed account environment namespace child should run");
+        assert!(
+            output.status.success(),
+            "managed account namespace child probe failed: status={:?}, stdout={}, stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn managed_relocated_daemon_socket_is_scrubbed_and_mount_masked() {
         let _env = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
