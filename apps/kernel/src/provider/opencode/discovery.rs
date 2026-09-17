@@ -83,6 +83,10 @@ pub(crate) fn apply_opencode_discovery_environment(
     // Do not give the discovery child ordinary runtime/granted MCP credentials.
     // This changes only the spawn copy, so ordinary restoration retains them.
     object.insert("mcp".into(), serde_json::json!({}));
+    // Plugins execute during native initialization, before session permissions
+    // can constrain tools. The isolated global directory does not remove inline
+    // plugins, so clear those in the discovery-only spawn copy as well.
+    object.insert("plugin".into(), serde_json::json!([]));
     let permissions = serde_json::json!({
         "*": "deny", "read": "allow", "glob": "allow", "grep": "allow", "list": "allow"
     });
@@ -136,6 +140,7 @@ mod tests {
             "OPENCODE_CONFIG_CONTENT".into(),
             serde_json::json!({
                 "mcp": {"mutating": {"enabled": true}},
+                "plugin": ["file:///ordinary/startup-plugin.mjs"],
                 "permission": "allow",
                 "agent": {"plan": {"permission": "allow", "temperature": 0.2}},
                 "model": "fixture/model"
@@ -147,6 +152,13 @@ mod tests {
         let config: serde_json::Value =
             serde_json::from_str(&child["OPENCODE_CONFIG_CONTENT"]).unwrap();
         assert_eq!(config["mcp"], serde_json::json!({}));
+        assert_eq!(config["plugin"], serde_json::json!([]));
+        let preserved: serde_json::Value =
+            serde_json::from_str(&original["OPENCODE_CONFIG_CONTENT"]).unwrap();
+        assert_eq!(
+            preserved["plugin"][0],
+            "file:///ordinary/startup-plugin.mjs"
+        );
         assert_eq!(config["permission"]["*"], "deny");
         assert_eq!(config["agent"]["plan"]["permission"], config["permission"]);
         assert_eq!(config["agent"]["plan"]["temperature"], 0.2);
