@@ -189,6 +189,20 @@ mod tests {
 
     #[test]
     fn read_only_discovery_policy_survives_event_drain_reconstruction_after_turn_start() {
+        struct DiscoveryWorkspace(std::path::PathBuf);
+        impl Drop for DiscoveryWorkspace {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let workspace = DiscoveryWorkspace(std::env::temp_dir().join(format!(
+            "chariox-discovery-drain-{:032x}",
+            rand::random::<u128>()
+        )));
+        std::fs::create_dir(&workspace.0).expect("create discovery workspace");
+        std::fs::write(workspace.0.join("README.md"), b"project evidence")
+            .expect("write project-local read fixture");
+        let canonical_read = workspace.0.join("README.md").canonicalize().unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind Codex websocket fixture");
         let address = listener
             .local_addr()
@@ -255,8 +269,8 @@ mod tests {
                         "id": turn_start["id"],
                         "result": {"turn": {"id": "turn-discovery"}}
                     })
-                .to_string()
-                .into(),
+                    .to_string()
+                    .into(),
                 ))
                 .expect("send turn/start response");
             turn_start_returned_rx
@@ -278,8 +292,8 @@ mod tests {
                             }
                         }
                     })
-                .to_string()
-                .into(),
+                    .to_string()
+                    .into(),
                 ))
                 .expect("send post-turn-start permission request");
             // `drain_codex_events` intentionally performs a bounded
@@ -298,10 +312,10 @@ mod tests {
                 serde_json::from_str(&response).expect("parse permission response");
             assert_eq!(response["id"], json!(42));
             assert_eq!(response["result"]["scope"], "turn");
-            assert_eq!(response["result"]["permissions"]["network"], true);
+            assert!(response["result"]["permissions"].get("network").is_none());
             assert_eq!(
                 response["result"]["permissions"]["fileSystem"]["read"],
-                json!(["README.md"])
+                json!([canonical_read])
             );
             assert!(response["result"]["permissions"]["fileSystem"]
                 .get("write")
@@ -343,7 +357,7 @@ mod tests {
                 pty_args: Vec::new(),
                 pty_env: BTreeMap::new(),
                 pty_env_remove: Vec::new(),
-                working_directory: None,
+                working_directory: Some(workspace.0.clone()),
                 structured_endpoint: Some(endpoint.clone()),
             },
         );
@@ -363,12 +377,7 @@ mod tests {
                 None,
             )
             .expect("thread/start should succeed");
-        let mut state = CodexRuntimeState::new(
-            endpoint,
-            thread.thread.id,
-            socket,
-            next_request_id,
-        );
+        let mut state = CodexRuntimeState::new(endpoint, thread.thread.id, socket, next_request_id);
         state.set_read_only_discovery_permissions(true);
         let thread_id = state.thread_id().to_string();
         client
