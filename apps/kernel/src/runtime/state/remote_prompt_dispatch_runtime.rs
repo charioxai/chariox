@@ -1994,6 +1994,7 @@ mod tests {
         let crate::runtime_transport::WatchResult::Ok {
             records,
             completions,
+            workflow_run_updates,
             snapshot,
             ..
         } = watch_result
@@ -2001,6 +2002,10 @@ mod tests {
             panic!("remote settlement subscription should remain available");
         };
         assert!(records.is_empty(), "remote output was already observed");
+        assert!(
+            workflow_run_updates.is_empty(),
+            "the non-workflow settlement should not select a workflow-run event instead of the public activity/snapshot path"
+        );
         assert_eq!(
             completions.len(),
             1,
@@ -2027,16 +2032,17 @@ mod tests {
         assert!(!settled_activity.busy);
         assert_eq!(settled_activity.active_prompt_count, 0);
         assert!(settled_activity.active_turn.is_none());
-        let settled_event = crate::transport::kernel_protocol::agent_activity_changed_event(
+        // The public subscription emits a narrow activity delta when the session permits one.
+        // Otherwise its actual transport loop falls back to the snapshot payload above. Check
+        // the same selection boundary without manufacturing a fallback event in this test.
+        match crate::transport::kernel_protocol::agent_activity_changed_event(
             &settled_snapshot,
             Some(&output_snapshot),
-        )
-        .expect("remote settlement should publish an idle activity event after completion");
-        match settled_event {
-            crate::transport::kernel_protocol::KernelEvent::AgentActivityChanged {
+        ) {
+            Some(crate::transport::kernel_protocol::KernelEvent::AgentActivityChanged {
                 agent_activity,
                 ..
-            } => {
+            }) => {
                 let activity = agent_activity
                     .get(agent.id())
                     .expect("idle event should include the settled remote agent");
@@ -2048,7 +2054,56 @@ mod tests {
                 assert_eq!(activity.active_prompt_count, 0);
                 assert!(activity.active_turn.is_none());
             }
-            event => panic!("unexpected public remote settlement event: {event:?}"),
+            Some(event) => panic!("unexpected public remote settlement event: {event:?}"),
+            None => {
+                assert!(
+                    crate::transport::kernel_protocol::provider_run_changed_event(
+                        &settled_snapshot,
+                        Some(&output_snapshot),
+                    )
+                    .is_none(),
+                    "the public transport must use the full snapshot when no activity delta applies"
+                );
+                assert!(
+                    crate::transport::kernel_protocol::session_metadata_changed_event(
+                        &settled_snapshot,
+                        Some(&output_snapshot),
+                    )
+                    .is_none(),
+                    "the public transport must use the full snapshot when no metadata delta applies"
+                );
+                assert!(
+                    crate::transport::kernel_protocol::runtime_interactions_changed_event(
+                        &settled_snapshot,
+                        Some(&output_snapshot),
+                    )
+                    .is_none(),
+                    "the public transport must use the full snapshot when no interaction delta applies"
+                );
+                assert!(
+                    crate::transport::kernel_protocol::workflow_run_updated_events(
+                        &settled_snapshot,
+                        Some(&output_snapshot),
+                    )
+                    .is_empty()
+                        && !crate::transport::kernel_protocol::workflow_run_only_changed(
+                            &settled_snapshot,
+                            Some(&output_snapshot),
+                        ),
+                    "the public transport must use the full snapshot when no narrow projection applies"
+                );
+                let fallback_activity = settled_snapshot
+                    .agent_activity
+                    .get(agent.id())
+                    .expect("full snapshot fallback should include the settled remote agent");
+                assert_eq!(
+                    fallback_activity.status,
+                    crate::runtime::projection::AgentRuntimeStatus::Idle
+                );
+                assert!(!fallback_activity.busy);
+                assert_eq!(fallback_activity.active_prompt_count, 0);
+                assert!(fallback_activity.active_turn.is_none());
+            }
         }
     }
 
