@@ -10,6 +10,7 @@ import {
   type WaitingRoomActivationControllerDeps,
   type WaitingRoomCreateSessionLaunch,
   type WaitingRoomPreparedManagedLaunch,
+  type WaitingRoomPreparedSessionOwner,
 } from "./waiting-room-activation-controller.js"
 import type {
   WaitingRoomActivationDecision,
@@ -188,7 +189,12 @@ test("waiting room activation re-derives the launch from the selected kernel cat
       },
       prepareSessionOwnerClient: async (launch) => {
         assert.equal(launch.model, "opencode/a-only")
-        return catalogB
+        return {
+          catalog: catalogB,
+          assertActive: () => {},
+          commit: async () => {},
+          rollback: async () => {},
+        }
       },
       deriveCreateSessionDecision: deriveWaitingRoomCreateSessionDecision,
     })
@@ -868,7 +874,7 @@ function createHarness(options: {
   loadOlderExternalProviderSessions?: () => Promise<number>
   browseKernelInventory?: (kernelId: string, machineId: string) => Promise<number>
   deleteSlice?: (sliceRef: string) => Promise<void>
-  prepareSessionOwnerClient?: (launch: WaitingRoomLaunchConfig) => Promise<ProviderCatalog | void>
+  prepareSessionOwnerClient?: (launch: WaitingRoomLaunchConfig) => Promise<WaitingRoomPreparedSessionOwner | void>
   prepareManagedSessionLaunch?: (
     launch: WaitingRoomLaunchConfig,
   ) => Promise<WaitingRoomPreparedManagedLaunch>

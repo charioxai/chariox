@@ -755,10 +755,18 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
         if (revision !== providerCatalogSelectionRevision || catalogClient !== activeClient) {
           throw new Error("provider selection changed while preparing the session; try again")
         }
-        await transaction.pivot?.commit()
-        assertActive()
         deps.setProviderCatalogState(catalog)
-        return catalog
+        return {
+          catalog,
+          assertActive,
+          commit: async () => {
+            assertActive()
+            await transaction.pivot?.commit()
+          },
+          rollback: async () => {
+            await transaction.pivot?.rollback()
+          },
+        }
       } catch (error) {
         await transaction.pivot?.rollback()
         throw error

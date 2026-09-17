@@ -41,6 +41,10 @@ export type WaitingRoomPreparedManagedLaunch = {
   rollback: () => Promise<void>
 }
 
+export type WaitingRoomPreparedSessionOwner = Omit<WaitingRoomPreparedManagedLaunch, "launch"> & {
+  catalog: ProviderCatalog
+}
+
 export type WaitingRoomActivationControllerDeps = {
   isKernelConnected: () => boolean
   connectKernel: () => Promise<void>
@@ -82,7 +86,7 @@ export type WaitingRoomActivationControllerDeps = {
   startSlice?: (sliceRef: string) => Promise<SliceRecord>
   deleteSlice?: (sliceRef: string) => Promise<unknown>
   updateSlices?: (slice: SliceRecord) => void
-  prepareSessionOwnerClient?: (launch: WaitingRoomLaunchConfig) => Promise<ProviderCatalog | void>
+  prepareSessionOwnerClient?: (launch: WaitingRoomLaunchConfig) => Promise<WaitingRoomPreparedSessionOwner | void>
   prepareManagedSessionLaunch?: (
     launch: WaitingRoomLaunchConfig,
   ) => Promise<WaitingRoomPreparedManagedLaunch>
@@ -264,7 +268,7 @@ export function createWaitingRoomActivationController(
 
   const createAndAttachSession = async (launch: WaitingRoomLaunchConfig) => {
     const managedLaunch = Boolean(launch.managedEnvironment)
-    const prepared = launch.managedEnvironment
+    let prepared = launch.managedEnvironment
       ? await deps.prepareManagedSessionLaunch?.(launch)
       : {
           launch,
@@ -277,14 +281,19 @@ export function createWaitingRoomActivationController(
     }
     let session: (Pick<RuntimeSession, "id"> & Partial<RuntimeSession>) | null = null
     let createdSliceRef: string | null = null
+    let attachmentStarted = false
     let workspacePath = ""
     try {
       let preparedLaunch = prepared.launch
       prepared.assertActive()
       if (!managedLaunch) {
-        const targetCatalog = await deps.prepareSessionOwnerClient?.(preparedLaunch)
+        const owner = await deps.prepareSessionOwnerClient?.(preparedLaunch)
+        if (owner) {
+          prepared = { ...owner, launch: preparedLaunch }
+        }
         prepared.assertActive()
-        if (targetCatalog) {
+        if (owner) {
+          const targetCatalog = owner.catalog
           const targetState = normalizeWaitingRoomState(
             deps.getWaitingRoomState(),
             deps.getAvailableSessions(),
@@ -334,6 +343,7 @@ export function createWaitingRoomActivationController(
         },
       )
       prepared.assertActive()
+      attachmentStarted = true
       await deps.attachBinding(session, true, preparedLaunch)
       prepared.assertActive()
       await prepared.commit()
@@ -341,13 +351,15 @@ export function createWaitingRoomActivationController(
       return session
     } catch (error) {
       const cleanupErrors: string[] = []
-      if (managedLaunch && session) {
-        try {
-          await deps.rollbackAttachedSession(session.id)
-        } catch (cleanupError) {
-          cleanupErrors.push(
-            `failed to undo the cancelled session attachment ${session.id}: ${deps.formatError(cleanupError)}`,
-          )
+      if (session) {
+        if (attachmentStarted) {
+          try {
+            await deps.rollbackAttachedSession(session.id)
+          } catch (cleanupError) {
+            cleanupErrors.push(
+              `failed to undo the cancelled session attachment ${session.id}: ${deps.formatError(cleanupError)}`,
+            )
+          }
         }
         try {
           await deps.deleteCreatedSession(session.id, workspacePath)
