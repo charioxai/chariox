@@ -763,6 +763,30 @@ async function main() {
       }),
     })
 
+    const candidateDiscoveryInlineConfig = {
+      mcp: {},
+      plugin: [],
+      permission: discoveryPermissions,
+      agent: { plan: { permission: discoveryPermissions } },
+    }
+    report.candidate_discovery_input_policy = {
+      ...candidateDiscoveryInlineConfig,
+      OPENCODE_DISABLE_PROJECT_CONFIG: 'true',
+      config_source: 'fresh XDG_CONFIG_HOME below prepared HOME; no OPENCODE_CONFIG or OPENCODE_CONFIG_DIR',
+    }
+    report.cases.candidate_inline_plugin_sanitized = await runCase({
+      label: 'candidate-isolated-xdg-inline-plugin-sanitized',
+      cwd: path.join(root, 'project'),
+      statePath,
+      pluginEventsPath,
+      env: safeEnvironment(root, {
+        inlineConfig: candidateDiscoveryInlineConfig,
+        disableProjectConfig: true,
+        pluginMarkerPath: pluginEventsPath,
+        xdgConfigHome: isolatedXdgConfigHome,
+      }),
+    })
+
     if (emittedEnvironmentFile) {
       const snapshot = await readEnvironmentSnapshot(emittedEnvironmentFile)
       if (!snapshot) throw new Error(`could not parse emitted child environment snapshot ${emittedEnvironmentFile}`)
@@ -806,6 +830,7 @@ async function main() {
     const explicitProjectDisabled = report.cases.explicit_project_disabled
     const explicitInlineDisabled = report.cases.explicit_inline_disabled
     const inlinePluginInheritance = report.cases.inline_plugin_inheritance
+    const candidateInlinePluginSanitized = report.cases.candidate_inline_plugin_sanitized
     const actualEmitted = report.cases.actual_emitted_child_environment
     const ordinaryNames = ordinary.debug_config?.resolved?.names ?? []
     const ordinarySharedMode = ordinary.debug_config?.resolved?.entries?.['shared-marker']?.marker_mode
@@ -821,6 +846,11 @@ async function main() {
       ordinary_shared_marker_mode: ordinarySharedMode,
       config_precedence_observed: 'With OPENCODE_CONFIG_DIR set to the provider global directory, project MCP entries are additive but the same-name shared-marker resolves to the global/custom-directory entry.',
       ordinary_marker_starts: ordinary.markers,
+      ordinary_plugin_loads: ordinary.plugin?.loads ?? 0,
+      ordinary_positive_control_preserved: ordinaryNames.includes('global-marker')
+        && ordinaryNames.includes('project-marker')
+        && ordinarySharedMode === 'global'
+        && (ordinary.plugin?.loads ?? 0) > 0,
       inline_empty_global_marker_autostarted: markerCount(inlineEmpty, 'global', 'global-marker') > 0,
       inline_empty_project_marker_autostarted: markerCount(inlineEmpty, 'project', 'project-marker') > 0,
       inline_empty_resolved_mcp_names: inlineEmpty.debug_config?.resolved?.names ?? [],
@@ -849,6 +879,11 @@ async function main() {
       inline_plugin_inheritance_loads: inlinePluginInheritance.plugin?.loads ?? 0,
       inline_plugin_inheritance_is_red: (inlinePluginInheritance.plugin?.loads ?? 0) > 0,
       inline_plugin_inheritance_mcp_starts: globalStarts(inlinePluginInheritance) + projectStarts(inlinePluginInheritance),
+      candidate_inline_plugin_sanitized_resolved_mcp_names: candidateInlinePluginSanitized.debug_config?.resolved?.names ?? [],
+      candidate_inline_plugin_sanitized_mcp_starts: globalStarts(candidateInlinePluginSanitized) + projectStarts(candidateInlinePluginSanitized),
+      candidate_inline_plugin_sanitized_plugin_loads: candidateInlinePluginSanitized.plugin?.loads ?? 0,
+      candidate_inline_plugin_sanitized_marker_tool_calls: markerToolCalls(candidateInlinePluginSanitized),
+      candidate_inline_plugin_sanitized_plan_permission: candidateInlinePluginSanitized.debug_config?.resolved?.plan_permission_star ?? null,
       actual_emitted_global_mcp_starts: actualEmitted ? globalStarts(actualEmitted) : null,
       actual_emitted_project_mcp_starts: actualEmitted ? projectStarts(actualEmitted) : null,
       actual_emitted_plugin_loads: actualEmitted?.plugin?.loads ?? null,
@@ -860,23 +895,51 @@ async function main() {
     const inlineDisableBoundaryPasses = globalStarts(explicitInlineDisabled) === 0
       && explicitInlineDisabled.plugin?.loads > 0
       && explicitInlineDisabled.debug_config?.resolved?.plan_permission_star === 'deny'
-    report.passed = report.version.length > 0
-      && ordinaryNames.includes('global-marker')
+    const actualEmittedBoundaryPasses = report.actual_emitted_child_environment === undefined
+      || (report.actual_emitted_child_environment.config_overrides_absent
+        && report.actual_emitted_child_environment.xdg_config_under_home
+        && report.actual_emitted_child_environment.xdg_data_unchanged
+        && globalStarts(actualEmitted) === 0
+        && projectStarts(actualEmitted) === 0
+        && actualEmitted.plugin?.loads === 0
+        && actualEmitted.cleanup?.live_pids_after_exit?.length === 0)
+    const candidateInlinePluginBoundaryPasses = candidateInlinePluginSanitized.debug_config?.resolved?.names?.length === 0
+      && globalStarts(candidateInlinePluginSanitized) === 0
+      && projectStarts(candidateInlinePluginSanitized) === 0
+      && (candidateInlinePluginSanitized.plugin?.loads ?? 0) === 0
+      && markerToolCalls(candidateInlinePluginSanitized) === 0
+      && candidateInlinePluginSanitized.debug_config?.resolved?.plan_permission_star === 'deny'
+    const ordinaryPositiveControlPasses = ordinaryNames.includes('global-marker')
       && ordinaryNames.includes('project-marker')
       && ordinarySharedMode === 'global'
-      && isolatedBoundaryPasses
-      && inlineDisableBoundaryPasses
-      && discoveryProjectStarts === 0
-      && discoveryToolCalls === 0
-      && discoveryGlobalStarts === 0
-      && (report.actual_emitted_child_environment === undefined
-        || (report.actual_emitted_child_environment.config_overrides_absent
-          && report.actual_emitted_child_environment.xdg_config_under_home
-          && report.actual_emitted_child_environment.xdg_data_unchanged
-          && globalStarts(actualEmitted) === 0
-          && projectStarts(actualEmitted) === 0
-          && actualEmitted.plugin?.loads === 0
-          && actualEmitted.cleanup?.live_pids_after_exit?.length === 0))
+      && (ordinary.plugin?.loads ?? 0) > 0
+    report.expected_red_controls = {
+      inherited_global_mcp_autostart: {
+        expected: true,
+        observed: discoveryGlobalStarts > 0,
+        global_marker_starts: discoveryGlobalStarts,
+        project_marker_starts: discoveryProjectStarts,
+        tool_calls: discoveryToolCalls,
+      },
+      inline_plugin_inheritance: {
+        expected: true,
+        observed: (inlinePluginInheritance.plugin?.loads ?? 0) > 0,
+        plugin_loads: inlinePluginInheritance.plugin?.loads ?? 0,
+        mcp_starts: globalStarts(inlinePluginInheritance) + projectStarts(inlinePluginInheritance),
+      },
+    }
+    report.candidate_verdict = {
+      passed: report.version.length > 0
+        && ordinaryPositiveControlPasses
+        && isolatedBoundaryPasses
+        && inlineDisableBoundaryPasses
+        && candidateInlinePluginBoundaryPasses
+        && actualEmittedBoundaryPasses,
+      ordinary_positive_control_preserved: ordinaryPositiveControlPasses,
+      isolated_xdg_inline_plugin_sanitized: candidateInlinePluginBoundaryPasses,
+      actual_emitted_child_boundary: actualEmittedBoundaryPasses,
+    }
+    report.passed = report.candidate_verdict.passed
     if (discoveryGlobalStarts > 0) {
       report.residual_gap = 'The exact discovery-style inline mcp={} plus OPENCODE_DISABLE_PROJECT_CONFIG=true still autostarted a marker from the inherited global config; inline mcp removal does not prove native global MCP isolation.'
     }

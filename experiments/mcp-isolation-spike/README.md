@@ -89,7 +89,13 @@ The harness re-homes disposable HOME/XDG state, keeps the real provider
 HOME, and left marker/plugin processes dead after OpenCode exits. The separate
 `inline_plugin_inheritance` case is intentionally RED evidence: an inline
 plugin in `OPENCODE_CONFIG_CONTENT` can still load even when global/project
-configuration sources are isolated.
+configuration sources are isolated. The
+`candidate_inline_plugin_sanitized` case uses the identical fresh-XDG fixture
+with the discovery projection `plugin: []`; its zero-load/zero-MCP result is
+the candidate verdict, while the inherited-plugin and inherited-global-MCP
+cases remain separately reported expected RED controls. The ordinary global
+plus project case must continue to load its plugin and markers as the positive
+restoration/configuration control.
 
 ## Artifacts
 
