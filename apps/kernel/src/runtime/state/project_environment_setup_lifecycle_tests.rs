@@ -125,7 +125,7 @@ async fn public_setup_cancellation_restores_ordinary_provider_without_retry() {
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn public_setup_second_restart_spawn_failure_restores_the_previous_provider_child() {
+async fn pr364_public_setup_second_restart_spawn_failure_restores_the_previous_provider_child() {
     exercise_public_setup_lifecycle_with_second_restart_failure(
         ProviderLifecycleFailureStage::Spawn,
     )
@@ -134,7 +134,7 @@ async fn public_setup_second_restart_spawn_failure_restores_the_previous_provide
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn public_setup_second_restart_binding_failure_restores_the_previous_provider_child() {
+async fn pr364_public_setup_second_restart_binding_failure_restores_the_previous_provider_child() {
     exercise_public_setup_lifecycle_with_second_restart_failure(
         ProviderLifecycleFailureStage::Bind,
     )

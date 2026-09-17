@@ -61,6 +61,7 @@ fn discovery_client(selected_project: &Path) -> CodexClient {
         .expect("client should construct")
         .with_write_access_mode(ProviderWriteAccessMode::WorkspaceLiveSyncTracked)
         .with_workspace_live_sync_roots(&[selected_project.to_path_buf()])
+        .with_discovery_read_root(Some(selected_project))
         .with_read_only_discovery_permissions()
 }
 

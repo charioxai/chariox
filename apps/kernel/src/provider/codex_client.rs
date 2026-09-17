@@ -540,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn read_only_discovery_client_denies_codex_filesystem_write_requests() {
+    fn pr364_read_only_discovery_client_denies_unscoped_permission_requests() {
         let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
             .expect("client should construct")
             .with_write_access_mode(ProviderWriteAccessMode::WorkspaceLiveSyncTracked)
@@ -564,12 +564,7 @@ mod tests {
         assert_eq!(
             client.permissions_approval_response(&message),
             json!({
-                "permissions": {
-                    "network": true,
-                    "fileSystem": {
-                        "read": ["/repo/selected"]
-                    }
-                },
+                "permissions": {},
                 "scope": "turn"
             })
         );
