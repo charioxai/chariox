@@ -78,7 +78,7 @@ pub(super) fn worker_validation_environment(
 ) -> BTreeMap<String, String> {
     let mut removed = BTreeSet::new();
     removed.extend(
-        crate::provider::managed_provider_control_env_remove()
+        crate::provider::managed_provider_isolation_env_remove()
             .into_iter()
             .collect::<BTreeSet<_>>(),
     );

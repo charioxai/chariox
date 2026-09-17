@@ -4,8 +4,8 @@ set -Eeuo pipefail
 workspace="${CHARIOX_MANAGED_ISOLATION_PROBE_WORKSPACE:?probe workspace is required}"
 result="${CHARIOX_MANAGED_ISOLATION_PROBE_RESULT:?probe result is required}"
 real_provider="${CHARIOX_MANAGED_ISOLATION_REAL_PROVIDER:?real provider executable is required}"
-unselected="${CHARIOX_MANAGED_ISOLATION_PROBE_UNSELECTED_REPOSITORY:?unselected repository is required}"
 account="${CODEX_HOME:-}"
+assert_mode="${CHARIOX_MANAGED_ISOLATION_ASSERT_MODE:-strict}"
 
 fail() {
   printf 'managed_provider_isolation=failure\nreason=%s\n' "$1" >"$result" 2>/dev/null || true
@@ -13,6 +13,87 @@ fail() {
   printf '%s\n' "$1" >&2
   exit 1
 }
+
+fail_denied_path() {
+  local path="$1"
+  local path_class="$2"
+  local permission="${3:-unknown}"
+  local entry_count="${4:-not_applicable}"
+  local reason="a denied host path is visible in the provider sandbox"
+  if [[ "$path_class" == "nonempty_directory" ]]; then
+    reason="denied host path contains payload in masked directory"
+  elif [[ "$path_class" == "empty_directory" ]]; then
+    reason="denied host path is readable even though empty"
+  fi
+  local diagnostic="$reason denied_path=$path denied_path_class=$path_class denied_path_permission=$permission denied_path_entries=$entry_count"
+  printf 'managed_provider_isolation=failure\nreason=%s\n' "$diagnostic" >"$result" 2>/dev/null || true
+  chmod 600 "$result" 2>/dev/null || true
+  printf '%s\n' "$diagnostic" >&2
+  exit 1
+}
+
+directory_permission_label() {
+  local directory="$1"
+  if [[ -r "$directory" && -x "$directory" ]]; then
+    printf 'readable\n'
+  elif [[ -r "$directory" ]]; then
+    printf 'listable_not_traversable\n'
+  elif [[ -x "$directory" ]]; then
+    printf 'traversable_not_readable\n'
+  else
+    printf 'inaccessible\n'
+  fi
+}
+
+path_permission_label() {
+  local path="$1"
+  if [[ -r "$path" ]]; then
+    printf 'readable\n'
+  elif [[ -x "$path" ]]; then
+    printf 'traversable_not_readable\n'
+  else
+    printf 'inaccessible\n'
+  fi
+}
+
+denied_path_class() {
+  local path="$1"
+  if [[ -L "$path" ]]; then
+    printf 'symlink\n'
+  elif [[ -d "$path" ]]; then
+    printf 'directory\n'
+  elif [[ -f "$path" ]]; then
+    printf 'regular_file\n'
+  elif [[ -S "$path" ]]; then
+    printf 'socket\n'
+  elif [[ -p "$path" ]]; then
+    printf 'fifo\n'
+  elif [[ -b "$path" ]]; then
+    printf 'block_device\n'
+  elif [[ -c "$path" ]]; then
+    printf 'character_device\n'
+  else
+    printf 'other\n'
+  fi
+}
+
+directory_entry_count() {
+  local directory="$1"
+  [[ -r "$directory" && -x "$directory" ]] || return 1
+  local entry_count
+  # Emit one non-secret marker per immediate entry. This counts hidden entries
+  # without exposing names or payload contents, and pipefail preserves a
+  # permission/I/O failure from find instead of turning it into zero entries.
+  if ! entry_count="$(find "$directory" -mindepth 1 -maxdepth 1 -printf . 2>/dev/null | wc -c)"; then
+    return 1
+  fi
+  printf '%s\n' "$entry_count"
+}
+
+case "$assert_mode" in
+  baseline|strict) ;;
+  *) fail "managed provider isolation assertion mode is invalid" ;;
+esac
 
 [[ "${CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE:-}" == "1" ]] \
   || fail "managed provider isolation marker is unavailable"
@@ -22,33 +103,121 @@ fail() {
   || fail "probe workspace is unavailable or not writable"
 [[ -n "$account" && -d "$account" && -r "$account" && -w "$account" ]] \
   || fail "probe provider account is unavailable or not writable"
+[[ "$account" == /home/chariox/.provider-account/* ]] \
+  || fail "provider account was not rebound into the managed namespace"
 [[ -x "$real_provider" ]] \
   || fail "real provider executable is unavailable"
+[[ "$(command -v "$real_provider" 2>/dev/null || true)" == "$real_provider" ]] \
+  || fail "real provider executable is not visible through PATH resolution"
 
+provider_cwd="$(pwd -P)"
+workspace_cwd="$(cd "$workspace" && pwd -P)"
+[[ "$provider_cwd" == "$workspace_cwd" ]] \
+  || fail "provider working directory was not transferred to the managed namespace"
+
+runtime_dir="${XDG_RUNTIME_DIR:-}"
+xdg_runtime_assessment="absent"
+if [[ -n "$runtime_dir" ]]; then
+  if [[ "$runtime_dir" == /home/chariox/.provider-account/* && -d "$runtime_dir" ]]; then
+    xdg_runtime_assessment="rebound"
+  elif [[ "$assert_mode" == "strict" ]]; then
+    fail "XDG_RUNTIME_DIR was not rebound into the managed namespace"
+  else
+    xdg_runtime_assessment="legacy"
+  fi
+fi
+
+if ! command -v unshare >/dev/null 2>&1; then
+  nested_userns="unavailable"
+elif unshare -Ur true >/dev/null 2>&1; then
+  nested_userns="allowed"
+else
+  nested_userns="denied"
+fi
+if [[ "${CHARIOX_MANAGED_ISOLATION_REQUIRE_NESTED_USERNS_DENIED:-0}" == "1" \
+  && "$nested_userns" != "denied" ]]; then
+  fail "nested user namespace probe was $nested_userns"
+fi
+
+# Bubblewrap may materialize protected destinations as directories. A path's
+# existence is not enough to diagnose a boundary: inaccessible directories are
+# recorded as masked, while readable directories are inspected by count only.
+# Only the known /home/slice/.chariox empty mask is allowed to be readable.
+empty_masked_denied_path="none"
+inaccessible_masked_denied_paths="none"
+allowed_empty_masked_directory=/home/slice/.chariox
 for denied in \
   /var/lib/chariox \
+  /home/slice/.chariox \
   /run/chariox-slice-broker.sock \
-  /proc/1/root/var/lib/chariox \
-  "$unselected"
+  /proc/1/root/var/lib/chariox
 do
-  [[ ! -e "$denied" ]] || fail "a denied host path is visible in the provider sandbox"
+  [[ ! -e "$denied" && ! -L "$denied" ]] && continue
+
+  if [[ -d "$denied" && ! -L "$denied" ]]; then
+    permission="$(directory_permission_label "$denied")"
+    if [[ "$permission" == "inaccessible" ]]; then
+      if [[ "$inaccessible_masked_denied_paths" == "none" ]]; then
+        inaccessible_masked_denied_paths="$denied"
+      else
+        inaccessible_masked_denied_paths+=",$denied"
+      fi
+      continue
+    fi
+    if ! entry_count="$(directory_entry_count "$denied")"; then
+      fail_denied_path "$denied" directory "$permission" unavailable
+    fi
+    if [[ "$denied" == "$allowed_empty_masked_directory" && "$entry_count" == "0" ]]; then
+      empty_masked_denied_path="$denied"
+      continue
+    fi
+    if [[ "$entry_count" == "0" ]]; then
+      fail_denied_path "$denied" empty_directory "$permission" "$entry_count"
+    fi
+    fail_denied_path "$denied" nonempty_directory "$permission" "$entry_count"
+  fi
+
+  fail_denied_path "$denied" "$(denied_path_class "$denied")" "$(path_permission_label "$denied")"
 done
 
+legacy_control_env=""
 for secret_name in \
   CHARIOX_RELAY_TOKEN \
   CHARIOX_KERNEL_LOCAL_AUTH_TOKEN \
   CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE \
   CHARIOX_SLICE_DOCKER_BROKER_SOCKET \
-  CHARIOX_SLICE_DOCKER_BROKER_FD
+  CHARIOX_SLICE_DOCKER_BROKER_FD \
+  CHARIOX_HOME \
+  CHARIOX_CAPABILITY_ISOLATION_ROOT \
+  CHARIOX_MANAGED_PROVIDER_HOME \
+  CHARIOX_MANAGED_VAULT_PATH \
+  CHARIOX_DISPOSABLE_WORKER_BOOTSTRAP_PATH
 do
-  [[ -z "${!secret_name:-}" ]] || fail "a denied control credential is visible in the provider sandbox"
+  if [[ -n "${!secret_name:-}" ]]; then
+    if [[ "$assert_mode" == "strict" ]]; then
+      fail "a denied control credential is visible in the provider sandbox"
+    fi
+    if [[ -n "$legacy_control_env" ]]; then
+      legacy_control_env+=",$secret_name"
+    else
+      legacy_control_env="$secret_name"
+    fi
+  fi
 done
+
+if [[ -z "$legacy_control_env" ]]; then
+  legacy_control_env="none"
+fi
 
 account_probe="$account/.chariox-isolation-account-$$"
 workspace_probe="$workspace/.chariox-isolation-workspace-$$"
 cross_mount_probe="$workspace/.chariox-isolation-cross-mount-$$"
+outside_root="/tmp/chariox-managed-isolation-outside-$$"
+outside_repository="$outside_root/repository"
+cloned_repository="$outside_root/cloned"
 cleanup() {
   rm -f "$account_probe" "$workspace_probe" "$cross_mount_probe"
+  rm -rf "$outside_root"
 }
 trap cleanup EXIT
 printf 'account\n' >"$account_probe"
@@ -58,8 +227,23 @@ if ln "$account_probe" "$cross_mount_probe" 2>/dev/null; then
   exit 1
 fi
 
-printf 'managed_provider_isolation=ok\nreal_provider=%s\nworkspace=%s\naccount=%s\n' \
-  "$real_provider" "$workspace" "$account" >"$result"
+# This deliberately lives outside the transferred publication mount. The
+# managed boundary must retain ordinary filesystem permissions here, so a
+# provider can create a repository and clone into another new repository
+# without project registration or another root allowlist.
+mkdir -p "$outside_repository"
+git -C "$outside_repository" init --quiet
+printf 'outside managed workspace\n' >"$outside_repository/README.md"
+git -C "$outside_repository" add README.md
+git -C "$outside_repository" -c user.name=probe -c user.email=probe@example.invalid commit --quiet -m probe
+git clone --quiet "$outside_repository" "$cloned_repository"
+git -C "$cloned_repository" status --porcelain >/dev/null
+
+printf 'managed_provider_isolation=ok\nisolation_assert_mode=%s\nreal_provider=%s\nworkspace=%s\naccount=%s\nprovider_cwd=%s\nnested_userns=%s\nxdg_runtime_dir=%s\nxdg_runtime_assessment=%s\ncontrol_env_scrubbed=%s\nlegacy_control_env=%s\nmasked_empty_denied_path=%s\nmasked_inaccessible_denied_paths=%s\nmasked_inaccessible_denied_path_permission=inaccessible\nmasked_inaccessible_denied_path_entries=unavailable\noutside_repository=%s\noutside_clone=%s\n' \
+  "$assert_mode" "$real_provider" "$workspace" "$account" "$provider_cwd" "$nested_userns" \
+  "$runtime_dir" "$xdg_runtime_assessment" "$([[ "$assert_mode" == "strict" ]] && echo yes || echo baseline)" \
+  "$legacy_control_env" "$empty_masked_denied_path" "$inaccessible_masked_denied_paths" \
+  "$outside_repository" "$cloned_repository" >"$result"
 chmod 600 "$result"
 cleanup
 trap - EXIT

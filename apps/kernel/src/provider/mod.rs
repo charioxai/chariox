@@ -80,8 +80,9 @@ pub use launch_contract::{
 pub(crate) use managed_isolation::{
     apply_managed_provider_isolation, command_from_provider_launch,
     managed_isolated_utility_command, managed_isolated_utility_launch,
-    managed_provider_control_env_remove, managed_provider_isolation_required,
-    provider_reported_path_on_kernel,
+    managed_provider_control_env_remove, managed_provider_isolation_env_remove,
+    managed_provider_isolation_required, provider_reported_path_on_kernel,
+    MANAGED_SLICE_PUBLICATION_ROOT_ENV, MANAGED_SLICE_SERVICE_ROOT_ENV,
 };
 #[cfg(test)]
 pub(crate) use managed_isolation::{
@@ -124,7 +125,9 @@ pub(crate) use runtime_run::{
 pub use runtime_run::{ProviderRunTokenUsage, RuntimeProviderRun};
 pub use service::{ProviderProcessService, ProviderProcessServiceStore};
 pub(crate) use service::{ProviderRunLivenessReconciliation, ProviderRuntimeBinding};
-pub(crate) use termination::sanitize_provider_diagnostic;
+pub(crate) use termination::{
+    provider_launch_failure_diagnostic, sanitize_provider_diagnostic,
+};
 pub use termination::{ProviderRunTermination, ProviderRunTerminationCategory};
 pub(crate) use types::provider_workspace_live_sync_mode_for_session;
 pub use types::{

@@ -206,32 +206,6 @@ impl KernelRuntimeOwnedState {
             );
             request = request.with_workspace_live_sync_roots(workspace_live_sync_roots);
         }
-        if crate::provider::managed_provider_isolation_required()
-            && !session.project_id().is_empty()
-        {
-            let project = self.session_store.get_project(session.project_id())?;
-            let mut roots = project
-                .workspace_ids()
-                .iter()
-                .filter(|workspace| !workspace.trim().is_empty())
-                .map(std::path::PathBuf::from)
-                .collect::<Vec<_>>();
-            if let Some(root) = crate::app::registered_workflow_runtime_worktree_root(
-                &session,
-                request.agent_id.as_deref(),
-                request.working_directory.as_deref(),
-            ) {
-                if !roots.iter().any(|existing| existing == &root) {
-                    roots.push(root);
-                }
-            }
-            for root in std::mem::take(&mut request.workspace_live_sync_roots) {
-                if !roots.iter().any(|existing| existing == &root) {
-                    roots.push(root);
-                }
-            }
-            request = request.with_workspace_live_sync_roots(roots);
-        }
         if request.runtime_mcp_binding.is_none() {
             let shared_auth_token = request
                 .agent_id
@@ -532,7 +506,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn owned_managed_launch_allows_only_the_registered_pool_instance_worktree() {
+    async fn owned_managed_launch_does_not_inject_a_project_workspace_allowlist() {
         let root = std::env::temp_dir().join(format!(
             "chariox-owned-managed-pool-launch-{}-{}",
             std::process::id(),
@@ -666,27 +640,45 @@ mod tests {
         let symlink_escape =
             symlink_escape.expect("symlink escape should prepare without expanding roots");
 
-        assert_eq!(
-            prepared.workspace_live_sync_roots,
-            vec![primary, supporting, instance_worktree],
-            "the exact registered runtime worktree must join the managed allowlist"
-        );
-        assert_eq!(
-            unregistered.workspace_live_sync_roots,
-            vec![root.join("primary"), root.join("supporting")],
-            "an unregistered hidden agent must not expand the managed allowlist"
-        );
-        assert_eq!(
-            traversal.workspace_live_sync_roots,
-            vec![root.join("primary"), root.join("supporting")],
-            "a lexical traversal outside the registered worktree must not expand the managed allowlist"
-        );
+        for (label, roots, working_directory) in [
+            (
+                "registered workflow agent",
+                &prepared.workspace_live_sync_roots,
+                &instance_worktree,
+            ),
+            (
+                "unregistered workflow agent",
+                &unregistered.workspace_live_sync_roots,
+                &unregistered_worktree,
+            ),
+            (
+                "lexical traversal",
+                &traversal.workspace_live_sync_roots,
+                &unregistered_worktree,
+            ),
+        ] {
+            assert!(
+                roots.iter().any(|root| root == working_directory),
+                "{label} should retain its explicit working-directory policy"
+            );
+            assert!(
+                !roots
+                    .iter()
+                    .any(|root| root == &primary || root == &supporting),
+                "{label} must not inherit the Project workspace list"
+            );
+        }
         #[cfg(unix)]
-        assert_eq!(
-            symlink_escape.workspace_live_sync_roots,
-            vec![root.join("primary"), root.join("supporting")],
-            "a symlink escape outside the registered worktree must not expand the managed allowlist"
-        );
+        {
+            assert!(symlink_escape
+                .workspace_live_sync_roots
+                .iter()
+                .any(|root| root == &instance_worktree.join("outside-link")));
+            assert!(!symlink_escape
+                .workspace_live_sync_roots
+                .iter()
+                .any(|root| root == &primary || root == &supporting));
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 

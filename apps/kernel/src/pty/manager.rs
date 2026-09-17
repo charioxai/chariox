@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -14,6 +14,7 @@ use crate::provider::RuntimeProviderRun;
 
 const PTY_OUTPUT_QUEUE_LIMIT: usize = 1024;
 const PTY_INPUT_QUEUE_LIMIT: usize = 64;
+const PTY_DIAGNOSTIC_TAIL_LIMIT: usize = 8 * 1024;
 const PTY_READER_STACK_BYTES: usize = 256 * 1024;
 const PTY_WRITER_STACK_BYTES: usize = 128 * 1024;
 
@@ -138,6 +139,7 @@ struct PtyProcess {
     master: Box<dyn MasterPty + Send>,
     input_writer: PtyInputWriter,
     output_rx: Receiver<Vec<u8>>,
+    diagnostic_tail: Arc<Mutex<VecDeque<u8>>>,
     exit_code: Option<u32>,
     signal: Option<String>,
     reference_count: usize,
@@ -192,6 +194,26 @@ fn cache_pty_process_exit(process: &mut PtyProcess, status: portable_pty::ExitSt
     let exit = observe_pty_process_exit(status);
     process.exit_code = exit.exit_code;
     process.signal = exit.signal;
+}
+
+fn append_pty_diagnostic_tail(tail: &Mutex<VecDeque<u8>>, bytes: &[u8]) {
+    let mut tail = tail
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for byte in bytes {
+        if tail.len() == PTY_DIAGNOSTIC_TAIL_LIMIT {
+            tail.pop_front();
+        }
+        tail.push_back(*byte);
+    }
+}
+
+fn snapshot_pty_diagnostic_tail(tail: &Mutex<VecDeque<u8>>) -> Vec<u8> {
+    tail.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .copied()
+        .collect()
 }
 
 impl PtyManager {
@@ -372,11 +394,15 @@ impl PtyManager {
         };
 
         let (output_tx, output_rx) = mpsc::sync_channel(PTY_OUTPUT_QUEUE_LIMIT);
+        let diagnostic_tail = Arc::new(Mutex::new(VecDeque::with_capacity(
+            PTY_DIAGNOSTIC_TAIL_LIMIT,
+        )));
 
         self.output_signal
             .register_alias(&request.process_key, request.provider_run_id.clone());
         let output_signal = self.output_signal.clone();
         let output_process_key = request.process_key.clone();
+        let reader_diagnostic_tail = Arc::clone(&diagnostic_tail);
         let reader_thread = thread::Builder::new()
             .name(format!("chariox-pty-reader-{}", request.provider_run_id))
             .stack_size(PTY_READER_STACK_BYTES)
@@ -388,6 +414,7 @@ impl PtyManager {
                         break;
                     }
 
+                    append_pty_diagnostic_tail(&reader_diagnostic_tail, &buffer[..size]);
                     if output_tx.send(buffer[..size].to_vec()).is_err() {
                         break;
                     }
@@ -411,6 +438,7 @@ impl PtyManager {
                 master: pair.master,
                 input_writer,
                 output_rx,
+                diagnostic_tail,
                 exit_code: None,
                 signal: None,
                 reference_count: 1,
@@ -606,6 +634,31 @@ impl PtyManager {
         }
 
         Ok(chunks)
+    }
+
+    /// Return a sanitized tail when the managed child exited before its
+    /// endpoint became ready. The tail is retained independently of the
+    /// public output queue so launch-failure cleanup cannot erase the only
+    /// useful Bubblewrap/provider diagnostic.
+    pub(crate) fn early_exit_diagnostic(&mut self, provider_run_id: &str) -> Option<String> {
+        let state = self.poll_process_state(provider_run_id).ok()?;
+        if !state.is_exited() {
+            return None;
+        }
+
+        // Give the reader a short bounded window to publish bytes that were
+        // written immediately before the child closed its PTY.
+        let _ = self.drain_output(provider_run_id);
+        let process_key = self.resolve_process_key(provider_run_id).ok()?;
+        let process = self.processes.get(&process_key)?;
+        let bytes = snapshot_pty_diagnostic_tail(&process.diagnostic_tail);
+        let raw = String::from_utf8_lossy(&bytes);
+        let diagnostic = crate::provider::sanitize_provider_diagnostic(&raw);
+        Some(if diagnostic.is_empty() {
+            "managed provider process exited before endpoint readiness".to_string()
+        } else {
+            diagnostic
+        })
     }
 
     pub fn poll_process_state(
@@ -1055,6 +1108,49 @@ mod tests {
         manager
             .remove_process(provider_run_id)
             .expect("reaped PTY process cleanup should succeed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn early_exit_diagnostic_retains_a_sanitized_tail_after_output_drain() {
+        let provider_run_id = "provider-run-early-exit-diagnostic";
+        let mut manager = PtyManager::new();
+        manager
+            .spawn(PtySpawnRequest {
+                process_key: "stub-pty:early-exit-diagnostic".to_string(),
+                provider_run_id: provider_run_id.to_string(),
+                program: "/bin/sh".to_string(),
+                args: vec![
+                    "-lc".to_string(),
+                    "printf 'bwrap: child setup failed api_key=sk-live-secret prompt=private prompt\\n' >&2; exit 1"
+                        .to_string(),
+                ],
+                env: std::collections::BTreeMap::new(),
+                env_remove: Vec::new(),
+                working_directory: None,
+                cols: 120,
+                rows: 40,
+            })
+            .expect("early-exit diagnostic PTY process should spawn");
+
+        let _ = wait_for_output(&mut manager, provider_run_id);
+        let state = wait_for_exit(&mut manager, provider_run_id);
+        assert!(state.is_exited());
+
+        let diagnostic = manager
+            .early_exit_diagnostic(provider_run_id)
+            .expect("exited PTY should expose an early-exit diagnostic");
+        assert!(diagnostic.contains("bwrap:"));
+        assert!(
+            diagnostic.contains("api_key[redacted]"),
+            "unexpected sanitized diagnostic: {diagnostic:?}"
+        );
+        assert!(!diagnostic.contains("sk-live-secret"));
+        assert!(!diagnostic.contains("private prompt"));
+
+        manager
+            .remove_process(provider_run_id)
+            .expect("early-exit diagnostic PTY cleanup should succeed");
     }
 
     #[cfg(unix)]

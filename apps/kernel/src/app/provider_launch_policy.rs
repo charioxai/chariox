@@ -188,34 +188,6 @@ pub(crate) fn workspace_live_sync_protected_roots(
     roots
 }
 
-pub(crate) fn registered_workflow_runtime_worktree_root(
-    session: &RuntimeSession,
-    agent_id: Option<&str>,
-    working_directory: Option<&Path>,
-) -> Option<PathBuf> {
-    let agent_id = agent_id?;
-    let working_directory = working_directory?;
-    let canonical_working_directory = working_directory.canonicalize().ok()?;
-    session
-        .workflow_runtime_instances()
-        .iter()
-        .filter(|instance| !instance.primary())
-        .find_map(|instance| {
-            let owns_agent = instance
-                .node_agent_ids()
-                .values()
-                .any(|runtime_agent_id| runtime_agent_id == agent_id);
-            if !owns_agent {
-                return None;
-            }
-            let root = PathBuf::from(instance.worktree_id());
-            let canonical_root = root.canonicalize().ok()?;
-            canonical_working_directory
-                .starts_with(canonical_root)
-                .then_some(root)
-        })
-}
-
 fn resolve_git_root(path: &Path) -> Option<PathBuf> {
     let output = std::process::Command::new("git")
         .arg("-C")
@@ -265,6 +237,29 @@ mod tests {
         assert!(
             status.success(),
             "provider child inherited a kernel bootstrap receipt binding"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ordinary_provider_child_retains_xdg_runtime_directory() {
+        let mut child = std::process::Command::new("/bin/sh");
+        child
+            .env_clear()
+            .env("XDG_RUNTIME_DIR", "/ordinary-provider-runtime");
+        for name in default_provider_env_remove(&DaemonConfig::for_tests()) {
+            child.env_remove(name);
+        }
+        let status = child
+            .args([
+                "-c",
+                "test \"$XDG_RUNTIME_DIR\" = /ordinary-provider-runtime",
+            ])
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "ordinary provider launches must retain their XDG runtime directory"
         );
     }
 

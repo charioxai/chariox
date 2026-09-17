@@ -178,6 +178,22 @@ pub(crate) fn sanitize_provider_diagnostic(reason: &str) -> String {
         .collect()
 }
 
+pub(crate) fn provider_launch_failure_diagnostic(
+    provider_run_id: &str,
+    error: &dyn std::fmt::Display,
+    pty_tail: Option<&str>,
+) -> String {
+    let mut detail = error.to_string();
+    if let Some(pty_tail) = pty_tail.filter(|tail| !tail.trim().is_empty()) {
+        detail.push_str("; managed PTY early-exit output: ");
+        detail.push_str(pty_tail);
+    }
+    let detail = sanitize_provider_diagnostic(&detail);
+    format!(
+        "Provider launch `{provider_run_id}` failed before it became ready: {detail}"
+    )
+}
+
 fn sanitize_signal_name(signal_name: &str) -> Option<&str> {
     let signal_name = signal_name.trim();
     if signal_name.is_empty()
@@ -409,5 +425,21 @@ mod tests {
         assert!(large.reason.chars().count() <= MAX_PROVIDER_TERMINATION_REASON_CHARS);
         assert!(!large.reason.contains("secret-token"));
         assert!(!large.reason.contains("prompt-body"));
+    }
+
+    #[test]
+    fn provider_launch_failure_diagnostic_includes_only_sanitized_pty_tail() {
+        let diagnostic = provider_launch_failure_diagnostic(
+            "provider-run-1",
+            &"codex_endpoint_unhealthy: timed out waiting for app-server",
+            Some("bwrap: child setup failed api_key=sk-live-secret prompt=private prompt"),
+        );
+
+        assert!(diagnostic.contains("provider-run-1"));
+        assert!(diagnostic.contains("managed PTY early-exit output"));
+        assert!(diagnostic.contains("api_key[redacted]"));
+        assert!(!diagnostic.contains("sk-live-secret"));
+        assert!(!diagnostic.contains("private prompt"));
+        assert!(!diagnostic.chars().any(char::is_control));
     }
 }
