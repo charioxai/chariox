@@ -39,6 +39,9 @@ pub struct CodexRuntimeState {
     developer_instructions_fingerprint: Option<String>,
     context_hot_reload_enabled: bool,
     turn_input_includes_hidden_context: bool,
+    /// Read-only discovery must keep its permission and MCP policy when the
+    /// event drain reconstructs a client for server requests.
+    read_only_discovery_permissions: bool,
     pub(super) socket: CodexSocket,
     pub(super) next_request_id: u64,
     pub(super) buffered_notifications: Vec<CodexNotification>,
@@ -66,6 +69,10 @@ impl std::fmt::Debug for CodexRuntimeState {
             .field(
                 "turn_input_includes_hidden_context",
                 &self.turn_input_includes_hidden_context,
+            )
+            .field(
+                "read_only_discovery_permissions",
+                &self.read_only_discovery_permissions,
             )
             .field("next_request_id", &self.next_request_id)
             .field("buffered_notifications", &self.buffered_notifications)
@@ -95,6 +102,7 @@ impl CodexRuntimeState {
             developer_instructions_fingerprint: None,
             context_hot_reload_enabled: false,
             turn_input_includes_hidden_context: true,
+            read_only_discovery_permissions: false,
             socket,
             next_request_id,
             buffered_notifications: Vec::new(),
@@ -120,6 +128,7 @@ impl CodexRuntimeState {
             developer_instructions_fingerprint: None,
             context_hot_reload_enabled: true,
             turn_input_includes_hidden_context,
+            read_only_discovery_permissions: false,
             socket,
             next_request_id,
             buffered_notifications: Vec::new(),
@@ -157,6 +166,14 @@ impl CodexRuntimeState {
 
     pub(super) fn turn_input_includes_hidden_context(&self) -> bool {
         self.turn_input_includes_hidden_context
+    }
+
+    pub(super) fn read_only_discovery_permissions(&self) -> bool {
+        self.read_only_discovery_permissions
+    }
+
+    pub(super) fn set_read_only_discovery_permissions(&mut self, enabled: bool) {
+        self.read_only_discovery_permissions = enabled;
     }
 
     pub(super) fn mark_thread_ready(

@@ -246,6 +246,7 @@ async fn authenticated_public_setup_status_request_has_a_bounded_worker_response
         target_platform: target_platform.clone(),
         source_path: None,
         inputs: Vec::new(),
+        path_entries: Vec::new(),
         setup_steps: vec![ProjectEnvironmentSetupStep {
             kind: ProjectEnvironmentSetupStepKind::Command,
             command: "true".to_string(),
@@ -619,6 +620,7 @@ async fn run_authenticated_public_concurrent_missing_setup_polls_with_mode(
         target_platform: target_platform.clone(),
         source_path: None,
         inputs: Vec::new(),
+        path_entries: Vec::new(),
         setup_steps: vec![ProjectEnvironmentSetupStep {
             kind: ProjectEnvironmentSetupStepKind::Command,
             command: "true".to_string(),
