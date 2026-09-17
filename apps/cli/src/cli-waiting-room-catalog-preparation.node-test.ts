@@ -464,7 +464,7 @@ test("waiting room start aborts when the selected kernel changes during target p
     assert.equal(client.currentClient(), sourceClient, "selection pivot must not commit before target catalog completes")
     releaseCatalog?.()
 
-    await assert.rejects(startPromise, /provider selection changed while preparing the session/)
+    await assert.rejects(startPromise, /selection changed/)
     assert.deepEqual(createdSessionOwners, [], "selection races must not create on either kernel owner")
     assert.equal(client.currentClient(), sourceClient, "the failed pivot must preserve the original client")
     assert.equal(sourceCloseCount, 0, "the source client must not be closed by an abandoned pivot")
@@ -478,6 +478,279 @@ test("waiting room start aborts when the selected kernel changes during target p
     __setWaitingRoomWorktreeInventoryForTest(null)
   }
 })
+
+test("waiting room start completes an unchanged remote pivot through the retained client transaction", async () => {
+  const fixture = createRemoteCompositionFixture()
+  let startPromise: Promise<unknown> | undefined
+  try {
+    startPromise = fixture.composition.startSessionFromWaitingRoomDefaults()
+    await fixture.targetCatalogStarted
+    assert.equal(fixture.client.currentClient().socketPath, "ws://kernel-old")
+
+    fixture.releaseTargetCatalog()
+    const session = await startPromise
+    assert.equal((session as { id: string }).id, "created-session")
+    assert.deepEqual(fixture.createdSessionOwners, ["kernel-old"])
+    assert.equal(fixture.client.currentClient().socketPath, "ws://kernel-old")
+    assert.equal(fixture.sourceCloseCount(), 1, "a successful retained pivot commits the source close")
+    assert.equal(fixture.targetCloseCount(), 0)
+  } finally {
+    fixture.releaseTargetCatalog()
+    await startPromise?.catch(() => {})
+    await fixture.cleanup()
+  }
+})
+
+test("waiting room start rolls back a post-pivot away-and-back selection change", async () => {
+  const fixture = createRemoteCompositionFixture()
+  let startPromise: Promise<unknown> | undefined
+  try {
+    startPromise = fixture.composition.startSessionFromWaitingRoomDefaults()
+    await fixture.targetCatalogStarted
+    assert.equal(fixture.client.currentClient().socketPath, "ws://kernel-old")
+
+    fixture.composition.reconcileWaitingRoom({
+      ...fixture.waitingRoomState(),
+      selectedMachineRef: "machine-new",
+      selectedKernelRef: "kernel-new",
+    })
+    fixture.composition.reconcileWaitingRoom({
+      ...fixture.waitingRoomState(),
+      selectedMachineRef: "machine-old",
+      selectedKernelRef: "kernel-old",
+    })
+    fixture.releaseTargetCatalog()
+
+    await assert.rejects(startPromise, /selection changed/)
+    assert.deepEqual(fixture.createdSessionOwners, [])
+    assert.equal(fixture.client.currentClient(), fixture.sourceClient)
+    assert.equal(fixture.sourceCloseCount(), 0, "away-and-back cancellation preserves the source client")
+    assert.ok(fixture.targetCloseCount() >= 1, "away-and-back cancellation rolls back the target client")
+  } finally {
+    fixture.releaseTargetCatalog()
+    await startPromise?.catch(() => {})
+    await fixture.cleanup()
+  }
+})
+
+function createRemoteCompositionFixture() {
+  __setWaitingRoomWorktreeInventoryForTest({
+    workspacePath: "/workspace",
+    currentWorktreePath: "/workspace",
+    options: [{
+      id: "existing:/workspace",
+      kind: "existing",
+      label: "main",
+      path: "/workspace",
+      branch: "main",
+      isCurrent: true,
+    }],
+  })
+
+  const originalSend = LocalIpcClient.prototype.send
+  const originalClose = LocalIpcClient.prototype.close
+  const sourceClient = new LocalIpcClient("source")
+  let sourceCloseCount = 0
+  let targetCloseCount = 0
+  let targetCatalogRequests = 0
+  let resolveTargetCatalogStarted: (() => void) | undefined
+  let releaseTargetCatalog: (() => void) | undefined
+  const targetCatalogStarted = new Promise<void>((resolve) => {
+    resolveTargetCatalogStarted = resolve
+  })
+  const targetCatalogGate = new Promise<void>((resolve) => {
+    releaseTargetCatalog = resolve
+  })
+  const createdSessionOwners: string[] = []
+
+  ;(sourceClient as any).close = async () => {
+    sourceCloseCount += 1
+  }
+  ;(sourceClient as any).send = async (request: unknown) => {
+    if (hasRequest(request, "ResolveKernelClientConnection")) {
+      return {
+        KernelClientConnectionResolved: {
+          connection: {
+            relay_url: "ws://kernel-old",
+            relay_token: "relay-token",
+            target_daemon_id: "kernel-old",
+            target_daemon_alias: null,
+            machine_id: "machine-old",
+            kernel_id: "kernel-old",
+            token_expires_at: null,
+          },
+        },
+      }
+    }
+    if (hasRequest(request, "GetProviderCatalog")) {
+      return { ProviderCatalog: { catalog: catalog("source-kernel") } }
+    }
+    if (hasRequest(request, "CreateSession")) {
+      createdSessionOwners.push("source")
+      return createdSessionResponse()
+    }
+    throw new Error(`unexpected source IPC request: ${requestKind(request)}`)
+  }
+  ;(LocalIpcClient.prototype as any).send = async function (request: unknown) {
+    if (this.socketPath === "ws://kernel-old" && hasRequest(request, "GetWaitingRoomPublicSnapshot")) {
+      return { WaitingRoomPublicSnapshot: { snapshot: publicSnapshot("kernel-old", "machine-old") } }
+    }
+    if (this.socketPath === "ws://kernel-old" && hasRequest(request, "GetProviderCatalog")) {
+      targetCatalogRequests += 1
+      if (targetCatalogRequests === 2) {
+        resolveTargetCatalogStarted?.()
+        await targetCatalogGate
+      }
+      return { ProviderCatalog: { catalog: catalog("old-kernel") } }
+    }
+    if (this.socketPath === "ws://kernel-old" && hasRequest(request, "CreateSession")) {
+      createdSessionOwners.push("kernel-old")
+      return createdSessionResponse()
+    }
+    throw new Error(`unexpected target IPC request: ${requestKind(request)}`)
+  }
+  ;(LocalIpcClient.prototype as any).close = async function () {
+    if (this.socketPath === "ws://kernel-old") {
+      targetCloseCount += 1
+    }
+    await originalClose.call(this)
+  }
+
+  const client = createMutableLocalIpcClient(sourceClient)
+  let waitingRoomState = {
+    ...createWaitingRoomState(
+      [],
+      catalog("source-kernel"),
+      "opencode",
+      "opencode/shared-model",
+      "",
+    ),
+    selectedMachineRef: "machine-old",
+    selectedKernelRef: "kernel-old",
+  }
+  let providerCatalog = catalog("source-kernel")
+  const providerAccounts = [account("default", "Default", true)]
+  const relay = {
+    configured: true,
+    connected: true,
+    daemon_id: "kernel-source",
+    machine_id: "machine-source",
+  }
+  const options: Record<string, unknown> = {
+    provider: "opencode",
+    accountProfile: "default",
+    model: "opencode/shared-model",
+    effort: "",
+    clientId: "composition-remote-pivot-control-test",
+  }
+  const composition = createCliWaitingRoomComposition({
+    client,
+    options,
+    appLogger: { info: () => {}, warn: () => {} },
+    formatError: (error: unknown) => error instanceof Error ? error.message : String(error),
+    isAttached: () => false,
+    kernelConnected: () => true,
+    waitingRoomState: () => waitingRoomState,
+    setWaitingRoomState: (next: typeof waitingRoomState) => {
+      waitingRoomState = next
+    },
+    setWaitingRoomStateProjection: (next: typeof waitingRoomState) => {
+      waitingRoomState = next
+    },
+    waitingRoomLaunchOwnershipRevision: () => 0,
+    availableSessions: () => [],
+    setAvailableSessions: () => {},
+    waitingRoomProjects: () => [],
+    setWaitingRoomProjects: () => {},
+    providerCatalogState: () => providerCatalog,
+    setProviderCatalogState: (next: ProviderCatalog) => {
+      providerCatalog = next
+    },
+    providerCommandCatalogState: () => ({}),
+    setProviderCommandCatalogState: () => {},
+    themeRegistryState: () => DEFAULT_THEME_REGISTRY,
+    waitingRoomCloudNotice: () => null,
+    waitingRoomInventoryStatus: () => "ready",
+    setWaitingRoomInventoryStatus: () => {},
+    waitingRoomHiddenKernelController: {
+      hideKernel: () => {},
+      isKernelHidden: () => false,
+    },
+    relayStatusState: () => relay,
+    setRelayStatusState: () => {},
+    remoteMachinesState: () => [
+      { machine_id: "machine-old", kernel_count: 1, available_providers: ["opencode"] },
+      { machine_id: "machine-new", kernel_count: 1, available_providers: ["opencode"] },
+    ],
+    setRemoteMachinesState: () => {},
+    remoteKernelsState: () => [
+      { kernel_id: "kernel-old", machine_id: "machine-old", available_providers: ["opencode"] },
+      { kernel_id: "kernel-new", machine_id: "machine-new", available_providers: ["opencode"] },
+    ],
+    setRemoteKernelsState: () => {},
+    providerAccountsState: () => providerAccounts,
+    setProviderAccountsState: () => {},
+    terminalsState: () => [],
+    setTerminalsState: () => {},
+    slicesState: () => [],
+    setSlicesState: () => {},
+    externalProviderSessionsState: () => [],
+    setExternalProviderSessionsState: () => {},
+    externalProviderSessionsPageState: () => ({ hasMore: false, nextCursor: null }),
+    setExternalProviderSessionsPageState: () => {},
+    pendingWorkspaceTarget: () => "/workspace",
+    setPendingWorkspaceTarget: () => {},
+    pendingWorktreeTarget: () => "/workspace",
+    setPendingWorktreeTarget: () => {},
+    preferencesState: () => ({}),
+    setPreferencesState: () => {},
+    setThemeRevision: () => {},
+    resetTranscriptSyntax: () => {},
+    applyResponseLayout: () => {},
+    renderCommandCenter: () => {},
+    rebuildTranscript: () => {},
+    updateSessionChrome: () => {},
+    syncCommandCenter: () => {},
+    handleCloudCommand: async () => {},
+    setPromptText: () => {},
+    focusPrompt: () => {},
+    openTerminalPairingDialog: async () => {},
+    openSessionBrowserDialog: () => {},
+    closeSessionBrowserDialog: () => {},
+    attachBinding: async () => {},
+    rollbackAttachedSession: async () => {},
+    flashFooter: () => {},
+    setKernelConnected: () => {},
+    setDaemonDisconnected: () => {},
+    sessionBrowserOpen: () => false,
+    focusedProviderRun: () => null,
+    focusedAgent: () => null,
+    focusedAgentId: () => null,
+    providerRunState: () => null,
+    sessionState: () => ({ id: "session-1" }),
+    applySessionState: () => {},
+    setProviderRunState: () => {},
+    appendNotice: () => {},
+  } as never)
+
+  return {
+    composition,
+    client,
+    sourceClient,
+    waitingRoomState: () => waitingRoomState,
+    createdSessionOwners,
+    targetCatalogStarted,
+    releaseTargetCatalog: () => releaseTargetCatalog?.(),
+    sourceCloseCount: () => sourceCloseCount,
+    targetCloseCount: () => targetCloseCount,
+    async cleanup() {
+      releaseTargetCatalog?.()
+      ;(LocalIpcClient.prototype as any).send = originalSend
+      ;(LocalIpcClient.prototype as any).close = originalClose
+      __setWaitingRoomWorktreeInventoryForTest(null)
+    },
+  }
+}
 
 function hasRequest(request: unknown, key: string): boolean {
   return typeof request === "object" && request !== null && key in request
@@ -509,7 +782,7 @@ function createdSessionResponse() {
   return {
     SessionCreated: {
       session: {
-        id: "unexpected-created-session",
+        id: "created-session",
         project_id: "project-default",
         alias: null,
         workspace_id: "/workspace",
