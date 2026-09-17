@@ -1815,6 +1815,298 @@ mod tests {
             .is_none());
     }
 
+    #[tokio::test]
+    async fn settlement_projection_order_remote_completion_publishes_bound_idle_snapshot_after_completion_event(
+    ) {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-settlement-projection-order-remote",
+                "worktree-settlement-projection-order-remote",
+            ))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-settlement-projection-order-remote",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let prompt = crate::session::PromptQueueItem::new(
+            "prompt-settlement-projection-order-remote",
+            attachment.id(),
+            agent.id(),
+            "remote prompt",
+            crate::session::PromptStatus::Queued,
+        );
+        let prompt_id = match app
+            .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .expect("remote prompt should start")
+        {
+            crate::session::PromptSubmissionOutcome::Started { prompt } => prompt.id().to_string(),
+            crate::session::PromptSubmissionOutcome::Queued { .. } => {
+                panic!("remote prompt should start")
+            }
+        };
+        let (binding, provider_run_id, output_event, completion_event) =
+            actual_worker_output_then_completion(session.id(), agent.id(), &prompt_id);
+        let home_binding = crate::agent::RemoteAgentBinding {
+            active_worker_provider_run_id: Some(provider_run_id.clone()),
+            ..binding.clone()
+        };
+        app.agents
+            .bind_remote_execution(agent.id(), home_binding)
+            .expect("home agent should bind to the worker projection source");
+        app.mark_active_prompt_delivery(
+            session.id(),
+            agent.id(),
+            &prompt_id,
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some(provider_run_id.clone()),
+            None,
+        )
+        .expect("delivery metadata should persist");
+
+        // This is a real run binding for flow-control, not a manually inserted active turn. The
+        // run is ended only after the pre-completion snapshot so the public watch cannot invoke a
+        // second local PTY settlement while the worker completion is being projected.
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "managed-dev-stub",
+            "managed-dev-stub",
+            "default",
+            "test-model",
+        )
+        .with_agent_id(agent.id());
+        let mut home_run = crate::provider::RuntimeProviderRun::new(
+            &provider_run_id,
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::External,
+                process_label: "remote-worker-settlement-projection-order".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        home_run.mark_running();
+        app.providers_mut().insert_run_for_test(home_run.clone());
+        app.sessions_mut()
+            .set_active_provider_run(session.id(), Some(provider_run_id.clone()))
+            .expect("home run should be selected for the pre-completion snapshot");
+        app.update_provider_run_projection(home_run.clone());
+        crate::transport::flow_control::note_prompt_started(&mut app, &provider_run_id);
+
+        let initial_snapshot =
+            crate::runtime::projection::SessionSnapshotProjection::from_daemon_app(
+                &mut app,
+                session.id(),
+                0,
+            )
+            .expect("public pre-completion snapshot should be available");
+        let initial_activity = initial_snapshot
+            .agent_activity
+            .get(agent.id())
+            .expect("agent activity should be present before remote output");
+        assert_eq!(
+            initial_activity.status,
+            crate::runtime::projection::AgentRuntimeStatus::Working
+        );
+        assert!(initial_activity.busy);
+        assert_eq!(initial_activity.active_prompt_count, 1);
+        assert!(initial_activity.active_turn.is_some());
+
+        let mut ended_home_run = home_run;
+        ended_home_run.mark_ended();
+        app.providers_mut()
+            .insert_run_for_test(ended_home_run.clone());
+        app.update_provider_run_projection(ended_home_run);
+
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        runtime
+            .project_remote_runtime_projection_event(output_event)
+            .await
+            .expect("worker output projection should reach the home session");
+        let output_records = runtime
+            .owned
+            .terminal_stream
+            .drain_output_records(session.id(), attachment.id());
+        assert_eq!(
+            output_records
+                .iter()
+                .filter(|record| record.bytes == b"LIVE_RECOVERY_OUTPUT_ONCE")
+                .count(),
+            1,
+            "the remote callback must deliver the worker output before completion"
+        );
+        let output_snapshot = {
+            let mut app = runtime.app.lock().await;
+            crate::runtime::projection::SessionSnapshotProjection::from_daemon_app(
+                &mut app,
+                session.id(),
+                0,
+            )
+            .expect("public output snapshot should be available")
+        };
+        let output_activity = output_snapshot
+            .agent_activity
+            .get(agent.id())
+            .expect("agent activity should remain present after output");
+        assert_eq!(
+            output_activity.status,
+            crate::runtime::projection::AgentRuntimeStatus::Working,
+            "a completion projection must not publish idle before its completion callback"
+        );
+        assert!(output_activity.busy);
+        assert_eq!(output_activity.active_prompt_count, 1);
+        assert!(output_activity.active_turn.is_some());
+        let projection_before_completion = runtime.owned.session_projection.change_sequence();
+
+        runtime
+            .project_remote_runtime_projection_event(completion_event)
+            .await
+            .expect("worker completion projection should settle the home prompt");
+        assert!(
+            runtime.owned.session_projection.change_sequence() > projection_before_completion,
+            "remote completion must invalidate the public session projection"
+        );
+
+        // This is the same public watch boundary used by the transport loop: completion records
+        // are drained before the activity snapshot is projected. Requiring both in this result
+        // catches an idle snapshot emitted before the completion event, not only eventual idle.
+        let watch_result = {
+            let mut app = runtime.app.lock().await;
+            crate::runtime_transport::watch_subscription_state(
+                &mut app,
+                session.id(),
+                attachment.id(),
+                true,
+                Some(output_snapshot.clone()),
+                0,
+            )
+        };
+        let crate::runtime_transport::WatchResult::Ok {
+            records,
+            completions,
+            workflow_run_updates,
+            snapshot,
+            ..
+        } = watch_result
+        else {
+            panic!("remote settlement subscription should remain available");
+        };
+        assert!(records.is_empty(), "remote output was already observed");
+        assert!(
+            workflow_run_updates.is_empty(),
+            "the non-workflow settlement should not select a workflow-run event instead of the public activity/snapshot path"
+        );
+        assert_eq!(
+            completions.len(),
+            1,
+            "the worker completion callback must expose exactly one public completion"
+        );
+        assert_eq!(completions[0].provider_run_id, provider_run_id);
+        assert_eq!(
+            completions[0].agent_id.as_deref(),
+            Some(agent.id()),
+            "the completion event must retain the remote run's home agent binding"
+        );
+        let settled_snapshot = snapshot
+            .as_ref()
+            .clone()
+            .expect("remote settlement should carry a changed public snapshot");
+        let settled_activity = settled_snapshot
+            .agent_activity
+            .get(agent.id())
+            .expect("settled public snapshot should include the remote agent");
+        assert_eq!(
+            settled_activity.status,
+            crate::runtime::projection::AgentRuntimeStatus::Idle
+        );
+        assert!(!settled_activity.busy);
+        assert_eq!(settled_activity.active_prompt_count, 0);
+        assert!(settled_activity.active_turn.is_none());
+        // The public subscription emits a narrow activity delta when the session permits one.
+        // Otherwise its actual transport loop falls back to the snapshot payload above. Check
+        // the same selection boundary without manufacturing a fallback event in this test.
+        match crate::transport::kernel_protocol::agent_activity_changed_event(
+            &settled_snapshot,
+            Some(&output_snapshot),
+        ) {
+            Some(crate::transport::kernel_protocol::KernelEvent::AgentActivityChanged {
+                agent_activity,
+                ..
+            }) => {
+                let activity = agent_activity
+                    .get(agent.id())
+                    .expect("idle event should include the settled remote agent");
+                assert_eq!(
+                    activity.status,
+                    crate::runtime::projection::AgentRuntimeStatus::Idle
+                );
+                assert!(!activity.busy);
+                assert_eq!(activity.active_prompt_count, 0);
+                assert!(activity.active_turn.is_none());
+            }
+            Some(event) => panic!("unexpected public remote settlement event: {event:?}"),
+            None => {
+                assert!(
+                    crate::transport::kernel_protocol::provider_run_changed_event(
+                        &settled_snapshot,
+                        Some(&output_snapshot),
+                    )
+                    .is_none(),
+                    "the public transport must use the full snapshot when no activity delta applies"
+                );
+                assert!(
+                    crate::transport::kernel_protocol::session_metadata_changed_event(
+                        &settled_snapshot,
+                        Some(&output_snapshot),
+                    )
+                    .is_none(),
+                    "the public transport must use the full snapshot when no metadata delta applies"
+                );
+                assert!(
+                    crate::transport::kernel_protocol::runtime_interactions_changed_event(
+                        &settled_snapshot,
+                        Some(&output_snapshot),
+                    )
+                    .is_none(),
+                    "the public transport must use the full snapshot when no interaction delta applies"
+                );
+                assert!(
+                    crate::transport::kernel_protocol::workflow_run_updated_events(
+                        &settled_snapshot,
+                        Some(&output_snapshot),
+                    )
+                    .is_empty()
+                        && !crate::transport::kernel_protocol::workflow_run_only_changed(
+                            &settled_snapshot,
+                            Some(&output_snapshot),
+                        ),
+                    "the public transport must use the full snapshot when no narrow projection applies"
+                );
+                let fallback_activity = settled_snapshot
+                    .agent_activity
+                    .get(agent.id())
+                    .expect("full snapshot fallback should include the settled remote agent");
+                assert_eq!(
+                    fallback_activity.status,
+                    crate::runtime::projection::AgentRuntimeStatus::Idle
+                );
+                assert!(!fallback_activity.busy);
+                assert_eq!(fallback_activity.active_prompt_count, 0);
+                assert!(fallback_activity.active_turn.is_none());
+            }
+        }
+    }
+
     #[test]
     fn live_run_binding_recovery_never_refreshes_the_lease() {
         let missing_lease = DaemonError::ExecutionLeaseNotFound {

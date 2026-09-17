@@ -822,4 +822,304 @@ mod tests {
         assert_eq!(selected.id(), authoritative_prompt.id());
         assert_ne!(selected.id(), stale_prompt.id());
     }
+
+    #[test]
+    fn settlement_projection_order_local_completion_publishes_bound_idle_snapshot_after_completion_event(
+    ) {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-settlement-projection-order",
+                "worktree-settlement-projection-order",
+            ))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-settlement-projection-order",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "dev-stub",
+            "default",
+            "test-model",
+        )
+        .with_agent_id(agent.id());
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "provider-run-settlement-projection-order",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "test-dev-stub-settlement-projection-order".to_string(),
+                pty_target: Some("test-dev-stub-settlement-projection-order".to_string()),
+                pty_program: Some("/bin/sh".to_string()),
+                pty_args: vec![
+                    "-lc".to_string(),
+                    "printf '%s\\n' 'legacy response'; sleep 5".to_string(),
+                ],
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        app.pty
+            .spawn_for_run(&run)
+            .expect("legacy provider PTY should start");
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.sessions_mut()
+            .set_active_provider_run(session.id(), Some(run.id().to_string()))
+            .expect("active provider run should be set");
+        app.update_provider_run_projection(run.clone());
+        assert!(
+            !crate::provider::provider_run_uses_structured_prompt_io(&run),
+            "this fixture must exercise the legacy PTY callback"
+        );
+        assert!(
+            agent.remote_execution().is_none(),
+            "the callback must take the local completion path"
+        );
+
+        let prompt = PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            attachment.id(),
+            agent.id(),
+            "finish the legacy settlement turn",
+            PromptStatus::Queued,
+        );
+        app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .expect("prompt should start");
+        let prompt_id = app
+            .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+            .expect("active prompt should load")
+            .expect("prompt should be active")
+            .id()
+            .to_string();
+        app.mark_active_prompt_delivery(
+            session.id(),
+            agent.id(),
+            &prompt_id,
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some(run.id().to_string()),
+            None,
+        )
+        .expect("prompt should bind to the local provider run");
+        crate::transport::flow_control::note_prompt_started(&mut app, run.id());
+
+        let initial_snapshot =
+            crate::runtime::projection::SessionSnapshotProjection::from_daemon_app(
+                &mut app,
+                session.id(),
+                0,
+            )
+            .expect("public pre-output snapshot should be available");
+        let initial_activity = initial_snapshot
+            .agent_activity
+            .get(agent.id())
+            .expect("agent activity should be present before output");
+        assert_eq!(
+            initial_activity.status,
+            crate::runtime::projection::AgentRuntimeStatus::Working
+        );
+        assert!(initial_activity.busy);
+        assert_eq!(initial_activity.active_prompt_count, 1);
+        assert!(initial_activity.active_turn.is_some());
+
+        let (first_snapshot, first_records) = loop {
+            let result = crate::runtime_transport::watch_subscription_state(
+                &mut app,
+                session.id(),
+                attachment.id(),
+                true,
+                Some(initial_snapshot.clone()),
+                0,
+            );
+            let crate::runtime_transport::WatchResult::Ok {
+                records,
+                completions,
+                snapshot,
+                ..
+            } = result
+            else {
+                panic!("legacy provider subscription should remain available");
+            };
+            if !records.is_empty() {
+                assert!(
+                    completions.is_empty(),
+                    "the public completion event must not precede the first provider output"
+                );
+                break (
+                    snapshot
+                        .as_ref()
+                        .clone()
+                        .expect("first provider output should carry a public snapshot"),
+                    records,
+                );
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let first_activity = first_snapshot
+            .agent_activity
+            .get(agent.id())
+            .expect("agent activity should remain present while output is active");
+        assert_eq!(
+            first_activity.status,
+            crate::runtime::projection::AgentRuntimeStatus::Working,
+            "a public snapshot cannot become idle while the legacy callback still has output"
+        );
+        assert!(first_activity.busy);
+        assert_eq!(first_activity.active_prompt_count, 1);
+        assert!(first_activity.active_turn.is_some());
+        assert!(
+            first_records
+                .iter()
+                .any(|record| record.provider_run_id == run.id()),
+            "provider output must remain bound to the active local run"
+        );
+        let projection_before_settlement = app.session_state_projection_store().change_sequence();
+
+        std::thread::sleep(Duration::from_millis(75));
+        let result = crate::runtime_transport::watch_subscription_state(
+            &mut app,
+            session.id(),
+            attachment.id(),
+            true,
+            Some(first_snapshot.clone()),
+            0,
+        );
+        let crate::runtime_transport::WatchResult::Ok {
+            records,
+            completions,
+            workflow_run_updates,
+            snapshot,
+            ..
+        } = result
+        else {
+            panic!("settled provider subscription should remain available");
+        };
+        assert!(
+            records.is_empty(),
+            "the quiet callback should settle only after final output has drained"
+        );
+        assert!(
+            workflow_run_updates.is_empty(),
+            "the non-workflow settlement should not select a workflow-run event instead of the public activity/snapshot path"
+        );
+        assert_eq!(
+            completions.len(),
+            1,
+            "the legacy callback must expose exactly one public completion"
+        );
+        assert_eq!(completions[0].provider_run_id, run.id());
+        assert_eq!(
+            completions[0].agent_id.as_deref(),
+            Some(agent.id()),
+            "the completion event must retain the local run's agent binding"
+        );
+        assert!(
+            app.session_state_projection_store().change_sequence() > projection_before_settlement,
+            "legacy outer settlement must invalidate the public session projection"
+        );
+
+        // The transport loop emits completion records before the activity delta. Requiring both
+        // here makes an eventual idle snapshot insufficient: an idle event observed without this
+        // completion is a premature projection.
+        let settled_snapshot = snapshot
+            .as_ref()
+            .clone()
+            .expect("settlement should carry the public idle snapshot");
+        let settled_activity = settled_snapshot
+            .agent_activity
+            .get(agent.id())
+            .expect("settled public snapshot should include the local agent");
+        assert_eq!(
+            settled_activity.status,
+            crate::runtime::projection::AgentRuntimeStatus::Idle
+        );
+        assert!(!settled_activity.busy);
+        assert_eq!(settled_activity.active_prompt_count, 0);
+        assert!(settled_activity.active_turn.is_none());
+        // The public subscription emits a narrow activity delta when the session permits one.
+        // Otherwise its actual transport loop falls back to the snapshot payload above. Check
+        // the same selection boundary without manufacturing a fallback event in this test.
+        match crate::transport::kernel_protocol::agent_activity_changed_event(
+            &settled_snapshot,
+            Some(&first_snapshot),
+        ) {
+            Some(crate::transport::kernel_protocol::KernelEvent::AgentActivityChanged {
+                agent_activity,
+                ..
+            }) => {
+                let activity = agent_activity
+                    .get(agent.id())
+                    .expect("idle event should include the settled local agent");
+                assert_eq!(
+                    activity.status,
+                    crate::runtime::projection::AgentRuntimeStatus::Idle
+                );
+                assert!(!activity.busy);
+                assert_eq!(activity.active_prompt_count, 0);
+                assert!(activity.active_turn.is_none());
+            }
+            Some(event) => panic!("unexpected public settlement event: {event:?}"),
+            None => {
+                assert!(
+                    crate::transport::kernel_protocol::provider_run_changed_event(
+                        &settled_snapshot,
+                        Some(&first_snapshot),
+                    )
+                    .is_none(),
+                    "the public transport must use the full snapshot when no activity delta applies"
+                );
+                assert!(
+                    crate::transport::kernel_protocol::session_metadata_changed_event(
+                        &settled_snapshot,
+                        Some(&first_snapshot),
+                    )
+                    .is_none(),
+                    "the public transport must use the full snapshot when no metadata delta applies"
+                );
+                assert!(
+                    crate::transport::kernel_protocol::runtime_interactions_changed_event(
+                        &settled_snapshot,
+                        Some(&first_snapshot),
+                    )
+                    .is_none(),
+                    "the public transport must use the full snapshot when no interaction delta applies"
+                );
+                assert!(
+                    crate::transport::kernel_protocol::workflow_run_updated_events(
+                        &settled_snapshot,
+                        Some(&first_snapshot),
+                    )
+                    .is_empty()
+                        && !crate::transport::kernel_protocol::workflow_run_only_changed(
+                            &settled_snapshot,
+                            Some(&first_snapshot),
+                        ),
+                    "the public transport must use the full snapshot when no narrow projection applies"
+                );
+                let fallback_activity = settled_snapshot
+                    .agent_activity
+                    .get(agent.id())
+                    .expect("full snapshot fallback should include the settled local agent");
+                assert_eq!(
+                    fallback_activity.status,
+                    crate::runtime::projection::AgentRuntimeStatus::Idle
+                );
+                assert!(!fallback_activity.busy);
+                assert_eq!(fallback_activity.active_prompt_count, 0);
+                assert!(fallback_activity.active_turn.is_none());
+            }
+        }
+
+        app.pty
+            .remove_process(run.id())
+            .expect("legacy provider PTY should stop");
+    }
 }
