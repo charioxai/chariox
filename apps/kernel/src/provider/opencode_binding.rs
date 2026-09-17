@@ -68,7 +68,9 @@ pub(crate) fn initialize_opencode_runtime(
     let selection = resolve_initial_selection(run, &client)?;
 
     let allow_native_writes = opencode_workspace_live_sync_native_writes_allowed(run);
-    let session_permission = if run.requires_workspace_live_sync() {
+    let session_permission = if run.read_only_discovery() {
+        Some(opencode_read_only_permission_rules())
+    } else if run.requires_workspace_live_sync() {
         Some(opencode_workspace_live_sync_permission_rules(
             allow_native_writes,
             run.permission_level(),
@@ -158,6 +160,9 @@ fn ensure_configured_mcp_servers_connected(
     run: &RuntimeProviderRun,
     client: &OpenCodeClient,
 ) -> Result<(), DaemonError> {
+    if run.read_only_discovery() {
+        return Ok(());
+    }
     let mut names = Vec::new();
     if run.runtime_mcp_server_url().is_some() {
         names.push("chariox".to_string());
@@ -305,6 +310,11 @@ fn opencode_permission_rules(
 
 fn opencode_read_only_permission_rules() -> serde_json::Value {
     serde_json::json!([
+        { "permission": "*", "pattern": "*", "action": "deny" },
+        { "permission": "read", "pattern": "*", "action": "allow" },
+        { "permission": "glob", "pattern": "*", "action": "allow" },
+        { "permission": "grep", "pattern": "*", "action": "allow" },
+        { "permission": "list", "pattern": "*", "action": "allow" },
         {
             "permission": "edit",
             "pattern": "*",
@@ -430,7 +440,9 @@ pub(super) fn abort_opencode_session(
                 {
                     let allow_native_writes =
                         opencode_workspace_live_sync_native_writes_allowed(run);
-                    let session_permission = if run.requires_workspace_live_sync() {
+                    let session_permission = if run.read_only_discovery() {
+                        Some(opencode_read_only_permission_rules())
+                    } else if run.requires_workspace_live_sync() {
                         Some(opencode_workspace_live_sync_permission_rules(
                             allow_native_writes,
                             run.permission_level(),
@@ -562,6 +574,24 @@ mod tests {
     #[test]
     fn project_environment_discovery_permission_rules_deny_every_mutating_capability() {
         let rules = opencode_read_only_permission_rules();
+        // OpenCode applies the last matching rule. Unknown MCP tool names must
+        // inherit deny, while explicitly permitted inspection remains usable.
+        let effective_action = |permission: &str| {
+            rules
+                .as_array()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|rule| rule["permission"] == permission || rule["permission"] == "*")
+                .unwrap()["action"]
+                .as_str()
+                .unwrap()
+        };
+        assert_eq!(effective_action("mutating-tool_delete"), "deny");
+        assert_eq!(effective_action("chariox_runtime_request"), "deny");
+        for permission in ["read", "glob", "grep", "list"] {
+            assert_eq!(effective_action(permission), "allow");
+        }
         for permission in [
             "edit",
             "write",
