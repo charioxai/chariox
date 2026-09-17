@@ -199,9 +199,12 @@ fn provider_catalog_discovery_error(
     source_errors: &[ProviderCatalogSourceError],
     focused_provider: Option<&str>,
 ) -> Option<DaemonError> {
+    let Some(focused_provider) = focused_provider else {
+        return None;
+    };
     let relevant_errors = source_errors
         .iter()
-        .filter(|error| focused_provider.map_or(true, |provider| provider == error.provider))
+        .filter(|error| focused_provider == error.provider)
         .map(|error| error.detail.as_str())
         .collect::<Vec<_>>();
     (!relevant_errors.is_empty()).then(|| DaemonError::LocalTransport {
@@ -1365,7 +1368,7 @@ mod tests {
             }],
             None,
         )
-        .is_some());
+        .is_none());
     }
 
     #[test]
