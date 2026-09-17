@@ -178,9 +178,10 @@ mod tests {
     use serde_json::{json, Value};
     use tokio_tungstenite::tungstenite::{accept, connect, Message};
 
+    use crate::mcp::CharioxMcpServerConfig;
     use crate::provider::{
-        AgentEndpointMode, AgentExecutionMode, AgentPermissionLevel, CodexClient,
-        LaunchProviderRequest, ProviderLaunchResult, ProviderWriteAccessMode, RuntimeProviderRun,
+        AgentEndpointMode, AgentExecutionMode, AgentPermissionLevel, LaunchProviderRequest,
+        ProviderLaunchResult, ProviderWriteAccessMode, RuntimeMcpBinding, RuntimeProviderRun,
     };
 
     use super::super::state::CodexRuntimeState;
@@ -200,6 +201,37 @@ mod tests {
             let mut socket = accept(stream).expect("upgrade Codex websocket fixture");
 
             let thread_start = read_json_request(&mut socket, "thread/start");
+            assert_eq!(thread_start["params"]["config"]["mcp_servers"], json!({}));
+            socket
+                .send(Message::Text(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": 41,
+                        "method": "item/tool/call",
+                        "params": {
+                            "tool": "workspace_live_sync_write_artifact",
+                            "arguments": {
+                                "path": "/repo/output",
+                                "content": "mutate"
+                            }
+                        }
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("send thread MCP tool request");
+            let tool_response = socket.read().expect("read thread MCP tool response");
+            let Message::Text(tool_response) = tool_response else {
+                panic!("expected thread MCP tool response text frame");
+            };
+            let tool_response: Value =
+                serde_json::from_str(&tool_response).expect("parse thread MCP tool response");
+            assert_eq!(tool_response["id"], json!(41));
+            assert_eq!(tool_response["result"]["success"], json!(false));
+            assert_eq!(
+                tool_response["result"]["contentItems"][0]["text"],
+                "MCP tool calls are disabled during read-only discovery"
+            );
             socket
                 .send(Message::Text(
                     json!({
@@ -281,13 +313,24 @@ mod tests {
 
         let endpoint = format!("ws://{address}");
         let (mut socket, _) = connect(&endpoint).expect("connect Codex websocket client");
+        let launch_mcp = CharioxMcpServerConfig::stdio(
+            "mutating-tool",
+            "project-mcp",
+            vec!["serve".to_string()],
+        );
         let mut request = LaunchProviderRequest::new(
             "session-discovery-drain",
             "codex",
             "codex",
             "default",
             "default",
-        );
+        )
+        .with_runtime_mcp_binding(RuntimeMcpBinding::new(
+            "http://127.0.0.1:43120/mcp",
+            "token-123",
+        ))
+        .with_mcp_servers(vec![launch_mcp])
+        .with_provider_config_override("mcp_servers.injected.command", json!("arbitrary-mcp"));
         request.write_access_mode = ProviderWriteAccessMode::WorkspaceLiveSyncTracked;
         let run = RuntimeProviderRun::new(
             "provider-run-discovery-drain",
@@ -304,9 +347,8 @@ mod tests {
                 structured_endpoint: Some(endpoint.clone()),
             },
         );
-        let client = CodexClient::new(run.id(), endpoint.as_str())
+        let client = super::super::run_config::codex_client_for_run(&run, endpoint.as_str(), None)
             .expect("client should construct")
-            .with_write_access_mode(ProviderWriteAccessMode::WorkspaceLiveSyncTracked)
             .with_read_only_discovery_permissions();
         let mut next_request_id = 1;
         let thread = client

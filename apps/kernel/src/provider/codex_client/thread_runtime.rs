@@ -312,8 +312,11 @@ impl CodexClient {
         if self.read_only_discovery_permissions {
             // Provider overrides are flat Codex config paths. Remove any
             // caller-provided MCP configuration as well as the normal runtime
-            // binding below, so discovery has no external tool surface.
+            // binding below, then explicitly replace the process-level MCP
+            // table. The managed Codex process may have been launched with
+            // MCP entries in its argv before this discovery thread starts.
             overrides.retain(|key, _| key != "mcp_servers" && !key.starts_with("mcp_servers."));
+            overrides.insert("mcp_servers".to_string(), json!({}));
             return Ok(overrides);
         }
         let provider_mcp_servers = codex_provider_facing_mcp_proxy_configs(

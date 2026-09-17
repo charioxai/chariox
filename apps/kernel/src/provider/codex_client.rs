@@ -592,9 +592,10 @@ mod tests {
             .expect("read-only discovery config should render");
 
         assert_eq!(overrides.get("features.multi_agent"), Some(&json!(false)));
+        assert_eq!(overrides.get("mcp_servers"), Some(&json!({})));
         assert!(overrides
             .keys()
-            .all(|key| key != "mcp_servers" && !key.starts_with("mcp_servers.")));
+            .all(|key| key == "mcp_servers" || !key.starts_with("mcp_servers.")));
     }
 
     #[test]
