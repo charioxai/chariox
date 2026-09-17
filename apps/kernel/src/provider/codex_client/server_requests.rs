@@ -109,7 +109,7 @@ impl CodexClient {
             .unwrap_or_else(|| json!({}));
         if self.read_only_discovery_permissions {
             return json!({
-                "permissions": read_only_codex_permission_grant(&requested_permissions),
+                "permissions": read_only_codex_permission_grant(&requested_permissions, self.discovery_read_root.as_deref()),
                 "scope": "turn",
             });
         }
