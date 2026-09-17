@@ -49,8 +49,9 @@ use crate::local::{
     LocalDaemonRequest, LocalDaemonResponse, ProjectEnvironmentCommandResult,
     ProjectEnvironmentDefinition, ProjectEnvironmentDefinitionOrigin,
     ProjectEnvironmentDefinitionSource, ProjectEnvironmentInput, ProjectEnvironmentInputKind,
-    ProjectEnvironmentSetupPhase, ProjectEnvironmentSetupStatus, ProjectEnvironmentSetupStep,
-    ProjectEnvironmentSetupStepKind, ProjectEnvironmentValidation,
+    ProjectEnvironmentPathBase, ProjectEnvironmentPathEntry, ProjectEnvironmentSetupPhase,
+    ProjectEnvironmentSetupStatus, ProjectEnvironmentSetupStep, ProjectEnvironmentSetupStepKind,
+    ProjectEnvironmentValidation,
     RetryProjectEnvironmentSetupRequest,
     StartProjectEnvironmentSetupRequest,
 };
@@ -125,6 +126,20 @@ async fn public_setup_cancellation_restores_ordinary_provider_without_retry() {
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
+async fn pr364_generated_validation_failure_restores_previous_provider_snapshot() {
+    exercise_public_setup_lifecycle_with_candidate_failure(CandidateFailureMode::Validation)
+        .await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn pr364_generated_validation_cancellation_restores_previous_provider_snapshot() {
+    exercise_public_setup_lifecycle_with_candidate_failure(CandidateFailureMode::Cancellation)
+        .await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
 async fn pr364_public_setup_second_restart_spawn_failure_restores_the_previous_provider_child() {
     exercise_public_setup_lifecycle_with_second_restart_failure(
         ProviderLifecycleFailureStage::Spawn,
@@ -154,6 +169,13 @@ enum DefinitionScenario {
 }
 
 #[cfg(unix)]
+#[derive(Clone, Copy)]
+enum CandidateFailureMode {
+    Validation,
+    Cancellation,
+}
+
+#[cfg(unix)]
 async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
     exercise_public_setup_lifecycle_with_options(scenario, true, None).await;
 }
@@ -169,6 +191,7 @@ async fn exercise_public_setup_lifecycle_with_options(
         retry_after_cancel,
         failure_stage,
         false,
+        None,
     )
     .await;
 }
@@ -182,6 +205,19 @@ async fn exercise_public_setup_lifecycle_with_second_restart_failure(
         true,
         Some(failure_stage),
         true,
+        None,
+    )
+    .await;
+}
+
+#[cfg(target_os = "linux")]
+async fn exercise_public_setup_lifecycle_with_candidate_failure(failure: CandidateFailureMode) {
+    exercise_public_setup_lifecycle_with_failure_timing(
+        DefinitionScenario::Generated,
+        false,
+        None,
+        false,
+        Some(failure),
     )
     .await;
 }
@@ -192,6 +228,7 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
     retry_after_cancel: bool,
     failure_stage: Option<ProviderLifecycleFailureStage>,
     fail_on_second_restart: bool,
+    candidate_failure: Option<CandidateFailureMode>,
 ) {
     let _environment_lock = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
@@ -295,9 +332,16 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
     std::env::set_var("CHARIOX_DISPOSABLE_WORKER_RECEIPT", &receipt);
 
     let validation_release = workspace.join("validation-release");
-    let command =
-        "touch validation-started; while [ ! -f validation-release ]; do sleep 0.01; done; command -v sh"
-            .to_string();
+    let command = match candidate_failure {
+        Some(CandidateFailureMode::Validation) => {
+            "touch validation-started; while [ ! -f validation-release ]; do sleep 0.01; done; false"
+                .to_string()
+        }
+        Some(CandidateFailureMode::Cancellation) | None => {
+            "touch validation-started; while [ ! -f validation-release ]; do sleep 0.01; done; command -v sh"
+                .to_string()
+        }
+    };
     let setup_command = match scenario {
         DefinitionScenario::SuppliedSetupFailure => "false".to_string(),
         DefinitionScenario::Supplied
@@ -348,7 +392,14 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
         } else {
             Vec::new()
         },
-        path_entries: Vec::new(),
+        path_entries: if candidate_failure.is_some() {
+            vec![ProjectEnvironmentPathEntry {
+                base: ProjectEnvironmentPathBase::Workspace,
+                path: ".".to_string(),
+            }]
+        } else {
+            Vec::new()
+        },
         setup_steps: vec![ProjectEnvironmentSetupStep {
             kind: ProjectEnvironmentSetupStepKind::Command,
             command: setup_command,
@@ -694,6 +745,139 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
             provider_environment.get("SSH_AUTH_SOCK").map(String::as_str),
             Some("selected-agent")
         );
+        drop(provider_fixture);
+        return;
+    }
+    if let Some(failure) = candidate_failure {
+        let validation_deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let status = response_status(
+                get_setup_status(
+                    &runtime,
+                    "setup-lifecycle",
+                    "user-1",
+                    "candidate validation polling",
+                )
+                .await,
+            );
+            if status.phase == ProjectEnvironmentSetupPhase::Validating
+                && validation_marker.exists()
+            {
+                break;
+            }
+            assert!(
+                !matches!(
+                    status.phase,
+                    ProjectEnvironmentSetupPhase::Failed
+                        | ProjectEnvironmentSetupPhase::Cancelled
+                        | ProjectEnvironmentSetupPhase::Ready
+                ),
+                "candidate setup did not reach the validation barrier: {status:?}"
+            );
+            assert!(
+                Instant::now() < validation_deadline,
+                "candidate setup did not reach the validation barrier: {status:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let failure_code = match failure {
+            CandidateFailureMode::Validation => {
+                std::fs::write(&validation_release, b"").unwrap();
+                let failure_deadline = Instant::now() + Duration::from_secs(10);
+                let failed_status = loop {
+                    let status = response_status(
+                        get_setup_status(
+                            &runtime,
+                            "setup-lifecycle",
+                            "user-1",
+                            "candidate validation failure polling",
+                        )
+                        .await,
+                    );
+                    if status.phase == ProjectEnvironmentSetupPhase::Failed {
+                        break status;
+                    }
+                    assert_ne!(
+                        status.phase,
+                        ProjectEnvironmentSetupPhase::Ready,
+                        "failed candidate validation must not report Ready"
+                    );
+                    assert!(
+                        Instant::now() < failure_deadline,
+                        "failed candidate validation did not settle: {status:?}"
+                    );
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                };
+                failed_status.failure_code
+            }
+            CandidateFailureMode::Cancellation => {
+                let cancelled = runtime
+                    .execute_project_environment_setup_request(
+                        LocalDaemonRequest::CancelProjectEnvironmentSetup(
+                            CancelProjectEnvironmentSetupRequest {
+                                operation_id: "setup-lifecycle".to_string(),
+                                session_id: session.id().to_string(),
+                            },
+                        ),
+                        "user-1",
+                    )
+                    .await
+                    .expect("public candidate setup cancellation should settle");
+                let cancelled_status = response_status(cancelled);
+                assert_eq!(
+                    cancelled_status.phase,
+                    ProjectEnvironmentSetupPhase::Cancelled
+                );
+                std::fs::write(&validation_release, b"").unwrap();
+                cancelled_status.failure_code
+            }
+        };
+        let (provider_run, _provider_pid, provider_environment) =
+            wait_for_ordinary_provider_child(&runtime, "utility-provider-run").await;
+        assert_eq!(
+            provider_run.state(),
+            crate::provider::ProviderRunState::Running
+        );
+        assert!(
+            !provider_run.read_only_discovery(),
+            "candidate failure must restore the ordinary provider snapshot"
+        );
+        let expected_home = provider_home.display().to_string();
+        assert_eq!(
+            provider_run.pty_env().get("HOME").map(String::as_str),
+            Some(expected_home.as_str())
+        );
+        assert_eq!(
+            provider_run.pty_env().get("PATH").map(String::as_str),
+            Some("/usr/bin:/bin")
+        );
+        assert_eq!(
+            provider_environment.get("HOME").map(String::as_str),
+            Some(expected_home.as_str())
+        );
+        assert_eq!(
+            provider_environment.get("PATH").map(String::as_str),
+            Some("/usr/bin:/bin")
+        );
+        assert_eq!(
+            provider_environment
+                .get("GIT_SSH_COMMAND")
+                .map(String::as_str),
+            Some("selected-ssh")
+        );
+        assert_eq!(
+            provider_environment.get("SSH_AUTH_SOCK").map(String::as_str),
+            Some("selected-agent")
+        );
+        match failure {
+            CandidateFailureMode::Validation => {
+                assert_eq!(failure_code.as_deref(), Some("validation_failed"));
+            }
+            CandidateFailureMode::Cancellation => {
+                assert!(failure_code.is_none());
+            }
+        }
         drop(provider_fixture);
         return;
     }
