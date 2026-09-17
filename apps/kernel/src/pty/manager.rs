@@ -134,6 +134,7 @@ impl PtyProcessState {
 }
 
 struct PtyProcess {
+    discovery_config: Option<crate::provider::OpenCodeDiscoveryConfigDirectory>,
     child: Box<dyn Child + Send + Sync>,
     master: Box<dyn MasterPty + Send>,
     input_writer: PtyInputWriter,
@@ -257,6 +258,11 @@ impl PtyManager {
         );
 
         let mut env_remove = run.pty_env_remove().to_vec();
+        let discovery_config = crate::provider::isolate_opencode_discovery_configuration(
+            run,
+            &mut env,
+            &mut env_remove,
+        )?;
         if run.read_only_discovery() {
             env_remove.extend(
                 crate::provider::managed_provider_parent_credential_env_remove()
@@ -267,7 +273,7 @@ impl PtyManager {
             env_remove.dedup();
         }
         let request = PtySpawnRequest {
-            process_key,
+            process_key: process_key.clone(),
             provider_run_id: run.id().to_string(),
             program: program.to_string(),
             args: run.pty_args().to_vec(),
@@ -278,7 +284,11 @@ impl PtyManager {
             rows: 40,
         };
 
-        self.spawn_with_credentials(request, credentials, false)
+        self.spawn_with_credentials(request, credentials, false)?;
+        if let Some(process) = self.processes.get_mut(&process_key) {
+            process.discovery_config = discovery_config;
+        }
+        Ok(())
     }
 
     pub fn spawn(&mut self, request: PtySpawnRequest) -> Result<(), DaemonError> {
@@ -430,6 +440,7 @@ impl PtyManager {
         self.processes.insert(
             request.process_key.clone(),
             PtyProcess {
+                discovery_config: None,
                 child,
                 master: pair.master,
                 input_writer,
