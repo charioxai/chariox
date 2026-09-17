@@ -2940,6 +2940,219 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn managed_collector_rebinds_nested_cwd_when_ancestor_git_root_masks_command_directory() {
+        let _env = crate::env_lock::lock();
+        let nonce = format!(
+            "{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        );
+        let root = std::env::temp_dir().join(format!(
+            "chariox-managed-git-ancestor-cwd-{nonce}"
+        ));
+        let home = root.join("runtime-home");
+        let chariox_home = root.join("chariox-home");
+        let repository = home.join(".config");
+        let command_directory = repository.join("openbox");
+        let working_directory = command_directory.join("project");
+        let supporting_workspace = home.join("supporting-workspace");
+        std::fs::create_dir_all(&working_directory)
+            .expect("nested Git working directory should exist");
+        std::fs::create_dir_all(&chariox_home).expect("CHARIOX_HOME fixture should exist");
+        std::fs::create_dir_all(&supporting_workspace)
+            .expect("supporting workspace should exist");
+        for relative in MANAGED_RUNTIME_USER_COMMAND_DIRECTORY_NAMES {
+            std::fs::create_dir_all(home.join(relative))
+                .expect("runtime command directory should exist");
+        }
+
+        let git_init = Command::new("git")
+            .arg("-C")
+            .arg(&repository)
+            .args(["init", "--quiet"])
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("git init should run for the ancestor repository fixture");
+        assert!(
+            git_init.success(),
+            "git init should succeed for the ancestor repository fixture"
+        );
+        assert!(
+            repository.join(".git").is_dir(),
+            "the fixture must contain a real ancestor .git directory"
+        );
+
+        let mut environment_names = vec![
+            MANAGED_PROVIDER_ISOLATION_ENV,
+            MANAGED_PROVIDER_HOME_ENV,
+            "CHARIOX_HOME",
+            "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+            "HOME",
+            "CHARIOX_SLICE_ROOT",
+            MANAGED_SLICE_SERVICE_ROOT_ENV,
+            MANAGED_SLICE_PUBLICATION_ROOT_ENV,
+            MANAGED_WORKSPACE_ROOT_COUNT_ENV,
+            "CHARIOX_MANAGED_WORKSPACE_ROOT_0",
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_COMMON_DIR",
+            "GIT_INDEX_FILE",
+        ];
+        environment_names.extend(MANAGED_PROTECTED_FILE_ENV_NAMES);
+        let previous_environment = environment_names
+            .iter()
+            .map(|name| (*name, std::env::var_os(name)))
+            .collect::<Vec<_>>();
+        let _cleanup = ManagedRuntimeHomeAncestorProbeCleanup {
+            paths: vec![root.clone()],
+            previous_environment,
+        };
+        for name in &environment_names {
+            std::env::remove_var(*name);
+        }
+        std::env::set_var(MANAGED_PROVIDER_ISOLATION_ENV, "1");
+        std::env::set_var("CHARIOX_HOME", &chariox_home);
+        std::env::set_var("HOME", &home);
+
+        let repository = repository
+            .canonicalize()
+            .expect("ancestor Git repository should canonicalize");
+        let command_directory = command_directory
+            .canonicalize()
+            .expect("runtime command directory should canonicalize");
+        let working_directory = working_directory
+            .canonicalize()
+            .expect("nested working directory should canonicalize");
+        let supporting_workspace = supporting_workspace
+            .canonicalize()
+            .expect("supporting workspace should canonicalize");
+        let runtime_command_roots =
+            managed_runtime_command_roots().expect("runtime command roots should resolve");
+        assert!(runtime_command_roots.contains(&command_directory));
+        let protected = managed_protected_namespace_directories(&[])
+            .expect("managed protected roots should resolve");
+        let trusted_read_only = Vec::new();
+        let runtime_home = managed_runtime_user_home()
+            .expect("managed runtime HOME should resolve")
+            .expect("managed runtime HOME should be configured");
+
+        for (case_name, live_sync_roots) in [
+            ("empty", Vec::new()),
+            ("populated", vec![supporting_workspace.clone()]),
+        ] {
+            let request = LaunchProviderRequest::new(
+                format!("managed-git-ancestor-cwd-{case_name}"),
+                "codex",
+                "codex",
+                "default",
+                "gpt-5.6-luna",
+            )
+            .with_working_directory(working_directory.clone())
+            .with_workspace_live_sync_roots(live_sync_roots);
+            let roots = managed_workspace_roots(&request)
+                .expect("managed roots should resolve for the nested Git cwd");
+            let expected_root_count = if case_name == "empty" { 2 } else { 3 };
+            assert_eq!(
+                roots.len(),
+                expected_root_count,
+                "{case_name} live-sync roots should retain only the selected roots"
+            );
+            assert!(
+                roots.contains(&repository),
+                "{case_name} live-sync roots should include the Git ancestor root: {roots:?}"
+            );
+            assert!(
+                roots.contains(&working_directory),
+                "{case_name} live-sync roots should include the actual nested cwd: {roots:?}"
+            );
+            if case_name == "populated" {
+                assert!(
+                    roots.contains(&supporting_workspace),
+                    "populated live-sync roots should retain the supplied workspace: {roots:?}"
+                );
+            }
+
+            let (mut args, mut created) = managed_namespace_args(None, Path::exists, None);
+            let early_workspace_roots = roots
+                .iter()
+                .filter(|root| {
+                    !protected
+                        .iter()
+                        .chain(trusted_read_only.iter())
+                        .chain(runtime_command_roots.iter())
+                        .any(|protected| root.starts_with(protected))
+                        && managed_workspace_root_requires_rebind(
+                            root,
+                            &protected,
+                            &trusted_read_only,
+                        )
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            for root in &early_workspace_roots {
+                append_bind(&mut args, root, root, &mut created);
+            }
+            append_managed_runtime_user_openbox_boundary(
+                &mut args,
+                &runtime_home,
+                &mut created,
+            )
+            .expect("runtime command masks should assemble");
+            for root in &roots {
+                if !early_workspace_roots.contains(root)
+                    && (managed_workspace_root_requires_rebind(
+                        root,
+                        &protected,
+                        &trusted_read_only,
+                    ) || runtime_command_roots
+                        .iter()
+                        .any(|command| root.starts_with(command)))
+                {
+                    append_bind(&mut args, root, root, &mut created);
+                }
+            }
+
+            let repository_text = repository.display().to_string();
+            let command_directory_text = command_directory.display().to_string();
+            let working_directory_text = working_directory.display().to_string();
+            let repository_bind = args
+                .windows(3)
+                .position(|window| {
+                    window == ["--bind", repository_text.as_str(), repository_text.as_str()]
+                })
+                .expect("Git ancestor root should be bound before runtime masks");
+            let command_mask = args
+                .windows(2)
+                .position(|window| window == ["--tmpfs", command_directory_text.as_str()])
+                .expect("runtime command directory should be masked");
+            let working_directory_bind = args
+                .windows(3)
+                .position(|window| {
+                    window
+                        == [
+                            "--bind",
+                            working_directory_text.as_str(),
+                            working_directory_text.as_str(),
+                        ]
+                })
+                .expect("actual nested cwd should be rebound after the command mask");
+            assert!(
+                repository_bind < command_mask,
+                "the Git ancestor root must be bound before its descendant command mask"
+            );
+            assert!(
+                command_mask < working_directory_bind,
+                "the actual nested cwd must be rebound after its command-directory mask"
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn managed_bwrap_reaches_selected_home_workspace_without_sibling_home() {
         let root = PathBuf::from("/home").join(format!(
             "chariox-managed-home-workspace-bwrap-{}-{}",
