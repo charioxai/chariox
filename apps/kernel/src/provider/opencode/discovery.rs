@@ -112,10 +112,7 @@ mod tests {
         run_with_program(discovery, None)
     }
 
-    fn run_with_program(
-        discovery: bool,
-        pty_program: Option<&str>,
-    ) -> RuntimeProviderRun {
+    fn run_with_program(discovery: bool, pty_program: Option<&str>) -> RuntimeProviderRun {
         let request =
             LaunchProviderRequest::new("session", "opencode", "opencode", "default", "model");
         let mut run = RuntimeProviderRun::new(
