@@ -1065,6 +1065,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         self.app
                             .prompt_owner_complete_active_prompt_only(session_id, agent_id)?
                     };
+                    crate::transport::flow_control::clear_prompt_activity(self.app, provider_run_id);
+                    let _ = crate::app::KernelSessionReadService::new(self.app)
+                        .session_snapshot(session_id);
                     outcome.completions.push(PromptCompletion {
                         completed,
                         started_next: None,
@@ -1083,6 +1086,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             let completed = self
                 .app
                 .prompt_owner_complete_active_prompt_only(session_id, agent_id)?;
+            // A matching worker completion settles the same flow-control turn
+            // started by native prompt projection. Clear it before publishing
+            // the home snapshot, otherwise completed prompts remain WORKING.
+            crate::transport::flow_control::clear_prompt_activity(self.app, provider_run_id);
             if let Ok(agent) = self.app.agents.get_agent(agent_id) {
                 if agent.remote_execution().is_some() {
                     let _ = self
