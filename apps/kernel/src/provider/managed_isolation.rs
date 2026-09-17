@@ -1288,6 +1288,15 @@ fn managed_workspace_roots_with_private_temp_roots(
         requested.push(working_root);
     }
 
+    // Git discovery may select an ancestor above a command-directory mask.
+    // Keep the actual cwd too, so the late bind restores that selected subtree.
+    if let Some(cwd) = request.working_directory.as_ref() {
+        let cwd = canonical_directory(cwd, "managed provider working directory")?;
+        if runtime_command_roots.iter().any(|command| cwd.starts_with(command)) {
+            requested.push(cwd);
+        }
+    }
+
     // A protected service tree may contain a selected repository. Rebind only
     // that exact repository after masking the service tree. Private temp and
     // home roots also need their selected children rebound, while leaving
