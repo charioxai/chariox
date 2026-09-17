@@ -93,6 +93,7 @@ pub(crate) use mcp_proxy::{
     dispatch_provider_mcp_proxy_request, shutdown_provider_mcp_proxy_session,
 };
 pub(crate) use opencode::{
+    apply_opencode_discovery_environment,
     ensure_opencode_account_endpoint, invalidate_opencode_account_endpoint,
     shutdown_opencode_account_endpoints,
 };
