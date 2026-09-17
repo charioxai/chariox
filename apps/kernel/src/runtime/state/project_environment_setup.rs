@@ -1276,11 +1276,9 @@ impl KernelRuntimeState {
                 ReusedDefinitionSetupOutcome::ContinueToRepair => {
                     if store.is_cancelled(&execution.operation_id, attempt) {
                         let _ = self
-                            .restore_provider_run_after_project_environment_discovery(
-                                &execution,
+                            .restore_previous_ordinary_provider_run(
                                 &provider_run,
                                 &ordinary_provider_run,
-                                Some(definition),
                             )
                             .await;
                         return;
@@ -1294,22 +1292,18 @@ impl KernelRuntimeState {
                 }
                 ReusedDefinitionSetupOutcome::Cancelled => {
                     let _ = self
-                        .restore_provider_run_after_project_environment_discovery(
-                            &execution,
+                        .restore_previous_ordinary_provider_run(
                             &provider_run,
                             &ordinary_provider_run,
-                            Some(definition),
                         )
                         .await;
                     return;
                 }
                 ReusedDefinitionSetupOutcome::Failed { code, message } => {
                     let _ = self
-                        .restore_provider_run_after_project_environment_discovery(
-                            &execution,
+                        .restore_previous_ordinary_provider_run(
                             &provider_run,
                             &ordinary_provider_run,
-                            Some(definition),
                         )
                         .await;
                     store.mark_failed(&execution.operation_id, attempt, code, message);
@@ -1356,11 +1350,9 @@ impl KernelRuntimeState {
         .await;
         if store.is_cancelled(&execution.operation_id, attempt) {
             let _ = self
-                .restore_provider_run_after_project_environment_discovery(
-                    &execution,
+                .restore_previous_ordinary_provider_run(
                     &provider_run,
                     &ordinary_provider_run,
-                    reusable_definition,
                 )
                 .await;
             return;
@@ -1370,11 +1362,9 @@ impl KernelRuntimeState {
                 AgentUtilityOutput::ProjectEnvironmentSetup { definition } => definition,
                 _ => {
                     let _ = self
-                        .restore_provider_run_after_project_environment_discovery(
-                            &execution,
+                        .restore_previous_ordinary_provider_run(
                             &provider_run,
                             &ordinary_provider_run,
-                            reusable_definition,
                         )
                         .await;
                     store.mark_failed(
@@ -1388,11 +1378,9 @@ impl KernelRuntimeState {
             },
             Err(error) => {
                 let _ = self
-                    .restore_provider_run_after_project_environment_discovery(
-                        &execution,
+                    .restore_previous_ordinary_provider_run(
                         &provider_run,
                         &ordinary_provider_run,
-                        reusable_definition,
                     )
                     .await;
                 if let Some(message) =
@@ -1423,11 +1411,9 @@ impl KernelRuntimeState {
                 .any(|command| !definition.validation_commands.contains(command))
         {
             let _ = self
-                .restore_provider_run_after_project_environment_discovery(
-                    &execution,
+                .restore_previous_ordinary_provider_run(
                     &provider_run,
                     &ordinary_provider_run,
-                    reusable_definition,
                 )
                 .await;
             store.mark_failed(
@@ -1446,11 +1432,9 @@ impl KernelRuntimeState {
             Ok(definition) => definition,
             Err(_) => {
                 let _ = self
-                    .restore_provider_run_after_project_environment_discovery(
-                        &execution,
+                    .restore_previous_ordinary_provider_run(
                         &provider_run,
                         &ordinary_provider_run,
-                        reusable_definition,
                     )
                     .await;
                 store.mark_failed(
@@ -1462,13 +1446,13 @@ impl KernelRuntimeState {
                 return;
             }
         };
+        // Keep the provider on its previous ordinary environment while the
+        // kernel applies and validates the utility proposal. Only a proposal
+        // that passes those checks may project its HOME/PATH into the provider
+        // run; failures and cancellation therefore retain the old child and
+        // bindings.
         let provider_run = match self
-            .restore_provider_run_after_project_environment_discovery(
-                &execution,
-                &provider_run,
-                &ordinary_provider_run,
-                Some(&definition),
-            )
+            .restore_previous_ordinary_provider_run(&provider_run, &ordinary_provider_run)
             .await
         {
             Ok(provider_run) => provider_run,
@@ -1588,15 +1572,38 @@ impl KernelRuntimeState {
             );
             return;
         }
+        let provider_run = match self
+            .restore_provider_run_after_project_environment_discovery(
+                &execution,
+                &provider_run,
+                &ordinary_provider_run,
+                Some(&definition),
+            )
+            .await
+        {
+            Ok(provider_run) => provider_run,
+            Err(_) => {
+                store.mark_failed(
+                    &execution.operation_id,
+                    attempt,
+                    "provider_environment_bind_failed",
+                    "kernel could not bind the validated environment to the provider run",
+                );
+                return;
+            }
+        };
         if execution.persist_project_definition
             && self
                 .update_project_environment_definition(
                     &execution.project_id,
-                    definition,
+                    definition.clone(),
                     &execution.owner_user_id,
                 )
                 .is_err()
         {
+            let _ = self
+                .restore_previous_ordinary_provider_run(&provider_run, &ordinary_provider_run)
+                .await;
             store.mark_failed(
                 &execution.operation_id,
                 attempt,
@@ -1734,6 +1741,44 @@ impl KernelRuntimeState {
             definition,
             false,
             Some(ordinary_provider_run),
+        )
+        .await
+    }
+
+    async fn restore_previous_ordinary_provider_run(
+        &self,
+        provider_run: &RuntimeProviderRun,
+        ordinary_provider_run: &RuntimeProviderRun,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let current_run = self.owned.provider_store.get_run(provider_run.id())?;
+        let restartable_server = matches!(provider_run.adapter_key(), "codex" | "opencode");
+        if !restartable_server {
+            let restored = self
+                .owned
+                .provider_store
+                .restore_run_snapshot_after_restart_failure(ordinary_provider_run.clone())?;
+            self.owned.provider_run_projection.update(restored.clone());
+            return Ok(restored);
+        }
+        if self
+            .owned
+            .provider_store
+            .structured_prompt_io_in_flight(provider_run.id())
+        {
+            return Err(setup_error(
+                "cannot restore a provider while structured provider I/O is in flight",
+            ));
+        }
+        let credentials = self
+            .resolve_provider_account_credentials_for_run_with_vault(
+                &current_run,
+                "restore project environment provider",
+            )
+            .await?;
+        self.recover_provider_run_after_restart_failure(
+            ordinary_provider_run,
+            &current_run,
+            &credentials,
         )
         .await
     }
