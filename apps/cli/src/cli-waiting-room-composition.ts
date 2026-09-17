@@ -710,7 +710,27 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       if (!await replaceClientForKernel(launch.ownerKernelRef, launch.ownerMachineRef)) {
         return
       }
-      return deps.providerCatalogState() as ProviderCatalog
+      const revision = ++providerCatalogSelectionRevision
+      const state = deps.waitingRoomState()
+      const catalogClient = typeof deps.client.currentClient === "function"
+        ? deps.client.currentClient()
+        : deps.client
+      const catalog = await loadProviderCatalogForKernel(catalogClient, deps.appLogger, {
+        providerId: state.providerId,
+        accountProfileId: state.accountProfileId,
+        executionLocation: providerCatalogExecutionLocation(
+          state,
+          directTargetKernelId ?? deps.relayStatusState()?.daemon_id,
+        ),
+      })
+      const activeClient = typeof deps.client.currentClient === "function"
+        ? deps.client.currentClient()
+        : deps.client
+      if (revision !== providerCatalogSelectionRevision || catalogClient !== activeClient) {
+        throw new Error("provider selection changed while preparing the session; try again")
+      }
+      deps.setProviderCatalogState(catalog)
+      return catalog
     },
     prepareManagedSessionLaunch,
     prepareExistingSessionClient: async (session) => {
