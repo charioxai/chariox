@@ -35,6 +35,7 @@ Implemented now:
 - `src/scenarios.mjs opencode-agent-triggered-grant`: simulates an OpenCode agent-requested MCP grant, provider relaunch, and synthetic continuation.
 - `src/scenarios.mjs scale-matrix`: runs a small Codex/OpenCode provider/proxy/backing lifecycle scale matrix.
 - `src/scenarios.mjs overlap-isolation`: validates overlapping-but-not-identical grants across two agents per provider.
+- `src/opencode-native-config-acceptance.mjs`: launches the installed official OpenCode binary with disposable global/project configs and records native MCP autostart and precedence observations for discovery policy.
 
 Not implemented yet:
 
@@ -57,6 +58,7 @@ node src/scenarios.mjs codex-agent-triggered-grant
 node src/scenarios.mjs opencode-agent-triggered-grant
 node src/scenarios.mjs scale-matrix
 node src/scenarios.mjs overlap-isolation
+node src/opencode-native-config-acceptance.mjs
 ```
 
 Or with npm/pnpm script runners:
@@ -73,6 +75,7 @@ npm run scenario:codex-agent-triggered-grant
 npm run scenario:opencode-agent-triggered-grant
 npm run scenario:scale-matrix
 npm run scenario:overlap-isolation
+npm run scenario:opencode-native-config-acceptance
 ```
 
 ## Artifacts
