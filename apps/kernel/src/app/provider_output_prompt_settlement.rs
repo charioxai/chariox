@@ -995,6 +995,7 @@ mod tests {
         let crate::runtime_transport::WatchResult::Ok {
             records,
             completions,
+            workflow_run_updates,
             snapshot,
             ..
         } = result
@@ -1004,6 +1005,10 @@ mod tests {
         assert!(
             records.is_empty(),
             "the quiet callback should settle only after final output has drained"
+        );
+        assert!(
+            workflow_run_updates.is_empty(),
+            "the non-workflow settlement should not select a workflow-run event instead of the public activity/snapshot path"
         );
         assert_eq!(
             completions.len(),
@@ -1039,50 +1044,78 @@ mod tests {
         assert!(!settled_activity.busy);
         assert_eq!(settled_activity.active_prompt_count, 0);
         assert!(settled_activity.active_turn.is_none());
-        // The local legacy callback also ends its provider run, so the public transport emits a
-        // provider-run delta instead of an activity-only delta. The idle activity is still
-        // carried by the public snapshot above; if the provider projection is unchanged, the
-        // activity event is the corresponding public delta.
-        if let Some(crate::transport::kernel_protocol::KernelEvent::AgentActivityChanged {
-            agent_activity,
-            ..
-        }) = crate::transport::kernel_protocol::agent_activity_changed_event(
+        // The public subscription emits a narrow activity delta when the session permits one.
+        // Otherwise its actual transport loop falls back to the snapshot payload above. Check
+        // the same selection boundary without manufacturing a fallback event in this test.
+        match crate::transport::kernel_protocol::agent_activity_changed_event(
             &settled_snapshot,
             Some(&first_snapshot),
         ) {
-            let activity = agent_activity
-                .get(agent.id())
-                .expect("idle event should include the settled local agent");
-            assert_eq!(
-                activity.status,
-                crate::runtime::projection::AgentRuntimeStatus::Idle
-            );
-            assert!(!activity.busy);
-            assert_eq!(activity.active_prompt_count, 0);
-            assert!(activity.active_turn.is_none());
-        } else {
-            assert_ne!(
-                first_snapshot.provider_run, settled_snapshot.provider_run,
-                "a missing activity delta is only valid when the local provider also changed"
-            );
-            let provider_event = crate::transport::kernel_protocol::KernelEvent::SessionSnapshot {
-                session: Box::new(settled_snapshot.session.clone()),
-                provider_run: Box::new(settled_snapshot.provider_run.clone()),
-                agent_activity: Box::new(settled_snapshot.agent_activity.clone()),
-                agent_activity_revision: settled_snapshot.metadata.last_event_id,
-            };
-            assert!(matches!(
-                provider_event,
-                crate::transport::kernel_protocol::KernelEvent::SessionSnapshot {
-                    agent_activity,
-                    ..
-                } if agent_activity.get(agent.id()).is_some_and(|activity| {
-                    activity.status == crate::runtime::projection::AgentRuntimeStatus::Idle
-                        && !activity.busy
-                        && activity.active_prompt_count == 0
-                        && activity.active_turn.is_none()
-                })
-            ));
+            Some(crate::transport::kernel_protocol::KernelEvent::AgentActivityChanged {
+                agent_activity,
+                ..
+            }) => {
+                let activity = agent_activity
+                    .get(agent.id())
+                    .expect("idle event should include the settled local agent");
+                assert_eq!(
+                    activity.status,
+                    crate::runtime::projection::AgentRuntimeStatus::Idle
+                );
+                assert!(!activity.busy);
+                assert_eq!(activity.active_prompt_count, 0);
+                assert!(activity.active_turn.is_none());
+            }
+            Some(event) => panic!("unexpected public settlement event: {event:?}"),
+            None => {
+                assert!(
+                    crate::transport::kernel_protocol::provider_run_changed_event(
+                        &settled_snapshot,
+                        Some(&first_snapshot),
+                    )
+                    .is_none(),
+                    "the public transport must use the full snapshot when no activity delta applies"
+                );
+                assert!(
+                    crate::transport::kernel_protocol::session_metadata_changed_event(
+                        &settled_snapshot,
+                        Some(&first_snapshot),
+                    )
+                    .is_none(),
+                    "the public transport must use the full snapshot when no metadata delta applies"
+                );
+                assert!(
+                    crate::transport::kernel_protocol::runtime_interactions_changed_event(
+                        &settled_snapshot,
+                        Some(&first_snapshot),
+                    )
+                    .is_none(),
+                    "the public transport must use the full snapshot when no interaction delta applies"
+                );
+                assert!(
+                    crate::transport::kernel_protocol::workflow_run_updated_events(
+                        &settled_snapshot,
+                        Some(&first_snapshot),
+                    )
+                    .is_empty()
+                        && !crate::transport::kernel_protocol::workflow_run_only_changed(
+                            &settled_snapshot,
+                            Some(&first_snapshot),
+                        ),
+                    "the public transport must use the full snapshot when no narrow projection applies"
+                );
+                let fallback_activity = settled_snapshot
+                    .agent_activity
+                    .get(agent.id())
+                    .expect("full snapshot fallback should include the settled local agent");
+                assert_eq!(
+                    fallback_activity.status,
+                    crate::runtime::projection::AgentRuntimeStatus::Idle
+                );
+                assert!(!fallback_activity.busy);
+                assert_eq!(fallback_activity.active_prompt_count, 0);
+                assert!(fallback_activity.active_turn.is_none());
+            }
         }
 
         app.pty
