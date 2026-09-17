@@ -533,7 +533,76 @@ test("waiting room start rolls back a post-pivot away-and-back selection change"
   }
 })
 
-function createRemoteCompositionFixture() {
+test("waiting room start cleans up a session when selection changes during CreateSession", async () => {
+  const fixture = createRemoteCompositionFixture({ deferCreateSession: true })
+  let startPromise: Promise<unknown> | undefined
+  try {
+    startPromise = fixture.composition.startSessionFromWaitingRoomDefaults()
+    await fixture.targetCatalogStarted
+    fixture.releaseTargetCatalog()
+    await fixture.createSessionStarted
+
+    fixture.composition.reconcileWaitingRoom({
+      ...fixture.waitingRoomState(),
+      selectedMachineRef: "machine-new",
+      selectedKernelRef: "kernel-new",
+    })
+    fixture.releaseCreateSession()
+
+    await assert.rejects(startPromise, /selection changed/)
+    assert.deepEqual(fixture.createdSessionOwners, ["kernel-old"])
+    assert.deepEqual(fixture.deletedSessionIds, ["created-session"])
+    assert.deepEqual(fixture.attachedSessionIds, [])
+    assert.deepEqual(fixture.rolledBackAttachmentIds, [])
+    assert.equal(fixture.client.currentClient(), fixture.sourceClient)
+    assert.equal(fixture.sourceCloseCount(), 0)
+    assert.ok(fixture.targetCloseCount() >= 1)
+  } finally {
+    fixture.releaseTargetCatalog()
+    fixture.releaseCreateSession()
+    fixture.releaseAttachBinding()
+    await startPromise?.catch(() => {})
+    await fixture.cleanup()
+  }
+})
+
+test("waiting room start rolls back a created and attached session when selection changes during attachBinding", async () => {
+  const fixture = createRemoteCompositionFixture({ deferAttachBinding: true })
+  let startPromise: Promise<unknown> | undefined
+  try {
+    startPromise = fixture.composition.startSessionFromWaitingRoomDefaults()
+    await fixture.targetCatalogStarted
+    fixture.releaseTargetCatalog()
+    await fixture.attachBindingStarted
+
+    fixture.composition.reconcileWaitingRoom({
+      ...fixture.waitingRoomState(),
+      selectedMachineRef: "machine-new",
+      selectedKernelRef: "kernel-new",
+    })
+    fixture.releaseAttachBinding()
+
+    await assert.rejects(startPromise, /selection changed/)
+    assert.deepEqual(fixture.createdSessionOwners, ["kernel-old"])
+    assert.deepEqual(fixture.attachedSessionIds, ["created-session"])
+    assert.deepEqual(fixture.rolledBackAttachmentIds, ["created-session"])
+    assert.deepEqual(fixture.deletedSessionIds, ["created-session"])
+    assert.equal(fixture.client.currentClient(), fixture.sourceClient)
+    assert.equal(fixture.sourceCloseCount(), 0)
+    assert.ok(fixture.targetCloseCount() >= 1)
+  } finally {
+    fixture.releaseTargetCatalog()
+    fixture.releaseCreateSession()
+    fixture.releaseAttachBinding()
+    await startPromise?.catch(() => {})
+    await fixture.cleanup()
+  }
+})
+
+function createRemoteCompositionFixture(fixtureOptions: {
+  deferCreateSession?: boolean
+  deferAttachBinding?: boolean
+} = {}) {
   __setWaitingRoomWorktreeInventoryForTest({
     workspacePath: "/workspace",
     currentWorktreePath: "/workspace",
@@ -555,13 +624,32 @@ function createRemoteCompositionFixture() {
   let targetCatalogRequests = 0
   let resolveTargetCatalogStarted: (() => void) | undefined
   let releaseTargetCatalog: (() => void) | undefined
+  let resolveCreateSessionStarted: (() => void) | undefined
+  let releaseCreateSession: (() => void) | undefined
+  let resolveAttachBindingStarted: (() => void) | undefined
+  let releaseAttachBinding: (() => void) | undefined
   const targetCatalogStarted = new Promise<void>((resolve) => {
     resolveTargetCatalogStarted = resolve
   })
   const targetCatalogGate = new Promise<void>((resolve) => {
     releaseTargetCatalog = resolve
   })
+  const createSessionStarted = new Promise<void>((resolve) => {
+    resolveCreateSessionStarted = resolve
+  })
+  const createSessionGate = new Promise<void>((resolve) => {
+    releaseCreateSession = resolve
+  })
+  const attachBindingStarted = new Promise<void>((resolve) => {
+    resolveAttachBindingStarted = resolve
+  })
+  const attachBindingGate = new Promise<void>((resolve) => {
+    releaseAttachBinding = resolve
+  })
   const createdSessionOwners: string[] = []
+  const deletedSessionIds: string[] = []
+  const attachedSessionIds: string[] = []
+  const rolledBackAttachmentIds: string[] = []
 
   ;(sourceClient as any).close = async () => {
     sourceCloseCount += 1
@@ -604,8 +692,19 @@ function createRemoteCompositionFixture() {
       return { ProviderCatalog: { catalog: catalog("old-kernel") } }
     }
     if (this.socketPath === "ws://kernel-old" && hasRequest(request, "CreateSession")) {
+      resolveCreateSessionStarted?.()
+      if (fixtureOptions.deferCreateSession) {
+        await createSessionGate
+      }
       createdSessionOwners.push("kernel-old")
       return createdSessionResponse()
+    }
+    if (this.socketPath === "ws://kernel-old" && hasRequest(request, "DeleteSession")) {
+      const payload = (request as { DeleteSession?: { session_ref?: string } }).DeleteSession
+      if (payload?.session_ref) {
+        deletedSessionIds.push(payload.session_ref)
+      }
+      return deletedSessionResponse()
     }
     throw new Error(`unexpected target IPC request: ${requestKind(request)}`)
   }
@@ -717,8 +816,16 @@ function createRemoteCompositionFixture() {
     openTerminalPairingDialog: async () => {},
     openSessionBrowserDialog: () => {},
     closeSessionBrowserDialog: () => {},
-    attachBinding: async () => {},
-    rollbackAttachedSession: async () => {},
+    attachBinding: async (session: { id: string }) => {
+      resolveAttachBindingStarted?.()
+      if (fixtureOptions.deferAttachBinding) {
+        await attachBindingGate
+      }
+      attachedSessionIds.push(session.id)
+    },
+    rollbackAttachedSession: async (sessionId: string) => {
+      rolledBackAttachmentIds.push(sessionId)
+    },
     flashFooter: () => {},
     setKernelConnected: () => {},
     setDaemonDisconnected: () => {},
@@ -739,8 +846,15 @@ function createRemoteCompositionFixture() {
     sourceClient,
     waitingRoomState: () => waitingRoomState,
     createdSessionOwners,
+    deletedSessionIds,
+    attachedSessionIds,
+    rolledBackAttachmentIds,
     targetCatalogStarted,
+    createSessionStarted,
+    attachBindingStarted,
     releaseTargetCatalog: () => releaseTargetCatalog?.(),
+    releaseCreateSession: () => releaseCreateSession?.(),
+    releaseAttachBinding: () => releaseAttachBinding?.(),
     sourceCloseCount: () => sourceCloseCount,
     targetCloseCount: () => targetCloseCount,
     async cleanup() {
@@ -814,6 +928,14 @@ function createdSessionResponse() {
           updated_by_attachment_id: null,
         },
       },
+    },
+  }
+}
+
+function deletedSessionResponse() {
+  return {
+    SessionDeleted: {
+      session: createdSessionResponse().SessionCreated.session,
     },
   }
 }
