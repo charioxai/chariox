@@ -140,6 +140,47 @@ the Rust/Cargo/native-dependency checks and a bounded build of the transferred
 Chariox repository. Kernel, relay, or provider connectivity alone cannot set
 the flag.
 
+The first-use utility contract is evidence-driven rather than a finite language
+allowlist. With no stored definition, the utility inspects the selected
+worktree's declared manifests and lockfiles (`package.json`, `pyproject.toml`,
+`go.mod`, `Cargo.toml`), Dockerfile/devcontainer, setup or CI scripts,
+tool-version files, build files, and documented build instructions. It records
+every evidenced language/toolchain, package, compiler, system tool, native
+dependency, and command as a repeatable step and validation. Project evidence
+that requires SSH or tmux must result in explicit `openssh-client`/`ssh` and
+`tmux` preparation and validation; image contents are not assumed. An existing
+recipe is authoritative and is applied and verified before utility discovery;
+repair is invoked only after that reuse path fails. These rules are exercised
+by the bounded heterogeneous-project regression
+`parser_accepts_heterogeneous_project_requirements_without_language_allowlist`
+in `apps/kernel/src/runtime/project_environment_setup_utility.rs`; the existing
+reuse and repair ordering is exercised by
+`public_setup_lifecycle_reuses_unchanged_recipe_and_lockfile_inputs_without_utility`
+and `public_setup_lifecycle_repairs_stale_and_missing_inputs_before_ready` in
+`apps/kernel/src/runtime/state/project_environment_setup_lifecycle_tests.rs`.
+
+Credential safeguards apply to credentials and account paths automatically
+provided by Chariox at the confirmed disposable-worker command boundary. That
+boundary removes those environment bindings and gives opaque setup and validation reruns an
+isolated `HOME`; it does not sandbox arbitrary project commands or guarantee
+the safety of credentials a project supplies itself. Evidence discovery and
+definition validation do not interpret opaque shell text: a script or
+application fixture may legitimately mention `ssh-keyscan`, `dd`, or
+`private_key`. Credential values and private-key bytes never enter the
+definition or attestation. If the selected credential, host verification,
+project configuration, or toolchain input is unavailable at the enforced
+boundary, return only a fixed-category `missing_user_inputs` diagnostic with no
+value. The parser regression
+`parser_accepts_definition_free_missing_user_input_report`, the script-backed
+execution regression
+`script_backed_setup_keeps_project_evidence_and_private_key_fixtures_opaque`,
+and the worker environment-boundary regression
+`opaque_commands_write_only_isolated_home_without_automatic_ssh_authority` in
+`apps/kernel/src/runtime/state/project_environment_setup.rs` cover these
+seams. The kernel projects the category-only diagnostic as a retryable setup
+failure; it does not claim readiness or host-authority guarantees absent an
+enforced boundary.
+
 The local red-green contract tests must cover both definition branches, each
 observable phase, failure, cancellation, retry, reconnect, cache invalidation,
 and the negative case where the worker is connected but validation has not
@@ -148,6 +189,12 @@ the reviewed Cloud path, exercise the same definition and utility-agent paths
 inside a disposable VM, run the bounded Rust/Cargo/native-dependency build from
 the transferred repository, and prove cleanup. Those deployment and live
 validation steps are not closed by local tests.
+
+The new unit/parser checks are bounded source coverage only. They do not prove
+that a fresh VM has heterogeneous language toolchains, SSH, or tmux installed;
+the real-worker gate must still run the project-declared setup and validation in
+the disposable target, then exercise reuse on a second machine and repair
+after an induced validation failure.
 
 ## Product and architecture decisions
 

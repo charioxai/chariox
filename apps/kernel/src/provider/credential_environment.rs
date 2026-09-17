@@ -69,6 +69,59 @@ struct ProviderCredentialDeliveryProbeState {
 }
 
 #[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum ProviderLifecycleFailureStage {
+    Spawn,
+    Bind,
+}
+
+#[cfg(test)]
+fn provider_lifecycle_failure_injections(
+) -> &'static std::sync::Mutex<
+    std::collections::BTreeSet<(String, ProviderLifecycleFailureStage)>,
+> {
+    static INJECTIONS: std::sync::OnceLock<
+        std::sync::Mutex<
+            std::collections::BTreeSet<(String, ProviderLifecycleFailureStage)>,
+        >,
+    > = std::sync::OnceLock::new();
+    INJECTIONS.get_or_init(Default::default)
+}
+
+#[cfg(test)]
+pub(crate) struct ProviderLifecycleFailureInjection {
+    provider_run_id: String,
+    stage: ProviderLifecycleFailureStage,
+}
+
+#[cfg(test)]
+impl ProviderLifecycleFailureInjection {
+    pub(crate) fn install(
+        provider_run_id: &str,
+        stage: ProviderLifecycleFailureStage,
+    ) -> Self {
+        provider_lifecycle_failure_injections()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert((provider_run_id.to_string(), stage));
+        Self {
+            provider_run_id: provider_run_id.to_string(),
+            stage,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for ProviderLifecycleFailureInjection {
+    fn drop(&mut self) {
+        provider_lifecycle_failure_injections()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&(self.provider_run_id.clone(), self.stage));
+    }
+}
+
+#[cfg(test)]
 fn provider_credential_delivery_probes(
 ) -> &'static std::sync::Mutex<BTreeMap<String, ProviderCredentialDeliveryProbeState>> {
     static PROBES: std::sync::OnceLock<
@@ -141,6 +194,17 @@ pub(crate) fn record_provider_credential_delivery_for_test(
         .observations
         .insert(stage, credentials == &probe.expected);
     true
+}
+
+#[cfg(test)]
+pub(crate) fn take_provider_lifecycle_failure_for_test(
+    provider_run_id: &str,
+    stage: ProviderLifecycleFailureStage,
+) -> bool {
+    provider_lifecycle_failure_injections()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&(provider_run_id.to_string(), stage))
 }
 
 #[cfg(test)]

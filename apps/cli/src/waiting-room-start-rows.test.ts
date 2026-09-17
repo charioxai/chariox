@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type { SliceRecord } from "./cli-types.js"
-import { catalogModelOptions, fallbackProviderCatalog } from "./provider-catalog.js"
+import { catalogModelOptions, fallbackProviderCatalog, type ProviderCatalog } from "./provider-catalog.js"
 import { waitingRoomStartRows } from "./waiting-room-start-rows.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 
@@ -55,6 +55,63 @@ test("waiting room start rows render configuration labels and join action", () =
   assert.equal(rows.find((row) => row.id === "managed-repositories")?.value, "None")
   assert.equal(rows.find((row) => row.id === "join-header")?.value, "Press Enter")
   assert.equal(rows.find((row) => row.id === "join-header")?.focused, true)
+})
+
+test("waiting room keeps OpenCode Zen and Go model identities distinct", () => {
+  const catalog: ProviderCatalog = {
+    all: [
+      {
+        id: "opencode",
+        name: "OpenCode Zen",
+        models: {
+          "shared-model": {
+            id: "shared-model",
+            name: "Shared model",
+            status: "active",
+            variants: { medium: {}, high: {} },
+          },
+        },
+      },
+      {
+        id: "opencode-go",
+        name: "OpenCode Go",
+        models: {
+          "shared-model": {
+            id: "shared-model",
+            name: "Shared model",
+            status: "active",
+            variants: { low: {}, max: {} },
+          },
+        },
+      },
+    ],
+    default: {
+      opencode: "shared-model",
+      "opencode-go": "shared-model",
+    },
+    connected: ["opencode", "opencode-go"],
+  }
+  const modelOptions = catalogModelOptions(catalog, "opencode")
+  const zen = modelOptions.find((option) => option.id === "opencode/shared-model")
+  const go = modelOptions.find((option) => option.id === "opencode-go/shared-model")
+
+  assert.deepEqual(zen?.variants, ["medium", "high"])
+  assert.deepEqual(go?.variants, ["low", "max"])
+
+  const rowsFor = (model: typeof zen) => waitingRoomStartRows(
+    waitingRoomState(),
+    { providerId: "opencode", model: model ?? null, effort: model?.variants[0] ?? "" },
+    {
+      modelOptions,
+      inventoryLoading: false,
+      loadingText: "loading",
+      visibleSessionCount: 0,
+      titleWidth: 24,
+    },
+  )
+
+  assert.equal(rowsFor(zen).find((row) => row.id === "model")?.value, "OpenCode Zen Shared model")
+  assert.equal(rowsFor(go).find((row) => row.id === "model")?.value, "OpenCode Go Shared model")
 })
 
 test("waiting room start rows place project selection below Kernel", () => {

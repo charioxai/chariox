@@ -4,11 +4,13 @@ import test from "node:test"
 import type { RuntimeSession } from "./cli-types.js"
 import type { BackendProviderId, ProviderCatalog } from "./provider-catalog.js"
 import type { SessionListEntry } from "./sessions.js"
+import { deriveWaitingRoomCreateSessionDecision } from "./waiting-room-controller.js"
 import {
   createWaitingRoomActivationController,
   type WaitingRoomActivationControllerDeps,
   type WaitingRoomCreateSessionLaunch,
   type WaitingRoomPreparedManagedLaunch,
+  type WaitingRoomPreparedSessionOwner,
 } from "./waiting-room-activation-controller.js"
 import type {
   WaitingRoomActivationDecision,
@@ -20,6 +22,8 @@ import type {
   WaitingRoomRemoteState,
   WaitingRoomState,
 } from "./waiting-room-types.js"
+import { createWaitingRoomState } from "./waiting-room-state.js"
+import { __setWaitingRoomWorktreeInventoryForTest } from "./waiting-room-worktrees.js"
 
 test("waiting room activation connects detached kernel before control actions", async () => {
   const harness = createHarness({
@@ -142,6 +146,71 @@ test("waiting room activation prepares a selected remote owner before creating t
     "attachBinding",
   ])
   assert.equal(harness.createdLaunches[0]?.launch.workerKernelRef ?? null, null)
+})
+
+test("waiting room activation re-derives the launch from the selected kernel catalog", async () => {
+  __setWaitingRoomWorktreeInventoryForTest({
+    workspacePath: "/workspace",
+    currentWorktreePath: "/workspace",
+    options: [{
+      id: "existing:/workspace",
+      kind: "existing",
+      label: "main",
+      path: "/workspace",
+      branch: "main",
+      isCurrent: true,
+    }],
+  })
+  try {
+    const catalogA = divergentCatalog("a-only")
+    const catalogB = divergentCatalog("b-only")
+    const state = {
+      ...createWaitingRoomState([], catalogA, "opencode", "opencode/a-only", ""),
+      selectedMachineRef: "machine-b",
+      selectedKernelRef: "kernel-b",
+    }
+    const harness = createHarness({
+      controlDecision: { action: "none" },
+      waitingRoomState: state,
+      providerCatalog: () => catalogB,
+      remoteState: {
+        machines: [{ machine_id: "machine-b", kernel_count: 1 }],
+        kernels: [{ kernel_id: "kernel-b", machine_id: "machine-b", available_providers: ["opencode"] }],
+      },
+      activationDecision: {
+        action: "create",
+        launch: {
+          provider: "opencode",
+          model: "opencode/a-only",
+          effort: "",
+          ownerMachineRef: "machine-b",
+          ownerKernelRef: "kernel-b",
+        },
+      },
+      prepareSessionOwnerClient: async (launch) => {
+        assert.equal(launch.model, "opencode/a-only")
+        return {
+          catalog: catalogB,
+          assertActive: () => {},
+          commit: async () => {},
+          rollback: async () => {},
+        }
+      },
+      deriveCreateSessionDecision: deriveWaitingRoomCreateSessionDecision,
+    })
+
+    await harness.controller.activate()
+
+    assert.equal(harness.createdLaunches[0]?.launch.model, "opencode/b-only")
+    assert.equal(harness.attachedSessions[0]?.launch.model, "opencode/b-only")
+    assert.deepEqual(harness.calls.slice(0, 3), [
+      "prepareSessionOwnerClient:kernel-b",
+      "createSession",
+      "attachBinding",
+    ])
+  } finally {
+    __setWaitingRoomWorktreeInventoryForTest(null)
+  }
 })
 
 test("waiting room activation creates and starts new headed slices before session creation", async () => {
@@ -805,12 +874,14 @@ function createHarness(options: {
   loadOlderExternalProviderSessions?: () => Promise<number>
   browseKernelInventory?: (kernelId: string, machineId: string) => Promise<number>
   deleteSlice?: (sliceRef: string) => Promise<void>
-  prepareSessionOwnerClient?: (launch: WaitingRoomLaunchConfig) => Promise<void>
+  prepareSessionOwnerClient?: (launch: WaitingRoomLaunchConfig) => Promise<WaitingRoomPreparedSessionOwner | void>
   prepareManagedSessionLaunch?: (
     launch: WaitingRoomLaunchConfig,
   ) => Promise<WaitingRoomPreparedManagedLaunch>
   waitingRoomState?: Partial<WaitingRoomState>
   remoteState?: WaitingRoomRemoteState
+  providerCatalog?: ProviderCatalog | (() => ProviderCatalog)
+  deriveCreateSessionDecision?: typeof deriveWaitingRoomCreateSessionDecision
 }) {
   const calls: string[] = []
   const attachedSessions: Array<{
@@ -847,7 +918,9 @@ function createHarness(options: {
     getWorkspaceTarget: () => workspaceTarget,
     getWorktreeTarget: () => worktreeTarget,
     getAvailableSessions: () => [],
-    getProviderCatalog: () => ({} as ProviderCatalog),
+    getProviderCatalog: () => typeof options.providerCatalog === "function"
+      ? options.providerCatalog()
+      : options.providerCatalog ?? ({} as ProviderCatalog),
     getCurrentProvider: () => "opencode" as BackendProviderId,
     getCurrentModel: () => "gpt-5.4",
     getAccountProfile: () => options.accountProfile ?? null,
@@ -930,7 +1003,7 @@ function createHarness(options: {
       ? {
         prepareSessionOwnerClient: async (launch: WaitingRoomLaunchConfig) => {
           calls.push(`prepareSessionOwnerClient:${launch.ownerKernelRef ?? "local"}`)
-          await options.prepareSessionOwnerClient?.(launch)
+          return await options.prepareSessionOwnerClient?.(launch)
         },
       }
       : {}),
@@ -963,7 +1036,8 @@ function createHarness(options: {
     formatError: (error) => error instanceof Error ? error.message : String(error),
     deriveControlDecision: () => options.controlDecision,
     deriveActivationDecision: () => options.activationDecision ?? { action: "none" },
-    deriveCreateSessionDecision: () => options.createSessionDecision ?? { action: "error", message: "not configured" },
+    deriveCreateSessionDecision: options.deriveCreateSessionDecision
+      ?? (() => options.createSessionDecision ?? { action: "error", message: "not configured" }),
   })
   return {
     get promptText() {
@@ -1019,6 +1093,25 @@ function runtimeSession(id: string, alias: string | null, overrides: Partial<Run
       updated_by_attachment_id: null,
     },
     ...overrides,
+  }
+}
+
+function divergentCatalog(modelId: string): ProviderCatalog {
+  return {
+    all: [{
+      id: "opencode",
+      name: "OpenCode Zen",
+      models: {
+        [modelId]: {
+          id: modelId,
+          name: modelId,
+          status: "active",
+          variants: {},
+        },
+      },
+    }],
+    default: { opencode: modelId },
+    connected: ["opencode"],
   }
 }
 

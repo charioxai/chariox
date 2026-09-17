@@ -1,5 +1,6 @@
 import {
   backendProviderLabel,
+  isOpenCodeNativeProviderId,
   type BackendProviderId,
   type CatalogModelOption,
 } from "./provider-catalog.js"
@@ -475,5 +476,9 @@ function formatWaitingRoomModelLabel(
   options: CatalogModelOption[],
 ) {
   const providerCount = new Set(options.map((option) => option.providerId)).size
-  return providerCount <= 1 ? model.label : `${model.providerName} ${model.label}`
+  const nativeProviderName = isOpenCodeNativeProviderId(model.providerId)
+    && model.providerName !== backendProviderLabel("opencode")
+  return providerCount <= 1 && !nativeProviderName
+    ? model.label
+    : `${model.providerName} ${model.label}`
 }

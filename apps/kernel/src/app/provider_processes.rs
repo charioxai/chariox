@@ -38,6 +38,16 @@ impl<'a> ProviderLaunchProcessRuntime<'a> {
         credentials: &crate::provider::ProviderCredentialEnvironment,
     ) -> Result<(), DaemonError> {
         #[cfg(test)]
+        if crate::provider::take_provider_lifecycle_failure_for_test(
+            run.id(),
+            crate::provider::ProviderLifecycleFailureStage::Spawn,
+        ) {
+            return Err(DaemonError::PtySpawn {
+                provider_run_id: run.id().to_string(),
+                message: "injected provider restart spawn failure".to_string(),
+            });
+        }
+        #[cfg(test)]
         if crate::provider::record_provider_credential_delivery_for_test(
             run.id(),
             "pty_spawn",

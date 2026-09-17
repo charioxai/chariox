@@ -40,6 +40,7 @@ pub(crate) fn load_provider_catalog(
         catalogs.push(dev_stub_provider_catalog());
     }
     let mut source_errors = Vec::new();
+    let mut provider_source_errors = Vec::new();
 
     let selected_profiles = resolve_catalog_profiles(&registry, &owner_user_id, &request)?;
     let opencode_profile = selected_profiles
@@ -55,11 +56,32 @@ pub(crate) fn load_provider_catalog(
         Ok(endpoint) => match OpenCodeClient::new("catalog", endpoint.as_str()) {
             Ok(client) => match client.provider_catalog() {
                 Ok(catalog) => catalogs.push(opencode_backend_catalog(catalog)),
-                Err(error) => source_errors.push(format!("opencode catalog request: {error}")),
+                Err(error) => {
+                    let detail = format!("opencode catalog request: {error}");
+                    source_errors.push(detail.clone());
+                    provider_source_errors.push(ProviderCatalogSourceError {
+                        provider: "opencode",
+                        detail,
+                    });
+                }
             },
-            Err(error) => source_errors.push(format!("opencode client: {error}")),
+            Err(error) => {
+                let detail = format!("opencode client: {error}");
+                source_errors.push(detail.clone());
+                provider_source_errors.push(ProviderCatalogSourceError {
+                    provider: "opencode",
+                    detail,
+                });
+            }
         },
-        Err(error) => source_errors.push(format!("opencode endpoint: {error}")),
+        Err(error) => {
+            let detail = format!("opencode endpoint: {error}");
+            source_errors.push(detail.clone());
+            provider_source_errors.push(ProviderCatalogSourceError {
+                provider: "opencode",
+                detail,
+            });
+        }
     }
     let codex_profile = selected_profiles
         .get("codex")
@@ -74,11 +96,32 @@ pub(crate) fn load_provider_catalog(
         Ok(endpoint) => match CodexClient::new("catalog", endpoint.as_str()) {
             Ok(client) => match client.provider_catalog() {
                 Ok(catalog) => catalogs.push(catalog),
-                Err(error) => source_errors.push(format!("codex catalog request: {error}")),
+                Err(error) => {
+                    let detail = format!("codex catalog request: {error}");
+                    source_errors.push(detail.clone());
+                    provider_source_errors.push(ProviderCatalogSourceError {
+                        provider: "codex",
+                        detail,
+                    });
+                }
             },
-            Err(error) => source_errors.push(format!("codex client: {error}")),
+            Err(error) => {
+                let detail = format!("codex client: {error}");
+                source_errors.push(detail.clone());
+                provider_source_errors.push(ProviderCatalogSourceError {
+                    provider: "codex",
+                    detail,
+                });
+            }
         },
-        Err(error) => source_errors.push(format!("codex endpoint: {error}")),
+        Err(error) => {
+            let detail = format!("codex endpoint: {error}");
+            source_errors.push(detail.clone());
+            provider_source_errors.push(ProviderCatalogSourceError {
+                provider: "codex",
+                detail,
+            });
+        }
     }
 
     let remote_machines = if config.relay_url.is_some() && config.relay_token.is_some() {
@@ -104,6 +147,14 @@ pub(crate) fn load_provider_catalog(
                 "source_errors": &source_errors,
             }),
         );
+    }
+    let focused_provider = request
+        .provider
+        .as_deref()
+        .and_then(crate::provider::canonical_provider_family);
+    if let Some(error) = provider_catalog_discovery_error(&provider_source_errors, focused_provider)
+    {
+        return Err(error);
     }
 
     let mut catalog = merge_provider_catalogs(catalogs)
@@ -137,6 +188,32 @@ pub(crate) fn load_provider_catalog(
         }),
     );
     Ok(catalog)
+}
+
+struct ProviderCatalogSourceError {
+    provider: &'static str,
+    detail: String,
+}
+
+fn provider_catalog_discovery_error(
+    source_errors: &[ProviderCatalogSourceError],
+    focused_provider: Option<&str>,
+) -> Option<DaemonError> {
+    let Some(focused_provider) = focused_provider else {
+        return None;
+    };
+    let relevant_errors = source_errors
+        .iter()
+        .filter(|error| focused_provider == error.provider)
+        .map(|error| error.detail.as_str())
+        .collect::<Vec<_>>();
+    (!relevant_errors.is_empty()).then(|| DaemonError::LocalTransport {
+        operation: "get_provider_catalog",
+        message: format!(
+            "provider catalog discovery failed: {}",
+            relevant_errors.join("; ")
+        ),
+    })
 }
 
 fn resolve_catalog_profiles(
@@ -1251,6 +1328,47 @@ mod tests {
         assert_eq!(catalog.all.len(), 1);
         assert_eq!(catalog.all[0].id, "dev-stub");
         assert!(catalog.all[0].models.is_empty());
+    }
+
+    #[test]
+    fn provider_catalog_discovery_errors_are_scoped_to_the_focused_provider() {
+        let error = provider_catalog_discovery_error(
+            &[ProviderCatalogSourceError {
+                provider: "codex",
+                detail: "codex catalog request: model/list continuation failed".to_string(),
+            }],
+            Some("codex"),
+        )
+        .expect("a focused provider source failure should be returned");
+
+        assert_eq!(
+            error.to_string(),
+            "local transport `get_provider_catalog` failed: provider catalog discovery failed: codex catalog request: model/list continuation failed",
+        );
+        assert!(provider_catalog_discovery_error(
+            &[ProviderCatalogSourceError {
+                provider: "opencode",
+                detail: "opencode endpoint unavailable".to_string(),
+            }],
+            Some("codex"),
+        )
+        .is_none());
+        assert!(provider_catalog_discovery_error(
+            &[ProviderCatalogSourceError {
+                provider: "opencode",
+                detail: "opencode endpoint unavailable".to_string(),
+            }],
+            Some("claude"),
+        )
+        .is_none());
+        assert!(provider_catalog_discovery_error(
+            &[ProviderCatalogSourceError {
+                provider: "opencode",
+                detail: "opencode endpoint unavailable".to_string(),
+            }],
+            None,
+        )
+        .is_none());
     }
 
     #[test]

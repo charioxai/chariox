@@ -5,7 +5,7 @@ use tokio::sync::{mpsc as tokio_mpsc, OwnedSemaphorePermit, Semaphore};
 
 use crate::error::DaemonError;
 use crate::prompt_assembly::PromptEnvelope;
-use crate::provider::RuntimeProviderRun;
+use crate::provider::{ProviderUtilityExecutionPolicy, RuntimeProviderRun};
 
 use super::command_execution::{
     execute_abort_command, execute_output_poll_command, execute_selection_sync_command,
@@ -49,6 +49,7 @@ pub(super) enum ProviderRunActorCommand {
         run: RuntimeProviderRun,
         envelope: PromptEnvelope,
         timeout: Duration,
+        policy: ProviderUtilityExecutionPolicy,
         response: mpsc::Sender<Result<String, DaemonError>>,
     },
     Abort {
@@ -161,10 +162,11 @@ impl ProviderRunWorkerDeps {
                 run,
                 envelope,
                 timeout,
+                policy,
                 response,
             } => {
                 let result =
-                    execute_utility_command(&self.runtime_registry, run, envelope, timeout);
+                    execute_utility_command(&self.runtime_registry, run, envelope, timeout, policy);
                 let _ = response.send(result);
                 self.in_flight.clear_prompt_io_in_flight(&provider_run_id);
             }

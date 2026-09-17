@@ -86,4 +86,5 @@ pub use workspace::*;
 /// Version 330 carries home-authoritative managed browser/profile inventory.
 /// Version 331 carries recipe and lockfile input attestations for worker setup.
 /// Version 332 carries the public camelCase managed-context transfer receipt.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 332;
+/// Version 333 carries definition-derived executable path entries for worker setup.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 333;

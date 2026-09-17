@@ -10,7 +10,7 @@ import {
 } from "./ipc-project-environment-setup-requests.js"
 
 test("project environment setup requests use the versioned kernel seam", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 332)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 333)
   assert.deepEqual(
     startProjectEnvironmentSetupRequest({
       operationId: "setup-1",

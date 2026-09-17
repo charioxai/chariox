@@ -193,6 +193,10 @@ export function providerDisplayName(provider: ProviderInfo) {
   return `${provider.name} (${remoteAliases.join(", ")})`
 }
 
+export function isOpenCodeNativeProviderId(providerId: string) {
+  return providerId === "opencode" || providerId === "opencode-go"
+}
+
 export function selectConfiguredModel(
   catalog: ProviderCatalog,
   configured?: string | null,

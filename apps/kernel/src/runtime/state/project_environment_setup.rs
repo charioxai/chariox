@@ -20,11 +20,12 @@ use crate::local::{
     ProjectEnvironmentValidation, RetryProjectEnvironmentSetupRequest, RunAgentUtilityRequest,
     StartProjectEnvironmentSetupRequest,
 };
-use crate::provider::RuntimeProviderRun;
+use crate::provider::{ProviderProcessService, RuntimeProviderRun};
 use crate::runtime::agent_utility_executor::{
     assert_agent_utility_can_run,
     run_agent_utility_on_provider_run_for_project_environment_repair,
 };
+use crate::runtime::project_environment_setup_utility::project_environment_setup_utility_missing_input_message;
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
 use crate::transport::relay_peer::{
@@ -38,6 +39,16 @@ struct WorkerExecutionContext {
     platform: String,
     workspace_root: PathBuf,
     environment: BTreeMap<String, String>,
+}
+
+enum ReusedDefinitionSetupOutcome {
+    ContinueToRepair,
+    Ready(ProjectEnvironmentDefinition),
+    Cancelled,
+    Failed {
+        code: &'static str,
+        message: &'static str,
+    },
 }
 
 fn validation_passed_for_execution(
@@ -1186,107 +1197,92 @@ impl KernelRuntimeState {
             );
             return;
         }
+        // Keep the ordinary run snapshot for the whole setup attempt. The
+        // discovery rebind intentionally changes the stored run to a
+        // read-only/no-MCP context, so a later restoration failure must not
+        // roll back to that temporary discovery snapshot.
+        let ordinary_provider_run = provider_run.clone();
+        let provider_run = match self
+            .prepare_provider_run_for_project_environment(&execution, &provider_run)
+            .await
+        {
+            Ok(provider_run) => provider_run,
+            Err(_) => {
+                store.mark_failed(
+                    &execution.operation_id,
+                    attempt,
+                    "provider_environment_bind_failed",
+                    "kernel could not bind a restartable prepared environment to the provider discovery process",
+                );
+                return;
+            }
+        };
 
-        if let Some(definition) = execution
+        let reusable_definition = execution
             .definition
             .as_ref()
-            .filter(|definition| !definition.is_unattested_file_backed())
-        {
+            .filter(|definition| !definition.is_unattested_file_backed());
+        if let Some(definition) = reusable_definition {
             match self
-                .apply_definition_on_worker(&execution, attempt, definition, &provider_run)
+                .run_reused_definition_setup(&execution, attempt, definition, &provider_run)
                 .await
             {
-                Ok(true) => {
-                    let _ = store.update(&execution.operation_id, attempt, |entry| {
-                        entry.status.phase = ProjectEnvironmentSetupPhase::Validating;
-                        entry.status.progress_percent = 45;
-                        entry.status.message = Some(
-                            "kernel is validating the reused definition in the target worker"
-                                .to_string(),
-                        );
-                    });
-                    let validation = match self
-                        .validate_definition_on_worker(
+                ReusedDefinitionSetupOutcome::Ready(definition) => {
+                    if self
+                        .restore_provider_run_after_project_environment_discovery(
                             &execution,
-                            attempt,
-                            definition,
                             &provider_run,
+                            &ordinary_provider_run,
+                            Some(&definition),
                         )
                         .await
+                        .is_err()
                     {
-                        Ok(validation) => validation,
-                        Err(_) => {
-                            store.mark_failed(
-                                &execution.operation_id,
-                                attempt,
-                                "worker_validation_unavailable",
-                                "kernel could not execute target validation commands",
-                            );
-                            return;
-                        }
-                    };
-                    if store.is_cancelled(&execution.operation_id, attempt) {
+                        store.mark_failed(
+                            &execution.operation_id,
+                            attempt,
+                            "provider_environment_bind_failed",
+                            "kernel could not bind the prepared environment to the provider run",
+                        );
                         return;
                     }
-                    let inputs_match = match self.definition_inputs_match_on_worker(
-                        &execution,
-                        definition,
-                        &provider_run,
-                    ) {
-                        Ok(matches) => matches,
-                        Err(_) => {
-                            store.mark_failed(
-                                &execution.operation_id,
-                                attempt,
-                                "worker_input_attestation_unavailable",
-                                "kernel could not verify project inputs on the target worker",
-                            );
-                            return;
-                        }
-                    };
-                    let validation_passed =
-                        validation_passed_for_execution(&execution, definition, &validation)
-                            && inputs_match;
+                    if execution.persist_project_definition
+                        && self
+                            .update_project_environment_definition(
+                                &execution.project_id,
+                                definition,
+                                &execution.owner_user_id,
+                            )
+                            .is_err()
+                    {
+                        store.mark_failed(
+                            &execution.operation_id,
+                            attempt,
+                            "definition_persist_failed",
+                            "kernel could not persist the target environment definition",
+                        );
+                        return;
+                    }
                     let _ = store.update(&execution.operation_id, attempt, |entry| {
-                        entry.status.validation = Some(validation);
-                        entry.status.progress_percent = 85;
-                        entry.status.message = Some(if validation_passed {
-                            "reused definition passed kernel validation".to_string()
-                        } else {
-                            "reused definition failed validation; utility agent is repairing the target"
-                                .to_string()
-                        });
+                        entry.status.phase = ProjectEnvironmentSetupPhase::Ready;
+                        entry.status.progress_percent = 100;
+                        entry.status.retryable = false;
+                        entry.status.message = Some(
+                            "project environment is ready on the validated worker".to_string(),
+                        );
                     });
-                    if validation_passed {
-                        if execution.persist_project_definition
-                            && self
-                                .update_project_environment_definition(
-                                    &execution.project_id,
-                                    definition.clone(),
-                                    &execution.owner_user_id,
-                                )
-                                .is_err()
-                        {
-                            store.mark_failed(
-                                &execution.operation_id,
-                                attempt,
-                                "definition_persist_failed",
-                                "kernel could not persist the target environment definition",
-                            );
-                            return;
-                        }
-                        let _ = store.update(&execution.operation_id, attempt, |entry| {
-                            entry.status.phase = ProjectEnvironmentSetupPhase::Ready;
-                            entry.status.progress_percent = 100;
-                            entry.status.retryable = false;
-                            entry.status.message = Some(
-                                "project environment is ready on the validated worker".to_string(),
-                            );
-                        });
+                    return;
+                }
+                ReusedDefinitionSetupOutcome::ContinueToRepair => {
+                    if store.is_cancelled(&execution.operation_id, attempt) {
+                        let _ = self
+                            .restore_previous_ordinary_provider_run(
+                                &provider_run,
+                                &ordinary_provider_run,
+                            )
+                            .await;
                         return;
                     }
-                }
-                Ok(false) => {
                     let _ = store.update(&execution.operation_id, attempt, |entry| {
                         entry.status.message = Some(
                             "reused definition setup failed; utility agent is repairing the target"
@@ -1294,18 +1290,25 @@ impl KernelRuntimeState {
                         );
                     });
                 }
-                Err(_) => {
-                    store.mark_failed(
-                        &execution.operation_id,
-                        attempt,
-                        "worker_setup_unavailable",
-                        "kernel could not execute the stored setup definition",
-                    );
+                ReusedDefinitionSetupOutcome::Cancelled => {
+                    let _ = self
+                        .restore_previous_ordinary_provider_run(
+                            &provider_run,
+                            &ordinary_provider_run,
+                        )
+                        .await;
                     return;
                 }
-            }
-            if store.is_cancelled(&execution.operation_id, attempt) {
-                return;
+                ReusedDefinitionSetupOutcome::Failed { code, message } => {
+                    let _ = self
+                        .restore_previous_ordinary_provider_run(
+                            &provider_run,
+                            &ordinary_provider_run,
+                        )
+                        .await;
+                    store.mark_failed(&execution.operation_id, attempt, code, message);
+                    return;
+                }
             }
             let _ = store.update(&execution.operation_id, attempt, |entry| {
                 entry.status.phase = ProjectEnvironmentSetupPhase::Preparing;
@@ -1346,12 +1349,24 @@ impl KernelRuntimeState {
         )
         .await;
         if store.is_cancelled(&execution.operation_id, attempt) {
+            let _ = self
+                .restore_previous_ordinary_provider_run(
+                    &provider_run,
+                    &ordinary_provider_run,
+                )
+                .await;
             return;
         }
         let definition = match utility_result {
             Ok(result) => match result.output {
                 AgentUtilityOutput::ProjectEnvironmentSetup { definition } => definition,
                 _ => {
+                    let _ = self
+                        .restore_previous_ordinary_provider_run(
+                            &provider_run,
+                            &ordinary_provider_run,
+                        )
+                        .await;
                     store.mark_failed(
                         &execution.operation_id,
                         attempt,
@@ -1361,13 +1376,30 @@ impl KernelRuntimeState {
                     return;
                 }
             },
-            Err(_) => {
-                store.mark_failed(
-                    &execution.operation_id,
-                    attempt,
-                    "utility_failed",
-                    "utility agent could not prepare the target environment",
-                );
+            Err(error) => {
+                let _ = self
+                    .restore_previous_ordinary_provider_run(
+                        &provider_run,
+                        &ordinary_provider_run,
+                    )
+                    .await;
+                if let Some(message) =
+                    project_environment_setup_utility_missing_input_message(&error)
+                {
+                    store.mark_failed(
+                        &execution.operation_id,
+                        attempt,
+                        "utility_missing_user_input",
+                        message,
+                    );
+                } else {
+                    store.mark_failed(
+                        &execution.operation_id,
+                        attempt,
+                        "utility_failed",
+                        "utility agent could not prepare the target environment",
+                    );
+                }
                 return;
             }
         };
@@ -1378,6 +1410,12 @@ impl KernelRuntimeState {
                 .iter()
                 .any(|command| !definition.validation_commands.contains(command))
         {
+            let _ = self
+                .restore_previous_ordinary_provider_run(
+                    &provider_run,
+                    &ordinary_provider_run,
+                )
+                .await;
             store.mark_failed(
                 &execution.operation_id,
                 attempt,
@@ -1386,6 +1424,48 @@ impl KernelRuntimeState {
             );
             return;
         }
+        let definition = match self.resolve_project_environment_definition_inputs_on_worker(
+            &execution,
+            &definition,
+            &provider_run,
+        ) {
+            Ok(definition) => definition,
+            Err(_) => {
+                let _ = self
+                    .restore_previous_ordinary_provider_run(
+                        &provider_run,
+                        &ordinary_provider_run,
+                    )
+                    .await;
+                store.mark_failed(
+                    &execution.operation_id,
+                    attempt,
+                    "worker_input_attestation_failed",
+                    "kernel could not compute the exact project input attestations on the target worker",
+                );
+                return;
+            }
+        };
+        // Keep the provider on its previous ordinary environment while the
+        // kernel applies and validates the utility proposal. Only a proposal
+        // that passes those checks may project its HOME/PATH into the provider
+        // run; failures and cancellation therefore retain the old child and
+        // bindings.
+        let provider_run = match self
+            .restore_previous_ordinary_provider_run(&provider_run, &ordinary_provider_run)
+            .await
+        {
+            Ok(provider_run) => provider_run,
+            Err(_) => {
+                store.mark_failed(
+                    &execution.operation_id,
+                    attempt,
+                    "provider_environment_bind_failed",
+                    "kernel could not restore the ordinary provider environment after discovery",
+                );
+                return;
+            }
+        };
         if !store.update(&execution.operation_id, attempt, |entry| {
             entry.execution.definition = Some(definition.clone());
             entry.status.definition_digest = Some(definition.digest());
@@ -1492,15 +1572,38 @@ impl KernelRuntimeState {
             );
             return;
         }
+        let provider_run = match self
+            .restore_provider_run_after_project_environment_discovery(
+                &execution,
+                &provider_run,
+                &ordinary_provider_run,
+                Some(&definition),
+            )
+            .await
+        {
+            Ok(provider_run) => provider_run,
+            Err(_) => {
+                store.mark_failed(
+                    &execution.operation_id,
+                    attempt,
+                    "provider_environment_bind_failed",
+                    "kernel could not bind the validated environment to the provider run",
+                );
+                return;
+            }
+        };
         if execution.persist_project_definition
             && self
                 .update_project_environment_definition(
                     &execution.project_id,
-                    definition,
+                    definition.clone(),
                     &execution.owner_user_id,
                 )
                 .is_err()
         {
+            let _ = self
+                .restore_previous_ordinary_provider_run(&provider_run, &ordinary_provider_run)
+                .await;
             store.mark_failed(
                 &execution.operation_id,
                 attempt,
@@ -1518,10 +1621,489 @@ impl KernelRuntimeState {
         });
     }
 
+    async fn run_reused_definition_setup(
+        &self,
+        execution: &SetupExecution,
+        attempt: u32,
+        definition: &ProjectEnvironmentDefinition,
+        provider_run: &RuntimeProviderRun,
+    ) -> ReusedDefinitionSetupOutcome {
+        match self
+            .apply_definition_on_worker(execution, attempt, definition, provider_run)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => return ReusedDefinitionSetupOutcome::ContinueToRepair,
+            Err(_) => {
+                return ReusedDefinitionSetupOutcome::Failed {
+                    code: "worker_setup_unavailable",
+                    message: "kernel could not execute the stored setup definition",
+                }
+            }
+        }
+
+        let _ = self
+            .owned
+            .project_environment_setups
+            .update(&execution.operation_id, attempt, |entry| {
+                entry.status.phase = ProjectEnvironmentSetupPhase::Validating;
+                entry.status.progress_percent = 45;
+                entry.status.message = Some(
+                    "kernel is validating the reused definition in the target worker".to_string(),
+                );
+            });
+        let validation = match self
+            .validate_definition_on_worker(execution, attempt, definition, provider_run)
+            .await
+        {
+            Ok(validation) => validation,
+            Err(_) => {
+                return ReusedDefinitionSetupOutcome::Failed {
+                    code: "worker_validation_unavailable",
+                    message: "kernel could not execute target validation commands",
+                }
+            }
+        };
+        if self
+            .owned
+            .project_environment_setups
+            .is_cancelled(&execution.operation_id, attempt)
+        {
+            return ReusedDefinitionSetupOutcome::Cancelled;
+        }
+        let inputs_match = match self.definition_inputs_match_on_worker(
+            execution,
+            definition,
+            provider_run,
+        ) {
+            Ok(matches) => matches,
+            Err(_) => {
+                return ReusedDefinitionSetupOutcome::Failed {
+                    code: "worker_input_attestation_unavailable",
+                    message: "kernel could not verify project inputs on the target worker",
+                }
+            }
+        };
+        let validation_passed =
+            validation_passed_for_execution(execution, definition, &validation) && inputs_match;
+        let _ = self
+            .owned
+            .project_environment_setups
+            .update(&execution.operation_id, attempt, |entry| {
+                entry.status.validation = Some(validation);
+                entry.status.progress_percent = 85;
+                entry.status.message = Some(if validation_passed {
+                    "reused definition passed kernel validation".to_string()
+                } else {
+                    "reused definition failed validation; utility agent is repairing the target"
+                        .to_string()
+                });
+            });
+        if self
+            .owned
+            .project_environment_setups
+            .is_cancelled(&execution.operation_id, attempt)
+        {
+            return ReusedDefinitionSetupOutcome::Cancelled;
+        }
+        if validation_passed {
+            ReusedDefinitionSetupOutcome::Ready(definition.clone())
+        } else {
+            ReusedDefinitionSetupOutcome::ContinueToRepair
+        }
+    }
+
+    async fn prepare_provider_run_for_project_environment(
+        &self,
+        execution: &SetupExecution,
+        provider_run: &RuntimeProviderRun,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.rebind_provider_run_for_project_environment(
+            execution,
+            provider_run,
+            None,
+            true,
+            None,
+        )
+        .await
+    }
+
+    async fn restore_provider_run_after_project_environment_discovery(
+        &self,
+        execution: &SetupExecution,
+        provider_run: &RuntimeProviderRun,
+        ordinary_provider_run: &RuntimeProviderRun,
+        definition: Option<&ProjectEnvironmentDefinition>,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.rebind_provider_run_for_project_environment(
+            execution,
+            provider_run,
+            definition,
+            false,
+            Some(ordinary_provider_run),
+        )
+        .await
+    }
+
+    async fn restore_previous_ordinary_provider_run(
+        &self,
+        provider_run: &RuntimeProviderRun,
+        ordinary_provider_run: &RuntimeProviderRun,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let current_run = self.owned.provider_store.get_run(provider_run.id())?;
+        let restartable_server = matches!(provider_run.adapter_key(), "codex" | "opencode");
+        if !restartable_server {
+            let restored = self
+                .owned
+                .provider_store
+                .restore_run_snapshot_after_restart_failure(ordinary_provider_run.clone())?;
+            self.owned.provider_run_projection.update(restored.clone());
+            return Ok(restored);
+        }
+        if self
+            .owned
+            .provider_store
+            .structured_prompt_io_in_flight(provider_run.id())
+        {
+            return Err(setup_error(
+                "cannot restore a provider while structured provider I/O is in flight",
+            ));
+        }
+        let credentials = self
+            .resolve_provider_account_credentials_for_run_with_vault(
+                &current_run,
+                "restore project environment provider",
+            )
+            .await?;
+        self.recover_provider_run_after_restart_failure(
+            ordinary_provider_run,
+            &current_run,
+            &credentials,
+        )
+        .await
+    }
+
+    async fn rebind_provider_run_for_project_environment(
+        &self,
+        execution: &SetupExecution,
+        provider_run: &RuntimeProviderRun,
+        definition: Option<&ProjectEnvironmentDefinition>,
+        read_only_discovery: bool,
+        restart_failure_snapshot: Option<&RuntimeProviderRun>,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let context = self.prepare_worker_execution_context_with_definition(
+            execution,
+            provider_run,
+            definition,
+        )?;
+        let original_run = self.owned.provider_store.get_run(provider_run.id())?;
+        let restart_failure_snapshot = restart_failure_snapshot.unwrap_or(&original_run);
+        let home = context
+            .environment
+            .get("HOME")
+            .cloned()
+            .ok_or_else(|| setup_error("prepared worker environment has no HOME"))?;
+        let path = context
+            .environment
+            .get("PATH")
+            .cloned()
+            .ok_or_else(|| setup_error("prepared worker environment has no PATH"))?;
+        let restartable_server = matches!(provider_run.adapter_key(), "codex" | "opencode");
+        if restartable_server
+            && provider_run.endpoint_mode() != crate::provider::AgentEndpointMode::Managed
+        {
+            return Err(setup_error(
+                "read-only provider discovery requires a managed Codex or OpenCode server that can be restarted with the prepared environment",
+            ));
+        }
+        if restartable_server
+            && self
+                .owned
+                .provider_store
+                .structured_prompt_io_in_flight(provider_run.id())
+        {
+            return Err(setup_error(
+                "cannot restart a provider discovery server while structured provider I/O is in flight",
+            ));
+        }
+
+        let needs_restart = original_run.read_only_discovery() != read_only_discovery
+            || !original_run.preparation_environment_matches(&home, &path)
+            || (restartable_server
+                && !self
+                    .owned
+                    .provider_store
+                    .structured_runtime_state_bound(provider_run.id()));
+        let credentials = if restartable_server && needs_restart {
+            Some(
+                self.resolve_provider_account_credentials_for_run_with_vault(
+                    provider_run,
+                    "prepare project environment provider",
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let updated = if needs_restart {
+            self.owned
+                .provider_store
+                .update_run_preparation_environment(provider_run.id(), home, path)?
+        } else {
+            original_run.clone()
+        };
+        let updated = if updated.read_only_discovery() != read_only_discovery {
+            self.owned
+                .provider_store
+                .update_run_read_only_discovery(updated.id(), read_only_discovery)?
+        } else {
+            updated
+        };
+        self.owned.provider_run_projection.update(updated.clone());
+        if !restartable_server || !needs_restart {
+            return Ok(updated);
+        }
+
+        let credentials = credentials.ok_or_else(|| {
+            setup_error("restartable provider credentials were not prepared")
+        })?;
+        self.owned.provider_store.clear_runtime(updated.id());
+        let run_for_spawn = updated.clone();
+        let spawn_credentials = credentials.clone();
+        let spawn_result = self
+            .with_app_side_effect(move |app| {
+                let _ = crate::app::ProviderProcessTracker::new(app)
+                    .remove_run(run_for_spawn.id())?;
+                crate::app::ProviderLaunchProcessRuntime::new(app)
+                    .spawn_for_launch_with_credentials(&run_for_spawn, &spawn_credentials)
+            })
+            .await;
+        if let Err(error) = spawn_result {
+            if let Err(recovery_error) = self
+                .recover_provider_run_after_restart_failure(
+                    restart_failure_snapshot,
+                    &updated,
+                    &credentials,
+                )
+                .await
+            {
+                crate::logging::error_with_fields(
+                    "daemon.provider",
+                    "provider restart rollback failed after spawn failure",
+                    serde_json::json!({
+                        "provider_run_id": updated.id(),
+                        "error": recovery_error.to_string(),
+                    }),
+                );
+            }
+            return Err(error);
+        }
+
+        let run_for_binding = updated.clone();
+        let binding_credentials = credentials.clone();
+        let binding = match tokio::task::spawn_blocking(move || {
+            ProviderProcessService::initialize_runtime_binding_with_credentials(
+                &run_for_binding,
+                &binding_credentials,
+            )
+        })
+        .await
+        {
+            Ok(Ok(binding)) => binding,
+            Ok(Err(error)) => {
+                if let Err(recovery_error) = self
+                    .recover_provider_run_after_restart_failure(
+                        restart_failure_snapshot,
+                        &updated,
+                        &credentials,
+                    )
+                    .await
+                {
+                    crate::logging::error_with_fields(
+                        "daemon.provider",
+                        "provider restart rollback failed after binding failure",
+                        serde_json::json!({
+                            "provider_run_id": updated.id(),
+                            "error": recovery_error.to_string(),
+                        }),
+                    );
+                }
+                return Err(error);
+            }
+            Err(error) => {
+                let setup_error = setup_error(&format!(
+                    "provider restart binding task failed: {error}"
+                ));
+                if let Err(recovery_error) = self
+                    .recover_provider_run_after_restart_failure(
+                        restart_failure_snapshot,
+                        &updated,
+                        &credentials,
+                    )
+                    .await
+                {
+                    crate::logging::error_with_fields(
+                        "daemon.provider",
+                        "provider restart rollback failed after binding task failure",
+                        serde_json::json!({
+                            "provider_run_id": updated.id(),
+                            "error": recovery_error.to_string(),
+                        }),
+                    );
+                }
+                return Err(setup_error);
+            }
+        };
+        if let Some(binding) = binding {
+            if let Err(error) = self
+                .owned
+                .provider_store
+                .apply_runtime_binding(updated.id(), binding)
+            {
+                if let Err(recovery_error) = self
+                    .recover_provider_run_after_restart_failure(
+                        restart_failure_snapshot,
+                        &updated,
+                        &credentials,
+                    )
+                    .await
+                {
+                    crate::logging::error_with_fields(
+                        "daemon.provider",
+                        "provider restart rollback failed after runtime binding apply failure",
+                        serde_json::json!({
+                            "provider_run_id": updated.id(),
+                            "error": recovery_error.to_string(),
+                        }),
+                    );
+                }
+                return Err(error);
+            }
+        }
+        let rebound = self.owned.provider_store.get_run(updated.id())?;
+        self.owned.provider_run_projection.update(rebound.clone());
+        Ok(rebound)
+    }
+
+    async fn cleanup_restarted_provider_run(&self, provider_run_id: &str) {
+        self.owned.provider_store.clear_runtime(provider_run_id);
+        let cleanup_run_id = provider_run_id.to_string();
+        let _ = self
+            .with_app_side_effect(move |app| {
+                crate::app::ProviderProcessTracker::new(app).remove_run(&cleanup_run_id)
+            })
+            .await;
+    }
+
+    async fn recover_provider_run_after_restart_failure(
+        &self,
+        original_run: &RuntimeProviderRun,
+        failed_run: &RuntimeProviderRun,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.cleanup_restarted_provider_run(failed_run.id()).await;
+        let result = self
+            .relaunch_provider_run_after_restart_failure(original_run, credentials)
+            .await;
+        if result.is_err() {
+            self.terminate_provider_run_after_restart_recovery_failure(original_run)
+                .await;
+        }
+        result
+    }
+
+    async fn relaunch_provider_run_after_restart_failure(
+        &self,
+        original_run: &RuntimeProviderRun,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let restored = self
+            .owned
+            .provider_store
+            .restore_run_snapshot_after_restart_failure(original_run.clone())?;
+        self.owned.provider_run_projection.update(restored.clone());
+
+        let run_for_spawn = restored.clone();
+        let spawn_credentials = credentials.clone();
+        self.with_app_side_effect(move |app| {
+            let _ = crate::app::ProviderProcessTracker::new(app)
+                .remove_run(run_for_spawn.id())?;
+            crate::app::ProviderLaunchProcessRuntime::new(app)
+                .spawn_for_launch_with_credentials(&run_for_spawn, &spawn_credentials)
+        })
+        .await?;
+
+        let run_for_binding = restored.clone();
+        let binding_credentials = credentials.clone();
+        let binding = tokio::task::spawn_blocking(move || {
+            ProviderProcessService::initialize_runtime_binding_with_credentials(
+                &run_for_binding,
+                &binding_credentials,
+            )
+        })
+        .await
+        .map_err(|error| setup_error(&format!("provider rollback binding task failed: {error}")))??;
+        if let Some(binding) = binding {
+            self.owned
+                .provider_store
+                .apply_runtime_binding(restored.id(), binding)?;
+        }
+        let rebound = self.owned.provider_store.get_run(restored.id())?;
+        self.owned.provider_run_projection.update(rebound.clone());
+        Ok(rebound)
+    }
+
+    async fn terminate_provider_run_after_restart_recovery_failure(
+        &self,
+        provider_run: &RuntimeProviderRun,
+    ) {
+        self.cleanup_restarted_provider_run(provider_run.id()).await;
+        let Ok(outcome) = self
+            .owned
+            .provider_store
+            .mark_run_ended_provider_only(provider_run.session_id(), provider_run.id())
+        else {
+            return;
+        };
+        let ended = outcome.into_run();
+        let session_id = ended.session_id().to_string();
+        let provider_run_id = ended.id().to_string();
+        self.owned.provider_run_projection.update(ended);
+        let _ = self
+            .with_app_side_effect(move |app| {
+                crate::app::clear_active_provider_run_session_pointer(
+                    app,
+                    &session_id,
+                    &provider_run_id,
+                )
+            })
+            .await;
+    }
+
+    fn resolve_project_environment_definition_inputs_on_worker(
+        &self,
+        execution: &SetupExecution,
+        definition: &ProjectEnvironmentDefinition,
+        provider_run: &RuntimeProviderRun,
+    ) -> Result<ProjectEnvironmentDefinition, DaemonError> {
+        let context = self.prepare_worker_execution_context(execution, provider_run)?;
+        resolve_project_environment_input_attestations(&context.workspace_root, definition)
+            .map_err(|message| setup_error(&message))
+    }
+
     fn prepare_worker_execution_context(
         &self,
         execution: &SetupExecution,
         provider_run: &RuntimeProviderRun,
+    ) -> Result<WorkerExecutionContext, DaemonError> {
+        self.prepare_worker_execution_context_with_definition(execution, provider_run, None)
+    }
+
+    fn prepare_worker_execution_context_with_definition(
+        &self,
+        execution: &SetupExecution,
+        provider_run: &RuntimeProviderRun,
+        definition: Option<&ProjectEnvironmentDefinition>,
     ) -> Result<WorkerExecutionContext, DaemonError> {
         // Both recipe application and validation are worker-kernel operations.
         // Keep the confirmed receipt, provider binding, canonical worktree, and
@@ -1552,6 +2134,7 @@ impl KernelRuntimeState {
             || current_provider_run.state() != crate::provider::ProviderRunState::Running
             || current_provider_run.pty_env() != provider_run.pty_env()
             || current_provider_run.pty_env_remove() != provider_run.pty_env_remove()
+            || current_provider_run.read_only_discovery() != provider_run.read_only_discovery()
             || current_provider_run.working_directory() != provider_run.working_directory()
         {
             return Err(setup_error(
@@ -1575,11 +2158,23 @@ impl KernelRuntimeState {
                 "prepared provider context uses a different worker worktree",
             ));
         }
+        let preparation_home =
+            WorkerPreparationHome::for_project_worker(
+                &workspace_root,
+                &execution.project_id,
+                &worker_id,
+            )?;
+        let environment = worker_validation_environment_with_home_and_definition(
+            provider_run,
+            Some(preparation_home.path()),
+            Some(&workspace_root),
+            definition,
+        );
         Ok(WorkerExecutionContext {
             worker_id,
             platform,
             workspace_root,
-            environment: worker_validation_environment(provider_run),
+            environment,
         })
     }
 
@@ -1589,7 +2184,11 @@ impl KernelRuntimeState {
         definition: &ProjectEnvironmentDefinition,
         provider_run: &RuntimeProviderRun,
     ) -> Result<bool, DaemonError> {
-        let context = self.prepare_worker_execution_context(execution, provider_run)?;
+        let context = self.prepare_worker_execution_context_with_definition(
+            execution,
+            provider_run,
+            Some(definition),
+        )?;
         Ok(verify_project_environment_inputs(&context.workspace_root, definition).is_ok())
     }
 
@@ -1600,7 +2199,11 @@ impl KernelRuntimeState {
         definition: &ProjectEnvironmentDefinition,
         provider_run: &RuntimeProviderRun,
     ) -> Result<bool, DaemonError> {
-        let context = self.prepare_worker_execution_context(execution, provider_run)?;
+        let context = self.prepare_worker_execution_context_with_definition(
+            execution,
+            provider_run,
+            Some(definition),
+        )?;
         if verify_project_environment_inputs(&context.workspace_root, definition).is_err() {
             return Ok(false);
         }
@@ -1609,7 +2212,12 @@ impl KernelRuntimeState {
             .iter()
             .map(|step| step.command.clone())
             .collect::<Vec<_>>();
-        let workspace_root = context.workspace_root.clone();
+        let WorkerExecutionContext {
+            workspace_root: context_workspace_root,
+            environment,
+            ..
+        } = context;
+        let workspace_root = context_workspace_root.clone();
         let operation_id = execution.operation_id.clone();
         let cancellation = self.owned.project_environment_setups.clone();
         let guard = cancellation
@@ -1620,8 +2228,8 @@ impl KernelRuntimeState {
             let _guard = guard;
             run_worker_setup_steps(
                 &commands,
-                &context.workspace_root,
-                &context.environment,
+                &context_workspace_root,
+                &environment,
                 || cancellation.is_cancelled(&operation_id, attempt),
             )
         })
@@ -1644,7 +2252,11 @@ impl KernelRuntimeState {
         definition: &ProjectEnvironmentDefinition,
         provider_run: &RuntimeProviderRun,
     ) -> Result<ProjectEnvironmentValidation, DaemonError> {
-        let context = self.prepare_worker_execution_context(execution, provider_run)?;
+        let context = self.prepare_worker_execution_context_with_definition(
+            execution,
+            provider_run,
+            Some(definition),
+        )?;
         let worker_id = context.worker_id;
         let platform = context.platform;
         let commands = definition.validation_commands.clone();
@@ -1745,6 +2357,7 @@ mod tests {
                 target_platform: "linux-x86_64".to_string(),
                 source_path: None,
                 inputs: Vec::new(),
+                path_entries: Vec::new(),
                 setup_steps: vec![ProjectEnvironmentSetupStep {
                     kind: ProjectEnvironmentSetupStepKind::Compiler,
                     command: "rustup toolchain install stable".to_string(),
@@ -2432,6 +3045,19 @@ mod tests {
             "/worker/kernel-home/auth-token".to_string(),
         );
         provider_env.insert("OPENAI_API_KEY".to_string(), "must-not-cross".to_string());
+        provider_env.insert("SSH_PRIVATE_KEY".to_string(), "must-not-cross".to_string());
+        provider_env.insert(
+            "SSH_AUTH_SOCK".to_string(),
+            "/run/user/1000/ssh-agent.sock".to_string(),
+        );
+        provider_env.insert(
+            "GIT_SSH_COMMAND".to_string(),
+            "ssh -o StrictHostKeyChecking=no".to_string(),
+        );
+        provider_env.insert(
+            "SSH_ASKPASS".to_string(),
+            "/tmp/unselected-askpass".to_string(),
+        );
         let request =
             LaunchProviderRequest::new("session-1", "codex", "codex", "default", "default");
         let run = RuntimeProviderRun::new(
@@ -2460,12 +3086,110 @@ mod tests {
             "CHARIOX_MANAGED_VAULT_PATH",
             "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE",
             "OPENAI_API_KEY",
+            "SSH_PRIVATE_KEY",
+            "SSH_AUTH_SOCK",
+            "GIT_SSH_COMMAND",
+            "SSH_ASKPASS",
         ] {
             assert!(
                 !environment.contains_key(name),
                 "{name} must not reach validation"
             );
         }
+        assert!(
+            !environment.contains_key("SSH_AUTH_SOCK"),
+            "automatically supplied SSH agent authority must not reach opaque commands"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opaque_commands_write_only_isolated_home_without_automatic_ssh_authority() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-project-environment-credential-boundary-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let automatic_home = root.join("automatic-home");
+        let isolated_home = root.join("isolated-home");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(automatic_home.join(".ssh"))
+            .expect("automatic credential home should exist");
+        std::fs::create_dir_all(&workspace).expect("worker workspace should exist");
+        std::fs::write(
+            automatic_home.join(".ssh/known_hosts"),
+            "selected-host.example ssh-ed25519 AAAA-selected\n",
+        )
+        .expect("selected host verification should exist");
+
+        let mut provider_env = BTreeMap::new();
+        provider_env.insert("PATH".to_string(), "/usr/bin:/bin".to_string());
+        provider_env.insert("HOME".to_string(), automatic_home.display().to_string());
+        provider_env.insert(
+            "SSH_AUTH_SOCK".to_string(),
+            "/run/user/1000/selected-agent.sock".to_string(),
+        );
+        provider_env.insert(
+            "SSH_CONFIG".to_string(),
+            automatic_home.join(".ssh/config").display().to_string(),
+        );
+        provider_env.insert(
+            "SSH_KNOWN_HOSTS".to_string(),
+            automatic_home
+                .join(".ssh/known_hosts")
+                .display()
+                .to_string(),
+        );
+        provider_env.insert(
+            "XDG_CONFIG_HOME".to_string(),
+            automatic_home.join(".config").display().to_string(),
+        );
+        provider_env.insert(
+            "CODEX_HOME".to_string(),
+            automatic_home.join(".codex").display().to_string(),
+        );
+        let request =
+            LaunchProviderRequest::new("session-1", "codex", "codex", "default", "default");
+        let run = RuntimeProviderRun::new(
+            "provider-run-credential-boundary",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "worker-provider".to_string(),
+                pty_target: None,
+                pty_program: Some("/bin/sh".to_string()),
+                pty_args: Vec::new(),
+                pty_env: provider_env,
+                pty_env_remove: Vec::new(),
+                working_directory: Some(workspace.clone()),
+                structured_endpoint: None,
+            },
+        );
+        let environment = worker_validation_environment_with_home(&run, Some(&isolated_home));
+        let command = format!(
+            "set -eu; test -z \"${{SSH_AUTH_SOCK:-}}\"; test \"$HOME\" = '{}'; mkdir -p \"$HOME/.ssh\"; printf '%s\\n' bypass > \"$HOME/.ssh/known_hosts\"; test \"$(cat \"$HOME/.ssh/known_hosts\")\" = bypass",
+            isolated_home.display()
+        );
+        let (exit_code, _, _) = run_worker_validation_command(
+            &command,
+            &workspace,
+            &environment,
+            || false,
+            None,
+        )
+        .expect("opaque project command should execute with ordinary shell semantics");
+        assert_eq!(exit_code, 0);
+        assert_eq!(
+            std::fs::read_to_string(automatic_home.join(".ssh/known_hosts"))
+                .expect("automatic host verification should remain readable"),
+            "selected-host.example ssh-ed25519 AAAA-selected\n",
+            "an opaque command writing its inherited HOME must not rewrite Chariox-provided host verification"
+        );
+        assert!(
+            !environment.contains_key("SSH_AUTH_SOCK"),
+            "the automatically provided agent must not be available to opaque commands"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(unix)]
