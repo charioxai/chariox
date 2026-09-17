@@ -125,22 +125,18 @@ async fn public_setup_cancellation_restores_ordinary_provider_without_retry() {
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn public_setup_restart_spawn_failure_restores_the_previous_provider_child() {
-    exercise_public_setup_lifecycle_with_options(
-        DefinitionScenario::Supplied,
-        true,
-        Some(ProviderLifecycleFailureStage::Spawn),
+async fn public_setup_second_restart_spawn_failure_restores_the_previous_provider_child() {
+    exercise_public_setup_lifecycle_with_second_restart_failure(
+        ProviderLifecycleFailureStage::Spawn,
     )
     .await;
 }
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn public_setup_restart_binding_failure_restores_the_previous_provider_child() {
-    exercise_public_setup_lifecycle_with_options(
-        DefinitionScenario::Supplied,
-        true,
-        Some(ProviderLifecycleFailureStage::Bind),
+async fn public_setup_second_restart_binding_failure_restores_the_previous_provider_child() {
+    exercise_public_setup_lifecycle_with_second_restart_failure(
+        ProviderLifecycleFailureStage::Bind,
     )
     .await;
 }
@@ -167,6 +163,35 @@ async fn exercise_public_setup_lifecycle_with_options(
     scenario: DefinitionScenario,
     retry_after_cancel: bool,
     failure_stage: Option<ProviderLifecycleFailureStage>,
+) {
+    exercise_public_setup_lifecycle_with_failure_timing(
+        scenario,
+        retry_after_cancel,
+        failure_stage,
+        false,
+    )
+    .await;
+}
+
+#[cfg(target_os = "linux")]
+async fn exercise_public_setup_lifecycle_with_second_restart_failure(
+    failure_stage: ProviderLifecycleFailureStage,
+) {
+    exercise_public_setup_lifecycle_with_failure_timing(
+        DefinitionScenario::Supplied,
+        true,
+        Some(failure_stage),
+        true,
+    )
+    .await;
+}
+
+#[cfg(unix)]
+async fn exercise_public_setup_lifecycle_with_failure_timing(
+    scenario: DefinitionScenario,
+    retry_after_cancel: bool,
+    failure_stage: Option<ProviderLifecycleFailureStage>,
+    fail_on_second_restart: bool,
 ) {
     let _environment_lock = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
@@ -459,8 +484,12 @@ async fn exercise_public_setup_lifecycle_with_options(
     let runtime =
         CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 1)
             .runtime_state();
-    let _failure_injection = failure_stage
-        .map(|stage| ProviderLifecycleFailureInjection::install("utility-provider-run", stage));
+    let _first_restart_failure_injection = if fail_on_second_restart {
+        None
+    } else {
+        failure_stage
+            .map(|stage| ProviderLifecycleFailureInjection::install("utility-provider-run", stage))
+    };
     if matches!(
         scenario,
         DefinitionScenario::Supplied
@@ -514,6 +543,112 @@ async fn exercise_public_setup_lifecycle_with_options(
     assert_eq!(status.attempt, 1);
 
     let validation_marker = workspace.join("validation-started");
+    if fail_on_second_restart {
+        let failure_stage =
+            failure_stage.expect("second-restart coverage requires a failure stage");
+        let discovery_deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let status = response_status(
+                get_setup_status(
+                    &runtime,
+                    "setup-lifecycle",
+                    "user-1",
+                    "second-restart discovery polling",
+                )
+                .await,
+            );
+            if status.phase == ProjectEnvironmentSetupPhase::Validating
+                && validation_marker.exists()
+            {
+                let discovery_run = runtime
+                    .owned
+                    .provider_store
+                    .get_run("utility-provider-run")
+                    .expect("discovery provider run should remain available");
+                assert!(
+                    discovery_run.read_only_discovery(),
+                    "failure must be injected after the ordinary-to-discovery restart"
+                );
+                break;
+            }
+            assert!(
+                !matches!(
+                    status.phase,
+                    ProjectEnvironmentSetupPhase::Failed | ProjectEnvironmentSetupPhase::Ready
+                ),
+                "setup did not reach the discovery validation barrier: {status:?}"
+            );
+            assert!(
+                Instant::now() < discovery_deadline,
+                "setup did not reach the discovery validation barrier: {status:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let _second_restart_failure_injection =
+            ProviderLifecycleFailureInjection::install("utility-provider-run", failure_stage);
+        std::fs::write(&validation_release, b"").unwrap();
+
+        let failure_deadline = Instant::now() + Duration::from_secs(10);
+        let failed_status = loop {
+            let status = response_status(
+                get_setup_status(
+                    &runtime,
+                    "setup-lifecycle",
+                    "user-1",
+                    "second-restart failure polling",
+                )
+                .await,
+            );
+            if status.phase == ProjectEnvironmentSetupPhase::Failed {
+                break status;
+            }
+            assert_ne!(
+                status.phase,
+                ProjectEnvironmentSetupPhase::Ready,
+                "injected second provider restart failure must fail setup, not report Ready"
+            );
+            assert!(
+                Instant::now() < failure_deadline,
+                "injected second provider restart failure did not settle: {status:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert_eq!(
+            failed_status.failure_code.as_deref(),
+            Some("provider_environment_bind_failed")
+        );
+        let (provider_run, _provider_pid, provider_environment) =
+            wait_for_ordinary_provider_child(&runtime, "utility-provider-run").await;
+        assert_eq!(
+            provider_run.state(),
+            crate::provider::ProviderRunState::Running
+        );
+        assert!(
+            !provider_run.read_only_discovery(),
+            "second-restart recovery must restore the ordinary provider snapshot"
+        );
+        assert_eq!(
+            provider_environment.get("HOME"),
+            provider_run.pty_env().get("HOME")
+        );
+        assert_eq!(
+            provider_environment.get("PATH"),
+            provider_run.pty_env().get("PATH")
+        );
+        assert_eq!(
+            provider_environment
+                .get("GIT_SSH_COMMAND")
+                .map(String::as_str),
+            Some("selected-ssh")
+        );
+        assert_eq!(
+            provider_environment.get("SSH_AUTH_SOCK").map(String::as_str),
+            Some("selected-agent")
+        );
+        drop(provider_fixture);
+        return;
+    }
     if failure_stage.is_some() {
         let failure_deadline = Instant::now() + Duration::from_secs(10);
         let failed_status = loop {

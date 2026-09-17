@@ -1197,6 +1197,11 @@ impl KernelRuntimeState {
             );
             return;
         }
+        // Keep the ordinary run snapshot for the whole setup attempt. The
+        // discovery rebind intentionally changes the stored run to a
+        // read-only/no-MCP context, so a later restoration failure must not
+        // roll back to that temporary discovery snapshot.
+        let ordinary_provider_run = provider_run.clone();
         let provider_run = match self
             .prepare_provider_run_for_project_environment(&execution, &provider_run)
             .await
@@ -1227,6 +1232,7 @@ impl KernelRuntimeState {
                         .restore_provider_run_after_project_environment_discovery(
                             &execution,
                             &provider_run,
+                            &ordinary_provider_run,
                             Some(&definition),
                         )
                         .await
@@ -1273,6 +1279,7 @@ impl KernelRuntimeState {
                             .restore_provider_run_after_project_environment_discovery(
                                 &execution,
                                 &provider_run,
+                                &ordinary_provider_run,
                                 Some(definition),
                             )
                             .await;
@@ -1290,6 +1297,7 @@ impl KernelRuntimeState {
                         .restore_provider_run_after_project_environment_discovery(
                             &execution,
                             &provider_run,
+                            &ordinary_provider_run,
                             Some(definition),
                         )
                         .await;
@@ -1300,6 +1308,7 @@ impl KernelRuntimeState {
                         .restore_provider_run_after_project_environment_discovery(
                             &execution,
                             &provider_run,
+                            &ordinary_provider_run,
                             Some(definition),
                         )
                         .await;
@@ -1350,6 +1359,7 @@ impl KernelRuntimeState {
                 .restore_provider_run_after_project_environment_discovery(
                     &execution,
                     &provider_run,
+                    &ordinary_provider_run,
                     reusable_definition,
                 )
                 .await;
@@ -1363,6 +1373,7 @@ impl KernelRuntimeState {
                         .restore_provider_run_after_project_environment_discovery(
                             &execution,
                             &provider_run,
+                            &ordinary_provider_run,
                             reusable_definition,
                         )
                         .await;
@@ -1380,6 +1391,7 @@ impl KernelRuntimeState {
                     .restore_provider_run_after_project_environment_discovery(
                         &execution,
                         &provider_run,
+                        &ordinary_provider_run,
                         reusable_definition,
                     )
                     .await;
@@ -1414,6 +1426,7 @@ impl KernelRuntimeState {
                 .restore_provider_run_after_project_environment_discovery(
                     &execution,
                     &provider_run,
+                    &ordinary_provider_run,
                     reusable_definition,
                 )
                 .await;
@@ -1436,6 +1449,7 @@ impl KernelRuntimeState {
                     .restore_provider_run_after_project_environment_discovery(
                         &execution,
                         &provider_run,
+                        &ordinary_provider_run,
                         reusable_definition,
                     )
                     .await;
@@ -1452,6 +1466,7 @@ impl KernelRuntimeState {
             .restore_provider_run_after_project_environment_discovery(
                 &execution,
                 &provider_run,
+                &ordinary_provider_run,
                 Some(&definition),
             )
             .await
@@ -1696,18 +1711,31 @@ impl KernelRuntimeState {
         execution: &SetupExecution,
         provider_run: &RuntimeProviderRun,
     ) -> Result<RuntimeProviderRun, DaemonError> {
-        self.rebind_provider_run_for_project_environment(execution, provider_run, None, true)
-            .await
+        self.rebind_provider_run_for_project_environment(
+            execution,
+            provider_run,
+            None,
+            true,
+            None,
+        )
+        .await
     }
 
     async fn restore_provider_run_after_project_environment_discovery(
         &self,
         execution: &SetupExecution,
         provider_run: &RuntimeProviderRun,
+        ordinary_provider_run: &RuntimeProviderRun,
         definition: Option<&ProjectEnvironmentDefinition>,
     ) -> Result<RuntimeProviderRun, DaemonError> {
-        self.rebind_provider_run_for_project_environment(execution, provider_run, definition, false)
-            .await
+        self.rebind_provider_run_for_project_environment(
+            execution,
+            provider_run,
+            definition,
+            false,
+            Some(ordinary_provider_run),
+        )
+        .await
     }
 
     async fn rebind_provider_run_for_project_environment(
@@ -1716,6 +1744,7 @@ impl KernelRuntimeState {
         provider_run: &RuntimeProviderRun,
         definition: Option<&ProjectEnvironmentDefinition>,
         read_only_discovery: bool,
+        restart_failure_snapshot: Option<&RuntimeProviderRun>,
     ) -> Result<RuntimeProviderRun, DaemonError> {
         let context = self.prepare_worker_execution_context_with_definition(
             execution,
@@ -1723,6 +1752,7 @@ impl KernelRuntimeState {
             definition,
         )?;
         let original_run = self.owned.provider_store.get_run(provider_run.id())?;
+        let restart_failure_snapshot = restart_failure_snapshot.unwrap_or(&original_run);
         let home = context
             .environment
             .get("HOME")
@@ -1806,7 +1836,7 @@ impl KernelRuntimeState {
         if let Err(error) = spawn_result {
             if let Err(recovery_error) = self
                 .recover_provider_run_after_restart_failure(
-                    &original_run,
+                    restart_failure_snapshot,
                     &updated,
                     &credentials,
                 )
@@ -1838,7 +1868,7 @@ impl KernelRuntimeState {
             Ok(Err(error)) => {
                 if let Err(recovery_error) = self
                     .recover_provider_run_after_restart_failure(
-                        &original_run,
+                        restart_failure_snapshot,
                         &updated,
                         &credentials,
                     )
@@ -1861,7 +1891,7 @@ impl KernelRuntimeState {
                 ));
                 if let Err(recovery_error) = self
                     .recover_provider_run_after_restart_failure(
-                        &original_run,
+                        restart_failure_snapshot,
                         &updated,
                         &credentials,
                     )
@@ -1887,7 +1917,7 @@ impl KernelRuntimeState {
             {
                 if let Err(recovery_error) = self
                     .recover_provider_run_after_restart_failure(
-                        &original_run,
+                        restart_failure_snapshot,
                         &updated,
                         &credentials,
                     )
