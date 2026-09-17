@@ -1,3 +1,4 @@
+// Run separately from the normal Node suite: composition imports Bun-only UI bindings.
 import assert from "node:assert/strict"
 import test from "node:test"
 
