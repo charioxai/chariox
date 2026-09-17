@@ -46,3 +46,82 @@ pub(crate) fn apply_opencode_discovery_environment(
     environment.insert("OPENCODE_DISABLE_PROJECT_CONFIG".into(), "true".into());
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
+
+    fn run(discovery: bool) -> RuntimeProviderRun {
+        let request =
+            LaunchProviderRequest::new("session", "opencode", "opencode", "default", "model");
+        let mut run = RuntimeProviderRun::new(
+            "run",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "discovery-policy-test".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.set_read_only_discovery(discovery);
+        run
+    }
+
+    #[test]
+    fn discovery_removes_inline_mcp_and_overrides_plan_permissions() {
+        let original = BTreeMap::from([(
+            "OPENCODE_CONFIG_CONTENT".into(),
+            serde_json::json!({
+                "mcp": {"mutating": {"enabled": true}},
+                "permission": "allow",
+                "agent": {"plan": {"permission": "allow", "temperature": 0.2}},
+                "model": "fixture/model"
+            })
+            .to_string(),
+        )]);
+        let mut child = original.clone();
+        apply_opencode_discovery_environment(&run(true), &mut child).unwrap();
+        let config: serde_json::Value =
+            serde_json::from_str(&child["OPENCODE_CONFIG_CONTENT"]).unwrap();
+        assert_eq!(config["mcp"], serde_json::json!({}));
+        assert_eq!(config["permission"]["*"], "deny");
+        assert_eq!(config["agent"]["plan"]["permission"], config["permission"]);
+        assert_eq!(config["agent"]["plan"]["temperature"], 0.2);
+        assert_eq!(config["model"], "fixture/model");
+        assert_eq!(child["OPENCODE_DISABLE_PROJECT_CONFIG"], "true");
+        assert_ne!(child, original);
+    }
+
+    #[test]
+    fn ordinary_spawn_keeps_configuration_unchanged() {
+        let mut environment =
+            BTreeMap::from([("OPENCODE_CONFIG_CONTENT".into(), "original".into())]);
+        let original = environment.clone();
+        apply_opencode_discovery_environment(&run(false), &mut environment).unwrap();
+        assert_eq!(environment, original);
+    }
+
+    #[test]
+    fn discovery_rejects_invalid_config_without_mutating_environment() {
+        for content in [
+            "invalid",
+            "[]",
+            "null",
+            r#"{"agent":false}"#,
+            r#"{"agent":{"plan":false}}"#,
+        ] {
+            let mut environment =
+                BTreeMap::from([("OPENCODE_CONFIG_CONTENT".into(), content.into())]);
+            let original = environment.clone();
+            assert!(apply_opencode_discovery_environment(&run(true), &mut environment).is_err());
+            assert_eq!(environment, original);
+        }
+    }
+}
