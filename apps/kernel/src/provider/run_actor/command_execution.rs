@@ -5,7 +5,7 @@ use crate::error::DaemonError;
 use crate::prompt_assembly::PromptEnvelope;
 use crate::provider::{
     ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
-    ProviderResumeState, RuntimeProviderRun,
+    ProviderResumeState, ProviderUtilityExecutionPolicy, RuntimeProviderRun,
 };
 
 use super::super::{
@@ -109,7 +109,18 @@ pub(super) fn execute_utility_command(
     run: RuntimeProviderRun,
     envelope: PromptEnvelope,
     timeout: Duration,
+    policy: ProviderUtilityExecutionPolicy,
 ) -> Result<String, DaemonError> {
+    if policy.is_read_only_discovery()
+        && (run.execution_mode() != crate::provider::AgentExecutionMode::Plan
+            || run.permission_level() != crate::provider::AgentPermissionLevel::Required)
+    {
+        return Err(DaemonError::LocalTransport {
+            operation: "run structured provider utility prompt",
+            message: "read-only discovery utility requires plan mode and required permissions"
+                .to_string(),
+        });
+    }
     let run_id = run.id().to_string();
     if !crate::provider::provider_run_uses_runtime_structured_utility_prompt(&run) {
         return Err(DaemonError::LocalTransport {

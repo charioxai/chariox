@@ -49,14 +49,16 @@ use crate::local::{
     LocalDaemonRequest, LocalDaemonResponse, ProjectEnvironmentCommandResult,
     ProjectEnvironmentDefinition, ProjectEnvironmentDefinitionOrigin,
     ProjectEnvironmentDefinitionSource, ProjectEnvironmentInput, ProjectEnvironmentInputKind,
-    ProjectEnvironmentSetupPhase, ProjectEnvironmentSetupStatus, ProjectEnvironmentSetupStep,
-    ProjectEnvironmentSetupStepKind, ProjectEnvironmentValidation,
+    ProjectEnvironmentPathBase, ProjectEnvironmentPathEntry, ProjectEnvironmentSetupPhase,
+    ProjectEnvironmentSetupStatus, ProjectEnvironmentSetupStep, ProjectEnvironmentSetupStepKind,
+    ProjectEnvironmentValidation,
     RetryProjectEnvironmentSetupRequest,
     StartProjectEnvironmentSetupRequest,
 };
 #[cfg(unix)]
 use crate::provider::{
-    AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
+    AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult,
+    ProviderLifecycleFailureInjection, ProviderLifecycleFailureStage, RuntimeProviderRun,
 };
 #[cfg(unix)]
 use crate::runtime::router::CommandRouter;
@@ -116,6 +118,44 @@ async fn public_setup_lifecycle_repairs_definition_for_followup_worker_without_u
     exercise_public_setup_lifecycle(DefinitionScenario::SuppliedSetupFailure).await;
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn public_setup_cancellation_restores_ordinary_provider_without_retry() {
+    exercise_public_setup_lifecycle_with_options(DefinitionScenario::Supplied, false, None).await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn pr364_generated_validation_failure_restores_previous_provider_snapshot() {
+    exercise_public_setup_lifecycle_with_candidate_failure(CandidateFailureMode::Validation)
+        .await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn pr364_generated_validation_cancellation_restores_previous_provider_snapshot() {
+    exercise_public_setup_lifecycle_with_candidate_failure(CandidateFailureMode::Cancellation)
+        .await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn pr364_public_setup_second_restart_spawn_failure_restores_the_previous_provider_child() {
+    exercise_public_setup_lifecycle_with_second_restart_failure(
+        ProviderLifecycleFailureStage::Spawn,
+    )
+    .await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn pr364_public_setup_second_restart_binding_failure_restores_the_previous_provider_child() {
+    exercise_public_setup_lifecycle_with_second_restart_failure(
+        ProviderLifecycleFailureStage::Bind,
+    )
+    .await;
+}
+
 #[cfg(unix)]
 #[derive(Clone, Copy)]
 enum DefinitionScenario {
@@ -129,7 +169,67 @@ enum DefinitionScenario {
 }
 
 #[cfg(unix)]
+#[derive(Clone, Copy)]
+enum CandidateFailureMode {
+    Validation,
+    Cancellation,
+}
+
+#[cfg(unix)]
 async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
+    exercise_public_setup_lifecycle_with_options(scenario, true, None).await;
+}
+
+#[cfg(unix)]
+async fn exercise_public_setup_lifecycle_with_options(
+    scenario: DefinitionScenario,
+    retry_after_cancel: bool,
+    failure_stage: Option<ProviderLifecycleFailureStage>,
+) {
+    exercise_public_setup_lifecycle_with_failure_timing(
+        scenario,
+        retry_after_cancel,
+        failure_stage,
+        false,
+        None,
+    )
+    .await;
+}
+
+#[cfg(target_os = "linux")]
+async fn exercise_public_setup_lifecycle_with_second_restart_failure(
+    failure_stage: ProviderLifecycleFailureStage,
+) {
+    exercise_public_setup_lifecycle_with_failure_timing(
+        DefinitionScenario::Supplied,
+        true,
+        Some(failure_stage),
+        true,
+        None,
+    )
+    .await;
+}
+
+#[cfg(target_os = "linux")]
+async fn exercise_public_setup_lifecycle_with_candidate_failure(failure: CandidateFailureMode) {
+    exercise_public_setup_lifecycle_with_failure_timing(
+        DefinitionScenario::Generated,
+        false,
+        None,
+        false,
+        Some(failure),
+    )
+    .await;
+}
+
+#[cfg(unix)]
+async fn exercise_public_setup_lifecycle_with_failure_timing(
+    scenario: DefinitionScenario,
+    retry_after_cancel: bool,
+    failure_stage: Option<ProviderLifecycleFailureStage>,
+    fail_on_second_restart: bool,
+    candidate_failure: Option<CandidateFailureMode>,
+) {
     let _environment_lock = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
         "chariox-project-environment-lifecycle-{}-{}",
@@ -137,8 +237,10 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
         crate::session::unix_epoch_ms()
     ));
     let home = root.join("kernel-home");
+    let provider_home = root.join("provider-home");
     let workspace = root.join("worker-worktree");
     std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&provider_home).unwrap();
     std::fs::create_dir_all(&workspace).unwrap();
     let input_scenario = matches!(
         scenario,
@@ -230,9 +332,16 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
     std::env::set_var("CHARIOX_DISPOSABLE_WORKER_RECEIPT", &receipt);
 
     let validation_release = workspace.join("validation-release");
-    let command =
-        "touch validation-started; while [ ! -f validation-release ]; do sleep 0.01; done; command -v sh"
-            .to_string();
+    let command = match candidate_failure {
+        Some(CandidateFailureMode::Validation) => {
+            "touch validation-started; while [ ! -f validation-release ]; do sleep 0.01; done; false"
+                .to_string()
+        }
+        Some(CandidateFailureMode::Cancellation) | None => {
+            "touch validation-started; while [ ! -f validation-release ]; do sleep 0.01; done; command -v sh"
+                .to_string()
+        }
+    };
     let setup_command = match scenario {
         DefinitionScenario::SuppliedSetupFailure => "false".to_string(),
         DefinitionScenario::Supplied
@@ -280,6 +389,14 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
                     sha256: format!("sha256:{:x}", Sha256::digest(lockfile_contents)),
                 },
             ]
+        } else {
+            Vec::new()
+        },
+        path_entries: if candidate_failure.is_some() {
+            vec![ProjectEnvironmentPathEntry {
+                base: ProjectEnvironmentPathBase::Workspace,
+                path: ".".to_string(),
+            }]
         } else {
             Vec::new()
         },
@@ -399,9 +516,14 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
             endpoint_mode: AgentEndpointMode::Managed,
             process_label: "opencode-project-environment-fixture".into(),
             pty_target: None,
-            pty_program: None,
-            pty_args: Vec::new(),
-            pty_env: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
+            pty_program: Some("/bin/sh".into()),
+            pty_args: vec!["-c".into(), "sleep 60".into()],
+            pty_env: BTreeMap::from([
+                ("HOME".into(), provider_home.display().to_string()),
+                ("PATH".into(), "/usr/bin:/bin".into()),
+                ("GIT_SSH_COMMAND".into(), "selected-ssh".into()),
+                ("SSH_AUTH_SOCK".into(), "selected-agent".into()),
+            ]),
             pty_env_remove: Vec::new(),
             working_directory: Some(workspace.clone()),
             structured_endpoint: Some(provider_fixture.address()),
@@ -413,6 +535,12 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
     let runtime =
         CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 1)
             .runtime_state();
+    let _first_restart_failure_injection = if fail_on_second_restart {
+        None
+    } else {
+        failure_stage
+            .map(|stage| ProviderLifecycleFailureInjection::install("utility-provider-run", stage))
+    };
     if matches!(
         scenario,
         DefinitionScenario::Supplied
@@ -466,6 +594,293 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
     assert_eq!(status.attempt, 1);
 
     let validation_marker = workspace.join("validation-started");
+    if fail_on_second_restart {
+        let failure_stage =
+            failure_stage.expect("second-restart coverage requires a failure stage");
+        let discovery_deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let status = response_status(
+                get_setup_status(
+                    &runtime,
+                    "setup-lifecycle",
+                    "user-1",
+                    "second-restart discovery polling",
+                )
+                .await,
+            );
+            if status.phase == ProjectEnvironmentSetupPhase::Validating
+                && validation_marker.exists()
+            {
+                let discovery_run = runtime
+                    .owned
+                    .provider_store
+                    .get_run("utility-provider-run")
+                    .expect("discovery provider run should remain available");
+                assert!(
+                    discovery_run.read_only_discovery(),
+                    "failure must be injected after the ordinary-to-discovery restart"
+                );
+                break;
+            }
+            assert!(
+                !matches!(
+                    status.phase,
+                    ProjectEnvironmentSetupPhase::Failed | ProjectEnvironmentSetupPhase::Ready
+                ),
+                "setup did not reach the discovery validation barrier: {status:?}"
+            );
+            assert!(
+                Instant::now() < discovery_deadline,
+                "setup did not reach the discovery validation barrier: {status:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let _second_restart_failure_injection =
+            ProviderLifecycleFailureInjection::install("utility-provider-run", failure_stage);
+        std::fs::write(&validation_release, b"").unwrap();
+
+        let failure_deadline = Instant::now() + Duration::from_secs(10);
+        let failed_status = loop {
+            let status = response_status(
+                get_setup_status(
+                    &runtime,
+                    "setup-lifecycle",
+                    "user-1",
+                    "second-restart failure polling",
+                )
+                .await,
+            );
+            if status.phase == ProjectEnvironmentSetupPhase::Failed {
+                break status;
+            }
+            assert_ne!(
+                status.phase,
+                ProjectEnvironmentSetupPhase::Ready,
+                "injected second provider restart failure must fail setup, not report Ready"
+            );
+            assert!(
+                Instant::now() < failure_deadline,
+                "injected second provider restart failure did not settle: {status:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert_eq!(
+            failed_status.failure_code.as_deref(),
+            Some("provider_environment_bind_failed")
+        );
+        let (provider_run, _provider_pid, provider_environment) =
+            wait_for_ordinary_provider_child(&runtime, "utility-provider-run").await;
+        assert_eq!(
+            provider_run.state(),
+            crate::provider::ProviderRunState::Running
+        );
+        assert!(
+            !provider_run.read_only_discovery(),
+            "second-restart recovery must restore the ordinary provider snapshot"
+        );
+        assert_eq!(
+            provider_environment.get("HOME"),
+            provider_run.pty_env().get("HOME")
+        );
+        assert_eq!(
+            provider_environment.get("PATH"),
+            provider_run.pty_env().get("PATH")
+        );
+        assert_eq!(
+            provider_environment
+                .get("GIT_SSH_COMMAND")
+                .map(String::as_str),
+            Some("selected-ssh")
+        );
+        assert_eq!(
+            provider_environment.get("SSH_AUTH_SOCK").map(String::as_str),
+            Some("selected-agent")
+        );
+        drop(provider_fixture);
+        return;
+    }
+    if failure_stage.is_some() {
+        let failure_deadline = Instant::now() + Duration::from_secs(10);
+        let failed_status = loop {
+            let status = response_status(
+                get_setup_status(&runtime, "setup-lifecycle", "user-1", "failure polling")
+                    .await,
+            );
+            if status.phase == ProjectEnvironmentSetupPhase::Failed {
+                break status;
+            }
+            assert_ne!(
+                status.phase,
+                ProjectEnvironmentSetupPhase::Ready,
+                "injected provider restart failure must fail setup, not report Ready"
+            );
+            assert!(
+                Instant::now() < failure_deadline,
+                "injected provider restart failure did not settle: {status:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert_eq!(
+            failed_status.failure_code.as_deref(),
+            Some("provider_environment_bind_failed")
+        );
+        let (provider_run, _provider_pid, provider_environment) =
+            wait_for_ordinary_provider_child(&runtime, "utility-provider-run").await;
+        assert_eq!(provider_run.state(), crate::provider::ProviderRunState::Running);
+        assert!(!provider_run.read_only_discovery());
+        assert_eq!(
+            provider_environment.get("HOME"),
+            provider_run.pty_env().get("HOME")
+        );
+        assert_eq!(
+            provider_environment.get("PATH"),
+            provider_run.pty_env().get("PATH")
+        );
+        assert_eq!(
+            provider_environment.get("GIT_SSH_COMMAND").map(String::as_str),
+            Some("selected-ssh")
+        );
+        assert_eq!(
+            provider_environment.get("SSH_AUTH_SOCK").map(String::as_str),
+            Some("selected-agent")
+        );
+        drop(provider_fixture);
+        return;
+    }
+    if let Some(failure) = candidate_failure {
+        let validation_deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let status = response_status(
+                get_setup_status(
+                    &runtime,
+                    "setup-lifecycle",
+                    "user-1",
+                    "candidate validation polling",
+                )
+                .await,
+            );
+            if status.phase == ProjectEnvironmentSetupPhase::Validating
+                && validation_marker.exists()
+            {
+                break;
+            }
+            assert!(
+                !matches!(
+                    status.phase,
+                    ProjectEnvironmentSetupPhase::Failed
+                        | ProjectEnvironmentSetupPhase::Cancelled
+                        | ProjectEnvironmentSetupPhase::Ready
+                ),
+                "candidate setup did not reach the validation barrier: {status:?}"
+            );
+            assert!(
+                Instant::now() < validation_deadline,
+                "candidate setup did not reach the validation barrier: {status:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let failure_code = match failure {
+            CandidateFailureMode::Validation => {
+                std::fs::write(&validation_release, b"").unwrap();
+                let failure_deadline = Instant::now() + Duration::from_secs(10);
+                let failed_status = loop {
+                    let status = response_status(
+                        get_setup_status(
+                            &runtime,
+                            "setup-lifecycle",
+                            "user-1",
+                            "candidate validation failure polling",
+                        )
+                        .await,
+                    );
+                    if status.phase == ProjectEnvironmentSetupPhase::Failed {
+                        break status;
+                    }
+                    assert_ne!(
+                        status.phase,
+                        ProjectEnvironmentSetupPhase::Ready,
+                        "failed candidate validation must not report Ready"
+                    );
+                    assert!(
+                        Instant::now() < failure_deadline,
+                        "failed candidate validation did not settle: {status:?}"
+                    );
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                };
+                failed_status.failure_code
+            }
+            CandidateFailureMode::Cancellation => {
+                let cancelled = runtime
+                    .execute_project_environment_setup_request(
+                        LocalDaemonRequest::CancelProjectEnvironmentSetup(
+                            CancelProjectEnvironmentSetupRequest {
+                                operation_id: "setup-lifecycle".to_string(),
+                                session_id: session.id().to_string(),
+                            },
+                        ),
+                        "user-1",
+                    )
+                    .await
+                    .expect("public candidate setup cancellation should settle");
+                let cancelled_status = response_status(cancelled);
+                assert_eq!(
+                    cancelled_status.phase,
+                    ProjectEnvironmentSetupPhase::Cancelled
+                );
+                std::fs::write(&validation_release, b"").unwrap();
+                cancelled_status.failure_code
+            }
+        };
+        let (provider_run, _provider_pid, provider_environment) =
+            wait_for_ordinary_provider_child(&runtime, "utility-provider-run").await;
+        assert_eq!(
+            provider_run.state(),
+            crate::provider::ProviderRunState::Running
+        );
+        assert!(
+            !provider_run.read_only_discovery(),
+            "candidate failure must restore the ordinary provider snapshot"
+        );
+        let expected_home = provider_home.display().to_string();
+        assert_eq!(
+            provider_run.pty_env().get("HOME").map(String::as_str),
+            Some(expected_home.as_str())
+        );
+        assert_eq!(
+            provider_run.pty_env().get("PATH").map(String::as_str),
+            Some("/usr/bin:/bin")
+        );
+        assert_eq!(
+            provider_environment.get("HOME").map(String::as_str),
+            Some(expected_home.as_str())
+        );
+        assert_eq!(
+            provider_environment.get("PATH").map(String::as_str),
+            Some("/usr/bin:/bin")
+        );
+        assert_eq!(
+            provider_environment
+                .get("GIT_SSH_COMMAND")
+                .map(String::as_str),
+            Some("selected-ssh")
+        );
+        assert_eq!(
+            provider_environment.get("SSH_AUTH_SOCK").map(String::as_str),
+            Some("selected-agent")
+        );
+        match failure {
+            CandidateFailureMode::Validation => {
+                assert_eq!(failure_code.as_deref(), Some("validation_failed"));
+            }
+            CandidateFailureMode::Cancellation => {
+                assert!(failure_code.is_none());
+            }
+        }
+        drop(provider_fixture);
+        return;
+    }
     let validation_deadline = Instant::now() + Duration::from_secs(10);
     let initial_status = loop {
         let response =
@@ -532,6 +947,38 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
         ProjectEnvironmentSetupPhase::Cancelled
     );
     assert!(cancelled_status.retryable);
+
+        if !retry_after_cancel {
+            let (provider_run, _provider_pid, provider_environment) =
+                wait_for_ordinary_provider_child(&runtime, "utility-provider-run").await;
+            assert_eq!(provider_run.state(), crate::provider::ProviderRunState::Running);
+            assert!(!provider_run.read_only_discovery());
+            assert_eq!(
+                provider_environment.get("HOME"),
+                provider_run.pty_env().get("HOME")
+            );
+            assert_eq!(
+                provider_environment.get("PATH"),
+                provider_run.pty_env().get("PATH")
+            );
+            assert!(
+                runtime
+                    .owned
+                    .provider_store
+                    .structured_runtime_state_bound_for_tests(provider_run.id()),
+                "cancellation without retry must retain a bound provider runtime"
+            );
+            assert_eq!(
+                provider_environment.get("GIT_SSH_COMMAND").map(String::as_str),
+                Some("selected-ssh")
+            );
+            assert_eq!(
+                provider_environment.get("SSH_AUTH_SOCK").map(String::as_str),
+                Some("selected-agent")
+            );
+            drop(provider_fixture);
+            return;
+        }
 
         std::fs::write(&validation_release, b"").unwrap();
 
@@ -752,6 +1199,68 @@ async fn wait_for_ready(
 }
 
 #[cfg(unix)]
+async fn wait_for_ordinary_provider_child(
+    runtime: &crate::runtime::state::KernelRuntimeState,
+    provider_run_id: &str,
+) -> (RuntimeProviderRun, u32, BTreeMap<String, String>) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let provider_run = runtime
+            .owned
+            .provider_store
+            .get_run(provider_run_id)
+            .expect("provider run should remain available while setup settles");
+        let process_id = {
+            let app = runtime.app.lock().await;
+            app.pty().process_id(provider_run_id).ok().flatten()
+        };
+        if provider_run.state() == crate::provider::ProviderRunState::Running
+            && !provider_run.read_only_discovery()
+            && runtime
+                .owned
+                .provider_store
+                .structured_runtime_state_bound_for_tests(provider_run_id)
+        {
+            if let Some(process_id) = process_id {
+                let environment = provider_child_environment(process_id);
+                if environment
+                    .get("GIT_SSH_COMMAND")
+                    .is_some_and(|value| value == "selected-ssh")
+                    && environment
+                        .get("SSH_AUTH_SOCK")
+                        .is_some_and(|value| value == "selected-agent")
+                {
+                    return (provider_run, process_id, environment);
+                }
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "ordinary provider child did not return after setup lifecycle: {provider_run:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn provider_child_environment(process_id: u32) -> BTreeMap<String, String> {
+    std::fs::read(format!("/proc/{process_id}/environ"))
+        .unwrap_or_default()
+        .split(|byte| *byte == 0)
+        .filter_map(|entry| {
+            let entry = std::str::from_utf8(entry).ok()?;
+            let (name, value) = entry.split_once('=')?;
+            Some((name.to_string(), value.to_string()))
+        })
+        .collect()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn provider_child_environment(_process_id: u32) -> BTreeMap<String, String> {
+    BTreeMap::new()
+}
+
+#[cfg(unix)]
 async fn run_repaired_definition_on_fresh_worker(
     root: &std::path::Path,
     definition: ProjectEnvironmentDefinition,
@@ -857,8 +1366,8 @@ async fn run_repaired_definition_on_fresh_worker(
             endpoint_mode: AgentEndpointMode::Managed,
             process_label: "opencode-project-environment-fresh-worker-fixture".into(),
             pty_target: None,
-            pty_program: None,
-            pty_args: Vec::new(),
+            pty_program: Some("/bin/sh".into()),
+            pty_args: vec!["-c".into(), "sleep 60".into()],
             pty_env: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
             pty_env_remove: Vec::new(),
             working_directory: Some(fresh_workspace.clone()),
@@ -1201,6 +1710,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         target_platform: target_platform.clone(),
         source_path: None,
         inputs: Vec::new(),
+        path_entries: Vec::new(),
         setup_steps: vec![ProjectEnvironmentSetupStep {
             kind: ProjectEnvironmentSetupStepKind::Command,
             command: validation_command.clone(),
@@ -3747,6 +4257,14 @@ impl UtilityProviderFixture {
         }
         state.trace.join(" -> ")
     }
+
+    fn trace_entries(&self) -> Vec<String> {
+        self.state
+            .lock()
+            .expect("provider fixture state should not poison")
+            .trace
+            .clone()
+    }
 }
 
 #[cfg(unix)]
@@ -3757,6 +4275,459 @@ impl Drop for UtilityProviderFixture {
             let _ = join.join();
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn pr364_opencode_discovery_rejects_source_mcp_and_restores_ordinary_config() {
+    let _environment_lock = crate::env_lock::lock();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-opencode-discovery-mcp-lifecycle-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let home = root.join("kernel-home");
+    let provider_home = root.join("provider-home");
+    let workspace = root.join("worker-worktree");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&provider_home).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+
+    let receipt = root.join("receipt.json");
+    std::fs::write(
+        &receipt,
+        serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 1,
+            "status": "confirmed",
+            "allocationId": "worker-1",
+            "machineId": "worker-machine",
+            "kernelId": "worker-kernel",
+            "relayPublicKey": "worker-public-key",
+            "runtimeReleaseDigest": format!("sha256:{}", "a".repeat(64)),
+            "homeCaller": {
+                "accountId": "account-1",
+                "userId": "user-1",
+                "realmId": "realm-1",
+                "machineId": "home-machine",
+                "kernelId": "home-kernel",
+                "relayPublicKey": "home-public-key"
+            },
+            "confirmedAt": "2026-09-14T00:00:00Z"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    struct Cleanup {
+        root: PathBuf,
+        home: Option<std::ffi::OsString>,
+        receipt: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for (key, value) in [
+                ("CHARIOX_HOME", &self.home),
+                ("CHARIOX_DISPOSABLE_WORKER_RECEIPT", &self.receipt),
+            ] {
+                if let Some(value) = value {
+                    std::env::set_var(key, value);
+                } else {
+                    std::env::remove_var(key);
+                }
+            }
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    let _cleanup = Cleanup {
+        root: root.clone(),
+        home: std::env::var_os("CHARIOX_HOME"),
+        receipt: std::env::var_os("CHARIOX_DISPOSABLE_WORKER_RECEIPT"),
+    };
+    std::env::set_var("CHARIOX_HOME", &home);
+    std::env::set_var("CHARIOX_DISPOSABLE_WORKER_RECEIPT", &receipt);
+
+    let validation_command =
+        "touch validation-started; while [ ! -f validation-release ]; do sleep 0.01; done; command -v sh"
+            .to_string();
+    let target_platform = actual_worker_platform();
+    let definition = ProjectEnvironmentDefinition {
+        schema_version: 1,
+        origin: ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
+        source: ProjectEnvironmentDefinitionSource::Commands,
+        target_platform: target_platform.clone(),
+        source_path: None,
+        inputs: Vec::new(),
+        path_entries: Vec::new(),
+        setup_steps: vec![ProjectEnvironmentSetupStep {
+            kind: ProjectEnvironmentSetupStepKind::Command,
+            command: "touch setup-started; command -v sh".to_string(),
+        }],
+        validation_commands: vec![validation_command.clone()],
+    };
+    let (provider_fixture, release_prompt) =
+        UtilityProviderFixture::start_with_repairs_and_prompt_gate(
+            definition.clone(),
+            None,
+            BTreeMap::new(),
+        );
+
+    let runtime_mcp_url = "http://127.0.0.1:43120/mcp";
+    let granted_mcp_url = "http://127.0.0.1:43121/mcp";
+    let original_provider_home = provider_home.display().to_string();
+    let original_provider_path = "/usr/bin:/bin".to_string();
+    let source_mcp_config = serde_json::json!({
+        "mcp": {
+            "chariox": {
+                "type": "remote",
+                "url": runtime_mcp_url,
+                "enabled": true,
+                "oauth": false,
+                "timeout": 300000,
+                "headers": {"Authorization": "Bearer token-123"}
+            },
+            "mutating-tool": {
+                "type": "remote",
+                "url": granted_mcp_url,
+                "enabled": true,
+                "oauth": false,
+                "timeout": 45000,
+                "headers": {}
+            }
+        }
+    })
+    .to_string();
+
+    let mut config = DaemonConfig::for_tests();
+    config.daemon_id = "worker-kernel".into();
+    config.host_machine_id = "worker-machine".into();
+    config.relay_public_key = "worker-public-key".into();
+    config.kernel_runtime_role = KernelRuntimeRole::RemoteLeaseWorker;
+    config.accept_remote_leases = true;
+    config.remote_lease_capacity = Some(1);
+    config.lease_worker_home_caller = Some(crate::config::LeaseWorkerHomeCaller {
+        kernel_id: "home-kernel".into(),
+        realm_id: "realm-1".into(),
+        user_id: "user-1".into(),
+        relay_public_key: "home-public-key".into(),
+    });
+    config.cloud_relay = Some(
+        serde_json::from_value(serde_json::json!({
+            "api_url": "https://staging.chariox.com",
+            "email": "owner@example.test",
+            "account_id": "account-1",
+            "user_id": "user-1",
+            "account_slug": "account-1",
+            "realm_id": "realm-1",
+            "relay_url": "wss://relay.example.test",
+            "issuer_id": "issuer-1",
+            "machine_id": "worker-machine",
+            "machine_credential": format!("mcred_{}", "c".repeat(40))
+        }))
+        .unwrap(),
+    );
+    ensure_worker_validation_boundary(&config).expect("fixture is a confirmed worker");
+
+    let mut app = crate::DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = app
+        .create_session(
+            CreateSessionRequest::new(
+                workspace.display().to_string(),
+                workspace.display().to_string(),
+            )
+            .with_owner_user_id("user-1")
+            .with_agent_defaults(crate::session::SessionAgentDefaults::new("opencode")),
+        )
+        .expect("fresh worker session should be created");
+    let project_id = session.project_id().to_string();
+    let launch_request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "opencode",
+        "opencode",
+        "default",
+        "opencode/test-model",
+    )
+    .with_agent_id(agent.id())
+    .with_owner_user_id("user-1")
+    .with_runtime_mcp_binding(crate::provider::RuntimeMcpBinding::new(
+        runtime_mcp_url,
+        "token-123",
+    ))
+    .with_mcp_servers(vec![crate::mcp::CharioxMcpServerConfig::streamable_http(
+        "mutating-tool",
+        granted_mcp_url,
+    )]);
+    let mut pty_env = BTreeMap::from([
+        ("HOME".into(), original_provider_home.clone()),
+        ("PATH".into(), original_provider_path.clone()),
+        ("GIT_SSH_COMMAND".into(), "selected-ssh".into()),
+        ("SSH_AUTH_SOCK".into(), "selected-agent".into()),
+    ]);
+    pty_env.insert("OPENCODE_CONFIG_CONTENT".into(), source_mcp_config.clone());
+    let mut provider_run = RuntimeProviderRun::new(
+        "utility-provider-run",
+        &launch_request,
+        ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "opencode-discovery-mcp-fixture".into(),
+            pty_target: None,
+            pty_program: Some("/bin/sh".into()),
+            pty_args: vec!["-c".into(), "sleep 60".into()],
+            pty_env,
+            pty_env_remove: Vec::new(),
+            working_directory: Some(workspace.clone()),
+            structured_endpoint: Some(provider_fixture.address()),
+        },
+    );
+    provider_run.mark_running();
+    assert_eq!(
+        provider_opencode_mcp_names(provider_run.pty_env()),
+        vec!["chariox".to_string(), "mutating-tool".to_string()],
+        "the source ordinary provider run must begin with both MCP servers"
+    );
+    assert_eq!(
+        provider_run.runtime_mcp_server_url(),
+        Some(runtime_mcp_url),
+        "the source ordinary provider run must retain its runtime MCP binding"
+    );
+    app.providers_mut().insert_run_for_test(provider_run);
+    let runtime =
+        CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 1)
+            .runtime_state();
+
+    let start = runtime
+        .execute_project_environment_setup_request(
+            LocalDaemonRequest::StartProjectEnvironmentSetup(StartProjectEnvironmentSetupRequest {
+                operation_id: "setup-opencode-discovery-mcp".into(),
+                project_id,
+                session_id: session.id().to_string(),
+                agent_id: agent.id().to_string(),
+                target_worker_id: "worker-machine".into(),
+                target_platform,
+                definition: None,
+                validation_commands: vec![validation_command],
+            }),
+            "user-1",
+        )
+        .await
+        .expect("public setup start should be accepted");
+    let LocalDaemonResponse::ProjectEnvironmentSetupStarted { status } = start else {
+        panic!("unexpected public setup start response: {start:?}");
+    };
+    assert_eq!(status.phase, ProjectEnvironmentSetupPhase::Requested);
+    assert_eq!(status.attempt, 1);
+
+    let prompt_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let trace = provider_fixture.trace_entries();
+        if trace.iter().any(|entry| entry.contains("prompt_async")) {
+            break;
+        }
+        let status = response_status(
+            get_setup_status(
+                &runtime,
+                "setup-opencode-discovery-mcp",
+                "user-1",
+                "OpenCode discovery prompt gate",
+            )
+            .await,
+        );
+        assert!(
+            !matches!(
+                status.phase,
+                ProjectEnvironmentSetupPhase::Failed | ProjectEnvironmentSetupPhase::Ready
+            ),
+            "setup settled before its discovery prompt: {status:?}"
+        );
+        assert!(
+            Instant::now() < prompt_deadline,
+            "OpenCode discovery prompt did not reach the fixture: {status:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let discovery_run = runtime
+        .owned
+        .provider_store
+        .get_run("utility-provider-run")
+        .expect("discovery provider run should remain available while prompt is gated");
+    assert!(
+        discovery_run.read_only_discovery(),
+        "the gated utility prompt must run on the read-only discovery restart"
+    );
+    let discovery_pid = {
+        let app = runtime.app.lock().await;
+        app.pty()
+            .process_id("utility-provider-run")
+            .ok()
+            .flatten()
+            .expect("discovery provider child should be running")
+    };
+    let discovery_environment = provider_child_environment(discovery_pid);
+    assert_eq!(
+        provider_opencode_mcp_names(&discovery_environment),
+        Vec::<String>::new(),
+        "read-only discovery must not expose source runtime/granted MCP config"
+    );
+    let discovery_trace = provider_fixture.trace_entries();
+    assert!(
+        discovery_trace
+            .iter()
+            .all(|entry| !(entry.starts_with("POST /mcp/") && entry.ends_with("/connect"))),
+        "read-only discovery must not connect source MCP servers before its prompt: {discovery_trace:?}"
+    );
+    let mcp_connect_count = |trace: &[String]| {
+        trace
+            .iter()
+            .filter(|entry| entry.starts_with("POST /mcp/") && entry.ends_with("/connect"))
+            .count()
+    };
+    assert_eq!(
+        mcp_connect_count(&discovery_trace),
+        0,
+        "read-only discovery must have zero MCP connections: {discovery_trace:?}"
+    );
+
+    release_prompt.store(true, Ordering::Release);
+    let validation_started = workspace.join("validation-started");
+    let validation_start_deadline = Instant::now() + Duration::from_secs(10);
+    while !validation_started.exists() {
+        assert!(
+            Instant::now() < validation_start_deadline,
+            "gated validation did not start after discovery: {}",
+            provider_fixture.diagnostics()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let (gated_ordinary_run, _gated_ordinary_pid, gated_environment) =
+        wait_for_ordinary_provider_child(&runtime, "utility-provider-run").await;
+    assert_eq!(
+        gated_environment.get("HOME").map(String::as_str),
+        Some(original_provider_home.as_str()),
+        "ordinary restoration must restore the original HOME while validation is gated"
+    );
+    assert_eq!(
+        gated_environment.get("PATH").map(String::as_str),
+        Some(original_provider_path.as_str()),
+        "ordinary restoration must restore the original PATH while validation is gated"
+    );
+    assert_eq!(
+        gated_ordinary_run.pty_env().get("HOME").map(String::as_str),
+        Some(original_provider_home.as_str())
+    );
+    assert_eq!(
+        gated_ordinary_run.pty_env().get("PATH").map(String::as_str),
+        Some(original_provider_path.as_str())
+    );
+    let gated_trace = provider_fixture.trace_entries();
+    assert_eq!(
+        mcp_connect_count(&gated_trace),
+        2,
+        "the original ordinary restore should reconnect both source MCP servers before validation completes: {gated_trace:?}"
+    );
+
+    let validation_release = workspace.join("validation-release");
+    std::fs::write(&validation_release, b"").unwrap();
+    let ready = wait_for_ready(&runtime, "setup-opencode-discovery-mcp", &provider_fixture).await;
+    assert_eq!(
+        ready.phase,
+        ProjectEnvironmentSetupPhase::Ready,
+        "ordinary restoration must complete setup"
+    );
+
+    let (ordinary_run, _ordinary_pid, ordinary_environment) =
+        wait_for_ordinary_provider_child(&runtime, "utility-provider-run").await;
+    assert!(
+        !ordinary_run.read_only_discovery(),
+        "ordinary provider restoration must leave discovery mode"
+    );
+    assert_eq!(
+        provider_opencode_mcp_names(&ordinary_environment),
+        vec!["chariox".to_string(), "mutating-tool".to_string()],
+        "ordinary provider child must regain the source MCP config"
+    );
+    assert_eq!(
+        provider_opencode_mcp_names(ordinary_run.pty_env()),
+        vec!["chariox".to_string(), "mutating-tool".to_string()],
+        "ordinary provider run must retain the source MCP config"
+    );
+    let (prepared_home, prepared_path) = ordinary_run
+        .preparation_environment()
+        .expect("Ready ordinary run must carry the validated preparation environment");
+    let prepared_home_path = std::path::Path::new(&prepared_home);
+    assert!(
+        prepared_home_path.starts_with(&root),
+        "validated preparation HOME must remain in the worker root: {prepared_home}"
+    );
+    assert_ne!(
+        prepared_home, original_provider_home,
+        "Ready must rebind the ordinary provider away from its original HOME"
+    );
+    let prepared_path_prefix = format!("{prepared_home}/.local/bin:{prepared_home}/.cargo/bin:");
+    assert!(
+        prepared_path.starts_with(&prepared_path_prefix),
+        "validated PATH must expose preparation-home tool directories: {prepared_path}"
+    );
+    assert_eq!(
+        ordinary_environment.get("HOME").map(String::as_str),
+        Some(prepared_home.as_str()),
+        "Ready ordinary child must see the validated preparation HOME"
+    );
+    assert_eq!(
+        ordinary_environment.get("PATH").map(String::as_str),
+        Some(prepared_path.as_str()),
+        "Ready ordinary child must see the validated preparation PATH"
+    );
+    assert_eq!(
+        ordinary_run.pty_env().get("HOME").map(String::as_str),
+        Some(prepared_home.as_str())
+    );
+    assert_eq!(
+        ordinary_run.pty_env().get("PATH").map(String::as_str),
+        Some(prepared_path.as_str())
+    );
+    let final_trace = provider_fixture.trace_entries();
+    let prompt_index = final_trace
+        .iter()
+        .position(|entry| entry.contains("prompt_async"))
+        .expect("the gated discovery prompt should be recorded");
+    let reconnects = final_trace
+        .iter()
+        .enumerate()
+        .filter(|(index, entry)| {
+            *index > prompt_index && entry.starts_with("POST /mcp/") && entry.ends_with("/connect")
+        })
+        .count();
+    assert_eq!(
+        reconnects, 4,
+        "ordinary restoration and the validated Ready rebind should reconnect both source MCP servers per phase: {final_trace:?}"
+    );
+    assert_eq!(
+        mcp_connect_count(&final_trace),
+        4,
+        "the integrated lifecycle should emit two reconnects for each ordinary phase: {final_trace:?}"
+    );
+
+    drop(provider_fixture);
+}
+
+#[cfg(target_os = "linux")]
+fn provider_opencode_mcp_names(environment: &BTreeMap<String, String>) -> Vec<String> {
+    let Some(config) = environment
+        .get("OPENCODE_CONFIG_CONTENT")
+        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+    else {
+        return Vec::new();
+    };
+    let mut names = config
+        .get("mcp")
+        .and_then(serde_json::Value::as_object)
+        .map(|mcp| mcp.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    names.sort();
+    names
 }
 
 #[cfg(unix)]
@@ -3789,7 +4760,10 @@ fn serve_provider_request(
             write_json_response(
                 &mut stream,
                 200,
-                &serde_json::json!({"chariox": {"status": "connected"}}),
+                &serde_json::json!({
+                    "chariox": {"status": "connected"},
+                    "mutating-tool": {"status": "connected"}
+                }),
             );
         }
         ("POST", "/session") => {

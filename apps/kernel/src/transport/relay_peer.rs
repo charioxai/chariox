@@ -79,7 +79,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version 52 carries the source-selected managed-context plan in import arm requests.
 /// Version 53 carries the home-authoritative setup attempt on worker redispatch.
 /// Version 54 carries recipe and lockfile input attestations for worker setup.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 54;
+/// Version 55 carries definition-derived executable path entries for worker setup.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 55;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
@@ -1112,7 +1113,7 @@ mod tests {
 
     #[test]
     fn leased_completion_provider_termination_shape_is_versioned() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 54);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 55);
         let completion = RelayProjectedCompletion {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,
@@ -1177,8 +1178,8 @@ mod tests {
     }
 
     #[test]
-    fn project_environment_setup_relay_shapes_round_trip_at_protocol_54() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 54);
+    fn project_environment_setup_relay_shapes_round_trip_at_protocol_55() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 55);
         let definition = crate::session::ProjectEnvironmentDefinition {
             schema_version: 1,
             origin: crate::session::ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
@@ -1197,6 +1198,10 @@ mod tests {
                     sha256: format!("sha256:{}", "b".repeat(64)),
                 },
             ],
+            path_entries: vec![crate::session::ProjectEnvironmentPathEntry {
+                base: crate::session::ProjectEnvironmentPathBase::Workspace,
+                path: ".venv/bin".to_string(),
+            }],
             setup_steps: vec![crate::session::ProjectEnvironmentSetupStep {
                 kind: crate::session::ProjectEnvironmentSetupStepKind::Command,
                 command: "command -v sh".to_string(),
