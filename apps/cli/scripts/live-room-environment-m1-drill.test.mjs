@@ -12,14 +12,25 @@ import {
   waitForTcpListener,
 } from "./live-room-environment-m1-drill.mjs"
 
-test("M1 relay claims do not assert a fabricated kernel key thumbprint", () => {
-  const claims = relayClaims({
+test("M1 relay claims bind kernels to their machine and omit fabricated key claims", () => {
+  const kernelClaims = relayClaims({
     subject: "room-environment-home-test",
     subjectKind: "kernel",
     actions: ["daemon_register"],
     userId: "user-1",
+    machineId: "room-environment-home-machine-test",
   })
-  assert.equal(Object.hasOwn(claims, "public_key_thumbprint"), false)
+  assert.equal(kernelClaims.machine_id, "room-environment-home-machine-test")
+  assert.equal(Object.hasOwn(kernelClaims, "public_key_thumbprint"), false)
+
+  const clientClaims = relayClaims({
+    subject: "client-user-1",
+    subjectKind: "client",
+    actions: ["client_connect"],
+    userId: "user-1",
+  })
+  assert.equal(clientClaims.machine_id, null)
+  assert.equal(Object.hasOwn(clientClaims, "public_key_thumbprint"), false)
 })
 
 test("M1 startup waits for a loopback relay listener", async () => {
@@ -56,6 +67,8 @@ test("M1 startup records an unexpected child exit without secrets", async () => 
     assert.equal(diagnostic.exit.signal, null)
     assert.equal(diagnostic.exit.expected, false)
     assert.equal(diagnostic.spawnError, null)
+    assert.equal(diagnostic.outputLogPath, path.join(evidenceRoot, "exit-fixture.log"))
+    assert.equal(diagnostic.runtimeLogDir, null)
     assert.equal(Object.hasOwn(diagnostic, "env"), false)
     assert.equal(Object.hasOwn(diagnostic, "token"), false)
   } finally {
