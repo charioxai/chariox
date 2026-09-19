@@ -300,8 +300,9 @@ function seamFor(input, action, provider) {
     ? [seams.providers?.[provider], seams.providerCell, seams[action]]
     : [seams[action], seams.liveRoom, seams.driver]
   const command = candidates.find((value) => typeof value === "string" && value.trim())
-  if (!command) fail(`seams.${action}`, "a runner-context-capable same-Room adapter is required", "missing-product-seam")
-  return requireAbsolutePath(command, `seams.${action}`)
+  if (command) return requireAbsolutePath(command, `seams.${action}`)
+  const adapter = path.resolve(input.runnerContext?.repoRoot ?? input.repoRoot ?? process.cwd(), "scripts", "path1-oss-runner-context-adapter.mjs")
+  return requireAbsolutePath(adapter, "runnerContext.adapter")
 }
 
 function validateSurfaceManifest(input) {
@@ -312,7 +313,70 @@ function validateSurfaceManifest(input) {
   return manifest
 }
 
-function basePayload(input, context, sourceHead, action, provider, surfaces) {
+function runnerContextPayload(input, context, sourceHead, surfaces, action, journalPath = null) {
+  const supplied = input.runnerContext ?? {}
+  const receipt = publicationReceiptFrom(input).receipt
+  const runtimeBindings = supplied.runtimeBindings ?? input.runtimeBindings ?? {
+    cloudRevision: receipt.source?.cloudRevision,
+    ossRevision: sourceHead,
+    runtimeDigest: receipt.image?.digest,
+    localDaemonProtocol: PATH1_PROTOCOLS.localDaemon,
+    relayPeerProtocol: PATH1_PROTOCOLS.relayPeer,
+  }
+  const journalRef = supplied.journal?.ref ?? input.journal?.journal?.ref ?? `path1-oss-live-${context.runId}`
+  const journal = {
+    ref: journalRef,
+    sequence: Number.isSafeInteger(input.journal?.sequence) ? input.journal.sequence : 0,
+  }
+  const actualJournalPath = journalPath ?? supplied.journal?.path ?? input.journalPath
+  if (actualJournalPath) journal.path = requireAbsolutePath(actualJournalPath, "runnerContext.journal.path")
+  const clientModes = supplied.clientModes ?? { web: true, localTui: true, remoteTui: true }
+  const clientBindings = supplied.clientBindings ?? Object.fromEntries(
+    ["web", "localTui", "remoteTui"].map((mode) => {
+      const endpoint = mode === "web" ? supplied.webEndpoint : mode === "remoteTui" ? supplied.relayEndpoint ?? supplied.relayUrl : supplied.kernelEndpoint ?? supplied.kernelUrl
+      return [mode, {
+        runId: context.runId,
+        sessionId: context.sessionId,
+        roomId: context.roomId,
+        authority: "home-kernel",
+        ...(endpoint ? { endpoint } : {}),
+      }]
+    }),
+  )
+  const result = {
+    schema: "chariox.path1.runner-context.v1",
+    action,
+    runId: context.runId,
+    allocationId: context.allocationId,
+    machineId: context.machineId,
+    homeKernelId: context.homeKernelId,
+    homeRelayRealmId: context.relayRealmId,
+    repoRoot: context.repoRoot,
+    sourceHead,
+    sessionId: context.sessionId,
+    roomId: context.roomId,
+    journal,
+    runtimeBindings,
+    surfaceManifest: supplied.surfaceManifest ?? {},
+    clientModes,
+    clientBindings,
+    authority: {
+      kernel: "normal-kernel",
+      relay: "transport-only",
+      room: "kernel-owned",
+    },
+    officialSurfaces: surfaces,
+  }
+  for (const [key, value] of [
+    ["kernelEndpoint", supplied.kernelEndpoint ?? supplied.kernelUrl],
+    ["relayEndpoint", supplied.relayEndpoint ?? supplied.relayUrl],
+    ["webEndpoint", supplied.webEndpoint],
+  ]) if (value !== undefined && value !== null) result[key] = value
+  if (supplied.evidenceRoot) result.evidenceRoot = requireAbsolutePath(supplied.evidenceRoot, "runnerContext.evidenceRoot")
+  return result
+}
+
+function basePayload(input, context, sourceHead, action, provider, surfaces, journalPath = null) {
   const payload = {
     schema: PATH1_OSS_LIVE_DRIVER_SCHEMA,
     action,
@@ -327,6 +391,9 @@ function basePayload(input, context, sourceHead, action, provider, surfaces) {
     sessionId: context.sessionId,
     roomId: context.roomId,
     contextPlan: input.contextPlan ?? context.contextPlan ?? null,
+    publicationReceipt: publicationReceiptFrom(input).receipt,
+    runtimeBindings: input.runtimeBindings ?? context.runtimeBindings ?? null,
+    runnerContext: runnerContextPayload(input, context, sourceHead, surfaces, action, journalPath),
     authority: {
       kernel: "normal-kernel",
       relay: "transport-only",
@@ -598,6 +665,22 @@ export function createFileJournalStore(journalPath) {
   }
 }
 
+function adapterEnvironment(env) {
+  const names = ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR"]
+  const result = {}
+  for (const name of names) if (typeof env?.[name] === "string") result[name] = env[name]
+  return result
+}
+
+function parseExternalResult(stdout) {
+  const marker = "CHARIOX_PATH1_RESULT:"
+  for (const line of String(stdout).trim().split("\n").toReversed()) {
+    if (!line.startsWith(marker)) continue
+    try { return JSON.parse(line.slice(marker.length)) } catch { return null }
+  }
+  try { return JSON.parse(stdout) } catch { return null }
+}
+
 async function invokeExternal(command, payload, { cwd, timeoutMs = 120_000, env = process.env } = {}) {
   const absolute = requireAbsolutePath(command, "seamCommand")
   const invocation = /\.(?:mjs|js)$/iu.test(absolute)
@@ -606,7 +689,7 @@ async function invokeExternal(command, payload, { cwd, timeoutMs = 120_000, env 
   return await new Promise((resolve, reject) => {
     const child = spawnChild(invocation.file, invocation.args, {
       cwd,
-      env: { ...env, CHARIOX_PATH1_OSS_LIVE_DRIVER: "1" },
+      env: { ...adapterEnvironment(env), CHARIOX_PATH1_OSS_LIVE_DRIVER: "1" },
       stdio: ["pipe", "pipe", "pipe"],
     })
     let stdout = ""
@@ -617,15 +700,26 @@ async function invokeExternal(command, payload, { cwd, timeoutMs = 120_000, env 
     child.once("error", (error) => { clearTimeout(timeout); reject(error) })
     child.once("close", (code, signal) => {
       clearTimeout(timeout)
+      const parsedResult = parseExternalResult(stdout)
       if (code !== 0) {
+        if (parsedResult?.failure?.code) {
+          const guarded = new Path1OssLiveDriverError(
+            parsedResult.failure.field ?? "runnerContext.adapter",
+            parsedResult.failure.reason ?? "runner-context adapter rejected the request",
+            parsedResult.failure.code,
+          )
+          guarded.stderrObserved = Boolean(stderr)
+          reject(guarded)
+          return
+        }
         const error = new Path1OssLiveDriverError("seamCommand", "the real live seam exited unsuccessfully", signal ? "interrupted" : "live-seam-failed")
         error.exit = { code, signal }
         error.stderrObserved = Boolean(stderr)
         reject(error)
         return
       }
-      let result
-      try { result = JSON.parse(stdout) } catch { reject(new Path1OssLiveDriverError("seamCommand", "the real live seam did not return JSON", "live-seam-invalid-output")); return }
+      const result = parsedResult
+      if (!result) { reject(new Path1OssLiveDriverError("seamCommand", "the real live seam did not return JSON", "live-seam-invalid-output")); return }
       try { assertSanitized(result, "seamResult") } catch (error) { reject(error); return }
       resolve(result)
     })
@@ -643,7 +737,7 @@ export function createRealRunner({ cwd, env = process.env, timeoutMs = 120_000 }
   }
 }
 
-async function executeAction({ input, context, sourceHead, action, provider, surfaces, runner, journal, store, now }) {
+async function executeAction({ input, context, sourceHead, action, provider, surfaces, runner, journal, store, now, journalPath = null }) {
   const stage = stageFor(action, provider)
   if (journal.stages[stage] && journal.results[stage]) return { journal, result: journal.results[stage], resumed: true }
   const command = runner.kind === "injected" ? null : seamFor(input, action, provider)
@@ -667,7 +761,7 @@ async function executeAction({ input, context, sourceHead, action, provider, sur
     },
   }, `${stage}-launch-planned`, now)
   await store.save(planned)
-  const payload = basePayload(input, context, sourceHead, action, provider, surfaces)
+  const payload = basePayload(input, context, sourceHead, action, provider, surfaces, journalPath)
   payload.artifactPath = artifactPath
   payload.runnerJournal = { ref: planned.journal.ref, sequence: planned.sequence }
   let result
@@ -756,17 +850,17 @@ export async function runPath1OssLiveAcceptance({
   let cells = {}
   let resumed = false
   try {
-    const transfer = await executeAction({ input: source, context, sourceHead, action: "context-transfer", surfaces, runner: effectiveRunner, journal, store, now })
+    const transfer = await executeAction({ input: source, context, sourceHead, action: "context-transfer", surfaces, runner: effectiveRunner, journal, store, now, journalPath })
     journal = transfer.journal
     if (transfer.failure) return { status: journal.status, plan, failure: transfer.failure, journal }
     resumed ||= transfer.resumed
     context = resolveContextFromTransfer(context, transfer.result)
-    const ready = await executeAction({ input: { ...source, sessionId: context.sessionId, roomId: context.roomId }, context, sourceHead, action: "project-environment-ready", surfaces, runner: effectiveRunner, journal, store, now })
+    const ready = await executeAction({ input: { ...source, sessionId: context.sessionId, roomId: context.roomId }, context, sourceHead, action: "project-environment-ready", surfaces, runner: effectiveRunner, journal, store, now, journalPath })
     journal = ready.journal
     if (ready.failure) return { status: journal.status, plan, failure: ready.failure, journal }
     resumed ||= ready.resumed
     for (const provider of PATH1_REQUIRED_PROVIDERS) {
-      const cell = await executeAction({ input: { ...source, sessionId: context.sessionId, roomId: context.roomId }, context, sourceHead, action: "provider-cell", provider, surfaces, runner: effectiveRunner, journal, store, now })
+      const cell = await executeAction({ input: { ...source, sessionId: context.sessionId, roomId: context.roomId }, context, sourceHead, action: "provider-cell", provider, surfaces, runner: effectiveRunner, journal, store, now, journalPath })
       journal = cell.journal
       if (cell.failure) return { status: journal.status, plan, failure: cell.failure, journal }
       resumed ||= cell.resumed
@@ -782,6 +876,7 @@ export async function runPath1OssLiveAcceptance({
       journal,
       store,
       now,
+      journalPath,
     })
     journal = capabilities.journal
     if (capabilities.failure) return { status: journal.status, plan, failure: capabilities.failure, journal }
@@ -847,7 +942,7 @@ export async function runPath1OssLiveAction({ input, mode = "apply", confirmed =
   }
   let result
   try {
-    result = await executeAction({ input: source, context, sourceHead, action, provider, surfaces, runner: runner ?? createRealRunner({ cwd: context.repoRoot }), journal, store, now })
+    result = await executeAction({ input: source, context, sourceHead, action, provider, surfaces, runner: runner ?? createRealRunner({ cwd: context.repoRoot }), journal, store, now, journalPath })
   } catch (error) {
     const failure = safeFailure(error)
     const failed = updateJournal(journal, {

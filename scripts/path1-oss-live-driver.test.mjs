@@ -291,13 +291,13 @@ test("apply rejects non-live or source-test-only evidence instead of manufacturi
   }
 })
 
-test("apply fails closed with the single missing same-Room product seam", async () => {
+test("the real adapter fails closed when the supplied context has no existing Room", async () => {
   const { input, scratch } = fixture()
   try {
     const result = await runPath1OssLiveAcceptance({ input, mode: "apply", confirmed: true, sourceInspector })
     assert.equal(result.status, "failed")
     assert.equal(result.failure.code, "missing-product-seam")
-    assert.match(result.failure.field, /^seams\./u)
+    assert.match(result.failure.field, /^runnerContext\./u)
   } finally {
     cleanup(scratch)
   }

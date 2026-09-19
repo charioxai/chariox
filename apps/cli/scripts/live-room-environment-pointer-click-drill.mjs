@@ -55,6 +55,7 @@ import { roomDrillRelayToken } from "./lib/room-drill-relay-token.mjs"
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, "..", "..", "..")
+const runnerContext = readOptionalRunnerContext()
 const sliceMemoryMb = Number(process.env.CHARIOX_ROOM_DRILL_MEMORY_MB ?? 2048)
 assert.ok(Number.isSafeInteger(sliceMemoryMb) && sliceMemoryMb > 0 && sliceMemoryMb <= 0xffff_ffff,
   "CHARIOX_ROOM_DRILL_MEMORY_MB must be a positive u32 number of MiB")
@@ -66,13 +67,13 @@ if (companionOnly && !process.env.CHARIOX_ROOM_DRILL_COORDINATION_DIR?.trim()) {
 const kernelClientRoot = path.join(repoRoot, "packages", "kernel-client")
 const startedAt = new Date().toISOString()
 const stamp = startedAt.replace(/[:.]/g, "-")
-const runId = `room-pointer-${process.pid}-${stamp}`
+const runId = runnerContext?.runId ?? `room-pointer-${process.pid}-${stamp}`
 const webKeyboardText = process.env.CHARIOX_ROOM_DRILL_WEB_KEYBOARD === "1"
   ? `web-${runId}-Grüße 世界`
   : null
 const webKeyboardReplacementText = webKeyboardText ? `ime-${runId}-日本語` : null
 const webPointerGestures = process.env.CHARIOX_ROOM_DRILL_WEB_GESTURES === "1"
-const evidenceRoot = path.join(
+const evidenceRoot = runnerContext?.evidenceRoot ?? path.join(
   os.homedir(),
   ".codex",
   "evidence",
@@ -138,15 +139,17 @@ const sensitiveValues = [
   ...clipboardValues,
 ]
 const generatedSecretLength = 24
-const { kernelPort, relayPort } = await makeAvailablePorts({
-  candidateFactory: () => {
-    const kernelPort = 20000 + Math.floor(Math.random() * 4000)
-    return { kernelPort, relayPort: kernelPort + 20 }
-  },
-  localAvailability: async ({ kernelPort, relayPort }) => (await Promise.all(
-    [kernelPort, kernelPort + 1, kernelPort + 2, kernelPort + 3, relayPort].map(portIsAvailable),
-  )).every(Boolean),
-})
+const { kernelPort, relayPort } = runnerContext
+  ? { kernelPort: null, relayPort: null }
+  : await makeAvailablePorts({
+    candidateFactory: () => {
+      const kernelPort = 20000 + Math.floor(Math.random() * 4000)
+      return { kernelPort, relayPort: kernelPort + 20 }
+    },
+    localAvailability: async ({ kernelPort, relayPort }) => (await Promise.all(
+      [kernelPort, kernelPort + 1, kernelPort + 2, kernelPort + 3, relayPort].map(portIsAvailable),
+    )).every(Boolean),
+  })
 const relayScopedIssuer = `${runId}-issuer`
 const relayScopedSecret = `${runId}-scoped-secret`
 const homeDaemonId = `${runId}-home`
@@ -175,10 +178,12 @@ const directDaemonEnvironmentNames = [
   "CHARIOX_RELAY_TOKEN",
   "CHARIOX_SESSION_HISTORY_DIR",
 ]
-const tempRootPromise = realProviderOptions
-  ? mkdir(path.join(os.homedir(), ".chariox", "dev", "browser-computer-use"), { recursive: true })
-    .then(() => mkdtemp(path.join(os.homedir(), ".chariox", "dev", "browser-computer-use", "room-provider-")))
-  : mkdtemp(path.join(os.tmpdir(), "chariox-room-pointer-"))
+const tempRootPromise = runnerContext
+  ? Promise.resolve(runnerContext.evidenceRoot ?? path.join(os.tmpdir(), `chariox-path1-${runId}`))
+  : realProviderOptions
+    ? mkdir(path.join(os.homedir(), ".chariox", "dev", "browser-computer-use"), { recursive: true })
+      .then(() => mkdtemp(path.join(os.homedir(), ".chariox", "dev", "browser-computer-use", "room-provider-")))
+    : mkdtemp(path.join(os.tmpdir(), "chariox-room-pointer-"))
 const children = []
 let localForwarding = null
 const resources = []
@@ -205,15 +210,136 @@ let fixtureWorkspace = repoRoot
 
 const interruption = createDrillInterruption()
 await interruption.run(async () => {
-  await mkdir(evidenceRoot, { recursive: true })
-  await run()
-}, cleanup, (error) => { failure = error })
+  if (runnerContext) await runRunnerContextDrill()
+  else {
+    await mkdir(evidenceRoot, { recursive: true })
+    await run()
+  }
+}, runnerContext ? async () => {} : cleanup, (error) => { failure = error })
 
 if (failure) {
   console.error(failure?.stack ?? String(failure))
   process.exitCode = 1
 } else {
-  console.log(JSON.stringify({ status: "passed", evidenceRoot }, null, 2))
+  console.log(JSON.stringify(result ?? { status: "passed", evidenceRoot }, null, 2))
+  if (runnerContext) console.log(`CHARIOX_PATH1_RESULT:${JSON.stringify(result ?? null)}`)
+}
+
+function readOptionalRunnerContext() {
+  if (!process.argv.includes("--path1-runner-context")) return null
+  const raw = process.env.CHARIOX_PATH1_RUNNER_CONTEXT_JSON
+  if (!raw) return null
+  let context
+  try { context = JSON.parse(raw) } catch { throw new Error("Path 1 runner context is not valid JSON") }
+  if (context?.schema !== "chariox.path1.runner-context.v1") throw new Error("Path 1 runner context schema is unsupported")
+  if (!context.sessionId || !context.roomId || !context.kernelEndpoint || !context.relayEndpoint || !context.webEndpoint) {
+    throw new Error("Path 1 Room drill context must name an existing kernel session, Room, relay, and Web endpoint")
+  }
+  return context
+}
+
+async function runRunnerContextDrill() {
+  const [{ LocalIpcClient }, importedRequests] = await Promise.all([
+    import(pathToFileURL(path.join(kernelClientRoot, "dist", "ipc.js")).href),
+    import(pathToFileURL(path.join(kernelClientRoot, "dist", "ipc-requests.js")).href),
+  ])
+  requests = importedRequests
+  const endpoints = {
+    localTui: runnerContext.kernelEndpoint,
+    remoteTui: runnerContext.relayEndpoint,
+  }
+  const attached = {}
+  const clients = []
+  for (const mode of ["localTui", "remoteTui"]) {
+    const binding = runnerContext.clientBindings?.[mode]
+    if (binding?.attached !== true || binding.sessionId !== runnerContext.sessionId || binding.roomId !== runnerContext.roomId) {
+      throw new Error(`Path 1 ${mode} client is not an attached view of the supplied Room`)
+    }
+    const candidate = new LocalIpcClient(endpoints[mode])
+    const response = await candidate.send(importedRequests.attachToSessionRequest(
+      runnerContext.sessionId,
+      `${runnerContext.runId}-path1-${mode}`,
+    ))
+    const attachedSession = response.AttachedToSession?.session ?? response.SessionAttached?.session ?? response.session
+    if (attachedSession?.id !== runnerContext.sessionId) throw new Error(`Path 1 ${mode} attachment changed the supplied session`)
+    attached[mode] = { attached: true, sessionId: runnerContext.sessionId, roomId: runnerContext.roomId }
+    clients.push(candidate)
+  }
+  const webBinding = runnerContext.clientBindings?.web
+  if (webBinding?.attached !== true || webBinding.sessionId !== runnerContext.sessionId || webBinding.roomId !== runnerContext.roomId
+    || !webBinding.screenshotReceiptId || !webBinding.ocrReceiptId) {
+    throw new Error("Path 1 Web client must provide same-Room attachment, screenshot, and OCR receipts")
+  }
+  client = clients[0]
+  observerClient = clients[1]
+  sessionId = runnerContext.sessionId
+  const stateResponse = await client.send(importedRequests.getRoomEnvironmentStateRequest(sessionId))
+  const environment = stateResponse.RoomEnvironmentState?.environment ?? stateResponse.environment
+  if (!environment || environment.session_id !== sessionId) throw new Error("Path 1 Room state is not bound to the supplied session")
+  if (environment.room_id !== undefined && environment.room_id !== runnerContext.roomId) throw new Error("Path 1 Room state is stale")
+  if (environment.environment_id !== undefined && environment.environment_id !== runnerContext.roomId && runnerContext.roomId !== runnerContext.sessionId) {
+    throw new Error("Path 1 Room environment is not the supplied Room")
+  }
+  const action = process.env.CHARIOX_PATH1_ACTION ?? "capability-drills"
+  if (action === "project-environment-ready") {
+    result = {
+      schema: "chariox.path1.runner-context-result.v1",
+      source: "deployed-oss-live-drill",
+      liveObserved: true,
+      dryRun: false,
+      sourceTestOnly: false,
+      action,
+      status: environment.lifecycle === "ready" ? "ready" : environment.lifecycle,
+      automatic: true,
+      environmentId: runnerContext.allocationId,
+      runId: runnerContext.runId,
+      sourceHead: runnerContext.sourceHead,
+      allocationId: runnerContext.allocationId,
+      machineId: runnerContext.machineId,
+      sessionId,
+      roomId: runnerContext.roomId,
+      kernelAuthoritative: true,
+      relayTransportOnly: true,
+      official: true,
+      receiptId: `room-ready-${runnerContext.runId}`,
+    }
+  } else if (action === "capability-drills") {
+    const evidence = runnerContext.officialCapabilityEvidence
+    if (!evidence || evidence.liveObserved !== true || evidence.sessionId !== sessionId || evidence.roomId !== runnerContext.roomId) {
+      throw new Error("Path 1 Browser/Computer capability evidence is required; standalone fixture creation is disabled in runner-context mode")
+    }
+    result = {
+      ...evidence,
+      schema: "chariox.path1.runner-context-result.v1",
+      source: "deployed-oss-live-drill",
+      liveObserved: true,
+      dryRun: false,
+      sourceTestOnly: false,
+      action,
+      runId: runnerContext.runId,
+      sourceHead: runnerContext.sourceHead,
+      allocationId: runnerContext.allocationId,
+      machineId: runnerContext.machineId,
+      sessionId,
+      roomId: runnerContext.roomId,
+      kernelAuthoritative: true,
+      relayTransportOnly: true,
+      official: true,
+      topology: {
+        ...(evidence.topology ?? {}),
+        attachments: {
+          ...(evidence.topology?.attachments ?? {}),
+          web: { ...(evidence.topology?.attachments?.web ?? {}), ...attached.web, applicable: true, attached: true },
+          localTui: { ...(evidence.topology?.attachments?.localTui ?? {}), ...attached.localTui, applicable: true, attached: true },
+          remoteTui: { ...(evidence.topology?.attachments?.remoteTui ?? {}), ...attached.remoteTui, applicable: true, attached: true },
+        },
+      },
+      receiptId: evidence.receiptId ?? `room-capability-${runnerContext.runId}`,
+    }
+  } else {
+    throw new Error(`Path 1 Room drill does not accept action ${action} in runner-context mode`)
+  }
+  for (const attachedClient of clients) await attachedClient.close?.()
 }
 
 async function run() {
