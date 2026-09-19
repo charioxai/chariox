@@ -1,5 +1,12 @@
 import { createRequire } from "node:module"
 import { fileURLToPath } from "node:url"
+import {
+  createManagedComputerCellRuntimeMcpFromEnvironment,
+  inspectManagedComputerCellCleanup,
+  runManagedComputerCell,
+  runManagedComputerCellReconnect,
+  runManagedComputerCellTakeover,
+} from "./managed-computer-cell-fixture.mjs"
 
 const OPERATOR_ENDPOINT_ENV = "CHARIOX_MANAGED_PARITY_HOME_KERNEL_URL"
 const TARGET_KERNEL_ENV = "CHARIOX_MANAGED_PARITY_TARGET_KERNEL_REF"
@@ -88,6 +95,8 @@ export async function createManagedBrowserComputerParityTransport({ evidenceRoot
         requestApi,
         targetKernelRef,
         targetMachineRef,
+        runtimeMcp: createManagedComputerCellRuntimeMcpFromEnvironment(),
+        reconnectClient: async () => new LocalIpcClient(homeKernelUrl),
         displayTransport: {
           openSelkiesDisplayStream: displayApi.openSelkiesDisplayStream,
           webSocket,
@@ -119,6 +128,8 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
   targetKernelRef = null,
   targetMachineRef = null,
   displayTransport,
+  runtimeMcp = null,
+  reconnectClient = null,
 } = {}) {
   if (!client || typeof client.send !== "function") {
     throw new Error("managed parity transport requires a public kernel client")
@@ -145,6 +156,8 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
     attachmentIds: new Set(),
     attachmentsByClient: new Map(),
     identity: null,
+    computer: null,
+    cleanupEvidence: null,
   }
 
   return {
@@ -184,8 +197,48 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
           signal,
         })
       }
+      if (step === "selkies.computer") {
+        return runManagedComputerCell({
+          displayClient,
+          requestApi,
+          runtimeMcp,
+          ownedResources,
+          request,
+          signal,
+        })
+      }
+      if (step === "selkies.takeover") {
+        return runManagedComputerCellTakeover({
+          displayClient,
+          requestApi,
+          runtimeMcp,
+          ownedResources,
+          request,
+          signal,
+        })
+      }
+      if (step === "selkies.reconnect") {
+        return runManagedComputerCellReconnect({
+          displayClient,
+          requestApi,
+          reconnectClient,
+          runtimeMcp,
+          ownedResources,
+          request,
+          signal,
+        })
+      }
       if (step === "cleanup.perform") {
         return runCleanup({ displayClient, requestApi, ownedResources, signal })
+      }
+      if (step === "cleanup.inspect") {
+        return inspectManagedComputerCellCleanup({
+          displayClient,
+          requestApi,
+          ownedResources,
+          request,
+          signal,
+        })
       }
       throw new Error(`unsupported managed parity step: ${step}`)
     },
@@ -350,6 +403,14 @@ async function runSelkiesDestroy({
   )
   const deleted = responseVariant(deleteResponse, "SliceDeleted", "selkies.destroy").slice
   validateDeletedSlice(deleted, sliceId, "selkies.destroy")
+  rememberCleanupEvidence(ownedResources, {
+    sliceId,
+    roomId: identity.roomId,
+    attachmentIds,
+    detachedAttachmentIds: attachmentIds,
+    deleted: true,
+    cleaned: true,
+  })
   clearOwnedResources(ownedResources)
   return {
     ...identity,
@@ -373,6 +434,16 @@ async function runCleanup({ displayClient, requestApi, ownedResources, signal })
     )
     const deleted = responseVariant(deleteResponse, "SliceDeleted", "cleanup.perform").slice
     validateDeletedSlice(deleted, sliceId, "cleanup.perform")
+  }
+  if (sliceId || !ownedResources.cleanupEvidence) {
+    rememberCleanupEvidence(ownedResources, {
+      sliceId,
+      roomId: ownedResources.identity?.roomId ?? ownedResources.computer?.binding?.roomId ?? null,
+      attachmentIds,
+      detachedAttachmentIds: attachmentIds,
+      deleted: Boolean(sliceId),
+      cleaned: true,
+    })
   }
   clearOwnedResources(ownedResources)
   return { cleaned: true, sliceId, attachmentIds }
@@ -619,6 +690,15 @@ function clearOwnedResources(ownedResources) {
   ownedResources.attachmentIds.clear()
   ownedResources.attachmentsByClient.clear()
   ownedResources.identity = null
+  ownedResources.computer = null
+}
+
+function rememberCleanupEvidence(ownedResources, evidence) {
+  ownedResources.cleanupEvidence = {
+    ...evidence,
+    attachmentIds: [...(evidence.attachmentIds ?? [])],
+    detachedAttachmentIds: [...(evidence.detachedAttachmentIds ?? [])],
+  }
 }
 
 async function runSelkiesAttach({
