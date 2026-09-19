@@ -27,7 +27,7 @@ test("publication image copies compile-time workflow examples before building th
 
   const rustStage = dockerfile.slice(rustStageStart, nextStageStart)
   const examplesCopy = rustStage.indexOf("COPY examples/workflow-code examples/workflow-code")
-  const kernelBuild = rustStage.indexOf("RUN cargo build --locked --manifest-path apps/kernel/Cargo.toml")
+  const kernelBuild = rustStage.indexOf("cargo build --locked --manifest-path apps/kernel/Cargo.toml")
   assert.ok(examplesCopy >= 0, "the Rust build stage must copy compile-time workflow examples")
   assert.ok(kernelBuild >= 0, "the Rust build stage must compile the kernel")
   assert.ok(examplesCopy < kernelBuild, "compile-time workflow examples must be copied before the kernel build")
@@ -37,7 +37,7 @@ test("publication Rust build consumes the workspace lock and every kernel path d
   const rustStageStart = dockerfile.indexOf("FROM rust:1.88-bookworm@sha256:")
   const nextStageStart = dockerfile.indexOf("\nFROM ", rustStageStart + 1)
   const rustStage = dockerfile.slice(rustStageStart, nextStageStart)
-  const kernelBuild = rustStage.indexOf("RUN cargo build --locked --manifest-path apps/kernel/Cargo.toml")
+  const kernelBuild = rustStage.indexOf("cargo build --locked --manifest-path apps/kernel/Cargo.toml")
 
   assert.ok(kernelBuild >= 0, "the kernel must build with the committed Cargo.lock")
   for (const requiredCopy of [
@@ -64,6 +64,19 @@ test("publication Rust build consumes the workspace lock and every kernel path d
     "the runtime image must copy the kernel from Cargo's workspace target directory",
   )
   assert.doesNotMatch(dockerfile, /apps\/kernel\/target\/release\/chariox-kernel/)
+})
+
+test("publication Rust build defaults to one Cargo job and accepts an explicit build input", () => {
+  const rustStageStart = dockerfile.indexOf("FROM rust:1.88-bookworm@sha256:")
+  const nextStageStart = dockerfile.indexOf("\nFROM ", rustStageStart + 1)
+  const rustStage = dockerfile.slice(rustStageStart, nextStageStart)
+
+  assert.match(rustStage, /^ARG CARGO_BUILD_JOBS=1$/m)
+  assert.match(
+    rustStage,
+    /RUN CARGO_BUILD_JOBS="\$\{CARGO_BUILD_JOBS\}" cargo build --locked --manifest-path apps\/kernel\/Cargo\.toml --release --bin chariox-kernel/,
+    "the Rust build must pass the supported Cargo job input explicitly",
+  )
 })
 
 test("publication images pin every base image by immutable digest", () => {

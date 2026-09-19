@@ -4,6 +4,7 @@ import { spawn } from "node:child_process"
 import { createHmac } from "node:crypto"
 import { createWriteStream } from "node:fs"
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { createConnection } from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { promisify } from "node:util"
@@ -58,7 +59,7 @@ function signRelayToken(claims) {
   return `chariox-scoped-v1.${payload}.${signature}`
 }
 
-function relayClaims({ subject, subjectKind, actions, userId }) {
+function relayClaims({ subject, subjectKind, actions, userId, machineId = null }) {
   return {
     issuer: RELAY_ISSUER,
     subject,
@@ -73,9 +74,8 @@ function relayClaims({ subject, subjectKind, actions, userId }) {
     organization_id: null,
     user_id: userId,
     device_id: subject,
-    machine_id: subjectKind === "kernel" ? subject : null,
+    machine_id: subjectKind === "kernel" ? machineId : null,
     client_id: subjectKind === "client" ? subject : null,
-    public_key_thumbprint: `${subject}-thumbprint`,
     entitlements_version: "drill",
   }
 }
@@ -95,7 +95,7 @@ function makePorts() {
   }
 }
 
-function kernelEnv({ ports, stateRoot, identity, acceptRemoteLeases }) {
+function kernelEnv({ ports, stateRoot, identity, acceptRemoteLeases, logDir }) {
   const token = signRelayToken(relayClaims({
     subject: identity.daemonId,
     subjectKind: "kernel",
@@ -109,6 +109,7 @@ function kernelEnv({ ports, stateRoot, identity, acceptRemoteLeases }) {
       "packet_route",
     ],
     userId: "user-1",
+    machineId: identity.machineId,
   }))
   const kernelRoot = path.join(stateRoot, identity.alias)
   return {
@@ -126,6 +127,7 @@ function kernelEnv({ ports, stateRoot, identity, acceptRemoteLeases }) {
     CHARIOX_MACHINE_ALIAS: identity.machineAlias,
     CHARIOX_ACCEPT_REMOTE_LEASES: acceptRemoteLeases ? "1" : "0",
     CHARIOX_PROVIDER_DEV_STUB: "1",
+    CHARIOX_LOG_DIR: logDir,
     CHARIOX_DAEMON_SOCKET: path.join(kernelRoot, "daemon.sock"),
     CHARIOX_SESSION_HISTORY_DIR: path.join(kernelRoot, "history"),
     XDG_CONFIG_HOME: path.join(kernelRoot, "xdg-config"),
@@ -152,17 +154,69 @@ function clientFor(LocalIpcClient, relayUrl, daemonAlias, userId) {
   })
 }
 
-function spawnObserved(label, binary, env, evidenceRoot) {
-  const log = createWriteStream(path.join(evidenceRoot, `${label}.log`), { flags: "a" })
-  const child = spawn(binary, [], { cwd: repoRoot, env, stdio: ["ignore", "pipe", "pipe"] })
+function safeChildError(error) {
+  return {
+    name: error?.name ?? "Error",
+    code: typeof error?.code === "string" ? error.code : null,
+    message: String(error?.message ?? error),
+  }
+}
+
+function childDiagnostics(children) {
+  return children.map((child) => {
+    const observed = child?.m1Observed ?? {}
+    return {
+      label: observed.label ?? "unknown",
+      pid: child?.pid ?? observed.pid ?? null,
+      startedAt: observed.startedAt ?? null,
+      outputLogPath: observed.outputLogPath ?? null,
+      runtimeLogDir: observed.runtimeLogDir ?? null,
+      spawnError: observed.spawnError ?? null,
+      exit: observed.exit ?? null,
+    }
+  })
+}
+
+function unexpectedChild(children) {
+  return children
+    .map((child) => ({ child, diagnostic: childDiagnostics([child])[0] }))
+    .find(({ diagnostic }) => diagnostic.spawnError || (diagnostic.exit && !diagnostic.exit.expected))
+}
+
+function spawnObserved(label, binary, env, evidenceRoot, args = []) {
+  const outputLogPath = path.join(evidenceRoot, `${label}.log`)
+  const log = createWriteStream(outputLogPath, { flags: "a" })
+  const child = spawn(binary, args, { cwd: repoRoot, env, stdio: ["ignore", "pipe", "pipe"] })
+  child.m1Observed = {
+    label,
+    pid: child.pid ?? null,
+    startedAt: new Date().toISOString(),
+    outputLogPath,
+    runtimeLogDir: typeof env?.CHARIOX_LOG_DIR === "string" ? env.CHARIOX_LOG_DIR : null,
+    spawnError: null,
+    exit: null,
+    terminationRequested: false,
+  }
+  child.once("error", (error) => {
+    child.m1Observed.spawnError = safeChildError(error)
+  })
   child.stdout.pipe(log)
   child.stderr.pipe(log)
-  child.once("exit", () => log.end())
+  child.once("exit", (code, signal) => {
+    child.m1Observed.exit = {
+      at: new Date().toISOString(),
+      code,
+      signal,
+      expected: child.m1Observed.terminationRequested,
+    }
+    log.end()
+  })
   return child
 }
 
 async function terminateChild(child) {
   if (!child || child.exitCode != null) return
+  if (child.m1Observed) child.m1Observed.terminationRequested = true
   child.kill("SIGTERM")
   await Promise.race([
     new Promise((resolve) => child.once("exit", resolve)),
@@ -189,9 +243,51 @@ function unwrap(response, key) {
   return response?.[key] ?? response
 }
 
-async function waitForTarget(LocalIpcClient, relayUrl, daemonAlias) {
+async function waitForTcpListener(host, port, timeoutMs = 15_000, child = null) {
+  const started = Date.now()
+  let lastError = "connection refused"
+  while (Date.now() - started < timeoutMs) {
+    const unexpected = child && unexpectedChild([child])
+    if (unexpected) {
+      throw new Error(
+        `relay child failed before listener became reachable: ${JSON.stringify(unexpected.diagnostic)}`,
+      )
+    }
+    const connected = await new Promise((resolve) => {
+      let settled = false
+      const socket = createConnection({ host, port })
+      const finish = (value) => {
+        if (settled) return
+        settled = true
+        socket.destroy()
+        resolve(value)
+      }
+      socket.once("connect", () => finish(true))
+      socket.once("error", (error) => {
+        lastError = error instanceof Error ? error.message : String(error)
+        finish(false)
+      })
+      socket.setTimeout(Math.min(500, Math.max(1, timeoutMs - (Date.now() - started))), () => {
+        lastError = "connection timeout"
+        finish(false)
+      })
+    })
+    if (connected) return { host, port, at: new Date().toISOString() }
+    await sleep(100)
+  }
+  const diagnostic = child ? `; child=${JSON.stringify(childDiagnostics([child])[0])}` : ""
+  throw new Error(`TCP listener ${host}:${port} did not become reachable: ${lastError}${diagnostic}`)
+}
+
+async function waitForTarget(LocalIpcClient, relayUrl, daemonAlias, children = []) {
   let lastError = "unknown error"
   for (let attempt = 0; attempt < 80; attempt += 1) {
+    const unexpected = unexpectedChild(children)
+    if (unexpected) {
+      throw new Error(
+        `relay target ${daemonAlias} unavailable because child failed: ${JSON.stringify(unexpected.diagnostic)}`,
+      )
+    }
     const client = clientFor(LocalIpcClient, relayUrl, daemonAlias, "user-1")
     try {
       await Promise.race([
@@ -326,6 +422,7 @@ async function main() {
   const children = []
   const clients = []
   const resources = [await resourceSnapshot("before")]
+  let relayListener = null
   const assertions = []
   const { stdout: commitOutput } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repoRoot })
   const ossCommit = commitOutput.trim()
@@ -356,22 +453,37 @@ async function main() {
       CHARIOX_RELAY_SCOPED_ISSUER: RELAY_ISSUER,
       CHARIOX_RELAY_SCOPED_HMAC_SECRET: RELAY_SECRET,
     }, evidenceRoot)
+    children.push(relay)
+    relayListener = await waitForTcpListener("127.0.0.1", ports.relay, 15_000, relay)
     const homeKernel = spawnObserved(
       "home-kernel",
       kernelBinary,
-      kernelEnv({ ports, stateRoot, identity: home, acceptRemoteLeases: false }),
+      kernelEnv({
+        ports,
+        stateRoot,
+        identity: home,
+        acceptRemoteLeases: false,
+        logDir: path.join(evidenceRoot, "home-kernel-runtime-logs"),
+      }),
       evidenceRoot,
     )
+    children.push(homeKernel)
     const workerKernel = spawnObserved(
       "worker-kernel",
       kernelBinary,
-      kernelEnv({ ports, stateRoot, identity: worker, acceptRemoteLeases: true }),
+      kernelEnv({
+        ports,
+        stateRoot,
+        identity: worker,
+        acceptRemoteLeases: true,
+        logDir: path.join(evidenceRoot, "worker-kernel-runtime-logs"),
+      }),
       evidenceRoot,
     )
-    children.push(relay, homeKernel, workerKernel)
+    children.push(workerKernel)
 
-    await waitForTarget(LocalIpcClient, relayUrl, home.alias)
-    await waitForTarget(LocalIpcClient, relayUrl, worker.alias)
+    await waitForTarget(LocalIpcClient, relayUrl, home.alias, children)
+    await waitForTarget(LocalIpcClient, relayUrl, worker.alias, children)
     const user1 = clientFor(LocalIpcClient, relayUrl, home.alias, "user-1")
     let user2 = clientFor(LocalIpcClient, relayUrl, home.alias, "user-2")
     clients.push(user1, user2)
@@ -525,6 +637,7 @@ async function main() {
       protocolVersion: kernelTypes.LOCAL_DAEMON_PROTOCOL_VERSION,
       versions,
       command: "pnpm --filter @chariox/cli run room-environment:m1-drill",
+      relayListener,
       topology: "same-host relay, home kernel, worker kernel, two authenticated clients",
       machine: "local development Mac",
       provider: "dev-stub",
@@ -535,7 +648,15 @@ async function main() {
       workerKernelId: advertisedWorker.kernel_id,
       eventCursor: nextCursor,
       assertions,
-      artifacts: ["relay.log", "home-kernel.log", "worker-kernel.log", "cleanup.json"],
+      childProcesses: childDiagnostics(children),
+      artifacts: [
+        "relay.log",
+        "home-kernel.log",
+        "worker-kernel.log",
+        "home-kernel-runtime-logs/",
+        "worker-kernel-runtime-logs/",
+        "cleanup.json",
+      ],
       resources,
       cleanup: { stateRootRemoved: false, listenersReleased: false },
     }
@@ -563,12 +684,21 @@ async function main() {
       protocolVersion: null,
       versions,
       command: "pnpm --filter @chariox/cli run room-environment:m1-drill",
+      relayListener,
       topology: "same-host relay, home kernel, worker kernel, two authenticated clients",
       machine: "local development Mac",
       provider: "dev-stub",
       sessionId,
       assertions,
-      artifacts: ["relay.log", "home-kernel.log", "worker-kernel.log", "cleanup.json"],
+      childProcesses: childDiagnostics(children),
+      artifacts: [
+        "relay.log",
+        "home-kernel.log",
+        "worker-kernel.log",
+        "home-kernel-runtime-logs/",
+        "worker-kernel-runtime-logs/",
+        "cleanup.json",
+      ],
       resources,
       cleanup: { stateRootRemoved: false, listenersReleased: false },
     }
@@ -576,6 +706,7 @@ async function main() {
     report.finishedAt = new Date().toISOString()
     report.failedAssertion = failure instanceof Error ? failure.message : failure
     report.resources.push(after)
+    report.childProcesses = childDiagnostics(children)
     report.cleanup = { stateRootRemoved: true, listenersReleased }
     await writeFile(path.join(evidenceRoot, "report.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8")
     await writeFile(path.join(evidenceRoot, "cleanup.json"), `${JSON.stringify({
@@ -584,13 +715,18 @@ async function main() {
       listenersReleased,
       resource: after,
       failure: failure instanceof Error ? failure.message : failure,
+      childProcesses: childDiagnostics(children),
     }, null, 2)}\n`, "utf8")
   }
   if (failure) throw failure
   console.log(JSON.stringify({ status: "passed", evidenceRoot, assertions }, null, 2))
 }
 
-main().catch((error) => {
-  console.error(error)
-  process.exitCode = 1
-})
+export { childDiagnostics, relayClaims, spawnObserved, waitForTcpListener }
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(error)
+    process.exitCode = 1
+  })
+}
