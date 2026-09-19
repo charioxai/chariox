@@ -11,6 +11,7 @@ mod runtime_interactions;
 mod runtime_project;
 mod runtime_session;
 mod runtime_worktrees;
+mod saved_room_generation;
 mod service;
 mod session_config;
 mod session_identity;
@@ -40,9 +41,8 @@ pub(crate) use project_environment::KERNEL_COMPUTED_INPUT_ATTESTATION;
 pub use project_environment::{
     ProjectEnvironmentDefinition, ProjectEnvironmentDefinitionOrigin,
     ProjectEnvironmentDefinitionSource, ProjectEnvironmentInput, ProjectEnvironmentInputKind,
-    ProjectEnvironmentPathBase, ProjectEnvironmentPathEntry,
-    ProjectEnvironmentSetupStep, ProjectEnvironmentSetupStepKind,
-    PROJECT_ENVIRONMENT_DEFINITION_SCHEMA_VERSION,
+    ProjectEnvironmentPathBase, ProjectEnvironmentPathEntry, ProjectEnvironmentSetupStep,
+    ProjectEnvironmentSetupStepKind, PROJECT_ENVIRONMENT_DEFINITION_SCHEMA_VERSION,
 };
 pub use room_environment::{
     agent_environment_actor_id, human_environment_actor_id, human_environment_actor_label,
@@ -65,6 +65,13 @@ pub use runtime_project::{
     RuntimeProject, RuntimeProjectKind, RuntimeProjectStatus, SessionProjectSelection,
 };
 pub(crate) use runtime_session::DurableWorkflowHotState;
+pub(crate) use saved_room_generation::{
+    SavedPermissionDecision, SavedRoomGeneration, SavedRoomGenerationError,
+    SavedRoomGenerationJournal, SavedRoomGenerationRef, SavedRoomGenerationRestoreAdapter,
+    SavedRoomRestorePlan, SavedRuntimeImageIdentity, SavedSourceIdentity,
+    SAVED_ROOM_GENERATION_COMMIT_EVENT_KIND, SAVED_ROOM_GENERATION_PREPARE_EVENT_KIND,
+    SAVED_ROOM_GENERATION_ROLLBACK_EVENT_KIND,
+};
 pub use service::{
     classify_workflow_failure_kind, WorkflowCompletionUpdate, WorkflowDispatch,
     WorkflowHandoffValidationFailure, WorkflowHandoffValidationWarning,

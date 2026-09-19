@@ -14,7 +14,8 @@ use crate::runtime::metaagent_event::{
     MetaagentEventRecord, MetaagentEventStore, MetaagentEventSubscription,
 };
 use crate::session::{
-    DurablePromptPrivateState, RuntimeProject, RuntimeSession, SessionStateStore,
+    DurablePromptPrivateState, RuntimeProject, RuntimeSession, SavedRoomGeneration,
+    SessionStateStore,
 };
 use crate::slice::{
     SliceBackupRecord, SliceBackupRestoreTransactionRecord, SliceRecord, SliceSavedStateRecord,
@@ -41,6 +42,8 @@ pub(crate) struct DurableKernelSnapshotPayload {
     pub(crate) metaagent_event_records: Vec<MetaagentEventRecord>,
     #[serde(default)]
     pub(crate) metaagent_event_subscriptions: Vec<MetaagentEventSubscription>,
+    #[serde(default)]
+    pub(crate) saved_room_generations: Vec<SavedRoomGeneration>,
 }
 
 impl DurableKernelSnapshotPayload {
@@ -81,6 +84,7 @@ impl DurableKernelSnapshotPayload {
             pending_slice_backup_restores,
             metaagent_event_records: metaagent_snapshot.records,
             metaagent_event_subscriptions: metaagent_snapshot.subscriptions,
+            saved_room_generations: sessions.read().saved_room_generations(),
         }
     }
 }
@@ -412,11 +416,18 @@ fn checkpoint_entity_id(kind: &str, value: &serde_json::Value, index: usize) -> 
             return format!("{session_id}:{prompt_id}");
         }
     }
-    ["id", "event_id", "subscription_id", "slice_id", "backup_id"]
-        .into_iter()
-        .find_map(|field| value.get(field).and_then(serde_json::Value::as_str))
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("{index:020}"))
+    [
+        "id",
+        "event_id",
+        "subscription_id",
+        "slice_id",
+        "backup_id",
+        "generation_id",
+    ]
+    .into_iter()
+    .find_map(|field| value.get(field).and_then(serde_json::Value::as_str))
+    .map(str::to_string)
+    .unwrap_or_else(|| format!("{index:020}"))
 }
 
 #[cfg(test)]
