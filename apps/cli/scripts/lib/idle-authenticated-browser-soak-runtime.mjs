@@ -17,8 +17,16 @@ import {
   IDLE_SOAK_SYNTHETIC_SECRET_MARKER,
   minimumIdleSoakCheckpointCount,
   validateIdleSoakDetachContract,
+  validateIdleSoakProvenance,
   validateCompletedIdleSoakResult,
 } from "./idle-authenticated-browser-soak.mjs"
+import {
+  assertCurrentContainerIdentity,
+  captureSourceIdentity,
+  inspectDigestBoundRuntime,
+  networkNamespaceAttribution,
+  resolveVerifiedImage,
+} from "./browser-computer-soak-runtime.mjs"
 
 const execFileAsync = promisify(execFile)
 const schema = "chariox.idle_authenticated_browser_soak.v1"
@@ -33,17 +41,18 @@ export async function runIdleAuthenticatedBrowserSoak({ options, repoRoot, scrip
   try {
     await mkdir(options.evidenceRoot, { recursive: true, mode: 0o700 })
     await assertCleanIdleSoakRunDirectory(paths.runDir, { detachedContinuation: options.internalRun })
-    source = await sourceIdentity(repoRoot)
+    source = await captureSourceIdentity(repoRoot)
     const allocation = { debugPort: options.debugPort ?? await availablePort(52_000, 55_000) }
     if (options.internalRun) {
       const contract = await waitForDetachContract(paths, source, process.pid)
       const preflight = contract.preflight
-      await executeSoak({ options, paths, allocation, source, image: preflight.image, baseline: preflight.baseline, repoRoot })
+      await executeSoak({ options, paths, allocation, source, provenance: preflight.provenance, baseline: preflight.baseline, repoRoot })
       return
     }
-    const image = await imageIdentity()
     const baseline = await resourceSnapshot("preflight", [process.pid], paths.runDir)
-    const preflight = await runPreflight({ options, paths, allocation, source, image, baseline, repoRoot })
+    const ownedIds = new Set([process.pid, ...(baseline.owned.processes ?? []).map(entry => entry.pid).filter(Number.isSafeInteger)])
+    const provenance = await captureIdleSoakProvenance({ options, source, ownedIds })
+    const preflight = await runPreflight({ options, paths, allocation, source, provenance, baseline, repoRoot })
     await writeJson(paths.preflight, preflight)
     if (options.mode === "preflight") {
       console.log(JSON.stringify({ status: "passed", runDir: paths.runDir, preflight: paths.preflight }))
@@ -68,19 +77,49 @@ export async function runIdleAuthenticatedBrowserSoak({ options, repoRoot, scrip
       console.log(JSON.stringify({ status: "started", pid: child.pid, runDir: paths.runDir, statusPath: paths.status }))
       return
     }
-    await executeSoak({ options, paths, allocation, source, image, baseline, repoRoot })
+    await executeSoak({ options, paths, allocation, source, provenance, baseline, repoRoot })
   } catch (error) {
     await materializeLaunchFailure(paths, options, source, error, detachedChildIdentity)
     throw error
   }
 }
 
-async function runPreflight({ options, paths, allocation, source, image, baseline, repoRoot }) {
-  if (process.getuid?.() === 0) throw new Error("preflight refuses root Chromium; run as the non-root disposable slice owner")
-  if (!/^[0-9a-f]{40}$/i.test(source.commit) || !source.branch || source.dirty) throw new Error("preflight requires an exact clean branch source identity")
-  if (image.available !== true || !image.imageDigest || image.sourceCommit !== source.commit) {
-    throw new Error("preflight requires a signed image manifest matching the source commit")
+export async function captureIdleSoakProvenance({ options, source, ownedIds = new Set([process.pid]) }, {
+  resolveImage = resolveVerifiedImage,
+  inspectRuntime = inspectDigestBoundRuntime,
+  assertContainer = assertCurrentContainerIdentity,
+  networkAttribution = networkNamespaceAttribution,
+  imageVerificationOptions,
+  runtimeInspectionOptions,
+  networkAttributionOptions,
+} = {}) {
+  const image = await resolveImage({
+    imageRef: options.imageRef,
+    signatureKey: options.imageSignatureKey,
+    engine: options.containerEngine,
+  }, imageVerificationOptions)
+  assertContainer(options.runtimeContainerId)
+  const runtimeImage = await inspectRuntime({ containerId: options.runtimeContainerId, image, source }, runtimeInspectionOptions)
+  const networkNamespace = await networkAttribution(ownedIds, 32, networkAttributionOptions)
+  if (networkNamespace?.exclusive !== true) {
+    const foreign = networkNamespace?.foreignPids?.length ? `; foreign PIDs: ${networkNamespace.foreignPids.join(",")}` : ""
+    throw new Error(`preflight requires exclusive network-namespace ownership${foreign}`)
   }
+  return {
+    schema: "chariox.idle_authenticated_browser_soak_provenance.v1",
+    source,
+    image,
+    runtimeImage,
+    networkNamespace,
+  }
+}
+
+async function runPreflight({ options, paths, allocation, source, provenance, baseline, repoRoot }) {
+  if (process.getuid?.() === 0) throw new Error("preflight refuses root Chromium; run as the non-root disposable slice owner")
+  if (!/^[0-9a-f]{40}$/i.test(source.commit) || !/^[0-9a-f]{40}$/i.test(source.tree) || source.dirty) {
+    throw new Error("preflight requires an exact clean source commit/tree identity")
+  }
+  validateIdleSoakProvenance(provenance, source)
   await assertNoOwnedRun(options.evidenceRoot, paths.runDir)
   const commandPaths = {}
   for (const command of ["chromium", "ps"]) {
@@ -94,12 +133,14 @@ async function runPreflight({ options, paths, allocation, source, image, baselin
   return {
     schema: "chariox.idle_authenticated_browser_soak_preflight.v1", status: "passed", at: new Date().toISOString(),
     syntheticFixture: true, externalNetworkRequired: false, idleAuthenticated: true,
-    durationSeconds: options.durationSeconds, limits: limits(options), allocation, source, image, baseline,
+    durationSeconds: options.durationSeconds, limits: limits(options), allocation, source,
+    image: provenance.image, runtimeImage: provenance.runtimeImage, networkNamespace: provenance.networkNamespace,
+    provenance, baseline,
     commandPaths, paths,
   }
 }
 
-async function executeSoak({ options, paths, allocation, source, image, baseline, repoRoot }) {
+async function executeSoak({ options, paths, allocation, source, provenance, baseline, repoRoot }) {
   const startedAt = new Date().toISOString()
   let soakStartedMonotonic = null
   let stateRoot
@@ -224,7 +265,7 @@ async function executeSoak({ options, paths, allocation, source, image, baseline
     const result = {
       schema, status, pid: process.pid, startedAt, completedAt: new Date().toISOString(),
       smoke: options.smoke, durationSeconds: options.durationSeconds, healthIntervalSeconds: options.healthIntervalSeconds,
-      elapsedMonotonicMs, command: commandEvidence(options, paths, allocation), source, image,
+      elapsedMonotonicMs, command: commandEvidence(options, paths, allocation), source, image: provenance.image, provenance,
       fixture: { synthetic: true, externalNetworkUsed: false }, counters,
       checkpoints: { count: checkpoints.length, required: minimumIdleSoakCheckpointCount(options.durationSeconds, options.healthIntervalSeconds),
         entries: checkpoints, final: checkpoints.at(-1) ?? null },
@@ -509,35 +550,18 @@ async function retainedEvidenceTexts(runDir) {
   return texts
 }
 
-async function sourceIdentity(repoRoot) {
-  const [{ stdout: commit }, { stdout: branch }, { stdout: status }] = await Promise.all([
-    execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repoRoot }), execFileAsync("git", ["branch", "--show-current"], { cwd: repoRoot }),
-    execFileAsync("git", ["status", "--short"], { cwd: repoRoot }),
-  ])
-  return { commit: commit.trim(), branch: branch.trim(), dirty: status.trim() !== "" }
-}
-
-async function imageIdentity() {
-  for (const candidate of ["/etc/chariox/release-manifest.json", "/usr/lib/chariox/current/usr/lib/chariox/release-manifest.json"]) {
-    try {
-      const value = JSON.parse(await readFile(candidate, "utf8"))
-      return { manifestPath: candidate, imageDigest: value.image_digest ?? value.imageDigest ?? null,
-        sourceCommit: value.source_commit ?? value.sourceCommit ?? value.git_sha ?? null, available: true }
-    } catch {}
-  }
-  return { available: false, reason: "release manifest not present" }
-}
-
 function detachedArgs(options, paths, allocation) {
   return ["--internal-run", ...(options.smoke ? ["--smoke"] : ["--duration-seconds", String(options.durationSeconds),
     "--health-interval-seconds", String(options.healthIntervalSeconds), "--sample-interval-seconds", String(options.sampleIntervalSeconds)]),
     "--max-cpu-percent", String(options.maxCpuPercent), "--max-rss-mb", String(options.maxRssMb),
     "--max-processes", String(options.maxProcesses), "--min-free-disk-mb", String(options.minFreeDiskMb),
-    "--evidence-root", options.evidenceRoot, "--run-dir", paths.runDir, "--debug-port", String(allocation.debugPort)]
+    "--evidence-root", options.evidenceRoot, "--run-dir", paths.runDir, "--debug-port", String(allocation.debugPort),
+    "--image-ref", options.imageRef, "--image-signature-key", options.imageSignatureKey,
+    "--container-engine", options.containerEngine, "--runtime-container-id", options.runtimeContainerId]
 }
 
 function commandEvidence(options, paths, allocation) {
-  return `node apps/cli/scripts/live-idle-authenticated-browser-soak.mjs --detach --duration-seconds ${options.durationSeconds} --health-interval-seconds ${options.healthIntervalSeconds} --sample-interval-seconds ${options.sampleIntervalSeconds} --max-cpu-percent ${options.maxCpuPercent} --max-rss-mb ${options.maxRssMb} --max-processes ${options.maxProcesses} --min-free-disk-mb ${options.minFreeDiskMb} --evidence-root ${JSON.stringify(options.evidenceRoot)} --run-dir ${JSON.stringify(paths.runDir)} --debug-port ${allocation.debugPort}`
+  return `node apps/cli/scripts/live-idle-authenticated-browser-soak.mjs --detach --duration-seconds ${options.durationSeconds} --health-interval-seconds ${options.healthIntervalSeconds} --sample-interval-seconds ${options.sampleIntervalSeconds} --max-cpu-percent ${options.maxCpuPercent} --max-rss-mb ${options.maxRssMb} --max-processes ${options.maxProcesses} --min-free-disk-mb ${options.minFreeDiskMb} --evidence-root ${JSON.stringify(options.evidenceRoot)} --run-dir ${JSON.stringify(paths.runDir)} --debug-port ${allocation.debugPort} --image-ref [VERIFIED_IN_PROVENANCE] --image-signature-key [REDACTED_PATH] --container-engine ${options.containerEngine} --runtime-container-id [VERIFIED_IN_PROVENANCE]`
 }
 
 export function spawnLogged(name, command, args, { cwd, logsRoot, env = process.env }) {
@@ -773,6 +797,7 @@ async function findSameSourceSmoke(evidenceRoot, currentRunDir, source) {
       const resultPath = path.join(runDir, "result.json")
       const result = JSON.parse(await readFile(resultPath, "utf8"))
       if (result.smoke === true && result.status === "passed" && result.source?.commit === source.commit
+        && result.source?.tree === source.tree
         && result.source?.dirty === false && source.dirty === false) {
         validateCompletedIdleSoakResult(result)
         const smokePaths = buildIdleSoakPaths(evidenceRoot, entry.name)
@@ -783,7 +808,7 @@ async function findSameSourceSmoke(evidenceRoot, currentRunDir, source) {
   }
   candidates.sort((left, right) => Date.parse(right.completedAt) - Date.parse(left.completedAt))
   if (!candidates[0]) throw new Error("detach requires a completed same-source smoke result under evidence-root")
-  return { status: "passed", smoke: true, source: candidates[0].result.source,
+  return { status: "passed", smoke: true, source: candidates[0].result.source, provenance: candidates[0].result.provenance,
     completedAt: candidates[0].completedAt, resultPath: candidates[0].resultPath }
 }
 
