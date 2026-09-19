@@ -59,7 +59,7 @@ function signRelayToken(claims) {
   return `chariox-scoped-v1.${payload}.${signature}`
 }
 
-function relayClaims({ subject, subjectKind, actions, userId }) {
+function relayClaims({ subject, subjectKind, actions, userId, machineId = null }) {
   return {
     issuer: RELAY_ISSUER,
     subject,
@@ -74,7 +74,7 @@ function relayClaims({ subject, subjectKind, actions, userId }) {
     organization_id: null,
     user_id: userId,
     device_id: subject,
-    machine_id: subjectKind === "kernel" ? subject : null,
+    machine_id: subjectKind === "kernel" ? machineId : null,
     client_id: subjectKind === "client" ? subject : null,
     entitlements_version: "drill",
   }
@@ -109,6 +109,7 @@ function kernelEnv({ ports, stateRoot, identity, acceptRemoteLeases, logDir }) {
       "packet_route",
     ],
     userId: "user-1",
+    machineId: identity.machineId,
   }))
   const kernelRoot = path.join(stateRoot, identity.alias)
   return {
@@ -168,6 +169,8 @@ function childDiagnostics(children) {
       label: observed.label ?? "unknown",
       pid: child?.pid ?? observed.pid ?? null,
       startedAt: observed.startedAt ?? null,
+      outputLogPath: observed.outputLogPath ?? null,
+      runtimeLogDir: observed.runtimeLogDir ?? null,
       spawnError: observed.spawnError ?? null,
       exit: observed.exit ?? null,
     }
@@ -181,12 +184,15 @@ function unexpectedChild(children) {
 }
 
 function spawnObserved(label, binary, env, evidenceRoot, args = []) {
-  const log = createWriteStream(path.join(evidenceRoot, `${label}.log`), { flags: "a" })
+  const outputLogPath = path.join(evidenceRoot, `${label}.log`)
+  const log = createWriteStream(outputLogPath, { flags: "a" })
   const child = spawn(binary, args, { cwd: repoRoot, env, stdio: ["ignore", "pipe", "pipe"] })
   child.m1Observed = {
     label,
     pid: child.pid ?? null,
     startedAt: new Date().toISOString(),
+    outputLogPath,
+    runtimeLogDir: typeof env?.CHARIOX_LOG_DIR === "string" ? env.CHARIOX_LOG_DIR : null,
     spawnError: null,
     exit: null,
     terminationRequested: false,
