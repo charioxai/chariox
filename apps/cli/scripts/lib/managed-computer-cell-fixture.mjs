@@ -325,7 +325,6 @@ export async function runManagedComputerCellTakeover({
   return {
     ...computer.binding,
     displayBackend: "selkies",
-    overlayVisible: true,
     takeoverCompleted: true,
     actorAttributed: true,
     humanActorId,
@@ -438,7 +437,6 @@ export async function runManagedComputerCellReconnect({
     return {
       ...computer.binding,
       displayBackend: "selkies",
-      faultInjected: request?.fault === "relay_disconnect",
       reconnected: true,
       duplicateActions,
       duplicateBrowsers: inventory.browserCount - 1,
