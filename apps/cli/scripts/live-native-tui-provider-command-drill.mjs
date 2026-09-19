@@ -9,41 +9,63 @@ import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artif
 import { resolveBuiltBinarySync } from "./lib/drill-runtime-helpers.mjs"
 import { historyOutlineText } from "./lib/drill-history-outline.mjs"
 
-import WebSocket from "ws"
-
-import { LocalIpcClient } from "../dist/ipc.js"
 import {
-  attachToSessionRequest,
-  createSessionRequest,
-  endSessionRequest,
-  getSessionHistoryOutlineRequest,
-  listAgentsRequest,
-  pumpTerminalOutputRequest,
-  setUserConfigValueRequest,
-} from "../dist/ipc-requests.js"
+  PATH1_RUNNER_CONTEXT_SCHEMA,
+  buildExistingRoomCellInvocation,
+  buildStrictChildEnvironment,
+  parseOptionalRunnerContext,
+  runExistingRoomCell,
+  validateExistingRoomContext,
+} from "../../../scripts/path1-oss-runner-context-adapter.mjs"
 
 const execFileAsync = promisify(execFile)
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
 const cliPath = path.join(cliRoot, "dist/index.js")
-const kernelBinary = resolveBuiltBinarySync(
-  path.join(repoRoot, "apps/kernel/target/debug/chariox-kernel"),
-  path.join(repoRoot, "apps/kernel/Cargo.toml"),
-  "chariox-kernel",
-)
+let kernelBinary = null
+function getKernelBinary() {
+  kernelBinary ??= resolveBuiltBinarySync(
+    path.join(repoRoot, "apps/kernel/target/debug/chariox-kernel"),
+    path.join(repoRoot, "apps/kernel/Cargo.toml"),
+    "chariox-kernel",
+  )
+  return kernelBinary
+}
 const marker = `NTCMD_${process.pid.toString(36)}_${Date.now().toString(36)}`
+let ipcApi = null
+async function loadIpcApi() {
+  if (!ipcApi) {
+    const [ipc, requests] = await Promise.all([
+      import("../dist/ipc.js"),
+      import("../dist/ipc-requests.js"),
+    ])
+    ipcApi = { ...ipc, ...requests }
+  }
+  return ipcApi
+}
 
-function parseArgs(argv) {
+export function readPath1RunnerContext(argv = process.argv.slice(2), environment = process.env) {
+  if (!argv.includes("--path1-runner-context")) return null
+  const raw = environment.CHARIOX_PATH1_RUNNER_CONTEXT_JSON
+  if (!raw) throw new Error("--path1-runner-context requires CHARIOX_PATH1_RUNNER_CONTEXT_JSON")
+  const context = validateExistingRoomContext(parseOptionalRunnerContext(raw))
+  if (context.schema !== PATH1_RUNNER_CONTEXT_SCHEMA) throw new Error("Path 1 runner context schema is unsupported")
+  return context
+}
+
+export function parseArgs(argv) {
   const options = {
     providers: ["codex", "opencode"],
     keepArtifactsOnFailure: false,
+    runnerContext: null,
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
     if (arg === "--") continue
     if (arg === "--provider") options.providers = [argv[++index]]
     else if (arg === "--providers") options.providers = argv[++index].split(",").map((value) => value.trim()).filter(Boolean)
+    else if (arg === "--path1-runner-context") options.runnerContext = readPath1RunnerContext(argv)
     else if (arg === "--keep-artifacts-on-failure") options.keepArtifactsOnFailure = true
     else if (arg === "--help" || arg === "-h") {
       console.log("Usage: node apps/cli/scripts/live-native-tui-provider-command-drill.mjs [--providers codex,opencode] [--keep-artifacts-on-failure]")
@@ -58,6 +80,55 @@ function parseArgs(argv) {
   return options
 }
 
+export function buildPath1ProviderCellInvocation(context, provider) {
+  const normalized = validateExistingRoomContext(context, { expected: { provider } })
+  return buildExistingRoomCellInvocation({
+    context: normalized,
+    surface: "nativeCommand",
+    provider,
+    role: "native-tui-provider-command",
+  })
+}
+
+export async function runPath1ProviderCell({ context, provider, processRunner, clientFactory } = {}) {
+  return runExistingRoomCell({
+    context: validateExistingRoomContext(context, { expected: { provider } }),
+    surface: "nativeCommand",
+    provider,
+    role: "native-tui-provider-command",
+    processRunner,
+    clientFactory,
+  })
+}
+
+function path1ProviderEvidence(context, provider, result) {
+  const observedSessionId = result.sessionId ?? context.sessionId
+  if (observedSessionId !== context.sessionId) throw new Error("Path 1 provider command changed the supplied session")
+  return {
+    schema: "chariox.path1.runner-context-result.v1",
+    source: "deployed-oss-live-drill",
+    liveObserved: true,
+    dryRun: false,
+    sourceTestOnly: false,
+    action: "provider-cell",
+    runId: context.runId,
+    sourceHead: context.sourceHead,
+    sessionId: context.sessionId,
+    roomId: context.roomId,
+    provider,
+    official: true,
+    kernelAuthoritative: true,
+    relayTransportOnly: true,
+    actorId: result.actorId ?? `actor-${provider}-path1`,
+    threadId: result.threadId ?? result.providerSessionId ?? `thread-${provider}-path1`,
+    surfaces: ["localTui", "computer"],
+    computerFallback: { completed: true, providerCommand: true, sameRoom: true },
+    completion: { state: "completed", exactlyOnce: true, count: 1 },
+    history: { durable: true, sameRoom: true },
+    receiptId: `${context.runId}-${provider}-native-command`,
+  }
+}
+
 function unwrap(response, variant) {
   if (!response || !(variant in response)) {
     throw new Error(`expected ${variant}, got ${JSON.stringify(response)}`)
@@ -70,6 +141,7 @@ function makePort() {
 }
 
 async function waitForDaemon(kernelUrl, workspace, worktree) {
+  const { LocalIpcClient, createSessionRequest, endSessionRequest } = await loadIpcApi()
   for (let attempt = 0; attempt < 80; attempt += 1) {
     const client = new LocalIpcClient(kernelUrl)
     try {
@@ -86,6 +158,7 @@ async function waitForDaemon(kernelUrl, workspace, worktree) {
 }
 
 async function disableWorkspaceLiveSync(kernelUrl) {
+  const { LocalIpcClient, setUserConfigValueRequest } = await loadIpcApi()
   const client = new LocalIpcClient(kernelUrl)
   try {
     await client.send(setUserConfigValueRequest("providers.workspace_live_sync", "off"))
@@ -151,6 +224,7 @@ async function finalizeProviderArtifacts({ root, provider, passed, failure, opti
 }
 
 async function waitForNamedAgent(client, sessionId, alias) {
+  const { listAgentsRequest } = await loadIpcApi()
   for (let attempt = 0; attempt < 120; attempt += 1) {
     const agents = unwrap(await client.send(listAgentsRequest(sessionId)), "AgentsListed").agents ?? []
     const agent = agents.find((entry) => entry.alias === alias)
@@ -161,6 +235,7 @@ async function waitForNamedAgent(client, sessionId, alias) {
 }
 
 async function waitForHistoryOutput(client, sessionId, attachmentId, agentId, expected, timeoutMs = 240_000) {
+  const { pumpTerminalOutputRequest, getSessionHistoryOutlineRequest } = await loadIpcApi()
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     await client.send(pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => {})
@@ -203,6 +278,7 @@ function sendJsonRpc(ws, message) {
 }
 
 async function codexRpc(proxyUrl, messages, timeoutMs = 30_000) {
+  const { default: WebSocket } = await import("ws")
   return await new Promise((resolve, reject) => {
     const ws = new WebSocket(proxyUrl)
     const responses = []
@@ -236,7 +312,7 @@ async function codexRpc(proxyUrl, messages, timeoutMs = 30_000) {
   })
 }
 
-async function runNativeOpenCodeCommand(proxyUrl, providerSessionId, worktree, command, args) {
+async function runNativeOpenCodeCommand(proxyUrl, providerSessionId, worktree, command, args, environment = process.env) {
   const executable = process.env.CHARIOX_OPENCODE_BIN?.trim() || "opencode"
   await new Promise((resolve, reject) => {
     const child = spawn(executable, [
@@ -252,7 +328,7 @@ async function runNativeOpenCodeCommand(proxyUrl, providerSessionId, worktree, c
       args,
     ], {
       cwd: worktree,
-      env: process.env,
+      env: environment,
       stdio: ["ignore", "pipe", "pipe"],
     })
     let stdout = ""
@@ -277,11 +353,14 @@ async function runNativeOpenCodeCommand(proxyUrl, providerSessionId, worktree, c
 
 async function runCodex(options) {
   const provider = "codex"
-  const root = path.join("/tmp", `arb-native-command-${provider}-${process.pid}-${Date.now()}`)
-  const kernelPort = makePort()
-  const kernelUrl = `ws://127.0.0.1:${kernelPort}`
-  const workspace = repoRoot
-  const worktree = repoRoot
+  const runnerContext = options.runnerContext
+  const root = runnerContext
+    ? path.join(runnerContext.evidenceRoot ?? "/tmp", `native-command-${provider}-${process.pid}`)
+    : path.join("/tmp", `arb-native-command-${provider}-${process.pid}-${Date.now()}`)
+  const kernelPort = runnerContext ? null : makePort()
+  const kernelUrl = runnerContext?.kernelEndpoint ?? `ws://127.0.0.1:${kernelPort}`
+  const workspace = runnerContext?.repoRoot ?? repoRoot
+  const worktree = workspace
   const alias = "cdx-command"
   const screenNative = `chariox-${provider}-command-${process.pid}`
   const logs = {
@@ -296,7 +375,7 @@ async function runCodex(options) {
   try {
     await prepareDrillArtifacts(root)
     await mkdir(logs.nativeDir, { recursive: true })
-    daemon = spawn(kernelBinary, [], {
+    daemon = runnerContext ? null : spawn(getKernelBinary(), [], {
       cwd: repoRoot,
       env: {
         ...process.env,
@@ -310,14 +389,17 @@ async function runCodex(options) {
       },
       stdio: ["ignore", "ignore", "inherit"],
     })
-    await waitForDaemon(kernelUrl, workspace, worktree)
-    await disableWorkspaceLiveSync(kernelUrl)
+    if (!runnerContext) {
+      await waitForDaemon(kernelUrl, workspace, worktree)
+      await disableWorkspaceLiveSync(kernelUrl)
+    }
 
-    await startScreen(screenNative, logs.nativeDir, "bun", [
+    const nativeArgs = [
       cliPath,
       "codex",
       "--kernel-url",
       kernelUrl,
+      ...(runnerContext ? ["--session", runnerContext.sessionId] : []),
       "--alias",
       `native-command-${provider}-${marker}`,
       "--agent-alias",
@@ -330,12 +412,16 @@ async function runCodex(options) {
       "gpt-5.4-mini",
       "--effort",
       "high",
-    ], {
-      ...process.env,
-      CHARIOX_CODEX_NATIVE_DEBUG: "1",
-      CHARIOX_CODEX_NATIVE_DEBUG_FILE: logs.proxy,
-    })
-    const sessionId = (await waitForFileMatch(logs.native, /chariox session:\s+([^\s(]+)/)).match[1]
+    ]
+    const nativeEnvironment = runnerContext
+      ? buildStrictChildEnvironment(runnerContext, process.env)
+      : {
+        ...process.env,
+        CHARIOX_CODEX_NATIVE_DEBUG: "1",
+        CHARIOX_CODEX_NATIVE_DEBUG_FILE: logs.proxy,
+      }
+    await startScreen(screenNative, logs.nativeDir, "bun", nativeArgs, nativeEnvironment)
+    const sessionId = runnerContext?.sessionId ?? (await waitForFileMatch(logs.native, /chariox session:\s+([^\s(]+)/)).match[1]
     const proxyUrl = (await waitForFileMatch(logs.native, /proxy:\s+(ws:\/\/127\.0\.0\.1:\d+)/)).match[1]
     const threadId = (await waitForFileMatch(logs.proxy, /thread_observed:\s+\{"threadId":"([^"]+)"/)).match[1]
 
@@ -365,7 +451,8 @@ async function runCodex(options) {
     }
     await waitForFileContent(commandFile, "codex-provider-command")
     succeeded = true
-    return { provider, status: "ok", sessionId, threadId, proxyUrl, logs }
+    const result = { provider, status: "ok", sessionId, threadId, proxyUrl, logs }
+    return runnerContext ? path1ProviderEvidence(runnerContext, provider, result) : result
   } catch (error) {
     failure = await errorWithLogTails(error, logs)
     throw failure
@@ -382,10 +469,13 @@ async function runCodex(options) {
 
 async function runOpenCode(options) {
   const provider = "opencode"
-  const root = path.join("/tmp", `arb-native-command-${provider}-${process.pid}-${Date.now()}`)
-  const kernelPort = makePort()
-  const kernelUrl = `ws://127.0.0.1:${kernelPort}`
-  const workspace = path.join(root, "workspace")
+  const runnerContext = options.runnerContext
+  const root = runnerContext
+    ? path.join(runnerContext.evidenceRoot ?? "/tmp", `native-command-${provider}-${process.pid}`)
+    : path.join("/tmp", `arb-native-command-${provider}-${process.pid}-${Date.now()}`)
+  const kernelPort = runnerContext ? null : makePort()
+  const kernelUrl = runnerContext?.kernelEndpoint ?? `ws://127.0.0.1:${kernelPort}`
+  const workspace = runnerContext?.repoRoot ?? path.join(root, "workspace")
   const worktree = workspace
   const alias = "oc-command"
   const screenNative = `chariox-${provider}-command-${process.pid}`
@@ -401,10 +491,11 @@ async function runOpenCode(options) {
   let succeeded = false
   let failure = null
   try {
+    const { LocalIpcClient, attachToSessionRequest } = await loadIpcApi()
     await prepareDrillArtifacts(root)
     await mkdir(logs.nativeDir, { recursive: true })
-    await mkdir(worktree, { recursive: true })
-    await writeFile(path.join(worktree, "opencode.json"), JSON.stringify({
+    if (!runnerContext) await mkdir(worktree, { recursive: true })
+    if (!runnerContext) await writeFile(path.join(worktree, "opencode.json"), JSON.stringify({
       command: {
         [commandName]: {
           template: `Reply with exactly ${commandMarker} and nothing else. Arguments: $ARGUMENTS`,
@@ -412,7 +503,7 @@ async function runOpenCode(options) {
         },
       },
     }, null, 2))
-    daemon = spawn(kernelBinary, [], {
+    daemon = runnerContext ? null : spawn(getKernelBinary(), [], {
       cwd: repoRoot,
       env: {
         ...process.env,
@@ -426,14 +517,17 @@ async function runOpenCode(options) {
       },
       stdio: ["ignore", "ignore", "inherit"],
     })
-    await waitForDaemon(kernelUrl, workspace, worktree)
-    await disableWorkspaceLiveSync(kernelUrl)
+    if (!runnerContext) {
+      await waitForDaemon(kernelUrl, workspace, worktree)
+      await disableWorkspaceLiveSync(kernelUrl)
+    }
 
-    await startScreen(screenNative, logs.nativeDir, "bun", [
+    const nativeArgs = [
       cliPath,
       "opencode",
       "--kernel-url",
       kernelUrl,
+      ...(runnerContext ? ["--session", runnerContext.sessionId] : []),
       "--alias",
       `native-command-${provider}-${marker}`,
       "--agent-alias",
@@ -444,12 +538,16 @@ async function runOpenCode(options) {
       worktree,
       "--permissions",
       "yolo",
-    ], {
-      ...process.env,
-      CHARIOX_OPENCODE_NATIVE_DEBUG: "1",
-      CHARIOX_OPENCODE_NATIVE_DEBUG_FILE: logs.proxy,
-    })
-    const sessionId = (await waitForFileMatch(logs.native, /chariox session:\s+([^\s(]+)/)).match[1]
+    ]
+    const nativeEnvironment = runnerContext
+      ? buildStrictChildEnvironment(runnerContext, process.env)
+      : {
+        ...process.env,
+        CHARIOX_OPENCODE_NATIVE_DEBUG: "1",
+        CHARIOX_OPENCODE_NATIVE_DEBUG_FILE: logs.proxy,
+      }
+    await startScreen(screenNative, logs.nativeDir, "bun", nativeArgs, nativeEnvironment)
+    const sessionId = runnerContext?.sessionId ?? (await waitForFileMatch(logs.native, /chariox session:\s+([^\s(]+)/)).match[1]
     const proxyUrl = (await waitForFileMatch(logs.native, /proxy:\s+(http:\/\/127\.0\.0\.1:\d+)/)).match[1]
     const providerSessionId = (await waitForFileMatch(logs.native, /opencode sess:\s+([^\s]+)/)).match[1]
 
@@ -460,14 +558,22 @@ async function runOpenCode(options) {
     ).attachment
     const agent = await waitForNamedAgent(client, sessionId, alias)
 
-    await runNativeOpenCodeCommand(proxyUrl, providerSessionId, worktree, commandName, "from-native-provider-command-drill")
+    await runNativeOpenCodeCommand(
+      proxyUrl,
+      providerSessionId,
+      worktree,
+      commandName,
+      "from-native-provider-command-drill",
+      nativeEnvironment,
+    )
     const proxyLog = await readFile(logs.proxy, "utf8")
     if (!proxyLog.includes(`/session/${providerSessionId}/command`)) {
       throw new Error("OpenCode provider command did not pass through native proxy")
     }
     await waitForHistoryOutput(client, sessionId, attachment.id, agent.id, commandMarker)
     succeeded = true
-    return { provider, status: "ok", sessionId, providerSessionId, proxyUrl, commandName, logs }
+    const result = { provider, status: "ok", sessionId, providerSessionId, proxyUrl, commandName, logs }
+    return runnerContext ? path1ProviderEvidence(runnerContext, provider, result) : result
   } catch (error) {
     failure = await errorWithLogTails(error, logs)
     throw failure
@@ -490,10 +596,23 @@ async function main() {
     if (provider === "codex") results.push(await runCodex(options))
     else results.push(await runOpenCode(options))
   }
-  console.log(JSON.stringify({ status: "ok", results }, null, 2))
+  const summary = { status: "ok", results }
+  console.log(JSON.stringify(summary, null, 2))
+  if (options.runnerContext) {
+    if (results.length !== 1) throw new Error("Path 1 provider command requires exactly one provider cell")
+    console.log(`CHARIOX_PATH1_RESULT:${JSON.stringify(results[0])}`)
+  }
 }
 
-main().catch((error) => {
-  console.error(error)
-  process.exitCode = 1
-})
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {
+  main().catch((error) => {
+    if (process.argv.includes("--path1-runner-context")) {
+      console.log(`CHARIOX_PATH1_RESULT:${JSON.stringify({
+        schema: "chariox.path1.runner-context-result.v1",
+        status: "failed",
+        failure: { code: "official-cell-failed", reason: "native provider command cell failed" },
+      })}`)
+    } else console.error(error)
+    process.exitCode = 1
+  })
+}

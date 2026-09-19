@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { spawn } from "node:child_process"
 import { pathToFileURL } from "node:url"
 import path from "node:path"
 
@@ -22,8 +23,12 @@ const BROAD_CLEANUP = /(?:docker\s+(?:system|container|volume|builder)\s+prune|\
 const OFFICIAL_SURFACES = Object.freeze({
   providerParity: "apps/cli/scripts/live-external-provider-live-parity-drill.mjs",
   nativeTuiMatrix: "apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs",
+  nativeCommand: "apps/cli/scripts/live-native-tui-provider-command-drill.mjs",
+  nativePermission: "apps/cli/scripts/live-native-tui-permission-drill.mjs",
+  remoteNativeTui: "apps/cli/scripts/live-remote-native-tui-drill.mjs",
   browserComputer: "apps/cli/scripts/live-room-environment-pointer-click-drill.mjs",
   takeoverReconnect: "apps/cli/scripts/live-room-takeover-reconnect-fault-drill.mjs",
+  faultRuntime: "apps/cli/scripts/lib/local-rust-fault-drill-runtime.mjs",
 })
 
 export class Path1RunnerContextAdapterError extends Error {
@@ -220,6 +225,79 @@ export function parseOptionalRunnerContext(value) {
   }
 }
 
+export function validateExistingRoomContext(input, { expected = {} } = {}) {
+  const value = record(input, "runnerContext")
+  assertSafe(value, "runnerContext")
+  if (value.schema !== PATH1_RUNNER_CONTEXT_SCHEMA) fail("runnerContext.schema", "is unsupported", "stale-context")
+  const normalized = {
+    schema: PATH1_RUNNER_CONTEXT_SCHEMA,
+    runId: value.runId,
+    allocationId: value.allocationId,
+    machineId: value.machineId,
+    homeKernelId: value.homeKernelId,
+    homeRelayRealmId: value.homeRelayRealmId,
+    repoRoot: absolute(value.repoRoot, "runnerContext.repoRoot"),
+    sourceHead: revision(value.sourceHead, "runnerContext.sourceHead"),
+    sessionId: boundedId(value.sessionId, "runnerContext.sessionId"),
+    roomId: boundedId(value.roomId, "runnerContext.roomId"),
+    kernelEndpoint: endpoint(value.kernelEndpoint ?? value.kernelUrl, "runnerContext.kernelEndpoint", ["ws:", "wss:"]),
+    relayEndpoint: endpoint(value.relayEndpoint ?? value.relayUrl, "runnerContext.relayEndpoint", ["ws:", "wss:"]),
+    webEndpoint: endpoint(value.webEndpoint, "runnerContext.webEndpoint", ["http:", "https:"]),
+    journal: record(value.journal, "runnerContext.journal"),
+    runtimeBindings: record(value.runtimeBindings, "runnerContext.runtimeBindings"),
+    surfaceManifest: record(value.surfaceManifest, "runnerContext.surfaceManifest"),
+    clientModes: record(value.clientModes, "runnerContext.clientModes"),
+    clientBindings: record(value.clientBindings, "runnerContext.clientBindings"),
+    authority: record(value.authority, "runnerContext.authority"),
+    officialSurfaces: record(value.officialSurfaces ?? {}, "runnerContext.officialSurfaces"),
+    action: value.action,
+    provider: value.provider ?? null,
+  }
+  if (!RUN_ID.test(normalized.runId ?? "")) fail("runnerContext.runId", "is stale or malformed", "stale-context")
+  boundedId(normalized.allocationId, "runnerContext.allocationId")
+  boundedId(normalized.machineId, "runnerContext.machineId")
+  boundedId(normalized.homeKernelId, "runnerContext.homeKernelId")
+  boundedId(normalized.homeRelayRealmId, "runnerContext.homeRelayRealmId")
+  if (normalized.provider !== null && !PATH1_RUNNER_CONTEXT_PROVIDERS.includes(normalized.provider)) fail("runnerContext.provider", "is unsupported", "stale-context")
+  if (normalized.action !== undefined && !["context-transfer", "project-environment-ready", "provider-cell", "capability-drills"].includes(normalized.action)) {
+    fail("runnerContext.action", "is unsupported", "stale-context")
+  }
+  if (value.evidenceRoot !== undefined) normalized.evidenceRoot = absolute(value.evidenceRoot, "runnerContext.evidenceRoot")
+  if (!Number.isSafeInteger(normalized.journal.sequence) || normalized.journal.sequence < 0) {
+    fail("runnerContext.journal.sequence", "must be a monotonic journal sequence", "stale-context")
+  }
+  text(normalized.journal.ref, "runnerContext.journal.ref")
+  if (normalized.journal.path !== undefined) absolute(normalized.journal.path, "runnerContext.journal.path")
+  const bindings = normalized.runtimeBindings
+  if (bindings.ossRevision !== normalized.sourceHead) fail("runnerContext.runtimeBindings.ossRevision", "is stale", "stale-context")
+  revision(bindings.cloudRevision, "runnerContext.runtimeBindings.cloudRevision")
+  digest(bindings.runtimeDigest, "runnerContext.runtimeBindings.runtimeDigest")
+  if (bindings.localDaemonProtocol !== 333 || bindings.relayPeerProtocol !== 55) {
+    fail("runnerContext.runtimeBindings.protocols", "are mismatched", "stale-context")
+  }
+  if (value.receipt !== undefined) {
+    const receipt = record(value.receipt, "runnerContext.receipt")
+    const image = record(receipt.image, "runnerContext.receipt.image")
+    if (image.digest !== bindings.runtimeDigest || receipt.status !== "published") {
+      fail("runnerContext.receipt", "is stale or mismatched", "stale-context")
+    }
+  }
+  for (const field of ["sameRoom", "acceptsRunnerContext", "normalKernelAuthority", "relayTransportOnly"]) {
+    if (normalized.surfaceManifest[field] !== true) fail(`runnerContext.surfaceManifest.${field}`, "must be true", "stale-context")
+  }
+  for (const mode of PATH1_RUNNER_CONTEXT_CLIENT_MODES) {
+    if (normalized.clientModes[mode] !== true) fail(`runnerContext.clientModes.${mode}`, "is required", "stale-context")
+    requireBinding(normalized.clientBindings[mode], `runnerContext.clientBindings.${mode}`, normalized)
+  }
+  if (normalized.authority.kernel !== "normal-kernel" || normalized.authority.relay !== "transport-only" || normalized.authority.room !== "kernel-owned") {
+    fail("runnerContext.authority", "must preserve home-kernel Room authority", "stale-context")
+  }
+  for (const [field, expectedValue] of Object.entries(expected)) {
+    if (expectedValue !== undefined && normalized[field] !== expectedValue) fail(`runnerContext.${field}`, "does not match the supplied context", "stale-context")
+  }
+  return Object.freeze({ ...value, ...normalized })
+}
+
 export function buildStrictChildEnvironment(context, baseEnvironment = {}) {
   const normalized = record(context, "runnerContext")
   const allowed = ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR"]
@@ -244,6 +322,29 @@ function surfacePath(context, key) {
   return absolutePath
 }
 
+export function buildExistingRoomCellInvocation({ context, surface, provider = null, extraArgs = [], role = "official-cell" } = {}) {
+  const normalized = validateExistingRoomContext(context, { expected: provider ? { provider } : {} })
+  const args = [surfacePath(normalized, surface), "--path1-runner-context", ...extraArgs]
+  if (provider && !extraArgs.includes("--providers")) args.push("--providers", provider)
+  return Object.freeze({
+    id: `${role}:${provider ?? "room"}`,
+    role,
+    surface,
+    command: process.execPath,
+    args,
+    cwd: normalized.repoRoot,
+    env: buildStrictChildEnvironment(normalized, process.env),
+    runId: normalized.runId,
+    sessionId: normalized.sessionId,
+    roomId: normalized.roomId,
+    provider,
+    createKernel: false,
+    createSession: false,
+    createRelay: false,
+    sameRoomRequired: true,
+  })
+}
+
 export function buildOfficialInvocationPlan(context) {
   const env = buildStrictChildEnvironment(context, process.env)
   const invocation = (id, surface, extraArgs = [], flags = {}) => ({
@@ -261,15 +362,16 @@ export function buildOfficialInvocationPlan(context) {
     return Object.freeze([invocation("project-environment-ready", "browserComputer", [], { browserFirst: true })])
   }
   if (context.action === "provider-cell") {
+    const nativeSurface = context.provider === "claude" ? "nativePermission" : "nativeCommand"
     return Object.freeze([
       invocation(`provider:${context.provider}:browser`, "providerParity", ["--providers", context.provider], { browserFirst: true, provider: context.provider }),
-      invocation(`provider:${context.provider}:computer-fallback`, "nativeTuiMatrix", ["--providers", context.provider], { computerFallback: true, provider: context.provider }),
+      invocation(`provider:${context.provider}:computer-fallback`, nativeSurface, ["--providers", context.provider], { computerFallback: true, provider: context.provider }),
     ])
   }
   return Object.freeze([
     invocation("capability:browser", "browserComputer", [], { browserFirst: true }),
-    invocation("capability:computer-fallback", "nativeTuiMatrix", [], { computerFallback: true }),
-    invocation("capability:takeover-reconnect", "takeoverReconnect"),
+    invocation("capability:computer-fallback", "remoteNativeTui", [], { computerFallback: true }),
+    invocation("capability:takeover-reconnect", "faultRuntime"),
   ])
 }
 
@@ -442,6 +544,92 @@ async function defaultClientFactory(context) {
 async function invokeOfficial(invocation, processRunner) {
   if (!processRunner || typeof processRunner.run !== "function") fail("processRunner", "must execute the official drill")
   return processRunner.run(invocation)
+}
+
+function defaultOfficialProcessRunner() {
+  return {
+    run(invocation) {
+      return new Promise((resolve, reject) => {
+        const child = spawn(invocation.command, invocation.args, {
+          cwd: invocation.cwd,
+          env: invocation.env,
+          stdio: ["ignore", "pipe", "pipe"],
+        })
+        const stdout = []
+        const stderr = []
+        const timer = setTimeout(() => {
+          try { child.kill("SIGTERM") } catch {}
+          reject(new Path1RunnerContextAdapterError(invocation.id, "official drill timed out", "official-timeout"))
+        }, 300_000)
+        child.stdout.on("data", (chunk) => stdout.push(chunk))
+        child.stderr.on("data", (chunk) => stderr.push(chunk))
+        child.once("error", (error) => {
+          clearTimeout(timer)
+          void error
+          reject(new Path1RunnerContextAdapterError(invocation.id, "official drill could not start", "official-process"))
+        })
+        child.once("close", (code, signal) => {
+          clearTimeout(timer)
+          const output = `${Buffer.concat(stdout).toString("utf8")}\n${Buffer.concat(stderr).toString("utf8")}`
+          const marker = output.split(/\r?\n/u).find((line) => line.startsWith("CHARIOX_PATH1_RESULT:"))
+          if (!marker) {
+            if (code !== 0 || signal) {
+              reject(new Path1RunnerContextAdapterError(invocation.id, "official drill failed; preserved runner evidence is required", "official-failed"))
+              return
+            }
+            reject(new Path1RunnerContextAdapterError(invocation.id, "official drill did not emit a typed Path 1 result", "missing-product-seam"))
+            return
+          }
+          try {
+            const result = JSON.parse(marker.slice("CHARIOX_PATH1_RESULT:".length))
+            if (code !== 0 || signal) {
+              resolve(result)
+              return
+            }
+            resolve(result)
+          } catch {
+            reject(new Path1RunnerContextAdapterError(invocation.id, "official drill emitted invalid typed evidence", "invalid-evidence"))
+          }
+        })
+      })
+    },
+  }
+}
+
+export async function runExistingRoomCell({
+  context,
+  surface,
+  provider = null,
+  extraArgs = [],
+  role = "official-cell",
+  processRunner = null,
+  clientFactory = null,
+} = {}) {
+  const normalized = validateExistingRoomContext(context, { expected: provider ? { provider } : {} })
+  const invocation = buildExistingRoomCellInvocation({ context: normalized, surface, provider, extraArgs, role })
+  const factory = clientFactory ?? await defaultClientFactory(normalized)
+  try {
+    const handshake = await handshakeContext(normalized, factory)
+    if (handshake.binding.kernelAuthoritative !== true || handshake.binding.relayTransportOnly !== true) {
+      fail("clientFactory.verifyRoom", "did not prove the supplied home-kernel Room")
+    }
+    const output = await invokeOfficial(invocation, processRunner ?? defaultOfficialProcessRunner())
+    const evidence = requireOfficialEvidence(output, normalized, `${role}.result`)
+    return Object.freeze({
+      ...evidence,
+      cellRole: role,
+      sessionId: normalized.sessionId,
+      roomId: normalized.roomId,
+      runId: normalized.runId,
+      sameRoom: true,
+      noSecondAuthority: true,
+    })
+  } catch (error) {
+    if (error instanceof Path1RunnerContextAdapterError) throw error
+    fail(`${role}.process`, "official cell failed; runner-owned failure evidence is preserved", "official-failed")
+  } finally {
+    await factory.close?.()
+  }
 }
 
 export async function runPath1RunnerContextAdapter({

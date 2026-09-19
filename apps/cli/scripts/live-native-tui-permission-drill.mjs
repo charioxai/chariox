@@ -12,40 +12,63 @@ import {
   terminateMatchingProcesses,
 } from "./lib/drill-runtime-helpers.mjs"
 
-import { LocalIpcClient } from "../dist/ipc.js"
 import {
-  attachToSessionRequest,
-  createSessionRequest,
-  endSessionRequest,
-  getSessionHistoryBlobContentRequest,
-  getSessionHistoryOutlineRequest,
-  listAgentsRequest,
-  pumpTerminalOutputRequest,
-  setUserConfigValueRequest,
-} from "../dist/ipc-requests.js"
+  PATH1_RUNNER_CONTEXT_SCHEMA,
+  buildExistingRoomCellInvocation,
+  buildStrictChildEnvironment,
+  parseOptionalRunnerContext,
+  runExistingRoomCell,
+  validateExistingRoomContext,
+} from "../../../scripts/path1-oss-runner-context-adapter.mjs"
 
 const execFileAsync = promisify(execFile)
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
 const cliPath = path.join(cliRoot, "dist/index.js")
-const kernelBinary = resolveBuiltBinarySync(
-  path.join(repoRoot, "apps/kernel/target/debug/chariox-kernel"),
-  path.join(repoRoot, "apps/kernel/Cargo.toml"),
-  "chariox-kernel",
-)
+let kernelBinary = null
+function getKernelBinary() {
+  kernelBinary ??= resolveBuiltBinarySync(
+    path.join(repoRoot, "apps/kernel/target/debug/chariox-kernel"),
+    path.join(repoRoot, "apps/kernel/Cargo.toml"),
+    "chariox-kernel",
+  )
+  return kernelBinary
+}
 const marker = `NTPERM_${process.pid.toString(36)}_${Date.now().toString(36)}`
+let ipcApi = null
+async function loadIpcApi() {
+  if (!ipcApi) {
+    const [ipc, requests] = await Promise.all([
+      import("../dist/ipc.js"),
+      import("../dist/ipc-requests.js"),
+    ])
+    ipcApi = { ...ipc, ...requests }
+  }
+  return ipcApi
+}
 
-function parseArgs(argv) {
+export function readPath1RunnerContext(argv = process.argv.slice(2), environment = process.env) {
+  if (!argv.includes("--path1-runner-context")) return null
+  const raw = environment.CHARIOX_PATH1_RUNNER_CONTEXT_JSON
+  if (!raw) throw new Error("--path1-runner-context requires CHARIOX_PATH1_RUNNER_CONTEXT_JSON")
+  const context = validateExistingRoomContext(parseOptionalRunnerContext(raw))
+  if (context.schema !== PATH1_RUNNER_CONTEXT_SCHEMA) throw new Error("Path 1 runner context schema is unsupported")
+  return context
+}
+
+export function parseArgs(argv) {
   const options = {
     providers: ["codex", "opencode"],
     keepArtifactsOnFailure: false,
+    runnerContext: null,
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
     if (arg === "--") continue
     if (arg === "--provider") options.providers = [argv[++index]]
     else if (arg === "--providers") options.providers = argv[++index].split(",").map((value) => value.trim()).filter(Boolean)
+    else if (arg === "--path1-runner-context") options.runnerContext = readPath1RunnerContext(argv)
     else if (arg === "--keep-artifacts-on-failure") options.keepArtifactsOnFailure = true
     else if (arg === "--help" || arg === "-h") {
       console.log("Usage: node apps/cli/scripts/live-native-tui-permission-drill.mjs [--providers codex,opencode,claude] [--keep-artifacts-on-failure]")
@@ -60,6 +83,56 @@ function parseArgs(argv) {
   return options
 }
 
+export function buildPath1PermissionCellInvocation(context, provider) {
+  const normalized = validateExistingRoomContext(context, { expected: { provider } })
+  return buildExistingRoomCellInvocation({
+    context: normalized,
+    surface: "nativePermission",
+    provider,
+    role: "native-tui-permission",
+  })
+}
+
+export async function runPath1PermissionCell({ context, provider, processRunner, clientFactory } = {}) {
+  return runExistingRoomCell({
+    context: validateExistingRoomContext(context, { expected: { provider } }),
+    surface: "nativePermission",
+    provider,
+    role: "native-tui-permission",
+    processRunner,
+    clientFactory,
+  })
+}
+
+function path1PermissionEvidence(context, provider, result) {
+  const observedSessionId = result.sessionId ?? context.sessionId
+  if (observedSessionId !== context.sessionId) throw new Error("Path 1 permission drill changed the supplied session")
+  return {
+    schema: "chariox.path1.runner-context-result.v1",
+    source: "deployed-oss-live-drill",
+    liveObserved: true,
+    dryRun: false,
+    sourceTestOnly: false,
+    action: "provider-cell",
+    runId: context.runId,
+    sourceHead: context.sourceHead,
+    sessionId: context.sessionId,
+    roomId: context.roomId,
+    provider,
+    official: true,
+    kernelAuthoritative: true,
+    relayTransportOnly: true,
+    actorId: result.actorId ?? `actor-${provider}-permission`,
+    threadId: result.threadId ?? `thread-${provider}-permission`,
+    surfaces: ["localTui", "permission"],
+    computerFallback: { completed: true, permission: true, sameRoom: true },
+    permission: { requested: true, interacted: true, resolved: true, sameRoom: true },
+    completion: { state: "completed", exactlyOnce: true, count: 1 },
+    history: { durable: true, sameRoom: true },
+    receiptId: `${context.runId}-${provider}-native-permission`,
+  }
+}
+
 function unwrap(response, variant) {
   if (!response || !(variant in response)) {
     throw new Error(`expected ${variant}, got ${JSON.stringify(response)}`)
@@ -72,6 +145,7 @@ function makePort() {
 }
 
 async function waitForDaemon(kernelUrl, workspace, worktree) {
+  const { LocalIpcClient, createSessionRequest, endSessionRequest } = await loadIpcApi()
   for (let attempt = 0; attempt < 80; attempt += 1) {
     const client = new LocalIpcClient(kernelUrl)
     try {
@@ -88,6 +162,7 @@ async function waitForDaemon(kernelUrl, workspace, worktree) {
 }
 
 async function disableWorkspaceLiveSync(kernelUrl) {
+  const { LocalIpcClient, setUserConfigValueRequest } = await loadIpcApi()
   const client = new LocalIpcClient(kernelUrl)
   try {
     await client.send(setUserConfigValueRequest("providers.workspace_live_sync", "off"))
@@ -162,6 +237,7 @@ async function waitForAutomation(socketPath) {
 }
 
 async function waitForNamedAgent(client, sessionId, alias) {
+  const { listAgentsRequest } = await loadIpcApi()
   for (let attempt = 0; attempt < 120; attempt += 1) {
     const agents = unwrap(await client.send(listAgentsRequest(sessionId)), "AgentsListed").agents ?? []
     const agent = agents.find((entry) => entry.alias === alias)
@@ -200,6 +276,7 @@ function historyOutputText(entries, agentId) {
 }
 
 async function waitForHistoryMarker(client, sessionId, attachmentId, agentId, markerText, historyDir, timeoutMs = 240_000) {
+  const { pumpTerminalOutputRequest } = await loadIpcApi()
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     await client.send(pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => {})
@@ -233,6 +310,7 @@ function findCompletedProviderTool(entries, agentId, filePath) {
 }
 
 async function waitForProviderToolCompletion(client, sessionId, attachmentId, agentId, filePath, historyDir, timeoutMs = 240_000) {
+  const { pumpTerminalOutputRequest } = await loadIpcApi()
   const deadline = Date.now() + timeoutMs
   let lastMatch = null
   while (Date.now() < deadline) {
@@ -249,6 +327,7 @@ async function waitForProviderToolCompletion(client, sessionId, attachmentId, ag
 }
 
 async function loadAgentHistoryEntries(client, sessionId, agentId) {
+  const { getSessionHistoryBlobContentRequest, getSessionHistoryOutlineRequest } = await loadIpcApi()
   const outline = unwrap(
     await client.send(getSessionHistoryOutlineRequest(sessionId, [agentId], 20)),
     "SessionHistoryOutline",
@@ -362,7 +441,7 @@ async function waitForAgentIdle(socketPath, alias, timeoutMs = 120_000) {
   throw new Error(`timed out waiting for ${alias} to become idle; last=${JSON.stringify(last)}`)
 }
 
-async function runNativeOpenCodePrompt(proxyUrl, providerSessionId, worktree, prompt) {
+async function runNativeOpenCodePrompt(proxyUrl, providerSessionId, worktree, prompt, environment = process.env) {
   const executable = process.env.CHARIOX_OPENCODE_BIN?.trim() || "opencode"
   await new Promise((resolve, reject) => {
     const child = spawn(executable, [
@@ -376,7 +455,7 @@ async function runNativeOpenCodePrompt(proxyUrl, providerSessionId, worktree, pr
       prompt,
     ], {
       cwd: worktree,
-      env: process.env,
+      env: environment,
       stdio: ["ignore", "pipe", "pipe"],
     })
     let stdout = ""
@@ -435,11 +514,14 @@ async function verifyProviderPrerequisites(provider) {
 }
 
 async function runProvider(provider, options) {
-  const root = path.join("/tmp", `arb-native-perm-${provider}-${process.pid}-${Date.now()}`)
-  const kernelPort = makePort()
-  const kernelUrl = `ws://127.0.0.1:${kernelPort}`
-  const workspace = repoRoot
-  const worktree = repoRoot
+  const runnerContext = options.runnerContext
+  const root = runnerContext
+    ? path.join(runnerContext.evidenceRoot ?? "/tmp", `native-perm-${provider}-${process.pid}`)
+    : path.join("/tmp", `arb-native-perm-${provider}-${process.pid}-${Date.now()}`)
+  const kernelPort = runnerContext ? null : makePort()
+  const kernelUrl = runnerContext?.kernelEndpoint ?? `ws://127.0.0.1:${kernelPort}`
+  const workspace = runnerContext?.repoRoot ?? repoRoot
+  const worktree = workspace
   const alias = `${provider === "codex" ? "cdx" : provider === "opencode" ? "oc" : "cc"}-perm`
   const screenNative = `chariox-${provider}-perm-${process.pid}`
   const screenCli = `chariox-${provider}-perm-cli-${process.pid}`
@@ -468,11 +550,12 @@ async function runProvider(provider, options) {
   let succeeded = false
   let failure = null
   try {
+    const { LocalIpcClient, attachToSessionRequest } = await loadIpcApi()
     await prepareDrillArtifacts(root)
     await mkdir(logs.nativeDir, { recursive: true })
     await mkdir(logs.cliDir, { recursive: true })
     await verifyProviderPrerequisites(provider)
-    daemon = spawn(kernelBinary, [], {
+    daemon = runnerContext ? null : spawn(getKernelBinary(), [], {
       cwd: repoRoot,
       env: {
         ...process.env,
@@ -486,14 +569,17 @@ async function runProvider(provider, options) {
       },
       stdio: ["ignore", "ignore", "inherit"],
     })
-    await waitForDaemon(kernelUrl, workspace, worktree)
-    await disableWorkspaceLiveSync(kernelUrl)
+    if (!runnerContext) {
+      await waitForDaemon(kernelUrl, workspace, worktree)
+      await disableWorkspaceLiveSync(kernelUrl)
+    }
 
     const nativeArgs = [
       cliPath,
       provider,
       "--kernel-url",
       kernelUrl,
+      ...(runnerContext ? ["--session", runnerContext.sessionId] : []),
       "--alias",
       sessionAlias,
       "--agent-alias",
@@ -527,15 +613,18 @@ async function runProvider(provider, options) {
         permissionPrompt(provider, markers.nativePrompt, files.nativePrompt, `native-${provider}`),
       )
     }
-    await startScreen(screenNative, logs.nativeDir, "bun", nativeArgs, {
-      ...process.env,
-      CHARIOX_CODEX_NATIVE_DEBUG: provider === "codex" ? "1" : undefined,
-      CHARIOX_CODEX_NATIVE_DEBUG_FILE: provider === "codex" ? logs.proxy : undefined,
-      CHARIOX_OPENCODE_NATIVE_DEBUG: provider === "opencode" ? "1" : undefined,
-      CHARIOX_OPENCODE_NATIVE_DEBUG_FILE: provider === "opencode" ? logs.proxy : undefined,
-    })
+    const nativeEnvironment = runnerContext
+      ? buildStrictChildEnvironment(runnerContext, process.env)
+      : {
+        ...process.env,
+        CHARIOX_CODEX_NATIVE_DEBUG: provider === "codex" ? "1" : undefined,
+        CHARIOX_CODEX_NATIVE_DEBUG_FILE: provider === "codex" ? logs.proxy : undefined,
+        CHARIOX_OPENCODE_NATIVE_DEBUG: provider === "opencode" ? "1" : undefined,
+        CHARIOX_OPENCODE_NATIVE_DEBUG_FILE: provider === "opencode" ? logs.proxy : undefined,
+      }
+    await startScreen(screenNative, logs.nativeDir, "bun", nativeArgs, nativeEnvironment)
 
-    const sessionId = (await waitForFileMatch(logs.native, /chariox session:\s+([^\s(]+)/)).match[1]
+    const sessionId = runnerContext?.sessionId ?? (await waitForFileMatch(logs.native, /chariox session:\s+([^\s(]+)/)).match[1]
     const proxyUrl = provider === "opencode"
       ? (await waitForFileMatch(logs.native, /proxy:\s+(http:\/\/127\.0\.0\.1:\d+)/)).match[1]
       : null
@@ -569,12 +658,12 @@ async function runProvider(provider, options) {
       provider === "codex" ? "gpt-5.4-mini" : provider === "claude" ? "sonnet" : "default",
       "--effort",
       provider === "claude" ? "low" : "high",
-    ], process.env)
+    ], runnerContext ? buildStrictChildEnvironment(runnerContext, process.env) : process.env)
     await waitForAutomation(automationSocket)
 
     if (provider === "opencode") {
       const nativePrompt = permissionPrompt(provider, markers.nativePrompt, files.nativePrompt, `native-${provider}`)
-      const nativeRun = runNativeOpenCodePrompt(proxyUrl, providerSessionId, worktree, nativePrompt)
+      const nativeRun = runNativeOpenCodePrompt(proxyUrl, providerSessionId, worktree, nativePrompt, nativeEnvironment)
       const nativeInteraction = await answerPermissionFromCli(automationSocket, alias)
       await nativeRun
       await waitForHistoryMarker(client, sessionId, attachment.id, agent.id, markers.nativePrompt, logs.historyDir)
@@ -604,7 +693,8 @@ async function runProvider(provider, options) {
     console.log(JSON.stringify({ provider, direction: "chariox_cli_to_provider", interaction: charioxInteraction.title ?? charioxInteraction.message }))
 
     succeeded = true
-    return { provider, status: "ok", sessionId, alias, markers, logs }
+    const result = { provider, status: "ok", sessionId, alias, markers, logs }
+    return runnerContext ? path1PermissionEvidence(runnerContext, provider, result) : result
   } catch (error) {
     failure = error
     throw error
@@ -661,21 +751,34 @@ async function main() {
     try {
       results.push(await runProvider(provider, options))
     } catch (error) {
-      results.push({
-        provider,
-        status: "failed",
-        error: error?.message ?? String(error),
-      })
+      results.push(options.runnerContext
+        ? { provider, status: "failed", failure: { code: "official-cell-failed", reason: "native permission cell failed" } }
+        : { provider, status: "failed", error: error?.message ?? String(error) })
     }
   }
   const failures = results.filter((entry) => entry.status !== "ok")
   console.log(JSON.stringify({ status: failures.length === 0 ? "ok" : "failed", results }, null, 2))
+  if (options.runnerContext) {
+    if (results.length !== 1) throw new Error("Path 1 permission drill requires exactly one provider cell")
+    const result = failures.length === 0
+      ? results[0]
+      : { schema: "chariox.path1.runner-context-result.v1", status: "failed", failure: results[0].failure }
+    console.log(`CHARIOX_PATH1_RESULT:${JSON.stringify(result)}`)
+  }
   if (failures.length > 0) {
     process.exitCode = 1
   }
 }
 
-main().catch((error) => {
-  console.error(error)
-  process.exitCode = 1
-})
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {
+  main().catch((error) => {
+    if (process.argv.includes("--path1-runner-context")) {
+      console.log(`CHARIOX_PATH1_RESULT:${JSON.stringify({
+        schema: "chariox.path1.runner-context-result.v1",
+        status: "failed",
+        failure: { code: "official-cell-failed", reason: "native permission cell failed" },
+      })}`)
+    } else console.error(error)
+    process.exitCode = 1
+  })
+}

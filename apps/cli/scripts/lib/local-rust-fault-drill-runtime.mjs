@@ -2,6 +2,13 @@ import { spawn } from "node:child_process"
 import { chmod, mkdir, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import {
+  PATH1_RUNNER_CONTEXT_SCHEMA,
+  buildExistingRoomCellInvocation,
+  parseOptionalRunnerContext,
+  runExistingRoomCell,
+  validateExistingRoomContext,
+} from "../../../../scripts/path1-oss-runner-context-adapter.mjs"
 
 const defaultCargoTarget = path.join(os.homedir(), ".chariox", "dev", "browser-computer-use", "cargo-target")
 
@@ -16,9 +23,18 @@ export async function runLocalRustFaultDrill({
   parseProbe,
   evidenceSubdir,
   processNeedle = null,
+  runnerContext = null,
+  path1ProcessRunner = null,
 }) {
   const options = parseArgs(argv, { name, description })
   if (options.help) return { help: true }
+  if (options.runnerContext || runnerContext) {
+    const context = validateExistingRoomContext(options.runnerContext ?? runnerContext)
+    if (!path1ProcessRunner) {
+      throw new Error("Path 1 fault runtime requires an injected context-capable official probe")
+    }
+    return runPath1FaultCell({ context, processRunner: path1ProcessRunner })
+  }
   const reportPath = externalPath(options.reportPath ?? defaultReportPath(evidenceSubdir), repoRoot, `${name} evidence`)
   const cargoTarget = externalPath(options.cargoTarget, repoRoot, "Cargo target")
   const children = new Set()
@@ -94,11 +110,39 @@ export async function runLocalRustFaultDrill({
   return report
 }
 
-function parseArgs(argv, { name, description }) {
-  const options = { cargoTarget: defaultCargoTarget, reportPath: null, dryRun: false, help: false }
+export function readPath1RunnerContext(argv = process.argv.slice(2), environment = process.env) {
+  if (!argv.includes("--path1-runner-context")) return null
+  const raw = environment.CHARIOX_PATH1_RUNNER_CONTEXT_JSON
+  if (!raw) throw new Error("--path1-runner-context requires CHARIOX_PATH1_RUNNER_CONTEXT_JSON")
+  return validateExistingRoomContext(parseOptionalRunnerContext(raw))
+}
+
+export function buildPath1FaultCellInvocation(context) {
+  const normalized = validateExistingRoomContext(context)
+  return buildExistingRoomCellInvocation({
+    context: normalized,
+    surface: "faultRuntime",
+    role: "room-takeover-reconnect-fault",
+  })
+}
+
+export async function runPath1FaultCell({ context, processRunner, clientFactory } = {}) {
+  if (!processRunner) throw new Error("Path 1 fault runtime requires an injected context-capable official probe")
+  return runExistingRoomCell({
+    context: validateExistingRoomContext(context),
+    surface: "faultRuntime",
+    role: "room-takeover-reconnect-fault",
+    processRunner,
+    clientFactory,
+  })
+}
+
+export function parseArgs(argv, { name, description }) {
+  const options = { cargoTarget: defaultCargoTarget, reportPath: null, dryRun: false, help: false, runnerContext: null }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
     if (arg === "--dry-run") options.dryRun = true
+    else if (arg === "--path1-runner-context") options.runnerContext = readPath1RunnerContext(argv)
     else if (arg === "--help" || arg === "-h") options.help = true
     else if (arg === "--cargo-target") options.cargoTarget = readValue(argv, index++, arg)
     else if (arg.startsWith("--cargo-target=")) options.cargoTarget = arg.slice("--cargo-target=".length)
@@ -225,4 +269,33 @@ async function writeReport(reportPath, report) {
 export function bounded(value, limit = 4_000) {
   const text = String(value ?? "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "")
   return text.length <= limit ? text : text.slice(-limit)
+}
+
+async function main() {
+  const context = readPath1RunnerContext()
+  if (!context) return
+  const result = {
+    schema: "chariox.path1.runner-context-result.v1",
+    status: "failed",
+    runId: context.runId,
+    sessionId: context.sessionId,
+    roomId: context.roomId,
+    failure: {
+      code: "missing-context-capable-fault-probe",
+      reason: "the existing Rust fault probe cannot accept an existing home-kernel Room without a context-capable official seam",
+    },
+  }
+  process.stdout.write(`CHARIOX_PATH1_RESULT:${JSON.stringify(result)}\n`)
+  process.exitCode = 2
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {
+  main().catch((error) => {
+    process.stdout.write(`CHARIOX_PATH1_RESULT:${JSON.stringify({
+      schema: "chariox.path1.runner-context-result.v1",
+      status: "failed",
+      failure: { code: "fault-runtime-context-error", reason: "fault runtime context validation failed" },
+    })}\n`)
+    process.exitCode = 2
+  })
 }
