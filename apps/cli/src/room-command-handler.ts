@@ -550,14 +550,26 @@ export function formatRoomEnvironmentStatus(environment: RoomEnvironmentSnapshot
       return `${target}:${actor?.display_label ?? actorLabel(owner.actor_id)}`
     })
     .join(", ") || "available"
+  const tabActivity = focusedTab
+    ? `tab_activity=${focusedTab.tab_id} document_revision=${focusedTab.document_revision}`
+    : "tab_activity=none"
+  const pendingInputTakeovers = environment.pending_input_takeovers.map((takeover) => {
+    const target = takeover.target.kind === "desktop" ? "desktop" : `tab:${takeover.target.id}`
+    const actor = environment.actors.find((candidate) => candidate.actor_id === takeover.human_actor_id)
+    const humanActor = actor?.display_label ?? actorLabel(takeover.human_actor_id)
+    const blockingActions = takeover.blocking_action_ids.join(",") || "none"
+    return `pending_input_takeover=target=${target} human_actor=${humanActor} blocking_actions=${blockingActions}`
+  })
   return [
     `Room environment ${environment.environment_id}`,
     `lifecycle=${environment.lifecycle} generation=${environment.runtime_generation} cursor=${environment.event_cursor}`,
     `health=${environment.health.map(formatHealth).join(", ") || "none"}`,
     `viewport=${viewport.desktop_pixel_width}x${viewport.desktop_pixel_height} css=${viewport.css_width}x${viewport.css_height} scale=${viewport.device_scale_factor} revision=${viewport.revision}`,
     `tab=${focusedTab ? `${focusedTab.tab_id} ${tabLabel(focusedTab.title, focusedTab.url)}` : "none"}`,
+    tabActivity,
     `actors=${actors}`,
     `input=${input}`,
+    ...(pendingInputTakeovers.length > 0 ? pendingInputTakeovers : ["pending_input_takeovers=available"]),
     `last_action=${formatLastAction(environment)}`,
   ].join("\n")
 }

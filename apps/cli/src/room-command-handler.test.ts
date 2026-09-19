@@ -4,7 +4,7 @@ import test from "node:test"
 import type { RoomEnvironmentAction, RoomEnvironmentSnapshot } from "@chariox/kernel-client/kernel-types"
 
 import { parseSlashCommand } from "./commands.js"
-import { handleRoomSlashCommand } from "./room-command-handler.js"
+import { formatRoomEnvironmentStatus, handleRoomSlashCommand } from "./room-command-handler.js"
 
 test("/room status reads and renders the attached Room environment", async () => {
   const requests: unknown[] = []
@@ -30,10 +30,46 @@ test("/room status reads and renders the attached Room environment", async () =>
     "health=browser_controller:ready, browser:ready, desktop:ready, streamer:ready",
     "viewport=1280x720 css=1280x720 scale=1 revision=3",
     "tab=tab-1 Docs — https://example.test/docs",
+    "tab_activity=tab-1 document_revision=4",
     "actors=Mara (agent,present), Miguel (human,present)",
     "input=desktop:Mara",
+    "pending_input_takeovers=available",
     "last_action=none",
   ].join("\n")])
+})
+
+test("Room environment status renders focused-tab revision and pending human takeovers", () => {
+  const environment = roomEnvironment()
+  environment.pending_input_takeovers = [
+    {
+      target: { kind: "desktop" },
+      human_actor_id: "user:miguel",
+      blocking_action_ids: ["action-7", "action-9"],
+    },
+    {
+      target: { kind: "browser_tab", id: "tab-1" },
+      human_actor_id: "user:unknown",
+      blocking_action_ids: [],
+    },
+  ]
+
+  assert.deepEqual(formatRoomEnvironmentStatus(environment).split("\n").slice(-6), [
+    "tab_activity=tab-1 document_revision=4",
+    "actors=Mara (agent,present), Miguel (human,present)",
+    "input=desktop:Mara",
+    "pending_input_takeover=target=desktop human_actor=Miguel blocking_actions=action-7,action-9",
+    "pending_input_takeover=target=tab:tab-1 human_actor=unknown blocking_actions=none",
+    "last_action=none",
+  ])
+
+  const empty = formatRoomEnvironmentStatus({
+    ...environment,
+    tabs: [],
+    focused_tab_id: null,
+    pending_input_takeovers: [],
+  })
+  assert.match(empty, /tab_activity=none/)
+  assert.match(empty, /pending_input_takeovers=available/)
 })
 
 test("/room actions renders bounded browser and computer history with a continuation cursor", async () => {
