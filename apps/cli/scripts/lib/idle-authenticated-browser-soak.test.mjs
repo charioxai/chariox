@@ -20,6 +20,7 @@ import {
 import {
   assertControllerReady,
   captureProcessIdentity,
+  captureIdleSoakProvenance,
   cleanupOwned,
   ControllerClient,
   launchOwnedProcess,
@@ -65,6 +66,25 @@ test("smoke mode is short and keeps the same safety contract", () => {
   assert.equal(options.healthIntervalSeconds, 2)
   assert.equal(options.sampleIntervalSeconds, 2)
   assert.equal(options.idleAuthenticated, true)
+})
+
+test("idle provenance inputs are explicit and default to absent", () => {
+  const absent = parseIdleAuthenticatedBrowserSoakArgs([], { repoRoot, homeDir: os.tmpdir() })
+  assert.equal(absent.imageRef, null)
+  assert.equal(absent.imageSignatureKey, null)
+  assert.equal(absent.runtimeContainerId, null)
+  assert.equal(absent.containerEngine, "docker")
+  const explicit = parseIdleAuthenticatedBrowserSoakArgs([
+    "--image-ref", "registry.example/chariox/slice:final",
+    "--image-signature-key", "/public/chariox.pub",
+    "--container-engine", "podman",
+    "--runtime-container-id", "a".repeat(64),
+  ], { repoRoot, homeDir: os.tmpdir() })
+  assert.deepEqual({ imageRef: explicit.imageRef, imageSignatureKey: explicit.imageSignatureKey,
+    containerEngine: explicit.containerEngine, runtimeContainerId: explicit.runtimeContainerId }, {
+    imageRef: "registry.example/chariox/slice:final", imageSignatureKey: "/public/chariox.pub",
+    containerEngine: "podman", runtimeContainerId: "a".repeat(64),
+  })
 })
 
 test("unsafe limits and repository evidence paths fail before runtime state", () => {
@@ -136,6 +156,8 @@ test("completed results require monotonic duration, cadence coverage, final heal
     browserPid: index < 4 ? 124 : 125, browserStartTime: index < 4 ? "200" : "300", browserAlive: true,
     freshAuthenticatedRequest: true, profileMarkerObserved: true }))
   assert.equal(entries.length, requiredCheckpoints)
+  const source = { commit: "a".repeat(40), tree: "b".repeat(40), branch: "codex/idle-authenticated-browser-soak", dirty: false }
+  const provenance = idleTestProvenance(source)
   const result = {
     schema: "chariox.idle_authenticated_browser_soak.v1",
     status: "passed",
@@ -145,13 +167,18 @@ test("completed results require monotonic duration, cadence coverage, final heal
     counters: { healthChecks: requiredCheckpoints, controllerRequests: requiredCheckpoints * 3, authenticatedSessionChecks: requiredCheckpoints, profileMarkerChecks: requiredCheckpoints, freshAuthenticatedRequests: requiredCheckpoints },
     checkpoints: { count: requiredCheckpoints, required: requiredCheckpoints, entries, final: entries.at(-1) },
     resources: { sampleCount: 2, peakOwnedRssBytes: 1, peakOwnedCpuPercent: 0, ceilingsRespected: true, baseline: { owned: { processCount: 1, rssBytes: 1, cpuPercent: 0 }, disk: { availableBytes: 1, totalBytes: 2 }, host: { totalMemoryBytes: 1, freeMemoryBytes: 1, loadAverage: [0, 0, 0] } }, final: { owned: { processCount: 1, rssBytes: 1, cpuPercent: 0 }, disk: { availableBytes: 1, totalBytes: 2 }, host: { totalMemoryBytes: 1, freeMemoryBytes: 1, loadAverage: [0, 0, 0] } } },
-    source: { commit: "a".repeat(40), branch: "codex/idle-authenticated-browser-soak", dirty: false },
-    image: { available: true, imageDigest: "sha256:fixture", sourceCommit: "a".repeat(40) },
+    source,
+    image: provenance.image,
+    provenance,
     profile: { markerDigest: "b".repeat(64), checks: requiredCheckpoints, browserObserved: true, cookiePersistedAfterRestart: true, controlledRestartCompleted: true },
     redaction: { passed: true },
     cleanup: { clean: true, remainingPids: [], remainingListeners: [], stateRemoved: true, debugPortReleased: true },
   }
   assert.deepEqual(validateCompletedIdleSoakResult(result), result)
+  const detached = { ...result, source: { ...result.source, branch: "" }, provenance: { ...result.provenance, source: { ...result.provenance.source, branch: "" } } }
+  assert.doesNotThrow(() => validateCompletedIdleSoakResult(detached))
+  assert.throws(() => validateCompletedIdleSoakResult({ ...result, provenance: { ...result.provenance, image: { ...result.provenance.image, signature: { ...result.provenance.image.signature, verified: false } } } }), /verified immutable image/i)
+  assert.throws(() => validateCompletedIdleSoakResult({ ...result, provenance: { ...result.provenance, networkNamespace: { ...result.provenance.networkNamespace, exclusive: false, foreignPids: [999] } } }), /network-namespace ownership/i)
   assert.throws(() => validateCompletedIdleSoakResult({ ...result, cleanup: { clean: false } }), /cleanup/)
   assert.throws(() => validateCompletedIdleSoakResult({ ...result, elapsedMonotonicMs: 14_999 }), /monotonic duration/)
   assert.throws(() => validateCompletedIdleSoakResult({ ...result, checkpoints: { ...result.checkpoints, count: requiredCheckpoints - 1 } }), /checkpoint coverage/)
@@ -159,6 +186,107 @@ test("completed results require monotonic duration, cadence coverage, final heal
   const suspended = entries.map((entry, index) => index >= 3 ? { ...entry, elapsedMonotonicMs: entry.elapsedMonotonicMs + 60_000 } : entry)
   assert.throws(() => validateCompletedIdleSoakResult({ ...result, checkpoints: { ...result.checkpoints, entries: suspended, final: suspended.at(-1) }, elapsedMonotonicMs: 75_000 }), /checkpoint cadence/)
   assert.throws(() => validateCompletedIdleSoakResult({ ...result, profile: { ...result.profile, cookiePersistedAfterRestart: false } }), /restart persistence/)
+})
+
+test("idle preflight accepts an exact clean detached commit/tree", async () => {
+  const runtime = await readFile(path.resolve(import.meta.dirname, "idle-authenticated-browser-soak-runtime.mjs"), "utf8")
+  assert.doesNotMatch(runtime, /!source\.branch/)
+})
+
+test("idle preflight uses the active immutable image verifier seam", async () => {
+  const runtime = await readFile(path.resolve(import.meta.dirname, "idle-authenticated-browser-soak-runtime.mjs"), "utf8")
+  assert.match(runtime, /resolveVerifiedImage/)
+  assert.match(runtime, /inspectDigestBoundRuntime/)
+})
+
+test("idle preflight uses the active exclusive namespace ownership seam", async () => {
+  const runtime = await readFile(path.resolve(import.meta.dirname, "idle-authenticated-browser-soak-runtime.mjs"), "utf8")
+  assert.match(runtime, /networkNamespaceAttribution/)
+})
+
+test("idle provenance capture uses fake verifier, runtime, and namespace seams", async () => {
+  const source = { commit: "a".repeat(40), tree: "b".repeat(40), branch: "", dirty: false }
+  const image = idleTestProvenance(source).image
+  const runtimeImage = idleTestProvenance(source).runtimeImage
+  const networkNamespace = { exclusive: true, namespace: "net:[42]", foreignPids: [], unreadablePids: [], mismatchedOwnedPids: [] }
+  const calls = []
+  const provenance = await captureIdleSoakProvenance({
+    options: { imageRef: "registry.example/chariox/slice:final", imageSignatureKey: "/public/key", containerEngine: "docker", runtimeContainerId: "b".repeat(64) },
+    source,
+    ownedIds: new Set([100]),
+  }, {
+    resolveImage: async value => { calls.push(["image", value]); return image },
+    assertContainer: value => calls.push(["container", value]),
+    inspectRuntime: async value => { calls.push(["runtime", value]); return runtimeImage },
+    networkAttribution: async value => { calls.push(["network", value]); return networkNamespace },
+  })
+  assert.deepEqual(provenance, { schema: "chariox.idle_authenticated_browser_soak_provenance.v1", source, image, runtimeImage, networkNamespace })
+  assert.deepEqual(calls.map(([name]) => name), ["image", "container", "runtime", "network"])
+})
+
+test("idle provenance capture forwards the active verifier command seams", async () => {
+  const source = { commit: "a".repeat(40), tree: "b".repeat(40), branch: "", dirty: false }
+  const imageRef = "registry.example/chariox/slice:final"
+  const digest = "sha256:" + "c".repeat(64)
+  const engineImageId = "sha256:" + "d".repeat(64)
+  const containerId = "e".repeat(64)
+  const calls = []
+  const provenance = await captureIdleSoakProvenance({
+    options: { imageRef, imageSignatureKey: "/public/key", containerEngine: "docker", runtimeContainerId: containerId },
+    source,
+    ownedIds: new Set([100]),
+  }, {
+    assertContainer: () => {},
+    imageVerificationOptions: {
+      readKey: async () => Buffer.from("public-key"),
+      exec: async (command, args) => {
+        calls.push([command, args])
+        if (args[0] === "image") return { stdout: JSON.stringify({
+          Id: engineImageId,
+          RepoDigests: [`${imageRef.replace(":final", "")}@${digest}`],
+          Config: { Labels: { "io.chariox.runtime-source-revision": source.commit } },
+        }) }
+        if (args[0] === "verify") return { stdout: JSON.stringify([{ critical: { image: { "docker-manifest-digest": digest } } }]) }
+        if (args[0] === "verify-attestation") return { stdout: JSON.stringify({
+          payload: Buffer.from(JSON.stringify({ subject: [{ digest: { sha256: digest.slice("sha256:".length) } }] })).toString("base64"),
+        }) }
+        throw new Error(`unexpected image command: ${args[0]}`)
+      },
+    },
+    runtimeInspectionOptions: {
+      exec: async (command, args) => {
+        calls.push([command, args])
+        return { stdout: JSON.stringify({
+          Id: containerId,
+          Image: engineImageId,
+          Config: { Image: `${imageRef.replace(":final", "")}@${digest}`, Labels: { "io.chariox.runtime-source-revision": source.commit } },
+          State: { Running: true },
+        }) }
+      },
+    },
+    networkAttributionOptions: { currentPid: 100, listProc: async () => ["100"], readNamespace: async () => "net:[42]" },
+  })
+  assert.equal(provenance.image.signature.verified, true)
+  assert.equal(provenance.image.attestation.verified, true)
+  assert.equal(provenance.runtimeImage.identity, `${imageRef.replace(":final", "")}@${digest}`)
+  assert.equal(provenance.networkNamespace.exclusive, true)
+  assert.deepEqual(calls.map(([command, args]) => `${command} ${args[0]}`), [
+    "docker image", "cosign verify", "cosign verify-attestation", "docker container",
+  ])
+})
+
+test("idle provenance capture rejects foreign namespace members and unbound runtimes", async () => {
+  const source = { commit: "a".repeat(40), tree: "b".repeat(40), branch: "", dirty: false }
+  const image = idleTestProvenance(source).image
+  const options = { imageRef: "registry.example/chariox/slice:final", imageSignatureKey: "/public/key", containerEngine: "docker", runtimeContainerId: "b".repeat(64) }
+  const base = { options, source, ownedIds: new Set([100]) }
+  const seams = {
+    resolveImage: async () => image,
+    assertContainer: () => {},
+    inspectRuntime: async () => idleTestProvenance(source).runtimeImage,
+  }
+  await assert.rejects(captureIdleSoakProvenance(base, { ...seams, networkAttribution: async () => ({ exclusive: false, namespace: "net:[42]", foreignPids: [101] }) }), /foreign PIDs: 101/)
+  await assert.rejects(captureIdleSoakProvenance(base, { ...seams, assertContainer: () => { throw new Error("runtime container is not bound") }, networkAttribution: async () => ({ exclusive: true, namespace: "net:[42]", foreignPids: [] }) }), /not bound/)
 })
 
 test("clean dedicated run directories reject retained files and remove only stale failure markers for detached continuation", async () => {
@@ -179,8 +307,9 @@ test("clean dedicated run directories reject retained files and remove only stal
 })
 
 test("detach contract requires passed same-source smoke and preflight before child start", () => {
-  const source = { commit: "c".repeat(40), dirty: false }
-  const contract = { source, preflight: { status: "passed", source }, smoke: { status: "passed", source, smoke: true }, childPid: 321 }
+  const source = { commit: "c".repeat(40), tree: "d".repeat(40), dirty: false }
+  const provenance = idleTestProvenance(source)
+  const contract = { source, preflight: { status: "passed", source, provenance }, smoke: { status: "passed", source, smoke: true, provenance }, childPid: 321 }
   assert.deepEqual(validateIdleSoakDetachContract(contract, { source, childPid: 321 }), contract)
   assert.throws(() => validateIdleSoakDetachContract({ ...contract, smoke: { ...contract.smoke, source: { ...source, commit: "d".repeat(40) } } }, { source, childPid: 321 }), /same-source smoke/)
   assert.throws(() => validateIdleSoakDetachContract({ ...contract, childPid: 322 }, { source, childPid: 321 }), /child pid/)
@@ -189,8 +318,9 @@ test("detach contract requires passed same-source smoke and preflight before chi
 test("detached child waits through the parent status race for its exact contract", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "chariox-idle-detach-race-"))
   const paths = buildIdleSoakPaths(root, "run")
-  const source = { commit: "e".repeat(40), dirty: false }
-  const contract = { source, preflight: { status: "passed", source }, smoke: { status: "passed", source, smoke: true }, childPid: process.pid }
+  const source = { commit: "e".repeat(40), tree: "f".repeat(40), dirty: false }
+  const provenance = idleTestProvenance(source)
+  const contract = { source, preflight: { status: "passed", source, provenance }, smoke: { status: "passed", source, smoke: true, provenance }, childPid: process.pid }
   await mkdir(paths.runDir)
   const timer = setTimeout(() => { void writeFile(paths.detachContract, JSON.stringify(contract)) }, 25)
   try {
@@ -418,3 +548,23 @@ test("terminal evidence scan includes final result, failure, status, and runner 
     await rm(root, { recursive: true, force: true })
   }
 })
+
+function idleTestProvenance(source) {
+  const digest = "sha256:" + "c".repeat(64)
+  const image = {
+    identity: `registry.example/chariox/slice@${digest}`,
+    digest,
+    engine: "docker",
+    engineImageId: "sha256:" + "d".repeat(64),
+    sourceRevision: source.commit,
+    signature: { verified: true, verifier: "cosign", keySha256: "e".repeat(64), bundleSha256: "f".repeat(64) },
+    attestation: { verified: true, type: "slsaprovenance", bundleSha256: "a".repeat(64) },
+  }
+  return {
+    schema: "chariox.idle_authenticated_browser_soak_provenance.v1",
+    source: { ...source },
+    image,
+    runtimeImage: { containerId: "b".repeat(64), imageId: image.engineImageId, identity: image.identity, sourceRevision: source.commit, running: true },
+    networkNamespace: { exclusive: true, namespace: "net:[42]", foreignPids: [], unreadablePids: [], mismatchedOwnedPids: [] },
+  }
+}
