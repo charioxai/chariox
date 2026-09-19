@@ -840,6 +840,7 @@ async fn run_waiting_room_inventory_subscription_loop(
     let mut inventory_dirty = true;
     let mut tick: u64 = 0;
     let mut next_heartbeat_at = Instant::now();
+    let mut next_relay_status_at = Instant::now();
     loop {
         let waiting_room_change_sequence = router.waiting_room_change_sequence();
         let session_projection_change_sequence = router.session_projection_change_sequence();
@@ -913,6 +914,10 @@ async fn run_waiting_room_inventory_subscription_loop(
             {
                 break;
             }
+            next_heartbeat_at =
+                advance_subscription_deadline(next_heartbeat_at, subscription_heartbeat_interval());
+        }
+        if Instant::now() >= next_relay_status_at {
             let status = router.transport_relay_status_snapshot().await;
             if previous_relay_status.as_ref() != Some(&status) {
                 previous_relay_status = Some(status.clone());
@@ -931,8 +936,10 @@ async fn run_waiting_room_inventory_subscription_loop(
                     break;
                 }
             }
-            next_heartbeat_at =
-                advance_subscription_deadline(next_heartbeat_at, subscription_heartbeat_interval());
+            next_relay_status_at = advance_subscription_deadline(
+                next_relay_status_at,
+                subscription_heartbeat_interval(),
+            );
         }
         if tick.is_multiple_of(RELAY_DISCOVERY_INTERVAL_TICKS) {
             let machines = router.transport_remote_machines_snapshot();
