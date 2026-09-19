@@ -848,3 +848,797 @@ async fn owned_destroy_agent_clears_stale_prompt_runtime_state_for_ended_provide
         "destroying an agent should clear active turns for ended provider runs"
     );
 }
+
+#[derive(Debug, Clone, Copy)]
+struct MixedLivenessFakeClock {
+    now_ms: u64,
+    liveness_timeout_ms: u64,
+}
+
+impl MixedLivenessFakeClock {
+    fn from_provider_runs(
+        first: &crate::provider::RuntimeProviderRun,
+        second: &crate::provider::RuntimeProviderRun,
+    ) -> Self {
+        Self {
+            now_ms: first
+                .last_activity_at_ms()
+                .max(second.last_activity_at_ms()),
+            // The production provider-liveness API consumes an explicit process observation.
+            // Keep the elapsed-time decision deterministic here without changing that API.
+            liveness_timeout_ms: 1_000,
+        }
+    }
+
+    fn advance_past_liveness(&mut self) {
+        self.now_ms = self
+            .now_ms
+            .saturating_add(self.liveness_timeout_ms.saturating_add(1));
+    }
+
+    fn is_past_liveness(&self, last_activity_at_ms: u64) -> bool {
+        self.now_ms.saturating_sub(last_activity_at_ms) > self.liveness_timeout_ms
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MixedPromptActivityFingerprint {
+    has_last_output: bool,
+    saw_response_content: bool,
+    completion_recorded: bool,
+    settlement_requested: bool,
+    active_tool_ids: std::collections::BTreeSet<String>,
+}
+
+fn mixed_prompt_activity_fingerprint(
+    runtime: &KernelRuntimeState,
+    provider_run_id: &str,
+) -> Option<MixedPromptActivityFingerprint> {
+    runtime
+        .owned
+        .prompt_activity
+        .read()
+        .get(provider_run_id)
+        .map(|state| MixedPromptActivityFingerprint {
+            has_last_output: state.last_output_at.is_some(),
+            saw_response_content: state.saw_response_content,
+            completion_recorded: state.completion_recorded,
+            settlement_requested: state.settlement_requested,
+            active_tool_ids: state.active_tool_ids.clone(),
+        })
+}
+
+fn mixed_history(
+    runtime: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+) -> Vec<crate::history::SessionHistoryEntry> {
+    runtime
+        .owned
+        .operational_history_store
+        .load_session_history_entries(session_id, Some(agent_id))
+        .expect("agent history should load")
+}
+
+fn mixed_queue_prompt_ids(
+    session: &crate::session::RuntimeSession,
+    agent_id: &str,
+) -> Vec<String> {
+    session
+        .queued_prompts_for_agent(agent_id)
+        .map(|prompts| prompts.iter().map(|prompt| prompt.id().to_string()).collect())
+        .unwrap_or_default()
+}
+
+fn mixed_submit_active_and_queued_prompts(
+    app: &mut DaemonApp,
+    session_id: &str,
+    attachment_id: &str,
+    agent_id: &str,
+    active_text: &str,
+    queued_text: &str,
+) -> (String, String) {
+    app.submit_prompt(
+        session_id,
+        attachment_id,
+        Some(agent_id),
+        active_text,
+        Vec::new(),
+    )
+    .expect("active prompt should submit");
+    let active_prompt_id = app
+        .sessions()
+        .get_session(session_id)
+        .expect("session should exist")
+        .active_prompt_for_agent(agent_id)
+        .expect("active prompt should be present")
+        .id()
+        .to_string();
+
+    match app
+        .submit_prompt(
+            session_id,
+            attachment_id,
+            Some(agent_id),
+            queued_text,
+            Vec::new(),
+        )
+        .expect("queued prompt should submit")
+    {
+        crate::session::PromptSubmissionOutcome::Queued { .. } => {}
+        other => panic!("second prompt should queue, got {other:?}"),
+    }
+    let queued_prompt_id = app
+        .sessions()
+        .get_session(session_id)
+        .expect("session should exist")
+        .queued_prompts_for_agent(agent_id)
+        .and_then(|prompts| prompts.front())
+        .expect("queued prompt should be present")
+        .id()
+        .to_string();
+    (active_prompt_id, queued_prompt_id)
+}
+
+fn mixed_launch_provider(
+    app: &mut DaemonApp,
+    session_id: &str,
+    agent_id: &str,
+    model: &str,
+) -> crate::provider::RuntimeProviderRun {
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session_id,
+                "dev-stub",
+                "dev-stub",
+                "default",
+                model,
+            )
+            .with_agent_id(agent_id),
+        )
+        .expect("dev-stub provider should launch");
+    app.update_provider_run_projection(run.clone());
+    run
+}
+
+fn assert_mixed_old_provider_runtime_cleared(
+    runtime: &KernelRuntimeState,
+    provider_run_id: &str,
+) {
+    assert!(
+        !runtime
+            .owned
+            .prompt_activity
+            .read()
+            .contains_key(provider_run_id),
+        "stale provider prompt activity should be cleared"
+    );
+    assert!(
+        !runtime
+            .active_turn_snapshot()
+            .contains_key(provider_run_id),
+        "stale provider active turn should be cleared"
+    );
+    assert!(
+        !runtime.owned.provider_output_deadlines.contains(provider_run_id),
+        "stale provider output timer should be stopped"
+    );
+}
+
+fn mixed_activity_event_revision(
+    event: &crate::transport::kernel_protocol::KernelEvent,
+) -> u64 {
+    match event {
+        crate::transport::kernel_protocol::KernelEvent::AgentActivityChanged {
+            agent_activity_revision,
+            ..
+        } => *agent_activity_revision,
+        other => panic!("expected agent activity event, got {other:?}"),
+    }
+}
+
+#[test]
+fn kernel_mixed_01_reconciles_two_stale_providers_without_touching_healthy_agent() {
+    run_kernel_mixed_01_with_large_stack(
+        "kernel-mixed-01",
+        kernel_mixed_01_reconciles_two_stale_providers_without_touching_healthy_agent_inner,
+    );
+}
+
+fn run_kernel_mixed_01_with_large_stack<F, Fut>(name: &'static str, test: F)
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
+                .enable_all()
+                .build()
+                .expect("mixed liveness test runtime should build")
+                .block_on(test());
+        })
+        .expect("mixed liveness test thread should spawn")
+        .join()
+        .unwrap_or_else(|error| std::panic::resume_unwind(error));
+}
+
+async fn kernel_mixed_01_reconciles_two_stale_providers_without_touching_healthy_agent_inner() {
+    let mut app = crate::test_support::bootstrap_authenticated_app(
+        crate::DaemonConfig::for_tests(),
+    )
+    .expect("daemon should boot");
+    let (session, healthy_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-kernel-mixed-01",
+            "worktree-kernel-mixed-01",
+        ))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let healthy_agent_id = healthy_agent.id().to_string();
+    let stale_b = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("stale-b"),
+        )
+        .expect("stale B agent should spawn");
+    let stale_b_id = stale_b.id().to_string();
+    let stale_c = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("stale-c"),
+        )
+        .expect("stale C agent should spawn");
+    let stale_c_id = stale_c.id().to_string();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-kernel-mixed-01",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let attachment_id = attachment.id().to_string();
+
+    let healthy_run = mixed_launch_provider(&mut app, &session_id, &healthy_agent_id, "healthy");
+    let stale_b_run = mixed_launch_provider(&mut app, &session_id, &stale_b_id, "stale-b");
+    let stale_c_run = mixed_launch_provider(&mut app, &session_id, &stale_c_id, "stale-c");
+    let (healthy_active_prompt_id, healthy_queued_prompt_id) =
+        mixed_submit_active_and_queued_prompts(
+            &mut app,
+            &session_id,
+            &attachment_id,
+            &healthy_agent_id,
+            "healthy active prompt\n",
+            "healthy queued prompt\n",
+        );
+    let (stale_c_active_prompt_id, stale_c_queued_prompt_id) =
+        mixed_submit_active_and_queued_prompts(
+            &mut app,
+            &session_id,
+            &attachment_id,
+            &stale_c_id,
+            "stale C active prompt\n",
+            "stale C queued prompt\n",
+        );
+
+    let app = Arc::new(Mutex::new(app));
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+        Arc::clone(&app),
+        4,
+    );
+    let healthy_token = healthy_run
+        .runtime_mcp_auth_token()
+        .expect("healthy run should expose runtime MCP auth")
+        .to_string();
+    let message_arguments = serde_json::json!({
+        "agent": "@stale-b",
+        "message": "kernel mixed liveness message",
+        "idempotency_key": "kernel-mixed-01-message",
+    });
+    let first_message = router
+        .runtime_state()
+        .dispatch_authenticated_runtime_tool_call(
+            &healthy_token,
+            crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
+            message_arguments.clone(),
+        )
+        .await
+        .expect("agent message should dispatch through the kernel");
+    assert!(first_message.ok, "{:?}", first_message.payload);
+    assert_eq!(first_message.payload["status"], "started");
+    assert_eq!(
+        first_message.payload["target_agent_id"],
+        serde_json::json!(stale_b_id)
+    );
+    let message_prompt_id = first_message.payload["prompt_id"]
+        .as_str()
+        .expect("message should return a prompt id")
+        .to_string();
+    let runtime = router.runtime_state();
+    let b_history_after_first = mixed_history(&runtime, &session_id, &stale_b_id);
+    let retried_message = router
+        .runtime_state()
+        .dispatch_authenticated_runtime_tool_call(
+            &healthy_token,
+            crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
+            message_arguments,
+        )
+        .await
+        .expect("duplicate agent message should dispatch through the kernel");
+    assert!(retried_message.ok, "{:?}", retried_message.payload);
+    assert_eq!(
+        retried_message.payload["prompt_id"],
+        serde_json::json!(message_prompt_id)
+    );
+    assert_eq!(
+        b_history_after_first,
+        mixed_history(&runtime, &session_id, &stale_b_id),
+        "the idempotency retry must not append another durable message"
+    );
+
+    let stale_b_active_prompt_id = runtime
+        .owned
+        .session_snapshot(&session_id)
+        .expect("session snapshot should exist")
+        .active_prompt_for_agent(&stale_b_id)
+        .expect("agent message should be active for stale B")
+        .id()
+        .to_string();
+    assert_eq!(stale_b_active_prompt_id, message_prompt_id);
+    {
+        let mut app = app.lock().await;
+        match app
+            .submit_prompt(
+                &session_id,
+                &attachment_id,
+                Some(&stale_b_id),
+                "stale B queued prompt\n",
+                Vec::new(),
+            )
+            .expect("stale B queued prompt should submit")
+        {
+            crate::session::PromptSubmissionOutcome::Queued { .. } => {}
+            other => panic!("stale B prompt should queue, got {other:?}"),
+        }
+    }
+    let stale_b_queued_prompt_id = runtime
+        .owned
+        .session_snapshot(&session_id)
+        .expect("session snapshot should exist")
+        .queued_prompts_for_agent(&stale_b_id)
+        .and_then(|prompts| prompts.front())
+        .expect("stale B should have a queued prompt")
+        .id()
+        .to_string();
+
+    runtime.owned.note_prompt_started(healthy_run.id());
+    runtime.owned.note_prompt_started(stale_b_run.id());
+    runtime.owned.note_prompt_started(stale_c_run.id());
+    runtime.owned.note_prompt_response_content(healthy_run.id());
+    let progress_before_clock = runtime.owned.fan_out_terminal_output(
+        &session_id,
+        healthy_run.id(),
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        Some("healthy-progress-1".to_string()),
+        vec![attachment_id.clone()],
+        b"healthy progress before stale reconciliation",
+    );
+    assert_eq!(
+        progress_before_clock.bytes,
+        b"healthy progress before stale reconciliation"
+    );
+
+    let mut fake_clock =
+        MixedLivenessFakeClock::from_provider_runs(&stale_b_run, &stale_c_run);
+    fake_clock.advance_past_liveness();
+    assert!(fake_clock.is_past_liveness(stale_b_run.last_activity_at_ms()));
+    assert!(fake_clock.is_past_liveness(stale_c_run.last_activity_at_ms()));
+    // A continues to make progress after the clock crosses the stale threshold. This is the
+    // healthy observation that keeps its run authoritative while B and C receive stale exits.
+    runtime.owned.note_prompt_response_content(healthy_run.id());
+    let progress_after_clock = runtime.owned.fan_out_terminal_output(
+        &session_id,
+        healthy_run.id(),
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        Some("healthy-progress-2".to_string()),
+        vec![attachment_id.clone()],
+        b"healthy progress after fake liveness",
+    );
+    assert_eq!(
+        progress_after_clock.bytes,
+        b"healthy progress after fake liveness"
+    );
+
+    let baseline_revision = runtime.session_projection_session_change_sequence(&session_id);
+    let baseline_projection = runtime
+        .session_snapshot_projection(&session_id, baseline_revision)
+        .expect("baseline projection should load");
+    let baseline_healthy_activity = baseline_projection
+        .agent_activity
+        .get(&healthy_agent_id)
+        .cloned()
+        .expect("healthy agent activity should project");
+    let baseline_healthy_turn = runtime
+        .active_turn_snapshot()
+        .get(healthy_run.id())
+        .cloned()
+        .expect("healthy active turn should remain tracked");
+    let baseline_healthy_activity_state = mixed_prompt_activity_fingerprint(&runtime, healthy_run.id())
+        .expect("healthy prompt activity should remain tracked");
+    let baseline_healthy_history = mixed_history(&runtime, &session_id, &healthy_agent_id);
+    assert!(
+        baseline_healthy_history
+            .iter()
+            .any(|entry| entry.text.contains("healthy progress after fake liveness")),
+        "progress without final completion must be durable"
+    );
+    assert!(baseline_healthy_activity.active_turn.is_some());
+    assert_eq!(
+        baseline_healthy_activity.active_turn.as_ref().map(|turn| turn.prompt_id.as_str()),
+        Some(healthy_active_prompt_id.as_str())
+    );
+    assert_eq!(
+        mixed_queue_prompt_ids(&baseline_projection.session, &healthy_agent_id),
+        vec![healthy_queued_prompt_id.clone()]
+    );
+    assert!(
+        baseline_healthy_activity.last_completed_turn.is_none(),
+        "healthy progress must not be mistaken for final completion"
+    );
+    let baseline_healthy_run = runtime
+        .owned
+        .provider_store
+        .get_run(healthy_run.id())
+        .expect("healthy provider run should remain available");
+    let baseline_healthy_run_state = baseline_healthy_run.state();
+    let baseline_healthy_last_activity = baseline_healthy_run.last_activity_at_ms();
+    let baseline_healthy_timer = runtime.owned.provider_output_deadlines.contains(healthy_run.id());
+    assert!(baseline_healthy_timer);
+
+    let baseline_stale_b_history = mixed_history(&runtime, &session_id, &stale_b_id);
+    let baseline_stale_c_history = mixed_history(&runtime, &session_id, &stale_c_id);
+    assert!(!baseline_stale_b_history.is_empty(), "stale B history must be durable");
+    assert!(!baseline_stale_c_history.is_empty(), "stale C history must be durable");
+    assert_eq!(
+        mixed_queue_prompt_ids(&baseline_projection.session, &stale_b_id),
+        vec![stale_b_queued_prompt_id.clone()]
+    );
+    assert_eq!(
+        mixed_queue_prompt_ids(&baseline_projection.session, &stale_c_id),
+        vec![stale_c_queued_prompt_id.clone()]
+    );
+
+    {
+        let mut app = app.lock().await;
+        let stale_b_ended = app
+            .providers_mut()
+            .mark_run_ended_provider_only(&session_id, stale_b_run.id())
+            .expect("stale B provider record should end")
+            .into_run();
+        app.update_provider_run_projection(stale_b_ended);
+        let stale_c_ended = app
+            .providers_mut()
+            .mark_run_ended_provider_only(&session_id, stale_c_run.id())
+            .expect("stale C provider record should end")
+            .into_run();
+        app.update_provider_run_projection(stale_c_ended);
+    }
+
+    let stale_b_reconciled = runtime
+        .reconcile_provider_run_exit(&session_id, stale_b_run.id())
+        .await
+        .expect("stale B liveness should reconcile");
+    let stale_c_reconciled = runtime
+        .reconcile_provider_run_exit(&session_id, stale_c_run.id())
+        .await
+        .expect("stale C liveness should reconcile");
+    assert!(stale_b_reconciled);
+    assert!(stale_c_reconciled);
+
+    let first_reconciled_revision = runtime.session_projection_session_change_sequence(&session_id);
+    assert!(first_reconciled_revision > baseline_revision);
+    let first_reconciled_projection = runtime
+        .session_snapshot_projection(&session_id, first_reconciled_revision)
+        .expect("reconciled projection should load");
+    assert_eq!(
+        first_reconciled_projection
+            .agent_activity
+            .get(&healthy_agent_id),
+        Some(&baseline_healthy_activity),
+        "B/C cleanup must not change A status, progress, timer, turn, or queue"
+    );
+    assert_eq!(
+        runtime
+            .active_turn_snapshot()
+            .get(healthy_run.id()),
+        Some(&baseline_healthy_turn)
+    );
+    assert_eq!(
+        mixed_prompt_activity_fingerprint(&runtime, healthy_run.id()),
+        Some(baseline_healthy_activity_state)
+    );
+    assert_eq!(
+        mixed_history(&runtime, &session_id, &healthy_agent_id),
+        baseline_healthy_history
+    );
+    let healthy_after_reconcile = runtime
+        .owned
+        .provider_store
+        .get_run(healthy_run.id())
+        .expect("healthy provider run should remain available after cleanup");
+    assert_eq!(healthy_after_reconcile.id(), healthy_run.id());
+    assert_eq!(healthy_after_reconcile.state(), baseline_healthy_run_state);
+    assert_eq!(
+        healthy_after_reconcile.last_activity_at_ms(),
+        baseline_healthy_last_activity
+    );
+    assert_eq!(
+        runtime.owned.provider_output_deadlines.contains(healthy_run.id()),
+        baseline_healthy_timer
+    );
+    assert_eq!(
+        mixed_queue_prompt_ids(
+            &first_reconciled_projection.session,
+            &healthy_agent_id
+        ),
+        vec![healthy_queued_prompt_id.clone()]
+    );
+    assert_eq!(
+        first_reconciled_projection
+            .agent_activity
+            .get(&healthy_agent_id)
+            .and_then(|activity| activity.active_turn.as_ref())
+            .map(|turn| turn.prompt_id.as_str()),
+        Some(healthy_active_prompt_id.as_str())
+    );
+
+    for (agent_id, old_run_id, old_active_prompt_id, queued_prompt_id) in [
+        (
+            stale_b_id.as_str(),
+            stale_b_run.id(),
+            stale_b_active_prompt_id.as_str(),
+            stale_b_queued_prompt_id.as_str(),
+        ),
+        (
+            stale_c_id.as_str(),
+            stale_c_run.id(),
+            stale_c_active_prompt_id.as_str(),
+            stale_c_queued_prompt_id.as_str(),
+        ),
+    ] {
+        let session_after = runtime
+            .owned
+            .session_snapshot(&session_id)
+            .expect("session snapshot should exist after stale reconciliation");
+        assert_eq!(
+            session_after
+                .active_prompt_for_agent(agent_id)
+                .map(crate::session::PromptQueueItem::id),
+            Some(queued_prompt_id),
+            "one queued prompt must be promoted for each stale provider"
+        );
+        assert!(
+            session_after
+                .queued_prompts_for_agent(agent_id)
+                .is_none_or(std::collections::VecDeque::is_empty)
+        );
+        let completed = runtime
+            .owned
+            .completed_git_turn_snapshots
+            .latest_projection_for_agent(&session_id, agent_id)
+            .expect("one stale turn termination should be projected");
+        assert_eq!(completed.prompt_id, old_active_prompt_id);
+        assert_eq!(completed.provider_run_id, old_run_id);
+        assert_eq!(
+            completed.settlement_status,
+            crate::git_observer::CompletedTurnSettlementStatus::Failed
+        );
+        assert!(
+            completed
+                .provider_termination
+                .as_ref()
+                .is_some_and(|termination| termination.reason.contains("already ended")),
+            "provider termination must be recorded exactly once for the stale run"
+        );
+        assert_mixed_old_provider_runtime_cleared(&runtime, old_run_id);
+        assert_eq!(
+            runtime
+                .owned
+                .provider_store
+                .get_run(old_run_id)
+                .expect("stale run should remain durable")
+                .state(),
+            crate::provider::ProviderRunState::Ended
+        );
+    }
+
+    let first_stale_b_history = mixed_history(&runtime, &session_id, &stale_b_id);
+    let first_stale_c_history = mixed_history(&runtime, &session_id, &stale_c_id);
+    let first_stale_b_completion = runtime
+        .owned
+        .completed_git_turn_snapshots
+        .latest_projection_for_agent(&session_id, &stale_b_id)
+        .expect("stale B completion should remain projected");
+    let first_stale_c_completion = runtime
+        .owned
+        .completed_git_turn_snapshots
+        .latest_projection_for_agent(&session_id, &stale_c_id)
+        .expect("stale C completion should remain projected");
+
+    let stale_revision = baseline_revision;
+    let delayed_working_projection = crate::runtime::projection::SessionSnapshotProjection {
+        metadata: crate::runtime::projection::ProjectionMetadata::new(
+            first_reconciled_projection.metadata.projection_version,
+            stale_revision,
+        ),
+        session: first_reconciled_projection.session.clone(),
+        provider_run: first_reconciled_projection.provider_run.clone(),
+        agent_activity: baseline_projection.agent_activity.clone(),
+    };
+    let delayed_working_event =
+        crate::transport::kernel_protocol::agent_activity_changed_event(
+            &delayed_working_projection,
+            Some(&first_reconciled_projection),
+        )
+        .expect("lower-revision WORKING event should be representable");
+    let mut delayed_completion_activity = first_reconciled_projection.agent_activity.clone();
+    for agent_id in [&stale_b_id, &stale_c_id] {
+        let activity = delayed_completion_activity
+            .get_mut(agent_id)
+            .expect("stale agent activity should project");
+        activity.status = crate::runtime::projection::AgentRuntimeStatus::Idle;
+        activity.prompt_status = crate::runtime::projection::AgentPromptRuntimeStatus::None;
+        activity.busy = false;
+        activity.active_prompt_count = 0;
+        activity.queued_prompt_count = 0;
+        activity.queued_prompt_controls.clear();
+        activity.active_turn = None;
+    }
+    let delayed_completion_projection = crate::runtime::projection::SessionSnapshotProjection {
+        metadata: crate::runtime::projection::ProjectionMetadata::new(
+            first_reconciled_projection.metadata.projection_version,
+            stale_revision,
+        ),
+        session: first_reconciled_projection.session.clone(),
+        provider_run: first_reconciled_projection.provider_run.clone(),
+        agent_activity: delayed_completion_activity,
+    };
+    let delayed_completion_event =
+        crate::transport::kernel_protocol::agent_activity_changed_event(
+            &delayed_completion_projection,
+            Some(&first_reconciled_projection),
+        )
+        .expect("lower-revision completion event should be representable");
+    assert!(stale_revision < first_reconciled_revision);
+    assert_eq!(
+        mixed_activity_event_revision(&delayed_working_event),
+        stale_revision
+    );
+    assert_eq!(
+        mixed_activity_event_revision(&delayed_completion_event),
+        stale_revision
+    );
+
+    let repeated_b = runtime
+        .reconcile_provider_run_exit(&session_id, stale_b_run.id())
+        .await
+        .expect("repeated stale B exit should be ignored");
+    let repeated_c = runtime
+        .reconcile_provider_run_exit(&session_id, stale_c_run.id())
+        .await
+        .expect("repeated stale C exit should be ignored");
+    assert!(repeated_b);
+    assert!(repeated_c);
+    let delayed_b_completion = runtime
+        .settle_unexpected_provider_run_exit(
+            &session_id,
+            stale_b_run.id(),
+            &stale_b_id,
+            crate::provider::ProviderRunTermination::runtime_failure(
+                "delayed lower-revision completion",
+                fake_clock.now_ms,
+            ),
+        )
+        .await
+        .expect("delayed stale B completion should be ignored");
+    let delayed_c_completion = runtime
+        .settle_unexpected_provider_run_exit(
+            &session_id,
+            stale_c_run.id(),
+            &stale_c_id,
+            crate::provider::ProviderRunTermination::runtime_failure(
+                "delayed lower-revision completion",
+                fake_clock.now_ms,
+            ),
+        )
+        .await
+        .expect("delayed stale C completion should be ignored");
+    assert!(!delayed_b_completion.had_active_prompt);
+    assert!(!delayed_c_completion.had_active_prompt);
+
+    let after_stale_revision = runtime.session_projection_session_change_sequence(&session_id);
+    assert_eq!(after_stale_revision, first_reconciled_revision);
+    let after_stale_projection = runtime
+        .session_snapshot_projection(&session_id, after_stale_revision)
+        .expect("projection should remain authoritative after stale events");
+    assert_eq!(
+        after_stale_projection.session,
+        first_reconciled_projection.session
+    );
+    assert_eq!(
+        after_stale_projection.provider_run,
+        first_reconciled_projection.provider_run
+    );
+    assert_eq!(
+        after_stale_projection.agent_activity,
+        first_reconciled_projection.agent_activity
+    );
+    assert_eq!(
+        mixed_history(&runtime, &session_id, &stale_b_id),
+        first_stale_b_history
+    );
+    assert_eq!(
+        mixed_history(&runtime, &session_id, &stale_c_id),
+        first_stale_c_history
+    );
+    assert_eq!(
+        runtime
+            .owned
+            .completed_git_turn_snapshots
+            .latest_projection_for_agent(&session_id, &stale_b_id),
+        Some(first_stale_b_completion)
+    );
+    assert_eq!(
+        runtime
+            .owned
+            .completed_git_turn_snapshots
+            .latest_projection_for_agent(&session_id, &stale_c_id),
+        Some(first_stale_c_completion)
+    );
+
+    let reloaded = owned_runtime_state(&app).await;
+    let reloaded_revision = reloaded.session_projection_session_change_sequence(&session_id);
+    assert_eq!(reloaded_revision, first_reconciled_revision);
+    let reloaded_projection = reloaded
+        .session_snapshot_projection(&session_id, reloaded_revision)
+        .expect("reloaded projection should load");
+    assert_eq!(reloaded_projection.session, first_reconciled_projection.session);
+    assert_eq!(
+        reloaded_projection.provider_run,
+        first_reconciled_projection.provider_run
+    );
+    for agent_id in [&healthy_agent_id, &stale_b_id, &stale_c_id] {
+        assert_eq!(
+            reloaded_projection.agent_activity.get(agent_id),
+            first_reconciled_projection.agent_activity.get(agent_id),
+            "reconnect/reload must preserve status, turn timer, queue, and completion state"
+        );
+        assert_eq!(
+            mixed_history(&reloaded, &session_id, agent_id),
+            mixed_history(&runtime, &session_id, agent_id),
+            "reconnect/reload must preserve durable turn history"
+        );
+    }
+    assert_eq!(
+        reloaded.active_turn_snapshot(),
+        runtime.active_turn_snapshot(),
+        "reconnect/reload must preserve active-turn parity"
+    );
+    for provider_run_id in [healthy_run.id(), stale_b_run.id(), stale_c_run.id()] {
+        assert_eq!(
+            mixed_prompt_activity_fingerprint(&reloaded, provider_run_id),
+            mixed_prompt_activity_fingerprint(&runtime, provider_run_id),
+            "reconnect/reload must preserve prompt activity parity"
+        );
+        assert_eq!(
+            reloaded.owned.provider_output_deadlines.contains(provider_run_id),
+            runtime.owned.provider_output_deadlines.contains(provider_run_id),
+            "reconnect/reload must preserve timer parity"
+        );
+    }
+}
