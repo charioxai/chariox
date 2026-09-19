@@ -78,6 +78,76 @@ function withRoomRealProviderEffort(requests, effort) {
   }
 }
 
+async function readBackRealProviderAgent({
+  client,
+  requests,
+  sessionId,
+  agentId,
+  provider,
+  model,
+  accountProfile,
+  effort,
+}) {
+  const state = unwrap(
+    await client.send(requests.getSessionStateRequest(sessionId)),
+    "SessionState",
+  )
+  const agent = state.session?.agents?.find((candidate) => candidate.id === agentId)
+  assert.ok(agent, `spawned real-provider agent ${agentId} was absent from SessionState`)
+  assert.equal(agent.provider, provider, "SessionState provider did not match the requested provider")
+  assert.equal(agent.model, model, "SessionState model did not match the requested model")
+  assert.equal(
+    agent.account_profile ?? "default",
+    accountProfile,
+    "SessionState account profile did not match the requested profile",
+  )
+  assert.equal(
+    agent.effort,
+    effort,
+    `SessionState effective effort ${String(agent.effort)} did not match requested ${effort}`,
+  )
+  return agent
+}
+
+async function spawnAndVerifyRealProviderAgent({
+  client,
+  requests,
+  sessionId,
+  sliceId,
+  workspace,
+  options,
+  effort,
+}) {
+  const agent = unwrap(
+    await client.send(requests.spawnAgentRequest(
+      sessionId,
+      options.provider,
+      `real-${options.provider}`,
+      options.model,
+      workspace,
+      effort,
+      "build",
+      "yolo",
+      undefined,
+      undefined,
+      sliceId,
+      options.accountProfile,
+    )),
+    "AgentSpawned",
+  ).agent
+  assert.ok(agent?.id, "SpawnAgent did not return an agent identity")
+  return readBackRealProviderAgent({
+    client,
+    requests,
+    sessionId,
+    agentId: agent.id,
+    provider: options.provider,
+    model: options.model,
+    accountProfile: options.accountProfile,
+    effort,
+  })
+}
+
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, "..", "..", "..")
 const sliceMemoryMb = Number(process.env.CHARIOX_ROOM_DRILL_MEMORY_MB ?? 2048)
@@ -86,7 +156,6 @@ assert.ok(Number.isSafeInteger(sliceMemoryMb) && sliceMemoryMb > 0 && sliceMemor
 const companionOnly = process.env.CHARIOX_ROOM_DRILL_FOCUS === "web-companion"
 const realProviderOptions = roomRealProviderOptions(process.env)
 const realProviderEffort = realProviderOptions ? parseRoomRealProviderEffort(process.env) : null
-if (realProviderOptions) realProviderOptions.effort = realProviderEffort
 const kernelClientRoot = path.join(repoRoot, "packages", "kernel-client")
 const startedAt = new Date().toISOString()
 const stamp = startedAt.replace(/[:.]/g, "-")
@@ -558,8 +627,18 @@ async function run() {
     waitForRemoteNotice(/^Room input: available$/),
   ])
   if (realProviderOptions && !companionOnly) {
+    const providerRequests = withRoomRealProviderEffort(requests, realProviderEffort)
+    const providerAgent = await spawnAndVerifyRealProviderAgent({
+      client,
+      requests: providerRequests,
+      sessionId,
+      sliceId: slice.id,
+      workspace: fixtureWorkspace,
+      options: realProviderOptions,
+      effort: realProviderEffort,
+    })
     const provider = await runRoomRealProvider({
-      client, requests: withRoomRealProviderEffort(requests, realProviderEffort), sessionId, sliceId: slice.id, workspace: fixtureWorkspace,
+      client, requests: providerRequests, agent: providerAgent, sessionId, sliceId: slice.id, workspace: fixtureWorkspace,
       options: realProviderOptions, waitFor, withTimeout, screenshot,
       officeRuntime: { containerName, docker, sliceScreen, runCommandWithStdin },
       checkpoint: (value) => writeFile(path.join(evidenceRoot, "real-provider.json"), `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 }),
@@ -570,7 +649,7 @@ async function run() {
       schema: "chariox.room_environment.real_provider.v1", status: "passed", startedAt,
       source: sourceIdentity, sliceRuntime: sliceRuntimeIdentity,
       sessionId, sliceId: slice.id, environmentId: released.environment_id,
-      provider: { ...provider, effort: realProviderEffort }, containerLimits: limits,
+      provider: { ...provider, effort: providerAgent.effort }, containerLimits: limits,
     }
     return
   }
@@ -3118,7 +3197,13 @@ async function withTimeout(promise, timeoutMs, label) {
   }
 }
 
-export { main, parseRoomRealProviderEffort, withRoomRealProviderEffort }
+export {
+  main,
+  parseRoomRealProviderEffort,
+  readBackRealProviderAgent,
+  spawnAndVerifyRealProviderAgent,
+  withRoomRealProviderEffort,
+}
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
