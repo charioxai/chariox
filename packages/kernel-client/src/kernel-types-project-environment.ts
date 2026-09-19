@@ -15,6 +15,13 @@ export type ProjectEnvironmentSetupStepKind =
 
 export type ProjectEnvironmentInputKind = "recipe" | "lockfile"
 
+export type ProjectEnvironmentPathBase = "preparation_home" | "workspace"
+
+export type ProjectEnvironmentPathEntry = {
+  readonly base: ProjectEnvironmentPathBase
+  readonly path: string
+}
+
 export type ProjectEnvironmentInput = {
   readonly kind: ProjectEnvironmentInputKind
   readonly path: string
@@ -33,6 +40,7 @@ export type ProjectEnvironmentDefinition = {
   readonly target_platform: string
   readonly source_path: string | null
   readonly inputs?: readonly ProjectEnvironmentInput[]
+  readonly path_entries?: readonly ProjectEnvironmentPathEntry[]
   readonly setup_steps: readonly ProjectEnvironmentSetupStep[]
   readonly validation_commands: readonly string[]
 }

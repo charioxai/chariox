@@ -12,7 +12,9 @@ mod command_catalog;
 mod credential_environment;
 #[cfg(test)]
 pub(crate) use credential_environment::{
-    record_provider_credential_delivery_for_test, ProviderCredentialDeliveryProbe,
+    record_provider_credential_delivery_for_test, take_provider_lifecycle_failure_for_test,
+    ProviderCredentialDeliveryProbe, ProviderLifecycleFailureInjection,
+    ProviderLifecycleFailureStage,
 };
 mod executable_resolution;
 mod external_observation;
@@ -46,6 +48,10 @@ pub(crate) use claude::ensure_claude_native_hidden_context_fits;
 pub(crate) use claude::probe_claude_account_usage;
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 pub(crate) use claude_runtime::ClaudeRuntimeState;
+#[cfg(test)]
+pub(crate) use claude_runtime::{
+    drain_claude_events, initialize_claude_runtime, submit_claude_prompt,
+};
 pub use codex::{
     codex_catalog_endpoint, logout_codex, plan_codex_launch, resolve_codex_executable,
 };
@@ -81,8 +87,9 @@ pub(crate) use managed_isolation::{
     apply_managed_provider_isolation, command_from_provider_launch,
     managed_isolated_utility_command, managed_isolated_utility_launch,
     managed_provider_control_env_remove, managed_provider_isolation_env_remove,
-    managed_provider_isolation_required, provider_reported_path_on_kernel,
-    MANAGED_SLICE_PUBLICATION_ROOT_ENV, MANAGED_SLICE_SERVICE_ROOT_ENV,
+    managed_provider_isolation_required, managed_provider_parent_credential_env_remove,
+    provider_reported_path_on_kernel, MANAGED_SLICE_PUBLICATION_ROOT_ENV,
+    MANAGED_SLICE_SERVICE_ROOT_ENV,
 };
 #[cfg(test)]
 pub(crate) use managed_isolation::{
@@ -92,8 +99,9 @@ pub(crate) use mcp_proxy::{
     dispatch_provider_mcp_proxy_request, shutdown_provider_mcp_proxy_session,
 };
 pub(crate) use opencode::{
-    ensure_opencode_account_endpoint, invalidate_opencode_account_endpoint,
-    shutdown_opencode_account_endpoints,
+    apply_opencode_discovery_environment, ensure_opencode_account_endpoint,
+    invalidate_opencode_account_endpoint, isolate_opencode_discovery_configuration,
+    shutdown_opencode_account_endpoints, OpenCodeDiscoveryConfigDirectory,
 };
 pub use opencode::{opencode_catalog_endpoint, plan_opencode_launch, resolve_opencode_executable};
 pub use opencode_client::{
@@ -125,9 +133,7 @@ pub(crate) use runtime_run::{
 pub use runtime_run::{ProviderRunTokenUsage, RuntimeProviderRun};
 pub use service::{ProviderProcessService, ProviderProcessServiceStore};
 pub(crate) use service::{ProviderRunLivenessReconciliation, ProviderRuntimeBinding};
-pub(crate) use termination::{
-    provider_launch_failure_diagnostic, sanitize_provider_diagnostic,
-};
+pub(crate) use termination::{provider_launch_failure_diagnostic, sanitize_provider_diagnostic};
 pub use termination::{ProviderRunTermination, ProviderRunTerminationCategory};
 pub(crate) use types::provider_workspace_live_sync_mode_for_session;
 pub use types::{
@@ -258,12 +264,25 @@ pub(crate) fn provider_run_uses_runtime_structured_utility_prompt(
     run.adapter_key() == "claude" && run.client_interface().is_chariox()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProviderUtilityExecutionPolicy {
+    ExistingRun,
+    ReadOnlyDiscovery,
+}
+
+impl ProviderUtilityExecutionPolicy {
+    pub(crate) fn is_read_only_discovery(self) -> bool {
+        matches!(self, Self::ReadOnlyDiscovery)
+    }
+}
+
 pub(crate) fn run_blocking_provider_utility_prompt(
     run: &RuntimeProviderRun,
     visible_user_prompt: &str,
     hidden_system_context: &str,
     timeout: Duration,
     operation: &'static str,
+    policy: ProviderUtilityExecutionPolicy,
 ) -> Result<String, crate::error::DaemonError> {
     match run.adapter_key() {
         "codex" => codex_runtime::run_codex_utility_prompt(
@@ -271,12 +290,14 @@ pub(crate) fn run_blocking_provider_utility_prompt(
             visible_user_prompt,
             hidden_system_context,
             timeout,
+            policy,
         ),
         "opencode" => opencode_binding::run_opencode_utility_prompt(
             run,
             visible_user_prompt,
             hidden_system_context,
             timeout,
+            policy,
         ),
         adapter_key => Err(crate::error::DaemonError::LocalTransport {
             operation,
@@ -304,7 +325,8 @@ mod tests {
         provider_run_waits_for_workflow_publication_completion, retain_public_inventory_providers,
         retain_public_inventory_providers_with_dev_stub_policy,
         run_blocking_provider_utility_prompt, AgentEndpointMode, LaunchProviderRequest,
-        ProviderClientInterface, ProviderLaunchResult, RuntimeProviderRun,
+        ProviderClientInterface, ProviderLaunchResult, ProviderUtilityExecutionPolicy,
+        RuntimeProviderRun,
     };
 
     #[test]
@@ -502,6 +524,7 @@ mod tests {
             "hidden",
             std::time::Duration::from_secs(1),
             "test utility",
+            ProviderUtilityExecutionPolicy::ExistingRun,
         )
         .expect_err("unsupported adapter should fail before provider I/O");
 

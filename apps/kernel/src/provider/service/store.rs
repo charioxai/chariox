@@ -165,6 +165,10 @@ impl ProviderProcessServiceStore {
         self.read().structured_prompt_io_in_flight(provider_run_id)
     }
 
+    pub(crate) fn structured_runtime_state_bound(&self, provider_run_id: &str) -> bool {
+        self.read().structured_runtime_state_bound(provider_run_id)
+    }
+
     pub fn record_run_activity(&self, run_id: &str) -> Result<(), DaemonError> {
         self.write().record_run_activity(run_id)
     }
@@ -186,6 +190,42 @@ impl ProviderProcessServiceStore {
     ) -> Result<RuntimeProviderRun, DaemonError> {
         self.write()
             .update_run_execution_config(run_id, execution_mode, permission_level)
+    }
+
+    pub(crate) fn update_run_preparation_environment(
+        &self,
+        run_id: &str,
+        home: impl Into<String>,
+        path: impl Into<String>,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.write()
+            .update_run_preparation_environment(run_id, home, path)
+    }
+
+    pub(crate) fn update_run_read_only_discovery(
+        &self,
+        run_id: &str,
+        enabled: bool,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.write()
+            .update_run_read_only_discovery(run_id, enabled)
+    }
+
+    pub(crate) fn restore_run_snapshot_after_restart_failure(
+        &self,
+        snapshot: RuntimeProviderRun,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.write()
+            .restore_run_snapshot_after_restart_failure(snapshot)
+    }
+
+    pub(crate) fn mark_run_ended_provider_only(
+        &self,
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<ProviderRunEndedOutcome, DaemonError> {
+        self.write()
+            .mark_run_ended_provider_only(session_id, run_id)
     }
 
     pub(crate) fn update_run_remote_extension_manifest(
@@ -329,12 +369,14 @@ impl ProviderProcessServiceStore {
         visible_user_prompt: &str,
         hidden_system_context: &str,
         timeout: std::time::Duration,
+        policy: super::super::ProviderUtilityExecutionPolicy,
     ) -> Result<String, DaemonError> {
         self.write().run_structured_utility_prompt(
             run,
             visible_user_prompt,
             hidden_system_context,
             timeout,
+            policy,
         )
     }
 

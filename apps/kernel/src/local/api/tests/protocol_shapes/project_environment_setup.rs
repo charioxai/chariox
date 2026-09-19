@@ -4,8 +4,9 @@ use crate::local::{
     CancelProjectEnvironmentSetupRequest, GetProjectEnvironmentSetupStatusRequest,
     ProjectEnvironmentCommandResult, ProjectEnvironmentDefinition,
     ProjectEnvironmentDefinitionOrigin, ProjectEnvironmentDefinitionSource,
-    ProjectEnvironmentInput, ProjectEnvironmentInputKind, ProjectEnvironmentSetupPhase,
-    ProjectEnvironmentSetupStatus, ProjectEnvironmentSetupStep, ProjectEnvironmentSetupStepKind,
+    ProjectEnvironmentInput, ProjectEnvironmentInputKind, ProjectEnvironmentPathBase,
+    ProjectEnvironmentPathEntry, ProjectEnvironmentSetupPhase, ProjectEnvironmentSetupStatus,
+    ProjectEnvironmentSetupStep, ProjectEnvironmentSetupStepKind,
     ProjectEnvironmentValidation, RetryProjectEnvironmentSetupRequest,
     StartProjectEnvironmentSetupRequest, LOCAL_DAEMON_PROTOCOL_VERSION,
 };
@@ -29,6 +30,10 @@ fn definition() -> ProjectEnvironmentDefinition {
                 sha256: format!("sha256:{}", "b".repeat(64)),
             },
         ],
+        path_entries: vec![ProjectEnvironmentPathEntry {
+            base: ProjectEnvironmentPathBase::PreparationHome,
+            path: "go/bin".to_string(),
+        }],
         setup_steps: vec![ProjectEnvironmentSetupStep {
             kind: ProjectEnvironmentSetupStepKind::NativeDependency,
             command: "apt-get install -y pkg-config libssl-dev".to_string(),
@@ -70,7 +75,7 @@ fn status() -> ProjectEnvironmentSetupStatus {
 
 #[test]
 fn project_environment_setup_protocol_shape_is_versioned_and_explicit() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 332);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 333);
     let start =
         LocalDaemonRequest::StartProjectEnvironmentSetup(StartProjectEnvironmentSetupRequest {
             operation_id: "setup-1".to_string(),
@@ -106,6 +111,10 @@ fn project_environment_setup_protocol_shape_is_versioned_and_explicit() {
                         "kind": "lockfile",
                         "path": "Cargo.lock",
                         "sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    }],
+                    "path_entries": [{
+                        "base": "preparation_home",
+                        "path": "go/bin"
                     }],
                     "setup_steps": [{
                         "kind": "native_dependency",

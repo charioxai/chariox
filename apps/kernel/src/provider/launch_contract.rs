@@ -476,6 +476,11 @@ pub struct LaunchProviderRequest {
     /// every serialized request shape and uses a redacted debug projection.
     #[serde(skip)]
     pub(crate) provider_credential_env: super::ProviderCredentialEnvironment,
+    /// Host-side preparation HOME/PATH supplied by the kernel for an
+    /// environment setup discovery or validation turn. This never crosses a
+    /// provider request boundary; it is applied to the fresh runtime launch.
+    #[serde(skip)]
+    pub(crate) preparation_environment: Option<(String, String)>,
     #[serde(
         default,
         skip_serializing_if = "ProviderWriteAccessMode::is_unrestricted"
@@ -643,6 +648,7 @@ impl LaunchProviderRequest {
             provider_env_remove: Vec::new(),
             provider_account_env: BTreeMap::new(),
             provider_credential_env: super::ProviderCredentialEnvironment::default(),
+            preparation_environment: None,
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
             execution_mode: None,
             permission_level: None,
@@ -730,6 +736,15 @@ impl LaunchProviderRequest {
         environment: super::ProviderCredentialEnvironment,
     ) -> Self {
         self.provider_credential_env = environment;
+        self
+    }
+
+    pub(crate) fn with_preparation_environment(
+        mut self,
+        home: impl Into<String>,
+        path: impl Into<String>,
+    ) -> Self {
+        self.preparation_environment = Some((home.into(), path.into()));
         self
     }
 

@@ -44,6 +44,17 @@ impl ProviderProcessService {
         credentials: &crate::provider::ProviderCredentialEnvironment,
     ) -> Result<Option<ProviderRuntimeBinding>, DaemonError> {
         #[cfg(test)]
+        if crate::provider::take_provider_lifecycle_failure_for_test(
+            run.id(),
+            crate::provider::ProviderLifecycleFailureStage::Bind,
+        ) {
+            return Err(DaemonError::ProviderProtocol {
+                provider_run_id: run.id().to_string(),
+                operation: "injected_provider_restart_binding",
+                message: "injected provider restart binding failure".to_string(),
+            });
+        }
+        #[cfg(test)]
         if crate::provider::record_provider_credential_delivery_for_test(
             run.id(),
             "runtime_binding",
@@ -142,6 +153,11 @@ impl ProviderProcessService {
     pub(crate) fn structured_prompt_io_in_flight(&self, provider_run_id: &str) -> bool {
         self.run_actor_mailbox
             .structured_prompt_io_in_flight(provider_run_id)
+    }
+
+    pub(crate) fn structured_runtime_state_bound(&self, provider_run_id: &str) -> bool {
+        self.run_actor_mailbox
+            .structured_runtime_state_bound(provider_run_id)
     }
 
     #[doc(hidden)]
@@ -260,6 +276,7 @@ impl ProviderProcessService {
         visible_user_prompt: &str,
         hidden_system_context: &str,
         timeout: std::time::Duration,
+        policy: super::super::ProviderUtilityExecutionPolicy,
     ) -> Result<String, DaemonError> {
         if !self.run_uses_structured_prompt_io(run) {
             return Err(DaemonError::LocalTransport {
@@ -278,7 +295,7 @@ impl ProviderProcessService {
             PromptAssemblyMode::UtilityTurn,
         )?;
         self.run_actor_mailbox
-            .run_utility(run.id().to_string(), run.clone(), envelope, timeout)
+            .run_utility(run.id().to_string(), run.clone(), envelope, timeout, policy)
     }
 
     pub(crate) fn enqueue_structured_prompt_abort(
