@@ -76,7 +76,6 @@ function relayClaims({ subject, subjectKind, actions, userId }) {
     device_id: subject,
     machine_id: subjectKind === "kernel" ? subject : null,
     client_id: subjectKind === "client" ? subject : null,
-    public_key_thumbprint: `${subject}-thumbprint`,
     entitlements_version: "drill",
   }
 }
@@ -717,7 +716,7 @@ async function main() {
   console.log(JSON.stringify({ status: "passed", evidenceRoot, assertions }, null, 2))
 }
 
-export { childDiagnostics, spawnObserved, waitForTcpListener }
+export { childDiagnostics, relayClaims, spawnObserved, waitForTcpListener }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
