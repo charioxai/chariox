@@ -294,11 +294,15 @@ impl PtyManager {
             env_remove.sort();
             env_remove.dedup();
         }
+        let mut args = run.pty_args().to_vec();
+        if let Some(discovery_config) = discovery_config.as_ref() {
+            discovery_config.apply_to_launch_args(run, &mut args)?;
+        }
         let request = PtySpawnRequest {
             process_key: process_key.clone(),
             provider_run_id: run.id().to_string(),
             program: program.to_string(),
-            args: run.pty_args().to_vec(),
+            args,
             env,
             env_remove,
             working_directory: run.working_directory().cloned(),

@@ -15,6 +15,78 @@ impl Drop for OpenCodeDiscoveryConfigDirectory {
     }
 }
 
+impl OpenCodeDiscoveryConfigDirectory {
+    pub(crate) fn apply_to_launch_args(
+        &self,
+        run: &RuntimeProviderRun,
+        args: &mut Vec<String>,
+    ) -> Result<(), DaemonError> {
+        if run.adapter_key() != "opencode" || !run.read_only_discovery() {
+            return Ok(());
+        }
+
+        let separator = args.iter().position(|argument| argument == "--");
+        let managed_end = separator.unwrap_or(args.len());
+        let managed = args[..managed_end].windows(3).any(|window| {
+            window[0] == "--setenv"
+                && window[1] == "CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE"
+                && window[2] == "1"
+        });
+        if !managed {
+            return Ok(());
+        }
+        let separator = separator.ok_or_else(|| DaemonError::ProviderProtocol {
+            provider_run_id: run.id().to_string(),
+            operation: "opencode_discovery_config",
+            message: "managed OpenCode discovery launch is missing its command separator"
+                .to_string(),
+        })?;
+        let failure = |message: &str| DaemonError::ProviderProtocol {
+            provider_run_id: run.id().to_string(),
+            operation: "opencode_discovery_config",
+            message: message.to_string(),
+        };
+        let isolated_config_home = self.0.display().to_string();
+        let mut separator = separator;
+        let mut index = 0;
+        let mut found_xdg_config_home = false;
+        while index < separator {
+            if args[index] != "--setenv" {
+                index += 1;
+                continue;
+            }
+            if index.saturating_add(2) >= separator {
+                return Err(failure(
+                    "managed OpenCode discovery launch contains an incomplete --setenv entry",
+                ));
+            }
+            match args[index + 1].as_str() {
+                "XDG_CONFIG_HOME" => {
+                    args[index + 2] = isolated_config_home.clone();
+                    found_xdg_config_home = true;
+                    index += 3;
+                }
+                "OPENCODE_CONFIG" | "OPENCODE_CONFIG_DIR" => {
+                    args.drain(index..index + 3);
+                    separator -= 3;
+                }
+                _ => index += 1,
+            }
+        }
+        if !found_xdg_config_home {
+            args.splice(
+                separator..separator,
+                [
+                    "--setenv".to_string(),
+                    "XDG_CONFIG_HOME".to_string(),
+                    isolated_config_home,
+                ],
+            );
+        }
+        Ok(())
+    }
+}
+
 pub(crate) fn isolate_opencode_discovery_configuration(
     run: &RuntimeProviderRun,
     environment: &mut BTreeMap<String, String>,
@@ -268,6 +340,69 @@ mod tests {
             assert!(!child.contains_key(name));
             assert!(removed.iter().any(|value| value == name));
         }
+        drop(guard);
+        assert!(!isolated.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn managed_discovery_rewrites_final_child_config_sources() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-discovery-final-args-test-{:032x}",
+            rand::random::<u128>()
+        ));
+        let isolated = root.join(".chariox-project-environment").join("isolated");
+        std::fs::create_dir_all(&isolated).unwrap();
+        let guard = OpenCodeDiscoveryConfigDirectory(isolated.clone());
+        let mut args = vec![
+            "--setenv".into(),
+            "CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE".into(),
+            "1".into(),
+            "--unsetenv".into(),
+            "XDG_CONFIG_HOME".into(),
+            "--setenv".into(),
+            "XDG_CONFIG_HOME".into(),
+            "/home/chariox/.provider-account/root-3".into(),
+            "--unsetenv".into(),
+            "OPENCODE_CONFIG_DIR".into(),
+            "--setenv".into(),
+            "OPENCODE_CONFIG_DIR".into(),
+            "/home/chariox/.provider-account/root-7".into(),
+            "--setenv".into(),
+            "OPENCODE_CONFIG".into(),
+            "/home/chariox/.provider-account/global.json".into(),
+            "--".into(),
+            "/usr/local/bin/opencode".into(),
+            "debug".into(),
+            "config".into(),
+        ];
+        let command_tail = args[args.iter().position(|arg| arg == "--").unwrap() + 1..].to_vec();
+
+        guard.apply_to_launch_args(&run(true), &mut args).unwrap();
+
+        let separator = args.iter().position(|arg| arg == "--").unwrap();
+        let namespace_args = &args[..separator];
+        let xdg_bindings = namespace_args
+            .windows(3)
+            .filter(|window| window[0] == "--setenv" && window[1] == "XDG_CONFIG_HOME")
+            .collect::<Vec<_>>();
+        assert_eq!(xdg_bindings.len(), 1);
+        assert_eq!(xdg_bindings[0][2], isolated.display().to_string());
+        for name in ["OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR"] {
+            assert!(!namespace_args
+                .windows(3)
+                .any(|window| { window[0] == "--setenv" && window[1] == name }));
+        }
+        // These are the finalized child sources: the former global XDG path
+        // and account-local OPENCODE_CONFIG_DIR must not survive the launch
+        // boundary, while the official OpenCode command remains unchanged.
+        assert!(!namespace_args
+            .iter()
+            .any(|argument| argument.contains(".provider-account/root-3")));
+        assert!(!namespace_args
+            .iter()
+            .any(|argument| argument.contains(".provider-account/root-7")));
+        assert_eq!(&args[separator + 1..], command_tail);
         drop(guard);
         assert!(!isolated.exists());
         std::fs::remove_dir_all(root).unwrap();
