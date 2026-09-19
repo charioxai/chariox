@@ -7,9 +7,20 @@ import test from "node:test"
 
 import {
   childDiagnostics,
+  relayClaims,
   spawnObserved,
   waitForTcpListener,
 } from "./live-room-environment-m1-drill.mjs"
+
+test("M1 relay claims do not assert a fabricated kernel key thumbprint", () => {
+  const claims = relayClaims({
+    subject: "room-environment-home-test",
+    subjectKind: "kernel",
+    actions: ["daemon_register"],
+    userId: "user-1",
+  })
+  assert.equal(Object.hasOwn(claims, "public_key_thumbprint"), false)
+})
 
 test("M1 startup waits for a loopback relay listener", async () => {
   const server = createServer((socket) => socket.end())
