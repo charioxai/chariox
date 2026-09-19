@@ -178,6 +178,7 @@ function parseArgs(argv) {
     providers: null,
     providerAccounts: {},
     passthrough: [],
+    runnerContext: null,
     help: false,
   }
   for (let index = 0; index < argv.length; index += 1) {
@@ -194,6 +195,7 @@ function parseArgs(argv) {
     else if (arg.startsWith("--artifact-index=")) options.artifactIndexPath = arg.slice("--artifact-index=".length)
     else if (arg === "--provider-account") applyProviderAccountAlias(options.providerAccounts, readValue(argv, index++, arg))
     else if (arg.startsWith("--provider-account=")) applyProviderAccountAlias(options.providerAccounts, arg.slice("--provider-account=".length))
+    else if (arg === "--path1-runner-context") options.runnerContext = readRunnerContextEnvironment()
     else if (arg === "--help" || arg === "-h") options.help = true
     else if (arg === "--only") options.only = parseDrillScenarioIds(readValue(argv, index++, arg))
     else if (arg.startsWith("--only=")) options.only = parseDrillScenarioIds(arg.slice("--only=".length))
@@ -208,6 +210,18 @@ function parseArgs(argv) {
     }
   }
   return options
+}
+
+function readRunnerContextEnvironment() {
+  const raw = process.env.CHARIOX_PATH1_RUNNER_CONTEXT_JSON
+  if (!raw) throw new Error("--path1-runner-context requires CHARIOX_PATH1_RUNNER_CONTEXT_JSON")
+  let context
+  try { context = JSON.parse(raw) } catch { throw new Error("Path 1 runner context is not valid JSON") }
+  if (context?.schema !== "chariox.path1.runner-context.v1") throw new Error("Path 1 runner context schema is unsupported")
+  if (!context.sessionId || !context.roomId || !context.kernelEndpoint || !context.relayEndpoint) {
+    throw new Error("Path 1 native matrix context must name an existing kernel session, Room, and relay")
+  }
+  return context
 }
 
 function selectScenarios(options) {
@@ -243,14 +257,28 @@ function selectScenarioProviders(scenarioItem, requestedProviders) {
   return { ...scenarioItem, args, providers }
 }
 
-function commandForScenario(scenarioItem, passthrough) {
+function commandForScenario(scenarioItem, passthrough, runnerContext = null) {
+  const args = appendHetznerPassthrough([
+    scenarioItem.script,
+    ...scenarioItem.args,
+    "--keep-artifacts-on-failure",
+    ...(runnerContext ? ["--path1-runner-context"] : []),
+  ], scenarioItem, passthrough)
   return {
     command: process.execPath,
-    args: appendHetznerPassthrough([
-      scenarioItem.script,
-      ...scenarioItem.args,
-      "--keep-artifacts-on-failure",
-    ], scenarioItem, passthrough),
+    args,
+    ...(runnerContext ? {
+      env: {
+        CHARIOX_PATH1_RUNNER_CONTEXT_JSON: JSON.stringify(runnerContext),
+        CHARIOX_PATH1_CONTEXT_SCHEMA: "chariox.path1.runner-context.v1",
+        CHARIOX_PATH1_CONTEXT_MODE: "required-existing-room",
+        CHARIOX_PATH1_ACTION: runnerContext.action,
+        CHARIOX_PATH1_RUN_ID: runnerContext.runId,
+        CHARIOX_PATH1_SOURCE_HEAD: runnerContext.sourceHead,
+        CHARIOX_PATH1_RUNTIME_DIGEST: runnerContext.runtimeBindings.runtimeDigest,
+        CHARIOX_PATH1_JOURNAL_REF: runnerContext.journal.ref,
+      },
+    } : {}),
   }
 }
 
@@ -268,6 +296,15 @@ function metadataFor(selected, options) {
     generatedMatrixRepos: "oss",
     ...providerProfileMetadata({ providers, defaultModel: "provider-default", providerAccounts: options.providerAccounts }),
     ...drillDeploymentPresetMetadata(deploymentPresets, { hetznerPassthrough: options.passthrough }),
+    ...(options.runnerContext ? {
+      runnerContext: {
+        schema: options.runnerContext.schema,
+        runId: options.runnerContext.runId,
+        sessionId: options.runnerContext.sessionId,
+        roomId: options.runnerContext.roomId,
+        sameRoomRequired: true,
+      },
+    } : {}),
   }
 }
 
@@ -278,12 +315,15 @@ async function main() {
     return
   }
   const selected = selectScenarios(options)
+  if (options.runnerContext) {
+    throw new Error("Path 1 runner-context mode is unavailable until the nested native provider drills accept an existing session/Room context")
+  }
   const reportPath = options.reportPath ?? defaultDrillMatrixReportPath("native-provider-tui-matrix", { rootDir: repoRoot })
   const artifactIndexPath = options.artifactIndexPath ?? defaultDrillMatrixArtifactIndexPath(reportPath)
   const results = await runDrillMatrix({
     matrixName: "native-provider-tui-matrix",
     scenarios: selected,
-    commandForScenario: (scenarioItem) => commandForScenario(scenarioItem, options.passthrough),
+    commandForScenario: (scenarioItem) => commandForScenario(scenarioItem, options.passthrough, options.runnerContext),
     cwd: repoRoot,
     continueOnFailure: options.continueOnFailure,
     dryRun: options.dryRun,

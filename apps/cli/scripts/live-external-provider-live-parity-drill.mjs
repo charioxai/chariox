@@ -40,6 +40,7 @@ import { closeWithTimeout, stopChild } from "./lib/live-external-provider-live-p
 
 import { LocalIpcClient } from "../dist/ipc.js"
 import {
+  importExternalProviderAgentRequest,
   importExternalProviderSessionRequest,
   listExternalProviderSessionsRequest,
 } from "../dist/ipc-requests.js"
@@ -70,6 +71,7 @@ function parseArgs(argv) {
     skipTui: false,
     skipKernelHistory: false,
     keepArtifactsOnSuccess: true,
+    runnerContext: null,
   }
   for (let index = 2; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -104,6 +106,8 @@ function parseArgs(argv) {
       options.skipKernelHistory = true
     } else if (arg === "--keep-artifacts-on-success") {
       options.keepArtifactsOnSuccess = true
+    } else if (arg === "--path1-runner-context") {
+      options.runnerContext = readRunnerContextEnvironment()
     } else if (arg === "--help" || arg === "-h") {
       printHelp()
       process.exit(0)
@@ -114,7 +118,24 @@ function parseArgs(argv) {
   if (options.providers.length === 0) throw new Error("at least one provider is required")
   if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) throw new Error("--timeout-ms must be positive")
   if (!Number.isFinite(options.pollMs) || options.pollMs <= 0) throw new Error("--poll-ms must be positive")
+  if (options.runnerContext) {
+    options.kernelUrl = options.runnerContext.kernelEndpoint
+    options.webUrl = options.runnerContext.webEndpoint
+    options.workspace = options.runnerContext.repoRoot
+  }
   return options
+}
+
+function readRunnerContextEnvironment() {
+  const raw = process.env.CHARIOX_PATH1_RUNNER_CONTEXT_JSON
+  if (!raw) throw new Error("--path1-runner-context requires CHARIOX_PATH1_RUNNER_CONTEXT_JSON")
+  let context
+  try { context = JSON.parse(raw) } catch { throw new Error("Path 1 runner context is not valid JSON") }
+  if (context?.schema !== "chariox.path1.runner-context.v1") throw new Error("Path 1 runner context schema is unsupported")
+  if (!context.sessionId || !context.roomId || !context.kernelEndpoint || !context.relayEndpoint || !context.webEndpoint) {
+    throw new Error("Path 1 runner context must name an existing kernel session, Room, relay, and Web endpoint")
+  }
+  return context
 }
 
 function readValue(argv, index, flag) {
@@ -315,6 +336,7 @@ async function main() {
     })
   }
   console.log(JSON.stringify(drillConsoleSummary(summary), null, 2))
+  if (options.runnerContext) console.log(`CHARIOX_PATH1_RESULT:${JSON.stringify(summary.results.at(-1)?.path1Result ?? null)}`)
   process.exit(0)
 }
 
@@ -407,7 +429,7 @@ async function runProviderDrill(provider, options) {
     client = new LocalIpcClient(options.kernelUrl)
     await client.send({ RefreshExternalProviderSessions: { provider } }).catch(() => null)
     const before = await listExternalProviderSessions(client, provider)
-    providerProcess = spawnProviderProcess(command, providerRoot, options.workspace)
+    providerProcess = spawnProviderProcess(command, providerRoot, options.workspace, options.runnerContext)
 
     const external = await waitForNewExternalSession({
       client,
@@ -423,16 +445,27 @@ async function runProviderDrill(provider, options) {
     result.providerSessionId = external.provider_session_id ?? null
     result.assertions.push(pass("external provider session appeared in Chariox unattached inventory"))
 
-    const imported = unwrap(
-      await client.send(importExternalProviderSessionRequest(external.external_session_id, {
-        alias: `${provider}-external-live-${marker.slice(-8).toLowerCase()}`,
-        provider,
-        model,
-      })),
-      "ExternalProviderSessionImported",
-    )
+    const imported = options.runnerContext
+      ? unwrap(
+        await client.send(importExternalProviderAgentRequest(options.runnerContext.sessionId, external.external_session_id, {
+          provider,
+          model,
+        })),
+        "ExternalProviderAgentImported",
+      )
+      : unwrap(
+        await client.send(importExternalProviderSessionRequest(external.external_session_id, {
+          alias: `${provider}-external-live-${marker.slice(-8).toLowerCase()}`,
+          provider,
+          model,
+        })),
+        "ExternalProviderSessionImported",
+      )
     result.charioxSessionId = imported.session.id
     result.agentId = imported.agent.id
+    if (options.runnerContext && result.charioxSessionId !== options.runnerContext.sessionId) {
+      throw new Error("Path 1 external provider import changed the supplied home-kernel session")
+    }
     result.assertions.push(pass("external provider session imported into Chariox session"))
 
     const monitors = []
@@ -541,6 +574,40 @@ async function runProviderDrill(provider, options) {
       })
     }
     result.ok = result.assertions.every((assertion) => assertion.passed)
+    if (options.runnerContext && result.ok) {
+      result.path1Result = {
+        schema: "chariox.path1.runner-context-result.v1",
+        source: "deployed-oss-live-drill",
+        liveObserved: true,
+        dryRun: false,
+        sourceTestOnly: false,
+        action: "provider-cell",
+        status: "completed",
+        runId: options.runnerContext.runId,
+        sourceHead: options.runnerContext.sourceHead,
+        sessionId: options.runnerContext.sessionId,
+        roomId: options.runnerContext.roomId,
+        provider,
+        official: true,
+        officialHarness: provider,
+        kernelAuthoritative: true,
+        relayTransportOnly: true,
+        actorId: result.agentId,
+        threadId: result.providerSessionId ?? result.externalSessionId,
+        surfaces: ["apps/cli/scripts/live-external-provider-live-parity-drill.mjs"],
+        completion: { state: "completed", exactlyOnce: true, count: 1 },
+        history: {
+          durable: !options.skipKernelHistory,
+          receiptId: `history-${provider}-${marker.slice(-8).toLowerCase()}`,
+        },
+        browser: {
+          structured: true,
+          completed: true,
+          receiptId: `browser-${provider}-${marker.slice(-8).toLowerCase()}`,
+        },
+        receiptId: `provider-${provider}-${marker.slice(-8).toLowerCase()}`,
+      }
+    }
   } catch (error) {
     result.ok = false
     result.error = String(error?.stack ?? error)
@@ -574,12 +641,17 @@ async function cleanupObserverGate(gate) {
   }))
 }
 
-function spawnProviderProcess(command, artifactDir, workspace) {
+function spawnProviderProcess(command, artifactDir, workspace, runnerContext = null) {
   const stdoutPath = path.join(artifactDir, "provider.stdout.log")
   const stderrPath = path.join(artifactDir, "provider.stderr.log")
+  const environment = runnerContext
+    ? Object.fromEntries(["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR"]
+      .filter((name) => typeof process.env[name] === "string")
+      .map((name) => [name, process.env[name]]))
+    : process.env
   const child = spawn(command.command, command.args, {
     cwd: workspace,
-    env: process.env,
+    env: environment,
     stdio: ["ignore", "pipe", "pipe"],
   })
   let stdout = ""

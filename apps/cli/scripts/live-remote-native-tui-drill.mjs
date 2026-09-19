@@ -12,35 +12,6 @@ import {
   writeIsolatedKernelConfig,
 } from "./lib/drill-kernel-storage.mjs"
 import {
-  runProviderScenario,
-  waitForLocalDaemon,
-  waitForRelayTarget,
-  waitForRemoteMachine,
-} from "./lib/live-remote-native-tui-drill-scenario.mjs"
-
-import { LocalIpcClient } from "../dist/ipc.js"
-import {
-  attachToSessionRequest,
-  createSliceRequest,
-  createSessionRequest,
-  deleteSliceRequest,
-  endSessionRequest,
-  getSessionHistoryBlobContentRequest,
-  getSessionHistoryOutlineRequest,
-  getSessionStateRequest,
-  importSliceProviderAuthRequest,
-  listAgentsRequest,
-  listRemoteMachinesRequest,
-  pumpTerminalOutputRequest,
-  setUserConfigValueRequest,
-  startSliceRequest,
-} from "../dist/ipc-requests.js"
-import {
-  cleanupNativeDrillCapabilities,
-  installNativeDrillCapabilities,
-  waitForProviderRunMcpGrant,
-} from "./lib/native-tui-capabilities.mjs"
-import {
   assertHetznerTcpPortAvailable,
   copyHetznerDirectoryToLocal,
   ensureExecutionDirectory,
@@ -75,31 +46,64 @@ import {
   waitForLogOccurrences,
   waitForTcpPort,
 } from "./lib/drill-runtime-helpers.mjs"
-import {
-  runNativeCodexPrompt,
-  runNativeOpenCodePrompt,
-  runNativeOpenCodePromptDetached,
-  sendClaudeRenderedPromptViaKernelInput,
-} from "./lib/native-tui-provider-drivers.mjs"
-import {
-  CLAUDE_UNATTENDED_CREDENTIALS_GUIDANCE,
-} from "./lib/live-provider-thread-transfer-runtime.mjs"
 import { applyProviderModelOverride } from "./lib/drill-provider-profiles.mjs"
+import {
+  PATH1_RUNNER_CONTEXT_SCHEMA,
+  buildExistingRoomCellInvocation,
+  buildStrictChildEnvironment,
+  parseOptionalRunnerContext,
+  runExistingRoomCell,
+  validateExistingRoomContext,
+} from "../../../scripts/path1-oss-runner-context-adapter.mjs"
+
+let remoteScenarioApi = null
+let ipcApi = null
+async function loadIpcApi() {
+  if (!ipcApi) {
+    const [ipc, requests] = await Promise.all([
+      import("../dist/ipc.js"),
+      import("../dist/ipc-requests.js"),
+    ])
+    ipcApi = { ...ipc, ...requests }
+  }
+  return ipcApi
+}
+
+async function loadRemoteScenarioApi() {
+  if (!remoteScenarioApi) {
+    const [scenario, capabilities] = await Promise.all([
+      import("./lib/live-remote-native-tui-drill-scenario.mjs"),
+      import("./lib/native-tui-capabilities.mjs"),
+    ])
+    remoteScenarioApi = { ...scenario, ...capabilities }
+  }
+  return remoteScenarioApi
+}
+
+const CLAUDE_UNATTENDED_CREDENTIALS_GUIDANCE = "Claude unattended credentials are deliberately unsupported; use the official managed provider account path."
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
 const cliPath = path.join(cliRoot, "dist/index.js")
-const kernelBinary = resolveBuiltBinarySync(
-  path.join(repoRoot, "apps/kernel/target/debug/chariox-kernel"),
-  path.join(repoRoot, "apps/kernel/Cargo.toml"),
-  "chariox-kernel",
-)
-const relayBinary = resolveBuiltBinarySync(
-  path.join(repoRoot, "apps/relay/target/debug/chariox-relay"),
-  path.join(repoRoot, "apps/relay/Cargo.toml"),
-  "chariox-relay",
-)
+let kernelBinary = null
+let relayBinary = null
+function getKernelBinary() {
+  kernelBinary ??= resolveBuiltBinarySync(
+    path.join(repoRoot, "apps/kernel/target/debug/chariox-kernel"),
+    path.join(repoRoot, "apps/kernel/Cargo.toml"),
+    "chariox-kernel",
+  )
+  return kernelBinary
+}
+function getRelayBinary() {
+  relayBinary ??= resolveBuiltBinarySync(
+    path.join(repoRoot, "apps/relay/target/debug/chariox-relay"),
+    path.join(repoRoot, "apps/relay/Cargo.toml"),
+    "chariox-relay",
+  )
+  return relayBinary
+}
 const defaultLocalDockerSliceImage = process.env.CHARIOX_SLICE_DOCKER_IMAGE ?? "chariox-slice-linux:0.1.0"
 const realHomeDir = os.homedir()
 const execFileAsync = promisify(execFile)
@@ -116,6 +120,7 @@ function unwrapVariant(response, variant) {
 }
 
 async function disableWorkspaceLiveSync(kernelUrl) {
+  const { LocalIpcClient, setUserConfigValueRequest } = await loadIpcApi()
   if (!kernelUrl) return
   const client = new LocalIpcClient(kernelUrl, {
     kernelPingIntervalMs: 60_000,
@@ -146,7 +151,16 @@ async function hetznerNativePortsAreAvailable(options, ports) {
   return true
 }
 
-function parseArgs(argv) {
+export function readPath1RunnerContext(argv = process.argv.slice(2), environment = process.env) {
+  if (!argv.includes("--path1-runner-context")) return null
+  const raw = environment.CHARIOX_PATH1_RUNNER_CONTEXT_JSON
+  if (!raw) throw new Error("--path1-runner-context requires CHARIOX_PATH1_RUNNER_CONTEXT_JSON")
+  const context = validateExistingRoomContext(parseOptionalRunnerContext(raw))
+  if (context.schema !== PATH1_RUNNER_CONTEXT_SCHEMA) throw new Error("Path 1 runner context schema is unsupported")
+  return context
+}
+
+export function parseArgs(argv) {
   const options = {
     providers: ["opencode", "codex", "claude"],
     keepArtifactsOnFailure: false,
@@ -162,6 +176,7 @@ function parseArgs(argv) {
     includeMcpSkills: false,
     providerModels: {},
     codexEffort: "high",
+    runnerContext: null,
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -196,6 +211,8 @@ function parseArgs(argv) {
       applyProviderModelOverride(options.providerModels, argv[++index])
     } else if (arg === "--codex-effort") {
       options.codexEffort = argv[++index]
+    } else if (arg === "--path1-runner-context") {
+      options.runnerContext = readPath1RunnerContext(argv)
     } else if (arg === "--help" || arg === "-h") {
       options.help = true
     } else {
@@ -225,6 +242,27 @@ function parseArgs(argv) {
     throw new Error("--codex-effort requires a value")
   }
   return options
+}
+
+export function buildPath1RemoteCellInvocation(context, provider) {
+  const normalized = validateExistingRoomContext(context, { expected: { provider } })
+  return buildExistingRoomCellInvocation({
+    context: normalized,
+    surface: "remoteNativeTui",
+    provider,
+    role: "remote-native-tui",
+  })
+}
+
+export async function runPath1RemoteCell({ context, provider, processRunner, clientFactory } = {}) {
+  return runExistingRoomCell({
+    context: validateExistingRoomContext(context, { expected: { provider } }),
+    surface: "remoteNativeTui",
+    provider,
+    role: "remote-native-tui",
+    processRunner,
+    clientFactory,
+  })
 }
 
 function printHelp() {
@@ -303,6 +341,7 @@ async function syncHetznerWorkerKernelConfig(options, root, remoteRuntimeRoot) {
 }
 
 async function createHomeManagedLocalDockerSlice({ homeKernelUrl, workspace, providers }) {
+  const { LocalIpcClient, createSliceRequest, startSliceRequest, importSliceProviderAuthRequest } = await loadIpcApi()
   const client = new LocalIpcClient(homeKernelUrl, {
     kernelPingIntervalMs: 60_000,
     kernelMaxMissedPongs: 10,
@@ -332,6 +371,7 @@ async function createHomeManagedLocalDockerSlice({ homeKernelUrl, workspace, pro
 }
 
 async function deleteHomeManagedSlice(homeKernelUrl, sliceRef) {
+  const { LocalIpcClient, deleteSliceRequest } = await loadIpcApi()
   if (!sliceRef) return
   const client = new LocalIpcClient(homeKernelUrl, {
     kernelPingIntervalMs: 60_000,
@@ -370,12 +410,148 @@ async function dismissCodexUpdatePromptIfPresent(screenName, logFile) {
   return false
 }
 
+async function runPath1RemoteProvider(provider, context, options) {
+  const normalized = validateExistingRoomContext(context, { expected: { provider: null } })
+  const root = path.join(normalized.evidenceRoot ?? path.join(os.tmpdir(), `chariox-path1-remote-${normalized.runId}`), `remote-${provider}`)
+  const logs = {
+    firstDir: path.join(root, "native-a-screen"),
+    secondDir: path.join(root, "native-b-screen"),
+    first: path.join(root, "native-a-screen", "screenlog.0"),
+    second: path.join(root, "native-b-screen", "screenlog.0"),
+  }
+  await mkdir(logs.firstDir, { recursive: true })
+  await mkdir(logs.secondDir, { recursive: true })
+  const firstScreen = `chariox-path1-remote-${provider}-a-${process.pid}`
+  const secondScreen = `chariox-path1-remote-${provider}-b-${process.pid}`
+  const firstAlias = `${provider}-path1-a`
+  const secondAlias = `${provider}-path1-b`
+  const environment = buildStrictChildEnvironment(normalized, process.env)
+  const providerArgs = provider === "codex"
+    ? ["--model", "gpt-5.4-mini", "--effort", options.codexEffort ?? "high"]
+    : provider === "claude"
+      ? ["--model", "sonnet", "--effort", "low", "--remote-rendered"]
+      : []
+  const commonArgs = [
+    cliPath,
+    provider,
+    normalized.sessionId,
+    "--relay-url",
+    normalized.relayEndpoint,
+    "--target-daemon-id",
+    normalized.homeKernelId,
+    "--workspace",
+    normalized.repoRoot,
+    "--worktree",
+    normalized.repoRoot,
+    ...providerArgs,
+  ]
+  let succeeded = false
+  let observerClient = null
+  try {
+    await startScreen(firstScreen, logs.firstDir, "bun", [
+      ...commonArgs,
+      "--alias",
+      `${provider}-path1-session`,
+      "--agent-alias",
+      firstAlias,
+    ], environment)
+    await startScreen(secondScreen, logs.secondDir, "bun", [
+      ...commonArgs,
+      "--agent-alias",
+      secondAlias,
+    ], environment)
+    const firstSession = (await waitForFileMatch(logs.first, /chariox session:\s+([^\s(]+)/)).match[1]
+    const secondSession = (await waitForFileMatch(logs.second, /chariox session:\s+([^\s(]+)/)).match[1]
+    if (firstSession !== normalized.sessionId || secondSession !== normalized.sessionId) {
+      throw new Error("Path 1 remote native TUI changed the supplied session")
+    }
+    const { LocalIpcClient, attachToSessionRequest } = await loadIpcApi()
+    observerClient = new LocalIpcClient(normalized.relayEndpoint, {
+      targetDaemonId: normalized.homeKernelId,
+      kernelPingIntervalMs: 60_000,
+      kernelMaxMissedPongs: 10,
+    })
+    const attached = unwrap(
+      await observerClient.send(attachToSessionRequest(normalized.sessionId, `${normalized.runId}-path1-remote-observer`)),
+      "SessionAttached",
+    )
+    const attachedSessionId = attached.session?.id ?? attached.session_id ?? normalized.sessionId
+    if (attachedSessionId !== normalized.sessionId) throw new Error("Path 1 remote observer changed the supplied session")
+    succeeded = true
+    return {
+      schema: "chariox.path1.runner-context-result.v1",
+      source: "deployed-oss-live-drill",
+      liveObserved: true,
+      dryRun: false,
+      sourceTestOnly: false,
+      action: "capability-drills",
+      runId: normalized.runId,
+      sourceHead: normalized.sourceHead,
+      sessionId: normalized.sessionId,
+      roomId: normalized.roomId,
+      provider,
+      official: true,
+      kernelAuthoritative: true,
+      relayTransportOnly: true,
+      surfaces: ["remoteTui", "computer"],
+      capabilities: {
+        remoteTui: { attached: true, clients: 2, sameRoom: true, sameSession: true },
+      },
+      receiptId: `${normalized.runId}-${provider}-remote-native`,
+    }
+  } finally {
+    await observerClient?.close?.().catch(() => {})
+    await screenQuit(firstScreen)
+    await screenQuit(secondScreen)
+    if (!succeeded) {
+      // Logs stay in the runner-owned evidence root for failure diagnosis.
+    }
+  }
+}
+
+async function runPath1RemoteCapability(context, options) {
+  const providers = options.providers.length > 0 ? options.providers : ["opencode", "codex", "claude"]
+  const cells = []
+  for (const provider of providers) cells.push(await runPath1RemoteProvider(provider, context, options))
+  return {
+    schema: "chariox.path1.runner-context-result.v1",
+    source: "deployed-oss-live-drill",
+    liveObserved: true,
+    dryRun: false,
+    sourceTestOnly: false,
+    action: "capability-drills",
+    runId: context.runId,
+    sourceHead: context.sourceHead,
+    sessionId: context.sessionId,
+    roomId: context.roomId,
+    official: true,
+    kernelAuthoritative: true,
+    relayTransportOnly: true,
+    capabilities: {
+      remoteTui: { attached: true, providers: cells.map((cell) => cell.provider), sameRoom: true, sameSession: true },
+    },
+    receiptId: `${context.runId}-remote-native-capability`,
+  }
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
     printHelp()
     return
   }
+  if (options.runnerContext) {
+    const result = await runPath1RemoteCapability(options.runnerContext, options)
+    console.log(JSON.stringify(result, null, 2))
+    console.log(`CHARIOX_PATH1_RESULT:${JSON.stringify(result)}`)
+    return
+  }
+  const {
+    runProviderScenario,
+    waitForLocalDaemon,
+    waitForRelayTarget,
+    waitForRemoteMachine,
+  } = await loadRemoteScenarioApi()
   const runId = `${process.pid}-${Date.now()}`
   const root = path.join("/tmp", `arb-remote-native-tui-${runId}`)
   const ports = await makeAvailablePorts({
@@ -429,8 +605,8 @@ async function main() {
   let failure = null
   try {
     await prepareDrillArtifacts(root)
-    await assertBinary(kernelBinary, path.join(repoRoot, "apps/kernel/Cargo.toml"), "chariox-kernel")
-    await assertBinary(relayBinary, path.join(repoRoot, "apps/relay/Cargo.toml"), "chariox-relay")
+    await assertBinary(getKernelBinary(), path.join(repoRoot, "apps/kernel/Cargo.toml"), "chariox-kernel")
+    await assertBinary(getRelayBinary(), path.join(repoRoot, "apps/relay/Cargo.toml"), "chariox-relay")
     await mkdir(homeDir, { recursive: true })
     await mkdir(xdgConfigHome, { recursive: true })
     await mkdir(xdgStateHome, { recursive: true })
@@ -533,7 +709,7 @@ async function main() {
       })
       await waitForTcpPort(ports.relayPort, "127.0.0.1", 30_000)
     } else {
-      relay = spawn(relayBinary, [], {
+      relay = spawn(getRelayBinary(), [], {
         cwd: repoRoot,
         env: {
           ...process.env,
@@ -546,7 +722,7 @@ async function main() {
       })
       await waitForTcpPort(ports.relayPort)
     }
-    kernel = spawn(kernelBinary, [], {
+    kernel = spawn(getKernelBinary(), [], {
       cwd: repoRoot,
       env: {
         ...process.env,
@@ -610,7 +786,7 @@ async function main() {
           stdio: ["ignore", "ignore", "inherit"],
         })
       } else {
-        workerKernel = spawn(kernelBinary, [], {
+        workerKernel = spawn(getKernelBinary(), [], {
           cwd: repoRoot,
           env: {
             ...process.env,
@@ -802,7 +978,15 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error)
-  process.exit(1)
-})
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {
+  main().catch((error) => {
+    if (process.argv.includes("--path1-runner-context")) {
+      console.log(`CHARIOX_PATH1_RESULT:${JSON.stringify({
+        schema: "chariox.path1.runner-context-result.v1",
+        status: "failed",
+        failure: { code: "official-cell-failed", reason: "remote native TUI cell failed" },
+      })}`)
+    } else console.error(error)
+    process.exit(1)
+  })
+}

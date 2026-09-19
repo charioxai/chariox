@@ -205,3 +205,19 @@ test("publication egress image runs only the dedicated unprivileged gateway", ()
   )
   assert.doesNotMatch(egressDockerfile, /COPY apps|COPY packages|COPY \. \/|npm install/)
 })
+
+test("publication Dockerfile pins the reviewed frontend and requires an exact source revision", () => {
+  assert.equal(
+    dockerfile.split("\n", 1)[0],
+    "# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32",
+  )
+  assert.match(dockerfile, /^ARG CHARIOX_RUNTIME_SOURCE_REVISION$/m)
+  assert.match(
+    dockerfile,
+    /printf '%s\\n' "\$\{CHARIOX_RUNTIME_SOURCE_REVISION\}" \| grep -Eq '\^\[0-9a-f\]\{40\}\$'/,
+  )
+  assert.match(
+    dockerfile,
+    /LABEL io\.chariox\.runtime-source-revision="\$\{CHARIOX_RUNTIME_SOURCE_REVISION\}"/,
+  )
+})
