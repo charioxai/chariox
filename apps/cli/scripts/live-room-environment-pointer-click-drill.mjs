@@ -54,6 +54,7 @@ import { hasRoomReadyProjection } from "./lib/room-drill-ready-notices.mjs"
 import { roomDrillRelayToken } from "./lib/room-drill-relay-token.mjs"
 
 const ROOM_REAL_PROVIDER_EFFORTS = Object.freeze(["low", "medium", "high", "xhigh", "max"])
+const ROOM_REAL_PROVIDER_ACCOUNT_PROFILE_PATTERN = /^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/
 
 function parseRoomRealProviderEffort(env) {
   const effort = env.CHARIOX_ROOM_DRILL_EFFORT?.trim() || "low"
@@ -62,6 +63,18 @@ function parseRoomRealProviderEffort(env) {
     `CHARIOX_ROOM_DRILL_EFFORT must be one of ${ROOM_REAL_PROVIDER_EFFORTS.join(", ")}`,
   )
   return effort
+}
+
+function parseRoomRealProviderAccountProfile(env) {
+  const rawProfile = env.CHARIOX_ROOM_DRILL_ACCOUNT_PROFILE
+  const profile = rawProfile === undefined ? "default" : rawProfile.trim()
+  assert.ok(
+    profile.length > 0
+      && profile.length <= 120
+      && ROOM_REAL_PROVIDER_ACCOUNT_PROFILE_PATTERN.test(profile),
+    "CHARIOX_ROOM_DRILL_ACCOUNT_PROFILE must be a stable alphanumeric-hyphen profile id (max 120 characters)",
+  )
+  return profile
 }
 
 function withRoomRealProviderEffort(requests, effort) {
@@ -156,6 +169,8 @@ assert.ok(Number.isSafeInteger(sliceMemoryMb) && sliceMemoryMb > 0 && sliceMemor
 const companionOnly = process.env.CHARIOX_ROOM_DRILL_FOCUS === "web-companion"
 const realProviderOptions = roomRealProviderOptions(process.env)
 const realProviderEffort = realProviderOptions ? parseRoomRealProviderEffort(process.env) : null
+const realProviderAccountProfile = realProviderOptions ? parseRoomRealProviderAccountProfile(process.env) : null
+if (realProviderOptions) realProviderOptions.accountProfile = realProviderAccountProfile
 const kernelClientRoot = path.join(repoRoot, "packages", "kernel-client")
 const startedAt = new Date().toISOString()
 const stamp = startedAt.replace(/[:.]/g, "-")
@@ -649,7 +664,12 @@ async function run() {
       schema: "chariox.room_environment.real_provider.v1", status: "passed", startedAt,
       source: sourceIdentity, sliceRuntime: sliceRuntimeIdentity,
       sessionId, sliceId: slice.id, environmentId: released.environment_id,
-      provider: { ...provider, effort: providerAgent.effort }, containerLimits: limits,
+      provider: {
+        ...provider,
+        accountProfile: providerAgent.account_profile ?? "default",
+        effort: providerAgent.effort,
+      },
+      containerLimits: limits,
     }
     return
   }
@@ -3199,6 +3219,7 @@ async function withTimeout(promise, timeoutMs, label) {
 
 export {
   main,
+  parseRoomRealProviderAccountProfile,
   parseRoomRealProviderEffort,
   readBackRealProviderAgent,
   spawnAndVerifyRealProviderAgent,
