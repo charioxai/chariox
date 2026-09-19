@@ -4,6 +4,8 @@ import test from "node:test"
 import {
   parseRoomRealProviderAccountProfile,
   parseRoomRealProviderEffort,
+  prepareRealProviderAgent,
+  readBackRealProviderAgent,
   spawnAndVerifyRealProviderAgent,
   withRoomRealProviderEffort,
 } from "./live-room-environment-pointer-click-drill.mjs"
@@ -119,6 +121,76 @@ test("real-provider effort fails closed when public state reports a mismatch", a
     /SessionState effective effort low did not match requested max/,
   )
   assert.equal(fixture.calls[0].args[5], "max")
+
+  const profileFixture = stateFixture("max", "max", "other-profile")
+  await assert.rejects(
+    spawnAndVerifyRealProviderAgent({
+      ...profileFixture,
+      sessionId: "session-1",
+      sliceId: "slice-1",
+      workspace: "/workspace",
+      options: { ...providerOptions, accountProfile: "codex-chariox" },
+      effort: "max",
+    }),
+    /SessionState account profile did not match the requested profile/,
+  )
+})
+
+test("import-first defers spawning and preserves the selected effort/profile seam", async () => {
+  const calls = []
+  const options = { ...providerOptions, accountProfile: "codex-chariox", importFirst: true }
+  const prepared = await prepareRealProviderAgent({
+    client: { send: async () => assert.fail("import-first must not pre-spawn an agent") },
+    requests: requestBuilders(calls),
+    sessionId: "session-1",
+    sliceId: "slice-1",
+    workspace: "/workspace",
+    options,
+    effort: "max",
+  })
+
+  assert.equal(prepared.providerAgent, null)
+  assert.equal(calls.length, 0)
+  const deferredSpawn = prepared.providerRequests.spawnAgentRequest(
+    "session-1", "codex", "real-codex", "gpt-5.6-luna", "/workspace",
+    "low", "build", "yolo", undefined, undefined, "slice-1", options.accountProfile,
+  )
+  assert.equal(deferredSpawn.SpawnAgent.effort, "max")
+  assert.equal(calls[0][5], "max")
+  assert.equal(calls[0][11], "codex-chariox")
+
+  const state = stateFixture("max", "max", "codex-chariox")
+  const verified = await readBackRealProviderAgent({
+    client: state.client,
+    requests: state.requests,
+    sessionId: "session-1",
+    agentId: "agent-1",
+    provider: options.provider,
+    model: options.model,
+    accountProfile: options.accountProfile,
+    effort: "max",
+  })
+  assert.equal(verified.effort, "max")
+  assert.equal(verified.account_profile, "codex-chariox")
+})
+
+test("non-import real-provider path still pre-spawns and verifies the agent", async () => {
+  const fixture = stateFixture("max", "max", "codex-chariox")
+  const prepared = await prepareRealProviderAgent({
+    ...fixture,
+    sessionId: "session-1",
+    sliceId: "slice-1",
+    workspace: "/workspace",
+    options: { ...providerOptions, accountProfile: "codex-chariox", importFirst: false },
+    effort: "max",
+  })
+  assert.equal(prepared.providerAgent.id, "agent-1")
+  assert.deepEqual(fixture.calls.filter((call) => call.kind), [
+    { kind: "spawn", args: fixture.calls[0].args },
+    { kind: "state-request", sessionId: "session-1" },
+  ])
+  assert.equal(fixture.calls[0].args[5], "max")
+  assert.equal(fixture.calls[0].args[11], "codex-chariox")
 })
 
 test("real-provider effort defaults to low for compatibility", async () => {

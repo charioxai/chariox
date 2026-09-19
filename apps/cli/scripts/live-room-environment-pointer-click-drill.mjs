@@ -161,6 +161,30 @@ async function spawnAndVerifyRealProviderAgent({
   })
 }
 
+async function prepareRealProviderAgent({
+  client,
+  requests,
+  sessionId,
+  sliceId,
+  workspace,
+  options,
+  effort,
+}) {
+  const providerRequests = withRoomRealProviderEffort(requests, effort)
+  const providerAgent = options.importFirst
+    ? null
+    : await spawnAndVerifyRealProviderAgent({
+      client,
+      requests: providerRequests,
+      sessionId,
+      sliceId,
+      workspace,
+      options,
+      effort,
+    })
+  return { providerRequests, providerAgent }
+}
+
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, "..", "..", "..")
 const sliceMemoryMb = Number(process.env.CHARIOX_ROOM_DRILL_MEMORY_MB ?? 2048)
@@ -642,32 +666,49 @@ async function run() {
     waitForRemoteNotice(/^Room input: available$/),
   ])
   if (realProviderOptions && !companionOnly) {
-    const providerRequests = withRoomRealProviderEffort(requests, realProviderEffort)
-    const providerAgent = await spawnAndVerifyRealProviderAgent({
+    const { providerRequests, providerAgent } = await prepareRealProviderAgent({
       client,
-      requests: providerRequests,
+      requests,
       sessionId,
       sliceId: slice.id,
       workspace: fixtureWorkspace,
       options: realProviderOptions,
       effort: realProviderEffort,
     })
-    const provider = await runRoomRealProvider({
-      client, requests: providerRequests, agent: providerAgent, sessionId, sliceId: slice.id, workspace: fixtureWorkspace,
+    let verifiedProviderAgent = providerAgent
+    const providerInput = {
+      client, requests: providerRequests, sessionId, sliceId: slice.id, workspace: fixtureWorkspace,
       options: realProviderOptions, waitFor, withTimeout, screenshot,
       officeRuntime: { containerName, docker, sliceScreen, runCommandWithStdin },
       checkpoint: (value) => writeFile(path.join(evidenceRoot, "real-provider.json"), `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 }),
       waitForPhysicalEffect: (marker) => waitForBrowserText(marker, 20_000, "provider click did not reach the shared browser"),
       waitForTuis: (pattern) => Promise.all([waitForLocalNotice(pattern), waitForRemoteNotice(pattern)]),
-    })
+    }
+    if (providerAgent) providerInput.agent = providerAgent
+    if (realProviderOptions.importFirst) {
+      providerInput.beforePrompt = async (agent) => {
+        verifiedProviderAgent = await readBackRealProviderAgent({
+          client,
+          requests: providerRequests,
+          sessionId,
+          agentId: agent.id,
+          provider: realProviderOptions.provider,
+          model: realProviderOptions.model,
+          accountProfile: realProviderOptions.accountProfile,
+          effort: realProviderEffort,
+        })
+      }
+    }
+    const provider = await runRoomRealProvider(providerInput)
+    assert.ok(verifiedProviderAgent, "real-provider agent was not read back before the provider action")
     result = {
       schema: "chariox.room_environment.real_provider.v1", status: "passed", startedAt,
       source: sourceIdentity, sliceRuntime: sliceRuntimeIdentity,
       sessionId, sliceId: slice.id, environmentId: released.environment_id,
       provider: {
         ...provider,
-        accountProfile: providerAgent.account_profile ?? "default",
-        effort: providerAgent.effort,
+        accountProfile: verifiedProviderAgent.account_profile ?? "default",
+        effort: verifiedProviderAgent.effort,
       },
       containerLimits: limits,
     }
@@ -3221,6 +3262,7 @@ export {
   main,
   parseRoomRealProviderAccountProfile,
   parseRoomRealProviderEffort,
+  prepareRealProviderAgent,
   readBackRealProviderAgent,
   spawnAndVerifyRealProviderAgent,
   withRoomRealProviderEffort,
