@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -75,15 +76,35 @@ pub(super) async fn run_subscription_loop(
         } else {
             None
         };
-        let watch_result = router
-            .relay_watch_subscription_state(
+        let Some(watch_result) = await_subscription_work_with_heartbeats(
+            router.relay_watch_subscription_state(
                 &subscription.session_id,
                 &subscription.attachment_id,
                 should_check_snapshot,
                 previous_snapshot_for_watch,
                 last_workflow_design_sequence,
-            )
-            .await;
+            ),
+            &mut next_heartbeat_at,
+            subscription_heartbeat_interval(),
+            || {
+                emit_kernel_event(
+                    &runtime,
+                    &outgoing_tx,
+                    &close_tx,
+                    &close_requested,
+                    KernelEvent::Heartbeat {
+                        session_id: subscription.session_id.clone(),
+                    },
+                    Some(&event_stream_id),
+                    Some(&subscription.session_id),
+                    Some(&subscription.attachment_id),
+                )
+            },
+        )
+        .await
+        else {
+            break;
+        };
         if should_check_snapshot {
             last_snapshot_projection_sequence = Some(session_projection_change_sequence);
             next_snapshot_reconciliation_at =
@@ -367,6 +388,43 @@ fn advance_subscription_deadline(mut deadline: Instant, interval: Duration) -> I
         deadline += interval;
     }
     deadline
+}
+
+async fn await_subscription_work_with_heartbeats<F, T, Emit, EmitFuture>(
+    work: F,
+    next_heartbeat_at: &mut Instant,
+    heartbeat_interval: Duration,
+    mut emit_heartbeat: Emit,
+) -> Option<T>
+where
+    F: Future<Output = T>,
+    Emit: FnMut() -> EmitFuture,
+    EmitFuture: Future<Output = bool>,
+{
+    tokio::pin!(work);
+    loop {
+        if Instant::now() >= *next_heartbeat_at {
+            if !emit_heartbeat().await {
+                return None;
+            }
+            *next_heartbeat_at =
+                advance_subscription_deadline(*next_heartbeat_at, heartbeat_interval);
+            continue;
+        }
+        let heartbeat_wait = next_heartbeat_at
+            .checked_duration_since(Instant::now())
+            .unwrap_or(Duration::ZERO);
+        tokio::select! {
+            result = &mut work => return Some(result),
+            _ = sleep(heartbeat_wait) => {
+                if !emit_heartbeat().await {
+                    return None;
+                }
+                *next_heartbeat_at =
+                    advance_subscription_deadline(*next_heartbeat_at, heartbeat_interval);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -782,14 +840,35 @@ async fn run_waiting_room_inventory_subscription_loop(
     let mut inventory_dirty = true;
     let mut tick: u64 = 0;
     let mut next_heartbeat_at = Instant::now();
+    let mut next_relay_status_at = Instant::now();
     loop {
         let waiting_room_change_sequence = router.waiting_room_change_sequence();
         let session_projection_change_sequence = router.session_projection_change_sequence();
         if inventory_dirty || tick.is_multiple_of(WAITING_ROOM_INVENTORY_INTERVAL_TICKS) {
-            match router
-                .waiting_room_public_snapshot(crate::session::DEFAULT_LOCAL_USER_ID)
-                .await
-            {
+            let Some(snapshot_result) = await_subscription_work_with_heartbeats(
+                router.waiting_room_public_snapshot(crate::session::DEFAULT_LOCAL_USER_ID),
+                &mut next_heartbeat_at,
+                subscription_heartbeat_interval(),
+                || {
+                    emit_kernel_event(
+                        &runtime,
+                        &outgoing_tx,
+                        &close_tx,
+                        &close_requested,
+                        KernelEvent::Heartbeat {
+                            session_id: WAITING_ROOM_INVENTORY_SENTINEL_ID.to_string(),
+                        },
+                        Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+                        None,
+                        None,
+                    )
+                },
+            )
+            .await
+            else {
+                break;
+            };
+            match snapshot_result {
                 Ok(snapshot) => {
                     inventory_dirty = false;
                     for event in waiting_room_event_projection.project(snapshot) {
@@ -835,6 +914,10 @@ async fn run_waiting_room_inventory_subscription_loop(
             {
                 break;
             }
+            next_heartbeat_at =
+                advance_subscription_deadline(next_heartbeat_at, subscription_heartbeat_interval());
+        }
+        if Instant::now() >= next_relay_status_at {
             let status = router.transport_relay_status_snapshot().await;
             if previous_relay_status.as_ref() != Some(&status) {
                 previous_relay_status = Some(status.clone());
@@ -853,8 +936,10 @@ async fn run_waiting_room_inventory_subscription_loop(
                     break;
                 }
             }
-            next_heartbeat_at =
-                advance_subscription_deadline(next_heartbeat_at, subscription_heartbeat_interval());
+            next_relay_status_at = advance_subscription_deadline(
+                next_relay_status_at,
+                subscription_heartbeat_interval(),
+            );
         }
         if tick.is_multiple_of(RELAY_DISCOVERY_INTERVAL_TICKS) {
             let machines = router.transport_remote_machines_snapshot();
