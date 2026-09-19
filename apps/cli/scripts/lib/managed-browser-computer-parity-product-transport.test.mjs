@@ -10,6 +10,7 @@ const kernelClientDistUrl = new URL("../../../../packages/kernel-client/dist/ipc
 const kernelRequestsDistUrl = new URL("../../../../packages/kernel-client/dist/ipc-requests.js", import.meta.url);
 const relayCryptoDistUrl = new URL("../../../../packages/kernel-client/dist/relay-crypto.js", import.meta.url);
 const displayStreamDistUrl = new URL("../../../../packages/kernel-client/dist/display-stream.js", import.meta.url);
+const computerCellFixtureUrl = new URL("./managed-computer-cell-fixture.mjs", import.meta.url);
 
 const importProductTransport = () => import(moduleUrl.href);
 
@@ -1181,3 +1182,443 @@ test("real LocalIpcClient cleanup deletes a slice after post-create validation f
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test("managed Computer cell records an attributed marker, physical screenshot, Room events, and history", async () => {
+  const fixtureModule = await import(computerCellFixtureUrl.href);
+  const fixture = createManagedComputerCellTestFixture();
+  const result = await fixtureModule.runManagedComputerCell({
+    displayClient: fixture.client,
+    requestApi: fixture.requestApi,
+    runtimeMcp: fixture.runtimeMcp,
+    ownedResources: { sliceId: "slice-1" },
+    request: computerCellRequest(),
+  });
+
+  assert.equal(result.keyboard, true);
+  assert.equal(result.pointer, true);
+  assert.equal(result.screenshot, true);
+  assert.equal(result.fixture.marker, "CHARIOX_MANAGED_COMPUTER_CELL_test-run");
+  assert.equal(result.fixture.occurrenceCount, 1);
+  assert.equal(result.actorId, "agent:agent-1");
+  assert.equal(result.completion, "completed");
+  assert.equal(result.actions.keyboard.kind, "keyboard_text");
+  assert.equal(result.actions.pointer.kind, "pointer_move");
+  assert.deepEqual(fixture.actionIds(), ["action-1", "action-2"]);
+  assert.deepEqual(fixture.runtimeCalls.map(({ name }) => name), [
+    "slice_keyboard",
+    "slice_mouse",
+    "slice_screenshot",
+    "slice_ocr",
+  ]);
+});
+
+test("managed Computer takeover proves exact idempotency replay and rejects agent mutation", async () => {
+  const fixtureModule = await import(computerCellFixtureUrl.href);
+  const fixture = createManagedComputerCellTestFixture();
+  const ownedResources = { sliceId: "slice-1" };
+  await fixtureModule.runManagedComputerCell({
+    displayClient: fixture.client,
+    requestApi: fixture.requestApi,
+    runtimeMcp: fixture.runtimeMcp,
+    ownedResources,
+    request: computerCellRequest(),
+  });
+  const computer = ownedResources.computer;
+  const takeover = await fixtureModule.runManagedComputerCellTakeover({
+    displayClient: fixture.client,
+    requestApi: fixture.requestApi,
+    runtimeMcp: fixture.runtimeMcp,
+    ownedResources,
+    request: { humanActorId: "user:local", idempotencyKey: "human-pointer-1" },
+  });
+
+  assert.equal(takeover.takeoverCompleted, true);
+  assert.equal(takeover.humanActorId, "user:local");
+  assert.equal(takeover.humanActorLabel, "Local user");
+  assert.equal(takeover.agentMutationRejected, true);
+  assert.equal(takeover.idempotency.actionId, "action-3");
+  assert.equal(takeover.idempotency.replayActionId, "action-3");
+  assert.equal(takeover.idempotency.duplicateHistoryEntries, 0);
+  assert.equal(fixture.actionIds().filter((id) => id === "action-3").length, 1);
+  assert.equal(ownedResources.computer, computer);
+  assert.match(JSON.stringify(takeover.agentMutationRejection), /takeover|ownership|human/i);
+  assert.equal(fixture.room.input_ownership.length, 0);
+});
+
+test("managed Computer reconnect replays one action history, one browser inventory, and rejects a stale probe", async () => {
+  const fixtureModule = await import(computerCellFixtureUrl.href);
+  const fixture = createManagedComputerCellTestFixture();
+  const ownedResources = { sliceId: "slice-1" };
+  await fixtureModule.runManagedComputerCell({
+    displayClient: fixture.client,
+    requestApi: fixture.requestApi,
+    runtimeMcp: fixture.runtimeMcp,
+    ownedResources,
+    request: computerCellRequest(),
+  });
+  await fixtureModule.runManagedComputerCellTakeover({
+    displayClient: fixture.client,
+    requestApi: fixture.requestApi,
+    runtimeMcp: fixture.runtimeMcp,
+    ownedResources,
+    request: { humanActorId: "user:local", idempotencyKey: "human-pointer-1" },
+  });
+
+  const reconnect = await fixtureModule.runManagedComputerCellReconnect({
+    displayClient: fixture.client,
+    requestApi: fixture.requestApi,
+    reconnectClient: async () => ({
+      send: fixture.client.send,
+      async close() { fixture.reconnectClosed += 1; },
+    }),
+    runtimeMcp: fixture.runtimeMcp,
+    ownedResources,
+    request: {
+      fault: "relay_disconnect",
+      staleProbe: true,
+      staleRuntimeGeneration: 0,
+    },
+  });
+
+  assert.equal(reconnect.reconnected, true);
+  assert.equal(reconnect.duplicateActions, 0);
+  assert.equal(reconnect.duplicateBrowsers, 0);
+  assert.deepEqual(reconnect.stale, { status: "rejected", runtimeGeneration: 0 });
+  assert.equal(reconnect.fixtureArtifactId, "artifact-1");
+  assert.equal(fixture.reconnectClosed, 1);
+});
+
+test("managed Computer cell fails closed when the public marker receipt is missing", async () => {
+  const fixtureModule = await import(computerCellFixtureUrl.href);
+  const fixture = createManagedComputerCellTestFixture({ missingScreenshot: true });
+  await assert.rejects(
+    () => fixtureModule.runManagedComputerCell({
+      displayClient: fixture.client,
+      requestApi: fixture.requestApi,
+      runtimeMcp: fixture.runtimeMcp,
+      ownedResources: { sliceId: "slice-1" },
+      request: computerCellRequest(),
+    }),
+    /successful screenshot receipt/,
+  );
+});
+
+test("managed Computer cleanup.inspect proves owned zero residue and rejects a residual slice", async () => {
+  const fixtureModule = await import(computerCellFixtureUrl.href);
+  const fixture = createManagedComputerCellTestFixture();
+  const cleanResources = {
+    sliceId: null,
+    attachmentIds: new Set(),
+    cleanupEvidence: {
+      cleaned: true,
+      sliceId: "slice-1",
+      roomId: "room-1",
+      attachmentIds: ["attachment-1"],
+      detachedAttachmentIds: ["attachment-1"],
+      deleted: true,
+    },
+  };
+  const clean = await fixtureModule.inspectManagedComputerCellCleanup({
+    displayClient: fixture.client,
+    requestApi: fixture.requestApi,
+    ownedResources: cleanResources,
+  });
+  assert.equal(clean.zeroResidue, true);
+  assert.deepEqual(clean.owned.detachedAttachmentIds, ["attachment-1"]);
+  assert.deepEqual(clean.publicInventory.receiptKinds, [
+    "SlicesListed",
+    "SessionsListed",
+    "SliceDeleted",
+    "SessionDetached",
+  ]);
+
+  fixture.residualSlice = true;
+  await assert.rejects(
+    () => fixtureModule.inspectManagedComputerCellCleanup({
+      displayClient: fixture.client,
+      requestApi: fixture.requestApi,
+      ownedResources: cleanResources,
+    }),
+    /owned slice after cleanup/,
+  );
+});
+
+test("managed Computer transport maps the cell steps and leaves provider persistence boundaries fail-closed", async () => {
+  const imported = await importProductTransport();
+  const transport = imported.createManagedBrowserComputerParityTransportFromPublicClient({
+    client: { async send() { throw new Error("unexpected public request"); } },
+    requestApi: {
+      getSliceDisplayEndpointRequest: () => ({ GetSliceDisplayEndpoint: {} }),
+    },
+  });
+  const request = computerCellRequest();
+  await assert.rejects(
+    () => transport.run("selkies.computer", { ...request, sliceId: "slice-1" }),
+    /requires a public runtime MCP client/,
+  );
+  await assert.rejects(
+    () => transport.run("selkies.persistence", request),
+    /unsupported managed parity step: selkies\.persistence/,
+  );
+  await assert.rejects(
+    () => transport.run("cleanup.inspect", request),
+    /cleanup\.perform receipt/,
+  );
+});
+
+function computerCellRequest() {
+  return {
+    runId: "test-run",
+    marker: "CHARIOX_MANAGED_COMPUTER_CELL_test-run",
+    binding: {
+      kernelId: "kernel-1",
+      machineId: "machine-1",
+      roomId: "room-1",
+      environmentId: "environment-1",
+    },
+  };
+}
+
+function createManagedComputerCellTestFixture({ missingScreenshot = false } = {}) {
+  const room = {
+    session_id: "room-1",
+    environment_id: "environment-1",
+    runtime_generation: 1,
+    lifecycle: "ready",
+    viewport: {
+      revision: 4,
+      css_width: 1280,
+      css_height: 800,
+      device_scale_factor: 1,
+      desktop_pixel_width: 1280,
+      desktop_pixel_height: 800,
+    },
+    actors: [
+      {
+        actor_id: "agent:agent-1",
+        kind: "agent",
+        display_label: "Test agent",
+        presence: "present",
+        presentation_color: "cyan",
+      },
+      {
+        actor_id: "user:local",
+        kind: "human",
+        display_label: "Local user",
+        presence: "present",
+        presentation_color: "blue",
+      },
+    ],
+    actions: [],
+    input_ownership: [],
+    pending_input_takeovers: [],
+    pointers: [],
+    tabs: [],
+    focused_tab_id: null,
+    event_cursor: 0,
+  };
+  let actionNumber = 0;
+  let eventNumber = 0;
+  let marker = null;
+  const events = [];
+  const runtimeCalls = [];
+  const idempotentActions = new Map();
+  let residualSlice = false;
+  let reconnectClosed = 0;
+
+  function snapshot() {
+    return JSON.parse(JSON.stringify(room));
+  }
+
+  function addAction({ actorId, kind, idempotencyKey = null }) {
+    const action = {
+      action_id: `action-${++actionNumber}`,
+      sequence: actionNumber,
+      idempotency_key: idempotencyKey,
+      actor_id: actorId,
+      runtime_generation: room.runtime_generation,
+      mode: "computer",
+      kind,
+      targets: [{ kind: "desktop" }],
+      state: "completed",
+      cancellation_requested: false,
+      submitted_at_ms: 1,
+      started_at_ms: 1,
+      finished_at_ms: 2,
+      outcome: { status: "completed" },
+    };
+    room.actions.push(action);
+    room.event_cursor = ++eventNumber;
+    events.push({
+      event_id: eventNumber,
+      environment_id: room.environment_id,
+      runtime_generation: room.runtime_generation,
+      kind: {
+        ActionChanged: {
+          action_id: action.action_id,
+          state: action.state,
+          cancellation_requested: false,
+          submitted_at_ms: 1,
+          started_at_ms: 1,
+          finished_at_ms: 2,
+          outcome: action.outcome,
+        },
+      },
+    });
+    return action;
+  }
+
+  const requestApi = {
+    getRoomEnvironmentStateRequest: (roomId) => ({ kind: "state", roomId }),
+    getRoomEnvironmentEventsRequest: (roomId, cursor) => ({ kind: "events", roomId, cursor }),
+    listRoomEnvironmentActionHistoryRequest: (roomId) => ({ kind: "history", roomId }),
+    requestRoomEnvironmentInputTakeoverRequest: (roomId, target) => ({ kind: "takeover", roomId, target }),
+    releaseRoomEnvironmentInputRequest: (roomId, target) => ({ kind: "release", roomId, target }),
+    submitRoomEnvironmentActionRequest: (roomId, runtimeGeneration, viewportRevision, idempotencyKey, action) => ({
+      kind: "submit",
+      roomId,
+      runtimeGeneration,
+      viewportRevision,
+      idempotencyKey,
+      action,
+    }),
+    updateRoomEnvironmentPointerRequest: (roomId, runtimeGeneration) => ({
+      kind: "stale-pointer",
+      roomId,
+      runtimeGeneration,
+    }),
+    getRoomEnvironmentResourceInventoryRequest: (roomId, sliceId) => ({ kind: "inventory", roomId, sliceId }),
+    listSlicesRequest: () => ({ kind: "slices" }),
+    listSessionsRequest: () => ({ kind: "sessions" }),
+  };
+
+  const client = {
+    async send(request) {
+      if (request.kind === "state") return { RoomEnvironmentState: { environment: snapshot() } };
+      if (request.kind === "events") {
+        return { RoomEnvironmentEvents: { replay: { Events: {
+          events: events.filter((event) => event.event_id > request.cursor),
+          next_cursor: room.event_cursor,
+        } } } };
+      }
+      if (request.kind === "history") {
+        return { RoomEnvironmentActionHistoryListed: { page: { actions: snapshot().actions, next_before_sequence: null } } };
+      }
+      if (request.kind === "takeover") {
+        room.input_ownership = [{ target: { kind: "desktop" }, actor_id: "user:local" }];
+        return {
+          RoomEnvironmentTakeoverUpdated: {
+            outcome: { state: "granted" },
+            environment: snapshot(),
+          },
+        };
+      }
+      if (request.kind === "submit") {
+        if (!room.input_ownership.some((owner) => owner.actor_id === "user:local")) {
+          throw new Error("human takeover required");
+        }
+        let action = idempotentActions.get(request.idempotencyKey);
+        if (!action) {
+          action = addAction({ actorId: "user:local", kind: request.action.kind, idempotencyKey: request.idempotencyKey });
+          idempotentActions.set(request.idempotencyKey, action);
+        }
+        return { RoomEnvironmentActionSubmitted: { action_id: action.action_id, environment: snapshot() } };
+      }
+      if (request.kind === "release") {
+        room.input_ownership = [];
+        room.pending_input_takeovers = [];
+        return { RoomEnvironmentInputReleased: { environment: snapshot() } };
+      }
+      if (request.kind === "stale-pointer") throw new Error("stale runtime generation");
+      if (request.kind === "inventory") {
+        return {
+          RoomEnvironmentResourceInventory: {
+            inventory: {
+              session_id: "room-1",
+              environment_id: "environment-1",
+              slice_id: "slice-1",
+              browser_ids: ["browser-1"],
+              profile_ids: ["profile-1"],
+            },
+          },
+        };
+      }
+      if (request.kind === "slices") {
+        return { SlicesListed: { slices: residualSlice ? [{ id: "slice-1" }] : [] } };
+      }
+      if (request.kind === "sessions") return { SessionsListed: { sessions: [{ id: "room-1" }] } };
+      throw new Error(`unexpected fake Computer cell request ${JSON.stringify(request)}`);
+    },
+  };
+
+  const runtimeMcp = {
+    async callTool(name, argumentsValue) {
+      runtimeCalls.push({ name, argumentsValue });
+      if (name === "slice_keyboard") {
+        if (room.input_ownership.some((owner) => owner.actor_id === "user:local")) {
+          return { ok: false, error: { code: "input_takeover", message: "human owns desktop" } };
+        }
+        marker = argumentsValue.text;
+        const action = addAction({ actorId: "agent:agent-1", kind: "keyboard_text" });
+        return { ok: true, content: {
+          source: "computer_controller",
+          session_id: "room-1",
+          slice_id: "slice-1",
+          agent_id: "agent-1",
+          actor_id: "agent:agent-1",
+          action_id: action.action_id,
+          action_kind: "keyboard_text",
+          runtime_generation: 1,
+        } };
+      }
+      if (name === "slice_mouse") {
+        const action = addAction({ actorId: "agent:agent-1", kind: "pointer_move" });
+        return { ok: true, content: {
+          source: "computer_controller",
+          session_id: "room-1",
+          slice_id: "slice-1",
+          agent_id: "agent-1",
+          actor_id: "agent:agent-1",
+          action_id: action.action_id,
+          action_kind: "pointer_move",
+          runtime_generation: 1,
+        } };
+      }
+      if (name === "slice_screenshot") {
+        if (missingScreenshot) return { ok: true, content: null };
+        return { ok: true, content: {
+          source: "computer_controller",
+          session_id: "room-1",
+          slice_id: "slice-1",
+          agent_id: "agent-1",
+          artifact_id: "artifact-1",
+          sha256: "sha256-artifact-1",
+          size_bytes: 128,
+        } };
+      }
+      if (name === "slice_ocr") {
+        return { ok: true, content: {
+          source: "computer_controller",
+          session_id: "room-1",
+          slice_id: "slice-1",
+          agent_id: "agent-1",
+          text: `${marker}`,
+        } };
+      }
+      throw new Error(`unexpected fake Computer cell runtime tool ${name}`);
+    },
+  };
+
+  return {
+    room,
+    client,
+    requestApi,
+    runtimeMcp,
+    runtimeCalls,
+    actionIds: () => room.actions.map((action) => action.action_id),
+    get reconnectClosed() { return reconnectClosed; },
+    set reconnectClosed(value) { reconnectClosed = value; },
+    get residualSlice() { return residualSlice; },
+    set residualSlice(value) { residualSlice = value; },
+  };
+}
