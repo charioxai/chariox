@@ -4,10 +4,14 @@ import test from "node:test"
 
 import {
   buildPath1FaultCellInvocation,
+  buildPath1FaultFailure,
+  buildPath1RustProbeInvocation,
   parseArgs,
+  runPath1ContextFaultProbe,
   runPath1FaultCell,
 } from "./local-rust-fault-drill-runtime.mjs"
 import { PATH1_RUNNER_CONTEXT_SCHEMA } from "../../../../scripts/path1-oss-runner-context-adapter.mjs"
+import { buildRoomTakeoverReconnectCargoArgs } from "./room-takeover-reconnect-fault-drill.mjs"
 
 const repoRoot = path.resolve(".")
 
@@ -80,6 +84,21 @@ function evidence(current) {
   }
 }
 
+function rustProbeOutput() {
+  return `CHARIOX_ROOM_TAKEOVER_RECONNECT_PROBE:${JSON.stringify({
+    schema: "chariox.room_takeover_reconnect_probe.v1",
+    responseLostAfterCommit: true,
+    replayedResponseMatched: true,
+    humanOwnershipRetained: true,
+    agentMutationBlocked: true,
+    takeoverAppliedExactlyOnce: true,
+    explicitReleaseRequired: true,
+    agentMutationAdmittedAfterRelease: true,
+    cleanupComplete: true,
+    takeoverEventCount: 1,
+  })}`
+}
+
 test("standalone Rust fault runtime remains parse-compatible and context-free", () => {
   const options = parseArgs(["--dry-run"], { name: "fault-drill", description: "fault" })
   assert.equal(options.dryRun, true)
@@ -93,6 +112,88 @@ test("Path 1 fault invocation is explicitly probe-only and cannot launch Cargo a
   assert.equal(invocation.createRelay, false)
   assert.equal(invocation.env.CHARIOX_RELAY_TOKEN, undefined)
   assert.ok(invocation.args.includes("--path1-runner-context"))
+})
+
+test("Rust context probe is exact, strict, and authority-free", () => {
+  const current = context()
+  const invocation = buildPath1RustProbeInvocation(current)
+  assert.equal(invocation.command, "cargo")
+  assert.deepEqual(invocation.args, buildRoomTakeoverReconnectCargoArgs())
+  assert.equal(invocation.cwd, current.repoRoot)
+  assert.equal(invocation.createKernel, false)
+  assert.equal(invocation.createSession, false)
+  assert.equal(invocation.createRelay, false)
+  assert.equal(invocation.sameRoomRequired, true)
+  assert.equal(invocation.env.CARGO_BUILD_JOBS, "1")
+  assert.equal(invocation.env.CHARIOX_PATH1_CONTEXT_MODE, "required-existing-room")
+  assert.equal(invocation.env.CHARIOX_RELAY_TOKEN, undefined)
+  assert.equal(invocation.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN, undefined)
+  assert.equal(invocation.env.PROVIDER_API_KEY, undefined)
+  const serializedContext = JSON.parse(invocation.env.CHARIOX_PATH1_RUNNER_CONTEXT_JSON)
+  assert.equal(serializedContext.runId, current.runId)
+  assert.equal(serializedContext.sessionId, current.sessionId)
+  assert.equal(serializedContext.roomId, current.roomId)
+  assert.equal(serializedContext.kernelEndpoint, current.kernelEndpoint)
+  assert.equal(serializedContext.runtimeBindings.runtimeDigest, current.runtimeBindings.runtimeDigest)
+})
+
+test("Rust context probe returns only sanitized typed evidence and preserves the shared binding", async () => {
+  const current = context()
+  const calls = []
+  const result = await runPath1ContextFaultProbe({
+    context: current,
+    processRunner: {
+      async run(invocation) {
+        calls.push(invocation)
+        return { code: 0, signal: null, stdout: rustProbeOutput(), stderr: "provider output must not escape" }
+      },
+    },
+  })
+  assert.equal(calls.length, 1)
+  assert.equal(result.status, "passed")
+  assert.equal(result.liveObserved, true)
+  assert.equal(result.runId, current.runId)
+  assert.equal(result.sessionId, current.sessionId)
+  assert.equal(result.roomId, current.roomId)
+  assert.equal(result.sameRoom, true)
+  assert.equal(result.noSecondAuthority, true)
+  assert.equal(result.capabilities.takeover.agentMutationBlocked, true)
+  assert.equal(result.capabilities.reconnect.replayedResponseMatched, true)
+  assert.equal(JSON.stringify(result).includes("provider output"), false)
+})
+
+test("missing, stale, or mismatched context fails before an official process can launch", async () => {
+  let launches = 0
+  const processRunner = { async run() { launches += 1; throw new Error("must not launch") } }
+  await assert.rejects(
+    () => runPath1ContextFaultProbe({ context: null, processRunner }),
+    /runnerContext/u,
+  )
+  await assert.rejects(
+    () => runPath1ContextFaultProbe({ context: { ...context(), kernelEndpoint: "ws://127.0.0.1:43119/kernel?stale=1" }, processRunner }),
+    /query material|credential/u,
+  )
+  const mismatched = context()
+  mismatched.clientBindings.web = { ...mismatched.clientBindings.web, sessionId: "stale-session-fault-001" }
+  await assert.rejects(
+    () => runPath1ContextFaultProbe({ context: mismatched, processRunner }),
+    /does not bind to the supplied Room\/session|stale/u,
+  )
+  assert.equal(launches, 0)
+})
+
+test("probe failure is redacted while typed failure evidence preserves the stale-context branch", async () => {
+  const current = context()
+  await assert.rejects(
+    () => runPath1ContextFaultProbe({
+      context: current,
+      processRunner: { async run() { return { code: 1, signal: null, stdout: "", stderr: "provider secret token=do-not-print" } } },
+    }),
+    (error) => error instanceof Error && error.message === "official Rust takeover/reconnect probe failed" && !error.message.includes("do-not-print"),
+  )
+  const failure = buildPath1FaultFailure(current, "stale-context")
+  assert.deepEqual(failure.failure, { code: "stale-context", reason: "official Rust takeover/reconnect probe failed" })
+  assert.equal(JSON.stringify(failure).includes("do-not-print"), false)
 })
 
 test("injected fault evidence is bound to the same Room and missing context-capable probes fail closed", async () => {

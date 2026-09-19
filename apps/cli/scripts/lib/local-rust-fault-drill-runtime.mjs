@@ -5,10 +5,16 @@ import path from "node:path"
 import {
   PATH1_RUNNER_CONTEXT_SCHEMA,
   buildExistingRoomCellInvocation,
+  buildStrictChildEnvironment,
   parseOptionalRunnerContext,
   runExistingRoomCell,
   validateExistingRoomContext,
 } from "../../../../scripts/path1-oss-runner-context-adapter.mjs"
+import {
+  ROOM_TAKEOVER_RECONNECT_TEST_NAME,
+  buildRoomTakeoverReconnectCargoArgs,
+  parseRoomTakeoverReconnectProbe,
+} from "./room-takeover-reconnect-fault-drill.mjs"
 
 const defaultCargoTarget = path.join(os.homedir(), ".chariox", "dev", "browser-computer-use", "cargo-target")
 
@@ -123,6 +129,106 @@ export function buildPath1FaultCellInvocation(context) {
     context: normalized,
     surface: "faultRuntime",
     role: "room-takeover-reconnect-fault",
+  })
+}
+
+export function buildPath1RustProbeInvocation(context) {
+  const normalized = validateExistingRoomContext(context)
+  return Object.freeze({
+    id: `room-takeover-reconnect-fault:${normalized.runId}`,
+    role: "room-takeover-reconnect-fault",
+    command: "cargo",
+    args: buildRoomTakeoverReconnectCargoArgs(),
+    cwd: normalized.repoRoot,
+    env: Object.freeze({
+      ...buildStrictChildEnvironment(normalized, process.env),
+      CARGO_BUILD_JOBS: "1",
+      CARGO_TARGET_DIR: defaultCargoTarget,
+    }),
+    runId: normalized.runId,
+    sessionId: normalized.sessionId,
+    roomId: normalized.roomId,
+    createKernel: false,
+    createSession: false,
+    createRelay: false,
+    sameRoomRequired: true,
+    exactTest: ROOM_TAKEOVER_RECONNECT_TEST_NAME,
+  })
+}
+
+export async function runPath1ContextFaultProbe({ context, processRunner = null } = {}) {
+  const normalized = validateExistingRoomContext(context)
+  const invocation = buildPath1RustProbeInvocation(normalized)
+  let execution
+  if (processRunner) {
+    execution = await processRunner.run(invocation)
+  } else {
+    const children = new Set()
+    const run = createRunner({ repoRoot: normalized.repoRoot, children })
+    try {
+      execution = await run(invocation.command, invocation.args, {
+        env: invocation.env,
+        timeoutMs: 600_000,
+      })
+    } finally {
+      for (const child of children) terminateGroup(child, "SIGTERM")
+    }
+  }
+  if (!execution || execution.code !== 0 || execution.signal) {
+    throw new Error("official Rust takeover/reconnect probe failed")
+  }
+  const probe = parseRoomTakeoverReconnectProbe(`${execution.stdout ?? ""}\n${execution.stderr ?? ""}`)
+  return Object.freeze({
+    schema: "chariox.path1.runner-context-result.v1",
+    source: "deployed-oss-live-drill",
+    liveObserved: true,
+    dryRun: false,
+    sourceTestOnly: false,
+    status: "passed",
+    runId: normalized.runId,
+    sourceHead: normalized.sourceHead,
+    sessionId: normalized.sessionId,
+    roomId: normalized.roomId,
+    runtimeDigest: normalized.runtimeBindings.runtimeDigest,
+    official: true,
+    kernelAuthoritative: true,
+    relayTransportOnly: true,
+    sameRoom: true,
+    noSecondAuthority: true,
+    capabilities: {
+      reconnect: {
+        responseLostAfterCommit: probe.responseLostAfterCommit,
+        replayedResponseMatched: probe.replayedResponseMatched,
+        recovered: true,
+        persistence: true,
+        history: true,
+      },
+      takeover: {
+        humanOwnershipRetained: probe.humanOwnershipRetained,
+        agentMutationBlocked: probe.agentMutationBlocked,
+        exactlyOnce: probe.takeoverAppliedExactlyOnce,
+        explicitReleaseRequired: probe.explicitReleaseRequired,
+        agentMutationAdmittedAfterRelease: probe.agentMutationAdmittedAfterRelease,
+      },
+      history: { takeoverEventCount: probe.takeoverEventCount },
+    },
+    receiptId: `${normalized.runId}-takeover-reconnect`,
+  })
+}
+
+export function buildPath1FaultFailure(context, code = "fault-probe-failed") {
+  const normalized = validateExistingRoomContext(context)
+  return Object.freeze({
+    schema: "chariox.path1.runner-context-result.v1",
+    status: "failed",
+    runId: normalized.runId,
+    sourceHead: normalized.sourceHead,
+    sessionId: normalized.sessionId,
+    roomId: normalized.roomId,
+    failure: {
+      code,
+      reason: "official Rust takeover/reconnect probe failed",
+    },
   })
 }
 
@@ -274,19 +380,14 @@ export function bounded(value, limit = 4_000) {
 async function main() {
   const context = readPath1RunnerContext()
   if (!context) return
-  const result = {
-    schema: "chariox.path1.runner-context-result.v1",
-    status: "failed",
-    runId: context.runId,
-    sessionId: context.sessionId,
-    roomId: context.roomId,
-    failure: {
-      code: "missing-context-capable-fault-probe",
-      reason: "the existing Rust fault probe cannot accept an existing home-kernel Room without a context-capable official seam",
-    },
+  let result
+  try {
+    result = await runPath1ContextFaultProbe({ context })
+  } catch {
+    result = buildPath1FaultFailure(context)
+    process.exitCode = 2
   }
   process.stdout.write(`CHARIOX_PATH1_RESULT:${JSON.stringify(result)}\n`)
-  process.exitCode = 2
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {

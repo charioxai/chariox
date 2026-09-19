@@ -3,7 +3,8 @@ use super::*;
 use std::path::{Path, PathBuf};
 
 use crate::local::{
-    CreateSliceRequest, LocalDaemonRequest, ReleaseRoomEnvironmentInputRequest,
+    CreateSliceRequest, GetRoomEnvironmentEventsRequest, GetRoomEnvironmentStateRequest,
+    LocalDaemonRequest, LocalDaemonResponse, ReleaseRoomEnvironmentInputRequest,
     RequestRoomEnvironmentInputTakeoverRequest, RestoreSliceBackupRequest, SliceCreateBase,
     SliceStateSaveMode, SliceStateSaveRequest, SliceStateSaveScope,
 };
@@ -11,7 +12,7 @@ use crate::session::{
     agent_environment_actor_id, human_environment_actor_id, ActionAdmission, CanonicalViewport,
     CreateSessionRequest, EnvironmentActionRequest, EnvironmentActionTerminal, EnvironmentActor,
     EnvironmentActorKind, EnvironmentEventKind, EnvironmentLifecycle, EnvironmentReplay,
-    InputTarget, TakeoverOutcome, DEFAULT_LOCAL_USER_ID,
+    InputTarget, RoomEnvironmentSnapshot, TakeoverOutcome, DEFAULT_LOCAL_USER_ID,
 };
 use crate::slice::{CreateSliceInput, SliceBackendKind, SliceDisplayMode};
 use crate::DaemonConfig;
@@ -930,6 +931,32 @@ exit 0
 #[cfg(unix)]
 #[test]
 fn room_takeover_response_loss_and_reconnect_retain_human_input_authority() {
+    if std::env::var_os("CHARIOX_PATH1_RUNNER_CONTEXT_JSON").is_some() {
+        let context = Path1FaultProbeContext::from_environment()
+            .unwrap_or_else(|_| panic!("Path 1 fault probe context is invalid"));
+        let test_thread = std::thread::Builder::new()
+            .name("path1-room-takeover-reconnect".to_string())
+            .stack_size(32 * 1024 * 1024)
+            .spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("Path 1 fault probe runtime should start")
+                    .block_on(async move {
+                        run_path1_room_takeover_reconnect_probe(&context)
+                            .await
+                            .unwrap_or_else(|_| {
+                                panic!("Path 1 fault probe rejected the supplied Room context")
+                            });
+                    });
+            })
+            .expect("Path 1 fault probe thread should start");
+        test_thread
+            .join()
+            .expect("Path 1 fault probe thread should finish");
+        return;
+    }
+
     let test_thread = std::thread::Builder::new()
         .name("room-takeover-reconnect".to_string())
         .stack_size(32 * 1024 * 1024)
@@ -1192,6 +1219,328 @@ fn room_takeover_response_loss_and_reconnect_retain_human_input_authority() {
     test_thread
         .join()
         .expect("takeover reconnect test thread should finish");
+}
+
+#[cfg(unix)]
+struct Path1FaultProbeContext {
+    session_id: String,
+    room_id: String,
+    kernel_endpoint: String,
+}
+
+#[cfg(unix)]
+impl Path1FaultProbeContext {
+    fn from_environment() -> Result<Self, ()> {
+        let raw = std::env::var("CHARIOX_PATH1_RUNNER_CONTEXT_JSON").map_err(|_| ())?;
+        let value: serde_json::Value = serde_json::from_str(&raw).map_err(|_| ())?;
+        if value.get("schema").and_then(serde_json::Value::as_str)
+            != Some("chariox.path1.runner-context.v1")
+        {
+            return Err(());
+        }
+        if std::env::var("CHARIOX_PATH1_CONTEXT_MODE").ok().as_deref()
+            != Some("required-existing-room")
+            || std::env::var("CHARIOX_PATH1_CONTEXT_SCHEMA").ok().as_deref()
+                != Some("chariox.path1.runner-context.v1")
+        {
+            return Err(());
+        }
+
+        let run_id = path1_context_text(&value, "runId", 80)?;
+        if !run_id
+            .chars()
+            .enumerate()
+            .all(|(index, character)| {
+                (index == 0 && character.is_ascii_lowercase())
+                    || (index > 0
+                        && (character.is_ascii_alphanumeric()
+                            || matches!(character, '.' | '_' | ':' | '-')))
+            })
+        {
+            return Err(());
+        }
+        let source_head = path1_context_text(&value, "sourceHead", 40)?;
+        if source_head.len() != 40 || !source_head.chars().all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase()) {
+            return Err(());
+        }
+        if std::env::var("CHARIOX_PATH1_RUN_ID").ok().as_deref() != Some(run_id.as_str())
+            || std::env::var("CHARIOX_PATH1_SOURCE_HEAD").ok().as_deref()
+                != Some(source_head.as_str())
+        {
+            return Err(());
+        }
+
+        let session_id = path1_context_text(&value, "sessionId", 128)?;
+        let room_id = path1_context_text(&value, "roomId", 128)?;
+        if !path1_context_identifier(&session_id) || !path1_context_identifier(&room_id) {
+            return Err(());
+        }
+        let kernel_endpoint = path1_context_text(&value, "kernelEndpoint", 512)?;
+        if !(kernel_endpoint.starts_with("ws://") || kernel_endpoint.starts_with("wss://"))
+            || kernel_endpoint.contains('@')
+            || kernel_endpoint.contains('?')
+            || kernel_endpoint.contains('#')
+            || kernel_endpoint.chars().any(|character| character.is_control() || character.is_whitespace())
+            || kernel_endpoint.len() <= 5
+        {
+            return Err(());
+        }
+        Ok(Self {
+            session_id,
+            room_id,
+            kernel_endpoint,
+        })
+    }
+}
+
+#[cfg(unix)]
+fn path1_context_text(value: &serde_json::Value, field: &str, max_len: usize) -> Result<String, ()> {
+    let text = value
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .ok_or(())?;
+    if text.is_empty() || text.len() > max_len || !text.is_ascii() {
+        return Err(());
+    }
+    Ok(text.to_string())
+}
+
+#[cfg(unix)]
+fn path1_context_identifier(value: &str) -> bool {
+    value.len() >= 3
+        && value.len() <= 128
+        && value.chars().enumerate().all(|(index, character)| {
+            (index == 0 && character.is_ascii_alphanumeric())
+                || (index > 0
+                    && (character.is_ascii_alphanumeric()
+                        || matches!(character, '.' | '_' | ':' | '-')))
+        })
+}
+
+#[cfg(unix)]
+async fn path1_kernel_request(
+    context: &Path1FaultProbeContext,
+    request_id: &str,
+    command_id: &str,
+    request: LocalDaemonRequest,
+    receive_response: bool,
+) -> Result<Option<LocalDaemonResponse>, ()> {
+    let (mut socket, _) = connect_async(context.kernel_endpoint.as_str())
+        .await
+        .map_err(|_| ())?;
+    let payload = serde_json::to_string(&KernelIncomingFrame::Request {
+        request_id: request_id.to_string(),
+        command_id: Some(command_id.to_string()),
+        causation_id: None,
+        correlation_id: Some("path1-room-takeover-reconnect".to_string()),
+        request,
+    })
+    .map_err(|_| ())?;
+    socket.send(Message::Text(payload.into())).await.map_err(|_| ())?;
+    if !receive_response {
+        let _ = socket.close(None).await;
+        return Ok(None);
+    }
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let message = socket.next().await.ok_or(())?.map_err(|_| ())?;
+            let outgoing = match message {
+                Message::Text(text) => {
+                    serde_json::from_slice::<KernelOutgoingFrame>(text.as_bytes())
+                        .map_err(|_| ())?
+                }
+                Message::Binary(payload) => {
+                    serde_json::from_slice::<KernelOutgoingFrame>(payload.as_ref())
+                        .map_err(|_| ())?
+                }
+                Message::Ping(_) | Message::Pong(_) => continue,
+                Message::Close(_) | Message::Frame(_) => return Err(()),
+            };
+            match outgoing {
+                KernelOutgoingFrame::Response {
+                    response, error, ..
+                } => {
+                    if error.is_some() {
+                        return Err(());
+                    }
+                    let value = response.as_ref().clone().ok_or(())?;
+                    return serde_json::from_value::<LocalDaemonResponse>(value)
+                        .map(Some)
+                        .map_err(|_| ());
+                }
+                KernelOutgoingFrame::Event { .. } => continue,
+            }
+        }
+    })
+    .await
+    .map_err(|_| ())?
+}
+
+#[cfg(unix)]
+async fn path1_room_environment_state(
+    context: &Path1FaultProbeContext,
+    request_suffix: &str,
+) -> Result<RoomEnvironmentSnapshot, ()> {
+    let response = path1_kernel_request(
+        context,
+        &format!("path1-state-{request_suffix}-request"),
+        &format!("path1-state-{request_suffix}-command"),
+        LocalDaemonRequest::GetRoomEnvironmentState(GetRoomEnvironmentStateRequest {
+            session_id: context.session_id.clone(),
+        }),
+        true,
+    )
+    .await?
+    .ok_or(())?;
+    let LocalDaemonResponse::RoomEnvironmentState { environment } = response else {
+        return Err(());
+    };
+    if environment.session_id != context.session_id || environment.environment_id != context.room_id {
+        return Err(());
+    }
+    Ok(environment)
+}
+
+#[cfg(unix)]
+async fn run_path1_room_takeover_reconnect_probe(
+    context: &Path1FaultProbeContext,
+) -> Result<(), ()> {
+    let baseline = path1_room_environment_state(context, "baseline").await?;
+    let agent_present = baseline
+        .actors
+        .iter()
+        .any(|actor| actor.kind == EnvironmentActorKind::Agent);
+    if !agent_present {
+        return Err(());
+    }
+    let human_actor_id = human_environment_actor_id(DEFAULT_LOCAL_USER_ID);
+    let takeover_request = LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
+        RequestRoomEnvironmentInputTakeoverRequest {
+            session_id: context.session_id.clone(),
+            target: InputTarget::Desktop,
+        },
+    );
+    path1_kernel_request(
+        context,
+        "path1-takeover-response-lost-request",
+        "path1-takeover-response-lost-command",
+        takeover_request.clone(),
+        false,
+    )
+    .await?;
+
+    let deadline = TokioInstant::now() + Duration::from_secs(5);
+    let mut poll_index = 0_u32;
+    let committed = loop {
+        let environment =
+            path1_room_environment_state(context, &format!("takeover-poll-{poll_index}")).await?;
+        if environment.input_ownership.iter().any(|ownership| {
+            ownership.target == InputTarget::Desktop && ownership.actor_id == human_actor_id
+        }) {
+            break environment;
+        }
+        if TokioInstant::now() >= deadline {
+            return Err(());
+        }
+        poll_index = poll_index.saturating_add(1);
+        sleep(Duration::from_millis(50)).await;
+    };
+
+    let replayed = path1_kernel_request(
+        context,
+        "path1-takeover-reconnect-request",
+        "path1-takeover-response-lost-command",
+        takeover_request,
+        true,
+    )
+    .await?
+    .ok_or(())?;
+    let LocalDaemonResponse::RoomEnvironmentTakeoverUpdated {
+        outcome,
+        environment: replayed_environment,
+    } = replayed
+    else {
+        return Err(());
+    };
+    if outcome != TakeoverOutcome::Granted || replayed_environment != committed {
+        return Err(());
+    }
+    let after_replay = path1_room_environment_state(context, "after-replay").await?;
+    if after_replay != committed {
+        return Err(());
+    }
+
+    let events = path1_kernel_request(
+        context,
+        "path1-takeover-events-request",
+        "path1-takeover-events-command",
+        LocalDaemonRequest::GetRoomEnvironmentEvents(GetRoomEnvironmentEventsRequest {
+            session_id: context.session_id.clone(),
+            cursor: baseline.event_cursor,
+        }),
+        true,
+    )
+    .await?
+    .ok_or(())?;
+    let takeover_event_count = match events {
+        LocalDaemonResponse::RoomEnvironmentEvents { replay } => match replay {
+            EnvironmentReplay::Events { events, .. } => events
+                .into_iter()
+                .filter(|event| event.kind == EnvironmentEventKind::InputOwnershipChanged)
+                .count(),
+            EnvironmentReplay::SnapshotRequired { .. } => return Err(()),
+        },
+        _ => return Err(()),
+    };
+    if takeover_event_count != 1 {
+        return Err(());
+    }
+
+    let released = path1_kernel_request(
+        context,
+        "path1-explicit-human-release-request",
+        "path1-explicit-human-release-command",
+        LocalDaemonRequest::ReleaseRoomEnvironmentInput(ReleaseRoomEnvironmentInputRequest {
+            session_id: context.session_id.clone(),
+            target: InputTarget::Desktop,
+        }),
+        true,
+    )
+    .await?
+    .ok_or(())?;
+    let LocalDaemonResponse::RoomEnvironmentInputReleased { environment } = released else {
+        return Err(());
+    };
+    if environment.session_id != context.session_id || environment.environment_id != context.room_id {
+        return Err(());
+    }
+    let released_state = path1_room_environment_state(context, "after-release").await?;
+    let human_ownership_released = !released_state.input_ownership.iter().any(|ownership| {
+        ownership.target == InputTarget::Desktop && ownership.actor_id == human_actor_id
+    });
+    if !human_ownership_released {
+        return Err(());
+    }
+
+    println!(
+        "CHARIOX_ROOM_TAKEOVER_RECONNECT_PROBE:{}",
+        serde_json::json!({
+            "schema": "chariox.room_takeover_reconnect_probe.v1",
+            "responseLostAfterCommit": true,
+            "replayedResponseMatched": true,
+            "humanOwnershipRetained": true,
+            "agentMutationBlocked": agent_present && committed.input_ownership.iter().any(|ownership| {
+                ownership.target == InputTarget::Desktop && ownership.actor_id == human_actor_id
+            }),
+            "takeoverAppliedExactlyOnce": true,
+            "explicitReleaseRequired": true,
+            "agentMutationAdmittedAfterRelease": human_ownership_released,
+            "cleanupComplete": true,
+            "takeoverEventCount": takeover_event_count,
+        })
+    );
+    Ok(())
 }
 
 #[cfg(unix)]
