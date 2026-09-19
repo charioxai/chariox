@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 
 FROM node:22.17.1-bookworm@sha256:37ff334612f77d8f999c10af8797727b731629c26f2e83caa6af390998bdc49c AS ca-bundle
 RUN echo 'a3413a37a8e09cc21b2c11c9ffb23d92d2fc9d1933c9e7617f5c4fba4f72d37d  /etc/ssl/certs/ca-certificates.crt' | sha256sum --check --strict
@@ -57,10 +57,14 @@ ARG CHARIOX_CODEX_VERSION=0.144.5
 ARG CHARIOX_OPENCODE_VERSION=1.18.23
 ARG CHARIOX_CLAUDE_VERSION=2.1.212
 ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=333
+ARG CHARIOX_RUNTIME_SOURCE_REVISION
+RUN test -n "${CHARIOX_RUNTIME_SOURCE_REVISION}" \
+  && printf '%s\n' "${CHARIOX_RUNTIME_SOURCE_REVISION}" | grep -Eq '^[0-9a-f]{40}$'
 LABEL dev.chariox.provider.codex.version="${CHARIOX_CODEX_VERSION}"
 LABEL dev.chariox.provider.opencode.version="${CHARIOX_OPENCODE_VERSION}"
 LABEL dev.chariox.provider.claude.version="${CHARIOX_CLAUDE_VERSION}"
 LABEL dev.chariox.local-daemon-protocol-version="${CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION}"
+LABEL io.chariox.runtime-source-revision="${CHARIOX_RUNTIME_SOURCE_REVISION}"
 
 ENV DEBIAN_FRONTEND=noninteractive
 COPY --from=ca-bundle /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
