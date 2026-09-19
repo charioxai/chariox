@@ -53,6 +53,138 @@ import {
 import { hasRoomReadyProjection } from "./lib/room-drill-ready-notices.mjs"
 import { roomDrillRelayToken } from "./lib/room-drill-relay-token.mjs"
 
+const ROOM_REAL_PROVIDER_EFFORTS = Object.freeze(["low", "medium", "high", "xhigh", "max"])
+const ROOM_REAL_PROVIDER_ACCOUNT_PROFILE_PATTERN = /^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/
+
+function parseRoomRealProviderEffort(env) {
+  const effort = env.CHARIOX_ROOM_DRILL_EFFORT?.trim() || "low"
+  assert.ok(
+    ROOM_REAL_PROVIDER_EFFORTS.includes(effort),
+    `CHARIOX_ROOM_DRILL_EFFORT must be one of ${ROOM_REAL_PROVIDER_EFFORTS.join(", ")}`,
+  )
+  return effort
+}
+
+function parseRoomRealProviderAccountProfile(env) {
+  const rawProfile = env.CHARIOX_ROOM_DRILL_ACCOUNT_PROFILE
+  const profile = rawProfile === undefined ? "default" : rawProfile.trim()
+  assert.ok(
+    profile.length > 0
+      && profile.length <= 120
+      && ROOM_REAL_PROVIDER_ACCOUNT_PROFILE_PATTERN.test(profile),
+    "CHARIOX_ROOM_DRILL_ACCOUNT_PROFILE must be a stable alphanumeric-hyphen profile id (max 120 characters)",
+  )
+  return profile
+}
+
+function withRoomRealProviderEffort(requests, effort) {
+  assert.ok(ROOM_REAL_PROVIDER_EFFORTS.includes(effort), "invalid Room real-provider effort")
+  assert.equal(typeof requests?.spawnAgentRequest, "function", "kernel request builders lack spawnAgentRequest")
+  return {
+    ...requests,
+    // The shared runner keeps its historical low argument for compatibility.
+    // This drill-owned namespace is the explicit seam for the selected real
+    // provider effort and changes no other spawn request in the drill.
+    spawnAgentRequest: (...args) => requests.spawnAgentRequest(
+      ...args.slice(0, 5), effort, ...args.slice(6),
+    ),
+  }
+}
+
+async function readBackRealProviderAgent({
+  client,
+  requests,
+  sessionId,
+  agentId,
+  provider,
+  model,
+  accountProfile,
+  effort,
+}) {
+  const state = unwrap(
+    await client.send(requests.getSessionStateRequest(sessionId)),
+    "SessionState",
+  )
+  const agent = state.session?.agents?.find((candidate) => candidate.id === agentId)
+  assert.ok(agent, `spawned real-provider agent ${agentId} was absent from SessionState`)
+  assert.equal(agent.provider, provider, "SessionState provider did not match the requested provider")
+  assert.equal(agent.model, model, "SessionState model did not match the requested model")
+  assert.equal(
+    agent.account_profile ?? "default",
+    accountProfile,
+    "SessionState account profile did not match the requested profile",
+  )
+  assert.equal(
+    agent.effort,
+    effort,
+    `SessionState effective effort ${String(agent.effort)} did not match requested ${effort}`,
+  )
+  return agent
+}
+
+async function spawnAndVerifyRealProviderAgent({
+  client,
+  requests,
+  sessionId,
+  sliceId,
+  workspace,
+  options,
+  effort,
+}) {
+  const agent = unwrap(
+    await client.send(requests.spawnAgentRequest(
+      sessionId,
+      options.provider,
+      `real-${options.provider}`,
+      options.model,
+      workspace,
+      effort,
+      "build",
+      "yolo",
+      undefined,
+      undefined,
+      sliceId,
+      options.accountProfile,
+    )),
+    "AgentSpawned",
+  ).agent
+  assert.ok(agent?.id, "SpawnAgent did not return an agent identity")
+  return readBackRealProviderAgent({
+    client,
+    requests,
+    sessionId,
+    agentId: agent.id,
+    provider: options.provider,
+    model: options.model,
+    accountProfile: options.accountProfile,
+    effort,
+  })
+}
+
+async function prepareRealProviderAgent({
+  client,
+  requests,
+  sessionId,
+  sliceId,
+  workspace,
+  options,
+  effort,
+}) {
+  const providerRequests = withRoomRealProviderEffort(requests, effort)
+  const providerAgent = options.importFirst
+    ? null
+    : await spawnAndVerifyRealProviderAgent({
+      client,
+      requests: providerRequests,
+      sessionId,
+      sliceId,
+      workspace,
+      options,
+      effort,
+    })
+  return { providerRequests, providerAgent }
+}
+
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, "..", "..", "..")
 const sliceMemoryMb = Number(process.env.CHARIOX_ROOM_DRILL_MEMORY_MB ?? 2048)
@@ -60,9 +192,9 @@ assert.ok(Number.isSafeInteger(sliceMemoryMb) && sliceMemoryMb > 0 && sliceMemor
   "CHARIOX_ROOM_DRILL_MEMORY_MB must be a positive u32 number of MiB")
 const companionOnly = process.env.CHARIOX_ROOM_DRILL_FOCUS === "web-companion"
 const realProviderOptions = roomRealProviderOptions(process.env)
-if (companionOnly && !process.env.CHARIOX_ROOM_DRILL_COORDINATION_DIR?.trim()) {
-  throw new Error("web-companion focus requires CHARIOX_ROOM_DRILL_COORDINATION_DIR")
-}
+const realProviderEffort = realProviderOptions ? parseRoomRealProviderEffort(process.env) : null
+const realProviderAccountProfile = realProviderOptions ? parseRoomRealProviderAccountProfile(process.env) : null
+if (realProviderOptions) realProviderOptions.accountProfile = realProviderAccountProfile
 const kernelClientRoot = path.join(repoRoot, "packages", "kernel-client")
 const startedAt = new Date().toISOString()
 const stamp = startedAt.replace(/[:.]/g, "-")
@@ -138,15 +270,8 @@ const sensitiveValues = [
   ...clipboardValues,
 ]
 const generatedSecretLength = 24
-const { kernelPort, relayPort } = await makeAvailablePorts({
-  candidateFactory: () => {
-    const kernelPort = 20000 + Math.floor(Math.random() * 4000)
-    return { kernelPort, relayPort: kernelPort + 20 }
-  },
-  localAvailability: async ({ kernelPort, relayPort }) => (await Promise.all(
-    [kernelPort, kernelPort + 1, kernelPort + 2, kernelPort + 3, relayPort].map(portIsAvailable),
-  )).every(Boolean),
-})
+let kernelPort = null
+let relayPort = null
 const relayScopedIssuer = `${runId}-issuer`
 const relayScopedSecret = `${runId}-scoped-secret`
 const homeDaemonId = `${runId}-home`
@@ -175,10 +300,7 @@ const directDaemonEnvironmentNames = [
   "CHARIOX_RELAY_TOKEN",
   "CHARIOX_SESSION_HISTORY_DIR",
 ]
-const tempRootPromise = realProviderOptions
-  ? mkdir(path.join(os.homedir(), ".chariox", "dev", "browser-computer-use"), { recursive: true })
-    .then(() => mkdtemp(path.join(os.homedir(), ".chariox", "dev", "browser-computer-use", "room-provider-")))
-  : mkdtemp(path.join(os.tmpdir(), "chariox-room-pointer-"))
+let tempRootPromise = null
 const children = []
 let localForwarding = null
 const resources = []
@@ -204,16 +326,34 @@ let prebuiltSliceImageId = null
 let fixtureWorkspace = repoRoot
 
 const interruption = createDrillInterruption()
-await interruption.run(async () => {
-  await mkdir(evidenceRoot, { recursive: true })
-  await run()
-}, cleanup, (error) => { failure = error })
+async function main() {
+  if (companionOnly && !process.env.CHARIOX_ROOM_DRILL_COORDINATION_DIR?.trim()) {
+    throw new Error("web-companion focus requires CHARIOX_ROOM_DRILL_COORDINATION_DIR")
+  }
+  ({ kernelPort, relayPort } = await makeAvailablePorts({
+    candidateFactory: () => {
+      const candidateKernelPort = 20000 + Math.floor(Math.random() * 4000)
+      return { kernelPort: candidateKernelPort, relayPort: candidateKernelPort + 20 }
+    },
+    localAvailability: async ({ kernelPort: candidateKernelPort, relayPort: candidateRelayPort }) => (await Promise.all(
+      [candidateKernelPort, candidateKernelPort + 1, candidateKernelPort + 2, candidateKernelPort + 3, candidateRelayPort].map(portIsAvailable),
+    )).every(Boolean),
+  }))
+  tempRootPromise = realProviderOptions
+    ? mkdir(path.join(os.homedir(), ".chariox", "dev", "browser-computer-use"), { recursive: true })
+      .then(() => mkdtemp(path.join(os.homedir(), ".chariox", "dev", "browser-computer-use", "room-provider-")))
+    : mkdtemp(path.join(os.tmpdir(), "chariox-room-pointer-"))
+  await interruption.run(async () => {
+    await mkdir(evidenceRoot, { recursive: true })
+    await run()
+  }, cleanup, (error) => { failure = error })
 
-if (failure) {
-  console.error(failure?.stack ?? String(failure))
-  process.exitCode = 1
-} else {
-  console.log(JSON.stringify({ status: "passed", evidenceRoot }, null, 2))
+  if (failure) {
+    console.error(failure?.stack ?? String(failure))
+    process.exitCode = 1
+  } else {
+    console.log(JSON.stringify({ status: "passed", evidenceRoot }, null, 2))
+  }
 }
 
 async function run() {
@@ -526,19 +666,51 @@ async function run() {
     waitForRemoteNotice(/^Room input: available$/),
   ])
   if (realProviderOptions && !companionOnly) {
-    const provider = await runRoomRealProvider({
-      client, requests, sessionId, sliceId: slice.id, workspace: fixtureWorkspace,
+    const { providerRequests, providerAgent } = await prepareRealProviderAgent({
+      client,
+      requests,
+      sessionId,
+      sliceId: slice.id,
+      workspace: fixtureWorkspace,
+      options: realProviderOptions,
+      effort: realProviderEffort,
+    })
+    let verifiedProviderAgent = providerAgent
+    const providerInput = {
+      client, requests: providerRequests, sessionId, sliceId: slice.id, workspace: fixtureWorkspace,
       options: realProviderOptions, waitFor, withTimeout, screenshot,
       officeRuntime: { containerName, docker, sliceScreen, runCommandWithStdin },
       checkpoint: (value) => writeFile(path.join(evidenceRoot, "real-provider.json"), `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 }),
       waitForPhysicalEffect: (marker) => waitForBrowserText(marker, 20_000, "provider click did not reach the shared browser"),
       waitForTuis: (pattern) => Promise.all([waitForLocalNotice(pattern), waitForRemoteNotice(pattern)]),
-    })
+    }
+    if (providerAgent) providerInput.agent = providerAgent
+    if (realProviderOptions.importFirst) {
+      providerInput.beforePrompt = async (agent) => {
+        verifiedProviderAgent = await readBackRealProviderAgent({
+          client,
+          requests: providerRequests,
+          sessionId,
+          agentId: agent.id,
+          provider: realProviderOptions.provider,
+          model: realProviderOptions.model,
+          accountProfile: realProviderOptions.accountProfile,
+          effort: realProviderEffort,
+        })
+      }
+    }
+    const provider = await runRoomRealProvider(providerInput)
+    assert.ok(verifiedProviderAgent, "real-provider agent was not read back before the provider action")
     result = {
       schema: "chariox.room_environment.real_provider.v1", status: "passed", startedAt,
       source: sourceIdentity, sliceRuntime: sliceRuntimeIdentity,
       sessionId, sliceId: slice.id, environmentId: released.environment_id,
-      provider, containerLimits: limits,
+      provider: {
+        ...provider,
+        accountProfile: verifiedProviderAgent.account_profile ?? "default",
+        effort: verifiedProviderAgent.effort,
+      },
+      containerLimits: limits,
     }
     return
   }
@@ -3084,4 +3256,21 @@ async function withTimeout(promise, timeoutMs, label) {
   } finally {
     if (timeout) clearTimeout(timeout)
   }
+}
+
+export {
+  main,
+  parseRoomRealProviderAccountProfile,
+  parseRoomRealProviderEffort,
+  prepareRealProviderAgent,
+  readBackRealProviderAgent,
+  spawnAndVerifyRealProviderAgent,
+  withRoomRealProviderEffort,
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(error?.stack ?? String(error))
+    process.exitCode = 1
+  })
 }

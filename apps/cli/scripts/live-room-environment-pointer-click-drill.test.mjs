@@ -1,0 +1,230 @@
+import assert from "node:assert/strict"
+import test from "node:test"
+
+import {
+  parseRoomRealProviderAccountProfile,
+  parseRoomRealProviderEffort,
+  prepareRealProviderAgent,
+  readBackRealProviderAgent,
+  spawnAndVerifyRealProviderAgent,
+  withRoomRealProviderEffort,
+} from "./live-room-environment-pointer-click-drill.mjs"
+
+function requestBuilders(calls) {
+  return {
+    spawnAgentRequest(...args) {
+      calls.push(args)
+      return {
+        SpawnAgent: {
+          session_id: args[0],
+          provider: args[1],
+          alias: args[2],
+          model: args[3],
+          effort: args[5],
+        },
+      }
+    },
+    unrelatedRequest: () => ({ Unrelated: true }),
+  }
+}
+
+function stateFixture(
+  effectiveEffort,
+  requestEffort = effectiveEffort,
+  effectiveAccountProfile = "default",
+) {
+  const calls = []
+  const requests = withRoomRealProviderEffort({
+    spawnAgentRequest(...args) {
+      calls.push({ kind: "spawn", args })
+      return { SpawnAgent: { effort: args[5] } }
+    },
+    getSessionStateRequest(sessionId) {
+      calls.push({ kind: "state-request", sessionId })
+      return { GetSessionState: { session_id: sessionId } }
+    },
+  }, requestEffort)
+  const client = {
+    send: async (request) => {
+      if ("SpawnAgent" in request) {
+        return { AgentSpawned: { agent: { id: "agent-1" } } }
+      }
+      return {
+        SessionState: {
+          session: {
+            agents: [{
+              id: "agent-1",
+              provider: "codex",
+              model: "gpt-5.6-luna",
+              account_profile: effectiveAccountProfile,
+              effort: effectiveEffort,
+              is_processing: false,
+            }],
+          },
+        },
+      }
+    },
+  }
+  return { client, requests, calls }
+}
+
+const providerOptions = {
+  provider: "codex",
+  model: "gpt-5.6-luna",
+  accountProfile: "default",
+}
+
+test("real-provider effort parses max, reaches SpawnAgent, and matches public state", async () => {
+  const calls = []
+  const effort = parseRoomRealProviderEffort({ CHARIOX_ROOM_DRILL_EFFORT: " max " })
+  const accountProfile = parseRoomRealProviderAccountProfile({
+    CHARIOX_ROOM_DRILL_ACCOUNT_PROFILE: " codex-chariox ",
+  })
+  const requests = withRoomRealProviderEffort(requestBuilders(calls), effort)
+
+  const request = requests.spawnAgentRequest(
+    "session-1", "codex", "real-codex", "gpt-5.6-luna", "/workspace",
+    "low", "build", "yolo", undefined, undefined, "slice-1", "default",
+  )
+
+  assert.equal(request.SpawnAgent.effort, "max")
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0][5], "max")
+  assert.equal(requests.unrelatedRequest().Unrelated, true)
+
+  const fixture = stateFixture("max", "max", accountProfile)
+  const agent = await spawnAndVerifyRealProviderAgent({
+    ...fixture,
+    sessionId: "session-1",
+    sliceId: "slice-1",
+    workspace: "/workspace",
+    options: { ...providerOptions, accountProfile },
+    effort,
+  })
+  assert.equal(agent.effort, "max")
+  assert.equal(agent.account_profile, "codex-chariox")
+  assert.equal(fixture.calls[0].args[5], "max")
+  assert.equal(fixture.calls[0].args[11], "codex-chariox")
+})
+
+test("real-provider effort fails closed when public state reports a mismatch", async () => {
+  const fixture = stateFixture("low", "max")
+  await assert.rejects(
+    spawnAndVerifyRealProviderAgent({
+      ...fixture,
+      sessionId: "session-1",
+      sliceId: "slice-1",
+      workspace: "/workspace",
+      options: providerOptions,
+      effort: "max",
+    }),
+    /SessionState effective effort low did not match requested max/,
+  )
+  assert.equal(fixture.calls[0].args[5], "max")
+
+  const profileFixture = stateFixture("max", "max", "other-profile")
+  await assert.rejects(
+    spawnAndVerifyRealProviderAgent({
+      ...profileFixture,
+      sessionId: "session-1",
+      sliceId: "slice-1",
+      workspace: "/workspace",
+      options: { ...providerOptions, accountProfile: "codex-chariox" },
+      effort: "max",
+    }),
+    /SessionState account profile did not match the requested profile/,
+  )
+})
+
+test("import-first defers spawning and preserves the selected effort/profile seam", async () => {
+  const calls = []
+  const options = { ...providerOptions, accountProfile: "codex-chariox", importFirst: true }
+  const prepared = await prepareRealProviderAgent({
+    client: { send: async () => assert.fail("import-first must not pre-spawn an agent") },
+    requests: requestBuilders(calls),
+    sessionId: "session-1",
+    sliceId: "slice-1",
+    workspace: "/workspace",
+    options,
+    effort: "max",
+  })
+
+  assert.equal(prepared.providerAgent, null)
+  assert.equal(calls.length, 0)
+  const deferredSpawn = prepared.providerRequests.spawnAgentRequest(
+    "session-1", "codex", "real-codex", "gpt-5.6-luna", "/workspace",
+    "low", "build", "yolo", undefined, undefined, "slice-1", options.accountProfile,
+  )
+  assert.equal(deferredSpawn.SpawnAgent.effort, "max")
+  assert.equal(calls[0][5], "max")
+  assert.equal(calls[0][11], "codex-chariox")
+
+  const state = stateFixture("max", "max", "codex-chariox")
+  const verified = await readBackRealProviderAgent({
+    client: state.client,
+    requests: state.requests,
+    sessionId: "session-1",
+    agentId: "agent-1",
+    provider: options.provider,
+    model: options.model,
+    accountProfile: options.accountProfile,
+    effort: "max",
+  })
+  assert.equal(verified.effort, "max")
+  assert.equal(verified.account_profile, "codex-chariox")
+})
+
+test("non-import real-provider path still pre-spawns and verifies the agent", async () => {
+  const fixture = stateFixture("max", "max", "codex-chariox")
+  const prepared = await prepareRealProviderAgent({
+    ...fixture,
+    sessionId: "session-1",
+    sliceId: "slice-1",
+    workspace: "/workspace",
+    options: { ...providerOptions, accountProfile: "codex-chariox", importFirst: false },
+    effort: "max",
+  })
+  assert.equal(prepared.providerAgent.id, "agent-1")
+  assert.deepEqual(fixture.calls.filter((call) => call.kind), [
+    { kind: "spawn", args: fixture.calls[0].args },
+    { kind: "state-request", sessionId: "session-1" },
+  ])
+  assert.equal(fixture.calls[0].args[5], "max")
+  assert.equal(fixture.calls[0].args[11], "codex-chariox")
+})
+
+test("real-provider effort defaults to low for compatibility", async () => {
+  assert.equal(parseRoomRealProviderEffort({}), "low")
+  assert.equal(parseRoomRealProviderEffort({ CHARIOX_ROOM_DRILL_EFFORT: "low" }), "low")
+  assert.equal(parseRoomRealProviderAccountProfile({}), "default")
+
+  const fixture = stateFixture("low", "low", "default")
+  const agent = await spawnAndVerifyRealProviderAgent({
+    ...fixture,
+    sessionId: "session-1",
+    sliceId: "slice-1",
+    workspace: "/workspace",
+    options: providerOptions,
+    effort: parseRoomRealProviderEffort({}),
+  })
+  assert.equal(agent.effort, "low")
+  assert.equal(fixture.calls[0].args[5], "low")
+  assert.equal(fixture.calls[0].args[11], "default")
+})
+
+test("invalid real-provider effort fails closed before a request can be built", () => {
+  assert.throws(
+    () => parseRoomRealProviderEffort({ CHARIOX_ROOM_DRILL_EFFORT: "maximum" }),
+    /CHARIOX_ROOM_DRILL_EFFORT must be one of low, medium, high, xhigh, max/,
+  )
+  assert.throws(
+    () => withRoomRealProviderEffort(requestBuilders([]), "maximum"),
+    /invalid Room real-provider effort/,
+  )
+  for (const value of ["", "   ", "codex_chariox", "codex/chariox", "-codex-chariox", "codex-chariox-"]) {
+    assert.throws(
+      () => parseRoomRealProviderAccountProfile({ CHARIOX_ROOM_DRILL_ACCOUNT_PROFILE: value }),
+      /CHARIOX_ROOM_DRILL_ACCOUNT_PROFILE must be a stable alphanumeric-hyphen profile id/,
+    )
+  }
+})
