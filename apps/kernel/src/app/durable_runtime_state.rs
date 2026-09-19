@@ -9,7 +9,11 @@ use crate::error::DaemonError;
 use crate::runtime::metaagent_event::{
     MetaagentEventRecord, MetaagentEventSnapshot, MetaagentEventSubscription,
 };
-use crate::session::{DurablePromptPrivateState, RuntimeProject, RuntimeSession};
+use crate::session::{
+    DurablePromptPrivateState, RuntimeProject, RuntimeSession, SavedRoomGeneration,
+    SavedRoomGenerationJournal, SAVED_ROOM_GENERATION_COMMIT_EVENT_KIND,
+    SAVED_ROOM_GENERATION_PREPARE_EVENT_KIND, SAVED_ROOM_GENERATION_ROLLBACK_EVENT_KIND,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -286,7 +290,7 @@ impl DaemonApp {
             .latest_snapshot_for_owner(&self.config.daemon_id)?
         {
             Some(snapshot) => {
-                if self.restore_durable_state_snapshot(snapshot.payload)? {
+                if self.restore_durable_state_snapshot(snapshot.sequence, snapshot.payload)? {
                     snapshot.sequence
                 } else {
                     crate::logging::info_with_fields(
@@ -725,6 +729,7 @@ impl DaemonApp {
 
     fn restore_durable_state_snapshot(
         &mut self,
+        snapshot_sequence: u64,
         payload: serde_json::Value,
     ) -> Result<bool, DaemonError> {
         if durable_snapshot_belongs_to_other_kernel(&payload, &self.config.daemon_id) {
@@ -752,6 +757,40 @@ impl DaemonApp {
                 .or_default()
                 .push(state);
         }
+        let saved_room_generations: Vec<SavedRoomGeneration> = snapshot
+            .saved_room_generations
+            .into_iter()
+            .filter(|generation| restored_session_ids.contains(&generation.room.room_id))
+            .collect();
+        let journal = SavedRoomGenerationJournal::new(&self.durable_state);
+        for generation in &saved_room_generations {
+            let authoritative = journal
+                .latest_committed_before(
+                    &generation.room.room_id,
+                    &generation.room.environment_id,
+                    snapshot_sequence,
+                )
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "durable_state.validate_saved_room_generation_snapshot",
+                    message: error.to_string(),
+                })?;
+            if authoritative.as_ref() != Some(generation) {
+                return Err(DaemonError::LocalTransport {
+                    operation: "durable_state.validate_saved_room_generation_snapshot",
+                    message: format!(
+                        "saved Room generation `{}` is not the journal authority",
+                        generation.generation_id
+                    ),
+                });
+            }
+        }
+        self.sessions
+            .write()
+            .restore_saved_room_generations(saved_room_generations)
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.restore_saved_room_generations",
+                message: error.to_string(),
+            })?;
         self.sessions.restore_projects(snapshot.projects);
         for mut session in snapshot.sessions {
             if !restored_session_ids.contains(session.id()) {
@@ -1468,6 +1507,31 @@ impl DaemonApp {
                 self.sessions.remove_restored_session(session.id());
                 self.session_projection.remove(session.id());
                 self.agent_runtime_projection.update_session(&session);
+            }
+            SAVED_ROOM_GENERATION_PREPARE_EVENT_KIND
+            | SAVED_ROOM_GENERATION_ROLLBACK_EVENT_KIND => {}
+            SAVED_ROOM_GENERATION_COMMIT_EVENT_KIND => {
+                let generation = SavedRoomGenerationJournal::new(&self.durable_state)
+                    .validate_commit_event(&event)
+                    .map_err(|error| DaemonError::LocalTransport {
+                        operation: "durable_state.validate_saved_room_generation_event",
+                        message: error.to_string(),
+                    })?;
+                let session = match self.sessions.get_session(&generation.room.room_id) {
+                    Ok(session) => session,
+                    Err(DaemonError::SessionNotFound { .. }) => return Ok(()),
+                    Err(error) => return Err(error),
+                };
+                if !self.session_belongs_to_current_kernel(&session) {
+                    return Ok(());
+                }
+                self.sessions
+                    .write()
+                    .restore_saved_room_generation(generation)
+                    .map_err(|error| DaemonError::LocalTransport {
+                        operation: "durable_state.restore_saved_room_generation",
+                        message: error.to_string(),
+                    })?;
             }
             "agent.deleted" => {
                 let agent: AgentInstance = decode_durable_payload_field(

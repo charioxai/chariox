@@ -15,6 +15,7 @@ impl SessionService {
         Self {
             store: SessionStore::new(),
             room_environments: RoomEnvironmentRegistry::new(),
+            saved_room_generations: BTreeMap::new(),
             projects: BTreeMap::new(),
             ephemeral_session_ids: BTreeSet::new(),
             host_machine_id: config.host_machine_id.clone(),

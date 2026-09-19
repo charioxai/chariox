@@ -15,18 +15,18 @@ use super::{
     CanonicalViewport, CollaborationLevel, CreateSessionRequest, DurableWorkflowHotState,
     EnvironmentError, EnvironmentReplay, PromptDetachEffect, PromptQueueItem,
     RoomEnvironmentRegistry, RoomEnvironmentSnapshot, RuntimeProject, RuntimeProjectKind,
-    RuntimeProjectStatus, RuntimeSession, SessionConfigState, SessionInvite, SessionMember,
-    SessionProjectSelection, SessionStatus, SessionStore, WorkflowCompletionSnapshot,
-    WorkflowConsole, WorkflowConsoleEntry, WorkflowDefinition, WorkflowEdgeDefinition,
-    WorkflowEndpointDefinition, WorkflowFailureEvent, WorkflowFailureKind, WorkflowHandoffPayload,
-    WorkflowHandoffValidationPolicy, WorkflowMessage, WorkflowNodeDefinition, WorkflowNodeRun,
-    WorkflowNodeRunStatus, WorkflowOutputPayload, WorkflowPromptQueueDefinition,
-    WorkflowPublicationDefinition, WorkflowQueuedPrompt, WorkflowQueuedPromptSource,
-    WorkflowQueuedPromptStatus, WorkflowRun, WorkflowRunStatus, WorkflowRuntimeToolCallEvent,
-    WorkflowScheduleDefinition, WorkflowScheduleOverlapPolicy, WorkflowScheduleTrigger,
-    WorkflowSchemaDefinition, WorkflowTurnEnvelope, WorkflowTurnRuntimeState,
-    WorkflowWatchdogDefinition, WorkflowWatchdogPolicy, WorkspaceLinkAttachment,
-    WorkspaceLinkDefinition, DEFAULT_LOCAL_USER_ID,
+    RuntimeProjectStatus, RuntimeSession, SavedRoomGeneration, SessionConfigState, SessionInvite,
+    SessionMember, SessionProjectSelection, SessionStatus, SessionStore,
+    WorkflowCompletionSnapshot, WorkflowConsole, WorkflowConsoleEntry, WorkflowDefinition,
+    WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowFailureEvent, WorkflowFailureKind,
+    WorkflowHandoffPayload, WorkflowHandoffValidationPolicy, WorkflowMessage,
+    WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowOutputPayload,
+    WorkflowPromptQueueDefinition, WorkflowPublicationDefinition, WorkflowQueuedPrompt,
+    WorkflowQueuedPromptSource, WorkflowQueuedPromptStatus, WorkflowRun, WorkflowRunStatus,
+    WorkflowRuntimeToolCallEvent, WorkflowScheduleDefinition, WorkflowScheduleOverlapPolicy,
+    WorkflowScheduleTrigger, WorkflowSchemaDefinition, WorkflowTurnEnvelope,
+    WorkflowTurnRuntimeState, WorkflowWatchdogDefinition, WorkflowWatchdogPolicy,
+    WorkspaceLinkAttachment, WorkspaceLinkDefinition, DEFAULT_LOCAL_USER_ID,
 };
 #[cfg(test)]
 use super::{PromptAttachment, PromptSubmissionOutcome};
@@ -281,6 +281,7 @@ pub struct AgentPromptScheduleCollection {
 pub struct SessionService {
     store: SessionStore,
     room_environments: RoomEnvironmentRegistry,
+    saved_room_generations: BTreeMap<String, SavedRoomGeneration>,
     projects: BTreeMap<String, RuntimeProject>,
     ephemeral_session_ids: BTreeSet<String>,
     host_machine_id: String,
@@ -311,6 +312,7 @@ mod helpers;
 mod launches;
 mod prompt_schedules;
 mod room_environments;
+mod saved_room_generation;
 mod sessions;
 #[cfg(test)]
 mod tests;
