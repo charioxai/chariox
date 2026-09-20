@@ -233,7 +233,7 @@ selkies_start() {
   fi
   selkies_port_is_free
   nohup "$SELKIES_BIN" \
-    --addr=127.0.0.1 \
+    --addr=0.0.0.0 \
     --port="$SELKIES_PORT" \
     --mode=websockets \
     --encoder=h264enc \
