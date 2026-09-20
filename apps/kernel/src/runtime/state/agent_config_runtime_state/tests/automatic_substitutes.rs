@@ -7,33 +7,39 @@ use crate::account_profile::{
 
 #[tokio::test]
 async fn automatic_substitution_settles_failure_before_relaunching_queued_work() {
-    assert_queued_substitution(false, false, false).await;
+    assert_queued_substitution(false, false, false, false).await;
 }
 
 #[tokio::test]
 async fn automatic_substitution_advances_a_queued_workflow_once() {
-    assert_queued_substitution(true, false, false).await;
+    assert_queued_substitution(true, false, false, false).await;
 }
 
 #[tokio::test]
 async fn claude_stop_failure_hook_activates_substitute_without_replaying_failed_prompt() {
-    assert_queued_substitution(false, true, false).await;
+    assert_queued_substitution(false, true, false, false).await;
 }
 
 #[tokio::test]
 async fn claude_stop_failure_hook_advances_queued_workflow_on_substitute_once() {
-    assert_queued_substitution(true, true, false).await;
+    assert_queued_substitution(true, true, false, false).await;
 }
 
 #[tokio::test]
 async fn late_claude_stop_failure_activates_substitute_after_prompt_settlement() {
-    assert_queued_substitution(false, true, true).await;
+    assert_queued_substitution(false, true, true, false).await;
+}
+
+#[tokio::test]
+async fn late_claude_stop_failure_does_not_replace_a_newer_same_profile_run() {
+    assert_queued_substitution(false, true, true, true).await;
 }
 
 async fn assert_queued_substitution(
     workflow_prompt: bool,
     claude_hook: bool,
     settle_before_failure: bool,
+    same_profile_relaunch_before_failure: bool,
 ) {
     let (runtime, session_id, agent_id, profile_id) =
         runtime_with_substitutes(&["opencode/deepseek-v4-pro"], true).await;
@@ -187,11 +193,74 @@ async fn assert_queued_substitution(
             .unwrap()
             .expect("the failed prompt should still be active before the race is simulated");
     }
+    let replacement_run_id = if same_profile_relaunch_before_failure {
+        let mut replacement = crate::provider::RuntimeProviderRun::new(
+            "same-profile-replacement-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::External,
+                process_label: "same-profile-replacement".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("same-profile-replacement-runtime".to_string()),
+            },
+        );
+        replacement.mark_running();
+        runtime
+            .with_app_side_effect(|app| {
+                app.providers_mut().insert_run_for_test(replacement.clone());
+                app.sessions_mut()
+                    .set_active_provider_run(&session_id, Some(replacement.id().to_string()))?;
+                Ok::<_, DaemonError>(())
+            })
+            .await
+            .unwrap();
+        Some(replacement.id().to_string())
+    } else {
+        None
+    };
     if claude_hook {
         let result = runtime
             .pump_owned_provider_output(&session_id, run.id(), Vec::new(), true)
             .await;
         std::fs::remove_dir_all(&hook_root).unwrap();
+        if let Some(replacement_run_id) = replacement_run_id.as_deref() {
+            result.expect("stale failure should settle without replacing the current run");
+            assert_eq!(
+                runtime
+                    .owned
+                    .agent_store
+                    .get_agent(&agent_id)
+                    .unwrap()
+                    .active_substitute_index(),
+                None,
+                "a stale failure must not advance the substitute chain"
+            );
+            let session = runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .unwrap();
+            assert_eq!(
+                session.active_provider_run_id(),
+                Some(replacement_run_id),
+                "the newer same-profile run must remain active"
+            );
+            assert_eq!(
+                runtime
+                    .owned
+                    .provider_store
+                    .get_run(replacement_run_id)
+                    .unwrap()
+                    .state(),
+                crate::provider::ProviderRunState::Running,
+            );
+            return;
+        }
         assert_eq!(runtime.owned.agent_store.get_agent(&agent_id).unwrap().active_substitute_index(), Some(0),
             "StopFailure must select a substitute, not complete the prompt; pump result: {result:?}");
         result.expect("failure hook should settle without reading a missing PTY");

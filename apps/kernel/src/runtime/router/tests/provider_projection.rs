@@ -812,6 +812,107 @@ async fn provider_launch_executor_retires_replaced_run_after_success_inner() {
     assert!(tracking.run_processes.contains_key(&replacement_run_id));
 }
 
+#[test]
+fn provider_launch_executor_retires_starting_predecessor_when_replacement_spawn_fails() {
+    run_provider_projection_large_stack_test(
+        "provider-launch-executor-retires-starting-predecessor-on-spawn-failure",
+        provider_launch_executor_retires_starting_predecessor_when_replacement_spawn_fails_inner,
+    );
+}
+
+async fn provider_launch_executor_retires_starting_predecessor_when_replacement_spawn_fails_inner()
+{
+    let mut config = DaemonConfig::for_tests();
+    config.provider_runtime_init_delay_ms = 60_000;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+    let first_request = LocalDaemonRequest::LaunchProviderRun(LaunchProviderRunRequest {
+        session_id: session_id.clone(),
+        agent_id: Some(agent_id.clone()),
+        adapter_key: "dev-stub".to_string(),
+        provider: "claude-code".to_string(),
+        account_profile: "default".to_string(),
+        model: "sonnet".to_string(),
+        variant: None,
+        structured_endpoint: None,
+        provider_session_id: None,
+        native_tui: false,
+    });
+    let first_command =
+        KernelCommand::from_local_request("cmd-provider-starting", None, None, &first_request);
+    let first_run_id = match router
+        .dispatch(first_command, first_request)
+        .await
+        .expect("first provider launch should be accepted")
+    {
+        LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run } => {
+            assert_eq!(
+                provider_run.state(),
+                crate::provider::ProviderRunState::Starting
+            );
+            provider_run.id().to_string()
+        }
+        other => panic!("unexpected first launch response: {other:?}"),
+    };
+    {
+        let app = app.lock().await;
+        assert!(app.pty().process_id(&first_run_id).is_ok());
+        assert!(app
+            .provider_process_tracking_store()
+            .snapshot()
+            .run_processes
+            .contains_key(&first_run_id));
+    }
+
+    let replacement_request = LocalDaemonRequest::LaunchProviderRun(LaunchProviderRunRequest {
+        session_id: session_id.clone(),
+        agent_id: Some(agent_id),
+        adapter_key: "dev-invalid-pty".to_string(),
+        provider: "claude-code".to_string(),
+        account_profile: "default".to_string(),
+        model: "opus".to_string(),
+        variant: None,
+        structured_endpoint: None,
+        provider_session_id: None,
+        native_tui: false,
+    });
+    let replacement_command = KernelCommand::from_local_request(
+        "cmd-provider-replacement-spawn-failure",
+        None,
+        None,
+        &replacement_request,
+    );
+    router
+        .dispatch(replacement_command, replacement_request)
+        .await
+        .expect_err("replacement provider spawn should fail");
+
+    let app = app.lock().await;
+    assert_eq!(
+        app.providers()
+            .get_run(&first_run_id)
+            .expect("first run should remain addressable")
+            .state(),
+        crate::provider::ProviderRunState::Ended,
+    );
+    assert!(
+        app.pty().process_id(&first_run_id).is_err(),
+        "the failed replacement must not strand the starting predecessor alias"
+    );
+    assert!(!app
+        .provider_process_tracking_store()
+        .snapshot()
+        .run_processes
+        .contains_key(&first_run_id));
+}
+
 #[tokio::test]
 async fn settled_provider_launch_pending_state_uses_projection_without_app_lock() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");

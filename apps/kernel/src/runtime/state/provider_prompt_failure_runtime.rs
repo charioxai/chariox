@@ -50,9 +50,20 @@ impl KernelRuntimeState {
                 && provider_run.account_profile() == agent.provider_account_profile()
                 && provider_run.model() == agent.model().unwrap_or("default")
                 && provider_run.variant() == agent.effort();
+            let failed_run_still_owns_transition = session
+                .active_provider_run_id()
+                .is_none_or(|active_run_id| active_run_id == provider_run_id)
+                && !owned.provider_store.list_runs().into_iter().any(|run| {
+                    run.id() != provider_run_id
+                        && run.session_id() == session_id
+                        && run.agent_instance_id() == Some(agent_id.as_str())
+                        && run.started_at_ms() >= provider_run.started_at_ms()
+                });
             self.retire_owned_provider_run(session_id, provider_run_id)
                 .await;
-            if let Some(reason) = substitution_reason.filter(|_| failed_profile_is_still_active) {
+            if let Some(reason) = substitution_reason
+                .filter(|_| failed_profile_is_still_active && failed_run_still_owns_transition)
+            {
                 self.activate_substitute_after_provider_failure(
                     session_id,
                     &agent_id,
