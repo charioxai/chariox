@@ -193,6 +193,7 @@ export async function runManagedBrowserComputerParityLive({
         persistencePlanResult = evaluateBrowserComputerPersistenceMutationSeams({
           result: persistencePlan,
           dockerPreconditions: declaredDockerPreconditions,
+          mode: "plan",
         })
         if (!persistencePlanResult.ok) {
           throw new Error(`managed parity persistence plan failed: ${persistencePlanResult.violations.join("; ")}`)

@@ -117,7 +117,7 @@ function transport() {
     calls,
     resourceScope: "managed",
     async describePersistenceMutations() {
-      return persistenceEvidence()
+      return persistencePlan()
     },
     async run(step, input, options = {}) {
       calls.push({ step, input })
@@ -238,6 +238,17 @@ function persistenceEvidence() {
         checkpoints: { before: "before-docker-restore", after: "after-docker-restore" },
       },
     ],
+  }
+}
+
+function persistencePlan() {
+  return {
+    persistenceMutations: persistenceEvidence().persistenceMutations.map(({
+      action,
+      argv,
+      request,
+      checkpoints,
+    }) => ({ action, argv, request, checkpoints })),
   }
 }
 

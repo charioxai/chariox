@@ -536,10 +536,19 @@ test("fault checkpoint interruption still runs owned cleanup", async () => {
 
 test("persistence evidence binds actual argv, requests, inventories, and seam checkpoints", () => {
   const evidence = persistenceEvidence()
+  const plan = persistencePlan()
   const declarations = persistenceDeclarations()
+  const planned = evaluateBrowserComputerPersistenceMutationSeams({
+    result: plan,
+    dockerPreconditions: declarations,
+    mode: "plan",
+  })
+  assert.equal(planned.ok, true, planned.violations.join("\n"))
+  assert.equal(planned.mutations.every((mutation) => mutation.receipt === null), true)
+
   const result = evaluateBrowserComputerPersistenceMutationSeams({
     result: evidence,
-    plan: evidence,
+    plan,
     dockerPreconditions: declarations,
   })
   assert.equal(result.ok, true)
@@ -549,7 +558,7 @@ test("persistence evidence binds actual argv, requests, inventories, and seam ch
   altered.persistenceMutations[2].request.argv[2] = "--all"
   const failed = evaluateBrowserComputerPersistenceMutationSeams({
     result: altered,
-    plan: evidence,
+    plan,
     dockerPreconditions: declarations,
   })
   assert.equal(failed.ok, false)
@@ -562,11 +571,19 @@ test("persistence evidence binds actual argv, requests, inventories, and seam ch
   }
   const broken = evaluateBrowserComputerPersistenceMutationSeams({
     result: brokenReceiptChain,
-    plan: evidence,
+    plan,
     dockerPreconditions: declarations,
   })
   assert.equal(broken.ok, false)
   assert.match(broken.violations.join("\n"), /exact successful save receipt/)
+
+  const predeclared = evaluateBrowserComputerPersistenceMutationSeams({
+    result: evidence,
+    dockerPreconditions: declarations,
+    mode: "plan",
+  })
+  assert.equal(predeclared.ok, false)
+  assert.match(predeclared.violations.join("\n"), /must not contain pre-execution receipt evidence/)
 })
 
 test("fault guard returns a deterministic pass with after-cleanup evidence", async () => {
@@ -690,6 +707,17 @@ function persistenceEvidence() {
         checkpoints: { before: "before-docker-restore", after: "after-docker-restore" },
       },
     ],
+  }
+}
+
+function persistencePlan() {
+  return {
+    persistenceMutations: persistenceEvidence().persistenceMutations.map(({
+      action,
+      argv,
+      request,
+      checkpoints,
+    }) => ({ action, argv, request, checkpoints })),
   }
 }
 

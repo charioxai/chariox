@@ -12,7 +12,7 @@ const moduleRequestApi = {
   },
 }
 
-test("factory uses an injected kernel-client seam without importing dist", async () => {
+test("factory uses the released kernel telemetry request without importing dist", async () => {
   const previous = new Map([
     ["CHARIOX_MANAGED_PARITY_HOME_KERNEL_URL", process.env.CHARIOX_MANAGED_PARITY_HOME_KERNEL_URL],
     ["CHARIOX_MANAGED_PARITY_TARGET_KERNEL_REF", process.env.CHARIOX_MANAGED_PARITY_TARGET_KERNEL_REF],
@@ -35,17 +35,26 @@ test("factory uses an injected kernel-client seam without importing dist", async
     }
 
     async send(request) {
-      assert.ok(Object.hasOwn(request, "ResolveKernelClientConnection"))
-      return {
-        KernelClientConnectionResolved: {
-          connection: {
-            relay_url: "ws://worker.invalid",
-            relay_token: "relay-token-kept-in-memory",
-            target_daemon_id: "daemon-1",
-            target_daemon_alias: null,
+      if (this.url === "ws://home.invalid") {
+        assert.ok(Object.hasOwn(request, "ResolveKernelClientConnection"))
+        return {
+          KernelClientConnectionResolved: {
+            connection: {
+              relay_url: "ws://worker.invalid",
+              relay_token: "relay-token-kept-in-memory",
+              target_daemon_id: "daemon-1",
+              target_daemon_alias: null,
+            },
           },
-        },
+        }
       }
+      assert.deepEqual(request, {
+        GetKernelResourceTelemetry: {
+          kernel_ref: "kernel-1",
+          machine_ref: "machine-1",
+        },
+      })
+      return { KernelResourceTelemetry: { snapshot: managedTelemetry() } }
     }
 
     async close() {}
@@ -53,7 +62,6 @@ test("factory uses an injected kernel-client seam without importing dist", async
   try {
     const transport = await createManagedBrowserComputerParityTransport({
       evidenceRoot: "/tmp/managed-parity-source-seam",
-      resourceTelemetry: async () => managedTelemetry(),
       kernelClientModules: {
         LocalIpcClient: SourceSeamClient,
         requestApi: {
@@ -65,12 +73,23 @@ test("factory uses an injected kernel-client seam without importing dist", async
           getRoomEnvironmentStateRequest(sessionId) {
             return { GetRoomEnvironmentState: { session_id: sessionId } }
           },
+          getKernelResourceTelemetryRequest({ kernelRef, machineRef }) {
+            return {
+              GetKernelResourceTelemetry: {
+                kernel_ref: kernelRef,
+                machine_ref: machineRef,
+              },
+            }
+          },
         },
         displayApi: { openSelkiesDisplayStream() {} },
         webSocket: {},
       },
     })
     assert.equal(transport.targetId, "machine-1")
+    const sample = await transport.collectManagedTargetResourceSnapshot({ phase: "preflight" })
+    assert.equal(sample.telemetry.source, "kernel-managed-test")
+    assert.equal(sample.telemetry.targetId, "machine-1")
     await transport.close()
   } finally {
     for (const [key, value] of previous) {
@@ -164,8 +183,9 @@ function managedTelemetry(overrides = {}) {
       targetId: "machine-1",
       source: "kernel-managed-test",
     },
-    memory: { totalBytes: 8_000, availableBytes: 4_000 },
-    disk: { totalBytes: 16_000, availableBytes: 12_000 },
+    capturedAt: "2026-09-20T00:00:00.000Z",
+    memory: { totalBytes: 8_000, usedBytes: 4_000, availableBytes: 4_000 },
+    disk: { totalBytes: 16_000, usedBytes: 4_000, availableBytes: 12_000 },
     process: { count: 1, rssBytes: 100 },
     logs: { bytes: 0 },
     docker: { containers: [] },
@@ -189,6 +209,7 @@ test("managed resource telemetry passes with stable target identity and redactio
   assert.equal(result.telemetry.targetId, "machine-1")
   assert.equal(result.providerAuth, "[REDACTED]")
   assert.equal(result.phase, "before-browser-start")
+  assert.equal(result.capturedAt, "2026-09-20T00:00:00.000Z")
 })
 
 test("managed resource telemetry does not promote partial daemon health into an authoritative sample", async () => {
@@ -237,6 +258,22 @@ test("managed resource telemetry rejects authoritative metadata without the comp
   await assert.rejects(
     () => transport.collectManagedTargetResourceSnapshot({ phase: "during" }),
     /resource telemetry memory\.totalBytes must be a finite non-negative number/,
+  )
+})
+
+test("managed resource telemetry rejects missing used bytes and kernel capture time", async () => {
+  const withoutMemoryUsed = managedTelemetry({
+    memory: { totalBytes: 8_000, availableBytes: 4_000 },
+  })
+  await assert.rejects(
+    () => createTelemetryTransport(withoutMemoryUsed).collectManagedTargetResourceSnapshot({ phase: "during" }),
+    /resource telemetry memory\.usedBytes must be a finite non-negative number/,
+  )
+
+  const withoutCaptureTime = managedTelemetry({ capturedAt: null })
+  await assert.rejects(
+    () => createTelemetryTransport(withoutCaptureTime).collectManagedTargetResourceSnapshot({ phase: "during" }),
+    /capturedAt must be a kernel-captured timestamp/,
   )
 })
 
@@ -300,19 +337,32 @@ function persistenceEvidence() {
   }
 }
 
-test("persistence descriptions preserve exact save/remove/restore argv and receipts", async () => {
+function persistencePlan() {
+  return {
+    persistenceMutations: persistenceEvidence().persistenceMutations.map(({
+      action,
+      argv,
+      request,
+      checkpoints,
+    }) => ({ action, argv, request, checkpoints })),
+  }
+}
+
+test("persistence plans remain immutable and execution returns post-mutation receipts", async () => {
   const evidence = persistenceEvidence()
+  const plan = persistencePlan()
   const transport = createManagedBrowserComputerParityTransportFromPublicClient({
     client: { async send() { throw new Error("unexpected persistence public request") } },
     requestApi: moduleRequestApi,
     persistence: {
-      async describe() { return evidence },
-      async run({ plan, onPersistenceMutation }) {
-        for (const mutation of plan.persistenceMutations) {
+      async describe() { return plan },
+      async run({ plan: executionPlan, onPersistenceMutation }) {
+        for (const mutation of evidence.persistenceMutations) {
           await onPersistenceMutation?.({ phase: "before", mutation })
           await onPersistenceMutation?.({ phase: "after", mutation })
         }
-        return plan
+        assert.deepEqual(executionPlan.persistenceMutations, plan.persistenceMutations)
+        return evidence
       },
     },
   })
@@ -320,12 +370,9 @@ test("persistence descriptions preserve exact save/remove/restore argv and recei
   const described = await transport.describePersistenceMutations({ runId: "run-1" })
   assert.deepEqual(
     described.persistenceMutations.map(({ action, argv, request }) => ({ action, argv, request })),
-    evidence.persistenceMutations.map(({ action, argv, request }) => ({ action, argv, request })),
+    plan.persistenceMutations.map(({ action, argv, request }) => ({ action, argv, request })),
   )
-  assert.deepEqual(
-    described.persistenceMutations.map(({ action, receipt }) => ({ action, receipt })),
-    evidence.persistenceMutations.map(({ action, receipt }) => ({ action, receipt })),
-  )
+  assert.ok(described.persistenceMutations.every((mutation) => !Object.hasOwn(mutation, "receipt")))
 
   const events = []
   const result = await transport.run("selkies.persistence", {}, {
@@ -343,13 +390,52 @@ test("persistence descriptions preserve exact save/remove/restore argv and recei
   ])
 })
 
+test("persistence rejects receipts declared before execution and no-op plan results", async () => {
+  const predeclared = createManagedBrowserComputerParityTransportFromPublicClient({
+    client: { async send() { throw new Error("unexpected persistence public request") } },
+    requestApi: moduleRequestApi,
+    persistence: {
+      async describe() { return persistenceEvidence() },
+      async run() { throw new Error("execution must not start") },
+    },
+  })
+  await assert.rejects(
+    () => predeclared.describePersistenceMutations({ runId: "run-predeclared" }),
+    /must not contain pre-execution .* evidence/,
+  )
+
+  const noOp = createManagedBrowserComputerParityTransportFromPublicClient({
+    client: { async send() { throw new Error("unexpected persistence public request") } },
+    requestApi: moduleRequestApi,
+    persistence: {
+      async describe() { return persistencePlan() },
+      async run({ plan, onPersistenceMutation }) {
+        for (const mutation of plan.persistenceMutations) {
+          await onPersistenceMutation?.({ phase: "before", mutation })
+          await onPersistenceMutation?.({ phase: "after", mutation })
+        }
+        return plan
+      },
+    },
+  })
+  await assert.rejects(
+    () => noOp.run("selkies.persistence", {}),
+    /requires a pre-mutation inventory/,
+  )
+})
+
 function createCleanupTransport({
   deleteRemovesSlice = true,
   startDelayMs = 0,
+  detachAckLossAttachmentId = null,
   cleanupInspector = null,
   timeouts,
 } = {}) {
   let slicePresent = true
+  let attachmentSequence = 0
+  let ackLossInjected = false
+  const activeAttachmentIds = new Set()
+  const detachAttempts = []
   const slice = {
     id: "slice-1",
     backend: "ssh_docker",
@@ -410,7 +496,7 @@ function createCleanupTransport({
         return { RoomEnvironmentState: { environment: { session_id: "room-1", environment_id: "environment-1" } } }
       }
       if (Object.hasOwn(request, "ListSessions")) {
-        return { SessionsListed: { sessions: [{ id: "room-1" }] } }
+        return { SessionsListed: { sessions: [{ id: "room-1", attachment_ids: [...activeAttachmentIds] }] } }
       }
       if (Object.hasOwn(request, "ListSlices")) {
         return { SlicesListed: { slices: slicePresent ? [slice] : [] } }
@@ -425,10 +511,21 @@ function createCleanupTransport({
         } } }
       }
       if (Object.hasOwn(request, "AttachToSession")) {
-        return { SessionAttached: { attachment: { id: "attachment-1", session_id: "room-1" } } }
+        const attachmentId = `attachment-${++attachmentSequence}`
+        activeAttachmentIds.add(attachmentId)
+        return { SessionAttached: { attachment: { id: attachmentId, session_id: "room-1" } } }
       }
       if (Object.hasOwn(request, "DetachFromSession")) {
-        return { SessionDetached: { attachment: { id: "attachment-1", session_id: "room-1" } } }
+        const attachmentId = request.DetachFromSession.attachment_id
+        detachAttempts.push(attachmentId)
+        if (!activeAttachmentIds.delete(attachmentId)) {
+          throw new Error(`AttachmentNotFound: ${attachmentId}`)
+        }
+        if (attachmentId === detachAckLossAttachmentId && !ackLossInjected) {
+          ackLossInjected = true
+          throw new Error(`simulated detach acknowledgement loss: ${attachmentId}`)
+        }
+        return { SessionDetached: { attachment: { id: attachmentId, session_id: "room-1" } } }
       }
       if (Object.hasOwn(request, "DeleteSlice")) {
         if (deleteRemovesSlice) slicePresent = false
@@ -467,6 +564,7 @@ function createCleanupTransport({
       },
     }),
     client,
+    detachAttempts,
   }
 }
 
@@ -562,6 +660,45 @@ test("destroy followed by final cleanup preserves the attachment evidence ledger
 
   assert.deepEqual(inspection.owned.attachmentIds, ["attachment-1"])
   assert.deepEqual(inspection.owned.detachedAttachmentIds, ["attachment-1"])
+  assert.equal(inspection.zeroResidue, true)
+})
+
+test("cleanup reconciles partial detach acknowledgement loss before retrying", async () => {
+  const { transport, detachAttempts } = createCleanupTransport({
+    detachAckLossAttachmentId: "attachment-2",
+  })
+  const binding = {
+    kernelId: "kernel-1",
+    machineId: "machine-1",
+    roomId: "room-1",
+    environmentId: "environment-1",
+  }
+  await transport.run("selkies.create", {
+    runId: "run-detach-retry",
+    kernelOwnedDefault: true,
+    displayBackend: null,
+    binding,
+  })
+  for (const client of ["web", "local_tui"]) {
+    await transport.run("selkies.attach", {
+      runId: "run-detach-retry",
+      binding,
+      client,
+      displayBackend: "selkies",
+    })
+  }
+
+  await assert.rejects(
+    () => transport.run("cleanup.perform", {}),
+    /simulated detach acknowledgement loss: attachment-2/,
+  )
+  assert.deepEqual(detachAttempts, ["attachment-1", "attachment-2"])
+
+  await transport.run("cleanup.perform", {})
+  assert.deepEqual(detachAttempts, ["attachment-1", "attachment-2"])
+  const inspection = await transport.run("cleanup.inspect", {})
+  assert.deepEqual(inspection.owned.attachmentIds, ["attachment-1", "attachment-2"])
+  assert.deepEqual(inspection.owned.detachedAttachmentIds, ["attachment-1", "attachment-2"])
   assert.equal(inspection.zeroResidue, true)
 })
 

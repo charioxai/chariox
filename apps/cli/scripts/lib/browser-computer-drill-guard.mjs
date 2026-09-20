@@ -693,10 +693,18 @@ export function evaluateBrowserComputerPersistenceMutationSeams({
   result,
   plan = null,
   dockerPreconditions = [],
+  mode = "execution",
 } = {}) {
   const mutations = extractPersistenceMutations(result)
   const plannedMutations = plan === null ? null : extractPersistenceMutations(plan)
   const violations = []
+  const planOnly = mode === "plan"
+  if (!planOnly && mode !== "execution") {
+    violations.push("persistence mutation validation mode must be plan or execution")
+  }
+  if (planOnly && plan !== null) {
+    violations.push("persistence plan validation cannot accept execution comparison evidence")
+  }
   if (!Array.isArray(mutations)) {
     violations.push("persistence transport must return exact save/remove/restore mutation evidence")
     return { schema: BROWSER_COMPUTER_GUARD_SCHEMA, ok: false, mutations: [], violations }
@@ -745,22 +753,32 @@ export function evaluateBrowserComputerPersistenceMutationSeams({
     if (checkpoint?.before !== expectedCheckpoint.before || checkpoint?.after !== expectedCheckpoint.after) {
       violations.push(`persistence ${mutation.action} checkpoints do not fence its exact Docker mutation`)
     }
-    const before = mutation.before ?? mutation.inventory
-    if (!before || typeof before !== "object" || Array.isArray(before)) {
-      violations.push(`persistence ${mutation.action} must expose its pre-mutation inventory`)
+    let before = mutation.before ?? mutation.inventory
+    let receipt = mutation.receipt ?? mutation.receipts?.[mutation.action]
+    if (planOnly) {
+      for (const field of ["before", "inventory", "receipt", "receipts", "saveReceipt", "removeReceipt"]) {
+        if (Object.hasOwn(mutation, field)) {
+          violations.push(`persistence ${mutation.action} plan must not contain pre-execution ${field} evidence`)
+        }
+      }
+      before = declaration.before
+      receipt = null
+    } else {
+      if (!before || typeof before !== "object" || Array.isArray(before)) {
+        violations.push(`persistence ${mutation.action} must expose its pre-mutation inventory`)
+      }
+      const receiptId = receipt?.id ?? receipt?.receiptId
+      if (!receipt || typeof receipt !== "object" || receipt.ok !== true || !nonEmptyString(receiptId)) {
+        violations.push(`persistence ${mutation.action} must expose a successful receipt with an exact id`)
+      }
     }
-    const receipt = mutation.receipt ?? mutation.receipts?.[mutation.action]
-    const receiptId = receipt?.id ?? receipt?.receiptId
-    if (!receipt || typeof receipt !== "object" || receipt.ok !== true || !nonEmptyString(receiptId)) {
-      violations.push(`persistence ${mutation.action} must expose a successful receipt with an exact id`)
-    }
-    if (mutation.action === "save") {
+    if (!planOnly && mutation.action === "save") {
       if (nonEmptyString(declaration.savePath) && receipt?.archivePath !== declaration.savePath) {
         violations.push(`persistence save receipt archivePath must equal savePath: ${receipt?.archivePath ?? "<missing>"} != ${declaration.savePath}`)
       }
       saveReceipt = receipt
     }
-    if (mutation.action === "remove") {
+    if (!planOnly && mutation.action === "remove") {
       if (!sameJson(mutation.saveReceipt, saveReceipt)) {
         violations.push("persistence remove must carry the exact successful save receipt")
       }
@@ -769,7 +787,7 @@ export function evaluateBrowserComputerPersistenceMutationSeams({
       }
       removeReceipt = receipt
     }
-    if (mutation.action === "restore") {
+    if (!planOnly && mutation.action === "restore") {
       if (!sameJson(mutation.saveReceipt, saveReceipt)) {
         violations.push("persistence restore must carry the exact successful save receipt")
       }
@@ -785,17 +803,21 @@ export function evaluateBrowserComputerPersistenceMutationSeams({
         violations.push(`persistence restore receipt archivePath must equal restorePath: ${receipt?.archivePath ?? "<missing>"} != ${declaration.restorePath}`)
       }
     }
-    const dockerInput = {
-      ...declaration,
-      action: mutation.action,
-      before,
-      command: argv,
-      saved: mutation.saved,
-      removed: mutation.removed,
-      saveReceipt: mutation.saveReceipt,
-      removeReceipt: mutation.removeReceipt,
-    }
-    const precondition = evaluateBrowserComputerDockerPreconditions(dockerInput)
+    const dockerInput = planOnly
+      ? { ...declaration, action: mutation.action, before, command: argv }
+      : {
+        ...declaration,
+        action: mutation.action,
+        before,
+        command: argv,
+        saved: mutation.saved,
+        removed: mutation.removed,
+        saveReceipt: mutation.saveReceipt,
+        removeReceipt: mutation.removeReceipt,
+      }
+    const precondition = planOnly
+      ? evaluatePersistencePlanDockerPrecondition(mutation.action, argv, declaration)
+      : evaluateBrowserComputerDockerPreconditions(dockerInput)
     if (!precondition.ok) {
       violations.push(...precondition.violations.map((entry) => `persistence ${mutation.action}: ${entry}`))
     }
@@ -804,10 +826,7 @@ export function evaluateBrowserComputerPersistenceMutationSeams({
       if (!planned || planned.action !== mutation.action
         || !sameArray(planned.argv, mutation.argv)
         || !sameJson(planned.request, mutation.request)
-        || !sameJson(planned.checkpoints, mutation.checkpoints)
-        || !sameJson(planned.receipt, mutation.receipt)
-        || !sameJson(planned.saveReceipt, mutation.saveReceipt)
-        || !sameJson(planned.removeReceipt, mutation.removeReceipt)) {
+        || !sameJson(planned.checkpoints, mutation.checkpoints)) {
         violations.push(`persistence ${mutation.action} result does not equal its validated mutation plan`)
       }
     }
@@ -824,6 +843,79 @@ export function evaluateBrowserComputerPersistenceMutationSeams({
     schema: BROWSER_COMPUTER_GUARD_SCHEMA,
     ok: violations.length === 0,
     mutations: validated,
+    violations,
+  }
+}
+
+function evaluatePersistencePlanDockerPrecondition(action, argv, declaration) {
+  const violations = []
+  const targets = {
+    containers: names(declaration.targetContainers),
+    volumes: names(declaration.targetVolumes),
+    networks: names(declaration.targetNetworks),
+    mounts: names(declaration.targetMounts),
+    mountSources: names(
+      names(declaration.targetMountSources).length > 0
+        ? declaration.targetMountSources
+        : declaration.targetVolumes,
+    ),
+  }
+  if (nonEmptyString(declaration.targetContainerName)
+    && !targets.containers.includes(declaration.targetContainerName)) {
+    targets.containers.push(declaration.targetContainerName)
+  }
+  const owned = {
+    containers: new Set(names(declaration.ownedContainers)),
+    volumes: new Set(names(declaration.ownedVolumes)),
+    networks: new Set(names(declaration.ownedNetworks)),
+  }
+  const allTargets = [...targets.containers, ...targets.volumes, ...targets.networks, ...targets.mounts]
+  if (allTargets.some(isBroadResourceSelector)) {
+    violations.push("Docker mutation must name exact owned resources; broad prune selectors are forbidden")
+  }
+  validateDockerCommand(argv, {
+    action,
+    targetContainers: targets.containers,
+    targetVolumes: targets.volumes,
+    targetNetworks: targets.networks,
+    targetMounts: targets.mounts,
+    targetMountSources: targets.mountSources,
+    imageRef: declaration.imageRef,
+    savePath: declaration.savePath,
+    restorePath: declaration.restorePath,
+  }, violations)
+  if (action === "save") {
+    requireSafeToken(declaration.imageRef, "Docker save image", violations)
+    requireSafeToken(declaration.savePath, "Docker save evidence path", violations)
+  }
+  if (action === "remove" && allTargets.length === 0) {
+    violations.push("Docker remove requires at least one exact owned resource")
+  }
+  if (action === "restore" && allTargets.length === 0 && !nonEmptyString(declaration.imageRef)) {
+    violations.push("Docker restore requires an exact resource or image target")
+  }
+  for (const [kind, values] of [
+    ["containers", targets.containers],
+    ["volumes", targets.volumes],
+    ["networks", targets.networks],
+  ]) {
+    for (const name of values) {
+      if (!owned[kind].has(name)) {
+        violations.push(`Docker ${action} target is not an owned ${kind.slice(0, -1)}: ${name}`)
+      }
+    }
+  }
+  if (action === "restore" && targets.mounts.some((mount) => {
+    const source = String(mount).includes("=") ? mountValue(mount).source : volumeSource(mount)
+    return !source || !targets.mountSources.includes(source)
+  })) {
+    violations.push("Docker restore mounts must use an exact declared target volume")
+  }
+  return {
+    schema: BROWSER_COMPUTER_GUARD_SCHEMA,
+    action,
+    ok: violations.length === 0,
+    targets,
     violations,
   }
 }

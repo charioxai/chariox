@@ -346,7 +346,6 @@ async function collectManagedTargetResourceSnapshot({
   phase,
   sampleId,
   evidenceRoot,
-  now,
   signal,
 }) {
   const input = {
@@ -385,13 +384,13 @@ async function collectManagedTargetResourceSnapshot({
     throw new Error("managed parity resource telemetry returned a foreign target identity")
   }
   requireCompleteManagedResourceTelemetry(candidate)
-  const capturedAt = normalizeTimestamp(now)
+  const capturedAt = requireManagedTelemetryCapturedAt(candidate.capturedAt)
   const normalized = redactManagedValue({
     ...candidate,
     schema: candidate.schema ?? MANAGED_PARITY_SCHEMA,
     phase: phase ?? candidate.phase ?? "unspecified",
     sampleId: sampleId ?? candidate.sampleId ?? null,
-    capturedAt: candidate.capturedAt ?? capturedAt,
+    capturedAt,
     telemetry: {
       ...telemetry,
       scope: "managed-target",
@@ -449,8 +448,10 @@ function hasManagedResourceTelemetryPath(client, requestApi, adapter) {
 function requireCompleteManagedResourceTelemetry(value) {
   for (const [field, label] of [
     [value?.memory?.totalBytes, "memory.totalBytes"],
+    [value?.memory?.usedBytes, "memory.usedBytes"],
     [value?.memory?.availableBytes, "memory.availableBytes"],
     [value?.disk?.totalBytes, "disk.totalBytes"],
+    [value?.disk?.usedBytes, "disk.usedBytes"],
     [value?.disk?.availableBytes, "disk.availableBytes"],
     [value?.process?.count, "process.count"],
     [value?.process?.rssBytes, "process.rssBytes"],
@@ -458,6 +459,13 @@ function requireCompleteManagedResourceTelemetry(value) {
   ]) {
     requireNonNegativeFinite(field, `resource telemetry ${label}`)
   }
+}
+
+function requireManagedTelemetryCapturedAt(value) {
+  if (!hasText(value) || Number.isNaN(Date.parse(value))) {
+    throw new Error("managed parity resource telemetry capturedAt must be a kernel-captured timestamp")
+  }
+  return new Date(value).toISOString()
 }
 
 function unwrapManagedTelemetry(value) {
@@ -506,7 +514,7 @@ async function describePersistenceMutations({
     }),
     "persistence description",
   )
-  return normalizePersistenceEvidence(raw, ownedResources)
+  return normalizePersistencePlan(raw, ownedResources)
 }
 
 async function runPersistenceMutations({
@@ -558,7 +566,7 @@ async function runPersistenceMutations({
       ? (event) => onPersistenceMutation(redactManagedValue(event))
       : undefined,
   })
-  return normalizePersistenceEvidence(raw, ownedResources)
+  return normalizePersistenceEvidence(raw, ownedResources, plan)
 }
 
 function persistenceAdapterInput({
@@ -583,33 +591,73 @@ function persistenceAdapterInput({
   }
 }
 
-function normalizePersistenceEvidence(value, ownedResources) {
+function normalizePersistencePlan(value, ownedResources) {
+  const source = value?.persistenceMutations ?? value?.mutations
+  if (!Array.isArray(source) || source.length !== 3) {
+    throw new Error("managed parity persistence plan must contain exact save/remove/restore mutations")
+  }
+  const normalized = source.map((mutation, index) => {
+    for (const field of ["before", "inventory", "receipt", "receipts", "saveReceipt", "removeReceipt"]) {
+      if (mutation && Object.hasOwn(mutation, field)) {
+        throw new Error(`managed parity persistence plan must not contain pre-execution ${field} evidence`)
+      }
+    }
+    return normalizePersistenceMutationDefinition(mutation, index)
+  })
+  const output = redactManagedValue({
+    schema: value?.schema ?? MANAGED_PARITY_SCHEMA,
+    persistenceMutations: normalized,
+  })
+  output.ownedResource = stableOwnedIdentity(ownedResources)
+  return output
+}
+
+function normalizePersistenceMutationDefinition(mutation, index) {
+  const actions = ["save", "remove", "restore"]
+  const action = actions[index]
+  if (!mutation || mutation.action !== action) {
+    throw new Error(`managed parity persistence mutation ${index} must be ${action}`)
+  }
+  const argv = requireSafeArgv(mutation.argv, `persistence ${action}`)
+  const request = mutation.request
+  const requestAction = request?.action ?? request?.operation ?? request?.mutation
+  if (!request || typeof request !== "object" || Array.isArray(request)
+    || requestAction !== action || !sameArray(request.argv, argv)) {
+    throw new Error(`managed parity persistence ${action} request must exactly repeat its argv`)
+  }
+  const expectedCheckpoint = {
+    save: { before: "before-docker-save", after: "after-docker-save" },
+    remove: { before: "before-docker-remove", after: "after-docker-remove" },
+    restore: { before: "before-docker-restore", after: "after-docker-restore" },
+  }[action]
+  if (!sameJson(mutation.checkpoints, expectedCheckpoint)) {
+    throw new Error(`managed parity persistence ${action} checkpoints are not exact`)
+  }
+  return {
+    action,
+    argv,
+    request: redactManagedValue({ ...request, argv }),
+    checkpoints: expectedCheckpoint,
+  }
+}
+
+function normalizePersistenceEvidence(value, ownedResources, plan) {
   const source = value?.persistenceMutations ?? value?.mutations
   if (!Array.isArray(source) || source.length !== 3) {
     throw new Error("managed parity persistence must expose exact save/remove/restore mutation evidence")
   }
-  const actions = ["save", "remove", "restore"]
+  const plannedMutations = plan?.persistenceMutations
+  if (!Array.isArray(plannedMutations) || plannedMutations.length !== 3) {
+    throw new Error("managed parity persistence execution requires an immutable mutation plan")
+  }
   const normalized = []
   for (const [index, mutation] of source.entries()) {
-    const action = actions[index]
-    if (!mutation || mutation.action !== action) {
-      throw new Error(`managed parity persistence mutation ${index} must be ${action}`)
+    const definition = normalizePersistenceMutationDefinition(mutation, index)
+    const plannedDefinition = normalizePersistenceMutationDefinition(plannedMutations[index], index)
+    if (!sameJson(definition, plannedDefinition)) {
+      throw new Error(`managed parity persistence ${definition.action} result does not match its plan`)
     }
-    const argv = requireSafeArgv(mutation.argv, `persistence ${action}`)
-    const request = mutation.request
-    const requestAction = request?.action ?? request?.operation ?? request?.mutation
-    if (!request || typeof request !== "object" || Array.isArray(request)
-      || requestAction !== action || !sameArray(request.argv, argv)) {
-      throw new Error(`managed parity persistence ${action} request must exactly repeat its argv`)
-    }
-    const expectedCheckpoint = {
-      save: { before: "before-docker-save", after: "after-docker-save" },
-      remove: { before: "before-docker-remove", after: "after-docker-remove" },
-      restore: { before: "before-docker-restore", after: "after-docker-restore" },
-    }[action]
-    if (!sameJson(mutation.checkpoints, expectedCheckpoint)) {
-      throw new Error(`managed parity persistence ${action} checkpoints are not exact`)
-    }
+    const { action, argv, request } = definition
     const before = mutation.before ?? mutation.inventory
     if (!before || typeof before !== "object" || Array.isArray(before)) {
       throw new Error(`managed parity persistence ${action} requires a pre-mutation inventory`)
@@ -643,7 +691,8 @@ function normalizePersistenceEvidence(value, ownedResources) {
       ...redactManagedValue(mutation),
       action,
       argv,
-      request: redactManagedValue({ ...request, argv }),
+      request,
+      checkpoints: definition.checkpoints,
       before: redactManagedValue(before),
       receipt: redactManagedValue(receipt),
       ...(mutation.saveReceipt ? { saveReceipt: redactManagedValue(mutation.saveReceipt) } : {}),
@@ -1215,8 +1264,35 @@ async function runCleanup({
 
 async function detachOwnedAttachments({ displayClient, requestApi, ownedResources, signal, step }) {
   if (ownedResources.attachmentIds.size === 0) return
+  const unresolvedAttachmentIds = [...ownedResources.attachmentIds]
+    .filter((attachmentId) => !ownedResources.detachedAttachmentIds.has(attachmentId))
+  if (unresolvedAttachmentIds.length === 0) return
+
+  const sessionsResponse = await sendWithAbortSignal(
+    displayClient,
+    requireRequestConstructor(requestApi, "listSessionsRequest")(),
+    signal,
+    `${step} attachment reconciliation`,
+  )
+  const sessions = requireArray(
+    responseVariant(sessionsResponse, "SessionsListed", `${step} attachment reconciliation`).sessions,
+    `${step} attachment reconciliation SessionsListed.sessions`,
+  )
+  const activeAttachmentIds = new Set()
+  for (const session of sessions) {
+    for (const attachmentId of session?.attachment_ids ?? session?.attachmentIds ?? []) {
+      if (hasText(attachmentId)) activeAttachmentIds.add(attachmentId)
+    }
+  }
+  for (const attachmentId of unresolvedAttachmentIds) {
+    if (!activeAttachmentIds.has(attachmentId)) {
+      ownedResources.detachedAttachmentIds.add(attachmentId)
+    }
+  }
+
   const detach = requireRequestConstructor(requestApi, "detachFromSessionRequest")
   for (const attachmentId of ownedResources.attachmentIds) {
+    if (ownedResources.detachedAttachmentIds.has(attachmentId)) continue
     const response = await sendWithAbortSignal(
       displayClient,
       detach(attachmentId),
