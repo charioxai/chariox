@@ -84,9 +84,24 @@ impl KernelRuntimeState {
         else {
             // Provider exit reconciliation can settle the prompt before a native
             // StopFailure hook is drained. The late authoritative failure must
-            // still advance the substitute chain, but only while this failed
-            // run still names the agent's active profile. That identity fence
-            // also prevents a repeated poll from advancing the chain twice.
+            // still advance the substitute chain. Reserve prompt admission
+            // before cleanup, then re-read profile and run ownership after the
+            // asynchronous retirement so stale observations cannot replace a
+            // prompt or provider run that arrived in the meantime.
+            let profile_transition = match owned
+                .prompt_state_owner
+                .claim_idle_agent_profile_transition(&session, &agent_id)
+            {
+                Ok(claim) => claim,
+                Err(_) => {
+                    self.retire_owned_provider_run(session_id, provider_run_id)
+                        .await;
+                    return Ok(());
+                }
+            };
+            self.retire_owned_provider_run(session_id, provider_run_id)
+                .await;
+            let session = owned.session_store.get_session(session_id)?;
             let agent = owned.agent_store.get_agent(&agent_id)?;
             let failed_profile_is_still_active = provider_run.provider()
                 == crate::provider::provider_id_for_launch(agent.provider())
@@ -102,8 +117,6 @@ impl KernelRuntimeState {
                         && run.agent_instance_id() == Some(agent_id.as_str())
                         && run.started_at_ms() >= provider_run.started_at_ms()
                 });
-            self.retire_owned_provider_run(session_id, provider_run_id)
-                .await;
             if let Some(reason) = substitution_reason
                 .filter(|_| failed_profile_is_still_active && failed_run_still_owns_transition)
             {
@@ -112,7 +125,7 @@ impl KernelRuntimeState {
                     &agent_id,
                     provider_run_id,
                     &reason,
-                    None,
+                    Some(profile_transition),
                 )
                 .await;
             }

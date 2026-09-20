@@ -42,7 +42,9 @@ impl KernelRuntimeState {
             }
             return Ok(true);
         }
-        drop(profile_transition);
+        // Keep admission reserved until the local profile mutation, durable
+        // event, and replacement launch scheduling have all completed.
+        let _profile_transition = profile_transition;
         let (launch_request, runtime_init_delay_ms, agent) = {
             let owned = &self.owned;
             let (agent, profile) = owned.agent_store.activate_agent_substitute(
