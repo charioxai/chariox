@@ -312,6 +312,85 @@ test("integrates CDP refresh and reconnect reconciliation with stable tab identi
   });
 });
 
+test("captures bounded observations through stable tabs and invalidates detached element references", async (t) => {
+  const targets = [
+    { id: "page-a", type: "page", webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/a" },
+    { id: "page-b", type: "page", webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/b" },
+  ];
+  const fixture = makeFixture({ targets });
+  const { controller } = fixture;
+  await controller.start("owner-a");
+  const tab = controller.getTabRegistrySnapshot("owner-a", 1).tabs
+    .find((candidate) => candidate.target_id === "page-b");
+  assert.ok(tab);
+
+  FakeWebSocket.onSend = (socket, message) => {
+    let result = {};
+    if (message.method === "Page.getFrameTree") {
+      result = { frameTree: { frame: { loaderId: "document-b" } } };
+    } else if (message.method === "Accessibility.getFullAXTree") {
+      result = {
+        nodes: [{
+          nodeId: "ax-button",
+          backendDOMNodeId: 41,
+          role: { value: "button" },
+          name: { value: "Continue" },
+        }],
+      };
+    } else if (message.method === "DOMSnapshot.captureSnapshot") {
+      result = {
+        strings: ["BUTTON"],
+        documents: [{
+          nodes: {
+            backendNodeId: [41],
+            parentIndex: [-1],
+            nodeType: [1],
+            nodeName: [0],
+            nodeValue: [-1],
+            attributes: [[]],
+          },
+          layout: { nodeIndex: [0], bounds: [[1, 2, 30, 20]] },
+        }],
+      };
+    }
+    queueMicrotask(() => socket.respond(message.id, result));
+  };
+
+  const snapshot = await controller.captureTabSnapshot("owner-a", 1, {
+    tab_id: tab.tab_id,
+    target_generation: tab.target_generation,
+  });
+  assert.equal(snapshot.tab_id, tab.tab_id);
+  assert.equal(snapshot.document_id, "document-b");
+  assert.equal(snapshot.accessibility_nodes[0].name, "Continue");
+  const elementRef = snapshot.accessibility_nodes[0].element_ref;
+  assert.doesNotMatch(elementRef, /41|page-b|document-b/);
+  assert.equal(
+    controller.resolveElementReference("owner-a", 1, {
+      tab_id: tab.tab_id,
+      target_generation: tab.target_generation,
+      element_ref: elementRef,
+    }).backend_node_id,
+    41,
+  );
+
+  targets.splice(1, 1);
+  await controller.refreshTabs("owner-a", 1);
+  assert.throws(
+    () => controller.resolveElementReference("owner-a", 1, {
+      tab_id: tab.tab_id,
+      target_generation: tab.target_generation,
+      element_ref: elementRef,
+    }),
+    (error) => error.code === "TAB_INVALIDATED",
+  );
+  assert.equal(FakeWebSocket.instances[1].closed, true);
+
+  t.after(async () => {
+    await controller.shutdown("owner-a", 1);
+  });
+});
+
 test("gracefully closes CDP and Chromium without a forced kill", async (t) => {
   const fixture = makeFixture({ autoExitOnBrowserClose: true });
   const { controller, processes, sockets, signals } = fixture;
