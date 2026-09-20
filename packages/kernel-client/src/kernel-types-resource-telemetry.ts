@@ -5,6 +5,24 @@ export type KernelResourceTelemetryMetadata = {
   source: string
 }
 
+export type KernelResourceTelemetryRelease =
+  | {
+      status: "verified"
+      runtimeReleaseDigest: string
+      sourceCommit: string
+      sourceTree: string
+      target: string
+      activeReleasePath: string
+      manifestSignatureVerified: true
+      manifestDigestVerified: true
+      kernelArtifactVerified: true
+      bootstrapReceiptVerified: true
+    }
+  | {
+      status: "unavailable"
+      reason: string
+    }
+
 export type KernelResourceTelemetryMemory = {
   usedBytes: number
   totalBytes: number
@@ -31,6 +49,7 @@ export type KernelResourceTelemetrySnapshot = {
   capturedAt: string
   capturedAtMonotonicMs: number
   telemetry: KernelResourceTelemetryMetadata
+  release: KernelResourceTelemetryRelease
   cpuPercent: number
   cpuSampleWindowMs: number
   memory: KernelResourceTelemetryMemory

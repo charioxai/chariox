@@ -891,3 +891,436 @@ fn restore_env(name: &str, value: Option<std::ffi::OsString>) {
         None => std::env::remove_var(name),
     }
 }
+
+#[cfg(unix)]
+struct AttestedReleaseFixture {
+    root: PathBuf,
+    config: BootstrapConfig,
+    release_digest: String,
+    release_root: PathBuf,
+    attestation_path: PathBuf,
+    attestation_signature_path: PathBuf,
+    receipt_path: PathBuf,
+}
+
+#[cfg(unix)]
+impl AttestedReleaseFixture {
+    fn new(
+        label: &str,
+        attestation_source_commit: &str,
+        attestation_source_tree: &str,
+        target: &str,
+    ) -> Self {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "chariox-release-evidence-{label}-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let install_root = root.join("installed");
+        let chariox_root = install_root.join("usr/lib/chariox");
+        let kernel_facade = install_root.join("usr/local/bin/chariox-kernel");
+        let kernel_bytes = b"#!/bin/sh\nverified-kernel\n";
+        let kernel_digest = format!("sha256:{:x}", Sha256::digest(kernel_bytes));
+        let supervisor_bytes = b"#!/bin/sh\nverified-bootstrap\n";
+        let supervisor_digest = format!("sha256:{:x}", Sha256::digest(supervisor_bytes));
+        let source_commit = "a".repeat(40);
+        let source_tree = "b".repeat(40);
+        let attestation = serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 1,
+            "sourceCommit": attestation_source_commit,
+            "sourceTree": attestation_source_tree,
+            "target": target,
+            "artifacts": [
+                { "name": "chariox-kernel", "sha256": kernel_digest },
+                { "name": "chariox-managed-bootstrap", "sha256": supervisor_digest },
+                { "name": "chariox-relay", "sha256": format!("sha256:{}", "d".repeat(64)) },
+            ],
+        }))
+        .expect("encode build attestation");
+        let builder_key = SigningKey::from_bytes(&[8_u8; 32]);
+        let attestation_signature = builder_key.sign(&attestation);
+        let manifest = serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 2,
+            "sourceCommit": source_commit,
+            "sourceTree": source_tree,
+            "artifacts": [
+                {
+                    "name": "chariox-kernel",
+                    "path": kernel_facade.display().to_string(),
+                    "sha256": kernel_digest,
+                },
+                {
+                    "name": "chariox-managed-bootstrap",
+                    "path": "/usr/local/bin/chariox-managed-bootstrap",
+                    "sha256": supervisor_digest,
+                },
+                {
+                    "name": "chariox-build-attestation",
+                    "path": "/usr/lib/chariox/build-attestation.json",
+                    "sha256": format!("sha256:{:x}", Sha256::digest(&attestation)),
+                },
+                {
+                    "name": "chariox-build-attestation-signature",
+                    "path": "/usr/lib/chariox/build-attestation.sig",
+                    "sha256": format!(
+                        "sha256:{:x}",
+                        Sha256::digest(
+                            base64::engine::general_purpose::STANDARD
+                                .encode(attestation_signature.to_bytes())
+                                .as_bytes()
+                        )
+                    ),
+                },
+                {
+                    "name": "chariox-builder-public-key",
+                    "path": "/usr/lib/chariox/builder-public-key",
+                    "sha256": format!(
+                        "sha256:{:x}",
+                        Sha256::digest(
+                            base64::engine::general_purpose::STANDARD
+                                .encode(builder_key.verifying_key().to_bytes())
+                                .as_bytes()
+                        )
+                    ),
+                },
+            ],
+        }))
+        .expect("encode release manifest");
+        let release_digest = format!("sha256:{:x}", Sha256::digest(&manifest));
+        let release_name = release_digest
+            .strip_prefix("sha256:")
+            .expect("release digest prefix");
+        let release_root = chariox_root.join("releases").join(release_name);
+        let release_chariox_root = release_root.join("usr/lib/chariox");
+        let release_kernel = release_root.join("usr/local/bin/chariox-kernel");
+        let release_supervisor = release_root.join("usr/local/bin/chariox-managed-bootstrap");
+        fs::create_dir_all(&release_chariox_root).expect("create release metadata directory");
+        fs::create_dir_all(release_kernel.parent().expect("release kernel parent"))
+            .expect("create release kernel directory");
+        fs::create_dir_all(kernel_facade.parent().expect("kernel facade parent"))
+            .expect("create kernel facade directory");
+        fs::write(&release_kernel, kernel_bytes).expect("write kernel artifact");
+        fs::write(&release_supervisor, supervisor_bytes).expect("write supervisor artifact");
+        fs::write(
+            release_chariox_root.join("build-attestation.json"),
+            &attestation,
+        )
+        .expect("write build attestation");
+        fs::write(
+            release_chariox_root.join("build-attestation.sig"),
+            base64::engine::general_purpose::STANDARD.encode(attestation_signature.to_bytes()),
+        )
+        .expect("write build attestation signature");
+        fs::write(
+            release_chariox_root.join("builder-public-key"),
+            base64::engine::general_purpose::STANDARD
+                .encode(builder_key.verifying_key().to_bytes()),
+        )
+        .expect("write builder public key");
+        let release_signing_key = SigningKey::from_bytes(&[7_u8; 32]);
+        let release_signature = release_signing_key.sign(&manifest);
+        fs::write(
+            release_chariox_root.join("release-manifest.json"),
+            &manifest,
+        )
+        .expect("write release manifest");
+        fs::write(
+            release_chariox_root.join("release-manifest.sig"),
+            base64::engine::general_purpose::STANDARD.encode(release_signature.to_bytes()),
+        )
+        .expect("write release signature");
+        fs::write(
+            release_chariox_root.join("release-public-key"),
+            base64::engine::general_purpose::STANDARD
+                .encode(release_signing_key.verifying_key().to_bytes()),
+        )
+        .expect("write release public key");
+        symlink(
+            format!("releases/{release_name}"),
+            chariox_root.join("current"),
+        )
+        .expect("link current release");
+        for (target, facade) in [
+            (
+                "current/usr/lib/chariox/release-manifest.json",
+                chariox_root.join("release-manifest.json"),
+            ),
+            (
+                "current/usr/lib/chariox/release-manifest.sig",
+                chariox_root.join("release-manifest.sig"),
+            ),
+            (
+                "current/usr/lib/chariox/release-public-key",
+                chariox_root.join("release-public-key"),
+            ),
+        ] {
+            symlink(target, facade).expect("link release facade");
+        }
+        symlink(
+            "../../../usr/lib/chariox/current/usr/local/bin/chariox-kernel",
+            &kernel_facade,
+        )
+        .expect("link kernel facade");
+
+        let home = root.join("home");
+        let receipt_path = home.join("managed/bootstrap-receipt.json");
+        fs::create_dir_all(receipt_path.parent().expect("receipt parent"))
+            .expect("create receipt parent");
+        fs::write(
+            &receipt_path,
+            serde_json::to_vec(&serde_json::json!({
+                "schemaVersion": 1,
+                "status": "confirmed",
+                "environmentId": "managed-env-1",
+                "machineId": "managed-machine-1",
+                "kernelId": "managed-kernel-1",
+                "relayPublicKey": "relay-public-key",
+                "runtimeReleaseDigest": release_digest,
+                "confirmedAt": "2026-09-20T00:00:00Z",
+            }))
+            .expect("encode bootstrap receipt"),
+        )
+        .expect("write bootstrap receipt");
+
+        Self {
+            config: BootstrapConfig {
+                chariox_home: home,
+                envelope_path: root.join("managed-bootstrap.json"),
+                receipt_path: receipt_path.clone(),
+                manifest_path: chariox_root.join("release-manifest.json"),
+                signature_path: chariox_root.join("release-manifest.sig"),
+                public_key_path: chariox_root.join("release-public-key"),
+                kernel_binary: kernel_facade,
+                kernel_host: "127.0.0.1".to_string(),
+                kernel_port: 43118,
+            },
+            root,
+            release_digest,
+            release_root,
+            attestation_path: release_chariox_root.join("build-attestation.json"),
+            attestation_signature_path: release_chariox_root.join("build-attestation.sig"),
+            receipt_path,
+        }
+    }
+
+    fn cleanup(self) {
+        let _ = fs::remove_dir_all(self.root);
+    }
+}
+
+#[cfg(unix)]
+fn set_release_evidence_env(fixture: &AttestedReleaseFixture) {
+    std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
+    std::env::set_var(
+        "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
+        &fixture.config.receipt_path,
+    );
+    std::env::set_var(
+        "CHARIOX_MANAGED_RELEASE_MANIFEST",
+        &fixture.config.manifest_path,
+    );
+    std::env::set_var(
+        "CHARIOX_MANAGED_RELEASE_SIGNATURE",
+        &fixture.config.signature_path,
+    );
+    std::env::set_var(
+        "CHARIOX_MANAGED_RELEASE_PUBLIC_KEY",
+        &fixture.config.public_key_path,
+    );
+    std::env::set_var(
+        "CHARIOX_MANAGED_KERNEL_BINARY",
+        &fixture.config.kernel_binary,
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn managed_release_evidence_is_kernel_verified_from_active_release_and_receipt() {
+    let _env = crate::env_lock::lock();
+    let fixture = AttestedReleaseFixture::new(
+        "valid",
+        &"a".repeat(40),
+        &"b".repeat(40),
+        "x86_64-unknown-linux-gnu",
+    );
+    let names = [
+        "CHARIOX_HOME",
+        "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
+        "CHARIOX_MANAGED_RELEASE_MANIFEST",
+        "CHARIOX_MANAGED_RELEASE_SIGNATURE",
+        "CHARIOX_MANAGED_RELEASE_PUBLIC_KEY",
+        "CHARIOX_MANAGED_KERNEL_BINARY",
+    ];
+    let previous = names
+        .iter()
+        .map(|name| (*name, std::env::var_os(name)))
+        .collect::<Vec<_>>();
+    set_release_evidence_env(&fixture);
+
+    let evidence = super::authoritative_managed_release_evidence_from_env()
+        .expect("valid managed release evidence should verify")
+        .expect("confirmed managed receipt should produce release evidence");
+    assert_eq!(evidence.runtime_release_digest, fixture.release_digest);
+    assert_eq!(evidence.source_commit, "a".repeat(40));
+    assert_eq!(evidence.source_tree, "b".repeat(40));
+    assert_eq!(evidence.target, "x86_64-unknown-linux-gnu");
+    assert_eq!(
+        evidence.active_release_path,
+        fixture.release_root.display().to_string()
+    );
+    assert!(evidence.manifest_signature_verified);
+    assert!(evidence.manifest_digest_verified);
+    assert!(evidence.kernel_artifact_verified);
+    assert!(evidence.bootstrap_receipt_verified);
+
+    for (name, value) in previous {
+        restore_env(name, value);
+    }
+    fixture.cleanup();
+}
+
+#[cfg(unix)]
+#[test]
+fn managed_release_evidence_fails_closed_for_attestation_target_source_signature_artifact_receipt_and_layout_mismatch(
+) {
+    let _env = crate::env_lock::lock();
+    for (label, source_commit, source_tree, target, expected) in [
+        (
+            "source-mismatch",
+            "c",
+            "b",
+            "x86_64-unknown-linux-gnu",
+            "source identity or target",
+        ),
+        (
+            "tree-mismatch",
+            "a",
+            "c",
+            "x86_64-unknown-linux-gnu",
+            "source identity or target",
+        ),
+        (
+            "target-mismatch",
+            "a",
+            "b",
+            "aarch64-unknown-linux-gnu",
+            "source identity or target",
+        ),
+    ] {
+        let source = format!("{source_commit}{source_commit}").repeat(20);
+        let tree = format!("{source_tree}{source_tree}").repeat(20);
+        let fixture = AttestedReleaseFixture::new(label, &source, &tree, target);
+        let names = [
+            "CHARIOX_HOME",
+            "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
+            "CHARIOX_MANAGED_RELEASE_MANIFEST",
+            "CHARIOX_MANAGED_RELEASE_SIGNATURE",
+            "CHARIOX_MANAGED_RELEASE_PUBLIC_KEY",
+            "CHARIOX_MANAGED_KERNEL_BINARY",
+        ];
+        let previous = names
+            .iter()
+            .map(|name| (*name, std::env::var_os(name)))
+            .collect::<Vec<_>>();
+        set_release_evidence_env(&fixture);
+        let error = super::authoritative_managed_release_evidence_from_env()
+            .expect_err("attestation identity mismatch must fail closed");
+        assert!(error.to_string().contains(expected));
+        for (name, value) in previous {
+            restore_env(name, value);
+        }
+        fixture.cleanup();
+    }
+
+    let receipt_fixture = AttestedReleaseFixture::new(
+        "receipt-mismatch",
+        &"a".repeat(40),
+        &"b".repeat(40),
+        "x86_64-unknown-linux-gnu",
+    );
+    let names = [
+        "CHARIOX_HOME",
+        "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
+        "CHARIOX_MANAGED_RELEASE_MANIFEST",
+        "CHARIOX_MANAGED_RELEASE_SIGNATURE",
+        "CHARIOX_MANAGED_RELEASE_PUBLIC_KEY",
+        "CHARIOX_MANAGED_KERNEL_BINARY",
+    ];
+    let previous = names
+        .iter()
+        .map(|name| (*name, std::env::var_os(name)))
+        .collect::<Vec<_>>();
+    set_release_evidence_env(&receipt_fixture);
+    fs::write(
+        &receipt_fixture.receipt_path,
+        serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 1,
+            "status": "confirmed",
+            "environmentId": "managed-env-1",
+            "machineId": "managed-machine-1",
+            "kernelId": "managed-kernel-1",
+            "relayPublicKey": "relay-public-key",
+            "runtimeReleaseDigest": format!("sha256:{}", "0".repeat(64)),
+            "confirmedAt": "2026-09-20T00:00:00Z",
+        }))
+        .expect("encode stale receipt"),
+    )
+    .expect("write stale receipt");
+    let receipt_error = super::authoritative_managed_release_evidence_from_env()
+        .expect_err("receipt digest mismatch must fail closed");
+    assert!(
+        receipt_error.to_string().contains("release path")
+            || receipt_error.to_string().contains("digest")
+    );
+    for (name, value) in previous {
+        restore_env(name, value);
+    }
+    receipt_fixture.cleanup();
+
+    let fixture = AttestedReleaseFixture::new(
+        "tamper",
+        &"a".repeat(40),
+        &"b".repeat(40),
+        "x86_64-unknown-linux-gnu",
+    );
+    let names = [
+        "CHARIOX_HOME",
+        "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
+        "CHARIOX_MANAGED_RELEASE_MANIFEST",
+        "CHARIOX_MANAGED_RELEASE_SIGNATURE",
+        "CHARIOX_MANAGED_RELEASE_PUBLIC_KEY",
+        "CHARIOX_MANAGED_KERNEL_BINARY",
+    ];
+    let previous = names
+        .iter()
+        .map(|name| (*name, std::env::var_os(name)))
+        .collect::<Vec<_>>();
+    set_release_evidence_env(&fixture);
+    fs::write(&fixture.attestation_signature_path, "invalid")
+        .expect("tamper attestation signature");
+    let signature_error = super::authoritative_managed_release_evidence_from_env()
+        .expect_err("attestation signature mismatch must fail closed");
+    assert!(signature_error.to_string().contains("artifact digest"));
+    fs::write(&fixture.attestation_path, "tampered").expect("tamper attestation");
+    let artifact_error = super::authoritative_managed_release_evidence_from_env()
+        .expect_err("pinned attestation mismatch must fail closed");
+    assert!(artifact_error.to_string().contains("artifact digest"));
+    for (name, value) in previous {
+        restore_env(name, value);
+    }
+    fixture.cleanup();
+
+    let legacy = Fixture::new("unversioned-evidence");
+    let layout_error = super::release::verify_release_evidence(
+        &legacy.config.manifest_path,
+        &legacy.config.signature_path,
+        &legacy.config.public_key_path,
+        &legacy.release_digest,
+        &legacy.config.kernel_binary,
+    )
+    .expect_err("unversioned release layout must not produce authoritative evidence");
+    assert!(layout_error.to_string().contains("active versioned layout"));
+    legacy.cleanup();
+}

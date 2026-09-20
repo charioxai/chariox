@@ -2,17 +2,17 @@ use super::*;
 use crate::local::{
     GetKernelResourceTelemetryRequest, KernelResourceTelemetryDisk, KernelResourceTelemetryLogs,
     KernelResourceTelemetryMemory, KernelResourceTelemetryMetadata, KernelResourceTelemetryProcess,
-    KernelResourceTelemetrySnapshot,
+    KernelResourceTelemetryRelease, KernelResourceTelemetrySnapshot,
 };
 
 #[test]
 fn kernel_resource_telemetry_request_and_response_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 335);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 336);
 
     let request = LocalDaemonRequest::GetKernelResourceTelemetry(GetKernelResourceTelemetryRequest);
     let response = LocalDaemonResponse::KernelResourceTelemetry {
         snapshot: KernelResourceTelemetrySnapshot {
-            schema: "chariox.kernel.resource_telemetry.v2".to_string(),
+            schema: "chariox.kernel.resource_telemetry.v3".to_string(),
             captured_at: "2026-09-20T00:00:00.000Z".to_string(),
             captured_at_monotonic_ms: 42,
             telemetry: KernelResourceTelemetryMetadata {
@@ -20,6 +20,17 @@ fn kernel_resource_telemetry_request_and_response_shape_is_versioned() {
                 authoritative: true,
                 target_id: "machine-1".to_string(),
                 source: "kernel".to_string(),
+            },
+            release: KernelResourceTelemetryRelease::Verified {
+                runtime_release_digest: format!("sha256:{}", "d".repeat(64)),
+                source_commit: "a".repeat(40),
+                source_tree: "b".repeat(40),
+                target: "x86_64-unknown-linux-gnu".to_string(),
+                active_release_path: "/usr/lib/chariox/releases/release-1".to_string(),
+                manifest_signature_verified: true,
+                manifest_digest_verified: true,
+                kernel_artifact_verified: true,
+                bootstrap_receipt_verified: true,
             },
             cpu_percent: 37,
             cpu_sample_window_ms: 100,
@@ -45,7 +56,7 @@ fn kernel_resource_telemetry_request_and_response_shape_is_versioned() {
     let response_wire = serde_json::json!({
         "KernelResourceTelemetry": {
             "snapshot": {
-                "schema": "chariox.kernel.resource_telemetry.v2",
+                "schema": "chariox.kernel.resource_telemetry.v3",
                 "capturedAt": "2026-09-20T00:00:00.000Z",
                 "capturedAtMonotonicMs": 42,
                 "telemetry": {
@@ -53,6 +64,18 @@ fn kernel_resource_telemetry_request_and_response_shape_is_versioned() {
                     "authoritative": true,
                     "targetId": "machine-1",
                     "source": "kernel"
+                },
+                "release": {
+                    "status": "verified",
+                    "runtimeReleaseDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                    "sourceCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "sourceTree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "target": "x86_64-unknown-linux-gnu",
+                    "activeReleasePath": "/usr/lib/chariox/releases/release-1",
+                    "manifestSignatureVerified": true,
+                    "manifestDigestVerified": true,
+                    "kernelArtifactVerified": true,
+                    "bootstrapReceiptVerified": true
                 },
                 "cpuPercent": 37,
                 "cpuSampleWindowMs": 100,
@@ -79,6 +102,6 @@ fn kernel_resource_telemetry_request_and_response_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "88ddbfd283c2571a37ba8c9801fb67ce3779409d9cd031e856c3408280a403b5"
+        "49d4d2b207a08c246264611efcd94abe9caa40f6aad2977c8028dbbfb1b5b3e6"
     );
 }

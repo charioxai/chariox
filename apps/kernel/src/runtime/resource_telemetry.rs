@@ -7,7 +7,7 @@ use crate::error::DaemonError;
 use crate::local::{
     KernelResourceTelemetryDisk, KernelResourceTelemetryLogs, KernelResourceTelemetryMemory,
     KernelResourceTelemetryMetadata, KernelResourceTelemetryProcess,
-    KERNEL_RESOURCE_TELEMETRY_SCHEMA,
+    KernelResourceTelemetryRelease, KERNEL_RESOURCE_TELEMETRY_SCHEMA,
 };
 use crate::local::{KernelResourceTelemetrySnapshot, LocalDaemonResponse};
 
@@ -61,17 +61,46 @@ pub(crate) fn collect_kernel_resource_telemetry(
         bytes: read_log_bytes(&log_root)?,
     };
     let (captured_at, captured_at_monotonic_ms) = capture_timestamp()?;
+    let (telemetry, release) =
+        match crate::managed_bootstrap::authoritative_managed_release_evidence_from_env()? {
+            Some(evidence) => (
+                KernelResourceTelemetryMetadata {
+                    scope: "managed-target".to_string(),
+                    authoritative: true,
+                    target_id: target_id.to_string(),
+                    source: "kernel".to_string(),
+                },
+                KernelResourceTelemetryRelease::Verified {
+                    runtime_release_digest: evidence.runtime_release_digest,
+                    source_commit: evidence.source_commit,
+                    source_tree: evidence.source_tree,
+                    target: evidence.target,
+                    active_release_path: evidence.active_release_path,
+                    manifest_signature_verified: evidence.manifest_signature_verified,
+                    manifest_digest_verified: evidence.manifest_digest_verified,
+                    kernel_artifact_verified: evidence.kernel_artifact_verified,
+                    bootstrap_receipt_verified: evidence.bootstrap_receipt_verified,
+                },
+            ),
+            None => (
+                KernelResourceTelemetryMetadata {
+                    scope: "ordinary-host".to_string(),
+                    authoritative: false,
+                    target_id: target_id.to_string(),
+                    source: "kernel".to_string(),
+                },
+                KernelResourceTelemetryRelease::Unavailable {
+                    reason: "managed bootstrap receipt unavailable".to_string(),
+                },
+            ),
+        };
 
     Ok(KernelResourceTelemetrySnapshot {
         schema: KERNEL_RESOURCE_TELEMETRY_SCHEMA.to_string(),
         captured_at,
         captured_at_monotonic_ms,
-        telemetry: KernelResourceTelemetryMetadata {
-            scope: "managed-target".to_string(),
-            authoritative: true,
-            target_id: target_id.to_string(),
-            source: "kernel".to_string(),
-        },
+        telemetry,
+        release,
         cpu_percent,
         cpu_sample_window_ms,
         memory,
@@ -392,9 +421,13 @@ mod tests {
             .expect("kernel telemetry should remain available");
 
         assert_eq!(first.schema, KERNEL_RESOURCE_TELEMETRY_SCHEMA);
-        assert_eq!(first.telemetry.scope, "managed-target");
-        assert!(first.telemetry.authoritative);
+        assert_eq!(first.telemetry.scope, "ordinary-host");
+        assert!(!first.telemetry.authoritative);
         assert_eq!(first.telemetry.source, "kernel");
+        assert!(matches!(
+            first.release,
+            KernelResourceTelemetryRelease::Unavailable { .. }
+        ));
         assert!(first.cpu_percent <= 100);
         assert_eq!(first.cpu_sample_window_ms, CPU_SAMPLE_WINDOW_MS);
         assert!(first.memory.used_bytes <= first.memory.total_bytes);

@@ -220,9 +220,13 @@ fn local_ipc_resource_telemetry_round_trip_returns_complete_kernel_snapshot() {
                 panic!("unexpected resource telemetry response");
             };
 
-            assert_eq!(snapshot.telemetry.scope, "managed-target");
-            assert!(snapshot.telemetry.authoritative);
+            assert_eq!(snapshot.telemetry.scope, "ordinary-host");
+            assert!(!snapshot.telemetry.authoritative);
             assert_eq!(snapshot.telemetry.source, "kernel");
+            assert!(matches!(
+                snapshot.release,
+                crate::local::KernelResourceTelemetryRelease::Unavailable { .. }
+            ));
             assert!(!snapshot.captured_at.is_empty());
             assert!(snapshot.cpu_percent <= 100);
             assert!(snapshot.cpu_sample_window_ms > 0);

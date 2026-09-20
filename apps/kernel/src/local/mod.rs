@@ -233,7 +233,8 @@ pub use api::{
     GetKernelResourceTelemetryRequest, KernelResourceTelemetryDisk,
     KernelResourceTelemetryLogs, KernelResourceTelemetryMemory,
     KernelResourceTelemetryMetadata, KernelResourceTelemetryProcess,
-    KernelResourceTelemetrySnapshot, KERNEL_RESOURCE_TELEMETRY_SCHEMA,
+    KernelResourceTelemetryRelease, KernelResourceTelemetrySnapshot,
+    KERNEL_RESOURCE_TELEMETRY_SCHEMA,
 };
 pub use client::LocalDaemonClient;
 pub use harness::{run_local_harness, LocalHarnessReport};

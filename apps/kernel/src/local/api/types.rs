@@ -91,4 +91,5 @@ pub use workspace::*;
 /// Version 333 carries definition-derived executable path entries for worker setup.
 /// Version 334 carries kernel-authoritative managed-target resource telemetry.
 /// Version 335 adds measured CPU utilization and its sample window to that telemetry.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 335;
+/// Version 336 adds kernel-verified installed release identity to resource telemetry.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 336;
