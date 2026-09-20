@@ -230,6 +230,12 @@ absence of another user report cannot close an item.
   the full fresh-machine Path-1 acceptance drill. Record exact commits,
   commands, results, resource samples, cleanup, and retained evidence before
   marking any ledger item complete.
+- [ ] `MP-11` Maintain a code-level inventory of every managed-only branch,
+  environment variable, service restriction, path filter, error mapping, and
+  client projection. Remove each behavior difference or prove that it belongs
+  to the two allowed exceptions: signed release deployment or mandatory
+  automatic shutdown. The audit must find inconsistencies proactively rather
+  than wait for users to report them.
 
 ### Locked Path-1 decisions
 
@@ -283,7 +289,8 @@ Use this checklist at every handoff, resumed turn, reviewer pass, deployment,
 and plan-level status report. Its purpose is simple: the parity contract must
 not shrink when the immediate symptom changes.
 
-- Reconcile every `MP-*` item against the current exact commits, open PRs,
+- Reconcile every item from `MP-01` through `MP-11` against the current exact
+  commits, open PRs,
   reviewer result, tests, live evidence, and cleanup record. Report an item as
   open when any one of those is missing.
 - Treat the disposable Path-1 VM as the isolation boundary. Do not restore
@@ -1553,6 +1560,8 @@ CHA-16 is complete only when:
 - vault-backed public-service work passes leak scans
 - the OpenShip-backed Chariox managed-machine drill passes from provisioning
   through teardown
+- every managed-parity ledger item from `MP-01` through `MP-11` is closed with
+  exact-head review, focused tests, fresh-machine evidence, and cleanup proof
 - disposable Cloud-VM workers pass provider-neutral Path-1 allocation,
   enrollment, no-Bubblewrap ordinary-kernel provider launch, arbitrary
   accessible cwd and filesystem parity, Codex, Claude, and OpenCode execution,
