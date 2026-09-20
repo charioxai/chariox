@@ -1,0 +1,1012 @@
+const DEFAULT_MAX_EVENTS = 2_048;
+const MAX_MAX_EVENTS = 16_384;
+const DEFAULT_MAX_BYTES = 1_048_576;
+const MAX_MAX_BYTES = 16 * 1_024 * 1_024;
+const DEFAULT_MAX_EVENT_BYTES = 64 * 1_024;
+const MAX_MAX_EVENT_BYTES = 256 * 1_024;
+const DEFAULT_MAX_SERIALIZED_BYTES = 512 * 1_024;
+const MAX_MAX_SERIALIZED_BYTES = 2 * 1_024 * 1_024;
+const DEFAULT_POLL_LIMIT = 100;
+const MAX_POLL_LIMIT = 200;
+const MAX_ID_BYTES = 256;
+const MAX_URL_BYTES = 2_048;
+const MAX_FILENAME_BYTES = 255;
+const MAX_SEEN_KEYS = 65_536;
+const MAX_SERIALIZATION_NODES = 4_096;
+const REDACTED = "[redacted]";
+
+const UTF8_ENCODER = typeof TextEncoder === "function" ? new TextEncoder() : null;
+
+export const BROWSER_EVENT_LIMITS = Object.freeze({
+  defaultMaxEvents: DEFAULT_MAX_EVENTS,
+  maxMaxEvents: MAX_MAX_EVENTS,
+  defaultMaxBytes: DEFAULT_MAX_BYTES,
+  maxMaxBytes: MAX_MAX_BYTES,
+  defaultMaxEventBytes: DEFAULT_MAX_EVENT_BYTES,
+  maxMaxEventBytes: MAX_MAX_EVENT_BYTES,
+  defaultMaxSerializedBytes: DEFAULT_MAX_SERIALIZED_BYTES,
+  maxMaxSerializedBytes: MAX_MAX_SERIALIZED_BYTES,
+  defaultPollLimit: DEFAULT_POLL_LIMIT,
+  maxPollLimit: MAX_POLL_LIMIT,
+});
+
+export const DEFAULT_EVENT_CAPACITY = DEFAULT_MAX_EVENTS;
+export const MAX_EVENT_CAPACITY = MAX_MAX_EVENTS;
+export const DEFAULT_EVENT_BYTES = DEFAULT_MAX_BYTES;
+export const MAX_EVENT_BYTES = MAX_MAX_BYTES;
+
+export const BROWSER_EVENT_KINDS = Object.freeze([
+  "console",
+  "network_request",
+  "network_response",
+  "network_failed",
+  "page_navigated",
+  "dom_content_loaded",
+  "page_loaded",
+  "page_lifecycle",
+  "frame_attached",
+  "frame_detached",
+  "dialog_opened",
+  "dialog_closed",
+  "target_created",
+  "target_changed",
+  "target_destroyed",
+  "target_crashed",
+  "download_started",
+  "download_progress",
+  "browser_connected",
+  "browser_disconnected",
+]);
+
+const EVENT_KIND_SET = new Set(BROWSER_EVENT_KINDS);
+const TARGET_LIFECYCLE_KINDS = new Set([
+  "target_created",
+  "target_changed",
+  "target_destroyed",
+  "target_crashed",
+  "page_navigated",
+]);
+const DOCUMENT_LIFECYCLE_KINDS = new Set([
+  "page_navigated",
+  "target_destroyed",
+  "target_crashed",
+]);
+
+export class BrowserEventError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = "BrowserEventError";
+    this.code = code;
+  }
+}
+
+export class BrowserEventJournal {
+  constructor(options = {}) {
+    const maxEvents =
+      options.maxEvents ?? options.maxCount ?? options.maxEventCount ?? options.capacity ?? DEFAULT_MAX_EVENTS;
+    const maxBytes = options.maxBytes ?? options.byteBudget ?? DEFAULT_MAX_BYTES;
+    const maxEventBytes =
+      options.maxEventBytes ?? options.eventBytes ?? Math.min(DEFAULT_MAX_EVENT_BYTES, maxBytes);
+    const maxSerializedBytes =
+      options.maxSerializedBytes ?? options.serializationBytes ?? DEFAULT_MAX_SERIALIZED_BYTES;
+
+    validateLimit("browser event count", maxEvents, MAX_MAX_EVENTS, "browser_event_capacity_invalid");
+    validateLimit("browser event byte budget", maxBytes, MAX_MAX_BYTES, "browser_event_bytes_invalid");
+    validateLimit(
+      "browser event size",
+      maxEventBytes,
+      MAX_MAX_EVENT_BYTES,
+      "browser_event_size_invalid",
+    );
+    validateLimit(
+      "browser event serialization budget",
+      maxSerializedBytes,
+      MAX_MAX_SERIALIZED_BYTES,
+      "browser_event_serialization_invalid",
+    );
+    if (maxEventBytes > maxBytes) {
+      throw new BrowserEventError(
+        "browser_event_size_invalid",
+        "browser event size cannot exceed the journal byte budget",
+      );
+    }
+
+    this.maxEvents = maxEvents;
+    this.capacity = maxEvents;
+    this.maxBytes = maxBytes;
+    this.maxEventBytes = maxEventBytes;
+    this.maxSerializedBytes = maxSerializedBytes;
+    this.events = [];
+    this.bytes = 0;
+    this.nextSequenceId = 1;
+    this.browserGeneration = 0;
+    this.invalidTargets = new Set();
+    this.invalidDocuments = new Set();
+    this.targetDocuments = new Map();
+    this.seen = new Map();
+  }
+
+  get size() {
+    return this.events.length;
+  }
+
+  get byteLength() {
+    return this.bytes;
+  }
+
+  cursor() {
+    return this.nextSequenceId - 1;
+  }
+
+  record(input, context = {}) {
+    if (input?.method) return this.recordCdp(input, context);
+
+    const generation = this._acceptGeneration(input, context);
+    if (generation === null) return null;
+    const mapped = mapDirectEvent(input, context);
+    if (!mapped) return null;
+    return this._recordMapped(mapped, {
+      generation,
+      source: input,
+      context,
+    });
+  }
+
+  append(input, context = {}) {
+    return this.record(input, context);
+  }
+
+  recordCdp(message, context = {}) {
+    const generation = this._acceptGeneration(message, context);
+    if (generation === null) return null;
+    const mapped = mapCdpEvent(message, context);
+    if (!mapped) return null;
+    return this._recordMapped(mapped, {
+      generation,
+      source: message,
+      context,
+    });
+  }
+
+  poll({ cursor = 0, limit = DEFAULT_POLL_LIMIT, browserGeneration, generation, actorId, tabId } = {}) {
+    if (!Number.isSafeInteger(cursor) || cursor < 0) {
+      throw new BrowserEventError(
+        "browser_event_cursor_invalid",
+        "browser event cursor must be a non-negative integer",
+      );
+    }
+    validateLimit("browser event limit", limit, MAX_POLL_LIMIT, "browser_event_limit_invalid");
+
+    const expectedGeneration = browserGeneration ?? generation ?? this.browserGeneration;
+    const currentCursor = this.cursor();
+    const oldestEventId = this.events[0]?.sequence_id ?? this.nextSequenceId;
+    if (
+      expectedGeneration !== this.browserGeneration ||
+      cursor > currentCursor ||
+      (this.events.length > 0 && cursor + 1 < oldestEventId)
+    ) {
+      return this._boundedBatch({
+        browser_generation: this.browserGeneration,
+        events: [],
+        next_cursor: currentCursor,
+        replay_gap: true,
+      });
+    }
+
+    const wantedActor = normalizeIdentity(actorId);
+    const wantedTab = normalizeIdentity(tabId);
+    const events = this.events
+      .filter((event) => event.sequence_id > cursor)
+      .filter((event) => wantedActor === null || event.actor_id === wantedActor)
+      .filter((event) => wantedTab === null || event.tab_id === wantedTab)
+      .slice(0, limit)
+      .map(cloneJsonValue);
+
+    return this._boundedBatch({
+      browser_generation: this.browserGeneration,
+      events,
+      next_cursor: events.at(-1)?.sequence_id ?? currentCursor,
+      replay_gap: false,
+    });
+  }
+
+  snapshot() {
+    return this._boundedBatch({
+      browser_generation: this.browserGeneration,
+      events: this.events.map(cloneJsonValue),
+      next_cursor: this.cursor(),
+      replay_gap: false,
+    });
+  }
+
+  serialize(options = {}) {
+    const maxBytes = options.maxBytes ?? this.maxSerializedBytes;
+    validateLimit(
+      "browser event serialization budget",
+      maxBytes,
+      MAX_MAX_SERIALIZED_BYTES,
+      "browser_event_serialization_invalid",
+    );
+    const value = Number.isSafeInteger(options.cursor)
+      ? this.poll(options)
+      : this.snapshot();
+    return boundedSerialize(value, maxBytes);
+  }
+
+  toJSON() {
+    return this.snapshot();
+  }
+
+  invalidateTarget(targetOrOptions, options = {}) {
+    const input = identityOptions(targetOrOptions, options);
+    const targetId = normalizeIdentity(input.targetId ?? input.target_id);
+    if (targetId === null || !this._acceptInvalidationGeneration(input)) return false;
+    this.invalidTargets.add(targetId);
+    const knownDocument = this.targetDocuments.get(targetId);
+    if (knownDocument) this.invalidDocuments.add(knownDocument);
+    if (input.documentId ?? input.document_id) {
+      const documentId = normalizeIdentity(input.documentId ?? input.document_id);
+      if (documentId) this.invalidDocuments.add(documentId);
+    }
+    return true;
+  }
+
+  invalidateDocument(documentOrOptions, options = {}) {
+    const input = identityOptions(documentOrOptions, options);
+    const documentId = normalizeIdentity(input.documentId ?? input.document_id ?? input.id);
+    if (documentId === null || !this._acceptInvalidationGeneration(input)) return false;
+    this.invalidDocuments.add(documentId);
+    return true;
+  }
+
+  restoreTarget(targetId) {
+    const normalized = normalizeIdentity(targetId);
+    if (normalized === null) return false;
+    const wasInvalid = this.invalidTargets.delete(normalized);
+    if (wasInvalid) this._clearSeenFor({ targetId: normalized });
+    return true;
+  }
+
+  restoreDocument(documentId) {
+    const normalized = normalizeIdentity(documentId);
+    if (normalized === null) return false;
+    const wasInvalid = this.invalidDocuments.delete(normalized);
+    if (wasInvalid) this._clearSeenFor({ documentId: normalized });
+    return true;
+  }
+
+  isTargetInvalid(targetId) {
+    return this.invalidTargets.has(normalizeIdentity(targetId));
+  }
+
+  isDocumentInvalid(documentId) {
+    return this.invalidDocuments.has(normalizeIdentity(documentId));
+  }
+
+  _acceptGeneration(source, context) {
+    const incoming = readGeneration(context) ?? readGeneration(source);
+    if (incoming === null && this.browserGeneration === 0) return null;
+    if (incoming === null) return this.browserGeneration;
+    if (this.browserGeneration === 0) {
+      this._resetGeneration(incoming);
+      return incoming;
+    }
+    if (incoming < this.browserGeneration) return null;
+    if (incoming > this.browserGeneration) this._resetGeneration(incoming);
+    return this.browserGeneration;
+  }
+
+  _resetGeneration(generation) {
+    this.browserGeneration = generation;
+    this.events = [];
+    this.bytes = 0;
+    this.nextSequenceId = 1;
+    this.invalidTargets.clear();
+    this.invalidDocuments.clear();
+    this.targetDocuments.clear();
+    this.seen.clear();
+  }
+
+  _acceptInvalidationGeneration(input) {
+    const generation = readGeneration(input);
+    if (generation === null) return this.browserGeneration > 0;
+    if (this.browserGeneration === 0) {
+      this._resetGeneration(generation);
+      return true;
+    }
+    return generation === this.browserGeneration;
+  }
+
+  _recordMapped(mapped, { generation, source, context }) {
+    this._prepareLifecycle(mapped);
+    if (this._isInvalid(mapped)) return null;
+
+    const dedupKey = makeDedupKey(source, mapped, generation);
+    const prior = this.seen.get(dedupKey);
+    if (prior) return cloneJsonValue(prior.event);
+
+    const sequenceId = this.nextSequenceId;
+    const baseEvent = {
+      sequence_id: sequenceId,
+      event_id: sequenceId,
+      browser_generation: generation,
+      actor_id: mapped.actorId ?? null,
+      tab_id: mapped.tabId ?? null,
+      target_id: mapped.targetId ?? null,
+      document_id: mapped.documentId ?? null,
+      kind: mapped.kind,
+      data: mapped.data,
+    };
+    const event = fitEvent(baseEvent, this.maxEventBytes);
+    if (!event) return null;
+    const eventBytes = utf8ByteLength(stableStringify(event));
+    if (eventBytes > this.maxBytes) return null;
+
+    while (
+      this.events.length >= this.maxEvents ||
+      (this.events.length > 0 && this.bytes + eventBytes > this.maxBytes)
+    ) {
+      const evicted = this.events.shift();
+      this.bytes -= utf8ByteLength(stableStringify(evicted));
+      this._forgetSeen(evicted);
+    }
+    if (this.bytes + eventBytes > this.maxBytes) return null;
+
+    this.events.push(event);
+    this.bytes += eventBytes;
+    this.nextSequenceId += 1;
+    this.seen.set(dedupKey, {
+      event,
+      targetId: event.target_id,
+      documentId: event.document_id,
+    });
+    this._trimSeen();
+    if (event.target_id && event.document_id) {
+      this.targetDocuments.set(event.target_id, event.document_id);
+    }
+    this._finishLifecycle(mapped);
+    return cloneJsonValue(event);
+  }
+
+  _prepareLifecycle(mapped) {
+    if (mapped.kind === "target_created" || mapped.kind === "target_changed") {
+      if (mapped.targetId) this.restoreTarget(mapped.targetId);
+      return;
+    }
+    if (mapped.kind !== "page_navigated") return;
+    if (mapped.targetId) {
+      const oldDocument = this.targetDocuments.get(mapped.targetId);
+      if (oldDocument && oldDocument !== mapped.documentId) {
+        this.invalidateDocument(oldDocument);
+      }
+      this.restoreTarget(mapped.targetId);
+    }
+    if (mapped.documentId) this.restoreDocument(mapped.documentId);
+  }
+
+  _finishLifecycle(mapped) {
+    if (mapped.kind === "target_destroyed" || mapped.kind === "target_crashed") {
+      if (mapped.targetId) this.invalidateTarget(mapped.targetId);
+      if (mapped.documentId) this.invalidateDocument(mapped.documentId);
+    }
+  }
+
+  _isInvalid(mapped) {
+    if (
+      mapped.targetId &&
+      this.invalidTargets.has(mapped.targetId) &&
+      !TARGET_LIFECYCLE_KINDS.has(mapped.kind)
+    ) {
+      return true;
+    }
+    return (
+      mapped.documentId &&
+      this.invalidDocuments.has(mapped.documentId) &&
+      !DOCUMENT_LIFECYCLE_KINDS.has(mapped.kind)
+    );
+  }
+
+  _clearSeenFor({ targetId, documentId }) {
+    for (const [key, entry] of this.seen) {
+      if (
+        (targetId && entry.targetId === targetId) ||
+        (documentId && entry.documentId === documentId)
+      ) {
+        this.seen.delete(key);
+      }
+    }
+  }
+
+  _forgetSeen(event) {
+    for (const [key, entry] of this.seen) {
+      if (entry.event.sequence_id === event.sequence_id) this.seen.delete(key);
+    }
+  }
+
+  _trimSeen() {
+    while (this.seen.size > Math.min(MAX_SEEN_KEYS, Math.max(64, this.maxEvents * 4))) {
+      this.seen.delete(this.seen.keys().next().value);
+    }
+  }
+
+  _boundedBatch(batch) {
+    let events = batch.events.map(cloneJsonValue);
+    let result = {
+      browser_generation: batch.browser_generation,
+      events,
+      next_cursor: batch.next_cursor,
+      replay_gap: batch.replay_gap,
+    };
+    while (events.length > 0 && utf8ByteLength(stableStringify(result)) > this.maxSerializedBytes) {
+      events = events.slice(1);
+      result = {
+        browser_generation: batch.browser_generation,
+        events,
+        next_cursor: events.at(-1)?.sequence_id ?? batch.next_cursor,
+        replay_gap: batch.replay_gap || events.length === 0,
+      };
+    }
+    if (utf8ByteLength(stableStringify(result)) > this.maxSerializedBytes) {
+      return {
+        browser_generation: batch.browser_generation,
+        events: [],
+        next_cursor: batch.next_cursor,
+        replay_gap: true,
+      };
+    }
+    return result;
+  }
+}
+
+export function sanitizeUrl(value) {
+  if (typeof value !== "string" || value.length === 0) return "";
+  if (value.length > 16_384) return "[redacted]";
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      const pathname = parsed.pathname || "/";
+      return boundedString(`${parsed.protocol}//${parsed.host}${pathname}`, MAX_URL_BYTES);
+    }
+    if (parsed.protocol === "about:") {
+      return boundedString(value.split(/[?#]/, 1)[0], 128);
+    }
+    return boundedString(parsed.protocol, 32);
+  } catch {
+    return "[invalid]";
+  }
+}
+
+export const sanitizedUrl = sanitizeUrl;
+
+export function redactHeaders(headers, { maxHeaders = 64 } = {}) {
+  if (!isRecord(headers)) return {};
+  const result = {};
+  const names = Object.keys(headers)
+    .sort()
+    .slice(0, Math.max(0, Math.min(64, maxHeaders)));
+  for (const name of names) {
+    const normalized = boundedString(name.toLowerCase(), 128);
+    if (!normalized || isSensitiveKey(normalized)) continue;
+    result[normalized] = REDACTED;
+  }
+  return result;
+}
+
+export function redactValue(key, value, maxBytes = MAX_URL_BYTES) {
+  if (isSensitiveKey(key)) return REDACTED;
+  if (typeof value === "string") return boundedString(value, maxBytes);
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return null;
+}
+
+export function boundedSerialize(value, maxBytes = DEFAULT_MAX_SERIALIZED_BYTES) {
+  validateLimit(
+    "browser event serialization budget",
+    maxBytes,
+    MAX_MAX_SERIALIZED_BYTES,
+    "browser_event_serialization_invalid",
+  );
+  const serialized = stableStringify(value);
+  if (utf8ByteLength(serialized) <= maxBytes) return serialized;
+  const marker = '{"truncated":true}';
+  if (utf8ByteLength(marker) <= maxBytes) return marker;
+  return maxBytes >= 4 ? "null" : "";
+}
+
+function mapCdpEvent(message, context) {
+  if (!isRecord(message)) return null;
+  const method = typeof message.method === "string" ? message.method : "";
+  const params = isRecord(message.params) ? message.params : {};
+  const base = resolveAttribution(message, context);
+  const hasOverride = (name, overrides) =>
+    Object.prototype.hasOwnProperty.call(overrides, name) && overrides[name] !== undefined;
+  const makeEvent = (kind, data, overrides = {}) => ({
+    kind,
+    actorId: hasOverride("actorId", overrides) ? overrides.actorId : base.actorId,
+    tabId: hasOverride("tabId", overrides) ? overrides.tabId : base.tabId,
+    targetId: hasOverride("targetId", overrides) ? overrides.targetId : base.targetId,
+    documentId: hasOverride("documentId", overrides) ? overrides.documentId : base.documentId,
+    data,
+    sourceId: explicitSourceId(message, params),
+  });
+
+  switch (method) {
+    case "Runtime.consoleAPICalled":
+      return makeEvent("console", {
+        console_type: boundedString(params.type, 64),
+        argument_count: boundedCount(params.args?.length),
+      });
+    case "Network.requestWillBeSent":
+      return makeEvent("network_request", {
+        request_id: safeIdentity(params.requestId),
+        method: boundedString(params.request?.method, 32),
+        url: sanitizeUrl(params.request?.url),
+        resource_type: boundedString(params.type, 64),
+      });
+    case "Network.responseReceived":
+      return makeEvent("network_response", {
+        request_id: safeIdentity(params.requestId),
+        status: boundedStatus(params.response?.status),
+        url: sanitizeUrl(params.response?.url),
+        resource_type: boundedString(params.type, 64),
+        mime_type: boundedString(params.response?.mimeType, 128),
+      });
+    case "Network.loadingFailed":
+      return makeEvent("network_failed", {
+        request_id: safeIdentity(params.requestId),
+        error_text: sanitizedNetworkError(params.errorText),
+        canceled: params.canceled === true,
+        resource_type: boundedString(params.type, 64),
+      });
+    case "Page.frameNavigated": {
+      const frame = isRecord(params.frame) ? params.frame : {};
+      if (frame.parentId) return null;
+      const targetId = base.targetId ?? safeIdentity(frame.targetId);
+      const attribution = resolveAttribution(message, context, {
+        targetId,
+        documentId: safeIdentity(frame.loaderId),
+      });
+      return makeEvent(
+        "page_navigated",
+        { url: sanitizeUrl(frame.url) },
+        attribution,
+      );
+    }
+    case "Page.domContentEventFired":
+      return makeEvent("dom_content_loaded", {});
+    case "Page.loadEventFired":
+      return makeEvent("page_loaded", {});
+    case "Page.lifecycleEvent":
+      return makeEvent("page_lifecycle", {
+        lifecycle_name: boundedString(params.name, 64),
+      });
+    case "Page.frameAttached":
+      return makeEvent("frame_attached", { frame_id: safeIdentity(params.frameId) });
+    case "Page.frameDetached":
+      return makeEvent("frame_detached", { frame_id: safeIdentity(params.frameId) });
+    case "Page.javascriptDialogOpening":
+      return makeEvent("dialog_opened", {
+        dialog_type: boundedString(params.type, 32),
+        has_message: typeof params.message === "string" && params.message.length > 0,
+        has_default_prompt:
+          typeof params.defaultPrompt === "string" && params.defaultPrompt.length > 0,
+      });
+    case "Page.javascriptDialogClosed":
+      return makeEvent("dialog_closed", {
+        result: params.result === true,
+        user_input_present:
+          typeof params.userInput === "string" && params.userInput.length > 0,
+      });
+    case "Target.targetCreated":
+    case "Target.targetInfoChanged": {
+      const target = isRecord(params.targetInfo) ? params.targetInfo : {};
+      if (target.type !== "page") return null;
+      const targetId = safeIdentity(target.targetId);
+      const attribution = resolveAttribution(message, context, { targetId, documentId: null });
+      return makeEvent(
+        method === "Target.targetCreated" ? "target_created" : "target_changed",
+        { url: sanitizeUrl(target.url) },
+        attribution,
+      );
+    }
+    case "Target.targetDestroyed":
+      return makeEvent("target_destroyed", {}, { targetId: safeIdentity(params.targetId), documentId: null });
+    case "Target.targetCrashed":
+      return makeEvent("target_crashed", {
+        status: boundedString(params.status, 64),
+        error_code: boundedErrorCode(params.errorCode),
+      }, { targetId: safeIdentity(params.targetId) ?? base.targetId });
+    case "Inspector.targetCrashed":
+      return makeEvent("target_crashed", {
+        status: "crashed",
+        error_code: null,
+      });
+    case "Browser.downloadWillBegin": {
+      const targetId = safeCall(context?.targetIdForFrame, params.frameId) ?? base.targetId;
+      const attribution = resolveAttribution(message, context, { targetId, documentId: null });
+      return makeEvent("download_started", {
+        guid: safeIdentity(params.guid),
+        url: sanitizeUrl(params.url),
+        suggested_filename: sanitizedFilename(params.suggestedFilename),
+      }, attribution);
+    }
+    case "Browser.downloadProgress": {
+      const targetId = safeCall(context?.targetIdForDownload, params.guid) ?? base.targetId;
+      const reason = safeCall(context?.downloadCancellationReason, params.guid);
+      return makeEvent("download_progress", {
+        guid: safeIdentity(params.guid),
+        state: boundedString(params.state, 32),
+        received_bytes: boundedNumber(params.receivedBytes),
+        total_bytes: boundedNumber(params.totalBytes),
+        ...(safeDownloadReason(reason) ? { cancellation_reason: safeDownloadReason(reason) } : {}),
+      }, { targetId, documentId: null });
+    }
+    case "Chariox.browserConnected":
+      return makeEvent("browser_connected", {}, { targetId: null, documentId: null });
+    case "Chariox.browserDisconnected":
+      return makeEvent("browser_disconnected", {}, { targetId: null, documentId: null });
+    default:
+      return null;
+  }
+}
+
+function mapDirectEvent(input, context) {
+  if (!isRecord(input)) return null;
+  const kind = typeof input.kind === "string" ? input.kind : input.type;
+  if (!EVENT_KIND_SET.has(kind)) return null;
+  const data = isRecord(input.data) ? input.data : input;
+  const base = resolveAttribution(input, context, {
+    actorId: input.actorId ?? input.actor_id,
+    tabId: input.tabId ?? input.tab_id,
+    targetId: input.targetId ?? input.target_id,
+    documentId: input.documentId ?? input.document_id,
+  });
+  return {
+    kind,
+    actorId: base.actorId,
+    tabId: base.tabId,
+    targetId: base.targetId,
+    documentId: base.documentId,
+    data: mapDirectData(kind, data),
+    sourceId: explicitSourceId(input, data),
+  };
+}
+
+function mapDirectData(kind, data) {
+  switch (kind) {
+    case "console":
+      return {
+        console_type: boundedString(data.console_type ?? data.consoleType ?? data.type, 64),
+        argument_count: boundedCount(data.argument_count ?? data.argumentCount ?? data.args?.length),
+      };
+    case "network_request":
+      return {
+        request_id: safeIdentity(data.request_id ?? data.requestId),
+        method: boundedString(data.method, 32),
+        url: sanitizeUrl(data.url),
+        resource_type: boundedString(data.resource_type ?? data.resourceType, 64),
+      };
+    case "network_response":
+      return {
+        request_id: safeIdentity(data.request_id ?? data.requestId),
+        status: boundedStatus(data.status),
+        url: sanitizeUrl(data.url),
+        resource_type: boundedString(data.resource_type ?? data.resourceType, 64),
+        mime_type: boundedString(data.mime_type ?? data.mimeType, 128),
+      };
+    case "network_failed":
+      return {
+        request_id: safeIdentity(data.request_id ?? data.requestId),
+        error_text: sanitizedNetworkError(data.error_text ?? data.errorText),
+        canceled: data.canceled === true,
+        resource_type: boundedString(data.resource_type ?? data.resourceType, 64),
+      };
+    case "page_navigated":
+    case "target_created":
+    case "target_changed":
+      return { url: sanitizeUrl(data.url) };
+    case "page_lifecycle":
+      return { lifecycle_name: boundedString(data.lifecycle_name ?? data.name, 64) };
+    case "frame_attached":
+    case "frame_detached":
+      return { frame_id: safeIdentity(data.frame_id ?? data.frameId) };
+    case "dom_content_loaded":
+    case "page_loaded":
+    case "target_destroyed":
+    case "browser_connected":
+    case "browser_disconnected":
+      return {};
+    case "dialog_opened":
+      return {
+        dialog_type: boundedString(data.dialog_type ?? data.type, 32),
+        has_message: data.has_message === true || data.hasMessage === true,
+        has_default_prompt: data.has_default_prompt === true || data.hasDefaultPrompt === true,
+      };
+    case "dialog_closed":
+      return {
+        result: data.result === true,
+        user_input_present: data.user_input_present === true || data.userInputPresent === true,
+      };
+    case "target_crashed":
+      return {
+        status: boundedString(data.status, 64),
+        error_code: boundedErrorCode(data.error_code ?? data.errorCode),
+      };
+    case "download_started":
+      return {
+        guid: safeIdentity(data.guid),
+        url: sanitizeUrl(data.url),
+        suggested_filename: sanitizedFilename(data.suggested_filename ?? data.suggestedFilename),
+      };
+    case "download_progress": {
+      const reason = data.cancellation_reason ?? data.cancellationReason;
+      return {
+        guid: safeIdentity(data.guid),
+        state: boundedString(data.state, 32),
+        received_bytes: boundedNumber(data.received_bytes ?? data.receivedBytes),
+        total_bytes: boundedNumber(data.total_bytes ?? data.totalBytes),
+        ...(safeDownloadReason(reason) ? { cancellation_reason: safeDownloadReason(reason) } : {}),
+      };
+    }
+    default:
+      return {};
+  }
+}
+
+function resolveAttribution(message, context = {}, overrides = {}) {
+  const sessionId = message?.sessionId ?? message?.session_id;
+  const frameId = message?.params?.frameId ?? message?.params?.frame_id;
+  const hasOverride = (name) =>
+    Object.prototype.hasOwnProperty.call(overrides, name) && overrides[name] !== undefined;
+  const targetId = normalizeIdentity(
+    hasOverride("targetId")
+      ? overrides.targetId
+      : safeCall(context.targetIdForSession, sessionId) ??
+        safeCall(context.targetIdForFrame, frameId) ??
+        context.targetId ??
+        context.target_id ??
+        message?.targetId ??
+        message?.target_id,
+  );
+  const documentId = normalizeIdentity(
+    hasOverride("documentId")
+      ? overrides.documentId
+      : safeCall(context.documentIdForTarget, targetId) ??
+        context.documentId ??
+        context.document_id ??
+        message?.documentId ??
+        message?.document_id,
+  );
+  const tabId = normalizeIdentity(
+    hasOverride("tabId")
+      ? overrides.tabId
+      : safeCall(context.tabIdForTarget, targetId) ??
+        safeCall(context.tabIdForSession, sessionId) ??
+        safeCall(context.tabIdForFrame, frameId) ??
+        context.tabId ??
+        context.tab_id ??
+        message?.tabId ??
+        message?.tab_id,
+  );
+  const actorId = normalizeIdentity(
+    hasOverride("actorId")
+      ? overrides.actorId
+      : safeCall(context.actorIdForTarget, targetId) ??
+        safeCall(context.actorIdForSession, sessionId) ??
+        context.actorId ??
+        context.actor_id ??
+        message?.actorId ??
+        message?.actor_id,
+  );
+  return { actorId, tabId, targetId, documentId };
+}
+
+function explicitSourceId(message, params) {
+  const candidates = [
+    message?.eventId,
+    message?.event_id,
+    message?.sequenceId,
+    message?.sequence_id,
+    message?.meta?.eventId,
+    params?.eventId,
+    params?.event_id,
+    params?.sequenceId,
+    params?.sequence_id,
+    params?.timestamp,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.length > 0) return boundedString(candidate, MAX_ID_BYTES);
+    if (Number.isSafeInteger(candidate) && candidate >= 0) return String(candidate);
+  }
+  return null;
+}
+
+function makeDedupKey(source, mapped, generation) {
+  const sourceId = mapped.sourceId;
+  const identity = {
+    generation,
+    actor_id: mapped.actorId,
+    tab_id: mapped.tabId,
+    target_id: mapped.targetId,
+    document_id: mapped.documentId,
+    kind: mapped.kind,
+    source_id: sourceId,
+    source_method: source?.method ?? source?.kind ?? source?.type ?? null,
+  };
+  if (sourceId === null) identity.data = mapped.data;
+  return stableStringify(identity);
+}
+
+function fitEvent(event, maxBytes) {
+  let candidate = event;
+  if (utf8ByteLength(stableStringify(candidate)) <= maxBytes) return candidate;
+  candidate = { ...event, data: {}, data_truncated: true };
+  if (utf8ByteLength(stableStringify(candidate)) <= maxBytes) return candidate;
+  candidate = {
+    sequence_id: event.sequence_id,
+    event_id: event.event_id,
+    browser_generation: event.browser_generation,
+    kind: event.kind,
+    data: {},
+    truncated: true,
+  };
+  return utf8ByteLength(stableStringify(candidate)) <= maxBytes ? candidate : null;
+}
+
+function fitValue(value, depth = 0, seen = new Set(), state = { nodes: 0 }) {
+  state.nodes += 1;
+  if (state.nodes > MAX_SERIALIZATION_NODES) return "[truncated]";
+  if (depth > 8) return "[truncated]";
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "string") return boundedString(value, MAX_URL_BYTES);
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "bigint") return null;
+  if (typeof value !== "object") return null;
+  if (seen.has(value)) return "[circular]";
+  seen.add(value);
+  if (Array.isArray(value)) {
+    const result = value
+      .slice(0, 128)
+      .map((entry) => fitValue(entry, depth + 1, seen, state));
+    seen.delete(value);
+    return result;
+  }
+  const result = {};
+  for (const key of Object.keys(value).sort().slice(0, 128)) {
+    if (isSensitiveKey(key)) continue;
+    try {
+      result[key] = fitValue(value[key], depth + 1, seen, state);
+    } catch {
+      result[key] = "[unavailable]";
+    }
+  }
+  seen.delete(value);
+  return result;
+}
+
+function stableStringify(value) {
+  return JSON.stringify(fitValue(value));
+}
+
+function cloneJsonValue(value) {
+  return JSON.parse(stableStringify(value));
+}
+
+function utf8ByteLength(value) {
+  if (UTF8_ENCODER) return UTF8_ENCODER.encode(value).byteLength;
+  return unescape(encodeURIComponent(value)).length;
+}
+
+function boundedString(value, maxBytes) {
+  if (typeof value !== "string") return "";
+  const limit = Number.isSafeInteger(maxBytes) && maxBytes > 0 ? maxBytes : 1;
+  let result = "";
+  let bytes = 0;
+  for (const character of value) {
+    const codePoint = character.codePointAt(0);
+    const safeCharacter = codePoint < 0x20 || codePoint === 0x7f ? "�" : character;
+    const width = utf8ByteLength(safeCharacter);
+    if (bytes + width > limit) break;
+    result += safeCharacter;
+    bytes += width;
+  }
+  return result;
+}
+
+function safeIdentity(value) {
+  const normalized = normalizeIdentity(value);
+  return normalized === null ? null : boundedString(normalized, MAX_ID_BYTES);
+}
+
+function normalizeIdentity(value) {
+  if (typeof value !== "string" || value.length === 0) return null;
+  return boundedString(value, MAX_ID_BYTES);
+}
+
+function boundedCount(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? Math.min(value, 10_000) : 0;
+}
+
+function boundedNumber(value) {
+  return Number.isFinite(value) && value >= 0 ? Math.min(Math.floor(value), Number.MAX_SAFE_INTEGER) : 0;
+}
+
+function boundedStatus(value) {
+  return Number.isFinite(value) && value >= 0 ? Math.min(Math.floor(value), 999) : 0;
+}
+
+function boundedErrorCode(value) {
+  return Number.isSafeInteger(value) ? value : null;
+}
+
+function sanitizedNetworkError(value) {
+  if (typeof value !== "string") return "";
+  return /^net::[A-Z0-9_]+$/.test(value) ? value : REDACTED;
+}
+
+function sanitizedFilename(value) {
+  if (typeof value !== "string") return "";
+  if (value.length > 16_384) return REDACTED;
+  const filename = value.split(/[\\/]/).at(-1);
+  if (/token|secret|password|credential|auth/i.test(filename)) return REDACTED;
+  return boundedString(filename, MAX_FILENAME_BYTES);
+}
+
+function safeDownloadReason(value) {
+  return ["canceled", "interrupted", "user_canceled", "disk_full", "dangerous"].includes(value)
+    ? value
+    : null;
+}
+
+function isSensitiveKey(value) {
+  const key = String(value).toLowerCase().replace(/[^a-z0-9]/g, "");
+  return (
+    key === "authorization" ||
+    key === "proxyauthorization" ||
+    key === "cookie" ||
+    key === "setcookie" ||
+    key === "xcsrftoken" ||
+    key === "csrf" ||
+    key.includes("token") ||
+    key.includes("secret") ||
+    key.includes("password") ||
+    key.includes("credential") ||
+    key.includes("body") ||
+    key.includes("postdata") ||
+    key.includes("userinput") ||
+    key === "prompt" ||
+    key.includes("prompttext") ||
+    key === "defaultprompt"
+  );
+}
+
+function validateLimit(label, value, maximum, code) {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) {
+    throw new BrowserEventError(code, `${label} must be between 1 and ${maximum}`);
+  }
+}
+
+function readGeneration(value) {
+  if (!isRecord(value)) return null;
+  const candidate = value.browserGeneration ?? value.browser_generation ?? value.generation;
+  return Number.isSafeInteger(candidate) && candidate > 0 ? candidate : null;
+}
+
+function identityOptions(value, options) {
+  if (typeof value === "string") return { ...options, targetId: value, id: value };
+  return { ...(isRecord(value) ? value : {}), ...options };
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function safeCall(fn, ...args) {
+  if (typeof fn !== "function") return null;
+  try {
+    return fn(...args);
+  } catch {
+    return null;
+  }
+}
