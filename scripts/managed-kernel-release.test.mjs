@@ -80,6 +80,33 @@ async function withTimeout(promise, message, timeoutMs = 10_000) {
   }
 }
 
+function processGroupId(pid) {
+  const result = spawnSync("ps", ["-o", "pgid=", "-p", String(pid)], { encoding: "utf8" })
+  assert.equal(result.status, 0, result.stderr)
+  const pgid = Number(result.stdout.trim())
+  assert.ok(Number.isSafeInteger(pgid) && pgid > 0, `invalid installer PGID for ${pid}`)
+  return pgid
+}
+
+function killProcessGroup(pgid) {
+  if (!pgid) return
+  try { process.kill(-pgid, "SIGKILL") } catch {}
+}
+
+function processGroupSnapshot(pgid) {
+  const result = spawnSync("ps", ["-eo", "pid=,ppid=,pgid=,sid=,stat=,args="], { encoding: "utf8" })
+  return result.stdout.split("\n").filter((line) => line.trim().split(/\s+/)[2] === String(pgid))
+}
+
+async function waitForProcessGroupExit(pgid, label, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (processGroupSnapshot(pgid).length === 0) return
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 20))
+  }
+  throw new Error(`${label} PGID ${pgid} did not exit: ${processGroupSnapshot(pgid).join(" | ")}`)
+}
+
 function rawPublicKey(publicKey) {
   const der = publicKey.export({ format: "der", type: "spki" })
   return der.subarray(der.length - 32)
@@ -813,11 +840,68 @@ async function createInstallerHarness(root) {
   const bin = join(root, "bin")
   const state = join(root, "command-state")
   const installRoot = join(root, "installed")
+  const chownLog = join(root, "chown.log")
+  const chownPreload = join(root, "chown-preload.mjs")
+  const migrationFaultMarker = join(root, "migration-fault.marker")
   await mkdir(bin, { recursive: true })
   await mkdir(state, { recursive: true })
+  await writeFile(
+    chownPreload,
+    `import fs from "node:fs"
+import { syncBuiltinESMExports } from "node:module"
+import { dirname } from "node:path"
+
+const logPath = ${JSON.stringify(chownLog)}
+const originalChown = fs.promises.chown.bind(fs.promises)
+const originalRename = fs.promises.rename.bind(fs.promises)
+fs.promises.chown = async (path, uid, gid) => {
+  await fs.promises.appendFile(logPath, String(path) + "\\t" + String(uid) + "\\t" + String(gid) + "\\n")
+  if (Number(uid) === 0 && Number(gid) === 0) return originalChown(path, uid, gid)
+}
+async function publishFaultMarker(value) {
+  const marker = process.env.HARNESS_MIGRATION_FAULT_MARKER
+  if (!marker) return
+  const temporary = marker + ".tmp." + process.pid
+  const file = await fs.promises.open(temporary, "wx", 0o600)
+  try {
+    await file.writeFile(value + "\\n")
+    await file.sync()
+  } finally {
+    await file.close()
+  }
+  await originalRename(temporary, marker)
+  const directory = await fs.promises.open(dirname(marker), "r")
+  try {
+    await directory.sync()
+  } finally {
+    await directory.close()
+  }
+}
+let faultInjected = false
+fs.promises.rename = async (source, destination) => {
+  const result = await originalRename(source, destination)
+  const rootRename = process.env.HARNESS_MIGRATION_KILL_AFTER_ROOT_RENAME === "1"
+    && source === process.env.HARNESS_MIGRATION_LEGACY_HOME
+    && destination === process.env.HARNESS_MIGRATION_MANAGED_HOME
+  const controlMove = process.env.HARNESS_MIGRATION_KILL_AFTER_CONTROL_PATH
+    && destination === process.env.HARNESS_MIGRATION_KILL_AFTER_CONTROL_PATH
+  if (!faultInjected && (rootRename || controlMove)) {
+    faultInjected = true
+    await publishFaultMarker(rootRename ? "root-renamed" : "control-moved")
+    process.kill(process.pid, "SIGSTOP")
+  }
+  return result
+}
+syncBuiltinESMExports()
+`,
+  )
   await writeHarnessCommand(join(bin, "id"), `#!/bin/sh
 if [ "\${1:-}" = "-u" ]; then
-  if [ "\${2:-}" = chariox-docker ]; then echo 997; else echo 0; fi
+  if [ "\${2:-}" = chariox-docker ]; then echo 997; elif [ "\${2:-}" = chariox ]; then echo 998; else echo 0; fi
+  exit 0
+fi
+if [ "\${1:-}" = "-g" ]; then
+  if [ "\${2:-}" = chariox-docker ]; then echo 997; elif [ "\${2:-}" = chariox ]; then echo 998; else echo 0; fi
   exit 0
 fi
 if [ "\${1:-}" = "-gn" ]; then
@@ -874,6 +958,15 @@ exec /usr/bin/find "$@"
 if [ -n "\${HARNESS_MUTATE_SOURCE:-}" ]; then
   printf '%s\n' 'mutated after staging' > "$HARNESS_MUTATE_SOURCE"
 fi
+export NODE_OPTIONS="--import=${chownPreload} \${NODE_OPTIONS:-}"
+case "\${1:-}:\${2:-}" in
+  *managed-kernel-home-migration.mjs:apply)
+    if [ "\${HARNESS_MIGRATION_REPLACE_SOURCE:-0}" = 1 ]; then
+      /bin/mv -- "\${HARNESS_MIGRATION_LEGACY_HOME:?}" "\${HARNESS_MIGRATION_LEGACY_HOME:?}.original"
+      /bin/mkdir "\${HARNESS_MIGRATION_LEGACY_HOME:?}"
+    fi
+    ;;
+esac
 exec "${process.execPath}" "$@"
 `)
   await writeHarnessCommand(join(bin, "install"), `#!/usr/bin/env node
@@ -896,7 +989,7 @@ process.exit(result.status ?? 1)
 if [ "$1" = -Tf ]; then echo 'mv -T is not portable' >&2; exit 64; fi
 exec /bin/mv "$@"
 `)
-  return { bin, state, installRoot }
+  return { bin, state, installRoot, chownLog, migrationFaultMarker }
 }
 
 test("managed image installer verifies, installs twice, and rejects seeded runtime state", async (context) => {
@@ -1076,6 +1169,8 @@ test("managed image installer migrates legacy home state without clobbering cano
   await writeFile(join(legacyState, "vault/vault.json"), "legacy-vault\n")
   await writeFile(join(legacyHome, "managed/bootstrap-receipt.json"), "legacy-receipt\n")
   await writeFile(join(legacyHome, "kernels/active/kernel-1.json"), "legacy-presence\n")
+  await chmod(legacyHome, 0o755)
+  await chmod(legacyState, 0o755)
   const env = {
     ...process.env,
     PATH: harness.bin + ":" + process.env.PATH,
@@ -1105,17 +1200,264 @@ test("managed image installer migrates legacy home state without clobbering cano
   )
   assert.equal((await stat(join(harness.installRoot, "home/chariox"))).mode & 0o777, 0o700)
   assert.equal((await stat(join(harness.installRoot, "home/chariox/.chariox"))).mode & 0o777, 0o700)
+  assert.equal((await stat(join(harness.installRoot, "var/lib/chariox/managed"))).uid, 0)
+  assert.equal((await stat(join(harness.installRoot, "var/lib/chariox/managed"))).gid, 0)
+  assert.equal((await stat(join(harness.installRoot, "var/lib/chariox/managed"))).mode & 0o777, 0o700)
+  assert.equal((await stat(join(harness.installRoot, "var/lib/chariox/managed/bootstrap-receipt.json"))).uid, 0)
+  assert.equal((await stat(join(harness.installRoot, "var/lib/chariox/managed/bootstrap-receipt.json"))).gid, 0)
+  assert.equal(
+    (await stat(join(harness.installRoot, "var/lib/chariox/managed/bootstrap-receipt.json"))).mode & 0o777,
+    0o600,
+  )
+  const migrationChowns = await readFile(harness.chownLog, "utf8")
+  assert.match(migrationChowns, new RegExp(`${harness.installRoot}/home/chariox\\t998\\t998`))
+  assert.match(migrationChowns, new RegExp(`${harness.installRoot}/home/chariox/.chariox\\t998\\t998`))
+  assert.equal((await stat(join(harness.installRoot, "var/lib/chariox/kernels/active"))).uid, 0)
+  assert.equal((await stat(join(harness.installRoot, "var/lib/chariox/kernels/active"))).gid, 0)
+  assert.equal((await stat(join(harness.installRoot, "var/lib/chariox/kernels/active"))).mode & 0o777, 0o700)
+  assert.equal((await stat(join(harness.installRoot, "var/lib/chariox/kernels/active/kernel-1.json"))).uid, 0)
+  assert.equal((await stat(join(harness.installRoot, "var/lib/chariox/kernels/active/kernel-1.json"))).gid, 0)
+  assert.equal(
+    (await stat(join(harness.installRoot, "var/lib/chariox/kernels/active/kernel-1.json"))).mode & 0o777,
+    0o600,
+  )
 
   await mkdir(legacyHome, { recursive: true })
   await writeFile(join(legacyHome, "must-remain-untouched"), "collision\n")
   const collision = spawnSync(installer, args, { encoding: "utf8", env })
   assert.equal(collision.status, 1)
-  assert.match(collision.stderr, /both exist; refusing to overwrite either/)
+  assert.match(collision.stderr, /legacy managed kernel home identity changed during migration/)
   assert.equal(await readFile(join(legacyHome, "must-remain-untouched"), "utf8"), "collision\n")
   assert.equal(
     await readFile(join(harness.installRoot, "home/chariox/repositories/repo-1/HEAD"), "utf8"),
     "legacy-repository\n",
   )
+})
+
+test("managed image installer resumes interrupted home migration by identity", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-managed-install-migration-recovery-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const fixture = await makeFixture(root)
+  const output = join(root, "release")
+  const packaged = runPackager({ ...fixture, output })
+  assert.equal(packaged.status, 0, packaged.stderr)
+  const rootfs = join(output, "rootfs")
+  const digest = packaged.stdout.trim()
+
+  const createLegacyCase = async (name) => {
+    const caseRoot = join(root, name)
+    await mkdir(caseRoot, { recursive: true })
+    const harness = await createInstallerHarness(caseRoot)
+    const stateRoot = join(harness.installRoot, "var/lib/chariox")
+    const legacyHome = join(stateRoot, "home")
+    const managedHome = join(harness.installRoot, "home/chariox")
+    const completion = join(stateRoot, "home-migration-complete")
+    await mkdir(join(legacyHome, "repositories/repo-1"), { recursive: true })
+    await mkdir(join(legacyHome, "managed"), { recursive: true })
+    await mkdir(join(legacyHome, "kernels/active"), { recursive: true })
+    await writeFile(join(legacyHome, "repositories/repo-1/HEAD"), "legacy-repository\n")
+    await writeFile(join(legacyHome, "managed/bootstrap-receipt.json"), "legacy-receipt\n")
+    await writeFile(join(legacyHome, "kernels/active/kernel-1.json"), "legacy-presence\n")
+    const env = {
+      ...process.env,
+      PATH: `${harness.bin}:${process.env.PATH}`,
+      HARNESS_STATE: harness.state,
+      CHARIOX_IMAGE_INSTALL_ROOT: harness.installRoot,
+      CHARIOX_IMAGE_INSTALL_LOCK: join(harness.state, "install.lock"),
+    }
+    return {
+      harness,
+      stateRoot,
+      legacyHome,
+      managedHome,
+      completion,
+      faultMarker: harness.migrationFaultMarker,
+      journal: join(stateRoot, "home-migration.json"),
+      controlPath: join(stateRoot, "kernels/active"),
+      args: [rootfs, digest, fixture.trustedPublicKey],
+      env,
+    }
+  }
+
+  const assertMigrated = async (migrationCase) => {
+    assert.equal(await lstat(migrationCase.legacyHome).then(() => true, () => false), false)
+    assert.equal(
+      await readFile(join(migrationCase.managedHome, "repositories/repo-1/HEAD"), "utf8"),
+      "legacy-repository\n",
+    )
+    assert.equal(
+      await readFile(join(migrationCase.stateRoot, "managed/bootstrap-receipt.json"), "utf8"),
+      "legacy-receipt\n",
+    )
+    assert.equal(
+      await readFile(join(migrationCase.controlPath, "kernel-1.json"), "utf8"),
+      "legacy-presence\n",
+    )
+    assert.equal(await readFile(migrationCase.completion, "utf8"), "complete\n")
+    assert.equal((await stat(migrationCase.journal)).uid, 0)
+    assert.equal((await stat(migrationCase.journal)).mode & 0o777, 0o600)
+  }
+
+  const rootRenameCase = await createLegacyCase("after-root-rename")
+  const rootRenameProcess = spawn(installer, rootRenameCase.args, {
+    detached: true,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...rootRenameCase.env,
+      HARNESS_MIGRATION_KILL_AFTER_ROOT_RENAME: "1",
+      HARNESS_MIGRATION_LEGACY_HOME: rootRenameCase.legacyHome,
+      HARNESS_MIGRATION_MANAGED_HOME: rootRenameCase.managedHome,
+      HARNESS_MIGRATION_FAULT_MARKER: rootRenameCase.faultMarker,
+    },
+  })
+  let rootRenameStderr = ""
+  rootRenameProcess.stderr.on("data", (chunk) => { rootRenameStderr += chunk.toString() })
+  const rootRenameExit = once(rootRenameProcess, "exit")
+  const rootRenamePgid = processGroupId(rootRenameProcess.pid)
+  context.after(() => killProcessGroup(rootRenamePgid))
+  try {
+    await waitForPath(rootRenameCase.faultMarker)
+  } catch (error) {
+    killProcessGroup(rootRenamePgid)
+    throw new Error(`${error.message}: ${rootRenameStderr}`)
+  }
+  assert.equal(await readFile(rootRenameCase.faultMarker, "utf8"), "root-renamed\n")
+  killProcessGroup(rootRenamePgid)
+  let rootRenameResult
+  try {
+    rootRenameResult = await withTimeout(
+      rootRenameExit,
+      "root-rename migration interruption timed out",
+    )
+  } catch (error) {
+    killProcessGroup(rootRenamePgid)
+    const state = await Promise.all([
+      lstat(rootRenameCase.managedHome).then(() => "managed", () => "no-managed"),
+      lstat(rootRenameCase.legacyHome).then(() => "legacy", () => "no-legacy"),
+      lstat(rootRenameCase.journal).then(() => "journal", () => "no-journal"),
+      lstat(rootRenameCase.completion).then(() => "complete", () => "no-complete"),
+    ])
+    throw new Error(`${error.message}: ${state.join(",")}; pid=${rootRenameProcess.pid}; stderr=${rootRenameStderr}`)
+  }
+  await waitForProcessGroupExit(rootRenamePgid, "root-rename migration")
+  const [rootRenameCode] = rootRenameResult
+  assert.notEqual(rootRenameCode, 0)
+  assert.equal(await lstat(rootRenameCase.journal).then(() => true, () => false), true)
+  assert.equal(await lstat(rootRenameCase.completion).then(() => true, () => false), false)
+  const rootRenameRetry = spawnSync(installer, rootRenameCase.args, {
+    encoding: "utf8",
+    env: rootRenameCase.env,
+    timeout: 20_000,
+    killSignal: "SIGKILL",
+  })
+  assert.equal(rootRenameRetry.status, 0, rootRenameRetry.stderr)
+  await assertMigrated(rootRenameCase)
+
+  const controlMoveCase = await createLegacyCase("after-control-move")
+  const controlMoveProcess = spawn(installer, controlMoveCase.args, {
+    detached: true,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...controlMoveCase.env,
+      HARNESS_MIGRATION_KILL_AFTER_CONTROL_PATH: controlMoveCase.controlPath,
+      HARNESS_MIGRATION_FAULT_MARKER: controlMoveCase.faultMarker,
+    },
+  })
+  let controlMoveStderr = ""
+  controlMoveProcess.stderr.on("data", (chunk) => { controlMoveStderr += chunk.toString() })
+  const controlMoveExit = once(controlMoveProcess, "exit")
+  const controlMovePgid = processGroupId(controlMoveProcess.pid)
+  context.after(() => killProcessGroup(controlMovePgid))
+  try {
+    await waitForPath(controlMoveCase.faultMarker)
+  } catch (error) {
+    killProcessGroup(controlMovePgid)
+    throw new Error(`${error.message}: ${controlMoveStderr}`)
+  }
+  assert.equal(await readFile(controlMoveCase.faultMarker, "utf8"), "control-moved\n")
+  killProcessGroup(controlMovePgid)
+  let controlMoveResult
+  try {
+    controlMoveResult = await withTimeout(
+      controlMoveExit,
+      "control-state migration interruption timed out",
+    )
+  } catch (error) {
+    killProcessGroup(controlMovePgid)
+    const state = await Promise.all([
+      lstat(controlMoveCase.managedHome).then(() => "managed", () => "no-managed"),
+      lstat(controlMoveCase.legacyHome).then(() => "legacy", () => "no-legacy"),
+      lstat(controlMoveCase.journal).then(() => "journal", () => "no-journal"),
+      lstat(controlMoveCase.controlPath).then(() => "control", () => "no-control"),
+      lstat(controlMoveCase.completion).then(() => "complete", () => "no-complete"),
+    ])
+    throw new Error(`${error.message}: ${state.join(",")}; pid=${controlMoveProcess.pid}; stderr=${controlMoveStderr}`)
+  }
+  await waitForProcessGroupExit(controlMovePgid, "control-state migration")
+  const [controlMoveCode] = controlMoveResult
+  assert.notEqual(controlMoveCode, 0)
+  assert.equal(await lstat(controlMoveCase.journal).then(() => true, () => false), true)
+  assert.equal(await lstat(controlMoveCase.completion).then(() => true, () => false), false)
+  const controlMoveRetry = spawnSync(installer, controlMoveCase.args, {
+    encoding: "utf8",
+    env: controlMoveCase.env,
+    timeout: 20_000,
+    killSignal: "SIGKILL",
+  })
+  assert.equal(controlMoveRetry.status, 0, controlMoveRetry.stderr)
+  await assertMigrated(controlMoveCase)
+
+  const replacementCase = await createLegacyCase("source-replacement")
+  const replacement = spawnSync(installer, replacementCase.args, {
+    encoding: "utf8",
+    env: {
+      ...replacementCase.env,
+      HARNESS_MIGRATION_REPLACE_SOURCE: "1",
+      HARNESS_MIGRATION_LEGACY_HOME: replacementCase.legacyHome,
+    },
+    timeout: 20_000,
+    killSignal: "SIGKILL",
+  })
+  assert.equal(replacement.status, 1)
+  assert.match(replacement.stderr, /identity changed during migration/)
+  assert.equal(await lstat(replacementCase.managedHome).then(() => true, () => false), false)
+  assert.equal(await lstat(replacementCase.legacyHome).then(() => true, () => false), true)
+  assert.equal(await lstat(`${replacementCase.legacyHome}.original`).then(() => true, () => false), true)
+  assert.equal(
+    await readFile(join(`${replacementCase.legacyHome}.original`, "repositories/repo-1/HEAD"), "utf8"),
+    "legacy-repository\n",
+  )
+
+  const ownershipCaseRoot = join(root, "ownership-recovery")
+  await mkdir(ownershipCaseRoot, { recursive: true })
+  const ownershipHarness = await createInstallerHarness(ownershipCaseRoot)
+  const ownershipStateRoot = join(ownershipHarness.installRoot, "var/lib/chariox")
+  const ownershipHome = join(ownershipHarness.installRoot, "home/chariox")
+  const ownershipState = join(ownershipHome, ".chariox")
+  await mkdir(ownershipStateRoot, { recursive: true })
+  await mkdir(ownershipState, { recursive: true })
+  await writeFile(join(ownershipHome, "user-file"), "must-survive\n")
+  await chmod(ownershipHome, 0o755)
+  await chmod(ownershipState, 0o755)
+  const ownershipEnv = {
+    ...process.env,
+    PATH: `${ownershipHarness.bin}:${process.env.PATH}`,
+    HARNESS_STATE: ownershipHarness.state,
+    CHARIOX_IMAGE_INSTALL_ROOT: ownershipHarness.installRoot,
+    CHARIOX_IMAGE_INSTALL_LOCK: join(ownershipHarness.state, "install.lock"),
+  }
+  const ownershipResult = spawnSync(
+    installer,
+    [rootfs, digest, fixture.trustedPublicKey],
+    { encoding: "utf8", env: ownershipEnv, timeout: 20_000, killSignal: "SIGKILL" },
+  )
+  assert.equal(ownershipResult.status, 0, ownershipResult.stderr)
+  assert.equal(await readFile(join(ownershipHome, "user-file"), "utf8"), "must-survive\n")
+  assert.equal((await stat(ownershipHome)).mode & 0o777, 0o700)
+  assert.equal((await stat(ownershipState)).mode & 0o777, 0o700)
+  const ownershipChowns = await readFile(ownershipHarness.chownLog, "utf8")
+  assert.match(ownershipChowns, new RegExp(`${ownershipHome}\\t998\\t998`))
+  assert.match(ownershipChowns, new RegExp(`${ownershipState}\\t998\\t998`))
 })
 
 test("managed image installer rejects a linked artifact ancestor before host mutation", async (context) => {
