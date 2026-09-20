@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { createServer } from "node:net";
 
 import {
   BrowserController,
@@ -8,6 +10,7 @@ import {
   ERROR_CODES,
   redactDiagnostic,
 } from "./browser-controller.mjs";
+import { OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES } from "./browser-controller-observations.mjs";
 
 class FakeClock {
   constructor() {
@@ -78,12 +81,25 @@ class FakeWebSocket extends EventEmitter {
   static instances = [];
   static onSend = null;
 
-  constructor(url) {
+  constructor(url, protocols = [], options) {
     super();
+    if (protocols && typeof protocols === "object" && !Array.isArray(protocols) && options === undefined) {
+      options = protocols;
+      protocols = [];
+    }
+    options = options ?? {};
     this.url = url;
+    this.protocols = protocols;
+    this.options = options;
+    this.maxPayload = Number.isSafeInteger(options?.maxPayload)
+      ? options.maxPayload
+      : Number.MAX_SAFE_INTEGER;
     this.readyState = 0;
     this.sent = [];
     this.closed = false;
+    this.incomingFragments = [];
+    this.incomingBytes = 0;
+    this.receivedMessages = 0;
     this.process = FakeWebSocket.currentProcess;
     FakeWebSocket.instances.push(this);
     queueMicrotask(() => this.open());
@@ -115,6 +131,24 @@ class FakeWebSocket extends EventEmitter {
     this.emit("message", { data: JSON.stringify({ id, result }) });
   }
 
+  receiveFragment(data, { final = false } = {}) {
+    const fragment = data instanceof Uint8Array ? data : new Uint8Array(data);
+    if (this.incomingBytes + fragment.byteLength > this.maxPayload) {
+      this.close();
+      return false;
+    }
+    this.incomingFragments.push(fragment);
+    this.incomingBytes += fragment.byteLength;
+    if (final) {
+      const payload = Buffer.concat(this.incomingFragments.map((part) => Buffer.from(part)));
+      this.incomingFragments = [];
+      this.incomingBytes = 0;
+      this.receivedMessages += 1;
+      this.emit("message", { data: payload });
+    }
+    return true;
+  }
+
   close() {
     if (this.closed) {
       return;
@@ -129,6 +163,149 @@ async function flush() {
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
+}
+
+function encodeServerFrame(opcode, payload, final = true) {
+  const body = Buffer.isBuffer(payload) ? payload : Buffer.from(payload);
+  const headerLength = body.length < 126 ? 2 : body.length <= 0xffff ? 4 : 10;
+  const header = Buffer.alloc(headerLength);
+  header[0] = (final ? 0x80 : 0) | opcode;
+  if (body.length < 126) {
+    header[1] = body.length;
+  } else if (body.length <= 0xffff) {
+    header[1] = 126;
+    header.writeUInt16BE(body.length, 2);
+  } else {
+    header[1] = 127;
+    header.writeBigUInt64BE(BigInt(body.length), 2);
+  }
+  return Buffer.concat([header, body]);
+}
+
+function clientCloseCode(buffer) {
+  let offset = 0;
+  while (offset + 2 <= buffer.length) {
+    const first = buffer[offset];
+    const second = buffer[offset + 1];
+    const masked = (second & 0x80) !== 0;
+    let length = second & 0x7f;
+    let headerLength = 2;
+    if (length === 126) {
+      if (offset + 4 > buffer.length) return null;
+      length = buffer.readUInt16BE(offset + 2);
+      headerLength = 4;
+    } else if (length === 127) {
+      if (offset + 10 > buffer.length) return null;
+      const wideLength = buffer.readBigUInt64BE(offset + 2);
+      if (wideLength > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+      length = Number(wideLength);
+      headerLength = 10;
+    }
+    const maskLength = masked ? 4 : 0;
+    const frameLength = headerLength + maskLength + length;
+    if (offset + frameLength > buffer.length) return null;
+    if ((first & 0x0f) === 0x8) {
+      const payloadOffset = offset + headerLength + maskLength;
+      if (length < 2) return 1005;
+      if (!masked) return buffer.readUInt16BE(payloadOffset);
+      const maskOffset = offset + headerLength;
+      return ((buffer[payloadOffset] ^ buffer[maskOffset]) << 8) |
+        (buffer[payloadOffset + 1] ^ buffer[maskOffset + 1]);
+    }
+    offset += frameLength;
+  }
+  return null;
+}
+
+async function startFragmentedWebSocketServer() {
+  const server = createServer();
+  let client = null;
+  let handshakeComplete = false;
+  let commandResponded = false;
+  let incoming = Buffer.alloc(0);
+  let resolveCommand;
+  let resolveCloseCode;
+  const commandReceived = new Promise((resolve) => {
+    resolveCommand = resolve;
+  });
+  const closeCode = new Promise((resolve) => {
+    resolveCloseCode = resolve;
+  });
+
+  server.on("connection", (socket) => {
+    client = socket;
+    socket.on("data", (chunk) => {
+      incoming = Buffer.concat([incoming, chunk]);
+      if (!handshakeComplete) {
+        const boundary = incoming.indexOf(Buffer.from("\r\n\r\n"));
+        if (boundary < 0) return;
+        const request = incoming.subarray(0, boundary).toString("latin1");
+        const key = request.match(/^Sec-WebSocket-Key:\s*(.+)$/im)?.[1]?.trim();
+        if (!key) {
+          socket.destroy();
+          return;
+        }
+        const accept = createHash("sha1")
+          .update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+          .digest("base64");
+        socket.write(
+          "HTTP/1.1 101 Switching Protocols\r\n" +
+          "Upgrade: websocket\r\n" +
+          "Connection: Upgrade\r\n" +
+          `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
+        );
+        incoming = incoming.subarray(boundary + 4);
+        handshakeComplete = true;
+      }
+      if (handshakeComplete && !commandResponded && incoming.length > 0) {
+        commandResponded = true;
+        socket.write(encodeServerFrame(0x1, JSON.stringify({ id: 1, result: {} })));
+        resolveCommand();
+      }
+      if (handshakeComplete) {
+        const code = clientCloseCode(incoming);
+        if (code !== null) resolveCloseCode(code);
+      }
+    });
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  return {
+    url: `ws://127.0.0.1:${address.port}`,
+    commandReceived,
+    closeCode,
+    sendOversizedPayload() {
+      assert.ok(client && handshakeComplete && commandResponded);
+      client.write(
+        encodeServerFrame(
+          0x1,
+          Buffer.alloc(OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES - 1, 0x78),
+          false,
+        ),
+      );
+      client.write(encodeServerFrame(0x0, Buffer.from("xx"), true));
+    },
+    async close() {
+      client?.destroy();
+      await new Promise((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
+async function waitFor(predicate, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok(predicate(), "condition did not become true before timeout");
 }
 
 function makeFixture(options = {}) {
@@ -310,6 +487,226 @@ test("integrates CDP refresh and reconnect reconciliation with stable tab identi
   t.after(async () => {
     await controller.shutdown("owner-a", 1);
   });
+});
+
+test("captures bounded observations through stable tabs and invalidates detached element references", async (t) => {
+  const targets = [
+    { id: "page-a", type: "page", webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/a" },
+    { id: "page-b", type: "page", webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/b" },
+  ];
+  const fixture = makeFixture({ targets });
+  const { controller } = fixture;
+  await controller.start("owner-a");
+  const tab = controller.getTabRegistrySnapshot("owner-a", 1).tabs
+    .find((candidate) => candidate.target_id === "page-b");
+  assert.ok(tab);
+
+  FakeWebSocket.onSend = (socket, message) => {
+    let result = {};
+    if (message.method === "Page.getFrameTree") {
+      result = { frameTree: { frame: { loaderId: "document-b" } } };
+    } else if (message.method === "Accessibility.getFullAXTree") {
+      result = {
+        nodes: [{
+          nodeId: "ax-button",
+          backendDOMNodeId: 41,
+          role: { value: "button" },
+          name: { value: "Continue" },
+        }],
+      };
+    } else if (message.method === "DOMSnapshot.captureSnapshot") {
+      result = {
+        strings: ["BUTTON"],
+        documents: [{
+          nodes: {
+            backendNodeId: [41],
+            parentIndex: [-1],
+            nodeType: [1],
+            nodeName: [0],
+            nodeValue: [-1],
+            attributes: [[]],
+          },
+          layout: { nodeIndex: [0], bounds: [[1, 2, 30, 20]] },
+        }],
+      };
+    }
+    queueMicrotask(() => socket.respond(message.id, result));
+  };
+
+  const snapshot = await controller.captureTabSnapshot("owner-a", 1, {
+    tab_id: tab.tab_id,
+    target_generation: tab.target_generation,
+  });
+  assert.equal(snapshot.tab_id, tab.tab_id);
+  assert.equal(snapshot.document_id, "document-b");
+  assert.equal(snapshot.accessibility_nodes[0].name, "Continue");
+  const elementRef = snapshot.accessibility_nodes[0].element_ref;
+  assert.doesNotMatch(elementRef, /41|page-b|document-b/);
+  assert.equal(
+    (await controller.resolveElementReference("owner-a", 1, {
+      tab_id: tab.tab_id,
+      target_generation: tab.target_generation,
+      element_ref: elementRef,
+    })).backend_node_id,
+    41,
+  );
+
+  targets.splice(1, 1);
+  await controller.refreshTabs("owner-a", 1);
+  await assert.rejects(
+    controller.resolveElementReference("owner-a", 1, {
+      tab_id: tab.tab_id,
+      target_generation: tab.target_generation,
+      element_ref: elementRef,
+    }),
+    (error) => error.code === "TAB_INVALIDATED",
+  );
+  assert.equal(FakeWebSocket.instances[1].closed, true);
+
+  t.after(async () => {
+    await controller.shutdown("owner-a", 1);
+  });
+});
+
+test("allows bounded raw AX and DOM snapshots above ordinary CDP frames and rejects overflow", async (t) => {
+  const fixture = makeFixture();
+  const { controller } = fixture;
+  await controller.start("owner-a");
+  const tab = controller.getTabRegistrySnapshot("owner-a", 1).tabs[0];
+  let padding = "x".repeat(70 * 1024);
+  FakeWebSocket.onSend = (socket, message) => {
+    let result = {};
+    if (message.method === "Page.getFrameTree") {
+      result = { frameTree: { frame: { id: "root-frame", loaderId: "document-raw" } } };
+    } else if (message.method === "Accessibility.getFullAXTree") {
+      result = { nodes: [], padding };
+    } else if (message.method === "DOMSnapshot.captureSnapshot") {
+      result = {
+        padding,
+        strings: ["BUTTON"],
+        documents: [{
+          nodes: {
+            backendNodeId: [50],
+            parentIndex: [-1],
+            nodeType: [1],
+            nodeName: [0],
+            nodeValue: [-1],
+            attributes: [[]],
+          },
+          layout: { nodeIndex: [0], bounds: [[1, 2, 30, 20]] },
+        }],
+      };
+    }
+    queueMicrotask(() => socket.respond(message.id, result));
+  };
+
+  const snapshot = await controller.captureTabSnapshot("owner-a", 1, {
+    tab_id: tab.tab_id,
+    target_generation: tab.target_generation,
+  });
+  assert.equal(snapshot.document_id, "document-raw");
+  assert.equal(snapshot.dom_nodes[0].node_name, "BUTTON");
+
+  padding = "x".repeat(OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES + 1);
+  await assert.rejects(
+    controller.captureTabSnapshot("owner-a", 1, {
+      tab_id: tab.tab_id,
+      target_generation: tab.target_generation,
+    }),
+    (error) => error.code === ERROR_CODES.CDP_PROTOCOL_INVALID,
+  );
+  t.after(async () => {
+    await controller.shutdown("owner-a", 1);
+  });
+});
+
+test("rejects oversized binary CDP frames before UTF-8 decoding", async (t) => {
+  const fixture = makeFixture();
+  const { controller, sockets } = fixture;
+  await controller.start("owner-a");
+  const socket = sockets[0];
+  socket.emit("message", {
+    data: new Uint8Array(OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES + 1),
+  });
+  await flush();
+  assert.equal(socket.closed, true);
+  assert.equal(controller.health("owner-a").state, "fatal");
+  assert.equal(controller.health("owner-a").fatal_code, ERROR_CODES.CONTROLLER_CRASHED);
+  t.after(async () => {
+    await controller.shutdownForSignal();
+  });
+});
+
+test("caps fragmented WebSocket payloads before message assembly", async (t) => {
+  const fixture = makeFixture();
+  const { controller, sockets } = fixture;
+  await controller.start("owner-a");
+  const socket = sockets[0];
+  assert.equal(socket.options.maxPayload, OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES);
+
+  assert.equal(
+    socket.receiveFragment(new Uint8Array(OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES - 1)),
+    true,
+  );
+  assert.equal(socket.incomingBytes, OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES - 1);
+  assert.equal(socket.receivedMessages, 0);
+
+  assert.equal(socket.receiveFragment(new Uint8Array(2)), false);
+  await flush();
+  assert.equal(socket.closed, true);
+  assert.equal(socket.incomingBytes, OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES - 1);
+  assert.equal(socket.incomingFragments.length, 1);
+  assert.equal(socket.receivedMessages, 0);
+  assert.equal(controller.health("owner-a").state, "fatal");
+
+  t.after(async () => {
+    await controller.shutdownForSignal();
+  });
+});
+
+test("production default WebSocket rejects an oversized fragmented payload in the receiver", async (t) => {
+  const server = await startFragmentedWebSocketServer();
+  t.after(async () => {
+    await server.close();
+  });
+  let process;
+  const controller = new BrowserController({
+    controllerId: "controller-production-websocket",
+    fetchImpl: async () => ({
+      ok: true,
+      text: async () => JSON.stringify([{
+        id: "page-1",
+        type: "page",
+        webSocketDebuggerUrl: server.url,
+      }]),
+    }),
+    spawnBrowser: async () => {
+      process = new FakeProcess();
+      return process;
+    },
+    startupTimeoutMs: 2_000,
+    pollIntervalMs: 10,
+    cdpConnectTimeoutMs: 1_000,
+    cdpCommandTimeoutMs: 1_000,
+    shutdownGraceMs: 1,
+    terminateGraceMs: 1,
+    killGraceMs: 1,
+    heartbeatIntervalMs: 10,
+  });
+
+  const started = await controller.start("owner-a");
+  assert.equal(started.state, "ready");
+  await server.commandReceived;
+  server.sendOversizedPayload();
+  const receivedCloseCode = await Promise.race([
+    server.closeCode,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("WebSocket close timed out")), 2_000)),
+  ]);
+  assert.equal(receivedCloseCode, 1009);
+  await waitFor(() => controller.health("owner-a").state === "fatal");
+  assert.equal(controller.health("owner-a").fatal_code, ERROR_CODES.CONTROLLER_CRASHED);
+  assert.deepEqual(process.kills, ["SIGKILL"]);
+  await controller.shutdownForSignal();
 });
 
 test("gracefully closes CDP and Chromium without a forced kill", async (t) => {
