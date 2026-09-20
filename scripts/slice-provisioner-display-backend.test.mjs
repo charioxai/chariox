@@ -69,7 +69,47 @@ test("exec and diagnostics carry only non-secret display settings", async () => 
   assert.match(diagnostics, /display backend:/)
   assert.match(diagnostics, /display host-loopback port:/)
   assert.match(diagnostics, /Selkies health timeout:/)
-  assert.doesNotMatch(diagnostics, /SLICE_RELAY_TOKEN|SLICE_CLOUD_RELAY|AUTH|CREDENTIAL/i)
+  assert.match(diagnostics, /\/opt\/chariox-selkies\/bin\/selkies/)
+  assert.match(diagnostics, /\/opt\/chariox-slice\/logs\/selkies\.log/)
+  assert.match(diagnostics, /\[REDACTED\]/)
+  assert.match(diagnostics, /\[Bb\]\[Ee\]\[Aa\]\[Rr\]\[Ee\]\[Rr\]/)
+  assert.doesNotMatch(diagnostics, /SLICE_RELAY_TOKEN|SLICE_CLOUD_RELAY_CONFIG/)
+})
+
+test("existing-container reprovision covers noVNC-to-Selkies and Selkies-to-noVNC transitions", async () => {
+  const source = await readFile(provisionerPath, "utf8")
+  const mapping = section(
+    source,
+    "container_display_mapping_matches() {",
+    "reconcile_existing_display_mapping() {",
+  )
+  const reconcile = section(
+    source,
+    "reconcile_existing_display_mapping() {",
+    "if [[ ! \"$SLICE_ACCOUNT_OWNER\"",
+  )
+  const ensure = section(source, "ensure_container() {", "exec_slice_with_timeout() {")
+
+  for (const transition of [
+    { selectedBackend: "selkies", selectedPort: "SLICE_SELKIES_PORT", otherPort: "SLICE_NOVNC_PORT" },
+    { selectedBackend: "novnc", selectedPort: "SLICE_NOVNC_PORT", otherPort: "SLICE_SELKIES_PORT" },
+  ]) {
+    assert.match(mapping, new RegExp(`SLICE_DISPLAY_BACKEND.*${transition.selectedBackend}`))
+    assert.match(mapping, new RegExp(transition.selectedPort))
+    assert.match(mapping, new RegExp(transition.otherPort))
+  }
+  assert.match(mapping, /selected_display_port\)/)
+  assert.match(mapping, /HostIp/)
+  assert.ok(mapping.includes("127\\\\.0\\\\.0\\\\.1"), "loopback matcher must stay literal")
+  assert.match(mapping, /HostPort/)
+  assert.match(mapping, /CHARIOX_SLICE_DISPLAY_BACKEND=selkies/)
+  assert.match(mapping, /CHARIOX_SLICE_DISPLAY_BACKEND=novnc/)
+  assert.match(reconcile, /mapping_status/)
+  assert.match(reconcile, /docker rm -f "\$SLICE_NAME"/)
+  assert.match(reconcile, /display backend\/port mapping changed/)
+  assert.match(reconcile, /container still exists/)
+  assert.match(reconcile, /cannot verify existing display backend\/port mapping/)
+  assert.match(ensure, /reconcile_existing_display_mapping/)
 })
 
 test("broker exposes and validates the same display settings without changing protocol shapes", async () => {

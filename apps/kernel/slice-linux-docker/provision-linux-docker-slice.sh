@@ -155,6 +155,55 @@ selected_display_port() {
   esac
 }
 
+container_display_mapping_matches() {
+  local inspect_json compact_json expected_port other_port
+  inspect_json="$(run_with_timeout 20 docker container inspect "$SLICE_NAME" 2>/dev/null)" || return 2
+  [[ -n "$inspect_json" ]] || return 2
+  compact_json="$(printf '%s' "$inspect_json" | tr -d '\r\n')"
+  expected_port="$(selected_display_port)"
+  if ! printf '%s' "$compact_json" | grep -Eq \
+    "\\\"${expected_port}/tcp\\\"[^]]*\\\"HostIp\\\"[[:space:]]*:[[:space:]]*\\\"127\\.0\\.0\\.1\\\"[^]]*\\\"HostPort\\\"[[:space:]]*:[[:space:]]*\\\"${expected_port}\\\""; then
+    return 1
+  fi
+
+  if [[ "$SLICE_DISPLAY_BACKEND" == selkies ]]; then
+    grep -Fq '"CHARIOX_SLICE_DISPLAY_BACKEND=selkies"' <<<"$compact_json" || return 1
+    other_port="$SLICE_NOVNC_PORT"
+  elif [[ "$SLICE_DISPLAY_BACKEND" == novnc ]]; then
+    if grep -Fq '"CHARIOX_SLICE_DISPLAY_BACKEND=' <<<"$compact_json" \
+      && ! grep -Fq '"CHARIOX_SLICE_DISPLAY_BACKEND=novnc"' <<<"$compact_json"; then
+      return 1
+    fi
+    other_port="$SLICE_SELKIES_PORT"
+  else
+    return 2
+  fi
+  if [[ "$other_port" != "$expected_port" ]] && printf '%s' "$compact_json" | grep -Fq "\"${other_port}/tcp\""; then
+    return 1
+  fi
+  return 0
+}
+
+reconcile_existing_display_mapping() {
+  local mapping_status=0 selected_port
+  container_display_mapping_matches || mapping_status=$?
+  case "$mapping_status" in
+    0)
+      return 0
+      ;;
+    1)
+      selected_port="$(selected_display_port)"
+      log "recreating container $SLICE_NAME because its display backend/port mapping changed to $SLICE_DISPLAY_BACKEND:$selected_port"
+      run_with_timeout 60 docker rm -f "$SLICE_NAME" >/dev/null \
+        || fail "failed to recreate $SLICE_NAME after its display backend/port mapping changed"
+      container_exists && fail "failed to recreate $SLICE_NAME after its display backend/port mapping changed: container still exists"
+      ;;
+    *)
+      fail "cannot verify existing display backend/port mapping for $SLICE_NAME; refusing to reuse it"
+      ;;
+  esac
+}
+
 if [[ ! "$SLICE_ACCOUNT_OWNER" =~ ^[A-Za-z0-9-]+$ || ! "$SLICE_ACCOUNT_PROFILE" =~ ^[A-Za-z0-9-]+$ ]]; then
   fail "slice account owner/profile contains an unsafe path component"
 fi
@@ -516,6 +565,9 @@ ensure_container() {
       run_with_timeout 60 docker rm -f "$SLICE_NAME" >/dev/null
     fi
   fi
+  if container_exists; then
+    reconcile_existing_display_mapping
+  fi
   case "$SLICE_WORKSPACE_MOUNT_MODE" in
     rw|ro) ;;
     *) fail "CHARIOX_SLICE_WORKSPACE_MOUNT_MODE must be rw or ro" ;;
@@ -740,12 +792,22 @@ slice_screen_diagnostics() {
     -u slice "$SLICE_NAME" bash -lc "
     set +e
     /opt/chariox-slice/slice-screen.sh status
+    echo '--- Selkies executable'
+    if [[ -x /opt/chariox-selkies/bin/selkies ]]; then
+      ls -l /opt/chariox-selkies/bin/selkies
+    else
+      echo 'missing /opt/chariox-selkies/bin/selkies'
+    fi
     echo '--- processes'
     pgrep -af 'Xvfb|openbox|x11vnc|websockify|chromium' || true
     echo '--- logs'
-    for log_file in /opt/chariox-slice/logs/xvfb.log /opt/chariox-slice/logs/openbox.log /opt/chariox-slice/logs/x11vnc.log /opt/chariox-slice/logs/novnc.log /opt/chariox-slice/logs/chromium-gui.log; do
+    for log_file in /opt/chariox-slice/logs/xvfb.log /opt/chariox-slice/logs/openbox.log /opt/chariox-slice/logs/x11vnc.log /opt/chariox-slice/logs/novnc.log /opt/chariox-slice/logs/selkies.log /opt/chariox-slice/logs/chromium-gui.log; do
       echo \"==== \${log_file}\"
-      tail -n 40 \"\${log_file}\" 2>/dev/null || true
+      tail -n 40 \"\${log_file}\" 2>/dev/null \
+        | sed -E \
+            -e 's/(([Tt][Oo][Kk][Ee][Nn]|[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll])[[:space:]]*[:=][[:space:]]*)[^[:space:]]+/\1[REDACTED]/g' \
+            -e 's/([Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+)[^[:space:]]+/\1[REDACTED]/g' \
+        || true
     done
   " >&2 || log "slice screen diagnostics unavailable"
 }
