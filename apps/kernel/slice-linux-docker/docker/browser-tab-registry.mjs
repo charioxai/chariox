@@ -354,6 +354,7 @@ export class BrowserTabRegistry {
     this._activeByTarget = new Map();
     this._tombstones = new Map();
     this._targetEpochs = new Map();
+    this._retiredEndpointKeys = new Map();
     this.viewport = new CanonicalViewport(options.viewport ?? {});
     if (options.generation !== undefined) {
       this._browserGeneration = requireGeneration(options.generation);
@@ -386,6 +387,19 @@ export class BrowserTabRegistry {
 
   _targetEpochKey(generation, targetId) {
     return `${generation}\u0000${targetId}`;
+  }
+
+  _endpointKey(target) {
+    return `${this._browserGeneration}\u0000${target.targetId}\u0000${target.websocketUrl ?? ""}`;
+  }
+
+  _rememberRetiredEndpoint(target) {
+    this._retiredEndpointKeys.set(this._endpointKey(target), true);
+    this._trimMap(this._retiredEndpointKeys, REGISTRY_LIMITS.maxTargetEpochs);
+  }
+
+  _isRetiredEndpoint(target) {
+    return this._retiredEndpointKeys.has(this._endpointKey(target));
   }
 
   _retireRecord(record, code) {
@@ -429,6 +443,7 @@ export class BrowserTabRegistry {
     this._trimRetiredRecords();
     this._trimMap(this._tombstones, REGISTRY_LIMITS.maxTombstones);
     this._trimMap(this._targetEpochs, REGISTRY_LIMITS.maxTargetEpochs);
+    this._trimMap(this._retiredEndpointKeys, REGISTRY_LIMITS.maxTargetEpochs);
   }
 
   _allocateTarget(target) {
@@ -467,23 +482,34 @@ export class BrowserTabRegistry {
     }
     const normalized = targets.map(normalizeTarget).sort(compareTargets);
     const uniqueTargets = [];
+    const retiredTargetIds = new Set();
     let duplicatesSuppressed = 0;
     for (const target of normalized) {
       if (uniqueTargets.length > 0 && uniqueTargets[uniqueTargets.length - 1].targetId === target.targetId) {
         duplicatesSuppressed += 1;
+      } else if (this._isRetiredEndpoint(target)) {
+        retiredTargetIds.add(target.targetId);
       } else {
         uniqueTargets.push(target);
       }
     }
 
     const reconnect = options.reconnect === true || options.authoritative === false || options.preserveMissing === true;
-    const seenTargetIds = new Set();
+    const seenTargetIds = new Set(retiredTargetIds);
     const added = [];
     const updated = [];
+    const detached = [];
     for (const target of uniqueTargets) {
       seenTargetIds.add(target.targetId);
       const current = this._activeByTarget.get(target.targetId);
       if (current === undefined) {
+        added.push(cloneTab(this._allocateTarget(target)));
+        continue;
+      }
+      if (current.targetType !== target.targetType || current.websocketUrl !== target.websocketUrl) {
+        this._rememberRetiredEndpoint(current);
+        this._detach(current);
+        detached.push(cloneTab(current));
         added.push(cloneTab(this._allocateTarget(target)));
         continue;
       }
@@ -492,7 +518,6 @@ export class BrowserTabRegistry {
       updated.push(cloneTab(current));
     }
 
-    const detached = [];
     if (!reconnect) {
       for (const record of [...this._activeByTarget.values()]) {
         if (!seenTargetIds.has(record.targetId)) {

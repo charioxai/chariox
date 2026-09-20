@@ -8,6 +8,7 @@ import {
   ERROR_CODES,
   redactDiagnostic,
 } from "./browser-controller.mjs";
+import { MUTATION_ERROR_CODES } from "./browser-controller-mutation-coordinator.mjs";
 import { OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES } from "./browser-controller-observations.mjs";
 import { BrowserPageFeatures } from "./browser-controller-page-features.mjs";
 
@@ -128,9 +129,36 @@ class FakeWebSocket extends EventEmitter {
 }
 
 async function flush() {
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let index = 0; index < 8; index += 1) {
+    await Promise.resolve();
+  }
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function mutationAttribution(actionId, actorId = "agent-1") {
+  return { action_id: actionId, actor_id: actorId };
+}
+
+function makeMutationPageFeatures() {
+  const calls = [];
+  return {
+    calls,
+    async handleDialog({ dialog }) {
+      const gate = deferred();
+      calls.push({ dialog, gate });
+      await gate.promise;
+      return { action: dialog.action };
+    },
+  };
 }
 
 function makeFixture(options = {}) {
@@ -197,6 +225,8 @@ function makeFixture(options = {}) {
     heartbeatIntervalMs: 1,
     queueLimit: options.queueLimit || 8,
     pageFeatures: options.pageFeatures,
+    observationStore: options.observationStore,
+    mutationCoordinator: options.mutationCoordinator,
   });
   return {
     controller,
@@ -310,6 +340,138 @@ test("integrates CDP refresh and reconnect reconciliation with stable tab identi
   assert.equal(resized.version, 2);
   assert.equal(controller.getTabRegistrySnapshot("owner-a", 1).viewport.owner_id, "owner-a");
   assert.equal(controller.getTabRegistrySnapshot("owner-a", 1).viewport.version, 2);
+  t.after(async () => {
+    await controller.shutdown("owner-a", 1);
+  });
+});
+
+test("makes the replacement tab immediately usable and rejects stale handles and mutations", async (t) => {
+  const targets = [{
+    id: "page-a",
+    type: "page",
+    webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/a",
+  }];
+  const pageFeatures = makeMutationPageFeatures();
+  const fixture = makeFixture({ targets, pageFeatures });
+  const { controller, sockets } = fixture;
+  await controller.start("owner-a");
+  const original = controller.getTabRegistrySnapshot("owner-a", 1).tabs[0];
+  const active = controller.handleDialog(
+    "owner-a",
+    1,
+    {
+      tab_id: original.tab_id,
+      target_generation: original.target_generation,
+      dialog: { action: "accept" },
+    },
+    mutationAttribution("endpoint-active"),
+  );
+  await flush();
+  assert.equal(pageFeatures.calls.length, 1);
+  const originalSocket = sockets.filter((socket) => socket.url.endsWith("/a")).at(-1);
+  assert.ok(originalSocket);
+
+  targets[0].webSocketDebuggerUrl = "ws://127.0.0.1:9222/devtools/page/a-replacement";
+  const reconciliation = await controller.refreshTabs("owner-a", 1);
+  const replacement = reconciliation.tabs.find((tab) => tab.target_id === "page-a");
+  assert.ok(replacement);
+  assert.notEqual(replacement.tab_id, original.tab_id);
+  assert.equal(replacement.target_generation, original.target_generation + 1);
+  assert.equal(controller.tabRegistry.resolveTarget(replacement.tab_id).websocket_url, targets[0].webSocketDebuggerUrl);
+  assert.equal(originalSocket.closed, true);
+  assert.throws(
+    () => controller.tabRegistry.getTab(original.tab_id, { generation: 1 }),
+    (error) => error.code === "TAB_INVALIDATED",
+  );
+  await assert.rejects(
+    controller.handleDialog(
+      "owner-a",
+      1,
+      {
+        tab_id: original.tab_id,
+        target_generation: original.target_generation,
+        dialog: { action: "accept" },
+      },
+      mutationAttribution("stale-endpoint-handle"),
+    ),
+    (error) => error.code === "TAB_INVALIDATED",
+  );
+
+  pageFeatures.calls[0].gate.resolve();
+  await assert.rejects(active, (error) => error.code === MUTATION_ERROR_CODES.INDETERMINATE);
+
+  const replacementAction = controller.handleDialog(
+    "owner-a",
+    1,
+    {
+      tab_id: replacement.tab_id,
+      target_generation: replacement.target_generation,
+      dialog: { action: "accept" },
+    },
+    mutationAttribution("replacement-action"),
+  );
+  await flush();
+  assert.equal(pageFeatures.calls.length, 2);
+  pageFeatures.calls[1].gate.resolve();
+  assert.deepEqual(await replacementAction, { action: "accept" });
+  t.after(async () => {
+    await controller.shutdown("owner-a", 1);
+  });
+});
+
+test("fences repeated and concurrent reconnects from a retired endpoint", async (t) => {
+  const targets = [{
+    id: "page-a",
+    type: "page",
+    webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/a",
+  }];
+  const pageFeatures = {
+    async handleDialog() {
+      return { action: "accept" };
+    },
+  };
+  const fixture = makeFixture({ targets, pageFeatures });
+  const { controller, sockets } = fixture;
+  await controller.start("owner-a");
+  const original = controller.getTabRegistrySnapshot("owner-a", 1).tabs[0];
+  await controller.handleDialog(
+    "owner-a",
+    1,
+    {
+      tab_id: original.tab_id,
+      target_generation: original.target_generation,
+      dialog: { action: "accept" },
+    },
+    mutationAttribution("open-original-endpoint"),
+  );
+  const originalSocket = sockets.filter((socket) => socket.url.endsWith("/a")).at(-1);
+  assert.ok(originalSocket);
+
+  targets[0].webSocketDebuggerUrl = "ws://127.0.0.1:9222/devtools/page/b";
+  const [firstReconnect, secondReconnect] = await Promise.all([
+    controller.refreshTabs("owner-a", 1, { reconnect: true }),
+    controller.refreshTabs("owner-a", 1, { reconnect: true }),
+  ]);
+  const replacement = firstReconnect.tabs[0];
+  assert.notEqual(replacement.tab_id, original.tab_id);
+  assert.equal(firstReconnect.added.length, 1);
+  assert.equal(secondReconnect.added.length, 0);
+  assert.deepEqual(secondReconnect.tabs, [replacement]);
+
+  // A late event from the retired connection cannot revoke the replacement.
+  originalSocket.emit("close", {});
+  targets[0].webSocketDebuggerUrl = "ws://127.0.0.1:9222/devtools/page/a";
+  const staleReconnect = await controller.refreshTabs("owner-a", 1, { reconnect: true });
+  assert.equal(staleReconnect.added.length, 0);
+  assert.deepEqual(staleReconnect.tabs, [replacement]);
+  assert.equal(controller.tabRegistry.resolveTarget(replacement.tab_id).websocket_url, "ws://127.0.0.1:9222/devtools/page/b");
+
+  targets[0].webSocketDebuggerUrl = "ws://127.0.0.1:9222/devtools/page/c";
+  const repeatedReplacement = await controller.refreshTabs("owner-a", 1);
+  const next = repeatedReplacement.tabs[0];
+  assert.notEqual(next.tab_id, replacement.tab_id);
+  assert.equal(next.target_generation, replacement.target_generation + 1);
+  assert.equal(repeatedReplacement.detached[0].tab_id, replacement.tab_id);
   t.after(async () => {
     await controller.shutdown("owner-a", 1);
   });

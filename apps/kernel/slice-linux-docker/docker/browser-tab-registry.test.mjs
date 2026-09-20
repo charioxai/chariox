@@ -29,12 +29,49 @@ test("keeps opaque tab IDs stable across target refresh reordering", () => {
   const registry = new BrowserTabRegistry();
   const first = registry.reconcile(1, [target("beta"), target("alpha")]);
   const firstIds = new Map(first.tabs.map((tab) => [tab.target_id, tab.tab_id]));
-  const refreshed = registry.reconcile(1, [target("alpha", "ws://127.0.0.1:9222/new-alpha"), target("beta")]);
+  const refreshed = registry.reconcile(1, [target("alpha"), target("beta")]);
   const refreshedIds = new Map(refreshed.tabs.map((tab) => [tab.target_id, tab.tab_id]));
 
   assert.deepEqual(refreshedIds, firstIds);
   assert.equal(refreshed.tabs[0].target_id, "alpha");
   assert.ok([...refreshedIds.values()].every((tabId) => !tabId.includes("alpha") && !tabId.includes("beta")));
+});
+
+test("rotates endpoint authority into a ready replacement and fences stale reconnects", () => {
+  const registry = new BrowserTabRegistry();
+  const originalUrl = "ws://127.0.0.1:9222/devtools/page/original";
+  const replacementUrl = "ws://127.0.0.1:9222/devtools/page/replacement";
+  const original = registry.reconcile(1, [target("page-1", originalUrl)]).tabs[0];
+
+  const rotated = registry.reconcile(1, [target("page-1", replacementUrl)]);
+  const replacement = rotated.tabs[0];
+  assert.equal(rotated.added.length, 1);
+  assert.deepEqual(rotated.detached, [original]);
+  assert.notEqual(replacement.tab_id, original.tab_id);
+  assert.equal(replacement.target_generation, original.target_generation + 1);
+  assert.equal(registry.resolveTarget(replacement.tab_id).websocket_url, replacementUrl);
+  assert.equal(errorCode(() => registry.resolveTarget(original.tab_id)), ERROR_CODES.TAB_INVALIDATED);
+
+  const staleReconnect = registry.reconcile(1, [target("page-1", originalUrl)]);
+  assert.equal(staleReconnect.added.length, 0);
+  assert.equal(staleReconnect.detached.length, 0);
+  assert.deepEqual(staleReconnect.tabs, [replacement]);
+  assert.equal(registry.resolveTarget(replacement.tab_id).websocket_url, replacementUrl);
+});
+
+test("repeated endpoint invalidation advances authority once per real replacement", () => {
+  const registry = new BrowserTabRegistry();
+  const first = registry.reconcile(1, [target("page-1", "ws://127.0.0.1:9222/devtools/page/one")]).tabs[0];
+  const secondResult = registry.reconcile(1, [target("page-1", "ws://127.0.0.1:9222/devtools/page/two")]);
+  const second = secondResult.tabs[0];
+  const repeated = registry.reconcile(1, [target("page-1", "ws://127.0.0.1:9222/devtools/page/two")]);
+
+  assert.notEqual(second.tab_id, first.tab_id);
+  assert.equal(second.target_generation, first.target_generation + 1);
+  assert.equal(repeated.added.length, 0);
+  assert.equal(repeated.detached.length, 0);
+  assert.deepEqual(repeated.updated, [second]);
+  assert.deepEqual(repeated.tabs, [second]);
 });
 
 test("suppresses duplicate CDP targets deterministically", () => {

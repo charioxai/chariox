@@ -1,4 +1,5 @@
 import { spawn as nodeSpawn } from "node:child_process";
+import path from "node:path";
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
@@ -21,6 +22,11 @@ import {
   BrowserPageFeatures,
   PAGE_FEATURE_ERROR_CODES,
 } from "./browser-controller-page-features.mjs";
+import {
+  BrowserMutationCoordinator,
+  BrowserMutationError,
+  MUTATION_ERROR_CODES,
+} from "./browser-controller-mutation-coordinator.mjs";
 
 export const CONTROLLER_STATES = Object.freeze([
   "idle",
@@ -228,6 +234,94 @@ function boundedJson(value, limit) {
     throw controllerError(ERROR_CODES.REQUEST_TOO_LARGE);
   }
   return encoded;
+}
+
+const DEFAULT_MUTATION_ACTION_TIMEOUT_MS = 5_000;
+const MIN_MUTATION_ACTION_TIMEOUT_MS = 100;
+const MAX_MUTATION_ACTION_TIMEOUT_MS = 5_000;
+const MAX_MUTATION_FILL_TEXT_BYTES = 48 * 1024;
+const MAX_MUTATION_PROMPT_BYTES = 8 * 1024;
+const MAX_MUTATION_PATH_BYTES = 4 * 1024;
+
+function normalizeMutationAction(value) {
+  if (!isPlainObject(value)) {
+    return value;
+  }
+  const keys = Object.keys(value);
+  if (value.kind === "click" && keys.every((key) => key === "kind")) {
+    return { kind: "click" };
+  }
+  if (
+    value.kind === "fill" &&
+    keys.every((key) => ["kind", "text", "append"].includes(key)) &&
+    typeof value.text === "string" &&
+    Buffer.byteLength(value.text, "utf8") <= MAX_MUTATION_FILL_TEXT_BYTES &&
+    (value.append === undefined || typeof value.append === "boolean")
+  ) {
+    return { kind: "fill", text: value.text, append: value.append === true };
+  }
+  return value;
+}
+
+function normalizeMutationTimeout(value) {
+  if (value === undefined) {
+    return DEFAULT_MUTATION_ACTION_TIMEOUT_MS;
+  }
+  if (!Number.isSafeInteger(value) || value < 1) {
+    return value;
+  }
+  return Math.max(
+    MIN_MUTATION_ACTION_TIMEOUT_MS,
+    Math.min(MAX_MUTATION_ACTION_TIMEOUT_MS, value),
+  );
+}
+
+function normalizeMutationDialog(value) {
+  if (!isPlainObject(value)) {
+    return value;
+  }
+  const keys = Object.keys(value);
+  const valid =
+    keys.every((key) => ["action", "prompt_text"].includes(key)) &&
+    (value.action === "accept" || value.action === "dismiss") &&
+    (value.prompt_text === undefined ||
+      (typeof value.prompt_text === "string" &&
+        Buffer.byteLength(value.prompt_text, "utf8") <= MAX_MUTATION_PROMPT_BYTES));
+  if (!valid) {
+    return value;
+  }
+  return {
+    action: value.action,
+    prompt_text: value.prompt_text,
+  };
+}
+
+function normalizeMutationPath(value) {
+  if (
+    typeof value !== "string" ||
+    !path.isAbsolute(value) ||
+    Buffer.byteLength(value, "utf8") > MAX_MUTATION_PATH_BYTES ||
+    /[\u0000-\u001f\u007f]/.test(value)
+  ) {
+    return value;
+  }
+  return path.normalize(value);
+}
+
+function normalizeMutationRequest(operation, request) {
+  if (!isPlainObject(request)) {
+    return request;
+  }
+  const normalized = { ...request };
+  if (operation === "perform_element_action") {
+    normalized.action = normalizeMutationAction(request.action);
+    normalized.timeout_ms = normalizeMutationTimeout(request.timeout_ms);
+  } else if (operation === "handle_dialog") {
+    normalized.dialog = normalizeMutationDialog(request.dialog);
+  } else if (operation === "upload_files" && Array.isArray(request.paths)) {
+    normalized.paths = request.paths.map(normalizeMutationPath);
+  }
+  return normalized;
 }
 
 function defaultClock() {
@@ -595,6 +689,20 @@ export class BrowserController {
     this._process = null;
     this._cdp = null;
     this.tabRegistry = options.tabRegistry ?? new BrowserTabRegistry();
+    this.mutationCoordinator = options.mutationCoordinator ?? new BrowserMutationCoordinator({
+      maxTabs: options.mutationMaxTabs,
+      maxQueuedPerTab: options.mutationMaxQueuedPerTab,
+      maxCompleted: options.mutationMaxCompleted,
+      maxInvalidatedTabs: options.mutationMaxInvalidatedTabs,
+    });
+    if (
+      typeof this.mutationCoordinator.mutate !== "function" ||
+      typeof this.mutationCoordinator.invalidateTab !== "function" ||
+      typeof this.mutationCoordinator.advanceBrowserGeneration !== "function" ||
+      typeof this.mutationCoordinator.snapshot !== "function"
+    ) {
+      throw new TypeError("mutationCoordinator must expose the controller mutation seam");
+    }
     this.observationStore = options.observationStore ?? new BrowserObservationStore();
     this.pageFeatures = options.pageFeatures ?? new BrowserPageFeatures({
       uploadRoots: options.uploadRoots ?? [],
@@ -653,6 +761,7 @@ export class BrowserController {
     }
 
     this.generation += 1;
+    this._advanceMutationBrowserGeneration(this.generation);
     this.state = "starting";
     this.fatalCode = null;
     let record;
@@ -835,7 +944,7 @@ export class BrowserController {
     }
   }
 
-  async performElementAction(ownerId, expectedGeneration, request) {
+  async performElementAction(ownerId, expectedGeneration, request, mutation) {
     this._assertTabRegistryAccess(ownerId, expectedGeneration);
     assertExactKeys(
       request,
@@ -853,7 +962,20 @@ export class BrowserController {
       schemaError();
     }
     const generation = this.generation;
-    return this._enqueue(generation, async () => {
+    const identity = mutation === undefined
+      ? undefined
+      : this._prepareMutationIdentity(
+        "perform_element_action",
+        tabId,
+        targetGeneration,
+        generation,
+        request,
+        elementRef,
+      );
+    const run = async ({ signal = { aborted: false } } = {}) => {
+      if (signal.aborted) {
+        throw new BrowserMutationError(MUTATION_ERROR_CODES.INDETERMINATE);
+      }
       const target = this.tabRegistry.resolveTarget(tabId, {
         generation,
         target_generation: targetGeneration,
@@ -866,7 +988,7 @@ export class BrowserController {
       }
       const connection = await this._ensureTargetConnection(target);
       try {
-        return await performBrowserAction({
+        const result = await performBrowserAction({
           connection,
           element,
           action: request.action,
@@ -874,10 +996,25 @@ export class BrowserController {
           now: () => this._now(),
           sleep: (milliseconds) => this.timers.sleep(milliseconds),
         });
+        if (signal.aborted) {
+          throw new BrowserMutationError(MUTATION_ERROR_CODES.INDETERMINATE);
+        }
+        return result;
       } catch (error) {
         throw normalizeError(error);
       }
-    });
+    };
+    if (mutation === undefined) {
+      return this._enqueue(generation, run);
+    }
+    const attribution = this._createTabMutationAttribution(
+      mutation,
+      "perform_element_action",
+      tabId,
+      targetGeneration,
+      generation,
+    );
+    return this._enqueueTabMutation(attribution, run, identity);
   }
 
   async describeElementContext(ownerId, expectedGeneration, request) {
@@ -911,7 +1048,7 @@ export class BrowserController {
     });
   }
 
-  async handleDialog(ownerId, expectedGeneration, request) {
+  async handleDialog(ownerId, expectedGeneration, request, mutation) {
     this._assertTabRegistryAccess(ownerId, expectedGeneration);
     assertExactKeys(request, ["tab_id", "target_generation", "dialog"], [
       "tab_id",
@@ -922,18 +1059,45 @@ export class BrowserController {
     const targetGeneration = validateGeneration(request.target_generation);
     if (!isPlainObject(request.dialog)) schemaError();
     const generation = this.generation;
-    return this._enqueue(generation, async () => {
+    const identity = mutation === undefined
+      ? undefined
+      : this._prepareMutationIdentity(
+        "handle_dialog",
+        tabId,
+        targetGeneration,
+        generation,
+        request,
+      );
+    const run = async ({ signal = { aborted: false } } = {}) => {
+      if (signal.aborted) {
+        throw new BrowserMutationError(MUTATION_ERROR_CODES.INDETERMINATE);
+      }
       const target = this.tabRegistry.resolveTarget(tabId, {
         generation,
         target_generation: targetGeneration,
       });
       const connection = await this._ensureTargetConnection(target);
       try {
-        return await this.pageFeatures.handleDialog({ connection, dialog: request.dialog });
+        const result = await this.pageFeatures.handleDialog({ connection, dialog: request.dialog });
+        if (signal.aborted) {
+          throw new BrowserMutationError(MUTATION_ERROR_CODES.INDETERMINATE);
+        }
+        return result;
       } catch (error) {
         throw normalizeError(error);
       }
-    });
+    };
+    if (mutation === undefined) {
+      return this._enqueue(generation, run);
+    }
+    const attribution = this._createTabMutationAttribution(
+      mutation,
+      "handle_dialog",
+      tabId,
+      targetGeneration,
+      generation,
+    );
+    return this._enqueueTabMutation(attribution, run, identity);
   }
 
   async waitForPopup(ownerId, expectedGeneration, request) {
@@ -985,7 +1149,7 @@ export class BrowserController {
     });
   }
 
-  async uploadFiles(ownerId, expectedGeneration, request) {
+  async uploadFiles(ownerId, expectedGeneration, request, mutation) {
     this._assertTabRegistryAccess(ownerId, expectedGeneration);
     assertExactKeys(request, ["tab_id", "target_generation", "element_ref", "paths"], [
       "tab_id",
@@ -998,7 +1162,20 @@ export class BrowserController {
     const elementRef = validateIdentifier(request.element_ref, "element_ref");
     if (!Array.isArray(request.paths)) schemaError();
     const generation = this.generation;
-    return this._enqueue(generation, async () => {
+    const identity = mutation === undefined
+      ? undefined
+      : this._prepareMutationIdentity(
+        "upload_files",
+        tabId,
+        targetGeneration,
+        generation,
+        request,
+        elementRef,
+      );
+    const run = async ({ signal = { aborted: false } } = {}) => {
+      if (signal.aborted) {
+        throw new BrowserMutationError(MUTATION_ERROR_CODES.INDETERMINATE);
+      }
       const target = this.tabRegistry.resolveTarget(tabId, {
         generation,
         target_generation: targetGeneration,
@@ -1011,11 +1188,26 @@ export class BrowserController {
       }
       const connection = await this._ensureTargetConnection(target);
       try {
-        return await this.pageFeatures.uploadFiles({ connection, element, paths: request.paths });
+        const result = await this.pageFeatures.uploadFiles({ connection, element, paths: request.paths });
+        if (signal.aborted) {
+          throw new BrowserMutationError(MUTATION_ERROR_CODES.INDETERMINATE);
+        }
+        return result;
       } catch (error) {
         throw normalizeError(error);
       }
-    });
+    };
+    if (mutation === undefined) {
+      return this._enqueue(generation, run);
+    }
+    const attribution = this._createTabMutationAttribution(
+      mutation,
+      "upload_files",
+      tabId,
+      targetGeneration,
+      generation,
+    );
+    return this._enqueueTabMutation(attribution, run, identity);
   }
 
   async grantPermissions(ownerId, expectedGeneration, request) {
@@ -1147,6 +1339,76 @@ export class BrowserController {
     this._requireGeneration(expectedGeneration);
     if (this.state !== "ready" || !this._cdp || this._cdp.closed) {
       throw controllerError(ERROR_CODES.CONTROLLER_NOT_READY);
+    }
+  }
+
+  _advanceMutationBrowserGeneration(generation) {
+    const current = this.mutationCoordinator.snapshot().browser_generation;
+    if (current === null || current < generation) {
+      this.mutationCoordinator.advanceBrowserGeneration(generation);
+      return;
+    }
+    if (current !== generation) {
+      throw controllerError(ERROR_CODES.STALE_GENERATION);
+    }
+  }
+
+  _createTabMutationAttribution(mutation, operation, tabId, targetGeneration, generation) {
+    assertExactKeys(mutation, ["action_id", "actor_id"], ["action_id", "actor_id"]);
+    return {
+      action_id: validateIdentifier(mutation.action_id, "action_id"),
+      actor_id: validateIdentifier(mutation.actor_id, "actor_id"),
+      browser_generation: generation,
+      operation,
+      tab_id: tabId,
+      target_generation: targetGeneration,
+    };
+  }
+
+  _prepareMutationIdentity(operation, tabId, targetGeneration, generation, request, elementRef) {
+    const target = this.tabRegistry.resolveTarget(tabId, {
+      generation,
+      target_generation: targetGeneration,
+    });
+    let documentId = null;
+    if (elementRef !== undefined) {
+      try {
+        documentId = this.observationStore.resolve(target, elementRef)?.document_id ?? null;
+      } catch (error) {
+        throw normalizeError(error);
+      }
+    }
+    const normalizedRequest = normalizeMutationRequest(operation, request);
+    return {
+      target_id: target.target_id,
+      page_id: target.target_id,
+      document_id: documentId,
+      arguments: normalizedRequest,
+      payload: normalizedRequest,
+    };
+  }
+
+  _enqueueTabMutation(attribution, run, identity) {
+    return this.mutationCoordinator.mutate(
+      attribution,
+      async (context) => {
+        if (context.signal.aborted) {
+          throw new BrowserMutationError(MUTATION_ERROR_CODES.INDETERMINATE);
+        }
+        return run(context);
+      },
+      identity,
+    );
+  }
+
+  _invalidateAllMutations() {
+    const snapshot = this.mutationCoordinator.snapshot();
+    const invalidated = new Set(snapshot.active.map((record) => record.tab_id));
+    for (const queued of snapshot.queued) {
+      invalidated.add(queued.tab_id);
+    }
+    for (const tabId of invalidated) {
+      this.mutationCoordinator.invalidateTab(tabId, Number.MAX_SAFE_INTEGER);
     }
   }
 
@@ -1340,6 +1602,9 @@ export class BrowserController {
       };
     });
     const result = this.tabRegistry.reconcile(generation, registryTargets, options);
+    for (const detached of result.detached) {
+      this.mutationCoordinator.invalidateTab(detached.tab_id, detached.target_generation);
+    }
     this.observationStore.reconcile(result.tabs);
     this._reconcileTargetConnections(result.tabs);
     return result;
@@ -1370,6 +1635,7 @@ export class BrowserController {
           if (this._targetConnections.get(target.tab_id) === record) {
             this._targetConnections.delete(target.tab_id);
             this.observationStore.invalidate(target.tab_id);
+            this.mutationCoordinator.invalidateTab(target.tab_id, target.target_generation);
           }
         },
       });
@@ -1395,11 +1661,22 @@ export class BrowserController {
     const activeByTabId = new Map(activeTabs.map((tab) => [tab.tab_id, tab]));
     for (const [tabId, record] of this._targetConnections) {
       const tab = activeByTabId.get(tabId);
+      const authoritativeTarget = tab
+        ? this.tabRegistry.resolveTarget(tabId, {
+          generation: tab.generation,
+          target_generation: tab.target_generation,
+        })
+        : null;
       if (
         !tab ||
         tab.generation !== record.generation ||
-        tab.target_generation !== record.targetGeneration
+        tab.target_generation !== record.targetGeneration ||
+        authoritativeTarget.websocket_url !== record.websocketUrl
       ) {
+        this.mutationCoordinator.invalidateTab(tabId, record.targetGeneration);
+        if (authoritativeTarget?.websocket_url !== record.websocketUrl) {
+          this.observationStore.invalidate(tabId);
+        }
         record.connection.close();
         this._targetConnections.delete(tabId);
       }
@@ -1434,6 +1711,7 @@ export class BrowserController {
   async _shutdownInternal(reason) {
     this.state = "stopping";
     this._stopHeartbeat();
+    this._invalidateAllMutations();
     this._closeTargetConnections();
     this._rejectQueued(controllerError(
       reason === "restart" ? ERROR_CODES.STALE_GENERATION : ERROR_CODES.REQUEST_CANCELLED,
@@ -1523,6 +1801,7 @@ export class BrowserController {
     this.state = "fatal";
     this.fatalCode = code;
     this._stopHeartbeat();
+    this._invalidateAllMutations();
     this._closeTargetConnections();
     this._rejectQueued(controllerError(code));
     const connection = this._cdp;
