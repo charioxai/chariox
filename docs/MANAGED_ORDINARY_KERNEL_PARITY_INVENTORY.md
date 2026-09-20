@@ -25,38 +25,56 @@ filesystem semantics.
 
 `CHARIOX_PUBLICATION_CONTROL_STATE_DIR` identifies durable publication/control
 state; it is not a repository root. `CHARIOX_MANAGED_PROVIDER_HOME` is the
-provider account/isolation home and is deliberately not consulted for repository
-or empty-workspace placement. No dedicated trusted machine-level repository-root
-setting was found.
+provider account home and is deliberately not consulted for repository or
+empty-workspace placement. Path 1 does not use that home as a Bubblewrap or
+managed-only filesystem boundary.
 
-The current contract therefore implements only the fixed default
-`/home/chariox/<validated-source-basename>`. An optional custom root would need a
-new, distinct trusted `repository_root` configuration field, bootstrapped through
-a dedicated setting and threaded into managed transfer/import. If that field were
-serialized into a public request/config shape, the local daemon protocol version,
-snapshots/hashes, and the minimum dependent client version would need the standard
-protocol-change update. This slice adds no such field and makes no serialized
-protocol change.
+The default repository destination is
+`/home/chariox/<validated-source-basename>`. The machine-level trusted
+`repository_root` setting may select another absolute root when the managed
+machine is created. Cloud provisioning, bootstrap, kernel receipt, child-worker
+creation, and Web projections must carry one server-authoritative value. A
+browser, worker, or session cannot supply a second override. Any serialized
+protocol change must follow the protocol-version and snapshot/hash rules in
+`AGENTS.md`.
 
 ## Executable runtime parity evidence contract
 
-The static Path-1 source assertions are not acceptance evidence. The executable
-matrix is owned by:
+The static Path-1 source assertions are not acceptance evidence. One executable
+contract owns capture, validation, and comparison:
 
-`
-scripts/managed-path1-provider-parity-drill.mjs
-scripts/managed-path1-provider-parity.test.mjs
-scripts/managed-path1-provider-parity-drill.test.mjs
-`
+```text
+apps/cli/scripts/managed-ordinary-parity-collector.mjs
+apps/cli/scripts/managed-ordinary-parity-matrix.mjs
+apps/cli/scripts/managed-ordinary-parity-collector.test.mjs
+apps/cli/scripts/managed-ordinary-parity-matrix.test.mjs
+```
+
+The older `scripts/managed-path1-provider-parity-drill.mjs` schema is not an
+acceptance source for this matrix. Do not add another snapshot format. Any
+remaining useful runtime probes from that script must move behind the
+repository-owned collector contract above.
 
 Capture must be invoked inside the official provider turn or an approved remote
 command boundary on each target. It must run on Linux, use the same reviewed
 kernel/provider build, declare @@ordinary@@ or @@path1@@, and write one signed
-machine-readable snapshot:
+machine-readable manifest. The collector uses a repository-owned probe whose
+source/build identity must match the reviewed commit. It does not accept a
+caller-selected probe executable.
 
-`bash
-node scripts/managed-path1-provider-parity-drill.mjs capture --topology ordinary --reviewed-commit "$CHARIOX_PARITY_REVIEWED_COMMIT" --build-id "$CHARIOX_PARITY_BUILD_ID" --provider "$CHARIOX_PARITY_PROVIDER" --provider-version "$CHARIOX_PARITY_PROVIDER_VERSION" --boundary official-provider-turn --fresh-worker --inside-provider-turn --output ordinary.json
-`
+```bash
+pnpm --filter @chariox/cli run managed-ordinary-parity:collect -- capture \
+  --topology ordinary \
+  --reviewed-commit "$CHARIOX_PARITY_REVIEWED_COMMIT" \
+  --build-id "$CHARIOX_PARITY_BUILD_ID" \
+  --kernel-protocol "$CHARIOX_PARITY_KERNEL_PROTOCOL" \
+  --relay-protocol "$CHARIOX_PARITY_RELAY_PROTOCOL" \
+  --provider "$CHARIOX_PARITY_PROVIDER" \
+  --provider-command "$CHARIOX_PARITY_PROVIDER_COMMAND" \
+  --kernel-binary "$CHARIOX_PARITY_KERNEL_BINARY" \
+  --boundary official-provider-turn \
+  --output ordinary.json
+```
 
 The same command is run inside the fresh Path-1 worker with
 `--topology path1`. The signing key is read from
@@ -67,46 +85,27 @@ not a pass.
 
 Comparison is a separate fail-closed operation:
 
-`bash
-node scripts/managed-path1-provider-parity-drill.mjs compare --ordinary ordinary.json --path1 path1.json --reviewed-commit "$CHARIOX_PARITY_REVIEWED_COMMIT" --build-id "$CHARIOX_PARITY_BUILD_ID" --report parity-report.json
-`
+```bash
+pnpm --filter @chariox/cli run managed-ordinary-parity:compare -- \
+  --ordinary ordinary.json \
+  --path1 path1.json \
+  --reviewed-commit "$CHARIOX_PARITY_REVIEWED_COMMIT" \
+  --build-id "$CHARIOX_PARITY_BUILD_ID" \
+  --report parity-report.json
+```
 
 The comparator requires valid signatures, the same reviewed commit and build
-identity, the declared @@ordinary@@/@@path1@@ topologies, a fresh worker, an
+identity, the declared `ordinary` and `path1` topologies, a fresh worker, an
 official provider identity, and a runtime provider-turn/remote-command
 boundary. It rejects source-only captures, unsigned or tampered snapshots,
 missing rows, topology/head mismatches, different normalized results, and
 cleanup failures. It emits row names and statuses only; provider output,
 environment contents, credentials, and command output are not printed.
 
-The required result fields are:
-
-`
-exact_cwd
-arbitrary_accessible_directory
-home_access
-tmp_access
-post_enrollment_repository
-git_file_terminal
-provider_ancestry
-managed_isolation_environment
-mount_visibility
-privilege_state
-network_reachability
-package_tool_installation
-official_provider_identity
-reconnect_history_result_identity
-errors
-cleanup
-shutdown_agents_done
-shutdown_idle_15m
-shutdown_idle_30m
-shutdown_minimum_3h
-shutdown_manual
-shutdown_custom
-shutdown_explicit_lifecycle_reconciliation
-shutdown_deployment_reconciliation
-`
+`ROW_DEFINITIONS` in `managed-ordinary-parity-matrix.mjs` is the sole
+machine-readable list of required rows and checks. It groups the contract as
+`MP-01` through `MP-10`. The plan-level `MP-11` source inventory is a separate
+proactive audit gate and cannot be represented by a runtime snapshot alone.
 
 `provider_ancestry` must prove no Bubblewrap ancestor on Path 1;
 `managed_isolation_environment` must prove the managed isolation and Bubblewrap
