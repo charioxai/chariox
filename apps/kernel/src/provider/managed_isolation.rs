@@ -2491,7 +2491,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn managed_collector_rebinds_selected_home_workspace_in_launch_args() {
+    fn managed_collector_rebinds_selected_provider_home_workspace_in_launch_args() {
         use std::os::unix::fs::PermissionsExt;
 
         let _env = crate::env_lock::lock();
@@ -2515,7 +2515,7 @@ mod tests {
         std::fs::set_permissions(&bwrap_copy, std::fs::Permissions::from_mode(0o755))
             .expect("private bwrap copy should be executable");
 
-        let home_root = PathBuf::from("/home").join(format!(
+        let home_root = PathBuf::from(SANDBOX_HOME).join(format!(
             "chariox-managed-home-workspace-collector-{}-{}",
             std::process::id(),
             crate::session::unix_epoch_ms()
@@ -2687,6 +2687,17 @@ mod tests {
             .windows(2)
             .position(|window| window == ["--tmpfs", "/home"])
             .expect("managed launch should mask the host home parent");
+        let provider_home_bind = prepared_args
+            .windows(3)
+            .position(|window| {
+                window
+                    == [
+                        "--bind",
+                        provider_home.to_str().expect("provider home should be utf8"),
+                        SANDBOX_HOME,
+                    ]
+            })
+            .expect("managed launch should install the synthetic provider HOME");
         let selected_bind = prepared_args
             .windows(3)
             .position(|window| {
@@ -2696,6 +2707,10 @@ mod tests {
         assert!(
             home_mask < selected_bind,
             "selected home workspace must be rebound after the synthetic home mask"
+        );
+        assert!(
+            provider_home_bind < selected_bind,
+            "selected provider-HOME child must be rebound after the synthetic provider HOME"
         );
         assert!(!prepared_args.windows(3).any(|window| {
             window
