@@ -686,11 +686,8 @@ impl KernelRuntimeState {
                     return Ok(CancelledLocalPromptRestartOutcome::Recovered(outcome));
                 }
             }
-            self.retire_owned_provider_run_after_terminal_failure(
-                session_id,
-                failed_provider_run_id,
-            )
-            .await;
+            self.retire_owned_provider_run(session_id, failed_provider_run_id)
+                .await;
         }
         let provider_run_id = if failed_delivery.is_some() {
             None

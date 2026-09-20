@@ -7,25 +7,34 @@ use crate::account_profile::{
 
 #[tokio::test]
 async fn automatic_substitution_settles_failure_before_relaunching_queued_work() {
-    assert_queued_substitution(false, false).await;
+    assert_queued_substitution(false, false, false).await;
 }
 
 #[tokio::test]
 async fn automatic_substitution_advances_a_queued_workflow_once() {
-    assert_queued_substitution(true, false).await;
+    assert_queued_substitution(true, false, false).await;
 }
 
 #[tokio::test]
 async fn claude_stop_failure_hook_activates_substitute_without_replaying_failed_prompt() {
-    assert_queued_substitution(false, true).await;
+    assert_queued_substitution(false, true, false).await;
 }
 
 #[tokio::test]
 async fn claude_stop_failure_hook_advances_queued_workflow_on_substitute_once() {
-    assert_queued_substitution(true, true).await;
+    assert_queued_substitution(true, true, false).await;
 }
 
-async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
+#[tokio::test]
+async fn late_claude_stop_failure_activates_substitute_after_prompt_settlement() {
+    assert_queued_substitution(false, true, true).await;
+}
+
+async fn assert_queued_substitution(
+    workflow_prompt: bool,
+    claude_hook: bool,
+    settle_before_failure: bool,
+) {
     let (runtime, session_id, agent_id, profile_id) =
         runtime_with_substitutes(&["opencode/deepseek-v4-pro"], true).await;
     let starter_provider = if claude_hook {
@@ -58,7 +67,8 @@ async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
         starter_account,
         starter_model,
     )
-    .with_agent_id(&agent_id);
+    .with_agent_id(&agent_id)
+    .with_variant(Some("high".to_string()));
     let hook_root = std::env::temp_dir().join(format!(
         "chariox-stop-failure-{:016x}",
         rand::random::<u64>()
@@ -170,6 +180,13 @@ async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
         })
         .await
         .unwrap();
+    if settle_before_failure {
+        runtime
+            .owned
+            .fail_local_prompt_without_advance(&session_id, &agent_id, Some(run.id()))
+            .unwrap()
+            .expect("the failed prompt should still be active before the race is simulated");
+    }
     if claude_hook {
         let result = runtime
             .pump_owned_provider_output(&session_id, run.id(), Vec::new(), true)

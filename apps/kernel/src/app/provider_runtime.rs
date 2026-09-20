@@ -203,7 +203,9 @@ impl DaemonApp {
             self.providers
                 .apply_runtime_binding(started.run.id(), binding)?;
         }
-        self.finish_provider_launch_success(&started.run)
+        let run = self.finish_provider_launch_success(&started.run)?;
+        ProviderRunActivationState::retire_replaced_run_after_success(self, started);
+        Ok(run)
     }
 
     pub(crate) fn fail_provider_launch(

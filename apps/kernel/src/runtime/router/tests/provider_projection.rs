@@ -699,6 +699,119 @@ async fn provider_run_projection_tracks_async_launch_completion_inner() {
     }
 }
 
+#[test]
+fn provider_launch_executor_retires_replaced_run_after_success() {
+    run_provider_projection_large_stack_test(
+        "provider-launch-executor-retires-replaced-run",
+        provider_launch_executor_retires_replaced_run_after_success_inner,
+    );
+}
+
+async fn provider_launch_executor_retires_replaced_run_after_success_inner() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+    let launch = |command_id: &str, model: &str| {
+        let request = LocalDaemonRequest::LaunchProviderRun(LaunchProviderRunRequest {
+            session_id: session_id.clone(),
+            agent_id: Some(agent_id.clone()),
+            adapter_key: "dev-stub".to_string(),
+            provider: "claude-code".to_string(),
+            account_profile: "default".to_string(),
+            model: model.to_string(),
+            variant: None,
+            structured_endpoint: None,
+            provider_session_id: None,
+            native_tui: false,
+        });
+        let command = KernelCommand::from_local_request(command_id, None, None, &request);
+        (command, request)
+    };
+
+    let (first_command, first_request) = launch("cmd-provider-first", "sonnet");
+    let first_run_id = match router
+        .dispatch(first_command, first_request)
+        .await
+        .expect("first provider launch should be accepted")
+    {
+        LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run } => {
+            provider_run.id().to_string()
+        }
+        other => panic!("unexpected first launch response: {other:?}"),
+    };
+    for _ in 0..50 {
+        if app
+            .lock()
+            .await
+            .providers()
+            .get_run(&first_run_id)
+            .is_ok_and(|run| run.state() == crate::provider::ProviderRunState::Running)
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let (replacement_command, replacement_request) = launch("cmd-provider-replacement", "opus");
+    let replacement_run_id = match router
+        .dispatch(replacement_command, replacement_request)
+        .await
+        .expect("replacement provider launch should be accepted")
+    {
+        LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run } => {
+            provider_run.id().to_string()
+        }
+        other => panic!("unexpected replacement launch response: {other:?}"),
+    };
+    for _ in 0..50 {
+        let settled = {
+            let app = app.lock().await;
+            let first_ended = app
+                .providers()
+                .get_run(&first_run_id)
+                .is_ok_and(|run| run.state() == crate::provider::ProviderRunState::Ended);
+            let replacement_running = app
+                .providers()
+                .get_run(&replacement_run_id)
+                .is_ok_and(|run| run.state() == crate::provider::ProviderRunState::Running);
+            first_ended && replacement_running
+        };
+        if settled {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let app = app.lock().await;
+    assert_eq!(
+        app.providers()
+            .get_run(&first_run_id)
+            .expect("first run should remain addressable")
+            .state(),
+        crate::provider::ProviderRunState::Ended,
+    );
+    assert_eq!(
+        app.providers()
+            .get_run(&replacement_run_id)
+            .expect("replacement run should remain addressable")
+            .state(),
+        crate::provider::ProviderRunState::Running,
+    );
+    assert!(
+        app.pty().process_id(&first_run_id).is_err(),
+        "the runtime launch path must retire the superseded process alias"
+    );
+    let tracking = app.provider_process_tracking_store().snapshot();
+    assert!(!tracking.run_processes.contains_key(&first_run_id));
+    assert!(tracking.run_processes.contains_key(&replacement_run_id));
+}
+
 #[tokio::test]
 async fn settled_provider_launch_pending_state_uses_projection_without_app_lock() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");

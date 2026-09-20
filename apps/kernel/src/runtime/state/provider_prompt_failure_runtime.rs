@@ -25,16 +25,43 @@ impl KernelRuntimeState {
             .settle_leased_workflow_provider_failure(session_id, &agent_id, provider_run_id)
             .await?
         {
-            self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run_id)
+            self.retire_owned_provider_run(session_id, provider_run_id)
                 .await;
             return Ok(());
         }
 
+        let substitution_reason = crate::provider::classify_provider_substitutable_failure_text(
+            provider_run.adapter_key(),
+            message,
+        );
         let session = owned.session_store.get_session(session_id)?;
         let Some(active_prompt) = owned
             .prompt_state_owner
             .active_prompt_for_agent(&session, &agent_id)
         else {
+            // Provider exit reconciliation can settle the prompt before a native
+            // StopFailure hook is drained. The late authoritative failure must
+            // still advance the substitute chain, but only while this failed
+            // run still names the agent's active profile. That identity fence
+            // also prevents a repeated poll from advancing the chain twice.
+            let agent = owned.agent_store.get_agent(&agent_id)?;
+            let failed_profile_is_still_active = provider_run.provider()
+                == crate::provider::provider_id_for_launch(agent.provider())
+                && provider_run.account_profile() == agent.provider_account_profile()
+                && provider_run.model() == agent.model().unwrap_or("default")
+                && provider_run.variant() == agent.effort();
+            self.retire_owned_provider_run(session_id, provider_run_id)
+                .await;
+            if let Some(reason) = substitution_reason.filter(|_| failed_profile_is_still_active) {
+                self.activate_substitute_after_provider_failure(
+                    session_id,
+                    &agent_id,
+                    provider_run_id,
+                    &reason,
+                    None,
+                )
+                .await;
+            }
             return Ok(());
         };
         if active_prompt.is_external() {
@@ -46,7 +73,7 @@ impl KernelRuntimeState {
         if project_failure_output {
             owned.record_provider_failure_output(session_id, provider_run_id, &agent_id, message);
         }
-        self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run_id)
+        self.retire_owned_provider_run(session_id, provider_run_id)
             .await;
         let _ = self.inject_metaagent_turn_failure_event(
             session_id,
@@ -72,11 +99,7 @@ impl KernelRuntimeState {
         // Settle the failed turn first, then choose its successor provider before
         // preparing any queued work. Otherwise admission retries the exhausted
         // account and can return before automatic substitution is reached.
-        let substituted = if let Some(reason) =
-            crate::provider::classify_provider_substitutable_failure_text(
-                provider_run.adapter_key(),
-                message,
-            ) {
+        let substituted = if let Some(reason) = substitution_reason {
             self.activate_substitute_after_provider_failure(
                 session_id,
                 &agent_id,
@@ -217,11 +240,7 @@ impl KernelRuntimeState {
         )
     }
 
-    pub(super) async fn retire_owned_provider_run_after_terminal_failure(
-        &self,
-        session_id: &str,
-        provider_run_id: &str,
-    ) {
+    pub(super) async fn retire_owned_provider_run(&self, session_id: &str, provider_run_id: &str) {
         let owned = &self.owned;
         if let Ok(outcome) = owned
             .provider_store

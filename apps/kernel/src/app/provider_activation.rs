@@ -5,6 +5,7 @@ use crate::provider::{
 };
 
 use super::provider_liveness::clear_active_provider_run_session_pointer;
+use super::provider_processes::ProviderProcessTracker;
 
 #[derive(Debug, Clone)]
 pub(crate) struct StartedProviderLaunch {
@@ -75,19 +76,12 @@ impl ProviderRunActivationState {
                 match active_run.state() {
                     ProviderRunState::Ended => {
                         app.sessions.set_active_provider_run(&session_id, None)?;
+                        let _ = ProviderProcessTracker::new(app).remove_run(active_run_id)?;
                         app.providers.clear_runtime(active_run_id);
                     }
                     ProviderRunState::Starting => {
                         if active_run.client_interface().is_chariox() {
-                            let outcome = app
-                                .providers
-                                .terminate_run_provider_only(&session_id, active_run_id)?;
-                            clear_active_provider_run_session_pointer(
-                                app,
-                                &session_id,
-                                outcome.run().id(),
-                            )?;
-                            app.update_provider_run_projection(outcome.into_run());
+                            Self::terminate_local_run(app, &session_id, active_run_id)?;
                         }
                     }
                     ProviderRunState::Running => {
@@ -128,14 +122,10 @@ impl ProviderRunActivationState {
             if previous_active_run_id.as_deref() == Some(run.id()) {
                 continue;
             }
-            let outcome = app
-                .providers
-                .terminate_run_provider_only(&session_id, run.id())?;
-            clear_active_provider_run_session_pointer(app, &session_id, outcome.run().id())?;
-            if previous_active_run_id.as_deref() == Some(outcome.run().id()) {
+            let ended = Self::terminate_local_run(app, &session_id, run.id())?;
+            if previous_active_run_id.as_deref() == Some(ended.id()) {
                 previous_active_run_id = None;
             }
-            app.update_provider_run_projection(outcome.into_run());
         }
 
         let outcome = app.providers.start_run_provider_only(request)?;
@@ -145,6 +135,53 @@ impl ProviderRunActivationState {
             run: outcome.into_run(),
             previous_active_run_id,
         })
+    }
+
+    pub(super) fn retire_replaced_run_after_success(
+        app: &mut DaemonApp,
+        started: &StartedProviderLaunch,
+    ) {
+        let Some(previous_run_id) = started.previous_active_run_id.as_deref() else {
+            return;
+        };
+        let Ok(previous_run) = app.providers.get_run(previous_run_id) else {
+            return;
+        };
+        if previous_run.session_id() != started.run.session_id()
+            || previous_run.agent_instance_id() != started.run.agent_instance_id()
+            || !previous_run.client_interface().is_chariox()
+        {
+            return;
+        }
+        if let Err(error) =
+            Self::terminate_local_run(app, started.run.session_id(), previous_run_id)
+        {
+            crate::logging::warn_with_fields(
+                "daemon.provider_process_gc",
+                "failed to retire superseded provider run after replacement launch",
+                serde_json::json!({
+                    "error": error.to_string(),
+                    "provider_run_id": previous_run_id,
+                    "replacement_provider_run_id": started.run.id(),
+                    "session_id": started.run.session_id(),
+                }),
+            );
+        }
+    }
+
+    fn terminate_local_run(
+        app: &mut DaemonApp,
+        session_id: &str,
+        provider_run_id: &str,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let outcome = app
+            .providers
+            .terminate_run_provider_only(session_id, provider_run_id)?;
+        clear_active_provider_run_session_pointer(app, session_id, outcome.run().id())?;
+        let ended = outcome.into_run();
+        let _ = ProviderProcessTracker::new(app).remove_run(ended.id())?;
+        app.update_provider_run_projection(ended.clone());
+        Ok(ended)
     }
 
     fn active_chariox_runs_for_target_agent(
@@ -200,15 +237,7 @@ impl ProviderRunActivationState {
                             }
                         }
                         ProviderRunState::Starting => {
-                            let outcome = app
-                                .providers
-                                .terminate_run_provider_only(session_id, active_run_id)?;
-                            clear_active_provider_run_session_pointer(
-                                app,
-                                session_id,
-                                outcome.run().id(),
-                            )?;
-                            app.update_provider_run_projection(outcome.into_run());
+                            Self::terminate_local_run(app, session_id, active_run_id)?;
                         }
                         ProviderRunState::Parked | ProviderRunState::Ended => {
                             app.sessions.set_active_provider_run(session_id, None)?;

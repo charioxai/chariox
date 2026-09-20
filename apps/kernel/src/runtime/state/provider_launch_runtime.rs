@@ -369,6 +369,8 @@ impl KernelRuntimeState {
             let result = owned.finish_provider_launch_success(started, binding);
             match result {
                 Ok(run) => {
+                    self.retire_replaced_provider_run_after_launch_success(started, &run)
+                        .await;
                     if let Some(agent_id) = run.agent_instance_id() {
                         match owned.advance_next_queued_prompt_dispatch(
                             run.session_id(),
@@ -404,6 +406,27 @@ impl KernelRuntimeState {
             }
         }
         self.spawn_workflow_prompt_dispatches(retry_metaagent_event_dispatches);
+    }
+
+    async fn retire_replaced_provider_run_after_launch_success(
+        &self,
+        started: &crate::app::StartedProviderLaunch,
+        replacement: &crate::provider::RuntimeProviderRun,
+    ) {
+        let Some(previous_run_id) = started.previous_active_run_id.as_deref() else {
+            return;
+        };
+        let Ok(previous_run) = self.owned.provider_store.get_run(previous_run_id) else {
+            return;
+        };
+        if previous_run.session_id() != replacement.session_id()
+            || previous_run.agent_instance_id() != replacement.agent_instance_id()
+            || !previous_run.client_interface().is_chariox()
+        {
+            return;
+        }
+        self.retire_owned_provider_run(replacement.session_id(), previous_run_id)
+            .await;
     }
 }
 
