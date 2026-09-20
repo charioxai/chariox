@@ -125,6 +125,71 @@ fn test_options() -> LocalDockerSliceOptions {
     }
 }
 
+fn projected_broker_environment(command: &Command) -> std::collections::BTreeMap<String, String> {
+    command
+        .get_envs()
+        .filter_map(|(name, value)| {
+            let name = name.to_str()?;
+            if !name.starts_with("CHARIOX_SLICE_") {
+                return None;
+            }
+            Some((name.to_string(), value?.to_str()?.to_string()))
+        })
+        .collect()
+}
+
+struct DisplayEnvironmentGuard {
+    previous: [(&'static str, Option<std::ffi::OsString>); 3],
+}
+
+impl DisplayEnvironmentGuard {
+    fn set(
+        backend: Option<&str>,
+        selkies_port: Option<&str>,
+        selkies_health_timeout: Option<&str>,
+    ) -> Self {
+        let values = [
+            ("CHARIOX_SLICE_DISPLAY_BACKEND", backend),
+            ("CHARIOX_SLICE_SELKIES_PORT", selkies_port),
+            (
+                "CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT",
+                selkies_health_timeout,
+            ),
+        ];
+        let previous = values.map(|(name, value)| {
+            let previous = std::env::var_os(name);
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+            (name, previous)
+        });
+        Self { previous }
+    }
+}
+
+impl Drop for DisplayEnvironmentGuard {
+    fn drop(&mut self) {
+        for (name, value) in &self.previous {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
+}
+
+fn with_display_environment<T>(
+    backend: Option<&str>,
+    selkies_port: Option<&str>,
+    selkies_health_timeout: Option<&str>,
+    callback: impl FnOnce() -> T,
+) -> T {
+    let _lock = crate::env_lock::lock();
+    let _environment = DisplayEnvironmentGuard::set(backend, selkies_port, selkies_health_timeout);
+    callback()
+}
+
 fn test_root(label: &str) -> std::path::PathBuf {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -303,6 +368,143 @@ fn local_docker_slice_runtime_uses_loopback_provider_bind_host() {
         })
         .expect("provider bind host should be configured");
     assert_eq!(provider_bind_host, "127.0.0.1");
+}
+
+#[test]
+fn managed_broker_projects_default_display_settings_for_every_slice_command() {
+    with_display_environment(None, None, None, || {
+        let record = test_record();
+        let expected_selkies_port = LocalDockerSlicePorts::for_record(&record).novnc.to_string();
+        for provision in [false, true] {
+            let mut command = Command::new("slice-provisioner");
+            configure_local_docker_slice_command(
+                &mut command,
+                &record,
+                None,
+                &test_options(),
+                provision,
+            )
+            .expect("default display settings should configure");
+            let environment = projected_broker_environment(&command);
+            assert_eq!(
+                environment
+                    .get("CHARIOX_SLICE_DISPLAY_BACKEND")
+                    .map(String::as_str),
+                Some("novnc")
+            );
+            assert_eq!(
+                environment
+                    .get("CHARIOX_SLICE_SELKIES_PORT")
+                    .map(String::as_str),
+                Some(expected_selkies_port.as_str())
+            );
+            assert_eq!(
+                environment
+                    .get("CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT")
+                    .map(String::as_str),
+                Some("15")
+            );
+        }
+    });
+}
+
+#[test]
+fn managed_broker_projects_validated_selkies_settings_for_every_slice_command() {
+    with_display_environment(Some("selkies"), Some("6081"), Some("21"), || {
+        let record = test_record();
+        for provision in [false, true] {
+            let mut command = Command::new("slice-provisioner");
+            configure_local_docker_slice_command(
+                &mut command,
+                &record,
+                None,
+                &test_options(),
+                provision,
+            )
+            .expect("Selkies display settings should configure");
+            let environment = projected_broker_environment(&command);
+            assert_eq!(
+                environment
+                    .get("CHARIOX_SLICE_DISPLAY_BACKEND")
+                    .map(String::as_str),
+                Some("selkies")
+            );
+            assert_eq!(
+                environment
+                    .get("CHARIOX_SLICE_SELKIES_PORT")
+                    .map(String::as_str),
+                Some("6081")
+            );
+            assert_eq!(
+                environment
+                    .get("CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT")
+                    .map(String::as_str),
+                Some("21")
+            );
+        }
+    });
+}
+
+#[test]
+fn managed_broker_rejects_invalid_display_settings_before_projection() {
+    for (backend, selkies_port, health_timeout, expected_message) in [
+        (
+            Some("x11"),
+            None,
+            None,
+            "CHARIOX_SLICE_DISPLAY_BACKEND is invalid",
+        ),
+        (
+            Some("selkies"),
+            Some("0"),
+            None,
+            "CHARIOX_SLICE_SELKIES_PORT is invalid",
+        ),
+        (
+            Some("selkies"),
+            Some("65536"),
+            None,
+            "CHARIOX_SLICE_SELKIES_PORT is invalid",
+        ),
+        (
+            Some("selkies"),
+            Some("bad"),
+            None,
+            "CHARIOX_SLICE_SELKIES_PORT is invalid",
+        ),
+        (
+            Some("selkies"),
+            None,
+            Some("0"),
+            "CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT is invalid",
+        ),
+        (
+            Some("selkies"),
+            None,
+            Some("121"),
+            "CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT is invalid",
+        ),
+        (
+            Some("selkies"),
+            None,
+            Some("fast"),
+            "CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT is invalid",
+        ),
+    ] {
+        with_display_environment(backend, selkies_port, health_timeout, || {
+            let mut command = Command::new("slice-provisioner");
+            let error = configure_local_docker_slice_command(
+                &mut command,
+                &test_record(),
+                None,
+                &test_options(),
+                true,
+            )
+            .expect_err("invalid display settings must fail closed");
+            assert!(error.to_string().contains(expected_message));
+            assert!(projected_broker_environment(&command).is_empty());
+        });
+    }
 }
 
 #[test]
