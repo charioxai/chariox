@@ -3,6 +3,7 @@ import { createHash, generateKeyPairSync, sign } from "node:crypto"
 import { spawnSync } from "node:child_process"
 import {
   chmod,
+  chown,
   cp,
   lstat,
   mkdir,
@@ -97,6 +98,32 @@ async function put(path, contents, mode = 0o644) {
   await mkdir(dirname(path), { recursive: true, mode: 0o755 })
   await writeFile(path, contents, { mode })
   await chmod(path, mode)
+}
+
+async function createRootPrivateDirectory(path) {
+  await mkdir(path, { recursive: true, mode: 0o700 })
+  await chown(path, 0, 0)
+  await chmod(path, 0o700)
+}
+
+function namespaceMapsId(contents, id) {
+  return contents.trim().split("\n").some((line) => {
+    const [inside, , length] = line.trim().split(/\s+/).map(Number)
+    return Number.isSafeInteger(inside) && Number.isSafeInteger(length)
+      && id >= inside && id < inside + length
+  })
+}
+
+async function effectiveCharioxIdentity() {
+  const uid = Number(spawnSync("id", ["-u", "chariox"], { encoding: "utf8" }).stdout.trim())
+  const gid = Number(spawnSync("id", ["-g", "chariox"], { encoding: "utf8" }).stdout.trim())
+  if (process.platform !== "linux") return { uid, gid }
+  const [uidMap, gidMap] = await Promise.all([
+    readFile("/proc/self/uid_map", "utf8").catch(() => ""),
+    readFile("/proc/self/gid_map", "utf8").catch(() => ""),
+  ])
+  if (namespaceMapsId(uidMap, uid) && namespaceMapsId(gidMap, gid)) return { uid, gid }
+  return { uid: 0, gid: 0 }
 }
 
 async function makeRelease(root, label, protocol, privateKey, publicKey, transitionPolicy = null, includeWorkerService = false) {
@@ -277,8 +304,21 @@ async function makeHarness(context, {
 
   const state = join(root, "harness-state")
   const bin = join(root, "bin")
+  const charioxIdentity = await effectiveCharioxIdentity()
   await mkdir(state)
   await mkdir(bin)
+  await put(join(bin, "id"), `#!/bin/sh
+set -eu
+if [ "\${1:-}" = "-u" ] && [ "\${2:-}" = "chariox" ]; then
+  printf '%s\n' "${charioxIdentity.uid}"
+  exit 0
+fi
+if [ "\${1:-}" = "-g" ] && [ "\${2:-}" = "chariox" ]; then
+  printf '%s\n' "${charioxIdentity.gid}"
+  exit 0
+fi
+exec /usr/bin/id "$@"
+`, 0o755)
   await put(join(bin, "systemctl"), `#!/bin/sh
 set -eu
 printf '%s\n' "$*" >> "$HARNESS_STATE/systemctl.log"
@@ -448,7 +488,7 @@ exec /usr/bin/stat "$@"
   const run = (extraEnv = {}, args = [target.rootfs, current.digest, target.digest, trustedKey]) =>
     spawnSync(upgrade, args, { encoding: "utf8", env: { ...env, ...extraEnv } })
   return {
-    root, installRoot, receiptPath, receipt, bindingDigest, persistent,
+    root, installRoot, receiptPath, receipt, bindingDigest, persistent, charioxIdentity,
     current, target, trustedKey, state, run,
   }
 }
@@ -505,7 +545,7 @@ test("managed kernel upgrade migrates legacy home state and rejects a home colli
   const legacyHome = join(harness.installRoot, "var/lib/chariox/home")
   const legacyReceipt = join(legacyHome, "managed/bootstrap-receipt.json")
   await rename(canonicalHome, legacyHome)
-  await mkdir(dirname(legacyReceipt), { recursive: true })
+  await createRootPrivateDirectory(dirname(legacyReceipt))
   await rename(harness.receiptPath, legacyReceipt)
 
   const migrated = harness.run()
@@ -525,8 +565,7 @@ test("managed kernel upgrade migrates legacy home state and rejects a home colli
   )
   assert.equal((await stat(join(harness.installRoot, "home/chariox"))).mode & 0o777, 0o700)
   assert.equal((await stat(join(harness.installRoot, "home/chariox/.chariox"))).mode & 0o777, 0o700)
-  const charioxUid = Number(spawnSync("id", ["-u", "chariox"], { encoding: "utf8" }).stdout.trim())
-  const charioxGid = Number(spawnSync("id", ["-g", "chariox"], { encoding: "utf8" }).stdout.trim())
+  const { uid: charioxUid, gid: charioxGid } = harness.charioxIdentity
   assert.equal((await stat(join(harness.installRoot, "home/chariox"))).uid, charioxUid)
   assert.equal((await stat(join(harness.installRoot, "home/chariox"))).gid, charioxGid)
   assert.equal((await stat(join(harness.installRoot, "home/chariox/.chariox"))).uid, charioxUid)
@@ -534,7 +573,7 @@ test("managed kernel upgrade migrates legacy home state and rejects a home colli
 
   const collisionHarness = await makeHarness(context)
   const collisionLegacy = join(collisionHarness.installRoot, "var/lib/chariox/home")
-  await mkdir(collisionLegacy, { recursive: true })
+  await createRootPrivateDirectory(collisionLegacy)
   await writeFile(join(collisionLegacy, "must-remain-untouched"), "collision\n")
   const collision = collisionHarness.run()
   assert.equal(collision.status, 1)
@@ -555,7 +594,7 @@ test("managed kernel upgrade stops the live service before migrating legacy home
   const legacyHome = join(harness.installRoot, "var/lib/chariox/home")
   const legacyReceipt = join(legacyHome, "managed/bootstrap-receipt.json")
   await rename(canonicalHome, legacyHome)
-  await mkdir(dirname(legacyReceipt), { recursive: true })
+  await createRootPrivateDirectory(dirname(legacyReceipt))
   await rename(harness.receiptPath, legacyReceipt)
   await put(join(harness.state, "write-legacy-home-on-stop"), "write\n")
 
@@ -571,21 +610,30 @@ test("managed kernel upgrade stops the live service before migrating legacy home
     "late-service-write\n",
     "the migration must retain the service's final write",
   )
+  assert.deepEqual((await readFile(join(harness.state, "systemctl.log"), "utf8")).trim().split("\n"), [
+    `stop ${serviceName}`,
+    "daemon-reload",
+    `start ${serviceName}`,
+    `is-active --quiet ${serviceName}`,
+  ])
 })
 
 test("managed kernel upgrade resumes its identity-backed home migration after crash windows", async (context) => {
-  for (const marker of ["crash-after-home-root-rename", "crash-before-home-completion-marker"]) {
+  const crashWindows = ["crash-after-home-root-rename", "crash-before-home-completion-marker"]
+  const observedCrashWindows = []
+  for (const marker of crashWindows) {
     const harness = await makeHarness(context)
     const canonicalHome = join(harness.installRoot, "home/chariox")
     const legacyHome = join(harness.installRoot, "var/lib/chariox/home")
     const legacyReceipt = join(legacyHome, "managed/bootstrap-receipt.json")
     await rename(canonicalHome, legacyHome)
-    await mkdir(dirname(legacyReceipt), { recursive: true })
+    await createRootPrivateDirectory(dirname(legacyReceipt))
     await rename(harness.receiptPath, legacyReceipt)
     await put(join(harness.state, marker), "crash\n")
 
     const interrupted = harness.run()
     assert.equal(interrupted.signal, "SIGKILL", `${marker}: ${interrupted.stderr}`)
+    observedCrashWindows.push(marker)
     const recovered = harness.run()
     assert.equal(recovered.status, 0, `${marker}: ${recovered.stderr}`)
     assert.equal(await lstat(legacyHome).then(() => true, () => false), false)
@@ -598,6 +646,7 @@ test("managed kernel upgrade resumes its identity-backed home migration after cr
       harness.target.digest,
     )
   }
+  assert.deepEqual(observedCrashWindows, crashWindows, "both injected home-migration crash windows must be observed")
 })
 
 test("managed kernel upgrade validates the signed candidate before planning legacy migration", async (context) => {
@@ -606,7 +655,7 @@ test("managed kernel upgrade validates the signed candidate before planning lega
   const legacyHome = join(harness.installRoot, "var/lib/chariox/home")
   const legacyReceipt = join(legacyHome, "managed/bootstrap-receipt.json")
   await rename(canonicalHome, legacyHome)
-  await mkdir(dirname(legacyReceipt), { recursive: true })
+  await createRootPrivateDirectory(dirname(legacyReceipt))
   await rename(harness.receiptPath, legacyReceipt)
   await put(
     join(harness.target.rootfs, "etc/systemd/system/chariox-disposable-worker-bootstrap.service"),
@@ -628,7 +677,7 @@ test("managed kernel upgrade rejects a symlinked legacy state entry before stopp
   const legacyReceipt = join(legacyHome, "managed/bootstrap-receipt.json")
   const outside = join(harness.root, "outside-managed-context")
   await rename(canonicalHome, legacyHome)
-  await mkdir(dirname(legacyReceipt), { recursive: true })
+  await createRootPrivateDirectory(dirname(legacyReceipt))
   await rename(harness.receiptPath, legacyReceipt)
   await mkdir(outside)
   await writeFile(join(outside, "must-remain"), "outside\n")
