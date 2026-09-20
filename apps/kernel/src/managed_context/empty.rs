@@ -145,7 +145,7 @@ pub(crate) fn empty_managed_context_workspace_path(
     config: &DaemonConfig,
     context_id: &str,
 ) -> Result<PathBuf, DaemonError> {
-    if config.publication_control_state_root.is_some() {
+    if managed_control_workspace_parent(config).is_some() {
         return Ok(managed_user_empty_context_workspace_path(context_id));
     }
     let state_root = config
@@ -160,10 +160,21 @@ pub(crate) fn empty_managed_context_workspace_path(
 }
 
 pub(crate) fn managed_user_empty_context_workspace_path(context_id: &str) -> PathBuf {
-    Path::new(DEFAULT_USER_WORKSPACE_ROOT).join(format!(
+    managed_user_workspace_root().join(format!(
         ".chariox-empty-context-{:x}",
         Sha256::digest(context_id.as_bytes())
     ))
+}
+
+pub(crate) fn managed_user_workspace_root() -> &'static Path {
+    Path::new(DEFAULT_USER_WORKSPACE_ROOT)
+}
+
+pub(crate) fn managed_control_workspace_parent(config: &DaemonConfig) -> Option<PathBuf> {
+    config
+        .publication_control_state_root
+        .as_ref()
+        .map(|root| root.join("managed-context-workspaces"))
 }
 
 pub(crate) fn ensure_empty_managed_context_workspace(
@@ -176,8 +187,8 @@ pub(crate) fn ensure_empty_managed_context_workspace(
         .parent()
         .ok_or_else(|| empty_context_error("durable state path has no parent directory"))?;
     ensure_real_private_directory(state_root)?;
-    if config.publication_control_state_root.is_some() {
-        let user_root = Path::new(DEFAULT_USER_WORKSPACE_ROOT);
+    if managed_control_workspace_parent(config).is_some() {
+        let user_root = managed_user_workspace_root();
         let canonical_user_root =
             ensure_existing_real_directory(user_root, "default user workspace root")?;
         ensure_real_private_directory(&workspace)?;

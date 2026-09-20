@@ -4,8 +4,15 @@ const PUBLICATION_RECEIPT_SCHEMA_VERSION: u32 = 2;
 const DIRECTORY_RECEIPT_SCHEMA_VERSION: u32 = 3;
 const PUBLICATION_RECEIPT_FILE: &str = ".chariox-managed-import-receipt.json";
 const MATERIALIZATION_TRANSACTION_FILE: &str = ".chariox-materialization-transaction.json";
+const MATERIALIZATION_OWNERSHIP_FILE_PREFIX: &str = ".chariox-materialization-ownership-";
 const DEFAULT_USER_WORKSPACE_ROOT: &str = "/home/chariox";
 pub(crate) const MAX_PUBLICATION_RECEIPT_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct MaterializationIdentity {
+    device: u64,
+    inode: u64,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct MaterializationTransaction {
@@ -13,6 +20,33 @@ struct MaterializationTransaction {
     target_directories: Vec<String>,
     #[serde(default)]
     published_target_directories: Vec<String>,
+    #[serde(default)]
+    published_target_identities: Vec<MaterializationIdentity>,
+    #[serde(default)]
+    pending_target_directory: Option<String>,
+    #[serde(default)]
+    pending_target_identity: Option<MaterializationIdentity>,
+    #[serde(default)]
+    control_destination: Option<PathBuf>,
+    #[serde(default)]
+    control_identity: Option<MaterializationIdentity>,
+    #[serde(default)]
+    ownership_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct MaterializationOwnership {
+    publication_id: String,
+    materialization_root: PathBuf,
+    control_destination: PathBuf,
+    control_identity: MaterializationIdentity,
+    repositories: Vec<OwnedMaterialization>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct OwnedMaterialization {
+    target_directory: String,
+    identity: MaterializationIdentity,
 }
 
 pub fn import_development_context(
@@ -285,35 +319,73 @@ pub(crate) fn cleanup_development_context_publication(
         false,
         false,
     )?;
-    let materialization_root = publication_materialization_root(&receipt, &canonical_destination)?;
-    if materialization_root != canonical_destination {
-        for repository in &receipt.repositories {
-            let path = &repository.destination_path;
-            match fs::symlink_metadata(path) {
-                Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
-                    return Err(context_error(
-                        "refusing to remove a non-directory managed repository destination",
-                    ))
-                }
-                Ok(_) => fs::remove_dir_all(path).map_err(|error| {
-                    context_io_error("remove managed repository materialization", error)
-                })?,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(context_io_error(
-                        "inspect managed repository materialization",
-                        error,
-                    ))
-                }
-            }
+    let parent = canonical_destination
+        .parent()
+        .ok_or_else(|| context_error("failed publication has no parent"))?;
+    let ownership_path = materialization_ownership_path(parent, publication_id);
+    let ownership = match read_materialization_ownership(&ownership_path) {
+        Ok(ownership) => ownership,
+        Err(error) => {
+            return Err(context_error(format!(
+                "refusing to remove publication without private ownership proof: {error}"
+            )))
         }
-        sync_directory(&materialization_root)?;
+    };
+    let expected_owned_repository_count = if ownership.materialization_root == canonical_destination
+    {
+        0
+    } else {
+        receipt.repositories.len()
+    };
+    if ownership.publication_id != publication_id
+        || ownership.control_destination != canonical_destination
+        || ownership.repositories.len() != expected_owned_repository_count
+    {
+        return Err(context_error(
+            "publication ownership proof does not match the receipt",
+        ));
     }
-    fs::remove_dir_all(&canonical_destination).map_err(|error| {
-        context_io_error("remove failed development context publication", error)
-    })?;
+    let expected_materialization_root =
+        publication_materialization_root(&receipt, &canonical_destination)?;
+    if ownership.materialization_root != expected_materialization_root {
+        return Err(context_error(
+            "publication ownership proof has an unexpected materialization root",
+        ));
+    }
+    for (repository, owned) in receipt.repositories.iter().zip(&ownership.repositories) {
+        if repository.target_directory != owned.target_directory
+            || repository.destination_path
+                != ownership.materialization_root.join(&owned.target_directory)
+        {
+            return Err(context_error(
+                "publication ownership proof does not match repository destinations",
+            ));
+        }
+    }
+    if directory_identity(&canonical_destination)? != ownership.control_identity {
+        return Err(context_error(
+            "refusing to remove a publication whose identity changed",
+        ));
+    }
+    for owned in &ownership.repositories {
+        remove_owned_directory(
+            &ownership.materialization_root.join(&owned.target_directory),
+            &owned.identity,
+            "remove managed repository materialization",
+        )?;
+    }
+    if ownership.materialization_root != canonical_destination {
+        sync_directory(&ownership.materialization_root)?;
+    }
+    remove_owned_directory(
+        &canonical_destination,
+        &ownership.control_identity,
+        "remove failed development context publication",
+    )?;
+    fs::remove_file(&ownership_path)
+        .map_err(|error| context_io_error("remove materialization ownership", error))?;
     #[cfg(unix)]
-    if let Some(parent) = canonical_destination.parent() {
+    {
         File::open(parent)
             .and_then(|directory| directory.sync_all())
             .map_err(|error| {
@@ -377,15 +449,28 @@ fn import_development_context_with_options(
     })?;
     let control_destination_root = canonical_parent.join(destination_name);
     ensure_path_absent(&control_destination_root, "development context destination")?;
+    let trusted_control_parent = if publication_id.is_some() {
+        trusted_managed_control_parent()?
+    } else {
+        None
+    };
     let materialization_root = if publication_id.is_some() {
-        managed_materialization_root_for_control(&control_destination_root)?
-            .unwrap_or_else(|| control_destination_root.clone())
+        managed_materialization_root_for_control(
+            &control_destination_root,
+            trusted_control_parent.as_deref(),
+        )?
+        .unwrap_or_else(|| control_destination_root.clone())
     } else {
         control_destination_root.clone()
     };
     if materialization_root != control_destination_root {
         validate_real_directory(&materialization_root, "default user workspace root")?;
     }
+    let transaction_root = if materialization_root == control_destination_root {
+        canonical_parent.clone()
+    } else {
+        materialization_root.clone()
+    };
 
     let staging_root = match publication_id.as_deref() {
         Some(publication_id) => {
@@ -393,7 +478,10 @@ fn import_development_context_with_options(
         }
         None => create_unique_private_directory(&canonical_parent, ".tmp-chariox-context-import")?,
     };
-    let mut cleanup = ImportCleanup::new(staging_root.clone());
+    let ownership_path = publication_id
+        .as_deref()
+        .map(|publication_id| materialization_ownership_path(&canonical_parent, publication_id));
+    let mut cleanup = ImportCleanup::new(staging_root.clone(), ownership_path.clone());
     let archive_snapshot = staging_root.join("archive.snapshot.tar.gz");
     let (archive_file, archive_size, archive_sha256) =
         snapshot_and_hash_archive(&request.archive_path, &archive_snapshot)?;
@@ -418,16 +506,14 @@ fn import_development_context_with_options(
         request.expected_source_repositories.as_deref(),
         &artifacts_root,
     )?;
-    if materialization_root != control_destination_root {
+    if publication_id.is_some() {
         for repository in &manifest.repositories {
-            let destination = materialization_root.join(&repository.target_directory);
-            ensure_path_absent(&destination, "managed repository destination")?;
+            super::export::validate_managed_repository_basename(&repository.target_directory)?;
+            if materialization_root != control_destination_root {
+                let destination = materialization_root.join(&repository.target_directory);
+                ensure_path_absent(&destination, "managed repository destination")?;
+            }
         }
-        write_materialization_transaction(
-            &staging_root,
-            &materialization_root,
-            &manifest.repositories,
-        )?;
     }
     let mut imported = Vec::with_capacity(manifest.repositories.len());
     let mut checkout_bytes = 0_u64;
@@ -474,29 +560,31 @@ fn import_development_context_with_options(
         repositories: imported,
     };
     let publication_receipt =
-        publication_id.map(|publication_id| DevelopmentContextPublicationReceipt {
-            schema_version: if result
-                .repositories
-                .iter()
-                .any(|repository| !repository.workspace_kind.is_git())
-            {
-                DIRECTORY_RECEIPT_SCHEMA_VERSION
-            } else {
-                PUBLICATION_RECEIPT_SCHEMA_VERSION
-            },
-            publication_id,
-            archive_sha256: request.expected_archive_sha256.to_ascii_lowercase(),
-            project_id: request.expected_project_id.clone(),
-            destination_root: control_destination_root.clone(),
-            primary_repository_id: result.primary_repository_id.clone(),
-            source_repository_binding_sha256s: result
-                .manifest
-                .repositories
-                .iter()
-                .map(|repository| repository.source_binding_sha256.clone())
-                .collect(),
-            repositories: result.repositories.clone(),
-        });
+        publication_id
+            .as_ref()
+            .map(|publication_id| DevelopmentContextPublicationReceipt {
+                schema_version: if result
+                    .repositories
+                    .iter()
+                    .any(|repository| !repository.workspace_kind.is_git())
+                {
+                    DIRECTORY_RECEIPT_SCHEMA_VERSION
+                } else {
+                    PUBLICATION_RECEIPT_SCHEMA_VERSION
+                },
+                publication_id: publication_id.clone(),
+                archive_sha256: request.expected_archive_sha256.to_ascii_lowercase(),
+                project_id: request.expected_project_id.clone(),
+                destination_root: control_destination_root.clone(),
+                primary_repository_id: result.primary_repository_id.clone(),
+                source_repository_binding_sha256s: result
+                    .manifest
+                    .repositories
+                    .iter()
+                    .map(|repository| repository.source_binding_sha256.clone())
+                    .collect(),
+                repositories: result.repositories.clone(),
+            });
     if let Some(receipt) = &publication_receipt {
         let bytes = serde_json::to_vec(receipt)
             .map_err(|error| context_error(format!("serialize import receipt: {error}")))?;
@@ -509,44 +597,108 @@ fn import_development_context_with_options(
     }
     fs::remove_dir_all(&artifacts_root)
         .map_err(|error| context_io_error("remove imported context artifacts", error))?;
+    if publication_id.is_some() {
+        write_materialization_transaction(
+            &staging_root,
+            &transaction_root,
+            &result.manifest.repositories,
+            Some(&control_destination_root),
+            ownership_path.clone(),
+        )?;
+    }
     let mut published_materializations = Vec::new();
     if materialization_root != control_destination_root {
         for repository in &result.manifest.repositories {
             let source = project_root.join(&repository.target_directory);
             let destination = materialization_root.join(&repository.target_directory);
-            if let Err(error) = publish_directory_no_clobber(&source, &destination) {
-                rollback_materializations(&published_materializations);
-                return Err(error);
-            }
-            published_materializations.push(destination);
+            let identity = match directory_identity(&source) {
+                Ok(identity) => identity,
+                Err(error) => return Err(import_failure_with_rollback(error, &staging_root)),
+            };
+            let pending = OwnedMaterialization {
+                target_directory: repository.target_directory.clone(),
+                identity,
+            };
             if let Err(error) = update_materialization_transaction(
                 &staging_root,
-                &materialization_root,
+                &transaction_root,
                 &result.manifest.repositories,
                 &published_materializations,
+                Some(&pending),
+                Some(&control_destination_root),
+                None,
+                ownership_path.as_deref(),
             ) {
-                rollback_materializations(&published_materializations);
-                return Err(error);
+                return Err(import_failure_with_rollback(error, &staging_root));
+            }
+            if let Err(error) = publish_directory_no_clobber(&source, &destination) {
+                return Err(import_failure_with_rollback(error, &staging_root));
+            }
+            published_materializations.push(pending);
+            if let Err(error) = update_materialization_transaction(
+                &staging_root,
+                &transaction_root,
+                &result.manifest.repositories,
+                &published_materializations,
+                None,
+                Some(&control_destination_root),
+                None,
+                ownership_path.as_deref(),
+            ) {
+                return Err(import_failure_with_rollback(error, &staging_root));
             }
         }
         if let Err(error) = sync_directory(&materialization_root) {
-            rollback_materializations(&published_materializations);
-            return Err(error);
+            return Err(import_failure_with_rollback(error, &staging_root));
+        }
+    }
+    let control_identity = match directory_identity(&project_root) {
+        Ok(identity) => identity,
+        Err(error) => {
+            return Err(import_failure_with_rollback(error, &staging_root));
+        }
+    };
+    if let Some(publication_id) = publication_id.as_deref() {
+        let ownership = MaterializationOwnership {
+            publication_id: publication_id.to_string(),
+            materialization_root: materialization_root.clone(),
+            control_destination: control_destination_root.clone(),
+            control_identity: control_identity.clone(),
+            repositories: published_materializations.clone(),
+        };
+        let Some(ownership_path) = ownership_path.as_deref() else {
+            return Err(import_failure_with_rollback(
+                context_error("managed publication ownership path is missing"),
+                &staging_root,
+            ));
+        };
+        if let Err(error) = write_materialization_ownership(ownership_path, &ownership) {
+            return Err(import_failure_with_rollback(error, &staging_root));
+        }
+        if let Err(error) = update_materialization_transaction(
+            &staging_root,
+            &transaction_root,
+            &result.manifest.repositories,
+            &published_materializations,
+            None,
+            Some(&control_destination_root),
+            Some(&control_identity),
+            Some(ownership_path),
+        ) {
+            return Err(import_failure_with_rollback(error, &staging_root));
+        }
+        if let Err(error) = sync_directory(&canonical_parent) {
+            return Err(import_failure_with_rollback(error, &staging_root));
         }
     }
     if let Err(error) = sync_directory(&project_root) {
-        rollback_materializations(&published_materializations);
-        return Err(error);
+        return Err(import_failure_with_rollback(error, &staging_root));
     }
     if let Err(error) = publish_directory_no_clobber(&project_root, &control_destination_root) {
-        rollback_materializations(&published_materializations);
-        return Err(error);
+        return Err(import_failure_with_rollback(error, &staging_root));
     }
     if let Err(error) = sync_directory(&canonical_parent) {
-        let _ = fs::remove_dir_all(&control_destination_root);
-        let _ = sync_directory(&canonical_parent);
-        rollback_materializations(&published_materializations);
-        return Err(error);
+        return Err(import_failure_with_rollback(error, &staging_root));
     }
     cleanup.commit();
     drop(cleanup);
@@ -554,12 +706,17 @@ fn import_development_context_with_options(
     Ok((result, publication_receipt))
 }
 
-fn managed_materialization_root_for_control(
+pub(super) fn managed_materialization_root_for_control(
     control_destination: &Path,
+    trusted_control_parent: Option<&Path>,
 ) -> Result<Option<PathBuf>, DaemonError> {
-    if control_destination.parent().and_then(Path::file_name)
-        != Some(std::ffi::OsStr::new("managed-context-workspaces"))
-    {
+    let Some(trusted_control_parent) = trusted_control_parent else {
+        return Ok(None);
+    };
+    let Some(control_parent) = control_destination.parent() else {
+        return Err(context_error("managed context control root has no parent"));
+    };
+    if control_parent != trusted_control_parent {
         return Ok(None);
     }
     let root = PathBuf::from(DEFAULT_USER_WORKSPACE_ROOT);
@@ -581,6 +738,36 @@ fn managed_materialization_root_for_control(
     Ok(Some(canonical))
 }
 
+fn trusted_managed_control_parent() -> Result<Option<PathBuf>, DaemonError> {
+    let Some(raw) = std::env::var_os("CHARIOX_PUBLICATION_CONTROL_STATE_DIR") else {
+        return Ok(None);
+    };
+    if raw.is_empty() {
+        return Err(context_error(
+            "managed publication control state root must not be empty",
+        ));
+    }
+    let configured_root = PathBuf::from(raw);
+    if !configured_root.is_absolute() {
+        return Err(context_error(
+            "managed publication control state root must be absolute",
+        ));
+    }
+    let canonical_root = fs::canonicalize(&configured_root).map_err(|error| {
+        context_io_error("resolve managed publication control state root", error)
+    })?;
+    let control_parent = canonical_root.join("managed-context-workspaces");
+    validate_real_directory(
+        &control_parent,
+        "managed publication control workspace root",
+    )?;
+    fs::canonicalize(&control_parent)
+        .map(Some)
+        .map_err(|error| {
+            context_io_error("resolve managed publication control workspace root", error)
+        })
+}
+
 fn validate_real_directory(path: &Path, label: &str) -> Result<(), DaemonError> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| context_io_error("inspect managed materialization root", error))?;
@@ -594,6 +781,8 @@ fn write_materialization_transaction(
     staging_root: &Path,
     materialization_root: &Path,
     repositories: &[DevelopmentRepositoryManifest],
+    control_destination: Option<&Path>,
+    ownership_file: Option<PathBuf>,
 ) -> Result<(), DaemonError> {
     let transaction = MaterializationTransaction {
         materialization_root: materialization_root.to_path_buf(),
@@ -602,6 +791,12 @@ fn write_materialization_transaction(
             .map(|repository| repository.target_directory.clone())
             .collect(),
         published_target_directories: Vec::new(),
+        published_target_identities: Vec::new(),
+        pending_target_directory: None,
+        pending_target_identity: None,
+        control_destination: control_destination.map(Path::to_path_buf),
+        control_identity: None,
+        ownership_file,
     };
     write_materialization_transaction_value(staging_root, &transaction)
 }
@@ -610,7 +805,11 @@ fn update_materialization_transaction(
     staging_root: &Path,
     materialization_root: &Path,
     repositories: &[DevelopmentRepositoryManifest],
-    published_paths: &[PathBuf],
+    published_materializations: &[OwnedMaterialization],
+    pending_materialization: Option<&OwnedMaterialization>,
+    control_destination: Option<&Path>,
+    control_identity: Option<&MaterializationIdentity>,
+    ownership_file: Option<&Path>,
 ) -> Result<(), DaemonError> {
     let transaction = MaterializationTransaction {
         materialization_root: materialization_root.to_path_buf(),
@@ -618,15 +817,21 @@ fn update_materialization_transaction(
             .iter()
             .map(|repository| repository.target_directory.clone())
             .collect(),
-        published_target_directories: published_paths
+        published_target_directories: published_materializations
             .iter()
-            .map(|path| {
-                path.file_name()
-                    .and_then(OsStr::to_str)
-                    .map(str::to_string)
-                    .ok_or_else(|| context_error("materialized repository path is not valid UTF-8"))
-            })
-            .collect::<Result<Vec<_>, _>>()?,
+            .map(|materialization| materialization.target_directory.clone())
+            .collect(),
+        published_target_identities: published_materializations
+            .iter()
+            .map(|materialization| materialization.identity.clone())
+            .collect(),
+        pending_target_directory: pending_materialization
+            .map(|materialization| materialization.target_directory.clone()),
+        pending_target_identity: pending_materialization
+            .map(|materialization| materialization.identity.clone()),
+        control_destination: control_destination.map(Path::to_path_buf),
+        control_identity: control_identity.cloned(),
+        ownership_file: ownership_file.map(Path::to_path_buf),
     };
     write_materialization_transaction_value(staging_root, &transaction)
 }
@@ -639,13 +844,182 @@ fn write_materialization_transaction_value(
         context_error(format!("serialize materialization transaction: {error}"))
     })?;
     crate::config::write_private_file(&staging_root.join(MATERIALIZATION_TRANSACTION_FILE), &bytes)
-        .map_err(|error| context_io_error("persist materialization transaction", error))
+        .map_err(|error| context_io_error("persist materialization transaction", error))?;
+    sync_directory(staging_root)
 }
 
-fn rollback_materializations(paths: &[PathBuf]) {
-    for path in paths.iter().rev() {
-        let _ = fs::remove_dir_all(path);
+fn import_failure_with_rollback(primary: DaemonError, staging_root: &Path) -> DaemonError {
+    match cleanup_materialization_transaction(staging_root) {
+        Ok(()) => primary,
+        Err(cleanup) => context_error(format!(
+            "{primary}; managed materialization rollback failed: {cleanup}"
+        )),
     }
+}
+
+fn rollback_materializations(
+    materialization_root: &Path,
+    materializations: &[OwnedMaterialization],
+) -> Result<(), DaemonError> {
+    let mut first_error = None;
+    for materialization in materializations.iter().rev() {
+        if let Err(error) = remove_owned_directory(
+            &materialization_root.join(&materialization.target_directory),
+            &materialization.identity,
+            "roll back materialized repository",
+        ) {
+            first_error.get_or_insert(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+fn directory_identity(path: &Path) -> Result<MaterializationIdentity, DaemonError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| context_io_error("inspect managed directory identity", error))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(context_error(
+            "managed materialization identity must refer to a real directory",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        return Ok(MaterializationIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        });
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        Err(context_error(
+            "managed materialization identity is unsupported on this platform",
+        ))
+    }
+}
+
+fn remove_owned_directory(
+    path: &Path,
+    expected: &MaterializationIdentity,
+    operation: &str,
+) -> Result<(), DaemonError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(context_io_error("inspect owned directory", error)),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(context_error(
+            "refusing to remove a replaced managed directory",
+        ));
+    }
+    let actual = directory_identity(path)?;
+    if &actual != expected {
+        return Err(context_error(
+            "refusing to remove a managed directory whose identity changed",
+        ));
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| context_error("owned managed directory has no parent"))?;
+    let quarantine = next_materialization_quarantine_path(parent);
+    publish_directory_no_clobber(path, &quarantine)?;
+    let quarantined_identity = match directory_identity(&quarantine) {
+        Ok(identity) => identity,
+        Err(error) => {
+            if let Err(restore_error) = restore_quarantined_directory(&quarantine, path) {
+                return Err(context_error(format!(
+                    "{error}; restoring cleanup quarantine failed: {restore_error}"
+                )));
+            }
+            return Err(error);
+        }
+    };
+    if &quarantined_identity != expected {
+        restore_quarantined_directory(&quarantine, path)?;
+        return Err(context_error(
+            "refusing to remove a replaced managed directory",
+        ));
+    }
+    fs::remove_dir_all(&quarantine).map_err(|error| context_io_error(operation, error))
+}
+
+fn restore_quarantined_directory(quarantine: &Path, original: &Path) -> Result<(), DaemonError> {
+    match fs::symlink_metadata(original) {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            publish_directory_no_clobber(quarantine, original)
+        }
+        Err(error) => Err(context_io_error(
+            "inspect cleanup quarantine destination",
+            error,
+        )),
+    }
+}
+
+fn next_materialization_quarantine_path(parent: &Path) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_QUARANTINE_ID: AtomicU64 = AtomicU64::new(1);
+    parent.join(format!(
+        ".chariox-materialization-quarantine-{}-{}",
+        std::process::id(),
+        NEXT_QUARANTINE_ID.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+fn materialization_ownership_path(parent: &Path, publication_id: &str) -> PathBuf {
+    parent.join(format!(
+        "{MATERIALIZATION_OWNERSHIP_FILE_PREFIX}{publication_id}.json"
+    ))
+}
+
+fn write_materialization_ownership(
+    path: &Path,
+    ownership: &MaterializationOwnership,
+) -> Result<(), DaemonError> {
+    let bytes = serde_json::to_vec(ownership)
+        .map_err(|error| context_error(format!("serialize materialization ownership: {error}")))?;
+    if bytes.len() > MAX_PUBLICATION_RECEIPT_BYTES {
+        return Err(context_error(
+            "materialization ownership exceeds its size limit",
+        ));
+    }
+    crate::config::write_private_file(path, &bytes)
+        .map_err(|error| context_io_error("persist materialization ownership", error))?;
+    Ok(())
+}
+
+fn read_materialization_ownership(path: &Path) -> Result<MaterializationOwnership, DaemonError> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options
+        .open(path)
+        .map_err(|error| context_io_error("open materialization ownership", error))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| context_io_error("inspect materialization ownership", error))?;
+    if !metadata.is_file() || metadata.len() > MAX_PUBLICATION_RECEIPT_BYTES as u64 {
+        return Err(context_error(
+            "materialization ownership must be a bounded regular file",
+        ));
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(MAX_PUBLICATION_RECEIPT_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| context_io_error("read materialization ownership", error))?;
+    if bytes.len() > MAX_PUBLICATION_RECEIPT_BYTES {
+        return Err(context_error(
+            "materialization ownership exceeds its size limit",
+        ));
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|_| context_error("materialization ownership is invalid"))
 }
 
 fn publication_materialization_root(
@@ -658,18 +1032,23 @@ fn publication_materialization_root(
         ));
     }
     if receipt.repositories.iter().all(|repository| {
-        super::export::validate_repository_basename(&repository.target_directory).is_ok()
+        super::export::validate_managed_repository_basename(&repository.target_directory).is_ok()
             && repository.destination_path == control_destination.join(&repository.target_directory)
     }) {
         return Ok(control_destination.to_path_buf());
     }
-    let Some(configured) = managed_materialization_root_for_control(control_destination)? else {
+    let trusted_control_parent = trusted_managed_control_parent()?;
+    let Some(configured) = managed_materialization_root_for_control(
+        control_destination,
+        trusted_control_parent.as_deref(),
+    )?
+    else {
         return Err(context_error(
             "managed context publication materialization root is unavailable",
         ));
     };
     if receipt.repositories.iter().all(|repository| {
-        super::export::validate_repository_basename(&repository.target_directory).is_ok()
+        super::export::validate_managed_repository_basename(&repository.target_directory).is_ok()
             && repository.destination_path == configured.join(&repository.target_directory)
     }) {
         return Ok(configured);
@@ -883,27 +1262,176 @@ fn cleanup_materialization_transaction(staging_root: &Path) -> Result<(), Daemon
         &transaction.materialization_root,
         "materialization transaction root",
     )?;
-    for target in &transaction.published_target_directories {
-        super::export::validate_repository_basename(target)?;
-        let destination = transaction.materialization_root.join(target);
+    if transaction.published_target_directories.len()
+        != transaction.published_target_identities.len()
+    {
+        return Err(context_error(
+            "materialization transaction has no identity for every published directory",
+        ));
+    }
+    let published = transaction
+        .published_target_directories
+        .iter()
+        .cloned()
+        .zip(transaction.published_target_identities.iter().cloned())
+        .map(|(target_directory, identity)| {
+            super::export::validate_managed_repository_basename(&target_directory)?;
+            Ok(OwnedMaterialization {
+                target_directory,
+                identity,
+            })
+        })
+        .collect::<Result<Vec<_>, DaemonError>>()?;
+    let pending = match (
+        transaction.pending_target_directory,
+        transaction.pending_target_identity,
+    ) {
+        (None, None) => None,
+        (Some(target_directory), Some(identity)) => {
+            super::export::validate_managed_repository_basename(&target_directory)?;
+            Some(OwnedMaterialization {
+                target_directory,
+                identity,
+            })
+        }
+        _ => {
+            return Err(context_error(
+                "materialization transaction has an incomplete pending directory intent",
+            ))
+        }
+    };
+    for materialization in published.iter().chain(pending.iter()) {
+        let destination = transaction
+            .materialization_root
+            .join(&materialization.target_directory);
         match fs::symlink_metadata(&destination) {
             Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
                 return Err(context_error(
                     "materialization transaction destination is not a real directory",
-                ))
+                ));
             }
-            Ok(_) => fs::remove_dir_all(&destination)
-                .map_err(|error| context_io_error("roll back materialized repository", error))?,
+            Ok(_) => {
+                if directory_identity(&destination)? != materialization.identity {
+                    return Err(context_error(
+                        "materialization transaction destination identity changed",
+                    ));
+                }
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => {
                 return Err(context_io_error(
                     "inspect materialization transaction destination",
                     error,
-                ))
+                ));
             }
         }
     }
+    let mut rollback = published;
+    if let Some(pending) = pending {
+        rollback.push(pending);
+    }
+    rollback_materializations(&transaction.materialization_root, &rollback)?;
+    if let (Some(control_destination), Some(control_identity)) = (
+        transaction.control_destination.as_deref(),
+        transaction.control_identity.as_ref(),
+    ) {
+        remove_owned_directory(
+            control_destination,
+            control_identity,
+            "roll back managed context publication",
+        )?;
+        if let Some(parent) = control_destination.parent() {
+            sync_directory(parent)?;
+        }
+    } else if let Some(control_destination) = transaction.control_destination.as_deref() {
+        match fs::symlink_metadata(control_destination) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Ok(_) => {
+                return Err(context_error(
+                    "materialization transaction has no control-directory identity",
+                ));
+            }
+            Err(error) => {
+                return Err(context_io_error(
+                    "inspect incomplete managed context publication",
+                    error,
+                ));
+            }
+        }
+    }
+    if let Some(ownership_file) = transaction.ownership_file.as_deref() {
+        match fs::remove_file(ownership_file) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(context_io_error("remove materialization ownership", error)),
+        }
+    }
     sync_directory(&transaction.materialization_root)
+}
+
+#[cfg(test)]
+pub(super) fn test_recover_pending_materialization_after_rename(
+    staging_root: &Path,
+    source: &Path,
+    destination: &Path,
+) -> Result<(), DaemonError> {
+    let identity = directory_identity(source)?;
+    let target_directory = destination
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| context_error("test materialization destination is not UTF-8"))?;
+    let transaction = MaterializationTransaction {
+        materialization_root: destination
+            .parent()
+            .ok_or_else(|| context_error("test materialization destination has no parent"))?
+            .to_path_buf(),
+        target_directories: vec![target_directory.to_string()],
+        published_target_directories: Vec::new(),
+        published_target_identities: Vec::new(),
+        pending_target_directory: Some(target_directory.to_string()),
+        pending_target_identity: Some(identity),
+        control_destination: None,
+        control_identity: None,
+        ownership_file: None,
+    };
+    write_materialization_transaction_value(staging_root, &transaction)?;
+    publish_directory_no_clobber(source, destination)?;
+    cleanup_materialization_transaction(staging_root)
+}
+
+#[cfg(test)]
+pub(super) fn test_reject_replaced_materialization(
+    staging_root: &Path,
+    source: &Path,
+    destination: &Path,
+    replacement: &Path,
+) -> Result<(), DaemonError> {
+    let identity = directory_identity(source)?;
+    let target_directory = destination
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| context_error("test materialization destination is not UTF-8"))?;
+    let transaction = MaterializationTransaction {
+        materialization_root: destination
+            .parent()
+            .ok_or_else(|| context_error("test materialization destination has no parent"))?
+            .to_path_buf(),
+        target_directories: vec![target_directory.to_string()],
+        published_target_directories: vec![target_directory.to_string()],
+        published_target_identities: vec![identity],
+        pending_target_directory: None,
+        pending_target_identity: None,
+        control_destination: None,
+        control_identity: None,
+        ownership_file: None,
+    };
+    write_materialization_transaction_value(staging_root, &transaction)?;
+    publish_directory_no_clobber(source, destination)?;
+    fs::remove_dir_all(destination)
+        .map_err(|error| context_io_error("replace test materialization", error))?;
+    fs::rename(replacement, destination)
+        .map_err(|error| context_io_error("install replacement test materialization", error))?;
+    cleanup_materialization_transaction(staging_root)
 }
 
 fn ensure_path_absent(path: &Path, label: &str) -> Result<(), DaemonError> {
@@ -1005,7 +1533,7 @@ fn validate_publication_receipt(
     let mut primary_ids = Vec::new();
     for repository in &receipt.repositories {
         validate_publication_id(&repository.repository_id)?;
-        super::export::validate_repository_basename(&repository.target_directory)?;
+        super::export::validate_managed_repository_basename(&repository.target_directory)?;
         if repository.workspace_kind.is_git() {
             validate_git_oid(&repository.head_sha)?;
         } else if receipt.schema_version != DIRECTORY_RECEIPT_SCHEMA_VERSION
@@ -1123,13 +1651,15 @@ fn publish_directory_no_clobber(source: &Path, destination: &Path) -> Result<(),
 
 struct ImportCleanup {
     staging_root: PathBuf,
+    ownership_path: Option<PathBuf>,
     committed: bool,
 }
 
 impl ImportCleanup {
-    fn new(staging_root: PathBuf) -> Self {
+    fn new(staging_root: PathBuf, ownership_path: Option<PathBuf>) -> Self {
         Self {
             staging_root,
+            ownership_path,
             committed: false,
         }
     }
@@ -1142,8 +1672,25 @@ impl ImportCleanup {
 impl Drop for ImportCleanup {
     fn drop(&mut self) {
         if !self.committed {
-            let _ = cleanup_materialization_transaction(&self.staging_root);
+            if let Err(error) = cleanup_materialization_transaction(&self.staging_root) {
+                tracing::error!(error = %error, "managed materialization rollback during import drop failed");
+            }
+            if let Some(path) = self.ownership_path.as_deref() {
+                match fs::remove_file(path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        tracing::error!(error = %error, "managed materialization ownership cleanup during import drop failed");
+                    }
+                }
+            }
         }
-        let _ = fs::remove_dir_all(&self.staging_root);
+        match fs::remove_dir_all(&self.staging_root) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                tracing::error!(error = %error, "managed import staging cleanup during import drop failed");
+            }
+        }
     }
 }
