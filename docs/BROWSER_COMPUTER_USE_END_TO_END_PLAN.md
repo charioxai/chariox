@@ -185,44 +185,98 @@ item below. Do not omit, weaken, or silently treat an item as complete because
 the active work moved to another milestone or because one reported symptom was
 fixed.
 
-- [ ] Remove Bubblewrap and any equivalent inherited systemd filesystem or
-  process restriction from the Path-1 provider launch. Prove the provider has
-  no Bubblewrap ancestor or managed-isolation marker.
-- [ ] Make directory discovery, exact-path entry, session creation, and
+Every delegated prompt, implementation PR, exact-head review, progress report,
+and retained evidence record that touches Path 1 must name the applicable
+`MP-*` identifiers below. An item closes only when its implementation, focused
+tests, independent exact-head review, fresh-machine comparison, and cleanup
+evidence all agree. A passing source test, one successful manual session, or the
+absence of another user report cannot close an item.
+
+- [ ] `MP-01` Remove Bubblewrap and any equivalent inherited systemd filesystem
+  or process restriction from the Path-1 provider launch. Prove the provider
+  has no Bubblewrap ancestor or managed-isolation marker.
+- [ ] `MP-02` Make directory discovery, exact-path entry, session creation, and
   provider execution match an ordinary Linux kernel for every path allowed by
   the worker user's Unix permissions. Cover `/home`, `/tmp`, nested paths,
   newly created directories, and repositories created after enrollment.
-- [ ] Protect only the exact managed control files and dedicated service-state
-  directories that require protection. A protected file must not make its
-  parent or an unrelated sibling unavailable as a workspace.
-- [ ] Run the managed service account with `HOME=/home/chariox` and
+- [ ] `MP-03` Protect only the exact managed control files and dedicated
+  service-state directories that require protection. A protected file must not
+  make its parent or an unrelated sibling unavailable as a workspace.
+- [ ] `MP-04` Run the managed service account with `HOME=/home/chariox` and
   `CHARIOX_HOME=/home/chariox/.chariox`. Keep repositories, user state, and
   mutable kernel state out of root-owned release directories.
-- [ ] Materialize a copied repository at
+- [ ] `MP-05` Materialize a copied repository at
   `/home/chariox/<source-repository-basename>` by default, preserve the source
   basename, and fail safely on a collision.
-- [ ] Let the user choose a different absolute trusted repository root when
-  creating the managed machine. Persist one authoritative value through the
-  Cloud API, provisioning, bootstrap, kernel receipt, child-worker creation,
-  and Web projections. A child worker inherits it and cannot accept a second
-  browser-supplied override.
-- [ ] Install and upgrade managed kernels as signed, immutable,
+- [ ] `MP-06` Let the user choose a different absolute trusted repository root
+  when creating the managed machine. Persist one authoritative value through
+  the Cloud API, provisioning, bootstrap, kernel receipt, child-worker
+  creation, and Web projections. A child worker inherits it and cannot accept
+  a second browser-supplied override.
+- [ ] `MP-07` Install and upgrade managed kernels as signed, immutable,
   content-addressed native releases under
   `/usr/lib/chariox/releases/<digest>`, activated through
   `/usr/local/bin/chariox-kernel`. Prove atomic activation, rollback, and
   crash-safe migration without moving or replacing `~/.chariox`.
-- [ ] Keep the ordinary kernel protocol, provider adapters, state model,
+- [ ] `MP-08` Keep the ordinary kernel protocol, provider adapters, state model,
   history, reconnect behavior, Project setup behavior, and clients unchanged
   by managed placement. Record and close every difference found by the parity
   audit rather than waiting for users to find them one at a time.
-- [ ] Preserve and test every managed-machine automatic shutdown trigger,
-  including the delay measured from the last agent finishing. Shutdown is the
-  required managed lifecycle difference and must not be removed in the name of
-  parity.
-- [ ] Pass the executable ordinary-versus-managed comparison matrix and the
-  full fresh-machine Path-1 acceptance drill. Record exact commits, commands,
-  results, resource samples, cleanup, and retained evidence before marking any
-  ledger item complete.
+- [ ] `MP-09` Preserve and test every managed-machine automatic shutdown
+  trigger, including the delay measured from the last agent finishing.
+  Shutdown is the required managed lifecycle difference and must not be
+  removed in the name of parity.
+- [ ] `MP-10` Pass the executable ordinary-versus-managed comparison matrix and
+  the full fresh-machine Path-1 acceptance drill. Record exact commits,
+  commands, results, resource samples, cleanup, and retained evidence before
+  marking any ledger item complete.
+- [ ] `MP-11` Maintain a code-level inventory of every managed-only branch,
+  environment variable, service restriction, path filter, error mapping, and
+  client projection. Remove each behavior difference or prove that it belongs
+  to the two allowed exceptions: signed release deployment or mandatory
+  automatic shutdown. The audit must find inconsistencies proactively rather
+  than wait for users to report them.
+
+### Locked clarification record for 2026-09-20
+
+This record is a handoff checkpoint. Every resumed turn, delegated Path-1 task,
+progress report, and completion review must reconcile its work against these
+decisions and the `MP-*` ledger above:
+
+- The disposable VM is the Path-1 isolation boundary. Path-1 provider
+  processes must not run under Bubblewrap or inherit an equivalent managed-only
+  systemd sandbox. Bubblewrap may remain only for a different, explicitly
+  documented topology such as an inner slice or legacy shared host.
+- Managed machines run the ordinary kernel build. Chariox installs that build
+  as a signed native release under `/usr/lib/chariox/releases/<digest>` and
+  activates it through `/usr/local/bin/chariox-kernel`. This is the production
+  installation design, not a managed-kernel fork. `pnpm` is not the managed
+  production installer.
+- Release installation and mutable-state transfer are separate operations.
+  User-owned kernel state uses `HOME=/home/chariox` and
+  `CHARIOX_HOME=/home/chariox/.chariox`. No release activation may move, hide,
+  or replace that state.
+- A copied repository defaults to
+  `/home/chariox/<source-repository-basename>`. The source basename is
+  preserved. The user may choose another absolute trusted repository root when
+  creating the machine. That choice is one server-authoritative setting, not a
+  per-session client override.
+- Repository placement does not define the workspace boundary. A managed user
+  may create or select any working directory allowed by normal Unix
+  permissions, including `/home`, `/tmp`, nested paths, and repositories made
+  after enrollment. Protect exact control files without blocking their parents
+  or unrelated siblings.
+- Managed deployment and atomic release activation are allowed to differ from
+  an ordinary installation. Mandatory managed-machine shutdown is the other
+  allowed difference. Preserve every shutdown trigger, including the idle
+  delay measured from the last agent finishing.
+- Resource decisions use current measurements. Keep disk, memory, CPU, process
+  health, and build growth within recoverable bounds, but do not stop a healthy
+  bounded build because of an arbitrary fixed threshold. Fast critical-path
+  progress remains the default.
+- Path 1 and the overall goal remain open until `MP-01` through `MP-11` have
+  reviewed implementation, focused tests, fresh-machine comparison evidence,
+  and verified cleanup.
 
 ### Locked Path-1 decisions
 
@@ -269,6 +323,42 @@ replace them with a managed-only approximation:
   conservative guardrails unless current measurements show a concrete
   exhaustion, corruption, or stability risk. Record that measurement and risk
   whenever resource pressure changes the implementation plan.
+
+### Managed-parity continuity checklist
+
+Use this checklist at every handoff, resumed turn, reviewer pass, deployment,
+and plan-level status report. Its purpose is simple: the parity contract must
+not shrink when the immediate symptom changes.
+
+- Reconcile every item from `MP-01` through `MP-11` against the current exact
+  commits, open PRs,
+  reviewer result, tests, live evidence, and cleanup record. Report an item as
+  open when any one of those is missing.
+- Treat the disposable Path-1 VM as the isolation boundary. Do not restore
+  Bubblewrap, a managed workspace allowlist, or equivalent inherited systemd
+  restrictions as a shortcut for protecting the host. The provider must have
+  ordinary Linux behavior inside its disposable VM.
+- Keep the signed native content-addressed installation and the ordinary
+  kernel runtime as separate concerns. The root-owned release mechanism is the
+  production deployment method. It must activate the same kernel build and
+  must never create managed-only runtime semantics or mutable state outside
+  `/home/chariox/.chariox`.
+- Verify repository placement and arbitrary accessible working directories as
+  one contract. The default copy target is
+  `/home/chariox/<source-repository-basename>`, the user may choose another
+  absolute trusted repository root at machine creation, and later sessions may
+  use any path allowed by the worker user's Unix permissions.
+- Preserve all managed automatic-shutdown triggers. The last-agent-finished
+  timer is required managed lifecycle behavior and is excluded from runtime
+  parity comparisons only for that reason.
+- Prefer completing bounded critical-path work over enforcing speculative
+  build-size or duration estimates. Stop or clean work when current resource
+  measurements show a real exhaustion, corruption, or host-stability risk,
+  not merely because a prior estimate was exceeded.
+- Do not close the parity milestone from code inspection, unit tests, or a
+  single successful session. Completion requires the executable `MP-10`
+  ordinary-versus-managed matrix on fresh machines, retained evidence, and
+  successful cleanup.
 
 For Path 1, the disposable worker VM is the provider security and filesystem
 isolation boundary. Once the signed kernel has enrolled, provider runs must use
@@ -1511,6 +1601,8 @@ CHA-16 is complete only when:
 - vault-backed public-service work passes leak scans
 - the OpenShip-backed Chariox managed-machine drill passes from provisioning
   through teardown
+- every managed-parity ledger item from `MP-01` through `MP-11` is closed with
+  exact-head review, focused tests, fresh-machine evidence, and cleanup proof
 - disposable Cloud-VM workers pass provider-neutral Path-1 allocation,
   enrollment, no-Bubblewrap ordinary-kernel provider launch, arbitrary
   accessible cwd and filesystem parity, Codex, Claude, and OpenCode execution,
