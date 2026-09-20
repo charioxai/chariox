@@ -305,22 +305,219 @@ container_running() {
   [[ "$state" == "true" ]]
 }
 
-restore_saved_home_volume() {
-  [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]] || return 0
-  [[ -f "$SLICE_SAVED_HOME_ARCHIVE" ]] || fail "saved slice home archive not found: $SLICE_SAVED_HOME_ARCHIVE"
-  local helper
-  helper="${SLICE_NAME}-home-restore-$$"
-  log "restoring saved home archive $SLICE_SAVED_HOME_ARCHIVE into volume $SLICE_HOME_VOLUME"
-  run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1 || true
-  run_with_timeout 60 docker create --name "$helper" --user root \
+volume_inspect_reports_not_found() {
+  local output="$1"
+  grep -Eiq 'no such volume|volume .* (not found|does not exist)' <<<"$output"
+}
+
+saved_home_archive_identity() {
+  local identity
+  identity="$(hash_stdin < "$SLICE_SAVED_HOME_ARCHIVE")" || return 1
+  [[ "$identity" =~ ^[a-f0-9]{64}$ ]] || return 1
+  printf '%s\n' "$identity"
+}
+
+saved_home_volume_label() {
+  local label="$1" output
+  if output="$(run_with_timeout 20 docker volume inspect -f "{{ index .Labels \"$label\" }}" "$SLICE_HOME_VOLUME" 2>/dev/null)"; then
+    [[ "$output" == "<no value>" ]] && output=""
+    printf '%s\n' "$output"
+    return 0
+  else
+    return $?
+  fi
+}
+
+saved_home_volume_marker_state() {
+  local archive_identity="$1" marker_state
+  if marker_state="$(run_with_timeout 60 docker run --rm --user root \
     -v "$SLICE_HOME_VOLUME:/home-dst" \
     "$SLICE_IMAGE" \
-    sleep infinity >/dev/null
-  run_with_timeout 60 docker start "$helper" >/dev/null
-  run_with_timeout 120 docker cp -L "$SLICE_SAVED_HOME_ARCHIVE" "$helper:/tmp/home.tar.zst"
-  run_with_timeout 120 docker exec -u root "$helper" \
-    bash -lc "set -euo pipefail; find /home-dst -mindepth 1 -maxdepth 1 -exec rm -rf {} +; cd /home-dst; tar --zstd -xf /tmp/home.tar.zst; chown -R slice:slice /home-dst"
+    bash -lc "
+      set -euo pipefail
+      marker=/home-dst/.chariox-saved-home-initialization
+      if [[ -L \"\$marker\" || ( -e \"\$marker\" && ! -f \"\$marker\" ) ]]; then
+        printf 'invalid\\n'
+      elif [[ -f \"\$marker\" ]]; then
+        value=\$(cat \"\$marker\")
+        if [[ \"\$value\" == chariox-saved-home-v1:complete-$archive_identity ]]; then
+          printf 'initialized\\n'
+        elif [[ \"\$value\" == chariox-saved-home-v1:pending-$archive_identity ]]; then
+          printf 'incomplete\\n'
+        else
+          printf 'invalid\\n'
+        fi
+      elif [[ -n \$(find /home-dst -mindepth 1 -maxdepth 1 -print -quit) ]]; then
+        printf 'missing-nonempty\\n'
+      else
+        printf 'missing-empty\\n'
+      fi
+    ")"; then
+    printf '%s\n' "$marker_state"
+    return 0
+  else
+    return $?
+  fi
+}
+
+restore_saved_home_volume() {
+  [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]] || return 0
+  if [[ ! -f "$SLICE_SAVED_HOME_ARCHIVE" ]]; then
+    log "saved slice home archive not found: $SLICE_SAVED_HOME_ARCHIVE"
+    return 1
+  fi
+  local archive_identity="${1:-${SLICE_SAVED_HOME_ARCHIVE_IDENTITY:-legacy-archive}}"
+  local helper status=0 cleanup_status=0
+  helper="${SLICE_NAME}-home-restore-$$"
+  log "restoring saved home archive $SLICE_SAVED_HOME_ARCHIVE into volume $SLICE_HOME_VOLUME on runtime image $SLICE_IMAGE"
   run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1 || true
+  if run_with_timeout 60 docker create --name "$helper" --user root \
+    -v "$SLICE_HOME_VOLUME:/home-dst" \
+    "$SLICE_IMAGE" \
+    sleep infinity >/dev/null; then :; else status=$?; fi
+  if (( status == 0 )); then
+    if run_with_timeout 60 docker start "$helper" >/dev/null; then :; else status=$?; fi
+  fi
+  if (( status == 0 )); then
+    if run_with_timeout 120 docker cp -L "$SLICE_SAVED_HOME_ARCHIVE" "$helper:/tmp/home.tar.zst"; then :; else status=$?; fi
+  fi
+  if (( status == 0 )); then
+    if run_with_timeout 120 docker exec -u root "$helper" \
+      bash -lc "
+        set -euo pipefail
+        marker=/home-dst/.chariox-saved-home-initialization
+        pending=chariox-saved-home-v1:pending-$archive_identity
+        complete=chariox-saved-home-v1:complete-$archive_identity
+        find /home-dst -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+        printf '%s\\n' \"\$pending\" > \"\$marker\"
+        chown slice:slice \"\$marker\"
+        sync -d \"\$marker\" 2>/dev/null || sync
+        cd /home-dst
+        tar --zstd -xf /tmp/home.tar.zst
+        chown -R slice:slice /home-dst
+        if [[ -L \"\$marker\" || -d \"\$marker\" ]]; then
+          exit 73
+        fi
+        marker_tmp=\"\$marker.tmp\"
+        rm -f \"\$marker_tmp\"
+        printf '%s\\n' \"\$complete\" > \"\$marker_tmp\"
+        chown slice:slice \"\$marker_tmp\"
+        mv -f -- \"\$marker_tmp\" \"\$marker\"
+        sync -d \"\$marker\" 2>/dev/null || sync
+      "; then :; else status=$?; fi
+  fi
+  if (( status == 0 )); then
+    if run_with_timeout 60 docker exec -u root "$helper" \
+      bash -lc "set -euo pipefail; test -d /home-dst; test \"\$(stat -c '%U:%G' /home-dst)\" = slice:slice"; then :; else status=$?; fi
+  fi
+  if run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1; then :; else cleanup_status=$?; fi
+  if (( status != 0 )); then return "$status"; fi
+  if (( cleanup_status != 0 )); then return "$cleanup_status"; fi
+  return 0
+}
+
+prepare_home_volume() {
+  local archive_identity="" created=0 initialization_token="" inspect_output=""
+  if inspect_output="$(run_with_timeout 20 docker volume inspect "$SLICE_HOME_VOLUME" 2>&1)"; then
+    if [[ -z "$SLICE_SAVED_HOME_ARCHIVE" ]]; then
+      log "preserving existing home volume $SLICE_HOME_VOLUME; saved home archive is only used for an initial restore"
+      return 0
+    fi
+    local archive_label marker_state
+    if ! archive_label="$(saved_home_volume_label io.chariox.saved-home.archive-sha256)"; then
+      log "could not inspect saved home initialization label on $SLICE_HOME_VOLUME; refusing to mutate it"
+      return 1
+    fi
+    if [[ -z "$archive_label" ]]; then
+      log "preserving legacy unmarked home volume $SLICE_HOME_VOLUME; refusing to replay the saved home archive"
+      return 0
+    fi
+    if [[ ! -f "$SLICE_SAVED_HOME_ARCHIVE" ]]; then
+      log "saved slice home archive not found: $SLICE_SAVED_HOME_ARCHIVE"
+      return 1
+    fi
+    if ! archive_identity="$(saved_home_archive_identity)"; then
+      log "could not calculate the saved slice home archive identity"
+      return 1
+    fi
+    if [[ "$archive_label" != "$archive_identity" ]]; then
+      log "saved home volume $SLICE_HOME_VOLUME is bound to a different archive identity; refusing to overwrite it"
+      return 1
+    fi
+    if ! marker_state="$(saved_home_volume_marker_state "$archive_identity")"; then
+      log "could not inspect saved home initialization marker on $SLICE_HOME_VOLUME; refusing to mutate it"
+      return 1
+    fi
+    case "$marker_state" in
+      initialized)
+        log "preserving initialized home volume $SLICE_HOME_VOLUME; saved home archive identity matches"
+        return 0
+        ;;
+      incomplete|missing-empty)
+        log "retrying incomplete saved home restore in $SLICE_HOME_VOLUME"
+        restore_saved_home_volume "$archive_identity"
+        return $?
+        ;;
+      missing-nonempty|invalid)
+        log "saved home volume $SLICE_HOME_VOLUME has no valid successful-initialization marker; refusing to overwrite it"
+        return 1
+        ;;
+      *)
+        log "saved home volume $SLICE_HOME_VOLUME returned an unknown initialization state; refusing to mutate it"
+        return 1
+        ;;
+    esac
+  fi
+  if ! volume_inspect_reports_not_found "$inspect_output"; then
+    log "could not inspect home volume $SLICE_HOME_VOLUME; refusing to assume it is absent: ${inspect_output:-unknown Docker error}"
+    return 1
+  fi
+  if [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]]; then
+    if [[ ! -f "$SLICE_SAVED_HOME_ARCHIVE" ]]; then
+      log "saved slice home archive not found: $SLICE_SAVED_HOME_ARCHIVE"
+      return 1
+    fi
+    if ! archive_identity="$(saved_home_archive_identity)"; then
+      log "could not calculate the saved slice home archive identity"
+      return 1
+    fi
+  fi
+  if [[ -z "$archive_identity" ]]; then
+    if ! run_with_timeout 30 docker volume create "$SLICE_HOME_VOLUME" >/dev/null; then
+      log "failed to create new home volume $SLICE_HOME_VOLUME"
+      return 1
+    fi
+    return 0
+  fi
+  initialization_token="$(printf '%s\0%s\0%s\0%s' "$SLICE_NAME" "$SLICE_HOME_VOLUME" "$archive_identity" "$$" | hash_stdin)"
+  if ! run_with_timeout 30 docker volume create \
+    --label "io.chariox.saved-home.archive-sha256=$archive_identity" \
+    --label "io.chariox.saved-home.initialization-token=$initialization_token" \
+    "$SLICE_HOME_VOLUME" >/dev/null; then
+    log "failed to create new home volume $SLICE_HOME_VOLUME"
+    return 1
+  fi
+  created=1
+  local created_archive_label created_token_label
+  if ! created_archive_label="$(saved_home_volume_label io.chariox.saved-home.archive-sha256)" \
+    || ! created_token_label="$(saved_home_volume_label io.chariox.saved-home.initialization-token)" \
+    || [[ "$created_archive_label" != "$archive_identity" ]] \
+    || [[ "$created_token_label" != "$initialization_token" ]]; then
+    log "home volume $SLICE_HOME_VOLUME was not proven newly-created for this saved archive; refusing to overwrite it"
+    return 1
+  fi
+  if (( created == 1 )) && restore_saved_home_volume "$archive_identity"; then
+    return 0
+  fi
+  if (( created == 1 )); then
+    log "initial saved home restore failed; removing newly-created home volume $SLICE_HOME_VOLUME before retry"
+    if ! run_with_timeout 30 docker volume rm "$SLICE_HOME_VOLUME" >/dev/null; then
+      log "initial saved home restore failed and newly-created home volume $SLICE_HOME_VOLUME could not be removed"
+      return 1
+    fi
+  fi
+  log "failed to materialize saved home archive into newly-created volume $SLICE_HOME_VOLUME"
+  return 1
 }
 
 machine_id_hex() {
@@ -434,6 +631,81 @@ image_runtime_compatible() {
     && "$image_runtime_revision" == "$SLICE_RUNTIME_SOURCE_REVISION" ]]
 }
 
+image_selkies_capable() {
+  local image="$1"
+  local selkies_version
+  local selkies_revision
+  local selkies_source
+  local selkies_license
+  selkies_version="$(docker image inspect -f '{{ index .Config.Labels "io.chariox.selkies-version" }}' "$image" 2>/dev/null || true)"
+  selkies_revision="$(docker image inspect -f '{{ index .Config.Labels "io.chariox.selkies-source-revision" }}' "$image" 2>/dev/null || true)"
+  selkies_source="$(docker image inspect -f '{{ index .Config.Labels "io.chariox.selkies-source" }}' "$image" 2>/dev/null || true)"
+  selkies_license="$(docker image inspect -f '{{ index .Config.Labels "io.chariox.selkies-license" }}' "$image" 2>/dev/null || true)"
+  [[ -n "$selkies_version" && "$selkies_version" != "<no value>" \
+    && "$selkies_revision" =~ ^[a-f0-9]{40}$ \
+    && "$selkies_source" == "https://github.com/selkies-project/selkies/commit/$selkies_revision" \
+    && "$selkies_license" == "MPL-2.0" ]]
+}
+
+saved_state_image_compatible() {
+  local image="$1"
+  docker image inspect "$image" >/dev/null 2>&1 \
+    && image_runtime_compatible "$image" \
+    && image_selkies_capable "$image"
+}
+
+ensure_saved_state_capable_base() {
+  case "$SLICE_BUILD_IMAGE" in
+    auto)
+      if image_runtime_compatible "$SLICE_BASE_IMAGE" \
+        && image_selkies_capable "$SLICE_BASE_IMAGE"; then
+        log "saved state base policy auto: cached runtime is Selkies-capable"
+      else
+        log "saved state base policy auto: building a capable runtime base"
+        build_standard_runtime_image "$SLICE_BASE_IMAGE"
+      fi
+      ;;
+    always)
+      log "saved state base policy always: refreshing a capable runtime base"
+      build_standard_runtime_image "$SLICE_BASE_IMAGE"
+      ;;
+    never)
+      log "saved state base policy never: build is disabled"
+      return 0
+      ;;
+    *)
+      fail "CHARIOX_SLICE_BUILD_IMAGE must be auto, always, or never"
+      ;;
+  esac
+
+  if image_runtime_compatible "$SLICE_BASE_IMAGE" \
+    && image_selkies_capable "$SLICE_BASE_IMAGE"; then
+    log "saved state base labels accepted for $SLICE_BASE_IMAGE"
+    return 0
+  fi
+  fail "saved state migration required: runtime base $SLICE_BASE_IMAGE did not expose authoritative compatible Selkies labels after CHARIOX_SLICE_BUILD_IMAGE=$SLICE_BUILD_IMAGE; no container or home-volume mutation was attempted."
+}
+
+require_saved_state_compatibility() {
+  [[ -n "$SLICE_SAVED_HOME_ARCHIVE" && "$SLICE_DISPLAY_BACKEND" == selkies ]] || return 0
+  [[ -f "$SLICE_SAVED_HOME_ARCHIVE" ]] \
+    || fail "saved state migration required before selecting Selkies: saved home archive is missing at $SLICE_SAVED_HOME_ARCHIVE; no container or home-volume mutation was attempted."
+  log "saved state compatibility gate: validating image labels before mutation"
+
+  if saved_state_image_compatible "$SLICE_IMAGE"; then
+    log "saved state image $SLICE_IMAGE is runtime-compatible and Selkies-capable"
+    return 0
+  fi
+
+  if saved_state_image_compatible "$SLICE_BASE_IMAGE"; then
+    log "saved state migration: restoring $SLICE_SAVED_HOME_ARCHIVE on Selkies-capable runtime image $SLICE_BASE_IMAGE; /home/slice state is preserved"
+    SLICE_IMAGE="$SLICE_BASE_IMAGE"
+    return 0
+  fi
+
+  fail "saved state migration required before selecting Selkies: no runtime-compatible image with authoritative Selkies capability labels is available; no container or home-volume mutation was attempted. Use a current image labeled io.chariox.selkies-version, io.chariox.selkies-source-revision, io.chariox.selkies-source, and io.chariox.selkies-license, then retry, or select CHARIOX_SLICE_DISPLAY_BACKEND=novnc."
+}
+
 build_standard_runtime_image() {
   local image="$1"
   local prebuilt_marker="$REPO_ROOT/apps/kernel/slice-linux-docker/prebuilt/.managed-release"
@@ -475,6 +747,21 @@ build_image() {
     auto|always|never) ;;
     *) fail "CHARIOX_SLICE_BUILD_IMAGE must be auto, always, or never" ;;
   esac
+  if [[ -n "$SLICE_SAVED_HOME_ARCHIVE" && "$SLICE_DISPLAY_BACKEND" == selkies ]]; then
+    [[ -f "$SLICE_SAVED_HOME_ARCHIVE" ]] \
+      || fail "saved state migration required before selecting Selkies: saved home archive is missing at $SLICE_SAVED_HOME_ARCHIVE; no container or home-volume mutation was attempted."
+    case "$SLICE_BUILD_IMAGE" in
+      always)
+        ensure_saved_state_capable_base
+        ;;
+      auto)
+        if ! saved_state_image_compatible "$SLICE_IMAGE"; then
+          ensure_saved_state_capable_base
+        fi
+        ;;
+    esac
+  fi
+  require_saved_state_compatibility
 
   if [[ "$SLICE_BUILD_IMAGE" == "never" ]]; then
     if image_runtime_compatible "$SLICE_IMAGE"; then
@@ -493,6 +780,10 @@ build_image() {
   fi
 
   if [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]]; then
+    if [[ "$SLICE_DISPLAY_BACKEND" == selkies ]]; then
+      log "preserving saved state image $SLICE_IMAGE after Selkies capability preflight"
+      return 0
+    fi
     ensure_runtime_base_image
     if ! docker image inspect "$SLICE_IMAGE" >/dev/null 2>&1; then
       log "saved state image $SLICE_IMAGE is missing; restoring the saved home archive on $SLICE_BASE_IMAGE"
@@ -550,6 +841,7 @@ refresh_saved_state_runtime() {
 }
 
 ensure_container() {
+  require_saved_state_compatibility
   validate_display_settings
   local created_container=0
   if [[ "$SLICE_RECREATE" == "1" ]] && container_exists; then
@@ -581,8 +873,7 @@ ensure_container() {
     log "container $SLICE_NAME already exists"
   else
     log "creating container $SLICE_NAME"
-    run_with_timeout 30 docker volume create "$SLICE_HOME_VOLUME" >/dev/null
-    restore_saved_home_volume
+    prepare_home_volume
     local display_port
     display_port="$(selected_display_port)"
     local docker_create_args=(
