@@ -69,7 +69,7 @@ test("Path-1 providers inherit an ordinary worker process environment", async ()
   for (const restriction of inheritedProviderRestrictions) {
     assert.doesNotMatch(
       disposableWorkerService,
-      new RegExp(`^${restriction}=`),
+      new RegExp(`^${restriction}=`, "m"),
       `the disposable Path-1 worker must not impose ${restriction} on provider descendants`,
     )
   }
