@@ -11,6 +11,7 @@ import {
 import { MUTATION_ERROR_CODES } from "./browser-controller-mutation-coordinator.mjs";
 import { OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES } from "./browser-controller-observations.mjs";
 import { BrowserPageFeatures } from "./browser-controller-page-features.mjs";
+import { UPLOAD_ARTIFACT_KIND } from "./browser-controller-upload-staging.mjs";
 
 class FakeClock {
   constructor() {
@@ -867,7 +868,31 @@ test("wires bounded page features through controller-owned tabs and connections"
       isDirectory: () => candidate === "/safe" || candidate === "/safe/downloads",
       isFile: () => candidate === "/safe/report.txt",
       size: candidate === "/safe/report.txt" ? 1024 : 0,
+      dev: 1,
+      ino: candidate === "/safe" ? 10 : candidate === "/safe/downloads" ? 11 : 20,
     }),
+    open: async () => ({
+      stat: async () => ({ isFile: () => true, size: 1024, dev: 1, ino: 20 }),
+      read: async (buffer, offset, length) => {
+        buffer.fill(0x41, offset, offset + length);
+        return { bytesRead: length };
+      },
+      close: async () => {},
+    }),
+    uploadArtifactBroker: {
+      separate_uid: true,
+      stage: async ({ expectedSize }) => ({
+        kind: UPLOAD_ARTIFACT_KIND,
+        artifact_id: "controller-upload",
+        path: "/broker-owned/controller-upload",
+        size: expectedSize,
+        immutable: true,
+        sealed: true,
+        separate_uid: true,
+        broker_owned: true,
+        release: async () => {},
+      }),
+    },
   });
   const fixture = makeFixture({ targets, pageFeatures });
   const { controller } = fixture;
@@ -974,6 +999,38 @@ test("wires bounded page features through controller-owned tabs and connections"
   }
   t.after(async () => {
     await controller.shutdown("owner-a", 1);
+  });
+});
+
+test("releases page-feature uploads when a tab detaches and on controller shutdown", async (t) => {
+  const targets = [{
+    id: "page-1",
+    type: "page",
+    webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/1",
+  }];
+  const releasedTabs = [];
+  let shutdowns = 0;
+  const pageFeatures = {
+    async prepare() {},
+    async releaseUploadsForTab(tabId) {
+      releasedTabs.push(tabId);
+    },
+    async shutdown() {
+      shutdowns += 1;
+    },
+  };
+  const fixture = makeFixture({ targets, pageFeatures });
+  const { controller } = fixture;
+  await controller.start("owner-a");
+  const tab = controller.getTabRegistrySnapshot("owner-a", 1).tabs[0];
+  targets.length = 0;
+  const refreshed = await controller.refreshTabs("owner-a", 1);
+  assert.deepEqual(refreshed.detached.map(({ tab_id }) => tab_id), [tab.tab_id]);
+  assert.deepEqual(releasedTabs, [tab.tab_id]);
+  await controller.shutdown("owner-a", 1);
+  assert.equal(shutdowns, 1);
+  t.after(async () => {
+    await controller.shutdownForSignal();
   });
 });
 
