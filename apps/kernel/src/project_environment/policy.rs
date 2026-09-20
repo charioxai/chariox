@@ -11,6 +11,8 @@ pub const MANIFEST_RELATIVE_PATH: &str = "project-environment.toml";
 
 pub const MAX_MANIFEST_BYTES: usize = 128 * 1024;
 pub const MAX_LOCKFILE_BYTES: usize = 4 * 1024 * 1024;
+/// Bound the total bytes read from the manifest and declared lockfiles.
+pub const MAX_TOTAL_REPOSITORY_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_STRING_BYTES: usize = 256;
 pub const MAX_PATH_BYTES: usize = 512;
 pub const MAX_MANIFEST_ENTRIES: usize = 128;
@@ -52,6 +54,15 @@ pub enum ProjectEnvironmentError {
     #[error("repository path `{path}` contains a symlink")]
     SymlinkPath { path: PathBuf },
 
+    #[error("repository path `{path}` escapes the canonical repository root")]
+    PathOutsideRoot { path: PathBuf },
+
+    #[error("repository path `{path}` was concurrently replaced")]
+    ConcurrentReplacement { path: PathBuf },
+
+    #[error("repository discovery requires a no-follow filesystem API")]
+    UnsupportedFilesystem,
+
     #[error("could not inspect repository path `{path}`: {source}")]
     InspectPath {
         path: PathBuf,
@@ -72,6 +83,12 @@ pub(crate) fn normalize_text(
     value: &str,
     limit: usize,
 ) -> Result<String, ProjectEnvironmentError> {
+    if value.chars().any(char::is_control) {
+        return Err(ProjectEnvironmentError::InvalidField {
+            field: field.to_owned(),
+            message: "must not contain control characters".to_owned(),
+        });
+    }
     let normalized = value.nfkc().collect::<String>().trim().to_owned();
     if normalized.is_empty() {
         return Err(ProjectEnvironmentError::InvalidField {

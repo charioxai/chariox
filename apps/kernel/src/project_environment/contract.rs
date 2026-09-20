@@ -347,8 +347,9 @@ impl EnvironmentContract {
     pub(crate) fn assemble(
         identity: EnvironmentIdentity,
         manifest: RepositoryManifest,
-        lockfile_digests: Vec<LockfileDigest>,
+        mut lockfile_digests: Vec<LockfileDigest>,
     ) -> Self {
+        sort_lockfile_digests(&mut lockfile_digests);
         let manifest_digest = manifest.digest();
         let fingerprint = fingerprint_for(&identity, &manifest_digest, &lockfile_digests);
         Self {
@@ -476,6 +477,8 @@ pub(crate) fn fingerprint_for(
     manifest_digest: &str,
     lockfile_digests: &[LockfileDigest],
 ) -> String {
+    let mut sorted_lockfile_digests = lockfile_digests.to_vec();
+    sort_lockfile_digests(&mut sorted_lockfile_digests);
     let mut bytes = Vec::new();
     put_bytes(&mut bytes, b"chariox.project_environment.fingerprint.v1");
     put_u16(&mut bytes, CONTRACT_SCHEMA_VERSION);
@@ -488,8 +491,8 @@ pub(crate) fn fingerprint_for(
     put_str(&mut bytes, &identity.target.realm);
     put_str(&mut bytes, &identity.repository_digest);
     put_str(&mut bytes, manifest_digest);
-    put_len(&mut bytes, lockfile_digests.len());
-    for lockfile in lockfile_digests {
+    put_len(&mut bytes, sorted_lockfile_digests.len());
+    for lockfile in &sorted_lockfile_digests {
         put_str(&mut bytes, &lockfile.path);
         put_str(&mut bytes, &lockfile.digest);
     }
@@ -498,6 +501,14 @@ pub(crate) fn fingerprint_for(
         put_toolchain(&mut bytes, toolchain);
     }
     hex_digest(&Sha256::digest(bytes))
+}
+
+fn sort_lockfile_digests(lockfile_digests: &mut [LockfileDigest]) {
+    lockfile_digests.sort_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then_with(|| left.digest.cmp(&right.digest))
+    });
 }
 
 fn put_toolchain(bytes: &mut Vec<u8>, toolchain: &ToolchainInput) {
