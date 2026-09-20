@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import {
   collectSourceInventory,
+  MP_ROWS,
   reviewedPredicatesFor,
   stableJson,
 } from "./managed-parity-source-inventory.mjs";
@@ -40,7 +41,7 @@ function fixtureFiles({ hiddenManagedFlag = false, directBwrap = false, inherite
     "apps/kernel/src/path.rs": "const ROOT = CHARIOX_MANAGED_REPOSITORY_ROOT; // /home/chariox and /tmp\n",
     "apps/kernel/src/cleanup.rs": "// managed cleanup revoke expires the private receipt\n",
     "apps/cli/src/client.ts": "// managed client projection is reviewed separately\n",
-    "apps/kernel/slice-linux-docker/docker/provider.sh": "bwrap --unshare-user --die-with-parent\n",
+    "apps/kernel/slice-linux-docker/docker/Dockerfile": "RUN bwrap --unshare-user --die-with-parent\n",
   };
   if (unknownProjection) files["apps/client/unknown.ts"] = "const value = { managed: projection };\n";
   return files;
@@ -67,14 +68,30 @@ function makeFixture(options = {}) {
   };
   const predicates = reviewedPredicatesFor({ sourceCommit: COMMIT, sourceTree: TREE }).map((predicate) => ({
     ...predicate,
-    path: predicate.id.startsWith("MP-09")
+    path: predicate.id.startsWith("MP-07")
       ? "apps/kernel/src/managed_bootstrap/release.rs"
       : "apps/kernel/src/runtime/managed_environment_control/cloud_contract.rs",
-    line: predicate.id.startsWith("MP-09") ? 39 : predicate.id.endsWith("idle-delay") ? 111 : 110,
-    symbol: predicate.id.startsWith("MP-09") ? "verify_release" : "AutoStopPolicy",
+    line: predicate.id.startsWith("MP-07") ? 39 : predicate.id.endsWith("idle-delay") ? 111 : 110,
+    symbol: predicate.id.startsWith("MP-07") ? "verify_release" : "AutoStopPolicy",
   }));
   return { root, files, runGit, predicates };
 }
+
+test("MP row meanings stay aligned with the stable plan ledger", () => {
+  assert.deepEqual(MP_ROWS.map(({ id, name }) => [id, name]), [
+    ["MP-01", "remove Path-1 Bubblewrap and inherited managed sandboxing"],
+    ["MP-02", "ordinary directory discovery, exact-path entry, and provider access"],
+    ["MP-03", "protect exact managed control state without blocking siblings"],
+    ["MP-04", "ordinary HOME and CHARIOX_HOME state layout"],
+    ["MP-05", "source-basename repository materialization and collision safety"],
+    ["MP-06", "server-authoritative custom repository root"],
+    ["MP-07", "signed content-addressed release activation"],
+    ["MP-08", "ordinary kernel runtime, protocol, adapters, state, and clients"],
+    ["MP-09", "mandatory managed automatic-shutdown lifecycle"],
+    ["MP-10", "fresh-machine ordinary-versus-managed comparison and cleanup evidence"],
+    ["MP-11", "proactive managed-only source inventory"],
+  ]);
+});
 
 function collect(fixture, options = {}) {
   return collectSourceInventory({
@@ -128,6 +145,7 @@ test("Bubblewrap added to direct Path 1 is not confused with the Docker slice", 
     assert.equal(direct?.disposition, "removal_required");
     const docker = report.entries.find((entry) => entry.category === "bubblewrap" && entry.topology === "inner_docker_slice");
     assert.equal(docker?.disposition, "unreviewed");
+    assert.equal(docker?.path, "apps/kernel/slice-linux-docker/docker/Dockerfile");
   });
 });
 
@@ -141,11 +159,11 @@ test("an inherited systemd restriction remains a direct Path-1 removal finding",
   });
 });
 
-test("protected-parent filtering is inventoried as MP-02/MP-07 evidence", () => {
+test("protected-parent filtering is inventoried as MP-02/MP-03/MP-11 evidence", () => {
   withFixture({ protectedParent: true }, (fixture) => {
     const report = collect(fixture);
     const protectedFinding = report.entries.find((entry) => entry.category === "protected_path_filter");
-    assert.deepEqual(protectedFinding?.applicableMpIds, ["MP-02", "MP-03", "MP-07"]);
+    assert.deepEqual(protectedFinding?.applicableMpIds, ["MP-02", "MP-03", "MP-11"]);
     assert.equal(protectedFinding?.disposition, "removal_required");
   });
 });
@@ -187,11 +205,11 @@ test("source drift removes the exact release exemption", () => {
   });
 });
 
-test("a missing shutdown trigger fails MP-10 instead of being silently omitted", () => {
+test("a missing shutdown trigger fails MP-09 instead of being silently omitted", () => {
   withFixture({ shutdown: false }, (fixture) => {
     const report = collect(fixture);
     assert.ok(report.missingCategories.includes("automatic_shutdown_selector"));
-    assert.ok(report.missingRows.includes("MP-10"));
+    assert.ok(report.missingRows.includes("MP-09"));
     assert.equal(report.status, "fail");
   });
 });

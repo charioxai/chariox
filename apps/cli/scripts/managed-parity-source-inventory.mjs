@@ -3,70 +3,12 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
-import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const INVENTORY_SCHEMA = "chariox.managed-parity.source-inventory.v1";
 export const REVIEWED_SOURCE_COMMIT = "391b38b2be15c4f49d8ea70cc14b031385cf8331";
 export const REVIEWED_SOURCE_TREE = "199b565b83e9582acd38a38a76520e2ba5ac02b4";
-
-export const MP_ROWS = Object.freeze([
-  {
-    id: "MP-01",
-    name: "reviewed source and build identity",
-    categories: ["source_identity", "release_activation"],
-  },
-  {
-    id: "MP-02",
-    name: "directory discovery and exact-path entry",
-    categories: ["repository_home_state_path", "protected_path_filter"],
-  },
-  {
-    id: "MP-03",
-    name: "workspace, repository basename, and collision handling",
-    categories: ["repository_home_state_path", "protected_path_filter"],
-  },
-  {
-    id: "MP-04",
-    name: "provider ancestry, environment, mounts, privilege, and network",
-    categories: ["managed_env_selector", "bubblewrap", "managed_service_restriction"],
-  },
-  {
-    id: "MP-05",
-    name: "session, worktree, project, and client projection",
-    categories: ["client_projection", "managed_only_branch"],
-  },
-  {
-    id: "MP-06",
-    name: "reconnect, history, queued prompts, and result identity",
-    categories: ["client_projection", "managed_only_error_mapping"],
-  },
-  {
-    id: "MP-07",
-    name: "control-file protection, permissions, limits, and errors",
-    categories: ["protected_path_filter", "managed_only_error_mapping"],
-  },
-  {
-    id: "MP-08",
-    name: "cleanup and revocation",
-    categories: ["cleanup_selector"],
-  },
-  {
-    id: "MP-09",
-    name: "signed release activation",
-    categories: ["release_activation"],
-  },
-  {
-    id: "MP-10",
-    name: "mandatory managed automatic shutdown",
-    categories: ["automatic_shutdown_selector"],
-  },
-  {
-    id: "MP-11",
-    name: "proactive managed-only source inventory",
-    categories: ["source_identity"],
-  },
-]);
 
 export const REQUIRED_CATEGORIES = Object.freeze([
   "managed_only_branch",
@@ -80,6 +22,64 @@ export const REQUIRED_CATEGORIES = Object.freeze([
   "cleanup_selector",
   "release_activation",
   "automatic_shutdown_selector",
+]);
+
+export const MP_ROWS = Object.freeze([
+  {
+    id: "MP-01",
+    name: "remove Path-1 Bubblewrap and inherited managed sandboxing",
+    categories: ["managed_env_selector", "bubblewrap", "managed_service_restriction"],
+  },
+  {
+    id: "MP-02",
+    name: "ordinary directory discovery, exact-path entry, and provider access",
+    categories: ["repository_home_state_path", "protected_path_filter"],
+  },
+  {
+    id: "MP-03",
+    name: "protect exact managed control state without blocking siblings",
+    categories: ["protected_path_filter"],
+  },
+  {
+    id: "MP-04",
+    name: "ordinary HOME and CHARIOX_HOME state layout",
+    categories: ["repository_home_state_path"],
+  },
+  {
+    id: "MP-05",
+    name: "source-basename repository materialization and collision safety",
+    categories: ["repository_home_state_path"],
+  },
+  {
+    id: "MP-06",
+    name: "server-authoritative custom repository root",
+    categories: ["repository_home_state_path", "client_projection"],
+  },
+  {
+    id: "MP-07",
+    name: "signed content-addressed release activation",
+    categories: ["release_activation"],
+  },
+  {
+    id: "MP-08",
+    name: "ordinary kernel runtime, protocol, adapters, state, and clients",
+    categories: ["managed_only_branch", "managed_only_error_mapping", "client_projection", "cleanup_selector"],
+  },
+  {
+    id: "MP-09",
+    name: "mandatory managed automatic-shutdown lifecycle",
+    categories: ["automatic_shutdown_selector"],
+  },
+  {
+    id: "MP-10",
+    name: "fresh-machine ordinary-versus-managed comparison and cleanup evidence",
+    categories: ["source_identity", "cleanup_selector"],
+  },
+  {
+    id: "MP-11",
+    name: "proactive managed-only source inventory",
+    categories: [...REQUIRED_CATEGORIES],
+  },
 ]);
 
 const SCANNABLE_EXTENSIONS = new Set([
@@ -96,6 +96,12 @@ const SCANNABLE_EXTENSIONS = new Set([
   ".tsx",
   ".yaml",
   ".yml",
+]);
+
+const SCANNABLE_EXTENSIONLESS_BASENAMES = new Set([
+  "Containerfile",
+  "Dockerfile",
+  "Makefile",
 ]);
 
 const IGNORED_DIRECTORY_NAMES = new Set([
@@ -120,67 +126,67 @@ const IGNORED_PATH_PARTS = [
 const CATEGORY_SPECS = Object.freeze([
   {
     category: "managed_env_selector",
-    mpIds: ["MP-04"],
+    mpIds: ["MP-01", "MP-08", "MP-11"],
     affectedBehavior: "managed environment selector or injected managed runtime marker",
     pattern: /\bCHARIOX_MANAGED[A-Z0-9_]*/g,
   },
   {
     category: "bubblewrap",
-    mpIds: ["MP-04"],
+    mpIds: ["MP-01", "MP-11"],
     affectedBehavior: "Bubblewrap or equivalent provider ancestry/sandbox boundary",
     pattern: /(?:\/usr\/bin\/)?\bbwrap\b|\bbubblewrap\b/gi,
   },
   {
     category: "managed_service_restriction",
-    mpIds: ["MP-04", "MP-07"],
+    mpIds: ["MP-01", "MP-08", "MP-11"],
     affectedBehavior: "managed service-unit or inherited system restriction",
     pattern: /\b(?:ProtectSystem|ProtectHome|PrivateTmp|NoNewPrivileges|Restrict[A-Za-z0-9_]*|ReadWritePaths|UMask)\b/g,
   },
   {
     category: "managed_only_branch",
-    mpIds: ["MP-05"],
+    mpIds: ["MP-08", "MP-11"],
     affectedBehavior: "branch or mode switch that changes managed runtime behavior",
     pattern: /\b(?:is_managed|managed_mode|managed_only|managed_context|managedEnvironment|managedRuntime)\b|\b(?:if|else\s+if|match|switch|case)\b[^\n;{}]{0,120}\bmanaged\b/gi,
   },
   {
     category: "protected_path_filter",
-    mpIds: ["MP-02", "MP-03", "MP-07"],
+    mpIds: ["MP-02", "MP-03", "MP-11"],
     affectedBehavior: "protected/control path or parent filtering",
     pattern: /\b(?:protected[_ -]?paths?|protected_parent|protected_path|control[_ -]?(?:root|file|path)|is_protected|force_excludes?|path_filter)\b/gi,
   },
   {
     category: "managed_only_error_mapping",
-    mpIds: ["MP-06", "MP-07"],
+    mpIds: ["MP-08", "MP-11"],
     affectedBehavior: "managed-only error, failure, denial, or unsupported mapping",
     pattern: /\bmanaged\b[^\n;{}]{0,100}\b(?:error|failure|failed|denied|unsupported|invalid)\b|\b(?:error|failure|failed|denied|unsupported|invalid)\b[^\n;{}]{0,100}\bmanaged\b/gi,
   },
   {
     category: "repository_home_state_path",
-    mpIds: ["MP-02", "MP-03"],
+    mpIds: ["MP-02", "MP-04", "MP-05", "MP-06", "MP-11"],
     affectedBehavior: "repository-root, home, provider-home, or durable state path",
     pattern: /\b(?:CHARIOX_HOME|CHARIOX_MANAGED_REPOSITORY_ROOT|managed[_-]?repository[_-]?root|repository[_-]?root|state[_-]?root|provider[_-]?home)\b|\/home\/chariox(?:\/[A-Za-z0-9._/-]+)?|\/var\/lib\/chariox(?:\/[A-Za-z0-9._/-]+)?|\.chariox\b/g,
   },
   {
     category: "client_projection",
-    mpIds: ["MP-05", "MP-06"],
+    mpIds: ["MP-06", "MP-08", "MP-11"],
     affectedBehavior: "managed state projected to a client, response, UI, or result",
     pattern: /\bmanaged\b[^\n;{}]{0,100}\b(?:projection|client|response|payload|result|json|ui|web|history|prompt)\b|\b(?:projection|client|response|payload|result|json|ui|web|history|prompt)\b[^\n;{}]{0,100}\bmanaged\b/gi,
   },
   {
     category: "cleanup_selector",
-    mpIds: ["MP-08"],
+    mpIds: ["MP-08", "MP-10", "MP-11"],
     affectedBehavior: "managed cleanup, revocation, expiry, reaping, or deletion path",
     pattern: /\bmanaged\b[^\n;{}]{0,100}\b(?:cleanup|revoke|revocation|expire|expiry|reap|delete|dispose)\b|\b(?:cleanup|revoke|revocation|expire|expiry|reap|delete|dispose)\b[^\n;{}]{0,100}\bmanaged\b/gi,
   },
   {
     category: "release_activation",
-    mpIds: ["MP-01", "MP-09"],
+    mpIds: ["MP-07", "MP-11"],
     affectedBehavior: "signed managed release activation and artifact identity",
     pattern: /\b(?:verify_release|release[-_ ]manifest|release[-_ ]signature|release[-_]public[-_]key|signed release|release_digest|kernel artifact)\b/gi,
   },
   {
     category: "automatic_shutdown_selector",
-    mpIds: ["MP-10"],
+    mpIds: ["MP-09", "MP-11"],
     affectedBehavior: "managed automatic shutdown policy or trigger selector",
     pattern: /\b(?:auto[_-]?stop|automatic[_-]?shutdown|idle[_-]?delay|minimum[_-]?runtime|keep[_-]?running|last[_-]?agent|agents[_-]?done)(?:[_-][A-Za-z0-9]+)*\b|\b(?:managed|idle|minimum|deployment|lifecycle)\b[^\n;{}]{0,100}\bshutdown\b/gi,
   },
@@ -191,7 +197,7 @@ const CATEGORY_SPECS = Object.freeze([
 // and trimmed source line. A changed line stops matching and becomes red.
 export const DEFAULT_REVIEWED_PREDICATES = Object.freeze([
   {
-    id: "MP-09-release-verify-release",
+    id: "MP-07-release-verify-release",
     sourceCommit: REVIEWED_SOURCE_COMMIT,
     sourceTree: REVIEWED_SOURCE_TREE,
     path: "apps/kernel/src/managed_bootstrap/release.rs",
@@ -200,11 +206,11 @@ export const DEFAULT_REVIEWED_PREDICATES = Object.freeze([
     sourceLine: "pub(super) fn verify_release(",
     category: "release_activation",
     topology: "direct_path1",
-    applicableMpIds: ["MP-01", "MP-09"],
+    applicableMpIds: ["MP-07", "MP-11"],
     disposition: "allowed_release_deployment",
   },
   {
-    id: "MP-10-auto-stop-policy",
+    id: "MP-09-auto-stop-policy",
     sourceCommit: REVIEWED_SOURCE_COMMIT,
     sourceTree: REVIEWED_SOURCE_TREE,
     path: "apps/kernel/src/runtime/managed_environment_control/cloud_contract.rs",
@@ -213,11 +219,11 @@ export const DEFAULT_REVIEWED_PREDICATES = Object.freeze([
     sourceLine: "minimum_runtime_seconds: u64,",
     category: "automatic_shutdown_selector",
     topology: "direct_path1",
-    applicableMpIds: ["MP-10"],
+    applicableMpIds: ["MP-09", "MP-11"],
     disposition: "required_automatic_shutdown",
   },
   {
-    id: "MP-10-auto-stop-idle-delay",
+    id: "MP-09-auto-stop-idle-delay",
     sourceCommit: REVIEWED_SOURCE_COMMIT,
     sourceTree: REVIEWED_SOURCE_TREE,
     path: "apps/kernel/src/runtime/managed_environment_control/cloud_contract.rs",
@@ -226,7 +232,7 @@ export const DEFAULT_REVIEWED_PREDICATES = Object.freeze([
     sourceLine: "idle_delay_seconds: Option<u64>,",
     category: "automatic_shutdown_selector",
     topology: "direct_path1",
-    applicableMpIds: ["MP-10"],
+    applicableMpIds: ["MP-09", "MP-11"],
     disposition: "required_automatic_shutdown",
   },
 ]);
@@ -314,7 +320,9 @@ function isScannable(path) {
   const parts = path.split("/");
   if (parts.some((part) => IGNORED_DIRECTORY_NAMES.has(part))) return false;
   const extension = extname(path).toLowerCase();
-  return SCANNABLE_EXTENSIONS.has(extension) || path.endsWith(".service.in");
+  return SCANNABLE_EXTENSIONS.has(extension)
+    || SCANNABLE_EXTENSIONLESS_BASENAMES.has(basename(path))
+    || path.endsWith(".service.in");
 }
 
 function readText(fsApi, absolutePath) {
