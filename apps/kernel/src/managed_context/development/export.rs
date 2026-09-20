@@ -44,6 +44,7 @@ pub fn export_development_context(
             "development context archive parent changed while preparing the export",
         ));
     }
+    let managed_publication_export = managed_publication_export_path(&canonical_archive_parent);
 
     let staging_root =
         create_unique_private_directory(&canonical_archive_parent, ".tmp-chariox-managed-context")?;
@@ -73,6 +74,7 @@ pub fn export_development_context(
             &mut repository_ids,
             &mut target_directories,
             &mut manifest_budget,
+            managed_publication_export,
         )?;
         checkout_bytes = checkout_bytes.saturating_add(estimate.checkout_bytes);
         materialized_entries = materialized_entries.saturating_add(estimate.materialized_entries);
@@ -241,6 +243,7 @@ fn export_repository(
     repository_ids: &mut BTreeSet<String>,
     target_directories: &mut BTreeSet<String>,
     manifest_budget: &mut ManifestMemoryBudget,
+    managed_publication_export: bool,
 ) -> Result<
     (
         DevelopmentRepositoryManifest,
@@ -257,6 +260,7 @@ fn export_repository(
                 repository_ids,
                 target_directories,
                 manifest_budget,
+                managed_publication_export,
             );
         }
         Err(error) => return Err(context_io_error("inspect Git workspace metadata", error)),
@@ -282,7 +286,12 @@ fn export_repository(
         &logical_name,
         repository_ids,
     );
-    let target_directory = unique_target_directory(&source_basename, target_directories)?;
+    let target_directory = target_directory_for_export(
+        &source_basename,
+        &repository_id,
+        target_directories,
+        managed_publication_export,
+    )?;
     manifest_budget.consume(
         head_sha
             .len()
@@ -442,15 +451,67 @@ pub(super) fn unique_repository_id(
 
 pub(super) fn unique_target_directory(
     source_basename: &str,
+    repository_id: &str,
     occupied: &mut BTreeSet<String>,
 ) -> Result<String, DaemonError> {
     validate_repository_basename(source_basename)?;
-    if !occupied.insert(source_basename.to_lowercase()) {
+    if occupied.insert(source_basename.to_lowercase()) {
+        return Ok(source_basename.to_string());
+    }
+    let base = sanitize_directory_name(source_basename);
+    let suffix = repository_id
+        .strip_prefix("repo-")
+        .unwrap_or(repository_id)
+        .chars()
+        .take(8)
+        .collect::<String>();
+    let hashed = format!("{base}-{suffix}");
+    if occupied.insert(hashed.to_lowercase()) {
+        return Ok(hashed);
+    }
+    for ordinal in 2_u32.. {
+        let candidate = format!("{hashed}-{ordinal}");
+        if occupied.insert(candidate.to_lowercase()) {
+            return Ok(candidate);
+        }
+    }
+    unreachable!("target directory suffix space is unbounded")
+}
+
+pub(super) fn target_directory_for_export(
+    source_basename: &str,
+    repository_id: &str,
+    occupied: &mut BTreeSet<String>,
+    managed_publication_export: bool,
+) -> Result<String, DaemonError> {
+    if managed_publication_export {
+        return unique_managed_target_directory(source_basename, occupied);
+    }
+    unique_target_directory(source_basename, repository_id, occupied)
+}
+
+pub(super) fn unique_managed_target_directory(
+    source_basename: &str,
+    occupied: &mut BTreeSet<String>,
+) -> Result<String, DaemonError> {
+    validate_managed_repository_basename(source_basename)?;
+    if !occupied.insert(source_basename.to_ascii_lowercase()) {
         return Err(context_error(format!(
-            "source repository basename `{source_basename}` collides with another selected repository"
+            "source repository basename `{source_basename}` collides with another selected managed repository"
         )));
     }
     Ok(source_basename.to_string())
+}
+
+fn managed_publication_export_path(archive_parent: &Path) -> bool {
+    [
+        "CHARIOX_PUBLICATION_CONTROL_STATE_DIR",
+        "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT",
+    ]
+    .into_iter()
+    .filter_map(|name| std::env::var_os(name).filter(|value| !value.is_empty()))
+    .map(PathBuf::from)
+    .any(|root| archive_parent.starts_with(root))
 }
 
 pub(super) fn validate_repository_basename(value: &str) -> Result<(), DaemonError> {
@@ -465,6 +526,33 @@ pub(super) fn validate_repository_basename(value: &str) -> Result<(), DaemonErro
     {
         return Err(context_error(
             "source repository basename is unsafe or invalid",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_managed_repository_basename(value: &str) -> Result<(), DaemonError> {
+    validate_repository_basename(value)?;
+    let lower = value.to_ascii_lowercase();
+    const RESERVED: &[&str] = &[
+        ".chariox",
+        ".provider-account",
+        "managed-context-workspaces",
+        "managed-context",
+        "managed-runtime-auth",
+        "provider-home",
+        "kernels",
+        "state",
+        "sessions",
+        "daemon",
+        "machine",
+        "managed",
+    ];
+    if RESERVED.iter().any(|reserved| *reserved == lower)
+        || lower.starts_with(".chariox-empty-context-")
+    {
+        return Err(context_error(
+            "source repository basename is reserved by managed runtime state",
         ));
     }
     Ok(())
