@@ -200,6 +200,23 @@ impl Drop for PlainWorkspaceCleanup {
 }
 
 #[cfg(unix)]
+fn protected_root_fixture(label: &str) -> (PathBuf, Vec<PathBuf>) {
+    let root = test_root(label);
+    let protected_roots = [
+        "protected-var-lib-chariox",
+        "protected-usr-lib-chariox",
+        "protected-home-chariox",
+    ]
+    .into_iter()
+    .map(|name| root.join(name))
+    .collect::<Vec<_>>();
+    for protected_root in &protected_roots {
+        fs::create_dir_all(protected_root).expect("create protected-root fixture");
+    }
+    (root, protected_roots)
+}
+
+#[cfg(unix)]
 #[test]
 fn plain_workspace_rejects_symlinks_and_special_files_without_publishing() {
     let root = test_root("plain-unsafe");
@@ -1575,6 +1592,230 @@ fn managed_materialization_requires_the_explicit_trusted_control_parent() {
         None
     );
     fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn managed_materialization_uses_the_bootstrap_repository_root() {
+    let _lock = crate::env_lock::lock();
+    let previous = std::env::var_os(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV);
+    let root = test_root("managed-configured-root");
+    let repository_root = root.join("user-selected workspaces");
+    let trusted_parent = root.join("control/managed-context-workspaces");
+    fs::create_dir_all(&repository_root).expect("create configured repository root");
+    fs::create_dir_all(&trusted_parent).expect("create trusted control parent");
+    std::env::set_var(
+        crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
+        &repository_root,
+    );
+
+    let resolved = super::import::managed_materialization_root_for_control(
+        &trusted_parent.join("publication"),
+        Some(&trusted_parent),
+    )
+    .expect("resolve configured repository root")
+    .expect("managed materialization root");
+    assert_eq!(resolved, fs::canonicalize(&repository_root).unwrap());
+
+    match previous {
+        Some(value) => {
+            std::env::set_var(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV, value)
+        }
+        None => std::env::remove_var(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV),
+    }
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[cfg(unix)]
+#[test]
+fn managed_repository_root_boundary_rejects_intermediate_symlinks_into_protected_service_roots() {
+    let (root, protected_roots) = protected_root_fixture("managed-root-protected-aliases");
+    let _cleanup = PlainWorkspaceCleanup(root.clone());
+    let _protected_scope =
+        crate::managed_context::empty::protected_root_test_scope(&protected_roots);
+    for (label, protected_root) in [
+        ("var-lib", protected_roots[0].as_path()),
+        ("usr-lib", protected_roots[1].as_path()),
+        ("home-state", protected_roots[2].as_path()),
+    ] {
+        let alias = root.join(format!("{label}-alias"));
+        std::os::unix::fs::symlink(protected_root, &alias).expect("create protected alias");
+        let blocked_name = format!(
+            "managed-root-boundary-{}",
+            root.file_name()
+                .expect("test root basename")
+                .to_string_lossy()
+        );
+        let blocked_target = protected_root.join(&blocked_name);
+        assert!(
+            !blocked_target.exists(),
+            "protected test target already exists"
+        );
+        let error = crate::managed_context::empty::resolve_managed_path_for_creation(
+            &alias.join(&blocked_name),
+            "managed repository root",
+        )
+        .expect_err("protected intermediate alias must be rejected");
+        assert!(error.to_string().contains("protected"));
+        assert!(
+            !blocked_target.exists(),
+            "rejection must not create a target"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn managed_repository_root_boundary_rejects_protected_intermediate_symlinks_before_materialization()
+{
+    let _lock = crate::env_lock::lock();
+    let previous = std::env::var_os(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV);
+    let (root, protected_roots) = protected_root_fixture("managed-root-materialization-alias");
+    let _cleanup = PlainWorkspaceCleanup(root.clone());
+    let _protected_scope =
+        crate::managed_context::empty::protected_root_test_scope(&protected_roots);
+    let trusted_parent = root.join("control/managed-context-workspaces");
+    fs::create_dir_all(&trusted_parent).expect("create trusted control parent");
+    for (label, protected_root) in [
+        ("var-lib", protected_roots[0].as_path()),
+        ("usr-lib", protected_roots[1].as_path()),
+        ("home-state", protected_roots[2].as_path()),
+    ] {
+        let alias = root.join(format!("{label}-materialization-alias"));
+        std::os::unix::fs::symlink(protected_root, &alias).expect("create protected alias");
+        let configured_root = alias.join("managed-root");
+        std::env::set_var(
+            crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
+            &configured_root,
+        );
+        let result = super::import::managed_materialization_root_for_control(
+            &trusted_parent.join(format!("publication-{label}")),
+            Some(&trusted_parent),
+        );
+        match previous.clone() {
+            Some(value) => {
+                std::env::set_var(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV, value)
+            }
+            None => std::env::remove_var(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV),
+        }
+        let error = result.expect_err("materialization must reject protected alias");
+        assert!(error.to_string().contains("protected"));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn managed_repository_root_boundary_accepts_safe_intermediate_symlink() {
+    let root = test_root("managed-root-safe-alias");
+    let _cleanup = PlainWorkspaceCleanup(root.clone());
+    let trusted_root = root.join("trusted");
+    fs::create_dir_all(&trusted_root).expect("create trusted root");
+    let alias = root.join("safe-alias");
+    std::os::unix::fs::symlink(&trusted_root, &alias).expect("create safe alias");
+    let resolved = crate::managed_context::empty::resolve_managed_path_for_creation(
+        &alias.join("missing/nested"),
+        "managed repository root",
+    )
+    .expect("safe intermediate alias");
+    assert_eq!(
+        resolved,
+        fs::canonicalize(&trusted_root)
+            .expect("canonical trusted root")
+            .join("missing/nested")
+    );
+}
+
+#[test]
+fn managed_repository_root_boundary_preserves_missing_nested_components() {
+    let root = test_root("managed-root-missing-nested");
+    let _cleanup = PlainWorkspaceCleanup(root.clone());
+    let resolved = crate::managed_context::empty::resolve_managed_path_for_creation(
+        &root.join("missing/nested/root"),
+        "managed repository root",
+    )
+    .expect("missing nested components are valid to resolve");
+    assert_eq!(
+        resolved,
+        fs::canonicalize(&root)
+            .expect("canonical test root")
+            .join("missing/nested/root")
+    );
+    assert!(!root.join("missing").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn managed_repository_root_boundary_rejects_final_target_symlink() {
+    let root = test_root("managed-root-final-alias");
+    let _cleanup = PlainWorkspaceCleanup(root.clone());
+    let real_target = root.join("real-target");
+    fs::create_dir_all(&real_target).expect("create real target");
+    let final_alias = root.join("final-alias");
+    std::os::unix::fs::symlink(&real_target, &final_alias).expect("create final alias");
+    let error = crate::managed_context::empty::resolve_managed_path_for_creation(
+        &final_alias,
+        "managed repository root",
+    )
+    .expect_err("final target symlink must be rejected");
+    assert!(error.to_string().contains("symlink"));
+    assert!(fs::symlink_metadata(&final_alias)
+        .expect("inspect final alias")
+        .file_type()
+        .is_symlink());
+}
+
+#[cfg(unix)]
+#[test]
+fn managed_repository_root_boundary_creates_no_partial_empty_workspace_on_rejection() {
+    let _lock = crate::env_lock::lock();
+    let previous = std::env::var_os(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV);
+    let (root, protected_roots) = protected_root_fixture("managed-root-empty-alias");
+    let _cleanup = PlainWorkspaceCleanup(root.clone());
+    let _protected_scope =
+        crate::managed_context::empty::protected_root_test_scope(&protected_roots);
+    let alias = root.join("empty-workspace-alias");
+    std::os::unix::fs::symlink(&protected_roots[0], &alias).expect("create protected alias");
+    let configured_root = alias.join("managed-root");
+    let context_id = format!("empty-boundary-{}", root.display());
+    std::env::set_var(
+        crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
+        &configured_root,
+    );
+    let requested_workspace =
+        crate::managed_context::empty::managed_user_empty_context_workspace_path(&context_id)
+            .expect("build empty workspace path");
+    let blocked_target = protected_roots[0].join(
+        requested_workspace
+            .file_name()
+            .expect("empty workspace basename"),
+    );
+    assert!(
+        !blocked_target.exists(),
+        "protected test target already exists"
+    );
+    let mut config = crate::config::DaemonConfig::new(
+        "managed-root-boundary",
+        "managed-root-boundary-machine",
+        "tester",
+    );
+    config.user_config_path = root.join("private/config.toml");
+    config.publication_control_state_root = Some(root.join("control"));
+    let result =
+        crate::managed_context::empty::ensure_empty_managed_context_workspace(&config, &context_id);
+    match previous {
+        Some(value) => {
+            std::env::set_var(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV, value)
+        }
+        None => std::env::remove_var(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV),
+    }
+    let error = result.expect_err("empty workspace must reject protected alias");
+    assert!(error.to_string().contains("protected"));
+    assert!(
+        !blocked_target.exists(),
+        "rejection must not create a target"
+    );
+    assert!(!alias
+        .join(requested_workspace.file_name().unwrap())
+        .exists());
 }
 
 #[cfg(unix)]

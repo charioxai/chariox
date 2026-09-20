@@ -18,7 +18,9 @@ use crate::error::DaemonError;
 
 use super::cloud::BootstrapCloudClient;
 use super::release::VerifiedRelease;
-use super::state::BootstrapConfig;
+#[cfg(test)]
+use super::state::BootstrapReceiptStatus;
+use super::state::{BootstrapConfig, BootstrapReceipt};
 use super::{jittered, PendingConfirmation};
 
 const MIN_RESTART_DELAY: Duration = Duration::from_secs(1);
@@ -165,6 +167,11 @@ pub(super) fn run_kernel_once(
 }
 
 fn spawn_kernel(config: &BootstrapConfig, release: &VerifiedRelease) -> Result<Child, DaemonError> {
+    let managed_repository_root = BootstrapReceipt::read(&config.receipt_path)?
+        .ok_or_else(|| {
+            supervisor_error("managed bootstrap receipt is missing before kernel launch")
+        })?
+        .managed_repository_root()?;
     let isolation_root = std::env::var_os("CHARIOX_CAPABILITY_ISOLATION_ROOT")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| config.chariox_home.join("managed-context").join("kernel"));
@@ -176,6 +183,7 @@ fn spawn_kernel(config: &BootstrapConfig, release: &VerifiedRelease) -> Result<C
         .current_dir(&config.process_home)
         .env("HOME", &config.process_home)
         .env("CHARIOX_HOME", &config.chariox_home)
+        .env(super::MANAGED_REPOSITORY_ROOT_ENV, managed_repository_root)
         .env("CHARIOX_CAPABILITY_ISOLATION_ROOT", isolation_root)
         .env("CHARIOX_MANAGED_PROVIDER_HOME", provider_home)
         .env(
@@ -184,10 +192,7 @@ fn spawn_kernel(config: &BootstrapConfig, release: &VerifiedRelease) -> Result<C
         )
         .env(
             "CHARIOX_MANAGED_VAULT_PATH",
-            config
-                .chariox_home
-                .join("vault")
-                .join("vault.json"),
+            config.chariox_home.join("vault").join("vault.json"),
         )
         .env("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT", &config.receipt_path)
         .env("CHARIOX_KERNEL_HOST", &config.kernel_host)
@@ -564,6 +569,7 @@ mod broker_proxy_tests {
 {
   printf 'home=%s\n' "${HOME-}"
   printf 'chariox_home=%s\n' "${CHARIOX_HOME-}"
+  printf 'repository_root=%s\n' "${CHARIOX_MANAGED_REPOSITORY_ROOT-}"
   printf 'cwd=%s\n' "$(pwd)"
   printf 'provider_isolation=%s\n' "${CHARIOX_MANAGED_PROVIDER_ISOLATION-<unset>}"
   printf 'vault=%s\n' "${CHARIOX_MANAGED_VAULT_PATH-}"
@@ -590,8 +596,7 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         let previous_socket = std::env::var_os(BROKER_SOCKET_ENV);
         let previous_fd = std::env::var_os(BROKER_FD_ENV);
         let previous_required = std::env::var_os(BROKER_REQUIRED_ENV);
-        let previous_provider_isolation =
-            std::env::var_os("CHARIOX_MANAGED_PROVIDER_ISOLATION");
+        let previous_provider_isolation = std::env::var_os("CHARIOX_MANAGED_PROVIDER_ISOLATION");
         let previous_record = std::env::var_os("CHARIOX_ENV_RECORD");
         std::env::set_var(
             crate::provider::MANAGED_SLICE_SERVICE_ROOT_ENV,
@@ -626,6 +631,20 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             digest: "test".to_string(),
             kernel_binary: kernel,
         };
+        BootstrapReceipt {
+            schema_version: 2,
+            status: BootstrapReceiptStatus::Confirmed,
+            environment_id: "managed-env-1".to_string(),
+            machine_id: "managed-machine-1".to_string(),
+            kernel_id: "managed-kernel-1".to_string(),
+            relay_public_key: "managed-public-key".to_string(),
+            runtime_release_digest: format!("sha256:{}", "a".repeat(64)),
+            managed_repository_root: Some("/srv/managed workspaces".to_string()),
+            confirmed_at: Some("2026-09-20T20:00:00Z".to_string()),
+            context_plan: None,
+        }
+        .persist(&config.receipt_path)
+        .expect("managed receipt should persist");
 
         // No broker lease exercises the required-fallback path. The
         // supervisor strips transport variables, but the explicit service
@@ -636,12 +655,16 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         let mut child = spawn_kernel(&config, &release).expect("fallback kernel should spawn");
         child.wait().expect("fallback kernel should exit");
         let fallback = std::fs::read_to_string(&fallback_record).expect("fallback env record");
+        let canonical_home = home
+            .canonicalize()
+            .expect("kernel home should canonicalize");
         assert!(fallback.contains(&format!("home={}\n", home.display())));
         assert!(fallback.contains(&format!(
             "chariox_home={}\n",
             home.join(".chariox").display()
         )));
-        assert!(fallback.contains(&format!("cwd={}\n", home.display())));
+        assert!(fallback.contains(&format!("cwd={}\n", canonical_home.display())));
+        assert!(fallback.contains("repository_root=/srv/managed workspaces\n"));
         assert!(fallback.contains(&format!(
             "vault={}\n",
             home.join(".chariox/vault/vault.json").display()

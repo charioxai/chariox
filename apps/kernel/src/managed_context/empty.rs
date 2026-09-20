@@ -1,3 +1,6 @@
+#[cfg(test)]
+use std::cell::RefCell;
+use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -25,7 +28,6 @@ const EMPTY_CONTEXT_RECEIPT_MAX_BYTES: u64 = 8 * 1024;
 const MIN_RETRY_DELAY: Duration = Duration::from_secs(1);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
 const RELAY_STATE_POLL_INTERVAL: Duration = Duration::from_millis(250);
-const DEFAULT_USER_WORKSPACE_ROOT: &str = "/home/chariox";
 
 #[derive(Debug, Clone)]
 pub(crate) struct EmptyManagedContextCompletion {
@@ -146,7 +148,7 @@ pub(crate) fn empty_managed_context_workspace_path(
     context_id: &str,
 ) -> Result<PathBuf, DaemonError> {
     if managed_control_workspace_parent(config).is_some() {
-        return Ok(managed_user_empty_context_workspace_path(context_id));
+        return managed_user_empty_context_workspace_path(context_id);
     }
     let state_root = config
         .durable_state_path()
@@ -159,15 +161,136 @@ pub(crate) fn empty_managed_context_workspace_path(
         .join("workspace"))
 }
 
-pub(crate) fn managed_user_empty_context_workspace_path(context_id: &str) -> PathBuf {
-    managed_user_workspace_root().join(format!(
+pub(crate) fn managed_user_empty_context_workspace_path(
+    context_id: &str,
+) -> Result<PathBuf, DaemonError> {
+    Ok(managed_user_workspace_root()?.join(format!(
         ".chariox-empty-context-{:x}",
         Sha256::digest(context_id.as_bytes())
-    ))
+    )))
 }
 
-pub(crate) fn managed_user_workspace_root() -> &'static Path {
-    Path::new(DEFAULT_USER_WORKSPACE_ROOT)
+pub(crate) fn managed_user_workspace_root() -> Result<PathBuf, DaemonError> {
+    crate::managed_bootstrap::managed_repository_root_from_env()
+}
+
+fn path_overlaps_protected_roots<'a>(
+    path: &Path,
+    protected_roots: impl IntoIterator<Item = &'a Path>,
+) -> bool {
+    path == Path::new("/")
+        || protected_roots
+            .into_iter()
+            .any(|protected| path == protected || path.starts_with(protected))
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_PROTECTED_ROOTS: RefCell<Option<Vec<PathBuf>>> = RefCell::new(None);
+}
+
+#[cfg(test)]
+pub(crate) struct ProtectedRootTestScope {
+    previous: Option<Vec<PathBuf>>,
+}
+
+#[cfg(test)]
+pub(crate) fn protected_root_test_scope(protected_roots: &[PathBuf]) -> ProtectedRootTestScope {
+    let previous =
+        TEST_PROTECTED_ROOTS.with(|current| current.replace(Some(protected_roots.to_vec())));
+    ProtectedRootTestScope { previous }
+}
+
+#[cfg(test)]
+impl Drop for ProtectedRootTestScope {
+    fn drop(&mut self) {
+        TEST_PROTECTED_ROOTS.with(|current| {
+            let _ = current.replace(self.previous.take());
+        });
+    }
+}
+
+pub(crate) fn managed_path_overlaps_protected_root(path: &Path) -> bool {
+    #[cfg(test)]
+    if let Some(overlaps) = TEST_PROTECTED_ROOTS.with(|current| {
+        current.borrow().as_ref().map(|protected_roots| {
+            path_overlaps_protected_roots(path, protected_roots.iter().map(PathBuf::as_path))
+        })
+    }) {
+        return overlaps;
+    }
+
+    path_overlaps_protected_roots(
+        path,
+        [
+            Path::new("/var/lib/chariox"),
+            Path::new("/usr/lib/chariox"),
+            Path::new("/home/chariox/.chariox"),
+        ],
+    )
+}
+
+pub(crate) fn resolve_managed_path_for_creation(
+    path: &Path,
+    label: &str,
+) -> Result<PathBuf, DaemonError> {
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(empty_context_error(format!(
+            "{label} must be an absolute path without parent components"
+        )));
+    }
+
+    let mut missing_components = Vec::<OsString>::new();
+    let mut existing = path;
+    loop {
+        match fs::symlink_metadata(existing) {
+            Ok(metadata) => {
+                let is_final_target = existing == path;
+                if metadata.file_type().is_symlink() && is_final_target {
+                    return Err(empty_context_error(format!(
+                        "{label} must not end in a symlink"
+                    )));
+                }
+                let canonical_existing = fs::canonicalize(existing).map_err(|error| {
+                    empty_context_io_error("resolve managed path for creation", error)
+                })?;
+                if !canonical_existing.is_dir() {
+                    return Err(empty_context_error(format!(
+                        "{label} must resolve through directories"
+                    )));
+                }
+                let mut resolved = canonical_existing;
+                for component in missing_components.iter().rev() {
+                    resolved.push(component);
+                }
+                if managed_path_overlaps_protected_root(&resolved) {
+                    return Err(empty_context_error(format!(
+                        "{label} resolves inside a protected service root"
+                    )));
+                }
+                return Ok(resolved);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let component = existing.file_name().ok_or_else(|| {
+                    empty_context_error(format!("{label} has no resolvable parent"))
+                })?;
+                missing_components.push(component.to_os_string());
+                existing = existing.parent().ok_or_else(|| {
+                    empty_context_error(format!("{label} has no resolvable parent"))
+                })?;
+            }
+            Err(error) => {
+                return Err(empty_context_io_error(
+                    "inspect managed path for creation",
+                    error,
+                ));
+            }
+        }
+    }
 }
 
 pub(crate) fn managed_control_workspace_parent(config: &DaemonConfig) -> Option<PathBuf> {
@@ -188,11 +311,13 @@ pub(crate) fn ensure_empty_managed_context_workspace(
         .ok_or_else(|| empty_context_error("durable state path has no parent directory"))?;
     ensure_real_private_directory(state_root)?;
     if managed_control_workspace_parent(config).is_some() {
-        let user_root = managed_user_workspace_root();
+        let user_root = managed_user_workspace_root()?;
         let canonical_user_root =
-            ensure_existing_real_directory(user_root, "default user workspace root")?;
-        ensure_real_private_directory(&workspace)?;
-        let canonical_workspace = fs::canonicalize(&workspace)
+            ensure_existing_real_directory(&user_root, "managed repository root")?;
+        let resolved_workspace =
+            resolve_managed_path_for_creation(&workspace, "empty managed workspace")?;
+        ensure_real_private_directory(&resolved_workspace)?;
+        let canonical_workspace = fs::canonicalize(&resolved_workspace)
             .map_err(|error| empty_context_io_error("resolve empty managed workspace", error))?;
         if !canonical_workspace.starts_with(&canonical_user_root)
             || canonical_workspace.starts_with(
@@ -230,14 +355,15 @@ pub(crate) fn ensure_empty_managed_context_workspace(
 }
 
 fn ensure_existing_real_directory(path: &Path, label: &str) -> Result<PathBuf, DaemonError> {
-    let metadata = fs::symlink_metadata(path)
+    let resolved = resolve_managed_path_for_creation(path, label)?;
+    let metadata = fs::symlink_metadata(&resolved)
         .map_err(|error| empty_context_io_error("inspect managed user workspace root", error))?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Err(empty_context_error(format!(
             "{label} must be a real directory"
         )));
     }
-    fs::canonicalize(path)
+    fs::canonicalize(resolved)
         .map_err(|error| empty_context_io_error("resolve managed user workspace root", error))
 }
 
@@ -575,12 +701,31 @@ mod tests {
         config.publication_control_state_root = Some(root.join("control"));
         let workspace = empty_managed_context_workspace_path(&config, "context-empty")
             .expect("managed empty workspace path");
-        assert!(workspace.starts_with(Path::new(DEFAULT_USER_WORKSPACE_ROOT)));
+        assert!(workspace.starts_with(Path::new("/home/chariox")));
         assert!(!workspace.starts_with(&root));
         assert!(!workspace
             .to_string_lossy()
             .contains("MANAGED_PROVIDER_HOME"));
         fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn managed_empty_workspace_uses_the_bootstrap_repository_root() {
+        let _lock = crate::env_lock::lock();
+        let previous = std::env::var_os(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV);
+        std::env::set_var(
+            crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
+            "/srv/custom workspaces",
+        );
+        let workspace = managed_user_empty_context_workspace_path("context-empty")
+            .expect("managed empty workspace path");
+        assert!(workspace.starts_with("/srv/custom workspaces"));
+        match previous {
+            Some(value) => {
+                std::env::set_var(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV, value)
+            }
+            None => std::env::remove_var(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV),
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

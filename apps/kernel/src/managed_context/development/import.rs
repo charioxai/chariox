@@ -5,7 +5,6 @@ const DIRECTORY_RECEIPT_SCHEMA_VERSION: u32 = 3;
 const PUBLICATION_RECEIPT_FILE: &str = ".chariox-managed-import-receipt.json";
 const MATERIALIZATION_TRANSACTION_FILE: &str = ".chariox-materialization-transaction.json";
 const MATERIALIZATION_OWNERSHIP_FILE_PREFIX: &str = ".chariox-materialization-ownership-";
-const DEFAULT_USER_WORKSPACE_ROOT: &str = "/home/chariox";
 pub(crate) const MAX_PUBLICATION_RECEIPT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -464,7 +463,7 @@ fn import_development_context_with_options(
         control_destination_root.clone()
     };
     if materialization_root != control_destination_root {
-        validate_real_directory(&materialization_root, "default user workspace root")?;
+        validate_real_directory(&materialization_root, "managed repository root")?;
     }
     let transaction_root = if materialization_root == control_destination_root {
         canonical_parent.clone()
@@ -719,10 +718,12 @@ pub(super) fn managed_materialization_root_for_control(
     if control_parent != trusted_control_parent {
         return Ok(None);
     }
-    let root = PathBuf::from(DEFAULT_USER_WORKSPACE_ROOT);
-    validate_real_directory(&root, "default user workspace root")?;
-    let canonical = fs::canonicalize(&root)
-        .map_err(|error| context_io_error("resolve default user workspace root", error))?;
+    let root = crate::managed_bootstrap::managed_repository_root_from_env()?;
+    let canonical = crate::managed_context::empty::resolve_managed_path_for_creation(
+        &root,
+        "managed repository root",
+    )?;
+    validate_real_directory(&canonical, "managed repository root")?;
     if canonical == control_destination
         || control_destination.starts_with(&canonical)
         || canonical.starts_with(
@@ -732,7 +733,7 @@ pub(super) fn managed_materialization_root_for_control(
         )
     {
         return Err(context_error(
-            "default user workspace root must remain separate from managed context control state",
+            "managed repository root must remain separate from managed context control state",
         ));
     }
     Ok(Some(canonical))

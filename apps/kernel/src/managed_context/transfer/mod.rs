@@ -829,7 +829,7 @@ impl ManagedContextTransferStore {
                     {
                         if workspace_path.is_empty() {
                             *workspace_path = crate::managed_context::empty::
-                                managed_user_empty_context_workspace_path(context_id)
+                                managed_user_empty_context_workspace_path(context_id)?
                                 .to_string_lossy()
                                 .into_owned();
                         }
@@ -1063,7 +1063,7 @@ fn launch_target_from_receipt(
                 workspace_path:
                     crate::managed_context::empty::managed_user_empty_context_workspace_path(
                         &entry.plan.context_id,
-                    )
+                    )?
                     .to_string_lossy()
                     .into_owned(),
             }
@@ -1157,7 +1157,7 @@ fn recover_launch_target_from_publication(
             let workspace_path =
                 crate::managed_context::empty::managed_user_empty_context_workspace_path(
                     &recovery.plan.context_id,
-                )
+                )?
                 .to_string_lossy()
                 .into_owned();
             crate::local::ManagedContextDevelopmentLaunchTarget::Empty { workspace_path }

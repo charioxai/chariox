@@ -31,6 +31,26 @@ use state::{
 
 const MIN_PREPARE_RETRY_DELAY: Duration = Duration::from_secs(1);
 const MAX_PREPARE_RETRY_DELAY: Duration = Duration::from_secs(60);
+pub(crate) const MANAGED_REPOSITORY_ROOT_ENV: &str = "CHARIOX_MANAGED_REPOSITORY_ROOT";
+
+pub(crate) fn managed_repository_root_from_env() -> Result<std::path::PathBuf, DaemonError> {
+    let value = match std::env::var(MANAGED_REPOSITORY_ROOT_ENV) {
+        Ok(value) => value,
+        Err(std::env::VarError::NotPresent) => state::DEFAULT_MANAGED_REPOSITORY_ROOT.to_string(),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(bootstrap_error(
+                "managed repository root environment is not Unicode",
+            ))
+        }
+    };
+    let normalized = state::normalize_managed_repository_root(&value)?;
+    if normalized != value {
+        return Err(bootstrap_error(
+            "managed repository root environment must be normalized",
+        ));
+    }
+    Ok(std::path::PathBuf::from(normalized))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ConfirmedManagedKernelRegistration {
@@ -166,13 +186,17 @@ fn prepare_managed_kernel(
         load_or_create_managed_runtime_identity(&config.kernel_host, config.kernel_port)?;
     let confirmation = match (receipt, envelope) {
         (Some(receipt), envelope) => {
-            if envelope.as_ref().is_some_and(|value| {
-                value.environment_id != receipt.environment_id
+            if let Some(value) = envelope.as_ref() {
+                let envelope_repository_root = value.managed_repository_root()?;
+                let receipt_repository_root = receipt.managed_repository_root()?;
+                if value.environment_id != receipt.environment_id
                     || value.runtime_release_digest != receipt.runtime_release_digest
-            }) {
-                return Err(bootstrap_error(
-                    "managed bootstrap envelope conflicts with its receipt",
-                ));
+                    || envelope_repository_root != receipt_repository_root
+                {
+                    return Err(bootstrap_error(
+                        "managed bootstrap envelope conflicts with its receipt",
+                    ));
+                }
             }
             resume_registration(config, envelope.as_ref(), receipt, &identity)?
         }
@@ -217,16 +241,18 @@ fn begin_registration(
         },
     )?;
     validate_exchange_response(envelope, identity, &exchanged)?;
+    let managed_repository_root = envelope.managed_repository_root()?;
     let profile = persisted_profile(exchanged.cloud_relay);
     persist_managed_cloud_relay_profile(profile.clone())?;
     let receipt = BootstrapReceipt {
-        schema_version: 1,
+        schema_version: envelope.schema_version,
         status: BootstrapReceiptStatus::Exchanged,
         environment_id: envelope.environment_id.clone(),
         machine_id: identity.machine_id.clone(),
         kernel_id: identity.kernel_id.clone(),
         relay_public_key: identity.relay_public_key.clone(),
         runtime_release_digest: envelope.runtime_release_digest.clone(),
+        managed_repository_root: (envelope.schema_version == 2).then_some(managed_repository_root),
         confirmed_at: None,
         context_plan: Some(exchanged.context_plan),
     };
@@ -311,6 +337,15 @@ fn confirm_registration(
             "Cloud did not confirm the managed kernel bootstrap",
         ));
     }
+    let confirmed_repository_root = state::managed_repository_root_for_schema(
+        receipt.schema_version,
+        confirmed.managed_repository_root.as_deref(),
+    )?;
+    if confirmed_repository_root != receipt.managed_repository_root()? {
+        return Err(bootstrap_error(
+            "Cloud confirmed a different managed repository root",
+        ));
+    }
     receipt.status = BootstrapReceiptStatus::Confirmed;
     receipt.confirmed_at = Some(now.to_rfc3339());
     receipt.persist(&config.receipt_path)?;
@@ -322,6 +357,10 @@ fn validate_exchange_response(
     identity: &ManagedRuntimeIdentity,
     response: &cloud::ExchangeResponse,
 ) -> Result<(), DaemonError> {
+    let response_repository_root = state::managed_repository_root_for_schema(
+        envelope.schema_version,
+        response.managed_repository_root.as_deref(),
+    )?;
     if response.environment_id != envelope.environment_id
         || response.kernel_id != identity.kernel_id
         || response.runtime_release_digest != envelope.runtime_release_digest
@@ -340,6 +379,7 @@ fn validate_exchange_response(
         || !valid_managed_relay_url(&response.cloud_relay.relay_url)
         || !valid_secret(&response.cloud_relay.machine_credential, "mcred_")
         || response.context_plan.validate().is_err()
+        || response_repository_root != envelope.managed_repository_root()?
         || response
             .context_plan
             .source_binding()
