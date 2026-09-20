@@ -6,6 +6,7 @@
   "scripts": {
     "build": "pnpm --workspace-root run build:kernel-client && node scripts/build.mjs",
     "test:managed-ordinary-parity-matrix": "node --test scripts/managed-ordinary-parity-matrix.test.mjs",
+    "managed-ordinary-parity:collect": "node scripts/managed-ordinary-parity-collector.mjs",
     "graph:drills": "pnpm run build && node scripts/workflow-graph-drills.mjs",
     "mcp-skill:drill": "node scripts/live-mcp-skill-drill.mjs --providers opencode,codex",
     "runtime-mcp-reattach:drill": "node scripts/live-runtime-mcp-reattach-drill.mjs --providers opencode,codex",
