@@ -5,8 +5,12 @@ use std::sync::{Arc, Barrier};
 
 use base64::Engine;
 
+use crate::app::{DaemonApp, HistoryEventContextResolver, KernelSessionService};
 use crate::config::DaemonConfig;
-use crate::session::{CreateSessionRequest, PromptAttachment, SessionService};
+use crate::session::{
+    CreateSessionRequest, PromptAttachment, PromptQueueItem, PromptStatus, SessionService,
+    WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowRun, WorkflowRunStatus,
+};
 use crate::terminal::TerminalOutputKind;
 
 use super::{
@@ -496,6 +500,131 @@ fn converts_session_history_entry_to_canonical_history_event() {
         round_tripped.prompt_origin,
         Some(crate::session::PromptOrigin::External)
     );
+}
+
+#[test]
+fn active_workflow_prompt_context_survives_history_conversion_and_query() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            "workspace-history-workflow-context",
+            "worktree-history-workflow-context",
+        ))
+        .expect("session should create");
+    let kernel_session_id = session.id().to_string();
+    let workflow_id = "workflow-history-context";
+    let workflow_run_id = "workflow-run-history-context";
+    let workflow_node_run_id = "workflow-node-history-context";
+    let node_run = WorkflowNodeRun::new(
+        workflow_node_run_id,
+        "review-node",
+        agent.id(),
+        0,
+        WorkflowNodeRunStatus::Running,
+    );
+    let mut workflow_run = WorkflowRun::new(
+        workflow_run_id,
+        workflow_id,
+        "review-endpoint",
+        "review-node",
+        Some("review the change".to_string()),
+        None,
+        vec![node_run],
+        Vec::new(),
+    );
+    workflow_run.set_active_node_run(workflow_node_run_id);
+    workflow_run.set_status(WorkflowRunStatus::Running);
+
+    let mut session_with_run = app
+        .sessions()
+        .get_session(&kernel_session_id)
+        .expect("session should still exist");
+    session_with_run.create_workflow_run(workflow_run);
+    app.sessions.restore_session(session_with_run);
+    app.prompt_owner_activate_prompt(
+        &kernel_session_id,
+        PromptQueueItem::new(
+            "prompt-history-workflow-context",
+            "attachment-history-workflow-context",
+            agent.id(),
+            "review prompt",
+            PromptStatus::Queued,
+        )
+        .with_workflow_context(workflow_run_id, workflow_node_run_id),
+    )
+    .expect("workflow prompt should activate");
+
+    let entry = SessionHistoryEntry::provider_output(
+        &kernel_session_id,
+        "provider-run-history-context",
+        Some(agent.id()),
+        TerminalOutputKind::ProviderOutput,
+        Some("history-workflow-context".to_string()),
+        "review output",
+    );
+    let context = HistoryEventContextResolver::new(
+        app.providers().clone(),
+        app.session_state_store(),
+        app.prompt_state_owner(),
+        app.active_turns.clone(),
+    )
+    .resolve(&entry);
+
+    assert_eq!(
+        context.session_id.as_deref(),
+        Some(kernel_session_id.as_str())
+    );
+    assert_eq!(context.workflow_id.as_deref(), Some(workflow_id));
+    assert_eq!(context.workflow_run_id.as_deref(), Some(workflow_run_id));
+    assert_eq!(
+        context.workflow_node_id.as_deref(),
+        Some(workflow_node_run_id)
+    );
+    assert_ne!(context.session_id.as_deref(), Some(workflow_run_id));
+
+    let event = HistoryEvent::transcript(1, &entry, context);
+    assert_eq!(
+        event.session_id.as_deref(),
+        Some(kernel_session_id.as_str())
+    );
+    assert_eq!(event.workflow_id.as_deref(), Some(workflow_id));
+    assert_eq!(event.workflow_run_id.as_deref(), Some(workflow_run_id));
+    assert_eq!(
+        event.workflow_node_id.as_deref(),
+        Some(workflow_node_run_id)
+    );
+
+    let path = std::env::temp_dir().join(format!(
+        "chariox-operational-history-workflow-context-{}-{}.db",
+        std::process::id(),
+        super::unix_epoch_ms()
+    ));
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history should open");
+    store.append(&event).expect("workflow event should append");
+    let queried = store
+        .query_events(HistoryEventQuery {
+            workflow_id: Some(workflow_id.to_string()),
+            limit: Some(10),
+            ..HistoryEventQuery::default()
+        })
+        .expect("workflow query should load matching events");
+    assert_eq!(queried.len(), 1);
+    assert_eq!(queried[0].event_id, event.event_id);
+    assert_eq!(
+        queried[0].session_id.as_deref(),
+        Some(kernel_session_id.as_str())
+    );
+    assert_eq!(queried[0].workflow_run_id.as_deref(), Some(workflow_run_id));
+    assert_eq!(
+        queried[0].workflow_node_id.as_deref(),
+        Some(workflow_node_run_id)
+    );
+
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
 }
 
 #[test]
