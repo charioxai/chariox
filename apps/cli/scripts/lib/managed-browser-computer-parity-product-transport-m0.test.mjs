@@ -49,10 +49,7 @@ test("factory uses the released kernel telemetry request without importing dist"
         }
       }
       assert.deepEqual(request, {
-        GetKernelResourceTelemetry: {
-          kernel_ref: "kernel-1",
-          machine_ref: "machine-1",
-        },
+        GetKernelResourceTelemetry: null,
       })
       return { KernelResourceTelemetry: { snapshot: managedTelemetry() } }
     }
@@ -73,13 +70,8 @@ test("factory uses the released kernel telemetry request without importing dist"
           getRoomEnvironmentStateRequest(sessionId) {
             return { GetRoomEnvironmentState: { session_id: sessionId } }
           },
-          getKernelResourceTelemetryRequest({ kernelRef, machineRef }) {
-            return {
-              GetKernelResourceTelemetry: {
-                kernel_ref: kernelRef,
-                machine_ref: machineRef,
-              },
-            }
+          getKernelResourceTelemetryRequest() {
+            return { GetKernelResourceTelemetry: null }
           },
         },
         displayApi: { openSelkiesDisplayStream() {} },
