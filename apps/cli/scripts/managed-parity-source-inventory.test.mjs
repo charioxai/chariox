@@ -25,22 +25,58 @@ function fixtureFiles({ hiddenManagedFlag = false, directBwrap = false, inherite
   const files = {
     "apps/kernel/src/managed_bootstrap/release.rs": release,
     "apps/kernel/src/runtime/managed_environment_control/cloud_contract.rs": shutdown ? autoStop : "struct AutoStopPolicy {\n    policy_name: String,\n}\n",
+    "apps/kernel/src/selector-rust.rs": [
+      "// CHARIOX_MANAGED_COMMENT_ONLY_RUST",
+      "let selector = std::env::var_os(\"CHARIOX_MANAGED_RUST_SELECTOR\");",
+    ].join("\n") + "\n",
+    "apps/kernel/src/ordinary-env.rs": "let endpoint = std::env::var(\"CHARIOX_PUBLICATION_CLOUD_API_URL\");\n",
+    "apps/kernel/src/comments.rs": [
+      "// CHARIOX_MANAGED_LINE_COMMENT_ONLY",
+      "/* CHARIOX_PUBLICATION_CONTROL_STATE_DIR_BLOCK_COMMENT_ONLY */",
+    ].join("\n") + "\n",
     "apps/kernel/src/provider/managed_isolation.rs": [
       "fn managed_mode_fixture() {",
-      hiddenManagedFlag ? "  // CHARIOX_MANAGED_HIDDEN_FLAG" : "  // ordinary reviewed selector fixture",
+      hiddenManagedFlag
+        ? "  let hidden = std::env::var(\"CHARIOX_MANAGED_HIDDEN_FLAG\");"
+        : "  let ordinary = \"ordinary reviewed selector fixture\";",
       directBwrap ? "  let command = \"/usr/bin/bwrap\";" : "  let command = \"ordinary-provider\";",
       "  if (is_managed) { run_managed(); }",
       "}",
     ].join("\n") + "\n",
+    "apps/cli/src/selector-typescript.ts": [
+      "// CHARIOX_DISPOSABLE_WORKER_RECEIPT_COMMENT_ONLY",
+      "const selector = process.env.CHARIOX_DISPOSABLE_WORKER_RECEIPT;",
+    ].join("\n") + "\n",
+    "apps/ios/CharioxPackage/Sources/Selector.swift": [
+      "// CHARIOX_MANAGED_SWIFT_COMMENT_ONLY",
+      "let selector = ProcessInfo.processInfo.environment[\"CHARIOX_PUBLICATION_CONTROL_STATE_DIR\"]",
+    ].join("\n") + "\n",
+    "scripts/selector.sh": [
+      "# CHARIOX_MANAGED_SHELL_COMMENT_ONLY",
+      "receipt=\"${CHARIOX_DISPOSABLE_WORKER_RECEIPT:?}\"",
+    ].join("\n") + "\n",
     "deploy/managed-kernel/provider.service": [
       inheritedRestriction ? "RestrictAddressFamilies=AF_UNIX" : "NoNewPrivileges=true",
+      "Environment=CHARIOX_PUBLICATION_CONTROL_STATE_DIR=/var/lib/chariox/publication",
       "ProtectSystem=strict",
     ].join("\n") + "\n",
-    "apps/kernel/src/managed_context/protected.rs": protectedParent ? "fn protected_parent_filter() { /* protected path */ }\n" : "fn ordinary_path_filter() {}\n",
-    "apps/kernel/src/error_map.rs": errorMapping ? "// managed failure token=secret-value\n" : "// ordinary error\n",
+    "docker/selector-image/Dockerfile": [
+      "# CHARIOX_MANAGED_DOCKER_COMMENT_ONLY",
+      "ENV CHARIOX_MANAGED_DOCKER_SELECTOR=1",
+    ].join("\n") + "\n",
+    "apps/kernel/slice-linux-docker/selector.apparmor": [
+      "# CHARIOX_MANAGED_APPARMOR_COMMENT_ONLY",
+      "profile chariox-selector {",
+      "  /usr/bin/env CHARIOX_MANAGED_APPARMOR_SELECTOR rix,",
+      "}",
+    ].join("\n") + "\n",
+    "apps/kernel/src/managed_context/protected.rs": protectedParent ? "fn protected_parent_filter() { let protected_path = true; }\n" : "fn ordinary_path_filter() {}\n",
+    "apps/kernel/src/generated/false.rs": "const GENERATED = CHARIOX_MANAGED_GENERATED_FALSE_POSITIVE;\n",
+    "apps/kernel/src/tests/false.rs": "const TEST_ONLY = CHARIOX_PUBLICATION_CONTROL_STATE_DIR_TEST_FALSE_POSITIVE;\n",
+    "apps/kernel/src/error_map.rs": errorMapping ? "let managed = failure; const token = \"secret-value\";\n" : "fn ordinary_error() {}\n",
     "apps/kernel/src/path.rs": "const ROOT = CHARIOX_MANAGED_REPOSITORY_ROOT; // /home/chariox and /tmp\n",
-    "apps/kernel/src/cleanup.rs": "// managed cleanup revoke expires the private receipt\n",
-    "apps/cli/src/client.ts": "// managed client projection is reviewed separately\n",
+    "apps/kernel/src/cleanup.rs": "let managed = cleanup;\n",
+    "apps/cli/src/client.ts": "const managed = projection;\n",
     "apps/kernel/slice-linux-docker/docker/Dockerfile": "RUN bwrap --unshare-user --die-with-parent\n",
   };
   if (unknownProjection) files["apps/client/unknown.ts"] = "const value = { managed: projection };\n";
@@ -52,12 +88,15 @@ function makeFixture(options = {}) {
   const files = fixtureFiles(options);
   const entries = [];
   let index = 1;
-  for (const [file, contents] of Object.entries(files)) {
+  const addFile = (file, contents, mode = "100644") => {
     const absolute = join(root, file);
     mkdirSync(dirname(absolute), { recursive: true });
     writeFileSync(absolute, contents);
-    entries.push(`100644 blob ${String(index).padStart(40, "0")}\t${file}`);
+    entries.push(`${mode} blob ${String(index).padStart(40, "0")}\t${file}`);
     index += 1;
+  };
+  for (const [file, contents] of Object.entries(files)) {
+    addFile(file, contents);
   }
   const runGit = (args) => {
     if (args[0] === "rev-parse" && args[1] === "HEAD") return `${COMMIT}\n`;
@@ -74,7 +113,7 @@ function makeFixture(options = {}) {
     line: predicate.id.startsWith("MP-07") ? 39 : predicate.id.endsWith("idle-delay") ? 111 : 110,
     symbol: predicate.id.startsWith("MP-07") ? "verify_release" : "AutoStopPolicy",
   }));
-  return { root, files, runGit, predicates };
+  return { root, files, addFile, runGit, predicates };
 }
 
 test("MP row meanings stay aligned with the stable plan ledger", () => {
@@ -125,6 +164,45 @@ test("current reviewed fixture emits source identity, all MP rows, and exact exe
     assert.equal(report.status, "fail", "unapproved managed selectors must fail closed");
     assert.ok(report.entries.some((entry) => entry.category === "managed_env_selector"));
     assert.ok(report.entries.some((entry) => entry.category === "cleanup_selector"));
+  });
+});
+
+test("all supported production formats and managed selector families are inventoried", () => {
+  withFixture({}, (fixture) => {
+    const report = collect(fixture);
+    const expectedFormats = new Map([
+      ["apps/kernel/src/selector-rust.rs", "rust"],
+      ["apps/cli/src/selector-typescript.ts", "javascript"],
+      ["apps/ios/CharioxPackage/Sources/Selector.swift", "swift"],
+      ["scripts/selector.sh", "shell"],
+      ["deploy/managed-kernel/provider.service", "unit"],
+      ["docker/selector-image/Dockerfile", "container"],
+      ["apps/kernel/slice-linux-docker/selector.apparmor", "policy"],
+    ]);
+    for (const [path, format] of expectedFormats) {
+      assert.ok(report.entries.some((entry) => entry.path === path && entry.format === format), `${path} should be ${format}`);
+    }
+    assert.ok(report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_RUST_SELECTOR"));
+    assert.ok(report.entries.some((entry) => entry.selector === "CHARIOX_PUBLICATION_CONTROL_STATE_DIR"));
+    assert.ok(report.entries.some((entry) => entry.selector === "CHARIOX_DISPOSABLE_WORKER_RECEIPT"));
+    assert.equal(report.entries.some((entry) => entry.selector === "CHARIOX_PUBLICATION_CLOUD_API_URL"), false);
+    assert.equal(report.entries.some((entry) => entry.selector.includes("COMMENT_ONLY")), false);
+    assert.equal(report.entries.some((entry) => entry.path.includes("/generated/")), false);
+    assert.equal(report.entries.some((entry) => entry.path.includes("/tests/")), false);
+    assert.ok(report.source.formats.rust >= 1);
+    assert.ok(report.source.formats.javascript >= 1);
+    assert.ok(report.source.formats.swift >= 1);
+    assert.ok(report.source.formats.shell >= 1);
+    assert.ok(report.source.formats.unit >= 1);
+    assert.ok(report.source.formats.container >= 1);
+    assert.ok(report.source.formats.policy >= 1);
+  });
+});
+
+test("an eligible production file with an unknown format fails closed", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("apps/kernel/src/unsupported.selector", "CHARIOX_MANAGED_UNCLASSIFIED_SELECTOR\n");
+    assert.throws(() => collect(fixture), /unclassified production file: apps\/kernel\/src\/unsupported\.selector/);
   });
 });
 

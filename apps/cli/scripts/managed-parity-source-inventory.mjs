@@ -83,19 +83,38 @@ export const MP_ROWS = Object.freeze([
 ]);
 
 const SCANNABLE_EXTENSIONS = new Set([
+  ".apparmor",
+  ".awk",
+  ".bash",
   ".cjs",
   ".conf",
+  ".container",
+  ".dockerfile",
+  ".env",
+  ".fish",
   ".js",
+  ".jsx",
   ".json",
   ".mjs",
+  ".mount",
+  ".network",
+  ".path",
+  ".policy",
+  ".profile",
   ".rs",
+  ".seccomp",
   ".service",
   ".sh",
+  ".socket",
+  ".swift",
+  ".target",
+  ".timer",
   ".toml",
   ".ts",
   ".tsx",
   ".yaml",
   ".yml",
+  ".zsh",
 ]);
 
 const SCANNABLE_EXTENSIONLESS_BASENAMES = new Set([
@@ -109,8 +128,10 @@ const IGNORED_DIRECTORY_NAMES = new Set([
   ".next",
   ".turbo",
   "build",
+  "codegen",
   "coverage",
   "dist",
+  "generated",
   "node_modules",
   "target",
 ]);
@@ -119,16 +140,70 @@ const IGNORED_PATH_PARTS = [
   /(?:^|\/)docs(?:\/|$)/i,
   /(?:^|\/)(?:fixtures?|snapshots?)(?:\/|$)/i,
   /(?:^|\/)(?:test|tests|__tests__)(?:\/|$)/i,
+  /(?:^|\/)(?:autogen|codegen|generated|__generated__)(?:\/|$)/i,
   /(?:^|\/)apps\/cli\/scripts(?:\/|$)/i,
   /(?:^|\/)[^/]*test[^/]*\.[^/]+$/i,
+  /(?:^|\/)[^/]*(?:\.generated|\.autogen|\.gen)\.[^/]+$/i,
 ];
+
+const PRODUCTION_PATH_PREFIXES = [
+  "adapters/",
+  "apps/cli/",
+  "apps/ios/",
+  "apps/kernel/",
+  "connector-adapters/",
+  "deploy/",
+  "docker/",
+  "packages/",
+  "scripts/",
+];
+
+// These are tracked repository assets, documentation, native build metadata,
+// or foreign-language implementation files. They are intentionally outside
+// this MP source inventory; a new production suffix is not silently ignored.
+const NON_INVENTORIED_PRODUCTION_EXTENSIONS = new Set([
+  ".c",
+  ".chariox",
+  ".charioxignore",
+  ".css",
+  ".dockerignore",
+  ".entitlements",
+  ".example",
+  ".gitignore",
+  ".gitkeep",
+  ".h",
+  ".html",
+  ".license",
+  ".lock",
+  ".md",
+  ".mdc",
+  ".pbxproj",
+  ".prisma",
+  ".py",
+  ".rst",
+  ".svg",
+  ".swiftformat",
+  ".txt",
+  ".xcodeproj",
+  ".xcconfig",
+  ".xcscheme",
+  ".xctestplan",
+  ".xcworkspacedata",
+]);
+
+const NON_INVENTORIED_PRODUCTION_BASENAMES = new Set([
+  "tint2rc",
+]);
+
+const CONTAINER_FILE_RE = /(?:^|\/)(?:Dockerfile|Containerfile)(?:\.[^/]*)?$/i;
+const COMPOSE_FILE_RE = /(?:^|\/)(?:docker-compose|compose)(?:\.[^/]*)?$/i;
 
 const CATEGORY_SPECS = Object.freeze([
   {
     category: "managed_env_selector",
     mpIds: ["MP-01", "MP-08", "MP-11"],
     affectedBehavior: "managed environment selector or injected managed runtime marker",
-    pattern: /\bCHARIOX_MANAGED[A-Z0-9_]*/g,
+    pattern: /\b(?:CHARIOX_MANAGED[A-Z0-9_]*|CHARIOX_DISPOSABLE_WORKER_[A-Z0-9_]*|CHARIOX_PUBLICATION_CONTROL_[A-Z0-9_]*|CHARIOX_WORKER_ISOLATION_[A-Z0-9_]*)\b/g,
   },
   {
     category: "bubblewrap",
@@ -315,14 +390,99 @@ function isIgnoredPath(path) {
   return IGNORED_PATH_PARTS.some((pattern) => pattern.test(path));
 }
 
-function isScannable(path) {
-  if (isIgnoredPath(path)) return false;
+function isProductionPath(path) {
+  return PRODUCTION_PATH_PREFIXES.some((prefix) => path.startsWith(prefix));
+}
+
+function classifyProductionPath(path) {
+  if (isIgnoredPath(path)) return null;
   const parts = path.split("/");
-  if (parts.some((part) => IGNORED_DIRECTORY_NAMES.has(part))) return false;
+  if (parts.some((part) => IGNORED_DIRECTORY_NAMES.has(part))) return null;
+  const fileName = basename(path);
+  const lowerPath = path.toLowerCase();
   const extension = extname(path).toLowerCase();
-  return SCANNABLE_EXTENSIONS.has(extension)
-    || SCANNABLE_EXTENSIONLESS_BASENAMES.has(basename(path))
-    || path.endsWith(".service.in");
+  if (CONTAINER_FILE_RE.test(path) || COMPOSE_FILE_RE.test(path)) return "container";
+  if (SCANNABLE_EXTENSIONLESS_BASENAMES.has(fileName)) return fileName === "Makefile" ? "shell" : "container";
+  if (fileName === "chariox-open-url") return "shell";
+  if (fileName === "tint2rc") return "config";
+  if (path.endsWith(".service.in")) return "unit";
+  if (!SCANNABLE_EXTENSIONS.has(extension)) {
+    if (!isProductionPath(path)) return null;
+    if (NON_INVENTORIED_PRODUCTION_BASENAMES.has(fileName)
+      || NON_INVENTORIED_PRODUCTION_EXTENSIONS.has(extension)) return null;
+    throw new Error(`unclassified production file: ${path}`);
+  }
+  if ([".rs"].includes(extension)) return "rust";
+  if ([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"].includes(extension)) return "javascript";
+  if (extension === ".swift") return "swift";
+  if ([".sh", ".bash", ".zsh", ".fish", ".awk"].includes(extension)) return "shell";
+  if (extension === ".dockerfile") return "container";
+  if ([".service", ".socket", ".mount", ".network", ".path", ".timer", ".target", ".container"].includes(extension)) return "unit";
+  if ([".apparmor", ".policy", ".profile", ".seccomp"].includes(extension)
+    || lowerPath.includes("apparmor")) return "policy";
+  return "config";
+}
+
+function stripComments(text, format) {
+  const slashComments = ["rust", "javascript", "swift"].includes(format);
+  const hashComments = ["shell", "unit", "container", "policy", "config"].includes(format);
+  if (!slashComments && !hashComments) return text;
+  const output = text.split("");
+  let blockComment = false;
+  let quote = null;
+  let escaped = false;
+  for (let index = 0; index < output.length; index += 1) {
+    const current = text[index];
+    const next = text[index + 1];
+    if (blockComment) {
+      if (current === "*" && next === "/") {
+        output[index] = " ";
+        output[index + 1] = " ";
+        index += 1;
+        blockComment = false;
+      } else if (current !== "\n" && current !== "\r") {
+        output[index] = " ";
+      }
+      continue;
+    }
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (current === "\\") {
+        escaped = true;
+      } else if (current === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (current === "\"" || current === "'" || (format === "javascript" && current === "`")) {
+      quote = current;
+      continue;
+    }
+    if (slashComments && current === "/" && next === "*") {
+      output[index] = " ";
+      output[index + 1] = " ";
+      index += 1;
+      blockComment = true;
+      continue;
+    }
+    if (slashComments && current === "/" && next === "/") {
+      while (index < output.length && text[index] !== "\n" && text[index] !== "\r") {
+        output[index] = " ";
+        index += 1;
+      }
+      index -= 1;
+      continue;
+    }
+    if (hashComments && current === "#") {
+      while (index < output.length && text[index] !== "\n" && text[index] !== "\r") {
+        output[index] = " ";
+        index += 1;
+      }
+      index -= 1;
+    }
+  }
+  return output.join("");
 }
 
 function readText(fsApi, absolutePath) {
@@ -403,12 +563,17 @@ function buildRowCoverage(entries, sourceIdentity) {
 
 function collectTrackedFiles({ sourceRoot, sourceRef, fsApi, runGit }) {
   const treeEntries = parseLsTree(runGit(["ls-tree", "-r", "--full-tree", "-z", sourceRef], sourceRoot));
-  return treeEntries.filter((entry) => isScannable(entry.path)).map((entry) => ({
-    ...entry,
-    text: sourceRef === "HEAD"
-      ? readText(fsApi, join(sourceRoot, entry.path))
-      : runGit(["show", `${sourceRef}:${entry.path}`], sourceRoot),
-  })).filter((entry) => entry.text !== null);
+  return treeEntries.map((entry) => {
+    const format = classifyProductionPath(entry.path);
+    if (!format) return null;
+    return {
+      ...entry,
+      format,
+      text: sourceRef === "HEAD"
+        ? readText(fsApi, join(sourceRoot, entry.path))
+        : runGit(["show", `${sourceRef}:${entry.path}`], sourceRoot),
+    };
+  }).filter((entry) => entry !== null && entry.text !== null);
 }
 
 export function reviewedPredicatesFor({ sourceCommit = REVIEWED_SOURCE_COMMIT, sourceTree = REVIEWED_SOURCE_TREE } = {}) {
@@ -446,14 +611,17 @@ export function collectSourceInventory({
   const files = collectTrackedFiles({ sourceRoot, sourceRef, fsApi, runGit });
   const entries = [];
   for (const file of files) {
-    const lines = file.text.split(/\r?\n/);
+    const rawLines = file.text.split(/\r?\n/);
+    const lines = stripComments(file.text, file.format).split(/\r?\n/);
     for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
-      const sourceLine = lines[lineIndex].trim();
-      if (!sourceLine) continue;
+      const sourceLine = rawLines[lineIndex].trim();
+      const scanLine = lines[lineIndex];
+      if (!scanLine.trim()) continue;
       for (const spec of CATEGORY_SPECS) {
-        for (const match of lineMatches(spec, lines[lineIndex])) {
+        for (const match of lineMatches(spec, scanLine)) {
           const finding = {
             category: spec.category,
+            format: file.format,
             path: file.path,
             blob: file.blob,
             line: lineIndex + 1,
@@ -487,6 +655,10 @@ export function collectSourceInventory({
   const observedCategories = [...new Set(entries.map((entry) => entry.category))].sort();
   const missingCategories = REQUIRED_CATEGORIES.filter((category) => !observedCategories.includes(category));
   const rowCoverage = buildRowCoverage(entries, source);
+  const formats = Object.fromEntries([...new Set(files.map((file) => file.format))].sort().map((format) => [
+    format,
+    files.filter((file) => file.format === format).length,
+  ]));
   const missingRows = rowCoverage.filter((row) => row.status === "missing").map((row) => row.id);
   const removalRequired = entries.filter((entry) => entry.disposition === "removal_required").length;
   const unreviewed = entries.filter((entry) => entry.disposition === "unreviewed").length;
@@ -496,6 +668,7 @@ export function collectSourceInventory({
       commit: source.commit,
       tree: source.tree,
       trackedFileCount: files.length,
+      formats,
     },
     rows: rowCoverage,
     requiredCategories: [...REQUIRED_CATEGORIES],
