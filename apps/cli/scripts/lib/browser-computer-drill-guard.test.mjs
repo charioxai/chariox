@@ -17,6 +17,7 @@ import {
   evaluateBrowserComputerResourceCaps,
   normalizeBrowserComputerCaps,
   parseBrowserComputerByteBudget,
+  parseBrowserComputerDockerMutationArgv,
   redactBrowserComputerEvidence,
   runBrowserComputerFaultGuard,
   serializeBrowserComputerEvidence,
@@ -67,6 +68,7 @@ test("resource collection is deterministic and uses injected Docker/macOS probes
         }
         if (args[0] === "ps") return { code: 0, stdout: "chariox-slice-existing\nunrelated\n", stderr: "" }
         if (args[0] === "volume") return { code: 0, stdout: "chariox-slice-existing-home\n", stderr: "" }
+        if (args[0] === "image") return { code: 0, stdout: "chariox/browser:fixture\n<none>:<none>\n", stderr: "" }
         throw new Error(`unexpected command: ${command} ${args.join(" ")}`)
       },
     })
@@ -79,11 +81,21 @@ test("resource collection is deterministic and uses injected Docker/macOS probes
     assert.deepEqual(result.logs, { bytes: 7 })
     assert.deepEqual(result.docker.containers, ["chariox-slice-existing", "unrelated"])
     assert.deepEqual(result.docker.volumes, ["chariox-slice-existing-home"])
+    assert.deepEqual(result.docker.images, ["chariox/browser:fixture"])
     assert.deepEqual(commands.map((command) => command.slice(0, 2)), [
       ["docker", "ps"],
       ["docker", "volume"],
+      ["docker", "image"],
       ["vm_stat"],
     ])
+
+    assert.equal(evaluateBrowserComputerDockerPreconditions({
+      action: "save",
+      before: result,
+      imageRef: "chariox/browser:fixture",
+      savePath: "/tmp/browser-state.tar",
+      command: ["docker", "save", "chariox/browser:fixture", "-o", "/tmp/browser-state.tar"],
+    }).ok, true)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
@@ -250,6 +262,24 @@ test("cleanup passes with exact owned action accounting and restored inventory",
   assert.equal(result.diskAvailableDeltaBytes, -2)
 })
 
+test("cleanup rejects disappearance of pre-existing unowned resources", async () => {
+  const result = await evaluateBrowserComputerCleanup({
+    before: snapshot({
+      containers: ["chariox-slice-unrelated"],
+      volumes: ["chariox-slice-unrelated-home"],
+    }),
+    after: snapshot(),
+  })
+
+  assert.equal(result.ok, false)
+  assert.match(result.violations.join("\n"), /pre-existing unowned container disappeared: chariox-slice-unrelated/)
+  assert.match(result.violations.join("\n"), /pre-existing unowned volume disappeared: chariox-slice-unrelated-home/)
+  assert.deepEqual(result.cleanupAccounting.removedUnowned, {
+    containers: ["chariox-slice-unrelated"],
+    volumes: ["chariox-slice-unrelated-home"],
+  })
+})
+
 test("Docker save/remove/restore preconditions fail closed and reject broad prune", () => {
   const inventory = {
     memory: { totalBytes: 100, availableBytes: 80 },
@@ -292,6 +322,29 @@ test("Docker save/remove/restore preconditions fail closed and reject broad prun
   })
   assert.equal(missingRestoreReceipt.ok, false)
   assert.match(missingRestoreReceipt.violations.join("\n"), /successful exact remove receipt/)
+  const parsedExtraRemove = parseBrowserComputerDockerMutationArgv(
+    ["docker", "rm", "chariox-slice-owned", "unrelated"],
+    "remove",
+  )
+  assert.deepEqual(parsedExtraRemove.affected.containers, ["chariox-slice-owned", "unrelated"])
+  const extraRemove = evaluateBrowserComputerDockerPreconditions({
+    action: "remove",
+    before: inventory,
+    ownedContainers: ["chariox-slice-owned"],
+    targetContainers: ["chariox-slice-owned"],
+    saved: true,
+    command: ["docker", "rm", "chariox-slice-owned", "unrelated"],
+  })
+  assert.equal(extraRemove.ok, false)
+  assert.match(extraRemove.violations.join("\n"), /affected resources do not equal declared targets/)
+  assert.equal(evaluateBrowserComputerDockerPreconditions({
+    action: "remove",
+    before: inventory,
+    ownedContainers: ["chariox-slice-owned"],
+    targetContainers: ["chariox-slice-owned"],
+    saved: true,
+    command: ["docker", "rm", "chariox-slice-owned"],
+  }).ok, true)
   assert.throws(() => assertBrowserComputerDockerPreconditions({
     action: "remove",
     before: inventory,
@@ -344,6 +397,41 @@ test("fault guard returns a deterministic pass with after-cleanup evidence", asy
   assert.equal(result.failure, null)
   assert.equal(result.checkpoints.at(-1).name, "after-cleanup")
   assert.equal(result.checkpoints.every((entry) => entry.capturedAt === "2026-09-20T00:00:00.000Z"), true)
+  assert.deepEqual(result.faultCheckpoint, { requested: null, reached: null, exercised: null })
+})
+
+test("fault guard fails when a requested checkpoint is missing or repeated out of order", async () => {
+  const missing = await runBrowserComputerFaultGuard({
+    faultAt: "during-browser",
+    operation: async ({ checkpoint }) => {
+      await checkpoint("before-browser-start")
+    },
+    cleanup: async () => ({ clean: true }),
+  })
+  assert.equal(missing.status, "failed")
+  assert.deepEqual(missing.faultCheckpoint, { requested: "during-browser", reached: 0, exercised: false })
+  assert.match(missing.failure.message, /not reached exactly once/)
+
+  const repeated = await runBrowserComputerFaultGuard({
+    operation: async ({ checkpoint }) => {
+      await checkpoint("before-browser-start")
+      await checkpoint("before-browser-start")
+    },
+    cleanup: async () => ({ clean: true }),
+  })
+  assert.equal(repeated.status, "failed")
+  assert.match(repeated.failure.message, /exactly once/)
+})
+
+test("fault guard treats unsuccessful cleanup results as failures", async () => {
+  for (const cleanup of [
+    async () => ({ clean: false }),
+    async () => ({ ok: false, violations: ["owned container remains"] }),
+  ]) {
+    const result = await runBrowserComputerFaultGuard({ cleanup })
+    assert.equal(result.status, "failed")
+    assert.match(result.failure.message, /cleanup reported/)
+  }
 })
 
 test("evidence redaction removes secret values, secret-shaped fields, and control bytes", () => {

@@ -23,9 +23,9 @@ export const BROWSER_COMPUTER_FAULT_CHECKPOINTS = Object.freeze([
   "before-browser-start",
   "during-browser",
   "after-browser-stop",
+  "after-operation",
   "before-cleanup",
   "after-cleanup",
-  "after-operation",
 ])
 export const BROWSER_COMPUTER_DOCKER_ACTIONS = Object.freeze(["save", "remove", "restore"])
 
@@ -95,10 +95,11 @@ export async function collectBrowserComputerResourceSnapshot({
   if (typeof runCommand !== "function") throw new Error("runCommand is required")
   if (!nonEmptyString(filesystemPath)) throw new Error("filesystemPath is required")
 
-  const [disk, dockerContainers, dockerVolumes, availableMemoryBytes, resolvedProcessCount, resolvedLogBytes] = await Promise.all([
+  const [disk, dockerContainers, dockerVolumes, dockerImages, availableMemoryBytes, resolvedProcessCount, resolvedLogBytes] = await Promise.all([
     statfs(filesystemPath),
     dockerNames(runCommand, ["ps", "-a", "--format", "{{.Names}}"]),
     dockerNames(runCommand, ["volume", "ls", "--format", "{{.Name}}"]),
+    dockerImageRefs(runCommand),
     resolveAvailableMemoryBytes(runCommand, platform),
     resolveMetric(processCount),
     resolveMetric(logBytes),
@@ -123,6 +124,7 @@ export async function collectBrowserComputerResourceSnapshot({
     docker: {
       containers: dockerContainers,
       volumes: dockerVolumes,
+      images: dockerImages,
     },
   }
   if (resolvedProcessCount !== undefined) snapshot.process = { count: resolvedProcessCount }
@@ -280,8 +282,13 @@ export async function evaluateBrowserComputerCleanup({
   const createdVolumes = difference(afterVolumes, beforeVolumes)
   const removedOwnedContainers = [...ownedContainerNames].filter((name) => beforeContainers.has(name) && !afterContainers.has(name))
   const removedOwnedVolumes = [...ownedVolumeNames].filter((name) => beforeVolumes.has(name) && !afterVolumes.has(name))
+  const removedUnownedContainers = [...beforeContainers].filter((name) => !afterContainers.has(name) && !ownedContainerNames.has(name))
+  const removedUnownedVolumes = [...beforeVolumes].filter((name) => !afterVolumes.has(name) && !ownedVolumeNames.has(name))
   const remainingOwnedContainers = [...ownedContainerNames].filter((name) => afterContainers.has(name))
   const remainingOwnedVolumes = [...ownedVolumeNames].filter((name) => afterVolumes.has(name))
+
+  for (const name of removedUnownedContainers) violations.push(`pre-existing unowned container disappeared: ${name}`)
+  for (const name of removedUnownedVolumes) violations.push(`pre-existing unowned volume disappeared: ${name}`)
 
   if (!allowRetainedResources) {
     for (const name of remainingOwnedContainers) violations.push(`owned container remains: ${name}`)
@@ -321,6 +328,7 @@ export async function evaluateBrowserComputerCleanup({
     cleanupAccounting: {
       created: { containers: [...createdContainers], volumes: [...createdVolumes] },
       removedOwned: { containers: removedOwnedContainers, volumes: removedOwnedVolumes },
+      removedUnowned: { containers: removedUnownedContainers, volumes: removedUnownedVolumes },
       remainingOwned: { containers: remainingOwnedContainers, volumes: remainingOwnedVolumes },
       actions: actionAccounting,
     },
@@ -368,7 +376,14 @@ export function evaluateBrowserComputerDockerPreconditions({
   if (allTargets.some(isBroadResourceSelector)) {
     violations.push("Docker mutation must name exact owned resources; broad prune selectors are forbidden")
   }
-  if (command !== undefined) validateDockerCommand(command, action, allTargets, imageRef, violations)
+  if (command !== undefined) {
+    validateDockerCommand(command, {
+      action,
+      targetContainers: targets.containers,
+      targetVolumes: targets.volumes,
+      imageRef,
+    }, violations)
+  }
 
   const saveReady = saved === true || saveReceipt?.ok === true
   const removeReady = removed === true || removeReceipt?.ok === true
@@ -430,6 +445,45 @@ export function assertBrowserComputerDockerPreconditions(input) {
 
 export const assertBrowserComputerDockerMutationPreconditions = assertBrowserComputerDockerPreconditions
 
+export function parseBrowserComputerDockerMutationArgv(command, action) {
+  const args = commandArgs(command)
+  const violations = []
+  if (!args || args.length < 2 || !["docker", "podman"].includes(path.basename(args[0]))) {
+    violations.push("Docker mutation command must be an explicit docker/podman argv")
+    return { args: null, action, subcommand: null, affected: emptyDockerResources(), violations }
+  }
+
+  const subcommand = args[1]
+  const nestedSubcommand = subcommand === "volume" ? args[2] : null
+  const start = nestedSubcommand ? 3 : 2
+  const optionValues = nestedSubcommand === "rm" || subcommand === "rm"
+    ? new Set(["--filter"])
+    : subcommand === "save"
+      ? new Set(["-o", "--output", "--platform"])
+      : subcommand === "load"
+        ? new Set(["-i", "--input", "--platform"])
+        : subcommand === "create"
+          ? new Set(["--name", "--label", "--env", "-e", "--network", "--volume", "-v", "--mount"])
+          : new Set()
+  const positionals = dockerPositionalArgs(args, start, optionValues)
+  const affected = emptyDockerResources()
+  if (action === "save" && subcommand === "save") {
+    affected.images = positionals
+  } else if (action === "remove" && subcommand === "rm") {
+    affected.containers = positionals
+  } else if (action === "remove" && subcommand === "volume" && nestedSubcommand === "rm") {
+    affected.volumes = positionals
+  } else if (action === "restore" && subcommand === "create") {
+    affected.images = positionals.slice(0, 1)
+  } else if (positionals.length > 0 && action !== "restore") {
+    violations.push(`Docker ${action ?? "mutation"} argv has unrecognized positional resources: ${positionals.join(", ")}`)
+  }
+
+  return { args, action, subcommand, nestedSubcommand, affected, violations }
+}
+
+export const parseBrowserComputerDockerArgv = parseBrowserComputerDockerMutationArgv
+
 export async function runBrowserComputerFaultGuard({
   operation = async () => undefined,
   cleanup = async () => ({ clean: true }),
@@ -447,9 +501,18 @@ export async function runBrowserComputerFaultGuard({
   let operationError = null
   let cleanupError = null
   let cleanupResult
+  let requestedFaultHits = 0
   const checkpoint = async (name, details = {}) => {
-    if (!BROWSER_COMPUTER_FAULT_CHECKPOINTS.includes(name)) {
+    const checkpointIndex = BROWSER_COMPUTER_FAULT_CHECKPOINTS.indexOf(name)
+    if (checkpointIndex < 0) {
       throw new Error(`unknown browser/computer fault checkpoint: ${name}`)
+    }
+    const previous = checkpoints.at(-1)
+    if (checkpoints.some((entry) => entry.name === name)) {
+      throw new Error(`browser/computer fault checkpoint must be reached exactly once: ${name}`)
+    }
+    if (previous && checkpointIndex <= BROWSER_COMPUTER_FAULT_CHECKPOINTS.indexOf(previous.name)) {
+      throw new Error(`browser/computer fault checkpoints are out of order: ${previous.name} -> ${name}`)
     }
     const entry = redactBrowserComputerEvidence({
       name,
@@ -459,7 +522,10 @@ export async function runBrowserComputerFaultGuard({
     }, { secretValues })
     checkpoints.push(entry)
     if (typeof onCheckpoint === "function") await onCheckpoint(entry)
-    if (faultAt === name) throw new Error(`injected browser/computer fault at ${name}`)
+    if (faultAt === name) {
+      requestedFaultHits += 1
+      throw new Error(`injected browser/computer fault at ${name}`)
+    }
     return entry
   }
 
@@ -479,6 +545,7 @@ export async function runBrowserComputerFaultGuard({
     }
     try {
       cleanupResult = await cleanup({ interrupted: operationError !== null, error: operationError, checkpoint })
+      cleanupError = cleanupResultFailure(cleanupResult)
     } catch (error) {
       cleanupError = error
     }
@@ -491,16 +558,41 @@ export async function runBrowserComputerFaultGuard({
     cleanupError ??= error
   }
 
-  const failure = cleanupError ?? operationError
+  const faultCheckpointError = faultAt !== null && requestedFaultHits !== 1
+    ? new Error(`requested browser/computer fault checkpoint was not reached exactly once: ${faultAt}`)
+    : null
+  const failure = cleanupError ?? operationError ?? faultCheckpointError
   return redactBrowserComputerEvidence({
     schema: BROWSER_COMPUTER_GUARD_SCHEMA,
     status: failure ? "failed" : "passed",
     faultAt: faultAt ?? null,
+    faultCheckpoint: {
+      requested: faultAt ?? null,
+      reached: faultAt === null ? null : requestedFaultHits,
+      exercised: faultAt === null ? null : requestedFaultHits === 1,
+    },
     interrupted: operationError !== null,
     checkpoints,
     cleanup: cleanupResult ?? null,
     failure: failure ? { message: failure?.message ?? String(failure) } : null,
   }, { secretValues })
+}
+
+function cleanupResultFailure(result) {
+  if (!result || typeof result !== "object") return null
+  if (result.clean === false) {
+    return new Error(`cleanup reported clean=false${formatCleanupViolations(result.violations)}`)
+  }
+  if (result.ok === false) {
+    return new Error(`cleanup reported ok=false${formatCleanupViolations(result.violations)}`)
+  }
+  return null
+}
+
+function formatCleanupViolations(violations) {
+  return Array.isArray(violations) && violations.length > 0
+    ? `: ${violations.map((entry) => String(entry)).join("; ")}`
+    : ""
 }
 
 export function redactBrowserComputerEvidence(value, { secretValues = [], maxStringLength = 4_000 } = {}) {
@@ -559,6 +651,50 @@ async function dockerNames(runCommand, args) {
   return names(result.stdout.split("\n"))
 }
 
+async function dockerImageRefs(runCommand) {
+  const refs = await dockerNames(runCommand, ["image", "ls", "--no-trunc", "--format", "{{.Repository}}:{{.Tag}}"])
+  return refs.filter((ref) => ref !== "<none>:<none>" && !ref.startsWith("<none>:") && !ref.endsWith(":<none>"))
+}
+
+function dockerPositionalArgs(args, start, optionValues) {
+  const positionals = []
+  for (let index = start; index < args.length; index += 1) {
+    const arg = args[index]
+    if (arg === "--") {
+      positionals.push(...args.slice(index + 1))
+      break
+    }
+    if (!arg.startsWith("-")) {
+      positionals.push(arg)
+      continue
+    }
+    if (!arg.includes("=") && optionValues.has(arg)) index += 1
+  }
+  return positionals
+}
+
+function emptyDockerResources() {
+  return { containers: [], volumes: [], images: [] }
+}
+
+function sameDockerResourceSet(left, right) {
+  return ["containers", "volumes", "images"].every((kind) => sameNames(left?.[kind], right?.[kind]))
+}
+
+function sameNames(left, right) {
+  const a = names(left).sort()
+  const b = names(right).sort()
+  return a.length === b.length && a.every((value, index) => value === b[index])
+}
+
+function formatDockerResources(resources) {
+  return JSON.stringify({
+    containers: names(resources?.containers),
+    volumes: names(resources?.volumes),
+    images: names(resources?.images),
+  })
+}
+
 function resourceMetrics(sample, phase, violations) {
   const disk = sample?.disk
   const memory = sample?.memory
@@ -614,14 +750,13 @@ function accountCleanupActions(actions, ownedContainers, ownedVolumes, violation
   return records
 }
 
-function validateDockerCommand(command, action, targets, imageRef, violations) {
-  const args = commandArgs(command)
-  if (!args || args.length < 2 || !["docker", "podman"].includes(path.basename(args[0]))) {
-    violations.push("Docker mutation command must be an explicit docker/podman argv")
-    return
-  }
+function validateDockerCommand(command, { action, targetContainers, targetVolumes, imageRef }, violations) {
+  const parsed = parseBrowserComputerDockerMutationArgv(command, action)
+  violations.push(...parsed.violations)
+  const args = parsed.args
+  if (!args) return
   const lower = args.map((entry) => entry.toLowerCase())
-  if (lower.some((entry) => ["prune", "system", "--all", "-a", "*"].includes(entry))) {
+  if (lower.some((entry) => entry === "prune" || entry === "system" || entry === "--all" || entry === "*" || /^-[^-]*a/.test(entry))) {
     violations.push("Docker mutation command uses a broad prune or all-resources selector")
   }
   if (action === "save" && args[1] !== "save") violations.push("Docker save precondition requires docker save")
@@ -631,11 +766,22 @@ function validateDockerCommand(command, action, targets, imageRef, violations) {
   if (action === "restore" && !(args[1] === "load" || args[1] === "create")) {
     violations.push("Docker restore precondition requires docker load or exact create")
   }
-  for (const target of targets) {
-    if (target && !args.includes(target)) violations.push(`Docker mutation argv omits its exact target: ${target}`)
-  }
   if (nonEmptyString(imageRef) && action === "save" && !args.includes(imageRef)) {
     violations.push(`Docker save argv omits its exact image: ${imageRef}`)
+  }
+
+  const expected = {
+    containers: action === "remove" ? targetContainers : [],
+    volumes: action === "remove" ? targetVolumes : [],
+    images: action === "save" || (action === "restore" && parsed.subcommand === "create")
+      ? (nonEmptyString(imageRef) ? [imageRef] : [])
+      : [],
+  }
+  if (!sameDockerResourceSet(parsed.affected, expected)) {
+    violations.push(
+      `Docker ${action ?? "mutation"} argv affected resources do not equal declared targets: `
+      + `${formatDockerResources(parsed.affected)} != ${formatDockerResources(expected)}`,
+    )
   }
 }
 
