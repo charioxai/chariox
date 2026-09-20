@@ -21,6 +21,11 @@ import {
   BrowserPageFeatures,
   PAGE_FEATURE_ERROR_CODES,
 } from "./browser-controller-page-features.mjs";
+import {
+  BrowserMutationCoordinator,
+  BrowserMutationError,
+  MUTATION_ERROR_CODES,
+} from "./browser-controller-mutation-coordinator.mjs";
 
 export const CONTROLLER_STATES = Object.freeze([
   "idle",
@@ -595,6 +600,21 @@ export class BrowserController {
     this._process = null;
     this._cdp = null;
     this.tabRegistry = options.tabRegistry ?? new BrowserTabRegistry();
+    this.mutationCoordinator = options.mutationCoordinator ?? new BrowserMutationCoordinator({
+      maxTabs: options.mutationMaxTabs,
+      maxQueuedPerTab: options.mutationMaxQueuedPerTab,
+      maxCompleted: options.mutationMaxCompleted,
+      maxInvalidatedTabs: options.mutationMaxInvalidatedTabs,
+    });
+    if (
+      typeof this.mutationCoordinator.mutate !== "function" ||
+      typeof this.mutationCoordinator.cancelAction !== "function" ||
+      typeof this.mutationCoordinator.invalidateTab !== "function" ||
+      typeof this.mutationCoordinator.advanceBrowserGeneration !== "function" ||
+      typeof this.mutationCoordinator.snapshot !== "function"
+    ) {
+      throw new TypeError("mutationCoordinator must expose the controller mutation seam");
+    }
     this.observationStore = options.observationStore ?? new BrowserObservationStore();
     this.pageFeatures = options.pageFeatures ?? new BrowserPageFeatures({
       uploadRoots: options.uploadRoots ?? [],
@@ -653,6 +673,7 @@ export class BrowserController {
     }
 
     this.generation += 1;
+    this._advanceMutationBrowserGeneration(this.generation);
     this.state = "starting";
     this.fatalCode = null;
     let record;
@@ -774,6 +795,16 @@ export class BrowserController {
     return this.tabRegistry.snapshot();
   }
 
+  // Internal runtime seam. The serialized controller protocol intentionally
+  // does not expose mutation cancellation or attribution.
+  cancelMutation(request) {
+    assertExactKeys(request, ["action_id", "actor_id"], ["action_id", "actor_id"]);
+    return this.mutationCoordinator.cancelAction({
+      action_id: validateIdentifier(request.action_id, "action_id"),
+      actor_id: validateIdentifier(request.actor_id, "actor_id"),
+    });
+  }
+
   claimViewport(ownerId, expectedGeneration, request) {
     this._assertTabRegistryAccess(ownerId, expectedGeneration);
     return this.tabRegistry.claimViewport(request);
@@ -835,7 +866,7 @@ export class BrowserController {
     }
   }
 
-  async performElementAction(ownerId, expectedGeneration, request) {
+  async performElementAction(ownerId, expectedGeneration, request, mutation) {
     this._assertTabRegistryAccess(ownerId, expectedGeneration);
     assertExactKeys(
       request,
@@ -853,7 +884,17 @@ export class BrowserController {
       schemaError();
     }
     const generation = this.generation;
-    return this._enqueue(generation, async () => {
+    const attribution = this._createTabMutationAttribution(
+      mutation,
+      "perform_element_action",
+      tabId,
+      targetGeneration,
+      generation,
+    );
+    return this._enqueueTabMutation(attribution, async ({ signal }) => {
+      if (signal.aborted) {
+        throw new BrowserMutationError(MUTATION_ERROR_CODES.INDETERMINATE);
+      }
       const target = this.tabRegistry.resolveTarget(tabId, {
         generation,
         target_generation: targetGeneration,
@@ -866,7 +907,7 @@ export class BrowserController {
       }
       const connection = await this._ensureTargetConnection(target);
       try {
-        return await performBrowserAction({
+        const result = await performBrowserAction({
           connection,
           element,
           action: request.action,
@@ -874,6 +915,10 @@ export class BrowserController {
           now: () => this._now(),
           sleep: (milliseconds) => this.timers.sleep(milliseconds),
         });
+        if (signal.aborted) {
+          throw new BrowserMutationError(MUTATION_ERROR_CODES.INDETERMINATE);
+        }
+        return result;
       } catch (error) {
         throw normalizeError(error);
       }
@@ -911,7 +956,7 @@ export class BrowserController {
     });
   }
 
-  async handleDialog(ownerId, expectedGeneration, request) {
+  async handleDialog(ownerId, expectedGeneration, request, mutation) {
     this._assertTabRegistryAccess(ownerId, expectedGeneration);
     assertExactKeys(request, ["tab_id", "target_generation", "dialog"], [
       "tab_id",
@@ -922,14 +967,28 @@ export class BrowserController {
     const targetGeneration = validateGeneration(request.target_generation);
     if (!isPlainObject(request.dialog)) schemaError();
     const generation = this.generation;
-    return this._enqueue(generation, async () => {
+    const attribution = this._createTabMutationAttribution(
+      mutation,
+      "handle_dialog",
+      tabId,
+      targetGeneration,
+      generation,
+    );
+    return this._enqueueTabMutation(attribution, async ({ signal }) => {
+      if (signal.aborted) {
+        throw new BrowserMutationError(MUTATION_ERROR_CODES.INDETERMINATE);
+      }
       const target = this.tabRegistry.resolveTarget(tabId, {
         generation,
         target_generation: targetGeneration,
       });
       const connection = await this._ensureTargetConnection(target);
       try {
-        return await this.pageFeatures.handleDialog({ connection, dialog: request.dialog });
+        const result = await this.pageFeatures.handleDialog({ connection, dialog: request.dialog });
+        if (signal.aborted) {
+          throw new BrowserMutationError(MUTATION_ERROR_CODES.INDETERMINATE);
+        }
+        return result;
       } catch (error) {
         throw normalizeError(error);
       }
@@ -985,7 +1044,7 @@ export class BrowserController {
     });
   }
 
-  async uploadFiles(ownerId, expectedGeneration, request) {
+  async uploadFiles(ownerId, expectedGeneration, request, mutation) {
     this._assertTabRegistryAccess(ownerId, expectedGeneration);
     assertExactKeys(request, ["tab_id", "target_generation", "element_ref", "paths"], [
       "tab_id",
@@ -998,7 +1057,17 @@ export class BrowserController {
     const elementRef = validateIdentifier(request.element_ref, "element_ref");
     if (!Array.isArray(request.paths)) schemaError();
     const generation = this.generation;
-    return this._enqueue(generation, async () => {
+    const attribution = this._createTabMutationAttribution(
+      mutation,
+      "upload_files",
+      tabId,
+      targetGeneration,
+      generation,
+    );
+    return this._enqueueTabMutation(attribution, async ({ signal }) => {
+      if (signal.aborted) {
+        throw new BrowserMutationError(MUTATION_ERROR_CODES.INDETERMINATE);
+      }
       const target = this.tabRegistry.resolveTarget(tabId, {
         generation,
         target_generation: targetGeneration,
@@ -1011,7 +1080,11 @@ export class BrowserController {
       }
       const connection = await this._ensureTargetConnection(target);
       try {
-        return await this.pageFeatures.uploadFiles({ connection, element, paths: request.paths });
+        const result = await this.pageFeatures.uploadFiles({ connection, element, paths: request.paths });
+        if (signal.aborted) {
+          throw new BrowserMutationError(MUTATION_ERROR_CODES.INDETERMINATE);
+        }
+        return result;
       } catch (error) {
         throw normalizeError(error);
       }
@@ -1147,6 +1220,49 @@ export class BrowserController {
     this._requireGeneration(expectedGeneration);
     if (this.state !== "ready" || !this._cdp || this._cdp.closed) {
       throw controllerError(ERROR_CODES.CONTROLLER_NOT_READY);
+    }
+  }
+
+  _advanceMutationBrowserGeneration(generation) {
+    const current = this.mutationCoordinator.snapshot().browser_generation;
+    if (current === null || current < generation) {
+      this.mutationCoordinator.advanceBrowserGeneration(generation);
+      return;
+    }
+    if (current !== generation) {
+      throw controllerError(ERROR_CODES.STALE_GENERATION);
+    }
+  }
+
+  _createTabMutationAttribution(mutation, operation, tabId, targetGeneration, generation) {
+    assertExactKeys(mutation, ["action_id", "actor_id"], ["action_id", "actor_id"]);
+    return {
+      action_id: validateIdentifier(mutation.action_id, "action_id"),
+      actor_id: validateIdentifier(mutation.actor_id, "actor_id"),
+      browser_generation: generation,
+      operation,
+      tab_id: tabId,
+      target_generation: targetGeneration,
+    };
+  }
+
+  _enqueueTabMutation(attribution, run) {
+    return this.mutationCoordinator.mutate(attribution, async (context) => {
+      if (context.signal.aborted) {
+        throw new BrowserMutationError(MUTATION_ERROR_CODES.INDETERMINATE);
+      }
+      return run(context);
+    });
+  }
+
+  _invalidateAllMutations() {
+    const snapshot = this.mutationCoordinator.snapshot();
+    const invalidated = new Set(snapshot.active.map((record) => record.tab_id));
+    for (const queued of snapshot.queued) {
+      invalidated.add(queued.tab_id);
+    }
+    for (const tabId of invalidated) {
+      this.mutationCoordinator.invalidateTab(tabId, Number.MAX_SAFE_INTEGER);
     }
   }
 
@@ -1340,6 +1456,9 @@ export class BrowserController {
       };
     });
     const result = this.tabRegistry.reconcile(generation, registryTargets, options);
+    for (const detached of result.detached) {
+      this.mutationCoordinator.invalidateTab(detached.tab_id, detached.target_generation);
+    }
     this.observationStore.reconcile(result.tabs);
     this._reconcileTargetConnections(result.tabs);
     return result;
@@ -1370,6 +1489,7 @@ export class BrowserController {
           if (this._targetConnections.get(target.tab_id) === record) {
             this._targetConnections.delete(target.tab_id);
             this.observationStore.invalidate(target.tab_id);
+            this.mutationCoordinator.invalidateTab(target.tab_id, target.target_generation);
           }
         },
       });
@@ -1400,6 +1520,7 @@ export class BrowserController {
         tab.generation !== record.generation ||
         tab.target_generation !== record.targetGeneration
       ) {
+        this.mutationCoordinator.invalidateTab(tabId, record.targetGeneration);
         record.connection.close();
         this._targetConnections.delete(tabId);
       }
@@ -1434,6 +1555,7 @@ export class BrowserController {
   async _shutdownInternal(reason) {
     this.state = "stopping";
     this._stopHeartbeat();
+    this._invalidateAllMutations();
     this._closeTargetConnections();
     this._rejectQueued(controllerError(
       reason === "restart" ? ERROR_CODES.STALE_GENERATION : ERROR_CODES.REQUEST_CANCELLED,
@@ -1523,6 +1645,7 @@ export class BrowserController {
     this.state = "fatal";
     this.fatalCode = code;
     this._stopHeartbeat();
+    this._invalidateAllMutations();
     this._closeTargetConnections();
     this._rejectQueued(controllerError(code));
     const connection = this._cdp;
