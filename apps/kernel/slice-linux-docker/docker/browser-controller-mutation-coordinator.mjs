@@ -117,15 +117,6 @@ export class BrowserMutationCoordinator {
   mutate(rawAttribution, run) {
     const attribution = normalizeAttribution(rawAttribution);
     if (typeof run !== "function") fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
-    if (this.invalidationOverflowed) {
-      fail(MUTATION_ERROR_CODES.QUEUE_SATURATED);
-    }
-    this._admitGeneration(attribution.browser_generation);
-    const invalidatedGeneration = this.invalidatedTargetGeneration.get(attribution.tab_id) ?? 0;
-    if (attribution.target_generation <= invalidatedGeneration) {
-      fail(MUTATION_ERROR_CODES.TAB_GENERATION_STALE);
-    }
-
     const actionFingerprint = fingerprint(attribution);
     const existing = this.actions.get(attribution.action_id);
     if (existing) {
@@ -133,6 +124,15 @@ export class BrowserMutationCoordinator {
         fail(MUTATION_ERROR_CODES.ACTION_ID_CONFLICT);
       }
       return existing.promise;
+    }
+
+    if (this.invalidationOverflowed) {
+      fail(MUTATION_ERROR_CODES.QUEUE_SATURATED);
+    }
+    this._admitGeneration(attribution.browser_generation);
+    const invalidatedGeneration = this.invalidatedTargetGeneration.get(attribution.tab_id) ?? 0;
+    if (attribution.target_generation <= invalidatedGeneration) {
+      fail(MUTATION_ERROR_CODES.TAB_GENERATION_STALE);
     }
 
     let queue = this.queues.get(attribution.tab_id);

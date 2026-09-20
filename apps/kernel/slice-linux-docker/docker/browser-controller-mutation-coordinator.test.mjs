@@ -108,6 +108,38 @@ test("deduplicates pending and completed action IDs without rerunning", async ()
   assert.equal(calls, 1);
 });
 
+test("deduplicates a completed action retry after browser generation advance", async () => {
+  const coordinator = new BrowserMutationCoordinator({ browserGeneration: 1 });
+  const original = attribution({ action_id: "generation-retained" });
+  let calls = 0;
+  const first = coordinator.mutate(original, async () => {
+    calls += 1;
+    return "completed";
+  });
+  assert.equal(await first, "completed");
+
+  coordinator.advanceBrowserGeneration(2);
+  const retry = coordinator.mutate(original, async () => {
+    calls += 1;
+    return "must-not-replay";
+  });
+  assert.equal(retry, first);
+  assert.equal(await retry, "completed");
+  assert.equal(calls, 1);
+
+  assert.throws(
+    () => coordinator.mutate(
+      attribution({
+        action_id: original.action_id,
+        browser_generation: 2,
+        operation: "fill",
+      }),
+      async () => "must-conflict",
+    ),
+    (error) => error.code === MUTATION_ERROR_CODES.ACTION_ID_CONFLICT,
+  );
+});
+
 test("retains only bounded secret-safe terminal state after completion", async () => {
   const coordinator = new BrowserMutationCoordinator({ maxCompleted: 2 });
   const secret = "Bearer completion-secret";
@@ -299,6 +331,38 @@ test("bounds invalidation tombstones and fails closed until browser generation a
   );
   assert.equal(coordinator.snapshot().invalidated_tab_count, 0);
   assert.equal(coordinator.snapshot().invalidation_overflowed, false);
+});
+
+test("deduplicates a pending action during invalidation overflow", async () => {
+  const coordinator = new BrowserMutationCoordinator({ maxInvalidatedTabs: 1 });
+  const gate = deferred();
+  const original = attribution({ action_id: "overflow-pending", tab_id: "tab-pending" });
+  const pending = coordinator.mutate(original, async () => {
+    await gate.promise;
+    return "pending-result";
+  });
+  await Promise.resolve();
+
+  coordinator.invalidateTab("tab-overflow-1", 1);
+  coordinator.invalidateTab("tab-overflow-2", 1);
+  assert.equal(coordinator.snapshot().invalidation_overflowed, true);
+
+  const retry = coordinator.mutate(original, async () => "must-not-replay");
+  assert.equal(retry, pending);
+  assert.throws(
+    () => coordinator.mutate(
+      attribution({
+        action_id: original.action_id,
+        operation: "fill",
+        tab_id: original.tab_id,
+      }),
+      async () => "must-conflict",
+    ),
+    (error) => error.code === MUTATION_ERROR_CODES.ACTION_ID_CONFLICT,
+  );
+
+  gate.resolve();
+  assert.equal(await retry, "pending-result");
 });
 
 test("preserves undefined rejection for the original action and deduplicated replay", async () => {
