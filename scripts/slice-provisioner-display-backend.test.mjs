@@ -196,6 +196,55 @@ function runSavedStateProbe(source, mode) {
   )
 }
 
+function runHomeVolumeProbe(source, volumeState) {
+  const restore = section(source, "restore_saved_home_volume() {", "prepare_home_volume() {")
+  const prepare = section(source, "prepare_home_volume() {", "machine_id_hex() {")
+  return spawnSync(
+    "bash",
+    [
+      "-c",
+      [
+        "set -Eeuo pipefail",
+        "log() { printf '[probe] %s\\n' \"$*\" >&2; }",
+        "fail() { printf 'FAIL %s\\n' \"$*\" >&2; return 91; }",
+        "run_with_timeout() { local seconds=\"$1\"; shift; \"$@\"; }",
+        "docker() {",
+        "  printf 'DOCKER_CALL %s\\n' \"$*\" >>\"$PROBE_LOG_FILE\"",
+        "  case \"$1 $2\" in",
+        "    'volume inspect') [[ \"$PROBE_VOLUME_STATE\" == existing ]] && return 0 || return 1 ;;",
+        "    'volume create') PROBE_VOLUME_STATE=existing; PROBE_VOLUME_CONTENT=empty; return 0 ;;",
+        "    exec*)",
+        "      PROBE_DESTRUCTIVE=1",
+        "      PROBE_VOLUME_CONTENT=archive-state",
+        "      return 0",
+        "      ;;",
+        "    *) return 0 ;;",
+        "  esac",
+        "}",
+        "SLICE_SAVED_HOME_ARCHIVE=/etc/hosts",
+        "SLICE_HOME_VOLUME=saved-home",
+        "SLICE_NAME=saved-state-volume-probe",
+        "SLICE_IMAGE=current-base",
+        "PROBE_DESTRUCTIVE=0",
+        "PROBE_VOLUME_CONTENT=post-restore-data",
+        "PROBE_LOG_FILE=$(mktemp)",
+        restore,
+        prepare,
+        "prepare_home_volume",
+        "printf 'STATUS=0\\nVOLUME_STATE=%s\\nVOLUME_CONTENT=%s\\nDESTRUCTIVE=%s\\n' \"$PROBE_VOLUME_STATE\" \"$PROBE_VOLUME_CONTENT\" \"$PROBE_DESTRUCTIVE\"",
+        "cat \"$PROBE_LOG_FILE\"",
+      ].join("\n"),
+    ],
+    {
+      env: {
+        ...process.env,
+        PROBE_VOLUME_STATE: volumeState,
+      },
+      encoding: "utf8",
+    },
+  )
+}
+
 function runSavedStatePolicyProbe(source, policy, baseState) {
   const runtimeCompatible = section(source, "image_runtime_compatible() {", "image_selkies_capable() {")
   const selkiesCapable = section(source, "image_selkies_capable() {", "ensure_saved_state_capable_base() {")
@@ -276,6 +325,85 @@ function runSavedStatePolicyProbe(source, policy, baseState) {
   )
 }
 
+function runCompatibleSavedImageProbe(source, baseState) {
+  const runtimeCompatible = section(source, "image_runtime_compatible() {", "image_selkies_capable() {")
+  const selkiesCapable = section(source, "image_selkies_capable() {", "ensure_saved_state_capable_base() {")
+  const basePreflight = section(source, "ensure_saved_state_capable_base() {", "require_saved_state_compatibility() {")
+  const compatibility = section(source, "require_saved_state_compatibility() {", "build_standard_runtime_image() {")
+  const buildStandard = section(source, "build_standard_runtime_image() {", "ensure_runtime_base_image() {")
+  const buildImage = section(source, "build_image() {", "refresh_saved_state_runtime() {")
+  return spawnSync(
+    "bash",
+    [
+      "-c",
+      [
+        "set -Eeuo pipefail",
+        "log() { printf '[probe] %s\\n' \"$*\" >&2; }",
+        "fail() { printf 'FAIL %s\\n' \"$*\" >&2; return 91; }",
+        "run_with_timeout() { local seconds=\"$1\"; shift; \"$@\"; }",
+        "docker() {",
+        "  printf 'DOCKER_CALL %s\\n' \"$*\" >>\"$PROBE_LOG_FILE\"",
+        "  if [[ \"$1\" == build ]]; then",
+        "    PROBE_DESTRUCTIVE=1",
+        "    printf 'DOCKER_BUILD %s\\n' \"$*\" >&2",
+        "    return 42",
+        "  fi",
+        "  [[ \"$1\" == image && \"$2\" == inspect ]] || { PROBE_DESTRUCTIVE=1; printf 'MUTATION %s\\n' \"$*\" >&2; return 42; }",
+        "  local format image capable=0",
+        "  if [[ \"$3\" == -f ]]; then format=\"$4\"; image=\"$5\"; else image=\"$3\"; fi",
+        "  case \"$image\" in",
+        "    current-saved) capable=1 ;;",
+        "    base-image)",
+        "      case \"$PROBE_BASE_STATE\" in missing) return 1 ;; stale) capable=0 ;; esac",
+        "      ;;",
+        "    *) return 1 ;;",
+        "  esac",
+        "  [[ \"$3\" == -f ]] || return 0",
+        "  case \"$format\" in",
+        "    *io.chariox.relay-peer-protocol-version*) (( capable )) && printf '9\\n' || printf '8\\n' ;;",
+        "    *io.chariox.runtime-source-revision*) (( capable )) && printf 'runtime-current\\n' || printf 'runtime-stale\\n' ;;",
+        "    *io.chariox.selkies-version*) (( capable )) && printf '0.0.0.dev0\\n' || printf '<no value>\\n' ;;",
+        "    *io.chariox.selkies-source-revision*) (( capable )) && printf '0123456789012345678901234567890123456789\\n' || printf '<no value>\\n' ;;",
+        "    *io.chariox.selkies-source*) (( capable )) && printf 'https://github.com/selkies-project/selkies/commit/0123456789012345678901234567890123456789\\n' || printf '<no value>\\n' ;;",
+        "    *io.chariox.selkies-license*) (( capable )) && printf 'MPL-2.0\\n' || printf '<no value>\\n' ;;",
+        "    *) printf '<no value>\\n' ;;",
+        "  esac",
+        "}",
+        "SLICE_DISPLAY_BACKEND=selkies",
+        "SLICE_SAVED_HOME_ARCHIVE=/etc/hosts",
+        "SLICE_HOME_VOLUME=saved-home",
+        "SLICE_NAME=saved-state-compatible-probe",
+        "SLICE_IMAGE=current-saved",
+        "SLICE_BASE_IMAGE=base-image",
+        "SLICE_RELAY_PEER_PROTOCOL_VERSION=9",
+        "SLICE_RUNTIME_SOURCE_REVISION=runtime-current",
+        "SLICE_BUILD_IMAGE=auto",
+        "REPO_ROOT=/nonexistent",
+        "SLICE_EXTENSION_DOCKERFILE=",
+        "PROBE_DESTRUCTIVE=0",
+        "PROBE_LOG_FILE=$(mktemp)",
+        runtimeCompatible,
+        selkiesCapable,
+        basePreflight,
+        compatibility,
+        buildStandard,
+        buildImage,
+        "status=0",
+        "if ! build_image; then status=$?; fi",
+        "printf 'STATUS=%s\\nIMAGE=%s\\nDESTRUCTIVE=%s\\n' \"$status\" \"$SLICE_IMAGE\" \"$PROBE_DESTRUCTIVE\"",
+        "cat \"$PROBE_LOG_FILE\"",
+      ].join("\n"),
+    ],
+    {
+      env: {
+        ...process.env,
+        PROBE_BASE_STATE: baseState,
+      },
+      encoding: "utf8",
+    },
+  )
+}
+
 test("saved state accepts a current image only from authoritative runtime and Selkies labels", async () => {
   const source = await readFile(provisionerPath, "utf8")
   const compatibility = section(source, "require_saved_state_compatibility() {", "build_standard_runtime_image() {")
@@ -327,6 +455,47 @@ test("legacy saved state rejects without a capable base before any mutation and 
   assert.deepEqual(nonInspectCalls, [])
 })
 
+test("saved-state rebase preserves post-restore data in an existing home volume", async () => {
+  const source = await readFile(provisionerPath, "utf8")
+  const ensure = section(source, "ensure_container() {", "ensure_auth_target_container() {")
+  assert.match(ensure, /prepare_home_volume/)
+
+  const probe = runHomeVolumeProbe(source, "existing")
+  const output = `${probe.stdout}${probe.stderr}`
+  assert.equal(probe.status, 0, probe.stderr)
+  assert.match(output, /STATUS=0/)
+  assert.match(output, /VOLUME_CONTENT=post-restore-data/)
+  assert.match(output, /DESTRUCTIVE=0/)
+  assert.match(output, /preserving existing home volume saved-home/)
+  assert.deepEqual(
+    output
+      .split("\n")
+      .filter((line) => line.startsWith("DOCKER_CALL ")),
+    ["DOCKER_CALL volume inspect saved-home"],
+  )
+})
+
+test("saved-state initial restore extracts only after creating a new home volume", async () => {
+  const source = await readFile(provisionerPath, "utf8")
+  const probe = runHomeVolumeProbe(source, "missing")
+  const output = `${probe.stdout}${probe.stderr}`
+  assert.equal(probe.status, 0, probe.stderr)
+  assert.match(output, /STATUS=0/)
+  assert.match(output, /VOLUME_CONTENT=archive-state/)
+  assert.match(output, /DESTRUCTIVE=1/)
+  const calls = output
+    .split("\n")
+    .filter((line) => line.startsWith("DOCKER_CALL "))
+  assert.equal(calls[0], "DOCKER_CALL volume inspect saved-home")
+  assert.equal(calls[1], "DOCKER_CALL volume create saved-home")
+  assert.match(calls[2], /^DOCKER_CALL rm -f saved-state-volume-probe-home-restore-/)
+  assert.match(calls[3], /^DOCKER_CALL create --name saved-state-volume-probe-home-restore-/)
+  assert.match(calls[4], /^DOCKER_CALL start saved-state-volume-probe-home-restore-/)
+  assert.match(calls[5], /^DOCKER_CALL cp -L \/etc\/hosts saved-state-volume-probe-home-restore-.*:\/tmp\/home\.tar\.zst$/)
+  assert.match(calls[6], /^DOCKER_CALL exec -u root saved-state-volume-probe-home-restore-/)
+  assert.match(calls[7], /^DOCKER_CALL rm -f saved-state-volume-probe-home-restore-/)
+})
+
 test("saved-state auto and always build policies accept missing and stale capable bases before the compatibility gate", async () => {
   const source = await readFile(provisionerPath, "utf8")
   const buildImage = section(source, "build_image() {", "refresh_saved_state_runtime() {")
@@ -353,6 +522,27 @@ test("saved-state auto and always build policies accept missing and stale capabl
       assert.ok(labelsAcceptedIndex > buildIndex, `${policy}/${baseState} must re-check labels after build`)
       assert.ok(gateIndex > labelsAcceptedIndex, `${policy}/${baseState} must gate after label acceptance`)
     }
+  }
+})
+
+test("saved-state auto accepts a compatible saved image before inspecting or rebuilding a missing or stale base", async () => {
+  const source = await readFile(provisionerPath, "utf8")
+
+  for (const baseState of ["missing", "stale"]) {
+    const probe = runCompatibleSavedImageProbe(source, baseState)
+    const output = `${probe.stdout}${probe.stderr}`
+    assert.equal(probe.status, 0, `auto/${baseState}: ${probe.stderr}`)
+    assert.match(output, /STATUS=0/)
+    assert.match(output, /IMAGE=current-saved/)
+    assert.match(output, /DESTRUCTIVE=0/)
+    assert.doesNotMatch(output, /DOCKER_BUILD /)
+    assert.doesNotMatch(output, /MUTATION /)
+    const calls = output
+      .split("\n")
+      .filter((line) => line.startsWith("DOCKER_CALL "))
+    assert.ok(calls.length > 0)
+    assert.ok(calls.every((line) => line.includes("current-saved")), `${baseState}: ${calls.join("\n")}`)
+    assert.ok(calls.every((line) => !line.includes("base-image")), `${baseState}: ${calls.join("\n")}`)
   }
 })
 
