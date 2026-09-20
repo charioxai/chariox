@@ -56,7 +56,7 @@ function preflight() {
       verified: true,
     },
     source: { ossSha: OSS_SHA, cloudSha: CLOUD_SHA },
-    protocol: { kernel: 322, relay: 18, relayVersion: "chariox-relay 0.1.0" },
+    protocol: { kernel: 334, relay: 18, relayVersion: "chariox-relay 0.1.0" },
     target: {
       kernelId: "kernel-managed-1",
       machineId: "machine-managed-1",
@@ -163,6 +163,28 @@ function transport() {
     },
   }
 }
+
+test("live M0 runs compatibility preflight before the first telemetry sample or harness action", async () => {
+  const injected = transport()
+  const order = []
+  injected.requiresCompatibilityPreflight = true
+  injected.assertCompatibilityPreflight = async () => {
+    order.push("compatibility")
+  }
+  const report = await runManagedBrowserComputerParityLive({
+    config: config(),
+    transport: injected,
+    evidenceRoot: EVIDENCE_ROOT,
+    collectResourceSnapshot: ({ phase }) => {
+      order.push(`telemetry:${phase}`)
+      return sample(phase)
+    },
+  })
+  assert.equal(report.status, "passed")
+  assert.equal(order[0], "compatibility")
+  assert.equal(order.some((entry) => entry.startsWith("telemetry:")), true)
+  assert.equal(injected.calls[0]?.step, "preflight")
+})
 
 function sample(phase, overrun = false) {
   const values = {

@@ -355,6 +355,16 @@ export async function runManagedBrowserComputerParityLive({
       activeCheckpoint = checkpoint
       try {
         assertConfiguredDockerPreconditions(declaredDockerPreconditions)
+        if (transport.requiresCompatibilityPreflight === true
+          && typeof transport.assertCompatibilityPreflight !== "function") {
+          throw new Error("managed parity live transport must expose compatibility preflight before telemetry")
+        }
+        if (typeof transport.assertCompatibilityPreflight === "function") {
+          await transport.assertCompatibilityPreflight({
+            config,
+            signal: workloadController.signal,
+          })
+        }
         const beforeSample = await capture("before")
         resourcePreflight = evaluateBrowserComputerPreflight(beforeSample, {
           requiredMemoryBytes: config.browserComputerGuard?.preflight?.requiredMemoryBytes
@@ -609,6 +619,7 @@ async function main() {
     transport = await imported.createManagedBrowserComputerParityTransport({
       evidenceRoot: runDir,
       signal: interruption.signal,
+      config,
     })
     const report = await runManagedBrowserComputerParityLive({
       config,

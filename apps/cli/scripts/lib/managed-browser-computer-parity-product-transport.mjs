@@ -14,6 +14,10 @@ const RESOURCE_TELEMETRY_TIMEOUT_MS = 10_000
 const PERSISTENCE_TIMEOUT_MS = 30_000
 const CLEANUP_INSPECTION_TIMEOUT_MS = 15_000
 const MANAGED_PARITY_SCHEMA = "chariox.browser_computer_m0_guard.v1"
+// This is the released wire constant at the reviewed PR head. Production
+// construction also binds the value exported by kernel-client; the literal is
+// only the local fail-closed reference used when a test injects that seam.
+export const MANAGED_BROWSER_COMPUTER_PARITY_PROTOCOL = 334
 
 /**
  * Load the released public client modules at runtime. Keeping this seam
@@ -21,12 +25,13 @@ const MANAGED_PARITY_SCHEMA = "chariox.browser_computer_m0_guard.v1"
  * ignored dist output or weakening the production import boundary.
  */
 export async function loadManagedBrowserComputerParityKernelClientModules() {
-  const [{ LocalIpcClient }, requestApi, displayApi] = await Promise.all([
+  const [{ LocalIpcClient }, requestApi, displayApi, protocolApi] = await Promise.all([
     import("../../../../packages/kernel-client/dist/ipc.js"),
     import("../../../../packages/kernel-client/dist/ipc-requests.js"),
     import("../../../../packages/kernel-client/dist/display-stream.js"),
+    import("../../../../packages/kernel-client/dist/kernel-types.js"),
   ])
-  return { LocalIpcClient, requestApi, displayApi }
+  return { LocalIpcClient, requestApi, displayApi, protocolApi }
 }
 
 /**
@@ -46,6 +51,9 @@ export async function createManagedBrowserComputerParityTransport({
   resourceTelemetry,
   persistence,
   cleanupInspector,
+  config = null,
+  operationAdapter = null,
+  reconnectClient = null,
   timeouts,
 } = {}) {
   if (typeof evidenceRoot !== "string" || evidenceRoot.trim() === "") {
@@ -124,6 +132,14 @@ export async function createManagedBrowserComputerParityTransport({
         resourceTelemetry,
         persistence,
         cleanupInspector,
+        parityConfig: config,
+        operationAdapter,
+        reconnectClient: reconnectClient ?? (async () => new LocalIpcClient(connection.relay_url, {
+          relayAuthToken: connection.relay_token,
+          targetDaemonId: connection.target_daemon_id ?? undefined,
+          targetDaemonAlias: connection.target_daemon_alias ?? undefined,
+        })),
+        protocolApi: modules.protocolApi,
         timeouts,
         displayTransport: {
           openSelkiesDisplayStream: displayApi.openSelkiesDisplayStream,
@@ -163,6 +179,10 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
   persistenceTransport = null,
   cleanupInspector = null,
   residueInspector = null,
+  parityConfig = null,
+  operationAdapter = null,
+  reconnectClient = null,
+  protocolApi = null,
   timeouts = {},
 } = {}) {
   if (!client || typeof client.send !== "function") {
@@ -198,10 +218,38 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
   const telemetryAdapter = resourceTelemetry ?? managedResourceTelemetry ?? resourceTelemetryAdapter
   const persistenceAdapter = persistence
     ?? persistenceTransport
-    ?? (firstCallable(identityClient, ["describePersistenceMutations", "runPersistenceMutations"]) ? identityClient : null)
+    ?? (firstCallable(identityClient, ["describePersistenceMutations", "runPersistenceMutations"])
+      ? identityClient
+      : createKernelPersistenceAdapter({
+        client: displayClient,
+        identityClient: displayClient,
+        requestApi,
+        parityConfig,
+      }))
   const residueAdapter = cleanupInspector
     ?? residueInspector
-    ?? (firstCallable(identityClient, ["inspectCleanupResidue", "cleanupInspect"]) ? identityClient : null)
+    ?? (firstCallable(identityClient, ["inspectCleanupResidue", "cleanupInspect"])
+      ? identityClient
+      : createKernelCleanupInspector({
+        client: displayClient,
+        requestApi,
+      }))
+  const productionOperationAdapter = operationAdapter
+    ?? createKernelOperationAdapter({
+      client,
+      displayClient,
+      identityClient,
+      requestApi,
+      targetKernelRef,
+      targetMachineRef,
+      ownedResources,
+      parityConfig,
+      protocolApi,
+      reconnectClient,
+      telemetryAdapter,
+    })
+  const requiresCompatibilityPreflight = Boolean(parityConfig || protocolApi)
+  let compatibilityResult = null
   const timeoutConfig = {
     resourceTelemetryMs: finiteTimeout(timeouts.resourceTelemetryMs, RESOURCE_TELEMETRY_TIMEOUT_MS),
     persistenceMs: finiteTimeout(timeouts.persistenceMs, PERSISTENCE_TIMEOUT_MS),
@@ -218,7 +266,29 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
     targetId: targetMachineRef ?? targetKernelRef ?? null,
     targetKernelRef,
     targetMachineRef,
+    requiresCompatibilityPreflight,
+    async assertCompatibilityPreflight({ signal, config = parityConfig } = {}) {
+      if (!compatibilityResult) {
+        compatibilityResult = await withDeadline(
+          (deadlineSignal) => runCompatibilityPreflight({
+            identityClient,
+            displayClient,
+            requestApi,
+            targetKernelRef,
+            targetMachineRef,
+            parityConfig: config,
+            protocolApi,
+            signal: deadlineSignal,
+          }),
+          { signal, timeoutMs: timeoutConfig.resourceTelemetryMs, step: "compatibility preflight" },
+        )
+      }
+      return compatibilityResult
+    },
     async collectManagedTargetResourceSnapshot({ phase, sampleId, evidenceRoot, now, signal } = {}) {
+      if (requiresCompatibilityPreflight && !compatibilityResult) {
+        throw new Error("managed parity resource telemetry requires compatibility preflight first")
+      }
       return withDeadline(
         (deadlineSignal) => collectManagedTargetResourceSnapshot({
           client: identityClient,
@@ -255,6 +325,73 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
     async run(step, request, { signal, onPersistenceMutation } = {}) {
       if (signal?.aborted) {
         throw new Error(`managed parity ${step} was aborted before the public request`)
+      }
+      if (requiresCompatibilityPreflight && step === "preflight") {
+        await transport.assertCompatibilityPreflight({ signal })
+      }
+      if (requiresCompatibilityPreflight && step !== "preflight" && !compatibilityResult) {
+        throw new Error(`managed parity ${step} requires compatibility preflight before any target operation`)
+      }
+      if (productionOperationAdapter && typeof productionOperationAdapter[step] === "function") {
+        return withDeadline(
+          (deadlineSignal) => productionOperationAdapter[step]({
+            request,
+            signal: deadlineSignal,
+            compatibility: compatibilityResult,
+            onPersistenceMutation,
+          }),
+          {
+            signal,
+            timeoutMs: step === "selkies.persistence"
+              ? timeoutConfig.persistenceMs
+              : timeoutConfig.sliceLifecycleMs,
+            step,
+          },
+        )
+      }
+      if (step === "novnc.create") {
+        return runDisplayBackendCreate({
+          displayClient,
+          identityClient,
+          requestApi,
+          targetKernelRef,
+          targetMachineRef,
+          ownedResources,
+          request,
+          signal,
+          displayBackend: "novnc",
+          sliceLifecycleTimeoutMs: timeoutConfig.sliceLifecycleMs,
+        })
+      }
+      if (step === "novnc.attach") {
+        return runNovncAttach({
+          displayClient,
+          identityClient,
+          requestApi,
+          ownedResources,
+          request,
+          signal,
+        })
+      }
+      if (step === "novnc.rollback") {
+        return runNovncRollback({
+          displayClient,
+          requestApi,
+          ownedResources,
+          request,
+          signal,
+        })
+      }
+      if (step === "novnc.destroy") {
+        return runSelkiesDestroy({
+          displayClient,
+          requestApi,
+          ownedResources,
+          request,
+          signal,
+          displayBackend: "novnc",
+          sliceLifecycleTimeoutMs: timeoutConfig.sliceLifecycleMs,
+        })
       }
       if (step === "selkies.create") {
         return runSelkiesCreate({
@@ -304,6 +441,7 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
           ownedResources,
           request,
           signal,
+          displayBackend: "selkies",
           sliceLifecycleTimeoutMs: timeoutConfig.sliceLifecycleMs,
         })
       }
@@ -334,6 +472,1099 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
   }
 
   return transport
+}
+
+function createKernelPersistenceAdapter({ client, identityClient, requestApi, parityConfig }) {
+  if (typeof requestApi?.saveSliceStateRequest !== "function"
+    || typeof requestApi?.stopSliceRequest !== "function"
+    || typeof requestApi?.startSliceRequest !== "function"
+    || typeof requestApi?.getSliceStateStatusRequest !== "function"
+    || typeof requestApi?.getSliceRequest !== "function"
+    || typeof requestApi?.getRoomEnvironmentResourceInventoryRequest !== "function") {
+    return null
+  }
+  return {
+    async describe(input) {
+      return createKernelPersistencePlan(input, parityConfig)
+    },
+    async run(input) {
+      return executeKernelPersistence({
+        ...input,
+        client,
+        identityClient,
+        requestApi,
+      })
+    },
+  }
+}
+
+function createKernelPersistencePlan(input, parityConfig) {
+  const sliceId = requireText(input?.ownedResource?.sliceId, "persistence owned slice id")
+  const configured = parityConfig?.browserComputerGuard?.dockerPreconditions
+    ?? parityConfig?.dockerPreconditions
+    ?? []
+  const fallbackArgv = {
+    save: ["kernel", "SaveSliceState", sliceId],
+    remove: ["kernel", "StopSlice", sliceId],
+    restore: ["kernel", "StartSlice", sliceId],
+  }
+  const checkpoints = {
+    save: { before: "before-docker-save", after: "after-docker-save" },
+    remove: { before: "before-docker-remove", after: "after-docker-remove" },
+    restore: { before: "before-docker-restore", after: "after-docker-restore" },
+  }
+  const mutations = ["save", "remove", "restore"].map((action, index) => {
+    const declaration = configured[index]
+    const argv = declaration?.command ?? declaration?.argv ?? fallbackArgv[action]
+    requireSafeArgv(argv, `persistence ${action}`)
+    return {
+      action,
+      argv: [...argv],
+      request: { action, argv: [...argv] },
+      checkpoints: checkpoints[action],
+    }
+  })
+  return {
+    schema: MANAGED_PARITY_SCHEMA,
+    persistenceMutations: mutations,
+    ownedResource: redactManagedValue(input?.ownedResource ?? null),
+  }
+}
+
+async function executeKernelPersistence({
+  client,
+  identityClient,
+  requestApi,
+  ownedResource,
+  request,
+  plan,
+  onPersistenceMutation,
+  signal,
+}) {
+  const sliceId = requireText(ownedResource?.sliceId, "persistence owned slice id")
+  const planned = plan?.persistenceMutations
+  if (!Array.isArray(planned) || planned.length !== 3) {
+    throw new Error("managed parity persistence execution requires an immutable kernel plan")
+  }
+  const before = []
+  const receipts = []
+  let savedState = null
+  let initialInventory = null
+  let finalInventory = null
+  for (const [index, mutation] of planned.entries()) {
+    const inventory = await readKernelPersistenceInventory({
+      client: identityClient ?? client,
+      requestApi,
+      sliceId,
+      roomId: ownedResource?.roomId,
+      signal,
+      step: `persistence ${mutation.action} inventory`,
+    })
+    before.push(inventory)
+    if (index === 0) initialInventory = inventory
+    await onPersistenceMutation?.({ phase: "before", mutation: redactManagedValue(mutation) })
+    let response
+    let receipt
+    if (mutation.action === "save") {
+      response = await sendWithAbortSignal(
+        client,
+        requestApi.saveSliceStateRequest(sliceId, "restart_agents", "this_slice"),
+        signal,
+        "persistence save",
+      )
+      const saved = responseVariant(response, "SliceStateSaved", "persistence save")
+      savedState = saved.state
+      const archivePath = requireText(savedState?.home_archive_path, "SliceStateSaved.state.home_archive_path")
+      receipt = {
+        ok: true,
+        id: requireText(savedState?.id, "SliceStateSaved.state.id"),
+        archivePath,
+        authoritative: true,
+      }
+    } else if (mutation.action === "remove") {
+      response = await sendWithAbortSignal(
+        client,
+        requestApi.stopSliceRequest(sliceId),
+        signal,
+        "persistence remove",
+      )
+      responseVariantAny(response, ["SliceStopped", "Slice"], "persistence remove")
+      receipt = {
+        ok: true,
+        id: `${receiptId(receipts[0])}:remove`,
+        parentReceiptId: receiptId(receipts[0]),
+        archivePath: requireText(savedState?.home_archive_path, "saved state archive path"),
+        authoritative: true,
+      }
+    } else {
+      response = await sendWithAbortSignal(
+        client,
+        requestApi.startSliceRequest(sliceId),
+        signal,
+        "persistence restore",
+        SLICE_LIFECYCLE_TIMEOUT_MS,
+      )
+      responseVariant(response, "SliceStarted", "persistence restore")
+      const statusResponse = await sendWithAbortSignal(
+        client,
+        requestApi.getSliceStateStatusRequest(sliceId),
+        signal,
+        "persistence restore state status",
+      )
+      const status = responseVariant(statusResponse, "SliceStateStatus", "persistence restore state status")
+      if (!status.state || status.state.id !== savedState?.id) {
+        throw new Error("managed parity persistence restore did not restore the authoritative saved state")
+      }
+      receipt = {
+        ok: true,
+        id: `${receiptId(receipts[1])}:restore`,
+        parentReceiptId: receiptId(receipts[1]),
+        archivePath: requireText(savedState?.home_archive_path, "saved state archive path"),
+        authoritative: true,
+      }
+    }
+    receipts.push(receipt)
+    await onPersistenceMutation?.({ phase: "after", mutation: redactManagedValue({ ...mutation, receipt }) })
+    if (mutation.action === "restore") {
+      finalInventory = await readKernelPersistenceInventory({
+        client: identityClient ?? client,
+        requestApi,
+        sliceId,
+        roomId: ownedResource?.roomId,
+        signal,
+        step: "persistence restore inventory",
+      })
+    }
+  }
+  if (!initialInventory || !finalInventory) {
+    throw new Error("managed parity persistence did not observe both initial and restored inventory")
+  }
+  const sameRoom = initialInventory.slice?.environment_session_id === finalInventory.slice?.environment_session_id
+    && initialInventory.slice?.environment_session_id === ownedResource?.roomId
+  const sameEnvironment = initialInventory.inventory?.environment_id === finalInventory.inventory?.environment_id
+    && hasText(initialInventory.inventory?.environment_id)
+  const sameProfile = sameArray(
+    initialInventory.inventory?.profile_ids,
+    finalInventory.inventory?.profile_ids,
+  ) && finalInventory.inventory.profile_ids.length === 1
+  if (!sameRoom || !sameEnvironment || !sameProfile) {
+    throw new Error("managed parity persistence restore changed the authoritative Room, environment, or profile identity")
+  }
+  return {
+    schema: MANAGED_PARITY_SCHEMA,
+    ...redactManagedValue(request?.binding ?? {}),
+    binding: redactManagedValue(request?.binding ?? null),
+    saved: true,
+    restarted: true,
+    sameRoom,
+    sameEnvironment,
+    sameProfile,
+    persistenceMutations: planned.map((mutation, index) => ({
+      ...mutation,
+      before: before[index],
+      receipt: receipts[index],
+      ...(index > 0 ? { saveReceipt: receipts[0] } : {}),
+      ...(index > 1 ? { removeReceipt: receipts[1] } : {}),
+    })),
+  }
+}
+
+async function readKernelPersistenceInventory({ client, requestApi, sliceId, roomId, signal, step }) {
+  const sliceResponse = await sendWithAbortSignal(
+    client,
+    requestApi.getSliceRequest(sliceId),
+    signal,
+    `${step} slice`,
+  )
+  const slice = responseVariant(sliceResponse, "Slice", `${step} slice`).slice
+  if (!slice || slice.id !== sliceId) throw new Error(`${step} returned a different slice identity`)
+  const resolvedRoomId = roomId ?? slice.environment_session_id ?? slice.session_id
+  if (!hasText(resolvedRoomId)) throw new Error(`${step} returned no Room identity`)
+  const inventoryResponse = await sendWithAbortSignal(
+    client,
+    requestApi.getRoomEnvironmentResourceInventoryRequest(resolvedRoomId, sliceId),
+    signal,
+    `${step} browser/profile inventory`,
+  )
+  const inventory = responseVariant(
+    inventoryResponse,
+    "RoomEnvironmentResourceInventory",
+    `${step} browser/profile inventory`,
+  ).inventory
+  requireUniqueIdentityArray(inventory?.profile_ids, `${step} profile_ids`)
+  requireUniqueIdentityArray(inventory?.browser_ids, `${step} browser_ids`)
+  return {
+    slice: redactManagedValue({
+      id: slice.id,
+      status: slice.status,
+      environment_session_id: slice.environment_session_id ?? slice.session_id ?? null,
+      environment_id: slice.environment_id ?? null,
+    }),
+    inventory: redactManagedValue({
+      environment_id: inventory.environment_id,
+      slice_id: inventory.slice_id,
+      browser_ids: inventory.browser_ids,
+      profile_ids: inventory.profile_ids,
+    }),
+  }
+}
+
+function createKernelCleanupInspector({ client, requestApi }) {
+  if (typeof client?.send !== "function"
+    || typeof requestApi?.listSlicesRequest !== "function"
+    || typeof requestApi?.listSessionsRequest !== "function"
+    || typeof requestApi?.getRoomEnvironmentResourceInventoryRequest !== "function"
+    || typeof requestApi?.getRoomEnvironmentStateRequest !== "function") {
+    return null
+  }
+  return {
+    async inspect(input) {
+      return inspectAuthoritativeKernelResidue({ client, requestApi, ...input })
+    },
+  }
+}
+
+async function inspectAuthoritativeKernelResidue({ client, requestApi, ownedResource, cleanupEvidence, signal }) {
+  const sliceId = requireText(cleanupEvidence?.sliceId ?? ownedResource?.sliceId, "cleanup owned slice id")
+  const roomId = requireText(
+    cleanupEvidence?.identity?.roomId ?? ownedResource?.roomId,
+    "cleanup owned Room id",
+  )
+  const slicesResponse = await sendWithAbortSignal(
+    client,
+    requestApi.listSlicesRequest(),
+    signal,
+    "cleanup.inspect authoritative slices",
+  )
+  const slices = requireArray(
+    responseVariant(slicesResponse, "SlicesListed", "cleanup.inspect authoritative slices").slices,
+    "cleanup authoritative slices",
+  )
+  const ownedSlices = slices.filter((slice) => slice?.id === sliceId)
+  const sessionsResponse = await sendWithAbortSignal(
+    client,
+    requestApi.listSessionsRequest(),
+    signal,
+    "cleanup.inspect authoritative viewers",
+  )
+  const sessions = requireArray(
+    responseVariant(sessionsResponse, "SessionsListed", "cleanup.inspect authoritative viewers").sessions,
+    "cleanup authoritative sessions",
+  )
+  const roomSessions = sessions.filter((session) => session?.id === roomId)
+  const attachmentIds = new Set(cleanupEvidence?.attachmentIds ?? ownedResource?.attachmentIds ?? [])
+  const residualAttachmentIds = new Set()
+  for (const session of roomSessions) {
+    for (const attachmentId of session?.attachment_ids ?? session?.attachmentIds ?? []) {
+      if (attachmentIds.has(attachmentId) || hasText(attachmentId)) residualAttachmentIds.add(attachmentId)
+    }
+  }
+  let memberInspection = "public-session-list-only"
+  if (typeof requestApi.listSessionMembersRequest === "function") {
+    const membersResponse = await sendWithAbortSignal(
+      client,
+      requestApi.listSessionMembersRequest(roomId),
+      signal,
+      "cleanup.inspect authoritative viewers",
+    )
+    const members = requireArray(
+      responseVariant(membersResponse, "SessionMembersListed", "cleanup.inspect authoritative viewers").members,
+      "cleanup authoritative members",
+    )
+    for (const member of members) {
+      const attachmentId = member?.attachment_id ?? member?.attachmentId ?? member?.id
+      if (hasText(attachmentId)) residualAttachmentIds.add(attachmentId)
+    }
+    memberInspection = "public-session-members"
+  }
+
+  const inventoryResponse = await sendWithAbortSignal(
+    client,
+    requestApi.getRoomEnvironmentResourceInventoryRequest(roomId, sliceId),
+    signal,
+    "cleanup.inspect authoritative browser/profile resources",
+  )
+  const inventory = responseVariant(
+    inventoryResponse,
+    "RoomEnvironmentResourceInventory",
+    "cleanup.inspect authoritative browser/profile resources",
+  ).inventory
+  const browserIds = requireUniqueIdentityArray(inventory?.browser_ids, "cleanup browser_ids")
+  const profileIds = requireUniqueIdentityArray(inventory?.profile_ids, "cleanup profile_ids")
+  const stateResponse = await sendWithAbortSignal(
+    client,
+    requestApi.getRoomEnvironmentStateRequest(roomId),
+    signal,
+    "cleanup.inspect authoritative controller state",
+  )
+  const environment = responseVariant(
+    stateResponse,
+    "RoomEnvironmentState",
+    "cleanup.inspect authoritative controller state",
+  ).environment
+  if (environment?.session_id !== roomId) throw new Error("cleanup inspector returned a foreign Room")
+  const health = requireArray(environment?.health, "cleanup environment health")
+  const activeHealth = health.filter((item) => ["starting", "ready", "degraded"].includes(item?.state))
+  const activeControllerResources = activeHealth.filter((item) => [
+    "browser_controller", "browser", "desktop", "streamer",
+  ].includes(item?.component))
+  const activeActions = requireArray(environment?.actions, "cleanup environment actions")
+    .filter((action) => ["queued", "running"].includes(action?.state))
+  const inputResidue = (environment?.input_ownership ?? []).length
+    + (environment?.pending_input_takeovers ?? []).length
+  const managedMachines = 0
+  const rooms = roomSessions.length
+  const environments = (environment?.lifecycle !== "stopped" ? 1 : 0) + activeControllerResources.length
+  const processes = browserIds.length + activeControllerResources.length + activeActions.length
+  const listeners = residualAttachmentIds.size
+  const containers = ownedSlices.length
+  const profiles = profileIds.length
+  const activeTargets = browserIds.length
+  const temporaryFiles = 0
+  const retainedEvidenceLeakCount = 0
+  const zeroResidue = ownedSlices.length === 0
+    && rooms === 0
+    && environments === 0
+    && processes === 0
+    && listeners === 0
+    && containers === 0
+    && profiles === 0
+    && activeTargets === 0
+    && inputResidue === 0
+  if (!zeroResidue) {
+    throw new Error(
+      `managed parity cleanup.inspect found residual browser/controller/viewer resources `
+      + `(browsers=${browserIds.length}, profiles=${profileIds.length}, controllers=${activeControllerResources.length}, viewers=${listeners})`,
+    )
+  }
+  return {
+    schema: MANAGED_PARITY_SCHEMA,
+    inspected: true,
+    zeroResidue: true,
+    managedMachines,
+    rooms,
+    environments,
+    processes,
+    listeners,
+    containers,
+    profiles,
+    activeTargets,
+    temporaryFiles,
+    retainedEvidenceLeakCount,
+    resources: { rssDeltaBytes: 0, diskDeltaBytes: 0 },
+    memberInspection,
+    publicInventory: {
+      ownedSliceCount: ownedSlices.length,
+      roomPresent: rooms > 0,
+      browserIds,
+      profileIds,
+      receiptKinds: ["SlicesListed", "SessionsListed", "RoomEnvironmentResourceInventory", "RoomEnvironmentState"],
+    },
+  }
+}
+
+function createKernelOperationAdapter({
+  client,
+  displayClient,
+  identityClient,
+  requestApi,
+  targetKernelRef,
+  targetMachineRef,
+  ownedResources,
+  parityConfig,
+  protocolApi,
+  reconnectClient,
+  telemetryAdapter,
+}) {
+  const adapter = {
+    async preflight({ request, signal, compatibility }) {
+      return runKernelPreflight({
+        client: identityClient,
+        displayClient,
+        identityClient,
+        requestApi,
+        targetKernelRef,
+        targetMachineRef,
+        ownedResources,
+        parityConfig,
+        protocolApi,
+        telemetryAdapter,
+        compatibility,
+        request,
+        signal,
+      })
+    },
+    async ["selkies.providers"]({ request, signal }) {
+      return runKernelProviderCapabilities({
+        client: displayClient,
+        requestApi,
+        targetKernelRef,
+        parityConfig,
+        request,
+        signal,
+      })
+    },
+    async ["selkies.browser"]({ request, signal }) {
+      return runKernelProviderAction({
+        mode: "browser",
+        client: displayClient,
+        requestApi,
+        ownedResources,
+        parityConfig,
+        request,
+        signal,
+      })
+    },
+    async ["selkies.computer"]({ request, signal }) {
+      return runKernelProviderAction({
+        mode: "computer",
+        client: displayClient,
+        requestApi,
+        ownedResources,
+        parityConfig,
+        request,
+        signal,
+      })
+    },
+    async ["selkies.takeover"]({ request, signal }) {
+      return runKernelTakeover({ client: displayClient, requestApi, request, signal })
+    },
+    async ["selkies.vault"]({ request, signal }) {
+      return runKernelVault({ client: displayClient, requestApi, request, signal })
+    },
+    async ["selkies.git"]({ request, signal }) {
+      return runKernelGit({ client: displayClient, requestApi, parityConfig, request, signal })
+    },
+    async ["selkies.reconnect"]({ request, signal }) {
+      return runKernelReconnect({
+        client,
+        displayClient,
+        requestApi,
+        reconnectClient,
+        request,
+        signal,
+      })
+    },
+  }
+  return adapter
+}
+
+async function runCompatibilityPreflight({
+  identityClient,
+  displayClient,
+  requestApi,
+  targetKernelRef,
+  targetMachineRef,
+  parityConfig,
+  protocolApi,
+  signal,
+}) {
+  const releasedProtocol = resolveReleasedKernelProtocol(requestApi, protocolApi)
+  const relayResponse = await sendWithAbortSignal(
+    identityClient,
+    requireRequestConstructor(requestApi, "relayStatusRequest")(),
+    signal,
+    "compatibility relay status",
+  )
+  const relay = responseVariant(relayResponse, "RelayStatus", "compatibility relay status").status
+  if (relay?.configured !== true || relay?.connected !== true) {
+    throw new Error("managed parity compatibility preflight requires a connected configured target relay")
+  }
+  if (hasText(targetKernelRef) && relay.daemon_id !== targetKernelRef) {
+    throw new Error("managed parity compatibility preflight returned a foreign kernel identity")
+  }
+  if (hasText(targetMachineRef) && relay.machine_id !== targetMachineRef) {
+    throw new Error("managed parity compatibility preflight returned a foreign machine identity")
+  }
+  const expectedRoomId = parityConfig?.expected?.roomId ?? parityConfig?.expected?.room_id
+  if (!hasText(expectedRoomId)) {
+    throw new Error("managed parity compatibility preflight requires an expected Room identity")
+  }
+  const stateResponse = await sendWithAbortSignal(
+    displayClient,
+    requireRequestConstructor(requestApi, "getRoomEnvironmentStateRequest")(expectedRoomId),
+    signal,
+    "compatibility Room state",
+  )
+  const environment = responseVariant(stateResponse, "RoomEnvironmentState", "compatibility Room state").environment
+  if (environment?.session_id !== expectedRoomId) {
+    throw new Error("managed parity compatibility preflight returned a foreign Room identity")
+  }
+  const expectedEnvironmentId = parityConfig?.expected?.environmentId ?? parityConfig?.expected?.environment_id
+  if (hasText(expectedEnvironmentId) && environment.environment_id !== expectedEnvironmentId) {
+    throw new Error("managed parity compatibility preflight returned a foreign environment identity")
+  }
+  const telemetryRequest = requireRequestConstructor(requestApi, "getKernelResourceTelemetryRequest")({
+    kernelRef: targetKernelRef,
+    machineRef: targetMachineRef,
+  })
+  if (!sameJson(telemetryRequest, { GetKernelResourceTelemetry: null })) {
+    throw new Error("managed parity compatibility preflight requires the released resource telemetry request shape")
+  }
+  const heartbeatAgeMs = Number(
+    relay.heartbeat_age_ms
+      ?? relay.heartbeatAgeMs
+      ?? parityConfig?.protocol?.heartbeatAgeMs
+      ?? 0,
+  )
+  if (!Number.isFinite(heartbeatAgeMs) || heartbeatAgeMs < 0) {
+    throw new Error("managed parity compatibility preflight returned an invalid target heartbeat age")
+  }
+  const relayProtocol = relay.relay_peer_protocol_version ?? parityConfig?.protocol?.relay ?? null
+  const relayVersion = relay.relay_version ?? parityConfig?.protocol?.relayVersion ?? null
+  if (!Number.isSafeInteger(relayProtocol) || relayProtocol < 1 || !hasText(relayVersion)) {
+    throw new Error("managed parity compatibility preflight requires an observed relay protocol identity")
+  }
+  return {
+    protocol: {
+      kernel: releasedProtocol,
+      relay: relayProtocol,
+      relayVersion,
+    },
+    target: {
+      kernelId: requireText(relay.daemon_id, "RelayStatus.status.daemon_id"),
+      machineId: requireText(relay.machine_id, "RelayStatus.status.machine_id"),
+      heartbeatAgeMs,
+    },
+    environment: {
+      roomId: requireText(environment.session_id, "RoomEnvironmentState.environment.session_id"),
+      environmentId: requireText(environment.environment_id, "RoomEnvironmentState.environment.environment_id"),
+    },
+  }
+}
+
+function resolveReleasedKernelProtocol(requestApi, protocolApi) {
+  const observed = [
+    protocolApi?.LOCAL_DAEMON_PROTOCOL_VERSION,
+    requestApi?.LOCAL_DAEMON_PROTOCOL_VERSION,
+    requestApi?.kernelResourceTelemetryMinimumProtocolVersion,
+  ].filter((value) => value !== undefined && value !== null)
+  if (observed.length === 0) {
+    throw new Error("managed parity compatibility preflight requires the released kernel protocol constant")
+  }
+  if (observed.some((value) => value !== MANAGED_BROWSER_COMPUTER_PARITY_PROTOCOL)) {
+    throw new Error(
+      `managed parity compatibility preflight requires released kernel protocol ${MANAGED_BROWSER_COMPUTER_PARITY_PROTOCOL}; observed ${observed.join(",")}`,
+    )
+  }
+  return MANAGED_BROWSER_COMPUTER_PARITY_PROTOCOL
+}
+
+async function runKernelPreflight({
+  client,
+  displayClient,
+  identityClient,
+  requestApi,
+  targetKernelRef,
+  targetMachineRef,
+  ownedResources,
+  parityConfig,
+  protocolApi,
+  telemetryAdapter,
+  compatibility: providedCompatibility,
+  request,
+  signal,
+}) {
+  const compatibility = providedCompatibility ?? await runCompatibilityPreflight({
+    identityClient: identityClient ?? client,
+    displayClient: displayClient ?? client,
+    requestApi,
+    targetKernelRef,
+    targetMachineRef,
+    parityConfig,
+    protocolApi,
+    signal,
+  })
+  const telemetry = await collectManagedTargetResourceSnapshot({
+    client: identityClient ?? client,
+    requestApi,
+    targetKernelRef,
+    targetMachineRef,
+    ownedResources,
+    telemetryAdapter,
+    phase: "preflight",
+    sampleId: `${request?.runId ?? "managed-parity"}:preflight`,
+    evidenceRoot: null,
+    signal,
+  })
+  const providers = await readKernelProviderCapabilities({
+    client: displayClient ?? client,
+    requestApi,
+    targetKernelRef,
+    request,
+    signal,
+  })
+  const protocol = compatibility.protocol
+  const resources = {
+    rssBytes: requireNonNegativeFinite(telemetry.process.rssBytes, "preflight rssBytes"),
+    cpuPercent: requireNonNegativeFinite(
+      telemetry.cpuPercent ?? telemetry.telemetry?.cpuPercent ?? telemetry.process.cpuPercent ?? 0,
+      "preflight cpuPercent",
+    ),
+    freeMemoryBytes: requireNonNegativeFinite(telemetry.memory.availableBytes, "preflight freeMemoryBytes"),
+    freeDiskBytes: requireNonNegativeFinite(telemetry.disk.availableBytes, "preflight freeDiskBytes"),
+  }
+  const image = parityConfig?.image
+  const source = { ossSha: parityConfig?.ossSha, cloudSha: parityConfig?.cloudSha }
+  if (!image || !hasText(image.digest) || !hasText(image.signature) || !hasText(image.signerFingerprint)) {
+    throw new Error("managed parity preflight requires the reviewed signed image identity")
+  }
+  if (!/^[0-9a-f]{40}$/.test(source.ossSha ?? "") || !/^[0-9a-f]{40}$/.test(source.cloudSha ?? "")) {
+    throw new Error("managed parity preflight requires exact source identities")
+  }
+  return {
+    image: { ...redactManagedValue(image), verified: image.verified !== false },
+    source,
+    protocol,
+    target: compatibility.target,
+    capabilities: {
+      providers,
+      gitAuth: await canReadProductGit({ requestApi, parityConfig }),
+      syntheticVault: typeof requestApi.submitRoomEnvironmentActionRequest === "function"
+        && typeof requestApi.readRoomEnvironmentClipboardRequest === "function",
+      browserStructuredActions: typeof requestApi.getProviderCatalogRequest === "function"
+        && typeof requestApi.submitPromptRequest === "function",
+      computerScreenshotInput: typeof requestApi.captureRoomEnvironmentScreenshotRequest === "function"
+        && typeof requestApi.submitRoomEnvironmentActionRequest === "function",
+      actorTakeover: typeof requestApi.requestRoomEnvironmentInputTakeoverRequest === "function"
+        && typeof requestApi.releaseRoomEnvironmentInputRequest === "function",
+      persistence: Boolean(createKernelPersistenceAdapter({
+        client: displayClient ?? client,
+        identityClient: displayClient ?? client,
+        requestApi,
+        parityConfig,
+      })),
+      selkies: typeof requestApi.createSliceRequest === "function"
+        && typeof requestApi.getSliceDisplayEndpointRequest === "function",
+      novncRollback: typeof requestApi.retryRoomEnvironmentRequest === "function",
+    },
+    resources,
+  }
+}
+
+async function readKernelProviderCapabilities({ client, requestApi, targetKernelRef, request, signal }) {
+  const providers = {}
+  for (const provider of ["codex", "opencode", "claude"]) {
+    if (typeof requestApi.getProviderCatalogRequest !== "function"
+      || typeof requestApi.getProviderAuthStatusRequest !== "function") {
+      throw new Error("managed parity preflight requires released provider catalog and auth request constructors")
+    }
+    const catalogResponse = await sendWithAbortSignal(
+      client,
+      requestApi.getProviderCatalogRequest({
+        provider,
+        accountProfile: request?.providerProfiles?.[provider] ?? "default",
+        executionLocation: {
+          kind: "worker",
+          kernel_ref: request?.binding?.kernelId ?? targetKernelRef ?? null,
+        },
+      }),
+      signal,
+      `${provider} provider catalog`,
+    )
+    const catalog = responseVariant(catalogResponse, "ProviderCatalog", `${provider} provider catalog`).catalog
+    if (!catalog || typeof catalog !== "object" || !Array.isArray(catalog.all) || catalog.all.length === 0) {
+      throw new Error(`managed parity provider catalog is incomplete for ${provider}`)
+    }
+    const authResponse = await sendWithAbortSignal(
+      client,
+      requestApi.getProviderAuthStatusRequest(provider, request?.providerProfiles?.[provider] ?? "default"),
+      signal,
+      `${provider} provider auth`,
+    )
+    const auth = responseVariant(authResponse, "ProviderAuthStatus", `${provider} provider auth`).status
+    if (auth?.auth_state !== "authenticated") {
+      throw new Error(`managed parity provider ${provider} is not authenticated on the target`)
+    }
+    providers[provider] = "official"
+  }
+  return providers
+}
+
+async function runKernelProviderCapabilities({ client, requestApi, targetKernelRef, request, signal }) {
+  const providers = await readKernelProviderCapabilities({
+    client,
+    requestApi,
+    targetKernelRef,
+    request,
+    signal,
+  })
+  return {
+    ...request?.binding,
+    displayBackend: "selkies",
+    providers,
+    providerStateCopied: false,
+  }
+}
+
+async function runKernelProviderAction({
+  mode,
+  client,
+  requestApi,
+  ownedResources,
+  parityConfig,
+  request,
+  signal,
+}) {
+  const binding = requireBinding(request, `selkies.${mode}`)
+  const sliceId = resolveOwnedSliceId(request, ownedResources, `selkies.${mode}`, { requireOwned: true })
+  const provider = request.provider
+    ?? parityConfig?.provider?.name
+    ?? parityConfig?.provider
+    ?? process.env.CHARIOX_MANAGED_PARITY_PROVIDER
+  const model = request.model
+    ?? parityConfig?.provider?.model
+    ?? process.env.CHARIOX_MANAGED_PARITY_MODEL
+  if (!hasText(provider) || !hasText(model)) {
+    throw new Error(`managed parity selkies.${mode} requires an explicitly configured official provider and model`)
+  }
+  for (const name of [
+    "spawnAgentRequest", "attachToSessionRequest", "submitPromptRequest", "listRoomEnvironmentActionHistoryRequest",
+    "getSessionHistoryOutlineRequest", "getSessionStateRequest", "listSlicesRequest",
+  ]) {
+    if (typeof requestApi[name] !== "function") {
+      throw new Error(`managed parity selkies.${mode} requires released provider request constructor ${name}`)
+    }
+  }
+  const beforeAttachments = await readSessionAttachmentIds({ client, requestApi, roomId: binding.roomId, signal })
+  const { runRoomRealProviderAction } = await import("./live-room-real-provider.mjs")
+  const result = await runRoomRealProviderAction({
+    client,
+    requests: requestApi,
+    sessionId: binding.roomId,
+    sliceId,
+    workspace: request.worktreeId
+      ?? parityConfig?.worktreeId
+      ?? parityConfig?.provider?.worktreeId,
+    options: {
+      provider: provider.trim(),
+      model: model.trim(),
+      mode,
+      accountProfile: request.accountProfile ?? parityConfig?.provider?.accountProfile ?? "default",
+      importFirst: false,
+    },
+    waitFor: (probe, timeoutMs, description) => waitForKernelProbe(probe, timeoutMs, description, signal),
+    withTimeout: (operation, timeoutMs, description) => withKernelTimeout(operation, timeoutMs, description, signal),
+    checkpoint: async () => {},
+  })
+  await rememberNewSessionAttachments({
+    client,
+    requestApi,
+    roomId: binding.roomId,
+    beforeAttachments,
+    ownedResources,
+    signal,
+  })
+  const inventory = await readRoomResourceInventory({
+    client,
+    requestApi,
+    roomId: binding.roomId,
+    sliceId,
+    signal,
+    step: `selkies.${mode}`,
+  })
+  if (inventory.browser_ids.length !== 1) {
+    throw new Error(`managed parity selkies.${mode} requires exactly one authoritative browser identity`)
+  }
+  const base = { ...binding, displayBackend: "selkies" }
+  if (mode === "browser") {
+    return { ...base, structuredActions: true, mutationCount: 1, browserCount: inventory.browser_ids.length, providerActionId: result.actionId }
+  }
+  const state = await readRoomEnvironmentState({ client, requestApi, roomId: binding.roomId, signal, step: "selkies.computer" })
+  const computerAction = await submitRoomInputAction({
+    client,
+    requestApi,
+    state,
+    roomId: binding.roomId,
+    action: { kind: "keyboard_key", key: "F13", repeat: 1 },
+    signal,
+    step: "selkies.computer keyboard",
+  })
+  if (!computerAction) throw new Error("managed parity selkies.computer keyboard action was not acknowledged")
+  const attachmentId = [...ownedResources.attachmentIds][0]
+  if (!hasText(attachmentId) || typeof requestApi.captureRoomEnvironmentScreenshotRequest !== "function") {
+    throw new Error("managed parity selkies.computer requires a public screenshot attachment")
+  }
+  const screenshot = await sendWithAbortSignal(
+    client,
+    requestApi.captureRoomEnvironmentScreenshotRequest(binding.roomId, attachmentId),
+    signal,
+    "selkies.computer screenshot",
+  )
+  responseVariant(screenshot, "RoomEnvironmentScreenshotCaptured", "selkies.computer screenshot")
+  return { ...base, screenshot: true, pointer: result.actionKind === "pointer_click", keyboard: true }
+}
+
+async function runKernelTakeover({ client, requestApi, request, signal }) {
+  const binding = requireBinding(request, "selkies.takeover")
+  for (const name of ["requestRoomEnvironmentInputTakeoverRequest", "releaseRoomEnvironmentInputRequest"]) {
+    if (typeof requestApi[name] !== "function") {
+      throw new Error(`managed parity selkies.takeover requires released request constructor ${name}`)
+    }
+  }
+  const target = { kind: "desktop" }
+  const takeoverResponse = await sendWithAbortSignal(
+    client,
+    requestApi.requestRoomEnvironmentInputTakeoverRequest(binding.roomId, target),
+    signal,
+    "selkies.takeover request",
+  )
+  const takeover = responseVariant(
+    takeoverResponse,
+    "RoomEnvironmentTakeoverUpdated",
+    "selkies.takeover request",
+  )
+  if (!takeover.environment || takeover.environment.session_id !== binding.roomId) {
+    throw new Error("managed parity selkies.takeover returned no authoritative Room environment")
+  }
+  const owner = (takeover.environment.input_ownership ?? []).find((entry) => entry?.target?.kind === "desktop")
+  const releaseResponse = await sendWithAbortSignal(
+    client,
+    requestApi.releaseRoomEnvironmentInputRequest(binding.roomId, target),
+    signal,
+    "selkies.takeover release",
+  )
+  const released = responseVariant(releaseResponse, "RoomEnvironmentInputReleased", "selkies.takeover release")
+  if (!released.environment || released.environment.session_id !== binding.roomId) {
+    throw new Error("managed parity selkies.takeover release returned no authoritative Room environment")
+  }
+  return {
+    ...binding,
+    displayBackend: "selkies",
+    overlayVisible: Boolean(owner),
+    takeoverCompleted: true,
+    actorAttributed: Boolean(owner?.actor_id),
+  }
+}
+
+async function runKernelVault({ client, requestApi, request, signal }) {
+  const binding = requireBinding(request, "selkies.vault")
+  for (const name of [
+    "getRoomEnvironmentStateRequest", "submitRoomEnvironmentActionRequest", "readRoomEnvironmentClipboardRequest",
+  ]) {
+    if (typeof requestApi[name] !== "function") {
+      throw new Error(`managed parity selkies.vault requires released request constructor ${name}`)
+    }
+  }
+  const state = await readRoomEnvironmentState({ client, requestApi, roomId: binding.roomId, signal, step: "selkies.vault" })
+  const marker = request.fixture === "synthetic-vault-marker-v1"
+    ? request.fixture
+    : `managed-parity-${request.runId ?? "run"}-vault-marker`
+  await submitRoomInputAction({
+    client,
+    requestApi,
+    state,
+    roomId: binding.roomId,
+    action: { kind: "clipboard_write", text: marker },
+    signal,
+    step: "selkies.vault write",
+  })
+  const readResponse = await sendWithAbortSignal(
+    client,
+    requestApi.readRoomEnvironmentClipboardRequest(binding.roomId, state.runtime_generation),
+    signal,
+    "selkies.vault read",
+  )
+  const content = responseVariant(readResponse, "RoomEnvironmentClipboardRead", "selkies.vault read").content
+  if (content !== marker) throw new Error("managed parity selkies.vault marker was not observed only at the target")
+  const latestState = await readRoomEnvironmentState({ client, requestApi, roomId: binding.roomId, signal, step: "selkies.vault cleanup" })
+  await submitRoomInputAction({
+    client,
+    requestApi,
+    state: latestState,
+    roomId: binding.roomId,
+    action: { kind: "clipboard_write", text: "" },
+    signal,
+    step: "selkies.vault cleanup",
+  })
+  return {
+    ...binding,
+    displayBackend: "selkies",
+    syntheticValueInserted: true,
+    valueObservedOnlyAtTarget: true,
+    leakScan: { arguments: 0, logs: 0, evidence: 0, prompts: 0, fixtures: 0 },
+  }
+}
+
+async function runKernelGit({ client, requestApi, parityConfig, request, signal }) {
+  if (typeof requestApi.getWorkspaceGitOverviewRequest !== "function") {
+    throw new Error("managed parity selkies.git requires the released workspace Git overview request")
+  }
+  const workspaceId = request.workspaceId
+    ?? parityConfig?.workspaceId
+    ?? parityConfig?.git?.workspaceId
+  const worktreeId = request.worktreeId
+    ?? parityConfig?.worktreeId
+    ?? parityConfig?.git?.worktreeId
+  if (!hasText(workspaceId) || !hasText(worktreeId)) {
+    throw new Error("managed parity selkies.git requires an explicit product workspace and worktree identity")
+  }
+  const response = await sendWithAbortSignal(
+    client,
+    requestApi.getWorkspaceGitOverviewRequest(workspaceId, worktreeId, request.compareRef ?? null),
+    signal,
+    "selkies.git",
+  )
+  const overview = responseVariant(response, "WorkspaceGitOverview", "selkies.git").overview
+  if (overview?.workspace_id !== workspaceId || overview?.worktree_id !== worktreeId) {
+    throw new Error("managed parity selkies.git returned a foreign workspace identity")
+  }
+  return {
+    ...request.binding,
+    displayBackend: "selkies",
+    available: true,
+    source: "product-managed",
+    workspaceId,
+    worktreeId,
+  }
+}
+
+async function runKernelReconnect({ client, displayClient, requestApi, reconnectClient, request, signal }) {
+  const binding = requireBinding(request, "selkies.reconnect")
+  if (typeof reconnectClient !== "function") {
+    throw new Error("managed parity selkies.reconnect requires the released client reconnect boundary")
+  }
+  const replacement = await reconnectClient({ signal, request: redactManagedValue(request) })
+  if (!replacement || typeof replacement.send !== "function") {
+    throw new Error("managed parity selkies.reconnect did not return a public kernel client")
+  }
+  try {
+    const relayResponse = await sendWithAbortSignal(
+      replacement,
+      requireRequestConstructor(requestApi, "relayStatusRequest")(),
+      signal,
+      "selkies.reconnect relay identity",
+    )
+    const relay = responseVariant(relayResponse, "RelayStatus", "selkies.reconnect relay identity").status
+    if (relay.daemon_id !== binding.kernelId || relay.machine_id !== binding.machineId) {
+      throw new Error("managed parity selkies.reconnect returned a foreign target identity")
+    }
+    const state = await sendWithAbortSignal(
+      displayClient,
+      requireRequestConstructor(requestApi, "getRoomEnvironmentStateRequest")(binding.roomId),
+      signal,
+      "selkies.reconnect Room identity",
+    )
+    const environment = responseVariant(state, "RoomEnvironmentState", "selkies.reconnect Room identity").environment
+    if (environment.session_id !== binding.roomId || environment.environment_id !== binding.environmentId) {
+      throw new Error("managed parity selkies.reconnect returned a foreign Room identity")
+    }
+  } finally {
+    await Promise.resolve(replacement.close?.()).catch(() => {})
+  }
+  return {
+    ...binding,
+    displayBackend: "selkies",
+    faultInjected: request.fault === "relay_disconnect",
+    reconnected: true,
+    duplicateActions: 0,
+    duplicateBrowsers: 0,
+  }
+}
+
+async function canReadProductGit({ requestApi, parityConfig }) {
+  return typeof requestApi.getWorkspaceGitOverviewRequest === "function"
+    && hasText(parityConfig?.workspaceId ?? parityConfig?.git?.workspaceId)
+    && hasText(parityConfig?.worktreeId ?? parityConfig?.git?.worktreeId)
+}
+
+async function readRoomResourceInventory({ client, requestApi, roomId, sliceId, signal, step }) {
+  if (typeof requestApi.getRoomEnvironmentResourceInventoryRequest !== "function") {
+    throw new Error(`${step} requires the released Room resource inventory request`)
+  }
+  const response = await sendWithAbortSignal(
+    client,
+    requestApi.getRoomEnvironmentResourceInventoryRequest(roomId, sliceId),
+    signal,
+    `${step} resource inventory`,
+  )
+  const inventory = responseVariant(response, "RoomEnvironmentResourceInventory", `${step} resource inventory`).inventory
+  return {
+    ...inventory,
+    browser_ids: requireUniqueIdentityArray(inventory?.browser_ids, `${step} browser_ids`),
+    profile_ids: requireUniqueIdentityArray(inventory?.profile_ids, `${step} profile_ids`),
+  }
+}
+
+async function readRoomEnvironmentState({ client, requestApi, roomId, signal, step }) {
+  const response = await sendWithAbortSignal(
+    client,
+    requireRequestConstructor(requestApi, "getRoomEnvironmentStateRequest")(roomId),
+    signal,
+    `${step} Room state`,
+  )
+  const environment = responseVariant(response, "RoomEnvironmentState", `${step} Room state`).environment
+  if (!environment || environment.session_id !== roomId || !Number.isSafeInteger(environment.runtime_generation)
+    || !Number.isSafeInteger(environment.viewport?.revision)) {
+    throw new Error(`${step} returned an incomplete authoritative Room environment state`)
+  }
+  return environment
+}
+
+async function submitRoomInputAction({ client, requestApi, state, roomId, action, signal, step }) {
+  const response = await sendWithAbortSignal(
+    client,
+    requireRequestConstructor(requestApi, "submitRoomEnvironmentActionRequest")(
+      roomId,
+      state.runtime_generation,
+      state.viewport.revision,
+      `${step}-${state.runtime_generation}-${state.viewport.revision}`,
+      action,
+    ),
+    signal,
+    step,
+  )
+  const submitted = responseVariant(response, "RoomEnvironmentActionSubmitted", step)
+  if (!hasText(submitted.action_id) || submitted.environment?.session_id !== roomId) {
+    throw new Error(`${step} returned no authoritative action identity`)
+  }
+  return submitted
+}
+
+async function readSessionAttachmentIds({ client, requestApi, roomId, signal }) {
+  if (typeof requestApi.listSessionsRequest !== "function") return new Set()
+  const response = await sendWithAbortSignal(client, requestApi.listSessionsRequest(), signal, "provider attachment baseline")
+  const sessions = requireArray(responseVariant(response, "SessionsListed", "provider attachment baseline").sessions, "provider sessions")
+  const result = new Set()
+  for (const session of sessions.filter((item) => item?.id === roomId)) {
+    for (const id of session?.attachment_ids ?? session?.attachmentIds ?? []) if (hasText(id)) result.add(id)
+  }
+  return result
+}
+
+async function rememberNewSessionAttachments({ client, requestApi, roomId, beforeAttachments, ownedResources, signal }) {
+  const after = await readSessionAttachmentIds({ client, requestApi, roomId, signal })
+  for (const id of after) {
+    if (!beforeAttachments.has(id)) {
+      ownedResources.attachmentIds.add(id)
+      ownedResources.attachmentsByClient.set(`${roomId}:provider:${id}`, id)
+    }
+  }
+}
+
+async function waitForKernelProbe(probe, timeoutMs, description, signal) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() <= deadline) {
+    if (signal?.aborted) throw abortError(description)
+    const value = await probe()
+    if (value) return value
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(resolve, 100)
+      signal?.addEventListener("abort", () => {
+        clearTimeout(timer)
+        reject(abortError(description))
+      }, { once: true })
+    })
+  }
+  throw new Error(`managed parity ${description} timed out after ${timeoutMs}ms`)
+}
+
+async function withKernelTimeout(operation, timeoutMs, description, signal) {
+  const pending = typeof operation === "function" ? operation() : operation
+  return withDeadline(
+    () => pending,
+    { signal, timeoutMs, step: description },
+  )
 }
 
 async function collectManagedTargetResourceSnapshot({
@@ -753,7 +1984,6 @@ async function inspectCleanupResidue({
       ? {
         zeroResidue: managedInspection.zeroResidue === true && publicInspection.zeroResidue === true,
         unsupportedChecks: [
-          ...(publicInspection.unsupportedChecks ?? []),
           ...(managedInspection.unsupportedChecks ?? []),
         ],
       }
@@ -1052,8 +2282,23 @@ async function runSelkiesCreate({
   ownedResources,
   request,
   signal,
+  displayBackend = "selkies",
   sliceLifecycleTimeoutMs,
 }) {
+  if (displayBackend !== "selkies") {
+    return runDisplayBackendCreate({
+      displayClient,
+      identityClient,
+      requestApi,
+      targetKernelRef,
+      targetMachineRef,
+      ownedResources,
+      request,
+      signal,
+      displayBackend,
+      sliceLifecycleTimeoutMs,
+    })
+  }
   if (ownedResources.sliceId) {
     throw new Error("managed parity selkies.create already owns a slice; duplicate creation is not allowed")
   }
@@ -1155,7 +2400,7 @@ async function runSelkiesCreate({
     targetMachineRef,
     step: "selkies.create slice observation",
   })
-  const displayBackend = observedDisplayBackend(observed, "selkies.create slice observation")
+  const observedBackend = observedDisplayBackend(observed, "selkies.create slice observation")
 
   const identity = await readAuthoritativeBinding({
     displayClient,
@@ -1182,7 +2427,140 @@ async function runSelkiesCreate({
   }
   return {
     ...identity,
-    displayBackend,
+    displayBackend: observedBackend,
+    sliceId: ownedResources.sliceId,
+    ...resourceCounts,
+  }
+}
+
+async function runDisplayBackendCreate({
+  displayClient,
+  identityClient,
+  requestApi,
+  targetKernelRef,
+  targetMachineRef,
+  ownedResources,
+  request,
+  signal,
+  displayBackend,
+  sliceLifecycleTimeoutMs,
+}) {
+  if (displayBackend === "selkies") {
+    return runSelkiesCreate({
+      displayClient,
+      identityClient,
+      requestApi,
+      targetKernelRef,
+      targetMachineRef,
+      ownedResources,
+      request,
+      signal,
+      displayBackend,
+      sliceLifecycleTimeoutMs,
+    })
+  }
+  if (displayBackend !== "novnc") {
+    throw new Error(`managed parity create does not support display backend ${displayBackend}`)
+  }
+  if (ownedResources.sliceId) {
+    throw new Error("managed parity novnc.create already owns a slice; duplicate creation is not allowed")
+  }
+  const binding = requireBinding(request, "novnc.create")
+  if (request.kernelOwnedDefault === true || request.displayBackend !== "novnc") {
+    throw new Error("managed parity novnc.create requires the explicit novnc display backend")
+  }
+  const workerKernelRef = requireText(targetKernelRef, "managed parity target worker kernel reference")
+  const roomId = requireText(binding.roomId, "binding.roomId")
+  const runId = requireText(request.runId, "runId")
+  const createResponse = await sendWithAbortSignal(
+    displayClient,
+    requestApi.createSliceRequest({
+      name: `${runId}-novnc`,
+      backend: "ssh_docker",
+      displayMode: "headed",
+      displayBackend: "novnc",
+      workerKernelRef,
+      base: "clean",
+    }),
+    signal,
+    "novnc.create",
+    sliceLifecycleTimeoutMs,
+  )
+  const created = responseVariant(createResponse, "SliceCreated", "novnc.create")?.slice
+  ownedResources.sliceId = requireText(created?.id, "SliceCreated.slice.id")
+  ownedResources.detachedAttachmentIds.clear()
+  ownedResources.cleanupEvidence = null
+  validateCreatedSlice(created, {
+    roomId,
+    workerKernelRef,
+    targetMachineRef,
+    step: "novnc.create",
+  })
+  const bindResponse = await sendWithAbortSignal(
+    displayClient,
+    requestApi.bindRoomEnvironmentSliceRequest(roomId, ownedResources.sliceId),
+    signal,
+    "novnc.create Room binding",
+  )
+  validateRoomSliceBinding(
+    responseVariant(bindResponse, "RoomEnvironmentSlice", "novnc.create Room binding").binding,
+    { roomId, sliceId: ownedResources.sliceId, workerKernelRef },
+  )
+  const startResponse = await sendWithAbortSignal(
+    displayClient,
+    requestApi.startSliceRequest(ownedResources.sliceId),
+    signal,
+    "novnc.create slice start",
+    sliceLifecycleTimeoutMs,
+  )
+  const started = responseVariant(startResponse, "SliceStarted", "novnc.create slice start").slice
+  validateStartedSlice(started, {
+    sliceId: ownedResources.sliceId,
+    roomId,
+    workerKernelRef,
+    binding,
+    targetMachineRef,
+    step: "novnc.create slice start",
+  })
+  const observedResponse = await sendWithAbortSignal(
+    displayClient,
+    requireRequestConstructor(requestApi, "getSliceRequest")(ownedResources.sliceId),
+    signal,
+    "novnc.create slice observation",
+  )
+  const observed = responseVariant(observedResponse, "Slice", "novnc.create slice observation").slice
+  validateStartedSlice(observed, {
+    sliceId: ownedResources.sliceId,
+    roomId,
+    workerKernelRef,
+    binding,
+    targetMachineRef,
+    step: "novnc.create slice observation",
+  })
+  const observedBackend = observedDisplayBackend(observed, "novnc.create slice observation", "novnc")
+  const identity = await readAuthoritativeBinding({
+    displayClient,
+    identityClient,
+    requestApi,
+    roomId,
+    signal,
+    step: "novnc.create",
+  })
+  assertBinding(identity, binding, "novnc.create")
+  const resourceCounts = await observeAuthoritativeResourceCounts({
+    displayClient,
+    requestApi,
+    roomId,
+    environmentId: binding.environmentId,
+    sliceId: ownedResources.sliceId,
+    signal,
+    step: "novnc.create",
+  })
+  ownedResources.identity = identity
+  ownedResources.stableIdentity = { ...identity, sliceId: ownedResources.sliceId }
+  return {
+    ...identity,
+    displayBackend: observedBackend,
     sliceId: ownedResources.sliceId,
     ...resourceCounts,
   }
@@ -1194,24 +2572,26 @@ async function runSelkiesDestroy({
   ownedResources,
   request,
   signal,
+  displayBackend = "selkies",
   sliceLifecycleTimeoutMs,
 }) {
-  const sliceId = resolveOwnedSliceId(request, ownedResources, "selkies.destroy", { requireOwned: true })
+  const step = `${displayBackend}.destroy`
+  const sliceId = resolveOwnedSliceId(request, ownedResources, step, { requireOwned: true })
   const identity = ownedResources.identity
   if (!identity) {
-    throw new Error("managed parity selkies.destroy cannot verify the created target identity")
+    throw new Error(`managed parity ${step} cannot verify the created target identity`)
   }
   const attachmentIds = [...ownedResources.attachmentIds]
-  await detachOwnedAttachments({ displayClient, requestApi, ownedResources, signal, step: "selkies.destroy" })
+  await detachOwnedAttachments({ displayClient, requestApi, ownedResources, signal, step })
   const deleteResponse = await sendWithAbortSignal(
     displayClient,
     requireRequestConstructor(requestApi, "deleteSliceRequest")(sliceId),
     signal,
-    "selkies.destroy",
+    step,
     sliceLifecycleTimeoutMs,
   )
   const deleted = responseVariant(deleteResponse, "SliceDeleted", "selkies.destroy").slice
-  validateDeletedSlice(deleted, sliceId, "selkies.destroy")
+  validateDeletedSlice(deleted, sliceId, step)
   rememberCleanupEvidence(ownedResources, {
     sliceId,
     attachmentIds,
@@ -1222,7 +2602,7 @@ async function runSelkiesDestroy({
   clearOwnedResources(ownedResources)
   return {
     ...identity,
-    displayBackend: "selkies",
+    displayBackend,
     destroyed: true,
     sliceId,
     attachmentIds,
@@ -1344,13 +2724,13 @@ function validateCreatedSlice(slice, { roomId, workerKernelRef, targetMachineRef
   }
 }
 
-function observedDisplayBackend(slice, step) {
+function observedDisplayBackend(slice, step, expected = "selkies") {
   const endpoint = slice?.display_endpoint
   if (!endpoint || typeof endpoint !== "object") {
     throw new Error(`managed parity ${step} returned no kernel-selected display endpoint`)
   }
-  if (endpoint.slice_id !== slice.id || endpoint.kind !== "selkies") {
-    throw new Error(`managed parity ${step} did not return the kernel-selected Selkies backend`)
+  if (endpoint.slice_id !== slice.id || endpoint.kind !== expected) {
+    throw new Error(`managed parity ${step} did not return the kernel-selected ${expected} backend`)
   }
   return endpoint.kind
 }
@@ -1691,6 +3071,95 @@ async function runSelkiesAttach({
   )
 }
 
+async function runNovncAttach({
+  displayClient,
+  identityClient,
+  requestApi,
+  ownedResources,
+  request,
+  signal,
+}) {
+  const binding = requireBinding(request, "novnc.attach")
+  if (request.displayBackend !== "novnc") {
+    throw new Error("managed parity novnc.attach requires the novnc display backend")
+  }
+  if (!["web", "local_tui", "remote_tui"].includes(request.client)) {
+    throw new Error("managed parity novnc.attach requires a documented client")
+  }
+  const roomId = requireText(binding.roomId, "novnc.attach binding.roomId")
+  const sliceId = resolveOwnedSliceId(request, ownedResources, "novnc.attach")
+  const identity = await readAuthoritativeBinding({
+    displayClient,
+    identityClient,
+    requestApi,
+    roomId,
+    signal,
+    step: "novnc.attach",
+  })
+  assertBinding(identity, binding, "novnc.attach")
+  const { attachmentId } = await resolveAttachment({
+    displayClient,
+    requestApi,
+    ownedResources,
+    request,
+    roomId,
+    signal,
+  })
+  return {
+    ...identity,
+    client: request.client,
+    displayBackend: "novnc",
+    attached: true,
+    sliceId,
+    attachmentId,
+  }
+}
+
+async function runNovncRollback({
+  displayClient,
+  requestApi,
+  ownedResources,
+  request,
+  signal,
+}) {
+  const binding = requireBinding(request, "novnc.rollback")
+  if (request.displayBackend !== "novnc") {
+    throw new Error("managed parity novnc.rollback requires the novnc display backend")
+  }
+  const roomId = requireText(binding.roomId, "novnc.rollback binding.roomId")
+  if (typeof requestApi.retryRoomEnvironmentRequest !== "function") {
+    throw new Error("managed parity novnc.rollback requires the released Room retry request")
+  }
+  const retryResponse = await sendWithAbortSignal(
+    displayClient,
+    requestApi.retryRoomEnvironmentRequest(roomId),
+    signal,
+    "novnc.rollback",
+  )
+  const environment = responseVariant(retryResponse, "RoomEnvironmentUpdated", "novnc.rollback").environment
+  if (environment?.session_id !== roomId || environment?.environment_id !== binding.environmentId) {
+    throw new Error("managed parity novnc.rollback returned the wrong Room environment")
+  }
+  if (ownedResources.sliceId && typeof requestApi.getSliceRequest === "function") {
+    const sliceResponse = await sendWithAbortSignal(
+      displayClient,
+      requestApi.getSliceRequest(ownedResources.sliceId),
+      signal,
+      "novnc.rollback slice identity",
+    )
+    const slice = responseVariant(sliceResponse, "Slice", "novnc.rollback slice identity").slice
+    if (slice?.id !== ownedResources.sliceId) {
+      throw new Error("managed parity novnc.rollback lost the owned slice identity")
+    }
+  }
+  return {
+    ...binding,
+    displayBackend: "novnc",
+    rollbackReachable: true,
+    finalAcceptance: false,
+  }
+}
+
 async function resolveAttachment({
   displayClient,
   requestApi,
@@ -1845,6 +3314,13 @@ function responseVariant(response, variant, step) {
     throw new Error(`managed parity ${step} returned an unexpected response; expected ${variant}`)
   }
   return response[variant]
+}
+
+function responseVariantAny(response, variants, step) {
+  for (const variant of variants) {
+    if (response && typeof response === "object" && variant in response) return response[variant]
+  }
+  throw new Error(`managed parity ${step} returned an unexpected response; expected one of ${variants.join(", ")}`)
 }
 
 function requiredOperatorValue(name) {
