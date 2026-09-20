@@ -1,5 +1,22 @@
+import { createHash } from "node:crypto";
+
 const MAX_IDENTIFIER_BYTES = 128;
 const MAX_OPERATION_BYTES = 64;
+const ATTRIBUTION_FIELDS = Object.freeze([
+  "action_id",
+  "actor_id",
+  "browser_generation",
+  "operation",
+  "tab_id",
+  "target_generation",
+]);
+const MUTATION_IDENTITY_FIELDS = Object.freeze([
+  "target_id",
+  "page_id",
+  "document_id",
+  "arguments",
+  "payload",
+]);
 
 export const MUTATION_ERROR_CODES = Object.freeze({
   INVALID_ARGUMENT: "MUTATION_INVALID_ARGUMENT",
@@ -50,18 +67,11 @@ function positiveInteger(value) {
 
 function normalizeAttribution(value) {
   if (!isPlainObject(value)) fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
-  const allowed = new Set([
-    "action_id",
-    "actor_id",
-    "browser_generation",
-    "operation",
-    "tab_id",
-    "target_generation",
-  ]);
+  const allowed = new Set([...ATTRIBUTION_FIELDS, ...MUTATION_IDENTITY_FIELDS]);
   if (Object.keys(value).some((key) => !allowed.has(key))) {
     fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
   }
-  for (const key of allowed) {
+  for (const key of ATTRIBUTION_FIELDS) {
     if (!Object.prototype.hasOwnProperty.call(value, key)) {
       fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
     }
@@ -84,8 +94,74 @@ function normalizeAttribution(value) {
   });
 }
 
-function fingerprint(attribution) {
-  return JSON.stringify(attribution);
+function optionalIdentifier(value) {
+  return value === undefined || value === null ? null : identifier(value);
+}
+
+function normalizeJsonValue(value, seen = new Set()) {
+  if (value === undefined || value === null) return null;
+  if (typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
+    return Object.is(value, -0) ? 0 : value;
+  }
+  if (!Array.isArray(value) && !isPlainObject(value)) {
+    fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
+  }
+  if (seen.has(value)) fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
+  seen.add(value);
+  let normalized;
+  if (Array.isArray(value)) {
+    normalized = value.map((entry) => normalizeJsonValue(entry, seen));
+  } else {
+    normalized = Object.create(null);
+    for (const key of Object.keys(value).sort()) {
+      if (value[key] !== undefined) {
+        normalized[key] = normalizeJsonValue(value[key], seen);
+      }
+    }
+  }
+  seen.delete(value);
+  return normalized;
+}
+
+function normalizeMutationIdentity(rawAttribution, rawIdentity) {
+  const inlineIdentity = {};
+  for (const key of MUTATION_IDENTITY_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(rawAttribution, key)) {
+      inlineIdentity[key] = rawAttribution[key];
+    }
+  }
+  if (rawIdentity !== undefined) {
+    if (!isPlainObject(rawIdentity)) fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
+    const allowed = new Set(MUTATION_IDENTITY_FIELDS);
+    if (Object.keys(rawIdentity).some((key) => !allowed.has(key))) {
+      fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
+    }
+    Object.assign(inlineIdentity, rawIdentity);
+  }
+  return Object.freeze({
+    target_id: optionalIdentifier(inlineIdentity.target_id),
+    page_id: optionalIdentifier(inlineIdentity.page_id),
+    document_id: optionalIdentifier(inlineIdentity.document_id),
+    arguments: normalizeJsonValue(inlineIdentity.arguments),
+    payload: normalizeJsonValue(inlineIdentity.payload),
+  });
+}
+
+function fingerprint(attribution, identity) {
+  const semanticIdentity = {
+    ...attribution,
+    target_id: identity.target_id,
+    page_id: identity.page_id,
+    document_id: identity.document_id,
+    arguments: identity.arguments,
+    payload: identity.payload,
+  };
+  const semanticDigest = createHash("sha256")
+    .update(JSON.stringify(semanticIdentity))
+    .digest("hex");
+  return JSON.stringify({ ...attribution, semantic_digest: semanticDigest });
 }
 
 function finiteLimit(value, fallback) {
@@ -114,10 +190,11 @@ export class BrowserMutationCoordinator {
     this.invalidationOverflowed = false;
   }
 
-  mutate(rawAttribution, run) {
+  mutate(rawAttribution, run, rawIdentity) {
     const attribution = normalizeAttribution(rawAttribution);
     if (typeof run !== "function") fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
-    const actionFingerprint = fingerprint(attribution);
+    const identity = normalizeMutationIdentity(rawAttribution, rawIdentity);
+    const actionFingerprint = fingerprint(attribution, identity);
     const existing = this.actions.get(attribution.action_id);
     if (existing) {
       if (existing.fingerprint !== actionFingerprint) {

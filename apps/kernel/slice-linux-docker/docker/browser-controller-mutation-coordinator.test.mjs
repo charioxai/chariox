@@ -18,6 +18,17 @@ function attribution(overrides = {}) {
   };
 }
 
+function mutationIdentity(overrides = {}) {
+  return {
+    target_id: "target-1",
+    page_id: "page-1",
+    document_id: "document-1",
+    arguments: { element_ref: "element-1" },
+    payload: { value: "first" },
+    ...overrides,
+  };
+}
+
 function deferred() {
   let resolve;
   let reject;
@@ -94,17 +105,83 @@ test("deduplicates pending and completed action IDs without rerunning", async ()
   const coordinator = new BrowserMutationCoordinator();
   const gate = deferred();
   let calls = 0;
+  const identity = mutationIdentity();
   const run = async () => {
     calls += 1;
     await gate.promise;
     return { ok: true };
   };
-  const first = coordinator.mutate(attribution(), run);
-  const duplicate = coordinator.mutate(attribution(), run);
+  const first = coordinator.mutate(attribution(), run, identity);
+  const duplicate = coordinator.mutate(attribution(), run, identity);
   assert.equal(first, duplicate);
   gate.resolve();
   assert.deepEqual(await first, { ok: true });
-  assert.deepEqual(await coordinator.mutate(attribution(), run), { ok: true });
+  assert.deepEqual(await coordinator.mutate(attribution(), run, identity), { ok: true });
+  assert.equal(calls, 1);
+});
+
+test("does not deduplicate one action ID across target, page, or document", async () => {
+  for (const field of ["target_id", "page_id", "document_id"]) {
+    const coordinator = new BrowserMutationCoordinator();
+    const first = coordinator.mutate(
+      attribution(),
+      async () => "first",
+      mutationIdentity({ [field]: `${field}-other` }),
+    );
+    assert.throws(
+      () => coordinator.mutate(
+        attribution(),
+        async () => "must-not-run",
+        mutationIdentity({ [field]: `${field}-different` }),
+      ),
+      (error) => error.code === MUTATION_ERROR_CODES.ACTION_ID_CONFLICT,
+    );
+    assert.equal(await first, "first");
+  }
+});
+
+test("does not deduplicate one action ID across different mutation payloads", async () => {
+  const coordinator = new BrowserMutationCoordinator();
+  const first = coordinator.mutate(
+    attribution(),
+    async () => "first",
+    mutationIdentity({ payload: { value: "first" } }),
+  );
+  assert.equal(await first, "first");
+  assert.throws(
+    () => coordinator.mutate(
+      attribution(),
+      async () => "must-not-run",
+      mutationIdentity({ payload: { value: "different" } }),
+    ),
+    (error) => error.code === MUTATION_ERROR_CODES.ACTION_ID_CONFLICT,
+  );
+});
+
+test("deduplicates key-order-equivalent normalized arguments and payloads", async () => {
+  const coordinator = new BrowserMutationCoordinator();
+  let calls = 0;
+  const first = coordinator.mutate(
+    attribution(),
+    async () => {
+      calls += 1;
+      return "same-result";
+    },
+    mutationIdentity({
+      arguments: { z: 1, nested: { b: true, a: "same" }, a: [2, 1] },
+      payload: { second: "value", first: { b: 2, a: 1 } },
+    }),
+  );
+  const retry = coordinator.mutate(
+    attribution(),
+    async () => "must-not-run",
+    mutationIdentity({
+      arguments: { a: [2, 1], nested: { a: "same", b: true }, z: 1 },
+      payload: { first: { a: 1, b: 2 }, second: "value" },
+    }),
+  );
+  assert.equal(retry, first);
+  assert.equal(await retry, "same-result");
   assert.equal(calls, 1);
 });
 
@@ -145,17 +222,28 @@ test("retains only bounded secret-safe terminal state after completion", async (
   const secret = "Bearer completion-secret";
   const payload = { authorization: secret };
   const firstAttribution = attribution({ action_id: "completed-1" });
-  await coordinator.mutate(firstAttribution, async () => payload.authorization && "one");
+  await coordinator.mutate(
+    firstAttribution,
+    async () => payload.authorization && "one",
+    mutationIdentity({ payload }),
+  );
   await coordinator.mutate(attribution({ action_id: "completed-2" }), async () => "two");
   const thirdAttribution = attribution({ action_id: "completed-3" });
-  const third = coordinator.mutate(thirdAttribution, async () => "three");
+  const third = coordinator.mutate(
+    thirdAttribution,
+    async () => "three",
+    mutationIdentity({ payload }),
+  );
   assert.equal(await third, "three");
 
   assert.equal(coordinator.actions.has(firstAttribution.action_id), false);
   assert.equal(coordinator.snapshot().completed_count, 2);
   const retained = coordinator.actions.get(thirdAttribution.action_id);
   assertTerminalRecord(retained, "fulfilled", secret);
-  assert.equal(coordinator.mutate(thirdAttribution, async () => "must-not-run"), retained.promise);
+  assert.equal(
+    coordinator.mutate(thirdAttribution, async () => "must-not-run", mutationIdentity({ payload })),
+    retained.promise,
+  );
 });
 
 test("rejects an action ID reused with different attribution", async () => {
@@ -250,6 +338,7 @@ test("releases execution references for queued cancellation", async () => {
   const queued = coordinator.mutate(
     queuedAttribution,
     async () => payload.authorization && "must-not-run",
+    mutationIdentity({ payload }),
   );
   await Promise.resolve();
 
