@@ -224,6 +224,8 @@ fn local_ipc_resource_telemetry_round_trip_returns_complete_kernel_snapshot() {
             assert!(snapshot.telemetry.authoritative);
             assert_eq!(snapshot.telemetry.source, "kernel");
             assert!(!snapshot.captured_at.is_empty());
+            assert!(snapshot.cpu_percent <= 100);
+            assert!(snapshot.cpu_sample_window_ms > 0);
             assert!(snapshot.memory.used_bytes <= snapshot.memory.total_bytes);
             assert!(snapshot.memory.available_bytes <= snapshot.memory.total_bytes);
             assert!(snapshot.disk.used_bytes <= snapshot.disk.total_bytes);

@@ -4,7 +4,7 @@ import type {
   KernelResourceTelemetryResponse,
 } from "./kernel-types.js"
 
-export const kernelResourceTelemetryMinimumProtocolVersion = 334
+export const kernelResourceTelemetryMinimumProtocolVersion = 335
 
 export function deleteKernelRequest() {
   return { DeleteKernel: null }

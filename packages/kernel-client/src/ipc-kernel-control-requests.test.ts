@@ -185,7 +185,7 @@ test("exportDebugBundleRequest is session scoped and label-only", () => {
 })
 
 test("getKernelResourceTelemetryRequest exposes the complete authoritative guard shape", () => {
-  assert.equal(kernelResourceTelemetryMinimumProtocolVersion, 334)
+  assert.equal(kernelResourceTelemetryMinimumProtocolVersion, 335)
   assert.deepEqual(getKernelResourceTelemetryRequest({ kernelRef: "kernel-1", machineRef: "machine-1" }), {
     GetKernelResourceTelemetry: null,
   })
@@ -193,7 +193,7 @@ test("getKernelResourceTelemetryRequest exposes the complete authoritative guard
   const response = {
     KernelResourceTelemetry: {
       snapshot: {
-        schema: "chariox.kernel.resource_telemetry.v1",
+        schema: "chariox.kernel.resource_telemetry.v2",
         capturedAt: "2026-09-20T00:00:00.000Z",
         capturedAtMonotonicMs: 42,
         telemetry: {
@@ -202,6 +202,8 @@ test("getKernelResourceTelemetryRequest exposes the complete authoritative guard
           targetId: "machine-1",
           source: "kernel",
         },
+        cpuPercent: 37,
+        cpuSampleWindowMs: 100,
         memory: { usedBytes: 4000, totalBytes: 8000, availableBytes: 4000 },
         disk: { usedBytes: 4000, totalBytes: 16000, availableBytes: 12000 },
         process: { count: 3, rssBytes: 100 },
@@ -209,6 +211,8 @@ test("getKernelResourceTelemetryRequest exposes the complete authoritative guard
       },
     },
   } satisfies KernelResourceTelemetryResponse
+  assert.equal(response.KernelResourceTelemetry.snapshot.cpuPercent, 37)
+  assert.equal(response.KernelResourceTelemetry.snapshot.cpuSampleWindowMs, 100)
   assert.equal(response.KernelResourceTelemetry.snapshot.memory.usedBytes, 4000)
   assert.equal(response.KernelResourceTelemetry.snapshot.disk.availableBytes, 12000)
   assert.equal(response.KernelResourceTelemetry.snapshot.process.rssBytes, 100)

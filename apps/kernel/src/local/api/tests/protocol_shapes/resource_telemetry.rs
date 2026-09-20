@@ -7,12 +7,12 @@ use crate::local::{
 
 #[test]
 fn kernel_resource_telemetry_request_and_response_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 334);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 335);
 
     let request = LocalDaemonRequest::GetKernelResourceTelemetry(GetKernelResourceTelemetryRequest);
     let response = LocalDaemonResponse::KernelResourceTelemetry {
         snapshot: KernelResourceTelemetrySnapshot {
-            schema: "chariox.kernel.resource_telemetry.v1".to_string(),
+            schema: "chariox.kernel.resource_telemetry.v2".to_string(),
             captured_at: "2026-09-20T00:00:00.000Z".to_string(),
             captured_at_monotonic_ms: 42,
             telemetry: KernelResourceTelemetryMetadata {
@@ -21,6 +21,8 @@ fn kernel_resource_telemetry_request_and_response_shape_is_versioned() {
                 target_id: "machine-1".to_string(),
                 source: "kernel".to_string(),
             },
+            cpu_percent: 37,
+            cpu_sample_window_ms: 100,
             memory: KernelResourceTelemetryMemory {
                 used_bytes: 4_000,
                 total_bytes: 8_000,
@@ -43,7 +45,7 @@ fn kernel_resource_telemetry_request_and_response_shape_is_versioned() {
     let response_wire = serde_json::json!({
         "KernelResourceTelemetry": {
             "snapshot": {
-                "schema": "chariox.kernel.resource_telemetry.v1",
+                "schema": "chariox.kernel.resource_telemetry.v2",
                 "capturedAt": "2026-09-20T00:00:00.000Z",
                 "capturedAtMonotonicMs": 42,
                 "telemetry": {
@@ -52,6 +54,8 @@ fn kernel_resource_telemetry_request_and_response_shape_is_versioned() {
                     "targetId": "machine-1",
                     "source": "kernel"
                 },
+                "cpuPercent": 37,
+                "cpuSampleWindowMs": 100,
                 "memory": { "usedBytes": 4000, "totalBytes": 8000, "availableBytes": 4000 },
                 "disk": { "usedBytes": 4000, "totalBytes": 16000, "availableBytes": 12000 },
                 "process": { "count": 3, "rssBytes": 100 },
@@ -75,6 +79,6 @@ fn kernel_resource_telemetry_request_and_response_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "4033604cd3639fb17c6f81998ac3c5dbb3d75e876e20ccdc5b435f6d63810e26"
+        "88ddbfd283c2571a37ba8c9801fb67ce3779409d9cd031e856c3408280a403b5"
     );
 }

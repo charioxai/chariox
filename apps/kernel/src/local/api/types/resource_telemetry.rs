@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const KERNEL_RESOURCE_TELEMETRY_SCHEMA: &str = "chariox.kernel.resource_telemetry.v1";
+pub const KERNEL_RESOURCE_TELEMETRY_SCHEMA: &str = "chariox.kernel.resource_telemetry.v2";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetKernelResourceTelemetryRequest;
@@ -12,6 +12,8 @@ pub struct KernelResourceTelemetrySnapshot {
     pub captured_at: String,
     pub captured_at_monotonic_ms: u64,
     pub telemetry: KernelResourceTelemetryMetadata,
+    pub cpu_percent: u32,
+    pub cpu_sample_window_ms: u64,
     pub memory: KernelResourceTelemetryMemory,
     pub disk: KernelResourceTelemetryDisk,
     pub process: KernelResourceTelemetryProcess,

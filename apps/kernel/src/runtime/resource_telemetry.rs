@@ -1,12 +1,15 @@
+#[cfg(target_os = "linux")]
 use std::path::Path;
 
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
+#[cfg(target_os = "linux")]
 use crate::local::{
     KernelResourceTelemetryDisk, KernelResourceTelemetryLogs, KernelResourceTelemetryMemory,
     KernelResourceTelemetryMetadata, KernelResourceTelemetryProcess,
-    KernelResourceTelemetrySnapshot, LocalDaemonResponse, KERNEL_RESOURCE_TELEMETRY_SCHEMA,
+    KERNEL_RESOURCE_TELEMETRY_SCHEMA,
 };
+use crate::local::{KernelResourceTelemetrySnapshot, LocalDaemonResponse};
 
 pub(crate) fn execute_kernel_resource_telemetry_request(
     config: DaemonConfig,
@@ -29,7 +32,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(target_os = "linux")]
 use std::sync::OnceLock;
 #[cfg(target_os = "linux")]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[cfg(target_os = "linux")]
 static MONOTONIC_START: OnceLock<Instant> = OnceLock::new();
@@ -37,6 +40,8 @@ static MONOTONIC_START: OnceLock<Instant> = OnceLock::new();
 static LAST_CAPTURED_AT_MS: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "linux")]
 static LAST_WALL_CAPTURED_AT_MS: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "linux")]
+const CPU_SAMPLE_WINDOW_MS: u64 = 100;
 
 #[cfg(target_os = "linux")]
 pub(crate) fn collect_kernel_resource_telemetry(
@@ -47,6 +52,7 @@ pub(crate) fn collect_kernel_resource_telemetry(
         return Err(telemetry_error("kernel machine identity is missing"));
     }
 
+    let (cpu_percent, cpu_sample_window_ms) = read_cpu_metrics()?;
     let memory = read_memory_metrics()?;
     let log_root = crate::logging::default_log_root();
     let disk = read_disk_metrics(&log_root)?;
@@ -66,11 +72,91 @@ pub(crate) fn collect_kernel_resource_telemetry(
             target_id: target_id.to_string(),
             source: "kernel".to_string(),
         },
+        cpu_percent,
+        cpu_sample_window_ms,
         memory,
         disk,
         process,
         logs,
     })
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CpuCounters {
+    total: u64,
+    idle: u64,
+}
+
+#[cfg(target_os = "linux")]
+fn read_cpu_metrics() -> Result<(u32, u64), DaemonError> {
+    let before = read_cpu_counters()?;
+    std::thread::sleep(Duration::from_millis(CPU_SAMPLE_WINDOW_MS));
+    let after = read_cpu_counters()?;
+    Ok((cpu_percent_between(before, after)?, CPU_SAMPLE_WINDOW_MS))
+}
+
+#[cfg(target_os = "linux")]
+fn read_cpu_counters() -> Result<CpuCounters, DaemonError> {
+    let contents = fs::read_to_string("/proc/stat")
+        .map_err(|error| telemetry_error(format!("read /proc/stat: {error}")))?;
+    parse_cpu_counters(&contents)
+}
+
+#[cfg(target_os = "linux")]
+fn parse_cpu_counters(contents: &str) -> Result<CpuCounters, DaemonError> {
+    let line = contents
+        .lines()
+        .find(|line| line.starts_with("cpu "))
+        .ok_or_else(|| telemetry_error("/proc/stat is missing aggregate CPU counters"))?;
+    let fields = line
+        .split_whitespace()
+        .skip(1)
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|error| telemetry_error(format!("parse /proc/stat CPU counter: {error}")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if fields.len() < 4 {
+        return Err(telemetry_error(
+            "/proc/stat aggregate CPU counters are incomplete",
+        ));
+    }
+    let total = fields.iter().take(8).try_fold(0_u64, |total, value| {
+        total
+            .checked_add(*value)
+            .ok_or_else(|| telemetry_error("/proc/stat aggregate CPU counters overflow"))
+    })?;
+    let idle = fields[3]
+        .checked_add(fields.get(4).copied().unwrap_or(0))
+        .ok_or_else(|| telemetry_error("/proc/stat idle CPU counters overflow"))?;
+    Ok(CpuCounters { total, idle })
+}
+
+#[cfg(target_os = "linux")]
+fn cpu_percent_between(before: CpuCounters, after: CpuCounters) -> Result<u32, DaemonError> {
+    let total = after
+        .total
+        .checked_sub(before.total)
+        .ok_or_else(|| telemetry_error("/proc/stat aggregate CPU counters moved backwards"))?;
+    let idle = after
+        .idle
+        .checked_sub(before.idle)
+        .ok_or_else(|| telemetry_error("/proc/stat idle CPU counters moved backwards"))?;
+    if total == 0 || idle > total {
+        return Err(telemetry_error(
+            "/proc/stat CPU sample has no valid elapsed capacity",
+        ));
+    }
+    let busy = total - idle;
+    let rounded_up = busy
+        .checked_mul(100)
+        .and_then(|value| value.checked_add(total - 1))
+        .ok_or_else(|| telemetry_error("/proc/stat CPU percentage overflows"))?
+        / total;
+    u32::try_from(rounded_up.min(100))
+        .map_err(|_| telemetry_error("/proc/stat CPU percentage is invalid"))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -292,11 +378,10 @@ fn telemetry_error(message: impl Into<String>) -> DaemonError {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn kernel_resource_snapshot_is_complete_and_monotonic() {
         let log_root = crate::logging::default_log_root();
@@ -310,6 +395,8 @@ mod tests {
         assert_eq!(first.telemetry.scope, "managed-target");
         assert!(first.telemetry.authoritative);
         assert_eq!(first.telemetry.source, "kernel");
+        assert!(first.cpu_percent <= 100);
+        assert_eq!(first.cpu_sample_window_ms, CPU_SAMPLE_WINDOW_MS);
         assert!(first.memory.used_bytes <= first.memory.total_bytes);
         assert!(first.memory.available_bytes <= first.memory.total_bytes);
         assert!(first.disk.used_bytes <= first.disk.total_bytes);
@@ -319,9 +406,76 @@ mod tests {
         assert!(second.captured_at >= first.captured_at);
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn kernel_resource_snapshot_fails_closed_when_availability_exceeds_capacity() {
         assert!(checked_used_bytes(10, 11).is_err());
+    }
+
+    #[test]
+    fn cpu_metrics_parse_aggregate_counters_and_round_busy_percent_up() {
+        let before =
+            parse_cpu_counters("cpu  100 10 20 800 40 5 5 20 0 0\ncpu0 1 1 1 1 1 1 1 1 0 0\n")
+                .expect("aggregate counters should parse");
+        let after =
+            parse_cpu_counters("cpu  130 10 30 850 50 5 5 20 0 0\ncpu0 1 1 1 1 1 1 1 1 0 0\n")
+                .expect("later aggregate counters should parse");
+
+        assert_eq!(
+            before,
+            CpuCounters {
+                total: 1_000,
+                idle: 840
+            }
+        );
+        assert_eq!(
+            after,
+            CpuCounters {
+                total: 1_100,
+                idle: 900
+            }
+        );
+        assert_eq!(cpu_percent_between(before, after).unwrap(), 40);
+        assert_eq!(
+            cpu_percent_between(
+                CpuCounters {
+                    total: 100,
+                    idle: 90
+                },
+                CpuCounters {
+                    total: 201,
+                    idle: 190
+                },
+            )
+            .unwrap(),
+            1,
+        );
+    }
+
+    #[test]
+    fn cpu_metrics_fail_closed_for_missing_or_invalid_elapsed_counters() {
+        assert!(parse_cpu_counters("intr 1\n").is_err());
+        assert!(parse_cpu_counters("cpu 1 2 3\n").is_err());
+        assert!(cpu_percent_between(
+            CpuCounters {
+                total: 100,
+                idle: 50
+            },
+            CpuCounters {
+                total: 100,
+                idle: 50
+            },
+        )
+        .is_err());
+        assert!(cpu_percent_between(
+            CpuCounters {
+                total: 100,
+                idle: 50
+            },
+            CpuCounters {
+                total: 200,
+                idle: 160
+            },
+        )
+        .is_err());
     }
 }

@@ -31,6 +31,8 @@ export type KernelResourceTelemetrySnapshot = {
   capturedAt: string
   capturedAtMonotonicMs: number
   telemetry: KernelResourceTelemetryMetadata
+  cpuPercent: number
+  cpuSampleWindowMs: number
   memory: KernelResourceTelemetryMemory
   disk: KernelResourceTelemetryDisk
   process: KernelResourceTelemetryProcess

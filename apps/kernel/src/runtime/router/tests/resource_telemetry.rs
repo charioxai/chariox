@@ -18,6 +18,8 @@ fn router_serves_kernel_authoritative_resource_telemetry() {
     assert!(snapshot.telemetry.authoritative);
     assert_eq!(snapshot.telemetry.scope, "managed-target");
     assert_eq!(snapshot.telemetry.source, "kernel");
+    assert!(snapshot.cpu_percent <= 100);
+    assert!(snapshot.cpu_sample_window_ms > 0);
     assert!(snapshot.memory.used_bytes <= snapshot.memory.total_bytes);
     assert!(snapshot.memory.available_bytes <= snapshot.memory.total_bytes);
     assert!(snapshot.disk.used_bytes <= snapshot.disk.total_bytes);
