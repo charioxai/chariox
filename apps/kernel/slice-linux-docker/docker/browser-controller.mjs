@@ -1,6 +1,7 @@
 import { spawn as nodeSpawn } from "node:child_process";
+import path from "node:path";
 import { createInterface } from "node:readline";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 
@@ -137,6 +138,13 @@ const MAX_IDENTIFIER_BYTES = 128;
 const MAX_PENDING_CDP = 32;
 const MAX_SEEN_REQUEST_IDS = 1024;
 const SAFE_OPERATION = "health_probe";
+const DEFAULT_MUTATION_ACTION_TIMEOUT_MS = 5_000;
+const MIN_MUTATION_ACTION_TIMEOUT_MS = 100;
+const MAX_MUTATION_ACTION_TIMEOUT_MS = 5_000;
+const MAX_MUTATION_FILL_TEXT_BYTES = 48 * 1024;
+const MAX_MUTATION_PROMPT_BYTES = 8 * 1024;
+const MAX_MUTATION_PATH_BYTES = 4 * 1024;
+const MUTATION_DIGEST_HEX_LENGTH = 40;
 
 export class ControllerError extends Error {
   constructor(code, message = ERROR_MESSAGES[code] || ERROR_MESSAGES[ERROR_CODES.INTERNAL_ERROR]) {
@@ -233,6 +241,138 @@ function boundedJson(value, limit) {
     throw controllerError(ERROR_CODES.REQUEST_TOO_LARGE);
   }
   return encoded;
+}
+
+function normalizeMutationAction(value) {
+  if (!isPlainObject(value)) {
+    return value;
+  }
+  const keys = Object.keys(value);
+  if (value.kind === "click" && keys.every((key) => key === "kind")) {
+    return { kind: "click" };
+  }
+  if (
+    value.kind === "fill" &&
+    keys.every((key) => ["kind", "text", "append"].includes(key)) &&
+    typeof value.text === "string" &&
+    Buffer.byteLength(value.text, "utf8") <= MAX_MUTATION_FILL_TEXT_BYTES &&
+    (value.append === undefined || typeof value.append === "boolean")
+  ) {
+    return { kind: "fill", text: value.text, append: value.append === true };
+  }
+  return value;
+}
+
+function normalizeMutationTimeout(value) {
+  if (value === undefined) {
+    return DEFAULT_MUTATION_ACTION_TIMEOUT_MS;
+  }
+  if (!Number.isSafeInteger(value) || value < 1) {
+    return value;
+  }
+  return Math.max(
+    MIN_MUTATION_ACTION_TIMEOUT_MS,
+    Math.min(MAX_MUTATION_ACTION_TIMEOUT_MS, value),
+  );
+}
+
+function normalizeMutationDialog(value) {
+  if (!isPlainObject(value)) {
+    return value;
+  }
+  const keys = Object.keys(value);
+  const valid =
+    keys.every((key) => ["action", "prompt_text"].includes(key)) &&
+    (value.action === "accept" || value.action === "dismiss") &&
+    (value.prompt_text === undefined ||
+      (typeof value.prompt_text === "string" &&
+        Buffer.byteLength(value.prompt_text, "utf8") <= MAX_MUTATION_PROMPT_BYTES));
+  if (!valid) {
+    return value;
+  }
+  return {
+    action: value.action,
+    prompt_text: value.prompt_text,
+  };
+}
+
+function normalizeMutationPath(value) {
+  if (
+    typeof value !== "string" ||
+    !path.isAbsolute(value) ||
+    Buffer.byteLength(value, "utf8") > MAX_MUTATION_PATH_BYTES ||
+    /[\u0000-\u001f\u007f]/.test(value)
+  ) {
+    return value;
+  }
+  return path.normalize(value);
+}
+
+function normalizeMutationRequest(operation, request) {
+  if (!isPlainObject(request)) {
+    return request;
+  }
+  const normalized = { ...request };
+  if (operation === "perform_element_action") {
+    normalized.action = normalizeMutationAction(request.action);
+    normalized.timeout_ms = normalizeMutationTimeout(request.timeout_ms);
+  } else if (operation === "handle_dialog") {
+    normalized.dialog = normalizeMutationDialog(request.dialog);
+  } else if (operation === "upload_files" && Array.isArray(request.paths)) {
+    normalized.paths = request.paths.map(normalizeMutationPath);
+  }
+  return normalized;
+}
+
+function canonicalMutationValue(value, seen = new Set()) {
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  if (typeof value === "string") return `string:${JSON.stringify(value)}`;
+  if (typeof value === "boolean") return `boolean:${value ? "true" : "false"}`;
+  if (typeof value === "number") {
+    if (Number.isNaN(value)) return "number:NaN";
+    if (value === Number.POSITIVE_INFINITY) return "number:+Infinity";
+    if (value === Number.NEGATIVE_INFINITY) return "number:-Infinity";
+    if (Object.is(value, -0)) return "number:-0";
+    return `number:${String(value)}`;
+  }
+  if (typeof value === "bigint") return `bigint:${String(value)}`;
+  if (typeof value === "function") return "function";
+  if (typeof value === "symbol") return "symbol";
+  if (Array.isArray(value)) {
+    if (seen.has(value)) return "cycle";
+    seen.add(value);
+    const encoded = `[${value.map((item) => canonicalMutationValue(item, seen)).join(",")}]`;
+    seen.delete(value);
+    return encoded;
+  }
+  if (isPlainObject(value)) {
+    if (seen.has(value)) return "cycle";
+    seen.add(value);
+    const encoded = `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalMutationValue(value[key], seen)}`)
+      .join(",")}}`;
+    seen.delete(value);
+    return encoded;
+  }
+  return "object";
+}
+
+function mutationOperationWithDigest(operation, tabId, targetGeneration, generation, request) {
+  const normalizedRequest = normalizeMutationRequest(operation, request);
+  const canonical = canonicalMutationValue({
+    browser_generation: generation,
+    operation,
+    request: normalizedRequest,
+    tab_id: tabId,
+    target_generation: targetGeneration,
+  });
+  const digest = createHash("sha256")
+    .update(canonical, "utf8")
+    .digest("hex")
+    .slice(0, MUTATION_DIGEST_HEX_LENGTH);
+  return `${operation}_${digest}`;
 }
 
 function defaultClock() {
@@ -890,6 +1030,11 @@ export class BrowserController {
       tabId,
       targetGeneration,
       generation,
+      {
+        action: request.action,
+        element_ref: elementRef,
+        timeout_ms: request.timeout_ms,
+      },
     );
     return this._enqueueTabMutation(attribution, async ({ signal }) => {
       if (signal.aborted) {
@@ -973,6 +1118,7 @@ export class BrowserController {
       tabId,
       targetGeneration,
       generation,
+      { dialog: request.dialog },
     );
     return this._enqueueTabMutation(attribution, async ({ signal }) => {
       if (signal.aborted) {
@@ -1063,6 +1209,10 @@ export class BrowserController {
       tabId,
       targetGeneration,
       generation,
+      {
+        element_ref: elementRef,
+        paths: request.paths,
+      },
     );
     return this._enqueueTabMutation(attribution, async ({ signal }) => {
       if (signal.aborted) {
@@ -1234,13 +1384,26 @@ export class BrowserController {
     }
   }
 
-  _createTabMutationAttribution(mutation, operation, tabId, targetGeneration, generation) {
+  _createTabMutationAttribution(
+    mutation,
+    operation,
+    tabId,
+    targetGeneration,
+    generation,
+    request,
+  ) {
     assertExactKeys(mutation, ["action_id", "actor_id"], ["action_id", "actor_id"]);
     return {
       action_id: validateIdentifier(mutation.action_id, "action_id"),
       actor_id: validateIdentifier(mutation.actor_id, "actor_id"),
       browser_generation: generation,
-      operation,
+      operation: mutationOperationWithDigest(
+        operation,
+        tabId,
+        targetGeneration,
+        generation,
+        request,
+      ),
       tab_id: tabId,
       target_generation: targetGeneration,
     };
@@ -1515,12 +1678,22 @@ export class BrowserController {
     const activeByTabId = new Map(activeTabs.map((tab) => [tab.tab_id, tab]));
     for (const [tabId, record] of this._targetConnections) {
       const tab = activeByTabId.get(tabId);
+      const authoritativeTarget = tab
+        ? this.tabRegistry.resolveTarget(tabId, {
+          generation: tab.generation,
+          target_generation: tab.target_generation,
+        })
+        : null;
       if (
         !tab ||
         tab.generation !== record.generation ||
-        tab.target_generation !== record.targetGeneration
+        tab.target_generation !== record.targetGeneration ||
+        authoritativeTarget.websocket_url !== record.websocketUrl
       ) {
         this.mutationCoordinator.invalidateTab(tabId, record.targetGeneration);
+        if (authoritativeTarget?.websocket_url !== record.websocketUrl) {
+          this.observationStore.invalidate(tabId);
+        }
         record.connection.close();
         this._targetConnections.delete(tabId);
       }

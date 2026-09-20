@@ -233,6 +233,7 @@ function makeFixture(options = {}) {
     heartbeatIntervalMs: 1,
     queueLimit: options.queueLimit || 8,
     pageFeatures: options.pageFeatures,
+    observationStore: options.observationStore,
   });
   return {
     controller,
@@ -669,13 +670,23 @@ test("deduplicates controller action retries and rejects stale actor authority",
     request,
     mutationAttribution("dialog-retry", "agent-2"),
   );
+  const changedDialog = controller.handleDialog(
+    "owner-a",
+    1,
+    dialogRequest(tab, "dismiss"),
+    attribution,
+  );
   const staleActorResult = assert.rejects(
     staleActor,
     (error) => error.code === MUTATION_ERROR_CODES.ACTION_ID_CONFLICT,
   );
+  const changedDialogResult = assert.rejects(
+    changedDialog,
+    (error) => error.code === MUTATION_ERROR_CODES.ACTION_ID_CONFLICT,
+  );
   await flush();
   assert.equal(pageFeatures.calls.length, 1);
-  await staleActorResult;
+  await Promise.all([staleActorResult, changedDialogResult]);
   pageFeatures.calls[0].gate.resolve();
   assert.deepEqual(await Promise.all([first, duplicate]), [{ action: "accept" }, { action: "accept" }]);
   const retry = await controller.handleDialog("owner-a", 1, request, attribution);
@@ -684,6 +695,98 @@ test("deduplicates controller action retries and rejects stale actor authority",
   t.after(async () => {
     await controller.shutdown("owner-a", 1);
   });
+});
+
+test("binds action IDs to normalized mutation arguments without retaining request data", async (t) => {
+  const uploadCalls = [];
+  const uploadGate = deferred();
+  const observationStore = {
+    reconcile() {},
+    resolve(target) {
+      return {
+        tab_id: target.tab_id,
+        document_id: "document-mutation",
+        frame_id: "frame-mutation",
+        main_frame_id: "frame-mutation",
+        snapshot_revision: 1,
+        backend_node_id: 7,
+      };
+    },
+    invalidate() {},
+    clear() {},
+  };
+  const pageFeatures = {
+    async uploadFiles({ paths }) {
+      uploadCalls.push(paths);
+      await uploadGate.promise;
+      return { file_count: paths.length };
+    },
+  };
+  const fixture = makeFixture({ pageFeatures, observationStore });
+  const { controller } = fixture;
+  await controller.start("owner-a");
+  t.after(async () => {
+    await controller.shutdown("owner-a", 1);
+  });
+  const tab = controller.getTabRegistrySnapshot("owner-a", 1).tabs[0];
+  const element = {
+    tab_id: tab.tab_id,
+    target_generation: tab.target_generation,
+    element_ref: "element-mutation",
+  };
+  const fillSecret = "fill-value-that-must-not-be-retained";
+  const fill = controller.performElementAction("owner-a", 1, {
+    ...element,
+    action: { kind: "fill", text: fillSecret },
+  }, mutationAttribution("fill-retry"));
+  const normalizedDuplicate = controller.performElementAction("owner-a", 1, {
+    ...element,
+    action: { kind: "fill", text: fillSecret, append: false },
+    timeout_ms: 5_000,
+  }, mutationAttribution("fill-retry"));
+  const changedFill = controller.performElementAction("owner-a", 1, {
+    ...element,
+    action: { kind: "fill", text: "different-fill-value" },
+  }, mutationAttribution("fill-retry"));
+  const fillSnapshot = JSON.stringify(controller.mutationCoordinator.snapshot());
+  assert.doesNotMatch(fillSnapshot, /fill-value-that-must-not-be-retained/);
+  await assert.rejects(
+    changedFill,
+    (error) => {
+      assert.equal(error.code, MUTATION_ERROR_CODES.ACTION_ID_CONFLICT);
+      assert.doesNotMatch(String(error), /fill-value-that-must-not-be-retained/);
+      return true;
+    },
+  );
+  await assert.rejects(fill, (error) => error.code === ERROR_CODES.STALE_DOCUMENT);
+  await assert.rejects(normalizedDuplicate, (error) => error.code === ERROR_CODES.STALE_DOCUMENT);
+
+  const firstPath = "/safe/private-upload-one.txt";
+  const changedPath = "/safe/private-upload-two.txt";
+  const upload = controller.uploadFiles("owner-a", 1, {
+    ...element,
+    paths: [firstPath],
+  }, mutationAttribution("upload-retry"));
+  await flush();
+  assert.equal(uploadCalls.length, 1);
+  const uploadSnapshot = JSON.stringify(controller.mutationCoordinator.snapshot());
+  assert.match(uploadSnapshot, /upload_files_[0-9a-f]{40}/);
+  assert.doesNotMatch(uploadSnapshot, /private-upload-one\.txt/);
+  const changedUpload = controller.uploadFiles("owner-a", 1, {
+    ...element,
+    paths: [changedPath],
+  }, mutationAttribution("upload-retry"));
+  await assert.rejects(
+    changedUpload,
+    (error) => {
+      assert.equal(error.code, MUTATION_ERROR_CODES.ACTION_ID_CONFLICT);
+      assert.doesNotMatch(String(error), /private-upload-(?:one|two)\.txt/);
+      return true;
+    },
+  );
+  assert.equal(uploadCalls.length, 1);
+  uploadGate.resolve();
+  assert.deepEqual(await upload, { file_count: 1 });
 });
 
 test("revokes a queued controller mutation before it starts", async (t) => {
@@ -797,6 +900,45 @@ test("detached tabs invalidate active controller mutations", async (t) => {
   t.after(async () => {
     await controller.shutdown("owner-a", 1);
   });
+});
+
+test("invalidates an active mutation when an authoritative tab endpoint is replaced in place", async (t) => {
+  const targets = [
+    { id: "page-a", type: "page", webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/a" },
+  ];
+  const pageFeatures = makeMutationPageFeatures();
+  const fixture = makeFixture({ targets, pageFeatures });
+  const { controller } = fixture;
+  await controller.start("owner-a");
+  t.after(async () => {
+    await controller.shutdown("owner-a", 1);
+  });
+  const tab = controller.getTabRegistrySnapshot("owner-a", 1).tabs[0];
+  const active = controller.handleDialog(
+    "owner-a",
+    1,
+    dialogRequest(tab),
+    mutationAttribution("dialog-endpoint-replacement"),
+  );
+  await flush();
+  assert.equal(pageFeatures.calls.length, 1);
+  const oldSockets = fixture.sockets.filter((socket) => socket.url.endsWith("/a"));
+  const oldSocket = oldSockets[oldSockets.length - 1];
+  assert.ok(oldSocket);
+
+  const replacementUrl = "ws://127.0.0.1:9222/devtools/page/a-replaced-in-place";
+  targets[0].webSocketDebuggerUrl = replacementUrl;
+  const reconciliation = await controller.refreshTabs("owner-a", 1);
+  const reconciledTab = reconciliation.tabs.find((candidate) => candidate.target_id === "page-a");
+  assert.equal(reconciledTab.tab_id, tab.tab_id);
+  assert.equal(reconciledTab.target_generation, tab.target_generation);
+  assert.equal(oldSocket.closed, true);
+
+  pageFeatures.calls[0].gate.resolve();
+  await assert.rejects(
+    active,
+    (error) => error.code === MUTATION_ERROR_CODES.INDETERMINATE,
+  );
 });
 
 test("controller restart invalidates old-generation mutations and authority", async (t) => {
