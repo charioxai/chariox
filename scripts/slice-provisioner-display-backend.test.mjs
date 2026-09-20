@@ -148,7 +148,9 @@ function runSavedStateProbe(source, mode) {
 }
 
 function runHomeVolumeProbe(source, volumeState, options = {}) {
-  const volumeInspect = section(source, "volume_inspect_reports_not_found() {", "restore_saved_home_volume() {")
+  const archiveIdentity = "a".repeat(64)
+  const volumeInspect = section(source, "volume_inspect_reports_not_found() {", "saved_home_archive_identity() {")
+  const archiveIdentityFunction = section(source, "saved_home_archive_identity() {", "restore_saved_home_volume() {")
   const restore = section(source, "restore_saved_home_volume() {", "prepare_home_volume() {")
   const prepare = section(source, "prepare_home_volume() {", "machine_id_hex() {")
   return spawnSync(
@@ -164,13 +166,53 @@ function runHomeVolumeProbe(source, volumeState, options = {}) {
         "  printf 'DOCKER_CALL %s\\n' \"$*\" >>\"$PROBE_LOG_FILE\"",
         "  case \"$1 $2\" in",
         "    'volume inspect')",
-        "      if [[ \"$PROBE_VOLUME_STATE\" == existing ]]; then return 0; fi",
         "      if [[ \"$PROBE_VOLUME_STATE\" == inspect-error ]]; then printf 'Error: permission denied\\n' >&2; return 13; fi",
+        "      if [[ \"$3\" == -f ]]; then",
+        "        if [[ \"$4\" == *archive-sha256* ]]; then printf '%s\\n' \"$PROBE_VOLUME_ARCHIVE_LABEL\"; else printf '%s\\n' \"$PROBE_VOLUME_TOKEN_LABEL\"; fi",
+        "        return 0",
+        "      fi",
+        "      if [[ \"$PROBE_VOLUME_STATE\" == existing ]]; then return 0; fi",
         "      printf 'Error: no such volume: saved-home\\n' >&2",
         "      return 1",
         "      ;;",
-        "    'volume create') PROBE_VOLUME_STATE=existing; PROBE_VOLUME_CONTENT=empty; return 0 ;;",
-        "    'volume rm') PROBE_VOLUME_STATE=missing; PROBE_VOLUME_CONTENT=empty; return 0 ;;",
+        "    'volume create')",
+        "      PROBE_VOLUME_STATE=existing",
+        "      PROBE_VOLUME_CONTENT=empty",
+        "      PROBE_MARKER_STATE=missing-empty",
+        "      local previous=",
+        "      for arg in \"$@\"; do",
+        "        if [[ \"$previous\" == --label ]]; then",
+        "          case \"$arg\" in",
+        "            io.chariox.saved-home.archive-sha256=*) PROBE_VOLUME_ARCHIVE_LABEL=\"${arg#*=}\" ;;",
+        "            io.chariox.saved-home.initialization-token=*) PROBE_VOLUME_TOKEN_LABEL=\"${arg#*=}\" ;;",
+        "          esac",
+        "        fi",
+        "        previous=\"$arg\"",
+        "      done",
+        "      return 0",
+        "      ;;",
+        "    'volume rm')",
+        "      if [[ \"$PROBE_FAIL_VOLUME_REMOVE\" == 1 ]]; then return 42; fi",
+        "      PROBE_VOLUME_STATE=missing",
+        "      PROBE_VOLUME_CONTENT=empty",
+        "      PROBE_VOLUME_ARCHIVE_LABEL=",
+        "      PROBE_VOLUME_TOKEN_LABEL=",
+        "      PROBE_MARKER_STATE=missing-empty",
+        "      return 0",
+        "      ;;",
+        "    'rm -f')",
+        "      PROBE_HELPER_RM_ATTEMPTS=$((PROBE_HELPER_RM_ATTEMPTS + 1))",
+        "      if [[ \"$PROBE_FAIL_HELPER_CLEANUP_ONCE\" == 1 && \"$PROBE_HELPER_RM_ATTEMPTS\" == 2 ]]; then return 42; fi",
+        "      return 0",
+        "      ;;",
+        "    'run --rm')",
+        "      case \"$PROBE_MARKER_STATE\" in",
+        "        initialized|incomplete|invalid) printf '%s\\n' \"$PROBE_MARKER_STATE\" ;;",
+        "        missing-empty) printf 'missing-empty\\n' ;;",
+        "        *) printf 'missing-nonempty\\n' ;;",
+        "      esac",
+        "      return 0",
+        "      ;;",
         "    exec*)",
         "      PROBE_DESTRUCTIVE=1",
         "      if [[ \"$*\" == *'stat -c'* ]]; then",
@@ -178,8 +220,10 @@ function runHomeVolumeProbe(source, volumeState, options = {}) {
         "        return 43",
         "      fi",
         "      PROBE_RESTORE_ATTEMPTS=$((PROBE_RESTORE_ATTEMPTS + 1))",
+        "      PROBE_MARKER_STATE=incomplete",
         "      if [[ \"$PROBE_FAIL_RESTORE_ONCE\" == 1 && \"$PROBE_RESTORE_ATTEMPTS\" == 1 ]]; then return 42; fi",
         "      PROBE_VOLUME_CONTENT=archive-state",
+        "      PROBE_MARKER_STATE=initialized",
         "      return 0",
         "      ;;",
         "    *) return 0 ;;",
@@ -191,9 +235,15 @@ function runHomeVolumeProbe(source, volumeState, options = {}) {
         "SLICE_IMAGE=current-base",
         "PROBE_DESTRUCTIVE=0",
         "PROBE_RESTORE_ATTEMPTS=0",
+        "PROBE_HELPER_RM_ATTEMPTS=0",
         "PROBE_VOLUME_CONTENT=post-restore-data",
+        `PROBE_VOLUME_ARCHIVE_LABEL=${options.archiveLabel ?? (options.initialized || options.incomplete ? archiveIdentity : "")}`,
+        `PROBE_VOLUME_TOKEN_LABEL=${options.initialized || options.incomplete ? "existing-token" : ""}`,
+        `PROBE_MARKER_STATE=${options.markerState ?? (options.initialized ? "initialized" : options.incomplete ? "incomplete" : "missing-nonempty")}`,
         "PROBE_LOG_FILE=$(mktemp)",
+        `hash_stdin() { printf '%s\\n' '${archiveIdentity}'; }`,
         volumeInspect,
+        archiveIdentityFunction,
         restore,
         prepare,
         "prepare_status=0",
@@ -204,7 +254,7 @@ function runHomeVolumeProbe(source, volumeState, options = {}) {
         "fi",
         "status=$prepare_status",
         "if [[ \"$PROBE_REPEAT_PREPARE\" == 1 ]]; then status=$second_status; fi",
-        "printf 'STATUS=%s\\nPREPARE_STATUS=%s\\nSECOND_STATUS=%s\\nVOLUME_STATE=%s\\nVOLUME_CONTENT=%s\\nDESTRUCTIVE=%s\\nRESTORE_ATTEMPTS=%s\\n' \"$status\" \"$prepare_status\" \"$second_status\" \"$PROBE_VOLUME_STATE\" \"$PROBE_VOLUME_CONTENT\" \"$PROBE_DESTRUCTIVE\" \"$PROBE_RESTORE_ATTEMPTS\"",
+        "printf 'STATUS=%s\\nPREPARE_STATUS=%s\\nSECOND_STATUS=%s\\nVOLUME_STATE=%s\\nVOLUME_CONTENT=%s\\nMARKER_STATE=%s\\nDESTRUCTIVE=%s\\nRESTORE_ATTEMPTS=%s\\n' \"$status\" \"$prepare_status\" \"$second_status\" \"$PROBE_VOLUME_STATE\" \"$PROBE_VOLUME_CONTENT\" \"$PROBE_MARKER_STATE\" \"$PROBE_DESTRUCTIVE\" \"$PROBE_RESTORE_ATTEMPTS\"",
         "cat \"$PROBE_LOG_FILE\"",
         "exit \"$status\"",
       ].join("\n"),
@@ -214,6 +264,8 @@ function runHomeVolumeProbe(source, volumeState, options = {}) {
         ...process.env,
         PROBE_VOLUME_STATE: volumeState,
         PROBE_FAIL_RESTORE_ONCE: options.failRestoreOnce ? "1" : "0",
+        PROBE_FAIL_VOLUME_REMOVE: options.failVolumeRemove ? "1" : "0",
+        PROBE_FAIL_HELPER_CLEANUP_ONCE: options.failHelperCleanupOnce ? "1" : "0",
         PROBE_REPEAT_PREPARE: options.repeatPrepare ? "1" : "0",
       },
       encoding: "utf8",
@@ -365,7 +417,7 @@ function runCompatibleSavedImageProbe(source, baseState) {
         buildStandard,
         buildImage,
         "status=0",
-        "if ! build_image; then status=$?; fi",
+        "if build_image; then status=0; else status=$?; fi",
         "printf 'STATUS=%s\\nIMAGE=%s\\nDESTRUCTIVE=%s\\n' \"$status\" \"$SLICE_IMAGE\" \"$PROBE_DESTRUCTIVE\"",
         "cat \"$PROBE_LOG_FILE\"",
       ].join("\n"),
@@ -442,13 +494,44 @@ test("saved-state rebase preserves post-restore data in an existing home volume"
   assert.match(output, /STATUS=0/)
   assert.match(output, /VOLUME_CONTENT=post-restore-data/)
   assert.match(output, /DESTRUCTIVE=0/)
-  assert.match(output, /preserving existing home volume saved-home/)
+  assert.match(output, /preserving legacy unmarked home volume saved-home/)
   assert.deepEqual(
     output
       .split("\n")
       .filter((line) => line.startsWith("DOCKER_CALL ")),
-    ["DOCKER_CALL volume inspect saved-home"],
+    [
+      "DOCKER_CALL volume inspect saved-home",
+      'DOCKER_CALL volume inspect -f {{ index .Labels "io.chariox.saved-home.archive-sha256" }} saved-home',
+    ],
   )
+})
+
+test("saved-state preserves a marked live volume with post-restore changes", async () => {
+  const source = await readFile(provisionerPath, "utf8")
+  const probe = runHomeVolumeProbe(source, "existing", { initialized: true, repeatPrepare: true })
+  const output = `${probe.stdout}${probe.stderr}`
+
+  assert.equal(probe.status, 0, probe.stderr)
+  assert.match(output, /STATUS=0/)
+  assert.match(output, /SECOND_STATUS=0/)
+  assert.match(output, /VOLUME_CONTENT=post-restore-data/)
+  assert.match(output, /MARKER_STATE=initialized/)
+  assert.match(output, /preserving initialized home volume saved-home/)
+  assert.match(output, /RESTORE_ATTEMPTS=0/)
+  assert.doesNotMatch(output, /DOCKER_CALL volume create|DOCKER_CALL exec /)
+})
+
+test("saved-state rejects a marked volume bound to a different archive", async () => {
+  const source = await readFile(provisionerPath, "utf8")
+  const probe = runHomeVolumeProbe(source, "existing", {
+    initialized: true,
+    archiveLabel: "b".repeat(64),
+  })
+  const output = `${probe.stdout}${probe.stderr}`
+
+  assert.equal(probe.status, 1)
+  assert.match(output, /bound to a different archive identity/)
+  assert.doesNotMatch(output, /DOCKER_CALL run --rm|DOCKER_CALL exec |DOCKER_CALL volume create/)
 })
 
 test("saved-state initial restore extracts only after creating a new home volume", async () => {
@@ -463,15 +546,17 @@ test("saved-state initial restore extracts only after creating a new home volume
     .split("\n")
     .filter((line) => line.startsWith("DOCKER_CALL "))
   assert.equal(calls[0], "DOCKER_CALL volume inspect saved-home")
-  assert.equal(calls[1], "DOCKER_CALL volume create saved-home")
-  assert.match(calls[2], /^DOCKER_CALL rm -f saved-state-volume-probe-home-restore-/)
-  assert.match(calls[3], /^DOCKER_CALL create --name saved-state-volume-probe-home-restore-/)
-  assert.match(calls[4], /^DOCKER_CALL start saved-state-volume-probe-home-restore-/)
-  assert.match(calls[5], /^DOCKER_CALL cp -L \/etc\/hosts saved-state-volume-probe-home-restore-.*:\/tmp\/home\.tar\.zst$/)
-  assert.match(calls[6], /^DOCKER_CALL exec -u root saved-state-volume-probe-home-restore-/)
-  assert.match(calls[7], /^DOCKER_CALL exec -u root saved-state-volume-probe-home-restore-/)
-  assert.match(calls[7], /stat -c/)
-  assert.match(calls[8], /^DOCKER_CALL rm -f saved-state-volume-probe-home-restore-/)
+  assert.match(calls[1], /^DOCKER_CALL volume create --label .* saved-home$/)
+  assert.match(calls[2], /volume inspect -f .*archive-sha256.* saved-home/)
+  assert.match(calls[3], /volume inspect -f .*initialization-token.* saved-home/)
+  assert.match(calls[4], /^DOCKER_CALL rm -f saved-state-volume-probe-home-restore-/)
+  assert.match(calls[5], /^DOCKER_CALL create --name saved-state-volume-probe-home-restore-/)
+  assert.match(calls[6], /^DOCKER_CALL start saved-state-volume-probe-home-restore-/)
+  assert.match(calls[7], /^DOCKER_CALL cp -L \/etc\/hosts saved-state-volume-probe-home-restore-.*:\/tmp\/home\.tar\.zst$/)
+  assert.match(calls[8], /^DOCKER_CALL exec -u root saved-state-volume-probe-home-restore-/)
+  assert.match(calls[9], /^DOCKER_CALL exec -u root saved-state-volume-probe-home-restore-/)
+  assert.match(calls[9], /stat -c/)
+  assert.match(calls[10], /^DOCKER_CALL rm -f saved-state-volume-probe-home-restore-/)
 })
 
 test("saved-state removes a failed new-volume restore so the next provision retries", async () => {
@@ -493,12 +578,53 @@ test("saved-state removes a failed new-volume restore so the next provision retr
     .split("\n")
     .filter((line) => line.startsWith("DOCKER_CALL "))
   assert.equal(calls.filter((line) => line === "DOCKER_CALL volume inspect saved-home").length, 2)
-  assert.equal(calls.filter((line) => line === "DOCKER_CALL volume create saved-home").length, 2)
+  assert.equal(calls.filter((line) => line.startsWith("DOCKER_CALL volume create ")).length, 2)
   assert.equal(calls.filter((line) => line === "DOCKER_CALL volume rm saved-home").length, 1)
   assert.equal(calls.filter((line) => line.startsWith("DOCKER_CALL exec ")).length, 3)
   assert.ok(
     calls.indexOf("DOCKER_CALL volume rm saved-home") < calls.lastIndexOf("DOCKER_CALL volume inspect saved-home"),
   )
+})
+
+test("saved-state retries an incomplete labeled volume when restore and removal both fail", async () => {
+  const source = await readFile(provisionerPath, "utf8")
+  const probe = runHomeVolumeProbe(source, "missing", {
+    failRestoreOnce: true,
+    failVolumeRemove: true,
+    repeatPrepare: true,
+  })
+  const output = `${probe.stdout}${probe.stderr}`
+
+  assert.equal(probe.status, 0, probe.stderr)
+  assert.match(output, /PREPARE_STATUS=1/)
+  assert.match(output, /SECOND_STATUS=0/)
+  assert.match(output, /VOLUME_STATE=existing/)
+  assert.match(output, /VOLUME_CONTENT=archive-state/)
+  assert.match(output, /MARKER_STATE=initialized/)
+  assert.match(output, /RESTORE_ATTEMPTS=2/)
+  const calls = output.split("\n").filter((line) => line.startsWith("DOCKER_CALL "))
+  assert.equal(calls.filter((line) => line.startsWith("DOCKER_CALL volume create ")).length, 1)
+  assert.equal(calls.filter((line) => line === "DOCKER_CALL volume rm saved-home").length, 1)
+  assert.equal(calls.filter((line) => line.startsWith("DOCKER_CALL run --rm ")).length, 1)
+})
+
+test("saved-state preserves a completed volume after helper cleanup and removal failure", async () => {
+  const source = await readFile(provisionerPath, "utf8")
+  const probe = runHomeVolumeProbe(source, "missing", {
+    failHelperCleanupOnce: true,
+    failVolumeRemove: true,
+    repeatPrepare: true,
+  })
+  const output = `${probe.stdout}${probe.stderr}`
+
+  assert.equal(probe.status, 0, probe.stderr)
+  assert.match(output, /PREPARE_STATUS=1/)
+  assert.match(output, /SECOND_STATUS=0/)
+  assert.match(output, /VOLUME_CONTENT=archive-state/)
+  assert.match(output, /MARKER_STATE=initialized/)
+  assert.match(output, /RESTORE_ATTEMPTS=1/)
+  assert.match(output, /preserving initialized home volume saved-home/)
+  assert.doesNotMatch(output, /retrying incomplete saved home restore/)
 })
 
 test("saved-state refuses an ambiguous existing-volume inspect failure", async () => {
@@ -532,7 +658,7 @@ test("saved-state restores a new volume only once and never replays over it", as
     .split("\n")
     .filter((line) => line.startsWith("DOCKER_CALL "))
   assert.equal(calls.filter((line) => line === "DOCKER_CALL volume inspect saved-home").length, 2)
-  assert.equal(calls.filter((line) => line === "DOCKER_CALL volume create saved-home").length, 1)
+  assert.equal(calls.filter((line) => line.startsWith("DOCKER_CALL volume create ")).length, 1)
   assert.equal(calls.filter((line) => line === "DOCKER_CALL volume rm saved-home").length, 0)
   assert.equal(calls.filter((line) => line.startsWith("DOCKER_CALL exec ")).length, 2)
 })
@@ -576,6 +702,7 @@ test("saved-state auto accepts a compatible saved image before inspecting or reb
     assert.match(output, /STATUS=0/)
     assert.match(output, /IMAGE=current-saved/)
     assert.match(output, /DESTRUCTIVE=0/)
+    assert.doesNotMatch(output, /^FAIL /m)
     assert.doesNotMatch(output, /DOCKER_BUILD /)
     assert.doesNotMatch(output, /MUTATION /)
     const calls = output

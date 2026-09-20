@@ -310,12 +310,63 @@ volume_inspect_reports_not_found() {
   grep -Eiq 'no such volume|volume .* (not found|does not exist)' <<<"$output"
 }
 
+saved_home_archive_identity() {
+  local identity
+  identity="$(hash_stdin < "$SLICE_SAVED_HOME_ARCHIVE")" || return 1
+  [[ "$identity" =~ ^[a-f0-9]{64}$ ]] || return 1
+  printf '%s\n' "$identity"
+}
+
+saved_home_volume_label() {
+  local label="$1" output
+  if output="$(run_with_timeout 20 docker volume inspect -f "{{ index .Labels \"$label\" }}" "$SLICE_HOME_VOLUME" 2>/dev/null)"; then
+    [[ "$output" == "<no value>" ]] && output=""
+    printf '%s\n' "$output"
+    return 0
+  else
+    return $?
+  fi
+}
+
+saved_home_volume_marker_state() {
+  local archive_identity="$1" marker_state
+  if marker_state="$(run_with_timeout 60 docker run --rm --user root \
+    -v "$SLICE_HOME_VOLUME:/home-dst" \
+    "$SLICE_IMAGE" \
+    bash -lc "
+      set -euo pipefail
+      marker=/home-dst/.chariox-saved-home-initialization
+      if [[ -L \"\$marker\" || ( -e \"\$marker\" && ! -f \"\$marker\" ) ]]; then
+        printf 'invalid\\n'
+      elif [[ -f \"\$marker\" ]]; then
+        value=\$(cat \"\$marker\")
+        if [[ \"\$value\" == chariox-saved-home-v1:complete-$archive_identity ]]; then
+          printf 'initialized\\n'
+        elif [[ \"\$value\" == chariox-saved-home-v1:pending-$archive_identity ]]; then
+          printf 'incomplete\\n'
+        else
+          printf 'invalid\\n'
+        fi
+      elif [[ -n \$(find /home-dst -mindepth 1 -maxdepth 1 -print -quit) ]]; then
+        printf 'missing-nonempty\\n'
+      else
+        printf 'missing-empty\\n'
+      fi
+    ")"; then
+    printf '%s\n' "$marker_state"
+    return 0
+  else
+    return $?
+  fi
+}
+
 restore_saved_home_volume() {
   [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]] || return 0
   if [[ ! -f "$SLICE_SAVED_HOME_ARCHIVE" ]]; then
     log "saved slice home archive not found: $SLICE_SAVED_HOME_ARCHIVE"
     return 1
   fi
+  local archive_identity="${1:-${SLICE_SAVED_HOME_ARCHIVE_IDENTITY:-legacy-archive}}"
   local helper status=0 cleanup_status=0
   helper="${SLICE_NAME}-home-restore-$$"
   log "restoring saved home archive $SLICE_SAVED_HOME_ARCHIVE into volume $SLICE_HOME_VOLUME on runtime image $SLICE_IMAGE"
@@ -332,7 +383,28 @@ restore_saved_home_volume() {
   fi
   if (( status == 0 )); then
     if run_with_timeout 120 docker exec -u root "$helper" \
-      bash -lc "set -euo pipefail; find /home-dst -mindepth 1 -maxdepth 1 -exec rm -rf {} +; cd /home-dst; tar --zstd -xf /tmp/home.tar.zst; chown -R slice:slice /home-dst"; then :; else status=$?; fi
+      bash -lc "
+        set -euo pipefail
+        marker=/home-dst/.chariox-saved-home-initialization
+        pending=chariox-saved-home-v1:pending-$archive_identity
+        complete=chariox-saved-home-v1:complete-$archive_identity
+        find /home-dst -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+        printf '%s\\n' \"\$pending\" > \"\$marker\"
+        chown slice:slice \"\$marker\"
+        sync -d \"\$marker\" 2>/dev/null || sync
+        cd /home-dst
+        tar --zstd -xf /tmp/home.tar.zst
+        chown -R slice:slice /home-dst
+        if [[ -L \"\$marker\" || -d \"\$marker\" ]]; then
+          exit 73
+        fi
+        marker_tmp=\"\$marker.tmp\"
+        rm -f \"\$marker_tmp\"
+        printf '%s\\n' \"\$complete\" > \"\$marker_tmp\"
+        chown slice:slice \"\$marker_tmp\"
+        mv -f -- \"\$marker_tmp\" \"\$marker\"
+        sync -d \"\$marker\" 2>/dev/null || sync
+      "; then :; else status=$?; fi
   fi
   if (( status == 0 )); then
     if run_with_timeout 60 docker exec -u root "$helper" \
@@ -345,21 +417,96 @@ restore_saved_home_volume() {
 }
 
 prepare_home_volume() {
-  local created=0 inspect_output=""
+  local archive_identity="" created=0 initialization_token="" inspect_output=""
   if inspect_output="$(run_with_timeout 20 docker volume inspect "$SLICE_HOME_VOLUME" 2>&1)"; then
-    log "preserving existing home volume $SLICE_HOME_VOLUME; saved home archive is only used for an initial restore"
-    return 0
+    if [[ -z "$SLICE_SAVED_HOME_ARCHIVE" ]]; then
+      log "preserving existing home volume $SLICE_HOME_VOLUME; saved home archive is only used for an initial restore"
+      return 0
+    fi
+    local archive_label marker_state
+    if ! archive_label="$(saved_home_volume_label io.chariox.saved-home.archive-sha256)"; then
+      log "could not inspect saved home initialization label on $SLICE_HOME_VOLUME; refusing to mutate it"
+      return 1
+    fi
+    if [[ -z "$archive_label" ]]; then
+      log "preserving legacy unmarked home volume $SLICE_HOME_VOLUME; refusing to replay the saved home archive"
+      return 0
+    fi
+    if [[ ! -f "$SLICE_SAVED_HOME_ARCHIVE" ]]; then
+      log "saved slice home archive not found: $SLICE_SAVED_HOME_ARCHIVE"
+      return 1
+    fi
+    if ! archive_identity="$(saved_home_archive_identity)"; then
+      log "could not calculate the saved slice home archive identity"
+      return 1
+    fi
+    if [[ "$archive_label" != "$archive_identity" ]]; then
+      log "saved home volume $SLICE_HOME_VOLUME is bound to a different archive identity; refusing to overwrite it"
+      return 1
+    fi
+    if ! marker_state="$(saved_home_volume_marker_state "$archive_identity")"; then
+      log "could not inspect saved home initialization marker on $SLICE_HOME_VOLUME; refusing to mutate it"
+      return 1
+    fi
+    case "$marker_state" in
+      initialized)
+        log "preserving initialized home volume $SLICE_HOME_VOLUME; saved home archive identity matches"
+        return 0
+        ;;
+      incomplete|missing-empty)
+        log "retrying incomplete saved home restore in $SLICE_HOME_VOLUME"
+        restore_saved_home_volume "$archive_identity"
+        return $?
+        ;;
+      missing-nonempty|invalid)
+        log "saved home volume $SLICE_HOME_VOLUME has no valid successful-initialization marker; refusing to overwrite it"
+        return 1
+        ;;
+      *)
+        log "saved home volume $SLICE_HOME_VOLUME returned an unknown initialization state; refusing to mutate it"
+        return 1
+        ;;
+    esac
   fi
   if ! volume_inspect_reports_not_found "$inspect_output"; then
     log "could not inspect home volume $SLICE_HOME_VOLUME; refusing to assume it is absent: ${inspect_output:-unknown Docker error}"
     return 1
   fi
-  if ! run_with_timeout 30 docker volume create "$SLICE_HOME_VOLUME" >/dev/null; then
+  if [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]]; then
+    if [[ ! -f "$SLICE_SAVED_HOME_ARCHIVE" ]]; then
+      log "saved slice home archive not found: $SLICE_SAVED_HOME_ARCHIVE"
+      return 1
+    fi
+    if ! archive_identity="$(saved_home_archive_identity)"; then
+      log "could not calculate the saved slice home archive identity"
+      return 1
+    fi
+  fi
+  if [[ -z "$archive_identity" ]]; then
+    if ! run_with_timeout 30 docker volume create "$SLICE_HOME_VOLUME" >/dev/null; then
+      log "failed to create new home volume $SLICE_HOME_VOLUME"
+      return 1
+    fi
+    return 0
+  fi
+  initialization_token="$(printf '%s\0%s\0%s\0%s' "$SLICE_NAME" "$SLICE_HOME_VOLUME" "$archive_identity" "$$" | hash_stdin)"
+  if ! run_with_timeout 30 docker volume create \
+    --label "io.chariox.saved-home.archive-sha256=$archive_identity" \
+    --label "io.chariox.saved-home.initialization-token=$initialization_token" \
+    "$SLICE_HOME_VOLUME" >/dev/null; then
     log "failed to create new home volume $SLICE_HOME_VOLUME"
     return 1
   fi
   created=1
-  if (( created == 1 )) && restore_saved_home_volume; then
+  local created_archive_label created_token_label
+  if ! created_archive_label="$(saved_home_volume_label io.chariox.saved-home.archive-sha256)" \
+    || ! created_token_label="$(saved_home_volume_label io.chariox.saved-home.initialization-token)" \
+    || [[ "$created_archive_label" != "$archive_identity" ]] \
+    || [[ "$created_token_label" != "$initialization_token" ]]; then
+    log "home volume $SLICE_HOME_VOLUME was not proven newly-created for this saved archive; refusing to overwrite it"
+    return 1
+  fi
+  if (( created == 1 )) && restore_saved_home_volume "$archive_identity"; then
     return 0
   fi
   if (( created == 1 )); then
