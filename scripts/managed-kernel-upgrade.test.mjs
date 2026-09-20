@@ -350,6 +350,23 @@ if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   rm -f -- "$HARNESS_STATE/fail-final-receipt-validation"
   exit 1
 fi
+if [ "\${1##*/}" = "managed-kernel-home-migration.mjs" ] \
+  && [ "\${2:-}" = "apply" ] \
+  && [ -f "$HARNESS_STATE/crash-after-home-root-rename" ]; then
+  /bin/mv -- "\${5}" "\${6}"
+  rm -f -- "$HARNESS_STATE/crash-after-home-root-rename"
+  kill -KILL "$PPID"
+  exit 1
+fi
+if [ "\${1##*/}" = "managed-kernel-home-migration.mjs" ] \
+  && [ "\${2:-}" = "apply" ] \
+  && [ -f "$HARNESS_STATE/crash-before-home-completion-marker" ]; then
+  "${process.execPath}" "$@"
+  rm -f -- "\${3%/*}/home-migration-complete" \
+    "$HARNESS_STATE/crash-before-home-completion-marker"
+  kill -KILL "$PPID"
+  exit 1
+fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   && [ "\${2:-}" = "atomic-symlink" ] \
   && [ -f "$HARNESS_STATE/crash-before-symlink" ]; then
@@ -508,6 +525,12 @@ test("managed kernel upgrade migrates legacy home state and rejects a home colli
   )
   assert.equal((await stat(join(harness.installRoot, "home/chariox"))).mode & 0o777, 0o700)
   assert.equal((await stat(join(harness.installRoot, "home/chariox/.chariox"))).mode & 0o777, 0o700)
+  const charioxUid = Number(spawnSync("id", ["-u", "chariox"], { encoding: "utf8" }).stdout.trim())
+  const charioxGid = Number(spawnSync("id", ["-g", "chariox"], { encoding: "utf8" }).stdout.trim())
+  assert.equal((await stat(join(harness.installRoot, "home/chariox"))).uid, charioxUid)
+  assert.equal((await stat(join(harness.installRoot, "home/chariox"))).gid, charioxGid)
+  assert.equal((await stat(join(harness.installRoot, "home/chariox/.chariox"))).uid, charioxUid)
+  assert.equal((await stat(join(harness.installRoot, "home/chariox/.chariox"))).gid, charioxGid)
 
   const collisionHarness = await makeHarness(context)
   const collisionLegacy = join(collisionHarness.installRoot, "var/lib/chariox/home")
@@ -548,6 +571,74 @@ test("managed kernel upgrade stops the live service before migrating legacy home
     "late-service-write\n",
     "the migration must retain the service's final write",
   )
+})
+
+test("managed kernel upgrade resumes its identity-backed home migration after crash windows", async (context) => {
+  for (const marker of ["crash-after-home-root-rename", "crash-before-home-completion-marker"]) {
+    const harness = await makeHarness(context)
+    const canonicalHome = join(harness.installRoot, "home/chariox")
+    const legacyHome = join(harness.installRoot, "var/lib/chariox/home")
+    const legacyReceipt = join(legacyHome, "managed/bootstrap-receipt.json")
+    await rename(canonicalHome, legacyHome)
+    await mkdir(dirname(legacyReceipt), { recursive: true })
+    await rename(harness.receiptPath, legacyReceipt)
+    await put(join(harness.state, marker), "crash\n")
+
+    const interrupted = harness.run()
+    assert.equal(interrupted.signal, "SIGKILL", `${marker}: ${interrupted.stderr}`)
+    const recovered = harness.run()
+    assert.equal(recovered.status, 0, `${marker}: ${recovered.stderr}`)
+    assert.equal(await lstat(legacyHome).then(() => true, () => false), false)
+    assert.equal(
+      await readFile(join(canonicalHome, "repositories/repo-1/HEAD"), "utf8"),
+      "repository-sentinel\n",
+    )
+    assert.equal(
+      JSON.parse(await readFile(harness.receiptPath, "utf8")).runtimeReleaseDigest,
+      harness.target.digest,
+    )
+  }
+})
+
+test("managed kernel upgrade validates the signed candidate before planning legacy migration", async (context) => {
+  const harness = await makeHarness(context)
+  const canonicalHome = join(harness.installRoot, "home/chariox")
+  const legacyHome = join(harness.installRoot, "var/lib/chariox/home")
+  const legacyReceipt = join(legacyHome, "managed/bootstrap-receipt.json")
+  await rename(canonicalHome, legacyHome)
+  await mkdir(dirname(legacyReceipt), { recursive: true })
+  await rename(harness.receiptPath, legacyReceipt)
+  await put(
+    join(harness.target.rootfs, "etc/systemd/system/chariox-disposable-worker-bootstrap.service"),
+    "[Service]\nExecStart=/unexpected\n",
+  )
+
+  const result = harness.run()
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /chariox-disposable-worker-bootstrap.service is corrupted/)
+  assert.equal(await lstat(legacyHome).then(() => true, () => false), true)
+  assert.equal(await lstat(canonicalHome).then(() => true, () => false), false)
+  assert.equal(await lstat(join(harness.state, "systemctl.log")).then(() => true, () => false), false)
+})
+
+test("managed kernel upgrade rejects a symlinked legacy state entry before stopping the service", async (context) => {
+  const harness = await makeHarness(context)
+  const canonicalHome = join(harness.installRoot, "home/chariox")
+  const legacyHome = join(harness.installRoot, "var/lib/chariox/home")
+  const legacyReceipt = join(legacyHome, "managed/bootstrap-receipt.json")
+  const outside = join(harness.root, "outside-managed-context")
+  await rename(canonicalHome, legacyHome)
+  await mkdir(dirname(legacyReceipt), { recursive: true })
+  await rename(harness.receiptPath, legacyReceipt)
+  await mkdir(outside)
+  await writeFile(join(outside, "must-remain"), "outside\n")
+  await symlink(outside, join(legacyHome, "managed-context"))
+
+  const result = harness.run()
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /managed kernel managed-context is not a real directory/)
+  assert.equal(await readFile(join(outside, "must-remain"), "utf8"), "outside\n")
+  assert.equal(await lstat(join(harness.state, "systemctl.log")).then(() => true, () => false), false)
 })
 
 test("managed upgrade rejects a corrupted declared worker service before stopping the kernel", async (context) => {
@@ -1315,8 +1406,13 @@ test("managed kernel upgrade remains a dedicated offline release operation", asy
 
   const publishRelease = contents.indexOf('mv "$pending_release" "$published_release"')
   const publishTransaction = contents.indexOf('publish-transaction \\', publishRelease)
-  const stopService = contents.indexOf('if ! systemctl stop "$service_name"', publishTransaction)
+  const stopService = contents.indexOf('systemctl stop "$service_name"', publishTransaction)
   assert.ok(publishRelease >= 0 && publishTransaction > publishRelease && stopService > publishTransaction)
+  const verifyCandidate = contents.indexOf('verify-image-release.mjs" "$image_root"', 0)
+  const planMigration = contents.indexOf('\nplan_home_migration\n', verifyCandidate)
+  const applyMigration = contents.indexOf('resume_home_migration', stopService)
+  assert.ok(verifyCandidate >= 0 && planMigration > verifyCandidate)
+  assert.ok(planMigration < publishTransaction && applyMigration > stopService)
   assert.match(contents.slice(0, publishRelease), /sync-tree[^\n]*\$pending_release/)
   assert.match(contents.slice(publishRelease, publishTransaction), /sync-directory[^\n]*\$releases_root/)
   assert.match(contents.slice(publishRelease, publishTransaction), /sync-tree[^\n]*\$pending_transaction/)
