@@ -96,12 +96,6 @@ function finiteLimit(value, fallback) {
   return result;
 }
 
-function terminalPromise(record) {
-  return record.outcome === "fulfilled"
-    ? Promise.resolve(record.result)
-    : Promise.reject(record.error);
-}
-
 export class BrowserMutationCoordinator {
   constructor(options = {}) {
     if (!isPlainObject(options)) throw new TypeError("options must be a plain object");
@@ -138,7 +132,7 @@ export class BrowserMutationCoordinator {
       if (existing.fingerprint !== actionFingerprint) {
         fail(MUTATION_ERROR_CODES.ACTION_ID_CONFLICT);
       }
-      return existing.state === "completed" ? terminalPromise(existing) : existing.promise;
+      return existing.promise;
     }
 
     let queue = this.queues.get(attribution.tab_id);
@@ -162,6 +156,7 @@ export class BrowserMutationCoordinator {
       rejectPromise = reject;
     });
     const record = {
+      actionId: attribution.action_id,
       attribution,
       abortController,
       fingerprint: actionFingerprint,
@@ -170,7 +165,6 @@ export class BrowserMutationCoordinator {
       resolve: resolvePromise,
       run,
       outcome: null,
-      state: "queued",
     };
     this.actions.set(attribution.action_id, record);
     queue.push(record);
@@ -189,7 +183,11 @@ export class BrowserMutationCoordinator {
       // exhausted, reject every mutation until a new browser generation begins.
       this.invalidationOverflowed = true;
     }
-    this._cancelQueued(normalizedTabId, MUTATION_ERROR_CODES.CANCELLED);
+    this._cancelQueued(
+      normalizedTabId,
+      MUTATION_ERROR_CODES.CANCELLED,
+      (record) => record.attribution.target_generation <= normalizedGeneration,
+    );
     const active = this.active.get(normalizedTabId);
     if (active && active.attribution.target_generation <= normalizedGeneration) {
       active.abortController.abort(MUTATION_ERROR_CODES.INDETERMINATE);
@@ -240,17 +238,22 @@ export class BrowserMutationCoordinator {
     }
   }
 
-  _cancelQueued(tabId, code) {
+  _cancelQueued(tabId, code, shouldCancel = () => true) {
     const queue = this.queues.get(tabId) ?? [];
-    this.queues.delete(tabId);
+    const retained = [];
     for (const record of queue) {
+      if (!shouldCancel(record)) {
+        retained.push(record);
+        continue;
+      }
       const error = new BrowserMutationError(code);
-      record.state = "completed";
       record.outcome = "rejected";
-      record.error = error;
       record.reject(error);
-      this._retainCompleted(record);
+      this._retainCompleted(record, record.actionId);
+      this._releaseExecution(record);
     }
+    if (retained.length === 0) this.queues.delete(tabId);
+    else this.queues.set(tabId, retained);
   }
 
   _pump(tabId) {
@@ -262,7 +265,6 @@ export class BrowserMutationCoordinator {
       return;
     }
     if (queue.length === 0) this.queues.delete(tabId);
-    record.state = "active";
     this.active.set(tabId, record);
     Promise.resolve()
       .then(() => {
@@ -284,25 +286,33 @@ export class BrowserMutationCoordinator {
     const terminalValue = wasAborted
       ? new BrowserMutationError(MUTATION_ERROR_CODES.INDETERMINATE)
       : value;
-    record.state = "completed";
     record.outcome = terminalOutcome;
     if (terminalOutcome === "fulfilled") {
-      record.result = terminalValue;
       record.resolve(terminalValue);
     } else {
-      record.error = terminalValue;
       record.reject(terminalValue);
     }
     if (this.active.get(tabId) === record) this.active.delete(tabId);
-    this._retainCompleted(record);
+    this._retainCompleted(record, record.actionId);
+    this._releaseExecution(record);
     this._pump(tabId);
   }
 
-  _retainCompleted(record) {
-    this.completedOrder.push(record.attribution.action_id);
+  _releaseExecution(record) {
+    delete record.actionId;
+    delete record.attribution;
+    delete record.run;
+    delete record.resolve;
+    delete record.reject;
+    delete record.abortController;
+    Object.freeze(record);
+  }
+
+  _retainCompleted(record, actionId) {
+    this.completedOrder.push(actionId);
     while (this.completedOrder.length > this.maxCompleted) {
       const actionId = this.completedOrder.shift();
-      if (this.actions.get(actionId)?.state === "completed") this.actions.delete(actionId);
+      if (this.actions.get(actionId)?.outcome !== null) this.actions.delete(actionId);
     }
   }
 }

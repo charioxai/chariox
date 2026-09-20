@@ -28,6 +28,21 @@ function deferred() {
   return { promise, reject, resolve };
 }
 
+function assertTerminalRecord(record, outcome, secret) {
+  assert.deepEqual(Object.keys(record).sort(), [
+    "fingerprint",
+    "outcome",
+    "promise",
+  ]);
+  assert.equal(record.outcome, outcome);
+  assert.equal(typeof record.promise?.then, "function");
+  assert.equal(record.fingerprint.includes(secret), false);
+  assert.equal(Object.isFrozen(record), true);
+  for (const key of ["abortController", "attribution", "reject", "resolve", "run", "request", "payload"]) {
+    assert.equal(key in record, false, `terminal record retained ${key}`);
+  }
+}
+
 test("serializes mutations on one tab and preserves actor attribution", async () => {
   const coordinator = new BrowserMutationCoordinator();
   const first = deferred();
@@ -93,6 +108,24 @@ test("deduplicates pending and completed action IDs without rerunning", async ()
   assert.equal(calls, 1);
 });
 
+test("retains only bounded secret-safe terminal state after completion", async () => {
+  const coordinator = new BrowserMutationCoordinator({ maxCompleted: 2 });
+  const secret = "Bearer completion-secret";
+  const payload = { authorization: secret };
+  const firstAttribution = attribution({ action_id: "completed-1" });
+  await coordinator.mutate(firstAttribution, async () => payload.authorization && "one");
+  await coordinator.mutate(attribution({ action_id: "completed-2" }), async () => "two");
+  const thirdAttribution = attribution({ action_id: "completed-3" });
+  const third = coordinator.mutate(thirdAttribution, async () => "three");
+  assert.equal(await third, "three");
+
+  assert.equal(coordinator.actions.has(firstAttribution.action_id), false);
+  assert.equal(coordinator.snapshot().completed_count, 2);
+  const retained = coordinator.actions.get(thirdAttribution.action_id);
+  assertTerminalRecord(retained, "fulfilled", secret);
+  assert.equal(coordinator.mutate(thirdAttribution, async () => "must-not-run"), retained.promise);
+});
+
 test("rejects an action ID reused with different attribution", async () => {
   const coordinator = new BrowserMutationCoordinator();
   const gate = deferred();
@@ -128,6 +161,74 @@ test("cancels queued mutations and marks active work indeterminate on tab invali
     () => coordinator.mutate(attribution({ action_id: "action-3" }), async () => {}),
     (error) => error.code === MUTATION_ERROR_CODES.TAB_GENERATION_STALE,
   );
+});
+
+test("invalidates only older active and queued generations and preserves retry", async () => {
+  const coordinator = new BrowserMutationCoordinator();
+  const activeGate = deferred();
+  let activeSignal;
+  let newerCalls = 0;
+  const active = coordinator.mutate(
+    attribution({ action_id: "older-active", target_generation: 1 }),
+    async ({ signal }) => {
+      activeSignal = signal;
+      await activeGate.promise;
+      return "old";
+    },
+  );
+  const newerAttribution = attribution({
+    action_id: "newer-queued",
+    operation: "fill",
+    target_generation: 2,
+  });
+  const newer = coordinator.mutate(newerAttribution, async () => {
+    newerCalls += 1;
+    return "new";
+  });
+  await Promise.resolve();
+
+  coordinator.invalidateTab("tab-1", 1);
+  assert.equal(activeSignal.aborted, true);
+  assert.deepEqual(coordinator.snapshot().queued, [
+    { tab_id: "tab-1", action_ids: ["newer-queued"] },
+  ]);
+
+  const retry = coordinator.mutate(newerAttribution, async () => "must-not-replay");
+  assert.equal(retry, newer);
+  activeGate.resolve();
+  await assert.rejects(active, (error) => error.code === MUTATION_ERROR_CODES.INDETERMINATE);
+  assert.equal(await retry, "new");
+  assert.equal(newerCalls, 1);
+});
+
+test("releases execution references for queued cancellation", async () => {
+  const coordinator = new BrowserMutationCoordinator();
+  const activeGate = deferred();
+  const secret = "Bearer queued-secret";
+  const payload = { authorization: secret };
+  const active = coordinator.mutate(
+    attribution({ action_id: "newer-active", target_generation: 2 }),
+    () => activeGate.promise,
+  );
+  const queuedAttribution = attribution({
+    action_id: "older-queued",
+    operation: "fill",
+    target_generation: 1,
+  });
+  const queued = coordinator.mutate(
+    queuedAttribution,
+    async () => payload.authorization && "must-not-run",
+  );
+  await Promise.resolve();
+
+  coordinator.invalidateTab("tab-1", 1);
+  await assert.rejects(queued, (error) => error.code === MUTATION_ERROR_CODES.CANCELLED);
+  const retained = coordinator.actions.get(queuedAttribution.action_id);
+  assertTerminalRecord(retained, "rejected", secret);
+  assert.equal(retained.promise, queued);
+
+  activeGate.resolve("active");
+  assert.equal(await active, "active");
 });
 
 test("does not start an admitted mutation after its tab is invalidated", async () => {
