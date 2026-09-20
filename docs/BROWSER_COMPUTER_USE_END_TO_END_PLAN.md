@@ -209,6 +209,38 @@ does not close a box.
   results, resource samples, cleanup, and retained evidence before marking any
   ledger item complete.
 
+### Locked Path-1 decisions
+
+These decisions are requirements. Do not reopen them during implementation or
+replace them with a managed-only approximation:
+
+- Path 1 uses the disposable VM as its isolation boundary. Provider processes
+  must not run inside Bubblewrap or inherit an equivalent managed systemd
+  filesystem or process sandbox.
+- The managed kernel is the ordinary kernel build. Chariox installs it as a
+  signed, target-native, content-addressed release with atomic activation and
+  rollback. This is the production installation design for managed machines,
+  not a development shortcut and not a separate managed runtime.
+- Mutable kernel state remains in `/home/chariox/.chariox`. Root-owned release
+  directories contain immutable binaries only.
+- Copied repositories default to `/home/chariox/<source-repository-basename>`.
+  A user may select another absolute trusted repository root when creating the
+  managed machine. Workers inherit that server-side setting and clients cannot
+  override it per worker or session.
+- A managed user can select every working directory allowed by normal Unix
+  permissions, including `/home`, `/tmp`, newly created directories, and
+  repositories created after enrollment. Exact managed control files remain
+  protected without blocking their parent directory or unrelated siblings.
+- Automatic shutdown remains mandatory for managed machines. This includes
+  minimum runtime, disabled and keep-running modes, restart reconciliation,
+  and the idle deadline measured from the last agent finishing.
+- Development is speed-first within measured resource safety. Monitor disk,
+  memory, CPU, process health, and build growth on local and managed machines.
+  Reclaim disposable artifacts and stop unhealthy or unbounded work, but do
+  not interrupt a bounded build or validation because it crosses an arbitrary
+  fixed threshold. Record the measurement and the concrete exhaustion or
+  stability risk whenever resource pressure changes the implementation plan.
+
 For Path 1, the disposable worker VM is the provider security and filesystem
 isolation boundary. Once the signed kernel has enrolled, provider runs must use
 the same ordinary kernel launch path as a user-managed machine. Path-1 service
