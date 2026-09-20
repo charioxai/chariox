@@ -6,6 +6,11 @@ import { pathToFileURL } from "node:url";
 
 import { BrowserTabRegistry } from "./browser-tab-registry.mjs";
 import {
+  ACTION_ERROR_CODES,
+  BrowserActionError,
+  performBrowserAction,
+} from "./browser-controller-actions.mjs";
+import {
   BrowserObservationError,
   BrowserObservationStore,
   OBSERVATION_ERROR_CODES,
@@ -47,6 +52,9 @@ export const ERROR_CODES = Object.freeze({
   STALE_DOCUMENT: "STALE_DOCUMENT",
   ELEMENT_REFERENCE_INVALIDATED: "ELEMENT_REFERENCE_INVALIDATED",
   SNAPSHOT_TOO_LARGE: "SNAPSHOT_TOO_LARGE",
+  ACTION_INVALID: "ACTION_INVALID",
+  ACTION_TIMEOUT: "ACTION_TIMEOUT",
+  ACTION_FAILED: "ACTION_FAILED",
   REQUEST_CANCELLED: "REQUEST_CANCELLED",
   OUTPUT_TOO_LARGE: "OUTPUT_TOO_LARGE",
   INTERNAL_ERROR: "INTERNAL_ERROR",
@@ -78,6 +86,9 @@ const ERROR_MESSAGES = Object.freeze({
   [ERROR_CODES.STALE_DOCUMENT]: "browser document changed during observation",
   [ERROR_CODES.ELEMENT_REFERENCE_INVALIDATED]: "element reference is no longer valid",
   [ERROR_CODES.SNAPSHOT_TOO_LARGE]: "browser observation exceeds the byte limit",
+  [ERROR_CODES.ACTION_INVALID]: "browser action is invalid",
+  [ERROR_CODES.ACTION_TIMEOUT]: "browser action timed out",
+  [ERROR_CODES.ACTION_FAILED]: "browser action failed",
   [ERROR_CODES.REQUEST_CANCELLED]: "request was cancelled",
   [ERROR_CODES.OUTPUT_TOO_LARGE]: "response exceeds the byte limit",
   [ERROR_CODES.INTERNAL_ERROR]: "internal controller error",
@@ -258,6 +269,13 @@ function defaultSpawnBrowser(executable, args) {
 function normalizeError(error, fallback = ERROR_CODES.INTERNAL_ERROR) {
   if (error instanceof ControllerError) {
     return error;
+  }
+  if (error instanceof BrowserActionError) {
+    return controllerError(
+      Object.values(ACTION_ERROR_CODES).includes(error.code)
+        ? error.code
+        : ERROR_CODES.ACTION_FAILED,
+    );
   }
   if (error instanceof BrowserObservationError && error.code in ERROR_MESSAGES) {
     return controllerError(error.code);
@@ -787,6 +805,51 @@ export class BrowserController {
     } catch (error) {
       throw normalizeError(error);
     }
+  }
+
+  async performElementAction(ownerId, expectedGeneration, request) {
+    this._assertTabRegistryAccess(ownerId, expectedGeneration);
+    assertExactKeys(
+      request,
+      ["tab_id", "target_generation", "element_ref", "action", "timeout_ms"],
+      ["tab_id", "target_generation", "element_ref", "action"],
+    );
+    const tabId = validateIdentifier(request.tab_id, "tab_id");
+    const targetGeneration = validateGeneration(request.target_generation);
+    const elementRef = validateIdentifier(request.element_ref, "element_ref");
+    if (!isPlainObject(request.action)) schemaError();
+    if (
+      request.timeout_ms !== undefined &&
+      (!Number.isSafeInteger(request.timeout_ms) || request.timeout_ms < 1)
+    ) {
+      schemaError();
+    }
+    const generation = this.generation;
+    return this._enqueue(generation, async () => {
+      const target = this.tabRegistry.resolveTarget(tabId, {
+        generation,
+        target_generation: targetGeneration,
+      });
+      let element;
+      try {
+        element = this.observationStore.resolve(target, elementRef);
+      } catch (error) {
+        throw normalizeError(error);
+      }
+      const connection = await this._ensureTargetConnection(target);
+      try {
+        return await performBrowserAction({
+          connection,
+          element,
+          action: request.action,
+          timeoutMs: request.timeout_ms,
+          now: () => this._now(),
+          sleep: (milliseconds) => this.timers.sleep(milliseconds),
+        });
+      } catch (error) {
+        throw normalizeError(error);
+      }
+    });
   }
 
   _assertOptions() {
