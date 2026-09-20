@@ -20,6 +20,8 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     python3-venv \
   && rm -rf /var/lib/apt/lists/*
 WORKDIR /tmp/chariox-selkies-build
+COPY apps/kernel/slice-linux-docker/docker/selkies-web-core.package-lock.json /tmp/selkies-web-core.package-lock.json
+COPY apps/kernel/slice-linux-docker/docker/selkies-dashboard.package-lock.json /tmp/selkies-dashboard.package-lock.json
 RUN curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
       "https://github.com/selkies-project/selkies/archive/$SELKIES_REVISION.tar.gz" \
       -o selkies.tar.gz \
@@ -28,10 +30,12 @@ RUN curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
   && mkdir source \
   && tar -xzf selkies.tar.gz --strip-components=1 -C source
 RUN cd source/addons/selkies-web-core \
-  && npm install --no-audit --no-fund \
+  && cp /tmp/selkies-web-core.package-lock.json package-lock.json \
+  && npm ci --no-audit --no-fund \
   && npm run build \
   && cd ../selkies-dashboard \
-  && npm install --no-audit --no-fund \
+  && cp /tmp/selkies-dashboard.package-lock.json package-lock.json \
+  && npm ci --no-audit --no-fund \
   && SELKIES_INJECT=1 npm run build \
   && mkdir -p ../../src/selkies/selkies_web \
   && cp ../selkies-web-core/dist/selkies-core.js dist/src/ \
@@ -69,20 +73,24 @@ RUN architecture="${TARGETARCH:-amd64}" \
   && case "$architecture" in \
     amd64) \
       pixelflux_url='https://github.com/selkies-project/pixelflux/releases/download/6974a8c/pixelflux-2.1.0-cp311-cp311-manylinux_2_28_x86_64.whl' \
+      pixelflux_filename='pixelflux-2.1.0-cp311-cp311-manylinux_2_28_x86_64.whl' \
       pixelflux_sha256='97a1b6b289373373b8a32699bade666d758848be11fda470f5e49a5d50512756' \
       pcmflux_url='https://github.com/selkies-project/pcmflux/releases/download/a8fac8d/pcmflux-2.1.0-cp311-cp311-manylinux_2_28_x86_64.whl' \
+      pcmflux_filename='pcmflux-2.1.0-cp311-cp311-manylinux_2_28_x86_64.whl' \
       pcmflux_sha256='5fc902b41888eaf8185f891709c995198152fd7febfd158d130cba18bd07508c' ;; \
     arm64) \
       pixelflux_url='https://github.com/selkies-project/pixelflux/releases/download/6974a8c/pixelflux-2.1.0-cp311-cp311-manylinux_2_28_aarch64.whl' \
+      pixelflux_filename='pixelflux-2.1.0-cp311-cp311-manylinux_2_28_aarch64.whl' \
       pixelflux_sha256='b86783c2fb7eb14b105f123b8182be7144afb9bd4d2c2af181b5731b5e966342' \
       pcmflux_url='https://github.com/selkies-project/pcmflux/releases/download/a8fac8d/pcmflux-2.1.0-cp311-cp311-manylinux_2_28_aarch64.whl' \
+      pcmflux_filename='pcmflux-2.1.0-cp311-cp311-manylinux_2_28_aarch64.whl' \
       pcmflux_sha256='d34fb03f25ad0a977bbcb19d8aee061b5125b8ee8be96be2a8398bd6097681ef' ;; \
     *) echo "unsupported Selkies architecture: $architecture" >&2; exit 1 ;; \
   esac \
-  && curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 "$pixelflux_url" -o /out/runtime-wheels/pixelflux.whl \
-  && printf '%s  %s\n' "$pixelflux_sha256" /out/runtime-wheels/pixelflux.whl | sha256sum --check --strict \
-  && curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 "$pcmflux_url" -o /out/runtime-wheels/pcmflux.whl \
-  && printf '%s  %s\n' "$pcmflux_sha256" /out/runtime-wheels/pcmflux.whl | sha256sum --check --strict
+  && curl --fail --silent --show-error --location --proto '=https' "$pixelflux_url" -o "/out/runtime-wheels/$pixelflux_filename" \
+  && printf '%s  %s\n' "$pixelflux_sha256" "/out/runtime-wheels/$pixelflux_filename" | sha256sum --check --strict \
+  && curl --fail --silent --show-error --location --proto '=https' "$pcmflux_url" -o "/out/runtime-wheels/$pcmflux_filename" \
+  && printf '%s  %s\n' "$pcmflux_sha256" "/out/runtime-wheels/$pcmflux_filename" | sha256sum --check --strict
 
 FROM rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS rust-builder
 WORKDIR /opt/chariox-source
