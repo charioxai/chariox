@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createECDH } from "node:crypto";
 import { once } from "node:events";
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -10,6 +11,16 @@ const kernelClientDistUrl = new URL("../../../../packages/kernel-client/dist/ipc
 const kernelRequestsDistUrl = new URL("../../../../packages/kernel-client/dist/ipc-requests.js", import.meta.url);
 const relayCryptoDistUrl = new URL("../../../../packages/kernel-client/dist/relay-crypto.js", import.meta.url);
 const displayStreamDistUrl = new URL("../../../../packages/kernel-client/dist/display-stream.js", import.meta.url);
+const browserRelayCryptoDistUrl = new URL("../../../../packages/kernel-client/dist/browser-relay-crypto.js", import.meta.url);
+const hasPublicClientDist = [kernelClientDistUrl, kernelRequestsDistUrl, relayCryptoDistUrl]
+  .every((url) => existsSync(fileURLToPath(url)));
+const hasDisplayClientDist = [
+  kernelClientDistUrl,
+  kernelRequestsDistUrl,
+  relayCryptoDistUrl,
+  displayStreamDistUrl,
+  browserRelayCryptoDistUrl,
+].every((url) => existsSync(fileURLToPath(url)));
 
 const importProductTransport = () => import(moduleUrl.href);
 
@@ -134,7 +145,7 @@ test("selkies display authorization aborts an in-flight public request and close
   assert.equal(closed, 1);
 });
 
-test("real LocalIpcClient authorizes a Selkies endpoint, then fails closed without a public stream connection API", async () => {
+test("real LocalIpcClient authorizes a Selkies endpoint, then fails closed without a public stream connection API", { skip: !hasPublicClientDist }, async () => {
   let LocalIpcClient;
   let getSliceDisplayEndpointRequest;
   let decryptRelayPayload;
@@ -253,7 +264,7 @@ test("real LocalIpcClient authorizes a Selkies endpoint, then fails closed witho
   }
 });
 
-test("real LocalIpcClient authorizes and connects the encrypted Selkies display stream", async () => {
+test("real LocalIpcClient authorizes and connects the encrypted Selkies display stream", { skip: !hasDisplayClientDist }, async () => {
   let LocalIpcClient;
   let getSliceDisplayEndpointRequest;
   let getRoomEnvironmentStateRequest;
@@ -472,7 +483,7 @@ test("real LocalIpcClient authorizes and connects the encrypted Selkies display 
   }
 });
 
-test("real public create binds and starts the home-owned slice before attach uses returned identities", async () => {
+test("real public create binds and starts the home-owned slice before attach uses returned identities", { skip: !hasPublicClientDist }, async () => {
   let LocalIpcClient;
   let attachToSessionRequest;
   let bindRoomEnvironmentSliceRequest;
@@ -977,7 +988,7 @@ test("real public create binds and starts the home-owned slice before attach use
   }
 });
 
-test("real LocalIpcClient rejects foreign destroy identities before any delete request", async () => {
+test("real LocalIpcClient rejects foreign destroy identities before any delete request", { skip: !hasPublicClientDist }, async () => {
   let LocalIpcClient;
   let deleteSliceRequest;
   let detachFromSessionRequest;
@@ -1037,7 +1048,7 @@ test("real LocalIpcClient rejects foreign destroy identities before any delete r
   }
 });
 
-test("real LocalIpcClient cleanup deletes a slice after post-create validation fails", async () => {
+test("real LocalIpcClient cleanup deletes a slice after post-create validation fails", { skip: !hasPublicClientDist }, async () => {
   let LocalIpcClient;
   let createSliceRequest;
   let deleteSliceRequest;
