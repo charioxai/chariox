@@ -96,12 +96,6 @@ function finiteLimit(value, fallback) {
   return result;
 }
 
-function terminalPromise(record) {
-  return record.outcome === "fulfilled"
-    ? Promise.resolve(record.result)
-    : Promise.reject(record.error);
-}
-
 export class BrowserMutationCoordinator {
   constructor(options = {}) {
     if (!isPlainObject(options)) throw new TypeError("options must be a plain object");
@@ -138,7 +132,7 @@ export class BrowserMutationCoordinator {
       if (existing.fingerprint !== actionFingerprint) {
         fail(MUTATION_ERROR_CODES.ACTION_ID_CONFLICT);
       }
-      return existing.state === "completed" ? terminalPromise(existing) : existing.promise;
+      return existing.promise;
     }
 
     let queue = this.queues.get(attribution.tab_id);
@@ -189,11 +183,56 @@ export class BrowserMutationCoordinator {
       // exhausted, reject every mutation until a new browser generation begins.
       this.invalidationOverflowed = true;
     }
-    this._cancelQueued(normalizedTabId, MUTATION_ERROR_CODES.CANCELLED);
+    this._cancelQueued(normalizedTabId, MUTATION_ERROR_CODES.CANCELLED, normalizedGeneration);
+    this._pump(normalizedTabId);
     const active = this.active.get(normalizedTabId);
     if (active && active.attribution.target_generation <= normalizedGeneration) {
       active.abortController.abort(MUTATION_ERROR_CODES.INDETERMINATE);
     }
+  }
+
+  cancelAction(rawRequest) {
+    if (!isPlainObject(rawRequest)) fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
+    const allowed = new Set(["action_id", "actor_id"]);
+    if (
+      Object.keys(rawRequest).some((key) => !allowed.has(key)) ||
+      !Object.prototype.hasOwnProperty.call(rawRequest, "action_id") ||
+      !Object.prototype.hasOwnProperty.call(rawRequest, "actor_id")
+    ) {
+      fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
+    }
+    const actionId = identifier(rawRequest.action_id);
+    const actorId = identifier(rawRequest.actor_id);
+    const record = this.actions.get(actionId);
+    if (!record) return { accepted: false, state: "unknown" };
+
+    let recordedActorId;
+    try {
+      recordedActorId = JSON.parse(record.fingerprint).actor_id;
+    } catch {
+      fail(MUTATION_ERROR_CODES.ACTION_ID_CONFLICT);
+    }
+    if (recordedActorId !== actorId) {
+      fail(MUTATION_ERROR_CODES.ACTION_ID_CONFLICT);
+    }
+    if (record.outcome !== null) {
+      return { accepted: false, state: "completed" };
+    }
+    if (record.state === "queued") {
+      const tabId = record.attribution.tab_id;
+      const queue = this.queues.get(tabId) ?? [];
+      const retained = queue.filter((candidate) => candidate !== record);
+      if (retained.length === queue.length) {
+        return { accepted: false, state: "completed" };
+      }
+      if (retained.length === 0) this.queues.delete(tabId);
+      else this.queues.set(tabId, retained);
+      this._cancelRecord(record, MUTATION_ERROR_CODES.CANCELLED);
+      this._pump(tabId);
+      return { accepted: true, state: "cancelled" };
+    }
+    record.abortController.abort(MUTATION_ERROR_CODES.INDETERMINATE);
+    return { accepted: true, state: "indeterminate" };
   }
 
   advanceBrowserGeneration(nextGeneration) {
@@ -240,17 +279,27 @@ export class BrowserMutationCoordinator {
     }
   }
 
-  _cancelQueued(tabId, code) {
+  _cancelQueued(tabId, code, maxTargetGeneration = Number.POSITIVE_INFINITY) {
     const queue = this.queues.get(tabId) ?? [];
-    this.queues.delete(tabId);
+    const retained = [];
     for (const record of queue) {
-      const error = new BrowserMutationError(code);
-      record.state = "completed";
-      record.outcome = "rejected";
-      record.error = error;
-      record.reject(error);
-      this._retainCompleted(record);
+      if (record.attribution.target_generation > maxTargetGeneration) {
+        retained.push(record);
+        continue;
+      }
+      this._cancelRecord(record, code);
     }
+    if (retained.length === 0) this.queues.delete(tabId);
+    else this.queues.set(tabId, retained);
+  }
+
+  _cancelRecord(record, code) {
+    const error = new BrowserMutationError(code);
+    record.state = "completed";
+    record.outcome = "rejected";
+    record.error = error;
+    record.reject(error);
+    this._retainCompleted(record);
   }
 
   _pump(tabId) {
@@ -299,10 +348,16 @@ export class BrowserMutationCoordinator {
   }
 
   _retainCompleted(record) {
-    this.completedOrder.push(record.attribution.action_id);
+    const actionId = record.attribution.action_id;
+    this.actions.set(actionId, {
+      fingerprint: record.fingerprint,
+      outcome: record.outcome,
+      promise: record.promise,
+    });
+    this.completedOrder.push(actionId);
     while (this.completedOrder.length > this.maxCompleted) {
       const actionId = this.completedOrder.shift();
-      if (this.actions.get(actionId)?.state === "completed") this.actions.delete(actionId);
+      if (this.actions.get(actionId)?.outcome !== undefined) this.actions.delete(actionId);
     }
   }
 }

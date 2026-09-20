@@ -130,6 +130,30 @@ test("cancels queued mutations and marks active work indeterminate on tab invali
   );
 });
 
+test("invalidating an older target generation preserves newer queued work", async () => {
+  const coordinator = new BrowserMutationCoordinator();
+  const gate = deferred();
+  let newerStarted = false;
+  const active = coordinator.mutate(attribution(), async () => {
+    await gate.promise;
+    return "old";
+  });
+  const newer = coordinator.mutate(
+    attribution({ action_id: "action-newer", target_generation: 2 }),
+    async () => {
+      newerStarted = true;
+      return "new";
+    },
+  );
+  await Promise.resolve();
+  coordinator.invalidateTab("tab-1", 1);
+  assert.equal(newerStarted, false);
+  gate.resolve();
+  await assert.rejects(active, (error) => error.code === MUTATION_ERROR_CODES.INDETERMINATE);
+  assert.equal(await newer, "new");
+  assert.equal(newerStarted, true);
+});
+
 test("does not start an admitted mutation after its tab is invalidated", async () => {
   const coordinator = new BrowserMutationCoordinator();
   let started = false;
@@ -220,6 +244,51 @@ test("preserves undefined rejection for the original action and deduplicated rep
   assert.deepEqual(first, { status: "rejected", reason: undefined });
   assert.deepEqual(replay, { status: "rejected", reason: undefined });
   assert.equal(calls, 1);
+});
+
+test("retains only bounded terminal dedup state after execution settles", async () => {
+  const coordinator = new BrowserMutationCoordinator();
+  const requestPayload = {
+    action: { kind: "fill", text: "private request text" },
+    nested: { response: { secret: "private response" } },
+  };
+  const result = await coordinator.mutate(attribution(), async () => {
+    assert.equal(requestPayload.action.kind, "fill");
+    return { ok: true };
+  });
+  assert.deepEqual(result, { ok: true });
+
+  const retained = coordinator.actions.get("action-1");
+  assert.deepEqual(Object.keys(retained).sort(), ["fingerprint", "outcome", "promise"]);
+  assert.equal(retained.outcome, "fulfilled");
+  assert.equal(retained.fingerprint.includes("private request text"), false);
+  assert.equal(retained.fingerprint.includes("private response"), false);
+  assert.equal("run" in retained, false);
+  assert.equal("resolve" in retained, false);
+  assert.equal("reject" in retained, false);
+  assert.equal("abortController" in retained, false);
+  assert.deepEqual(await coordinator.mutate(attribution(), async () => "must-not-run"), { ok: true });
+
+  const gate = deferred();
+  const active = coordinator.mutate(
+    attribution({ action_id: "action-active" }),
+    () => gate.promise,
+  );
+  const queuedPayload = { action: { kind: "fill", text: "queued private text" } };
+  const canceled = coordinator.mutate(
+    attribution({ action_id: "action-canceled" }),
+    async () => queuedPayload,
+  );
+  assert.deepEqual(coordinator.cancelAction({ action_id: "action-canceled", actor_id: "agent-1" }), {
+    accepted: true,
+    state: "cancelled",
+  });
+  await assert.rejects(canceled, (error) => error.code === MUTATION_ERROR_CODES.CANCELLED);
+  const canceledRecord = coordinator.actions.get("action-canceled");
+  assert.deepEqual(Object.keys(canceledRecord).sort(), ["fingerprint", "outcome", "promise"]);
+  assert.equal(canceledRecord.fingerprint.includes("queued private text"), false);
+  gate.resolve("active");
+  await active;
 });
 
 test("bounds queued tabs, per-tab work, and completed deduplication", async () => {
