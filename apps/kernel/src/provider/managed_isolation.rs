@@ -704,6 +704,14 @@ pub(crate) fn apply_managed_provider_isolation(
     request: &LaunchProviderRequest,
 ) -> Result<ProviderLaunchResult, DaemonError> {
     if !managed_provider_isolation_required() {
+        if let Some(working_directory) = request.working_directory.as_deref() {
+            crate::git_worktree_placement::preflight_working_directory(
+                working_directory,
+                "provider launch",
+                false,
+                &request.workspace_live_sync_roots,
+            )?;
+        }
         let mut environment_remove = managed_provider_control_env_remove();
         environment_remove.extend(launch.pty_env.keys().filter_map(|name| {
             (name.starts_with("GIT_CONFIG_KEY_") || name.starts_with("GIT_CONFIG_VALUE_"))
@@ -1500,13 +1508,28 @@ fn managed_working_directory(
         .working_directory
         .as_ref()
         .ok_or_else(|| isolation_error("managed provider launch has no working directory"))?;
-    let directory = canonical_directory(directory, "managed provider working directory")?;
-    let protected = managed_protected_namespace_directories(&[])?;
-    if let Some(protected_root) = protected.iter().find(|path| directory.starts_with(path)) {
+    let preflight = crate::git_worktree_placement::preflight_working_directory(
+        directory,
+        "managed provider working directory",
+        false,
+        roots,
+    )
+    .map_err(|error| isolation_error(error.to_string()))?;
+
+    // Preserve the managed namespace's existing mask contract. The shared
+    // ordinary check handles exact control paths and re-exposed roots; this
+    // additional topology check keeps /run and any managed-only service
+    // boundary hidden unless one selected child is explicitly rebound.
+    let protected = managed_protected_namespace_directories(&[])
+        .map_err(|error| isolation_error(error.to_string()))?;
+    if let Some(protected_root) = protected
+        .iter()
+        .find(|path| preflight.canonical_path.starts_with(path))
+    {
         let reexposed_child = roots.iter().any(|root| {
             root != protected_root
                 && root.starts_with(protected_root)
-                && directory.starts_with(root)
+                && preflight.canonical_path.starts_with(root)
         });
         if !reexposed_child {
             return Err(isolation_error(
@@ -1514,7 +1537,7 @@ fn managed_working_directory(
             ));
         }
     }
-    Ok(directory)
+    Ok(preflight.canonical_path)
 }
 
 #[cfg(target_os = "linux")]

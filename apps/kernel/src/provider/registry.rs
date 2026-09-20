@@ -13,6 +13,20 @@ use dev_stub_adapter::{
     FailingPtyAdapter, ManagedDevStubAdapter, FAILING_PTY_ADAPTER, MANAGED_DEV_STUB_ADAPTER,
 };
 
+fn preflight_provider_working_directory(
+    request: &LaunchProviderRequest,
+) -> Result<(), DaemonError> {
+    if let Some(working_directory) = request.working_directory.as_deref() {
+        crate::git_worktree_placement::preflight_working_directory(
+            working_directory,
+            "provider launch",
+            false,
+            &request.workspace_live_sync_roots,
+        )?;
+    }
+    Ok(())
+}
+
 pub trait AgentEndpointAdapter: Send + Sync {
     fn key(&self) -> &'static str;
     fn connect(&self, request: &LaunchProviderRequest)
@@ -130,6 +144,7 @@ impl AgentEndpointAdapter for ClaudeAdapter {
         &self,
         request: &LaunchProviderRequest,
     ) -> Result<ProviderLaunchResult, DaemonError> {
+        preflight_provider_working_directory(request)?;
         let mut launch = plan_claude_launch(Some(request))?;
         launch.process_label = format!("claude:{}:{}", request.provider, request.model);
         launch.working_directory = request.working_directory.clone();
@@ -170,6 +185,7 @@ impl AgentEndpointAdapter for OpenCodeAdapter {
         &self,
         request: &LaunchProviderRequest,
     ) -> Result<ProviderLaunchResult, DaemonError> {
+        preflight_provider_working_directory(request)?;
         let mut launch = plan_opencode_launch(Some(request))?;
         launch.process_label = format!("opencode:{}:{}", request.provider, request.model);
         launch.pty_target = None;
@@ -215,6 +231,7 @@ impl AgentEndpointAdapter for CodexAdapter {
         &self,
         request: &LaunchProviderRequest,
     ) -> Result<ProviderLaunchResult, DaemonError> {
+        preflight_provider_working_directory(request)?;
         let mut launch = plan_codex_launch(Some(request))?;
         launch.process_label = format!("codex:{}:{}", request.provider, request.model);
         launch.pty_target = None;

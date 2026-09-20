@@ -36,6 +36,16 @@ pub(crate) fn search_workspace_directories(
 
     if normalized_query.is_empty() {
         for root in &roots {
+            if crate::git_worktree_placement::preflight_working_directory(
+                root,
+                "search workspace directories",
+                false,
+                &[],
+            )
+            .is_err()
+            {
+                continue;
+            }
             push_unique_path(&mut results, &mut seen, root.display().to_string());
             if results.len() >= limit {
                 break;
@@ -103,10 +113,22 @@ pub(crate) fn create_workspace_directory(path: &str) -> Result<String, DaemonErr
             message: format!("{} exists and is not a directory", directory.display()),
         });
     }
+    crate::git_worktree_placement::preflight_working_directory(
+        &directory,
+        "create workspace directory",
+        true,
+        &[],
+    )?;
     std::fs::create_dir_all(&directory).map_err(|error| DaemonError::LocalTransport {
         operation: "create workspace directory",
         message: error.to_string(),
     })?;
+    crate::git_worktree_placement::preflight_working_directory(
+        &directory,
+        "create workspace directory",
+        false,
+        &[],
+    )?;
     Ok(directory.display().to_string())
 }
 
@@ -147,6 +169,16 @@ fn push_matching_path(
     if results.len() >= limit {
         return;
     }
+    if crate::git_worktree_placement::preflight_working_directory(
+        Path::new(&value),
+        "search workspace directories",
+        false,
+        &[],
+    )
+    .is_err()
+    {
+        return;
+    }
     if normalized_query.is_empty() || value.to_lowercase().contains(normalized_query) {
         push_unique_path(results, seen, value);
     }
@@ -164,20 +196,41 @@ fn append_directory_completion(
 ) -> Result<(), DaemonError> {
     let expanded = expand_workspace_query_path(query);
     if query == "~" {
-        if expanded.is_dir() {
+        if crate::git_worktree_placement::preflight_working_directory(
+            &expanded,
+            "search workspace directories",
+            false,
+            &[],
+        )
+        .is_ok()
+        {
             push_unique_path(results, seen, expanded.display().to_string());
             append_matching_directory_children(results, seen, &expanded, "", limit)?;
         }
         return Ok(());
     }
     if query.ends_with('/') {
-        if expanded.is_dir() {
+        if crate::git_worktree_placement::preflight_working_directory(
+            &expanded,
+            "search workspace directories",
+            false,
+            &[],
+        )
+        .is_ok()
+        {
             push_unique_path(results, seen, expanded.display().to_string());
         }
         return append_matching_directory_children(results, seen, &expanded, "", limit);
     }
 
-    if expanded.is_dir() {
+    if crate::git_worktree_placement::preflight_working_directory(
+        &expanded,
+        "search workspace directories",
+        false,
+        &[],
+    )
+    .is_ok()
+    {
         push_unique_path(results, seen, expanded.display().to_string());
     }
     let prefix = expanded
@@ -199,7 +252,15 @@ fn append_matching_directory_children(
     normalized_query: &str,
     limit: usize,
 ) -> Result<(), DaemonError> {
-    if results.len() >= limit || !parent.is_dir() {
+    if results.len() >= limit
+        || crate::git_worktree_placement::preflight_working_directory(
+            parent,
+            "search workspace directories",
+            false,
+            &[],
+        )
+        .is_err()
+    {
         return Ok(());
     }
     append_matching_directory_children_from_result(
@@ -262,7 +323,14 @@ fn append_matching_directory_paths(
 ) {
     let mut matches = Vec::new();
     for path in entries {
-        if !path.is_dir() {
+        if crate::git_worktree_placement::preflight_working_directory(
+            &path,
+            "search workspace directories",
+            false,
+            &[],
+        )
+        .is_err()
+        {
             continue;
         }
         let name = path

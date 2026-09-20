@@ -206,6 +206,14 @@ impl KernelRuntimeOwnedState {
             );
             request = request.with_workspace_live_sync_roots(workspace_live_sync_roots);
         }
+        if let Some(working_directory) = request.working_directory.as_deref() {
+            crate::git_worktree_placement::preflight_working_directory(
+                working_directory,
+                "launch provider run",
+                false,
+                &request.workspace_live_sync_roots,
+            )?;
+        }
         if request.runtime_mcp_binding.is_none() {
             let shared_auth_token = request
                 .agent_id

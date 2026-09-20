@@ -4,27 +4,299 @@ use std::process::Command;
 use crate::agent::GitWorktreePlacement;
 use crate::error::DaemonError;
 
+const CHARIOX_STATE_DIRECTORY_NAMES: &[&str] = &[
+    ".chariox",
+    "kernels",
+    "state",
+    "managed-context",
+    "managed-runtime-auth",
+    "managed",
+    "sessions",
+    "daemon",
+    "machine",
+];
+const PROTECTED_DIRECTORY_ENV_NAMES: &[&str] = &[
+    "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+    "CHARIOX_MANAGED_PROVIDER_HOME",
+    "CHARIOX_MANAGED_SLICE_SERVICE_ROOT",
+    "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT",
+];
+const PROTECTED_FILE_ENV_NAMES: &[&str] = &[
+    "CHARIOX_MANAGED_VAULT_PATH",
+    "CHARIOX_SLICE_DOCKER_BROKER_SOCKET",
+    "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE",
+    "CHARIOX_MANAGED_BOOTSTRAP_PATH",
+    "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
+    "CHARIOX_DISPOSABLE_WORKER_BOOTSTRAP_PATH",
+    "CHARIOX_DISPOSABLE_WORKER_RECEIPT",
+    "CHARIOX_DAEMON_SOCKET",
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkingDirectoryPreflight {
+    pub(crate) requested_path: PathBuf,
+    pub(crate) canonical_path: PathBuf,
+    pub(crate) exists: bool,
+}
+
+/// Apply the ordinary-kernel working-directory contract at every entry point.
+///
+/// The check deliberately follows symlinks, requires only the same metadata and
+/// ancestor-execute access needed by a Linux `current_dir`, and never enumerates
+/// children. Managed isolation can pass selected re-exposed roots when it must
+/// mask a dedicated service namespace; Path 1 and ordinary launches pass none.
+pub(crate) fn preflight_working_directory(
+    path: &Path,
+    operation: &'static str,
+    allow_missing: bool,
+    reexposed_roots: &[PathBuf],
+) -> Result<WorkingDirectoryPreflight, DaemonError> {
+    let (canonical_path, exists) = match std::fs::metadata(path) {
+        Ok(metadata) if !metadata.is_dir() => {
+            return Err(working_directory_error(
+                operation,
+                format!("working directory `{}` is not a directory", path.display()),
+            ));
+        }
+        Ok(_) => (
+            path.canonicalize().map_err(|error| {
+                working_directory_error(
+                    operation,
+                    format!(
+                        "working directory `{}` cannot be accessed: {error}",
+                        path.display()
+                    ),
+                )
+            })?,
+            true,
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && allow_missing => {
+            (canonical_or_lexical_path(path, operation)?, false)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(working_directory_error(
+                operation,
+                format!("working directory `{}` does not exist", path.display()),
+            ));
+        }
+        Err(error) => {
+            return Err(working_directory_error(
+                operation,
+                format!(
+                    "working directory `{}` cannot be accessed: {error}",
+                    path.display()
+                ),
+            ));
+        }
+    };
+
+    let protection = ordinary_working_directory_protection(operation)?;
+    let reexposed_roots = reexposed_roots
+        .iter()
+        .map(|root| canonical_or_lexical_path(root, operation))
+        .collect::<Result<Vec<_>, _>>()?;
+    if protection
+        .directories
+        .iter()
+        .any(|root| canonical_path_is_within(&canonical_path, root))
+        && reexposed_roots.iter().all(|root| {
+            !protection
+                .directories
+                .iter()
+                .any(|protected| root != protected && root.starts_with(protected))
+                || !canonical_path_is_within(&canonical_path, root)
+        })
+    {
+        return Err(working_directory_error(
+            operation,
+            format!(
+                "working directory `{}` is inside protected Chariox service state",
+                path.display()
+            ),
+        ));
+    }
+    if protection
+        .files
+        .iter()
+        .any(|protected| protected == &canonical_path)
+    {
+        return Err(working_directory_error(
+            operation,
+            format!(
+                "working directory `{}` is a protected Chariox control path",
+                path.display()
+            ),
+        ));
+    }
+
+    Ok(WorkingDirectoryPreflight {
+        requested_path: path.to_path_buf(),
+        canonical_path,
+        exists,
+    })
+}
+
+fn working_directory_error(operation: &'static str, message: String) -> DaemonError {
+    DaemonError::LocalTransport { operation, message }
+}
+
+#[derive(Debug, Default)]
+struct WorkingDirectoryProtection {
+    directories: Vec<PathBuf>,
+    files: Vec<PathBuf>,
+}
+
+fn ordinary_working_directory_protection(
+    operation: &'static str,
+) -> Result<WorkingDirectoryProtection, DaemonError> {
+    let mut protection = WorkingDirectoryProtection::default();
+    if let Some(raw_home) = std::env::var_os("CHARIOX_HOME").or_else(|| std::env::var_os("HOME")) {
+        let home = configured_protected_path(&raw_home, "CHARIOX_HOME", operation)?;
+        if home.file_name() == Some(std::ffi::OsStr::new(".chariox")) {
+            protection.directories.push(home);
+        } else {
+            for name in CHARIOX_STATE_DIRECTORY_NAMES {
+                protection.directories.push(home.join(name));
+            }
+        }
+    }
+    for name in PROTECTED_DIRECTORY_ENV_NAMES {
+        if let Some(raw) = std::env::var_os(name) {
+            protection
+                .directories
+                .push(configured_protected_path(&raw, name, operation)?);
+        }
+    }
+    for name in PROTECTED_FILE_ENV_NAMES {
+        if let Some(raw) = std::env::var_os(name) {
+            protection
+                .files
+                .push(configured_protected_path(&raw, name, operation)?);
+        }
+    }
+    protection.directories.sort();
+    protection.directories.dedup();
+    protection.files.sort();
+    protection.files.dedup();
+    Ok(protection)
+}
+
+fn configured_protected_path(
+    raw: &std::ffi::OsStr,
+    name: &str,
+    operation: &'static str,
+) -> Result<PathBuf, DaemonError> {
+    let path = PathBuf::from(raw);
+    if !path.is_absolute()
+        || path == Path::new("/")
+        || path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(working_directory_error(
+            operation,
+            format!("protected Chariox path `{name}` must be absolute and path-safe"),
+        ));
+    }
+    canonical_or_lexical_path(&path, operation)
+}
+
+fn canonical_or_lexical_path(path: &Path, operation: &'static str) -> Result<PathBuf, DaemonError> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| {
+                working_directory_error(
+                    operation,
+                    format!(
+                        "cannot resolve working directory `{}`: {error}",
+                        path.display()
+                    ),
+                )
+            })?
+            .join(path)
+    };
+    if let Ok(canonical) = absolute.canonicalize() {
+        return Ok(canonical);
+    }
+
+    // Preserve canonical symlink resolution for a planned child below an
+    // existing directory. This keeps protection checks aligned with Linux
+    // path traversal even when the final directory is created later.
+    let mut unresolved: Vec<std::ffi::OsString> = Vec::new();
+    let mut ancestor = absolute.clone();
+    loop {
+        if let Ok(canonical) = ancestor.canonicalize() {
+            for component in unresolved.iter().rev() {
+                ancestor = ancestor_from_canonical(&canonical, component);
+            }
+            return Ok(ancestor);
+        }
+        let Some(name) = ancestor.file_name() else {
+            break;
+        };
+        unresolved.push(name.to_os_string());
+        let Some(parent) = ancestor.parent() else {
+            break;
+        };
+        if parent == ancestor {
+            break;
+        }
+        ancestor = parent.to_path_buf();
+    }
+    lexically_normalized_absolute_path(&absolute, operation)
+}
+
+fn ancestor_from_canonical(canonical: &Path, component: &std::ffi::OsStr) -> PathBuf {
+    let mut path = canonical.to_path_buf();
+    path.push(component);
+    path
+}
+
+fn lexically_normalized_absolute_path(
+    path: &Path,
+    operation: &'static str,
+) -> Result<PathBuf, DaemonError> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| {
+                working_directory_error(
+                    operation,
+                    format!(
+                        "cannot resolve working directory `{}`: {error}",
+                        path.display()
+                    ),
+                )
+            })?
+            .join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    Ok(normalized)
+}
+
+fn canonical_path_is_within(path: &Path, root: &Path) -> bool {
+    path == root || path.starts_with(root)
+}
+
 pub(crate) fn resolve_existing_worktree(
     directory: &str,
     base_directory: impl AsRef<Path>,
     operation: &'static str,
 ) -> Result<String, DaemonError> {
     let resolved = resolve_target_directory(base_directory.as_ref(), directory);
-    if !resolved.exists() {
-        return Err(DaemonError::LocalTransport {
-            operation,
-            message: format!("working directory `{}` does not exist", resolved.display()),
-        });
-    }
-    if !resolved.is_dir() {
-        return Err(DaemonError::LocalTransport {
-            operation,
-            message: format!(
-                "working directory `{}` is not a directory",
-                resolved.display()
-            ),
-        });
-    }
+    preflight_working_directory(&resolved, operation, false, &[])?;
     Ok(resolved.display().to_string())
 }
 
@@ -45,6 +317,7 @@ pub(crate) fn prepare_workflow_runtime_worktree_or_reuse_directory(
     operation: &'static str,
 ) -> Result<String, DaemonError> {
     let base_directory = base_directory.as_ref();
+    preflight_working_directory(base_directory, operation, false, &[])?;
     if is_git_worktree(base_directory) {
         return prepare_git_worktree(placement, base_directory, target_hint, operation);
     }
@@ -62,6 +335,7 @@ pub(crate) fn remove_workflow_runtime_worktree(
 ) -> Result<(), DaemonError> {
     let base_directory = base_directory.as_ref();
     let worktree_directory = worktree_directory.as_ref();
+    preflight_working_directory(worktree_directory, operation, true, &[])?;
     if base_directory == worktree_directory
         || std::fs::canonicalize(base_directory)
             .ok()
@@ -80,6 +354,7 @@ pub(crate) fn prepare_git_worktree(
     operation: &'static str,
 ) -> Result<String, DaemonError> {
     let base_directory = base_directory.as_ref();
+    preflight_working_directory(base_directory, operation, false, &[])?;
     let repo_root = run_git(base_directory, &["rev-parse", "--show-toplevel"], operation)?;
     let repo_root = PathBuf::from(repo_root.trim());
     if repo_root.as_os_str().is_empty() {
@@ -112,6 +387,7 @@ pub(crate) fn prepare_git_worktree(
         });
 
     let target = target_directory.display().to_string();
+    preflight_working_directory(&target_directory, operation, true, &[])?;
     let args = if let Some(branch) = placement.branch.as_deref() {
         if git_branch_exists(&repo_root, branch, operation)? {
             vec![
@@ -150,6 +426,7 @@ pub(crate) fn remove_git_worktree(
 ) -> Result<(), DaemonError> {
     let base_directory = base_directory.as_ref();
     let worktree_directory = worktree_directory.as_ref();
+    preflight_working_directory(worktree_directory, operation, true, &[])?;
     let repo_root = run_git(base_directory, &["rev-parse", "--show-toplevel"], operation)?;
     let repo_root = PathBuf::from(repo_root.trim());
     if worktree_directory == repo_root || worktree_directory.parent().is_none() {
@@ -282,7 +559,7 @@ fn default_worktree_directory_base(repo_name: &str, branch_or_ref: &str) -> Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        default_worktree_directory_base, is_git_worktree,
+        default_worktree_directory_base, is_git_worktree, preflight_working_directory,
         prepare_workflow_runtime_worktree_or_reuse_directory, remove_workflow_runtime_worktree,
     };
     use crate::agent::GitWorktreePlacement;
@@ -367,5 +644,143 @@ mod tests {
         assert!(alias.exists());
         std::fs::remove_file(alias).expect("temporary alias should be removable");
         std::fs::remove_dir(directory).expect("temporary directory should be removable");
+    }
+
+    #[test]
+    fn ordinary_and_path1_inputs_share_the_same_access_contract() {
+        let root = plain_temp_directory("common-preflight");
+        let nested = root.join("nested").join("new");
+        std::fs::create_dir_all(&nested).expect("nested directory should exist");
+        let post_enrollment_repository = root.join("repository-created-after-enrollment");
+        std::fs::create_dir_all(&post_enrollment_repository)
+            .expect("post-enrollment repository should exist");
+        let existing = [
+            PathBuf::from("/"),
+            PathBuf::from("/home"),
+            PathBuf::from("/var"),
+            PathBuf::from("/usr/lib"),
+            PathBuf::from("/tmp"),
+            nested,
+            post_enrollment_repository,
+        ];
+
+        for path in existing {
+            if !path.is_dir() {
+                continue;
+            }
+            let ordinary = preflight_working_directory(&path, "ordinary.cwd", false, &[])
+                .expect("ordinary path should pass its access contract");
+            let path1 = preflight_working_directory(&path, "path1.cwd", false, &[])
+                .expect("Path-1 path should pass the same access contract");
+            assert_eq!(ordinary.canonical_path, path1.canonical_path);
+            assert!(ordinary.exists && path1.exists);
+        }
+
+        let missing = root.join("created-after-preflight");
+        let planned = preflight_working_directory(&missing, "ordinary.create", true, &[])
+            .expect("newly-created directory should be admissible before creation");
+        assert!(!planned.exists);
+        std::fs::create_dir_all(&missing).expect("planned directory should be created");
+        let path1 = preflight_working_directory(&missing, "path1.cwd", false, &[])
+            .expect("Path-1 should accept the newly-created directory");
+        assert_eq!(path1.canonical_path, missing.canonicalize().unwrap());
+
+        let missing_error =
+            preflight_working_directory(&root.join("does-not-exist"), "path1.cwd", false, &[])
+                .expect_err("missing working directories must fail closed");
+        assert!(missing_error.to_string().contains("does not exist"));
+        std::fs::remove_dir_all(root).expect("preflight fixture should be removable");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_directories_follow_ordinary_kernel_resolution() {
+        let root = plain_temp_directory("common-preflight-symlink");
+        let target = root.join("target");
+        let alias = root.join("alias");
+        std::fs::create_dir_all(&target).expect("symlink target should exist");
+        std::os::unix::fs::symlink(&target, &alias).expect("directory alias should exist");
+
+        for operation in ["ordinary.cwd", "path1.cwd"] {
+            let result = preflight_working_directory(&alias, operation, false, &[])
+                .expect("ordinary-accepted symlinks should remain accepted");
+            assert_eq!(result.requested_path, alias);
+            assert_eq!(result.canonical_path, target.canonicalize().unwrap());
+        }
+        let planned = preflight_working_directory(
+            &alias.join("created-after-enrollment"),
+            "path1.create",
+            true,
+            &[],
+        )
+        .expect("missing children below symlinked directories should be plan-able");
+        assert_eq!(
+            planned.canonical_path,
+            target.join("created-after-enrollment")
+        );
+        std::fs::remove_file(alias).expect("directory alias should be removable");
+        std::fs::remove_dir_all(root).expect("symlink fixture should be removable");
+    }
+
+    #[test]
+    fn only_exact_control_state_and_service_descendants_are_rejected() {
+        let _env = crate::env_lock::lock();
+        let root = plain_temp_directory("common-preflight-control-state");
+        let service = root.join("service-state");
+        let selected = service.join("selected-repository");
+        let sibling = root.join("sibling");
+        let control_file = root.join("bootstrap-receipt.json");
+        std::fs::create_dir_all(&selected).expect("selected repository should exist");
+        std::fs::create_dir_all(&sibling).expect("sibling should exist");
+        std::fs::write(&control_file, "control\n").expect("control file should exist");
+
+        let prior_service = std::env::var_os("CHARIOX_MANAGED_SLICE_SERVICE_ROOT");
+        let prior_receipt = std::env::var_os("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT");
+        std::env::set_var("CHARIOX_MANAGED_SLICE_SERVICE_ROOT", &service);
+        std::env::set_var("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT", &control_file);
+
+        let service_error = preflight_working_directory(&service, "ordinary.cwd", false, &[])
+            .expect_err("dedicated service state must be rejected");
+        assert!(service_error
+            .to_string()
+            .contains("protected Chariox service state"));
+        let child_error =
+            preflight_working_directory(&service.join("nested"), "path1.cwd", true, &[])
+                .expect_err("service-state descendants must be rejected");
+        assert!(child_error
+            .to_string()
+            .contains("protected Chariox service state"));
+        preflight_working_directory(&root, "ordinary.cwd", false, &[])
+            .expect("the service parent must remain usable");
+        preflight_working_directory(&sibling, "path1.cwd", false, &[])
+            .expect("an unrelated sibling must remain usable");
+        preflight_working_directory(
+            &selected,
+            "managed.selected.cwd",
+            false,
+            std::slice::from_ref(&selected),
+        )
+        .expect("a selected managed child may be explicitly re-exposed");
+        preflight_working_directory(
+            &service,
+            "managed.service.cwd",
+            false,
+            std::slice::from_ref(&service),
+        )
+        .expect_err("re-exposing an entire service root must remain forbidden");
+        let file_error = preflight_working_directory(&control_file, "path1.cwd", false, &[])
+            .expect_err("exact control files must not become working directories");
+        assert!(file_error.to_string().contains("not a directory"));
+
+        restore_env("CHARIOX_MANAGED_SLICE_SERVICE_ROOT", prior_service);
+        restore_env("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT", prior_receipt);
+        std::fs::remove_dir_all(root).expect("control-state fixture should be removable");
+    }
+
+    fn restore_env(name: &str, value: Option<std::ffi::OsString>) {
+        match value {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
     }
 }
