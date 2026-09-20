@@ -261,6 +261,18 @@ or other user files. A disposable worker receives only the kernel-authorized
 selected context, credentials, and lease state required by its role; it must
 not gain a second managed-only state model.
 
+This signed native-release layout is the production installation model for
+Chariox-managed machines, not a development shortcut or a managed-kernel fork.
+The image or bootstrap installs a target-native, signature-verified release in
+`/usr/lib/chariox/releases/<digest>` and activates it through the stable
+`/usr/local/bin/chariox-kernel` entry point. Release ownership, atomic
+activation, rollback, and managed deployment receipts may differ from a user
+install performed with a package manager. The running kernel, its protocol,
+provider adapters, user home, and mutable `~/.chariox` state must remain the
+same reviewed product behavior as an ordinary kernel. State transfer must copy
+only the selected kernel-authorized context into that normal state layout; it
+must never place user state inside a release directory.
+
 Protected managed state must be expressed as exact control files or dedicated
 state directories. A control file must never make its shared parent, such as
 `/var/lib/chariox`, unavailable when that parent also contains a legitimate
@@ -944,6 +956,15 @@ crash, OOM, or disk-exhaustion risk, and resume it after making room or moving
 it to a suitably sized managed machine. On managed machines, use cgroup limits
 and the planned admission controller even when the host appears to have spare
 memory.
+
+Fast critical-path progress is the default. Do not stop a healthy build or
+validation run merely because it crosses an arbitrary per-job growth estimate,
+a fixed free-space percentage, or an old conservative threshold. Stop only on
+measured evidence of a credible host-safety risk, such as sustained memory
+pressure, runaway growth that would exhaust the recovery reserve, or an
+approaching hard disk floor. Reclaim known disposable artifacts promptly, move
+heavy work to the managed machine when that is faster, and keep independent
+source, review, and lightweight validation work running in parallel.
 
 ## Validation matrix
 
