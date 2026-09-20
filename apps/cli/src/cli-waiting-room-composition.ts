@@ -56,6 +56,10 @@ import { getWaitingRoomInventory } from "./waiting-room-inventory-api.js"
 import type { WaitingRoomInventory } from "./waiting-room-inventory-api.js"
 import { createWaitingRoomInventoryRefreshController } from "./waiting-room-inventory-refresh-controller.js"
 import {
+  createProjectEnvironmentSetupProjection,
+  setActiveProjectEnvironmentSetupProjection,
+} from "./project-environment-setup-projection.js"
+import {
   createWaitingRoomInventoryCache,
   waitingRoomInventoryCacheScopeKey,
 } from "./waiting-room-inventory-cache.js"
@@ -267,6 +271,20 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   const reconcileWaitingRoom = waitingRoomReconcileController.reconcile
   const reconcileWaitingRoomProjection = waitingRoomReconcileController.reconcileProjection
 
+  const projectEnvironmentSetupProjection = createProjectEnvironmentSetupProjection({
+    client: deps.client,
+    onStatusChanged: () => {
+      reconcileWaitingRoomProjection(deps.waitingRoomState())
+    },
+    onError: (operation, error) => {
+      deps.appLogger?.debug?.("project environment setup projection request failed", {
+        operation,
+        error: deps.formatError(error),
+      })
+    },
+  })
+  setActiveProjectEnvironmentSetupProjection(projectEnvironmentSetupProjection)
+
   const waitingRoomInventoryRefreshController = createWaitingRoomInventoryRefreshController({
     isKernelConnected: deps.kernelConnected,
     getInventoryStatus: deps.waitingRoomInventoryStatus,
@@ -402,7 +420,13 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
         directTargetKernelId = targetInventory.kernelId
         connected?.(targetInventory)
         retainPrevious({
-          commit: () => pivot.commit(),
+          commit: async () => {
+            try {
+              await pivot.commit()
+            } finally {
+              projectEnvironmentSetupProjection.clear()
+            }
+          },
           rollback: async () => {
             try {
               await pivot.rollback()
@@ -422,6 +446,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       }
     } else {
       await deps.client.replaceClient(nextClient)
+      projectEnvironmentSetupProjection.clear()
       directTargetKernelId = targetInventory.kernelId
       connected?.(targetInventory)
     }
@@ -844,6 +869,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     promptUsageMeta: providerPromptProjectionController.promptUsageMeta,
     reconcileWaitingRoom,
     reconcileWaitingRoomProjection,
+    projectEnvironmentSetupProjection,
     refreshWaitingRoomData,
     refreshWaitingRoomDataNow,
     startSessionFromWaitingRoomDefaults,
