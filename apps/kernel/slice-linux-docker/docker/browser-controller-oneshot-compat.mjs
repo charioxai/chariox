@@ -30,9 +30,19 @@ function targetArguments(target) {
   if (typeof target !== "string" || target.length === 0) {
     fail(ONESHOT_COMPAT_ERROR_CODES.INVALID_ARGUMENT);
   }
-  return /^(?:field|button|link|element):[A-Za-z0-9._:-]+$/.test(target)
+  return /^(?:field|button|link|element):[0-9]+$/.test(target)
     ? { field_id: target }
     : { selector: target };
+}
+
+function projectJsonResult(request, result) {
+  if (request.tool_name !== "chariox.slice_browser_fill") return result;
+  return {
+    ok: result?.ok !== false,
+    ...(request.arguments.selector === undefined
+      ? { field_id: request.arguments.field_id }
+      : { selector: request.arguments.selector }),
+  };
 }
 
 function timeout(value) {
@@ -115,7 +125,7 @@ export function parseOneShotBrowserCommand(rawArgv, options = {}) {
     assertExactCount(args, 0, 1);
     return {
       tool_name: "chariox.slice_browser_submit",
-      arguments: args.length === 0 ? {} : targetArguments(args[0]),
+      arguments: args.length === 0 || args[0] === "" ? {} : targetArguments(args[0]),
       output: "json",
     };
   }
@@ -181,7 +191,7 @@ export class BrowserOneShotCompatibilityAdapter {
     }
     let stdout;
     try {
-      stdout = JSON.stringify(result);
+      stdout = JSON.stringify(projectJsonResult(request, result));
     } catch {
       fail(ONESHOT_COMPAT_ERROR_CODES.OUTPUT_INVALID);
     }

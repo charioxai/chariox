@@ -73,6 +73,19 @@ test("preserves legacy opaque targets while keeping CSS selectors distinct", () 
     arguments: { selector: "body > button:nth-of-type(1)" },
     output: "json",
   });
+  assert.deepEqual(parseOneShotBrowserCommand(["click-selector", "button:first-of-type"]), {
+    tool_name: "chariox.slice_browser_click",
+    arguments: { selector: "button:first-of-type" },
+    output: "json",
+  });
+});
+
+test("normalizes the wrapper's empty submit argument to no target", () => {
+  assert.deepEqual(parseOneShotBrowserCommand(["submit", ""]), {
+    tool_name: "chariox.slice_browser_submit",
+    arguments: {},
+    output: "json",
+  });
 });
 
 test("reads fill-stdin without placing text in output", async () => {
@@ -85,7 +98,23 @@ test("reads fill-stdin without placing text in output", async () => {
     args: { field_id: "element:7", text: secret },
   }]);
   assert.equal(result.exit_code, 0);
-  assert.equal(result.stdout, '{"ok":true}');
+  assert.equal(result.stdout, '{"ok":true,"field_id":"element:7"}');
+  assert.equal(result.stdout.includes(secret), false);
+});
+
+test("projects fill output even when the runtime port echoes its arguments", async () => {
+  const secret = "vault-backed-password";
+  const runtime = new BrowserRuntimeMcpAdapter(semanticPort({
+    fill: async (args) => ({ ok: true, args }),
+  }));
+  const adapter = new BrowserOneShotCompatibilityAdapter(runtime);
+
+  const result = await adapter.invoke(["fill-stdin", "field:42"], { stdin: secret });
+
+  assert.deepEqual(result, {
+    exit_code: 0,
+    stdout: '{"ok":true,"field_id":"field:42"}',
+  });
   assert.equal(result.stdout.includes(secret), false);
 });
 
