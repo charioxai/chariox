@@ -280,6 +280,47 @@ test("target and document invalidation drop stale events until explicitly restor
   }, source), null);
 });
 
+test("keeps target admission atomic when same-document authority rejects the event", () => {
+  const journal = new BrowserEventJournal({ maxEvents: 16, maxBytes: 16_384 });
+  journal.invalidateTarget({
+    targetId: "target-a",
+    targetGeneration: 4,
+    browserGeneration: 7,
+  });
+  journal.invalidateDocument({
+    documentId: "document-a",
+    documentGeneration: 4,
+    browserGeneration: 7,
+  });
+
+  const rejected = journal.record({
+    kind: "page_loaded",
+    eventId: "same-document-rejected",
+    browserGeneration: 7,
+    targetId: "target-a",
+    documentId: "document-a",
+    data: {},
+  }, {
+    browserGeneration: 7,
+    activeTargetGenerationForTarget: () => 5,
+  });
+
+  assert.equal(rejected, null);
+  assert.equal(journal.size, 0);
+  assert.equal(journal.isTargetInvalid("target-a"), true);
+  assert.equal(journal.targetAuthorityFences.get("target-a"), 4);
+  assert.equal(journal.record({
+    kind: "target_created",
+    eventId: "stale-target-after-rejected-document",
+    browserGeneration: 7,
+    targetId: "target-a",
+    data: { url: "https://example.test/stale" },
+  }, {
+    browserGeneration: 7,
+    activeTargetGenerationForTarget: () => 4,
+  }), null);
+});
+
 test("bounds lifecycle churn while retaining current target authority deterministically", () => {
   const journal = new BrowserEventJournal({
     maxEvents: 32,
@@ -319,7 +360,7 @@ test("bounds lifecycle churn while retaining current target authority determinis
       data: { url: "https://example.test/churn" },
     }, authoritative);
   }
-  assert.ok(journal.targetDocuments.size <= 3);
+  assert.equal(journal.targetDocuments.get("active-target"), "active-document");
   journal.record({
     kind: "page_navigated",
     eventId: "active-2",
@@ -334,6 +375,98 @@ test("bounds lifecycle churn while retaining current target authority determinis
   assert.equal(journal.targetDocuments.has("active-target"), false);
   journal.restoreTarget("active-target");
   assert.equal(journal.isTargetInvalid("active-target"), false);
+});
+
+test("retains the active document mapping while pruning inactive lifecycle entries", () => {
+  const journal = new BrowserEventJournal({
+    maxEvents: 32,
+    maxBytes: 32_768,
+    maxLifecycleEntries: 3,
+  });
+  const authoritative = {
+    browserGeneration: 7,
+    activeTargetGenerationForTarget: () => 1,
+  };
+  const navigate = (eventId, targetId, documentId) => journal.record({
+    kind: "page_navigated",
+    eventId,
+    browserGeneration: 7,
+    targetId,
+    documentId,
+    data: { url: "https://example.test/active" },
+  }, authoritative);
+
+  navigate("active-1", "active-target", "active-document");
+  navigate("churn-0", "churn-target-0", "churn-document-0");
+  navigate("churn-1", "churn-target-1", "churn-document-1");
+  journal.restoreTarget("active-target");
+  journal.restoreDocument("active-document");
+  navigate("churn-2", "churn-target-2", "churn-document-2");
+
+  assert.equal(journal.targetDocuments.get("active-target"), "active-document");
+
+  navigate("active-2", "active-target", "active-document-2");
+  assert.equal(journal.isDocumentInvalid("active-document"), true);
+  assert.equal(journal.record({
+    kind: "page_loaded",
+    eventId: "late-old-document",
+    browserGeneration: 7,
+    targetId: "active-target",
+    documentId: "active-document",
+    data: {},
+  }, authoritative), null);
+});
+
+test("preserves destroyed-generation fences through lifecycle pruning and serialization", () => {
+  const journal = new BrowserEventJournal({
+    maxEvents: 16,
+    maxBytes: 16_384,
+    maxLifecycleEntries: 1,
+  });
+  const destroyed = journal.record({
+    kind: "target_destroyed",
+    eventId: "destroyed-target-a",
+    browserGeneration: 7,
+    targetId: "target-a",
+    data: {},
+  }, {
+    browserGeneration: 7,
+    activeTargetGenerationForTarget: () => 9,
+  });
+  assert.equal(destroyed.kind, "target_destroyed");
+  assert.equal(journal.targetAuthorityFences.get("target-a"), 9);
+
+  journal.invalidateTarget({
+    targetId: "target-b",
+    targetGeneration: 1,
+    browserGeneration: 7,
+  });
+  assert.equal(journal.compactedTargets.get("target-a"), 9);
+  assert.ok(JSON.parse(journal.serialize()).events.length >= 1);
+  assert.equal(journal.compactedTargets.get("target-a"), 9);
+
+  assert.equal(journal.record({
+    kind: "target_created",
+    eventId: "stale-target-a-replay",
+    browserGeneration: 7,
+    targetId: "target-a",
+    data: { url: "https://example.test/stale" },
+  }, {
+    browserGeneration: 7,
+    activeTargetGenerationForTarget: () => 9,
+  }), null);
+
+  const reopened = journal.record({
+    kind: "target_created",
+    eventId: "new-target-a-generation",
+    browserGeneration: 7,
+    targetId: "target-a",
+    data: { url: "https://example.test/new" },
+  }, {
+    browserGeneration: 7,
+    activeTargetGenerationForTarget: () => 10,
+  });
+  assert.equal(reopened.kind, "target_created");
 });
 
 test("returns an oldest-first byte-bounded prefix and losslessly continues past 128 events", () => {
@@ -354,8 +487,14 @@ test("returns an oldest-first byte-bounded prefix and losslessly continues past 
     });
   }
 
-  const blocked = journal.poll({ cursor: 0, limit: 200, browserGeneration: 7, maxSerializedBytes: 100 });
-  assert.deepEqual([blocked.events.length, blocked.next_cursor, blocked.replay_gap], [0, 0, false]);
+  assert.throws(() => journal.poll({
+    cursor: 0,
+    limit: 200,
+    browserGeneration: 7,
+    maxSerializedBytes: 100,
+  }), (error) => {
+    return error instanceof BrowserEventError && error.code === "browser_event_serialization_impossible";
+  });
 
   let cursor = 0;
   const sequenceIds = [];
@@ -767,4 +906,23 @@ test("rejects 1-3 byte budgets and never returns invalid JSON as a fallback", ()
     });
   }
   assert.doesNotThrow(() => JSON.parse(boundedSerialize({ payload: SECRET }, 4)));
+});
+
+test("fails boundedly when a serialization budget cannot fit the first event", () => {
+  const journal = new BrowserEventJournal({ maxEvents: 8, maxBytes: 16_384 });
+  journal.record({
+    kind: "console",
+    eventId: "first-event-too-large-for-envelope",
+    browserGeneration: 7,
+    targetId: "target-a",
+    documentId: "document-a",
+    data: { type: "log", args: [] },
+  });
+  const impossible = (operation) => assert.throws(operation, (error) => {
+    return error instanceof BrowserEventError && error.code === "browser_event_serialization_impossible";
+  });
+
+  impossible(() => journal.poll({ cursor: 0, browserGeneration: 7, maxSerializedBytes: 100 }));
+  impossible(() => journal.snapshot({ maxSerializedBytes: 100 }));
+  impossible(() => journal.serialize({ cursor: 0, browserGeneration: 7, maxBytes: 100 }));
 });

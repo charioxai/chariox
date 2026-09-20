@@ -461,7 +461,7 @@ export class BrowserEventJournal {
     this._trimSeen();
     this._prepareLifecycle(mapped);
     this._recordActiveLifecycle(mapped, authority);
-    this._finishLifecycle(mapped);
+    this._finishLifecycle(mapped, authority);
     return cloneJsonValue(event);
   }
 
@@ -475,10 +475,28 @@ export class BrowserEventJournal {
     }
   }
 
-  _finishLifecycle(mapped) {
+  _finishLifecycle(mapped, authority) {
     if (mapped.kind === "target_destroyed" || mapped.kind === "target_crashed") {
-      if (mapped.targetId) this.invalidateTarget(mapped.targetId);
-      if (mapped.documentId) this.invalidateDocument(mapped.documentId);
+      if (mapped.targetId) {
+        const targetInvalidation = {
+          targetId: mapped.targetId,
+          browserGeneration: this.browserGeneration,
+        };
+        if (Number.isSafeInteger(authority?.targetGeneration)) {
+          targetInvalidation.targetGeneration = authority?.targetGeneration;
+        }
+        this.invalidateTarget(targetInvalidation);
+      }
+      if (mapped.documentId) {
+        const documentInvalidation = {
+          documentId: mapped.documentId,
+          browserGeneration: this.browserGeneration,
+        };
+        if (Number.isSafeInteger(authority?.documentGeneration)) {
+          documentInvalidation.documentGeneration = authority?.documentGeneration;
+        }
+        this.invalidateDocument(documentInvalidation);
+      }
     }
   }
 
@@ -490,114 +508,112 @@ export class BrowserEventJournal {
   }
 
   _admitLifecycle(mapped, authority) {
+    const admissions = [];
     if (mapped.targetId) {
-      const targetId = mapped.targetId;
-      const targetGeneration = authority.targetGeneration;
-      const activeGeneration = this.activeTargets.get(targetId);
-      if (this.invalidTargets.has(targetId)) {
-        const compactedFence = this.compactedTargets.get(targetId);
-        if (
-          !authority.targetAuthoritative ||
-          !this._passesAuthorityFence(
-            this.targetAuthorityFences,
-            targetId,
-            targetGeneration,
-            compactedFence,
-          )
-        ) {
-          return false;
-        }
-        this.invalidTargets.delete(targetId);
-        this.targetAuthorityFences.delete(targetId);
-        this.compactedTargets.delete(targetId);
-      } else if (
-        this.compactedTargets.has(targetId) &&
-        !this.trustedTargets.has(targetId) &&
-        !this.activeTargets.has(targetId)
-      ) {
-        if (!authority.targetAuthoritative) this._lifecycleEvidenceGap("target");
-        if (!this._passesAuthorityFence(
-          this.targetAuthorityFences,
-          targetId,
-          targetGeneration,
-          this.compactedTargets.get(targetId),
-        )) {
-          return false;
-        }
-        this.compactedTargets.delete(targetId);
-        this.targetAuthorityFences.delete(targetId);
-      } else if (
-        this.targetLifecycleGap &&
-        !this.trustedTargets.has(targetId) &&
-        !this.activeTargets.has(targetId) &&
-        !authority.targetAuthoritative
-      ) {
-        this._lifecycleEvidenceGap("target");
-      }
+      admissions.push(this._planLifecycleAdmission(
+        "target",
+        mapped.targetId,
+        authority.targetGeneration,
+        authority.targetAuthoritative,
+      ));
+    }
+    if (mapped.documentId) {
+      admissions.push(this._planLifecycleAdmission(
+        "document",
+        mapped.documentId,
+        authority.documentGeneration,
+        authority.documentAuthoritative,
+      ));
+    }
+    if (admissions.some((admission) => admission === null)) return false;
+    for (const admission of admissions) this._commitLifecycleAdmission(admission);
+    return true;
+  }
+
+  _planLifecycleAdmission(kind, identity, generation, authoritative) {
+    const invalid = kind === "target" ? this.invalidTargets : this.invalidDocuments;
+    const compacted = kind === "target" ? this.compactedTargets : this.compactedDocuments;
+    const trusted = kind === "target" ? this.trustedTargets : this.trustedDocuments;
+    const active = kind === "target" ? this.activeTargets : this.activeDocuments;
+    const fences = kind === "target"
+      ? this.targetAuthorityFences
+      : this.documentAuthorityFences;
+    const lifecycleGap = kind === "target"
+      ? this.targetLifecycleGap
+      : this.documentLifecycleGap;
+    const admission = {
+      kind,
+      identity,
+      clearInvalid: false,
+      clearCompacted: false,
+      clearFence: false,
+    };
+
+    if (invalid.has(identity)) {
+      const compactedFence = compacted.get(identity);
       if (
-        activeGeneration !== undefined &&
-        targetGeneration !== null &&
-        activeGeneration !== null &&
-        targetGeneration < activeGeneration
+        !authoritative ||
+        !this._passesAuthorityFence(fences, identity, generation, compactedFence)
       ) {
-        return false;
+        return null;
       }
+      admission.clearInvalid = true;
+      admission.clearCompacted = true;
+      admission.clearFence = true;
+    } else if (
+      compacted.has(identity) &&
+      !trusted.has(identity) &&
+      !active.has(identity)
+    ) {
+      if (!authoritative) this._lifecycleEvidenceGap(kind);
+      if (!this._passesAuthorityFence(
+        fences,
+        identity,
+        generation,
+        compacted.get(identity),
+      )) {
+        return null;
+      }
+      admission.clearCompacted = true;
+      admission.clearFence = true;
+    } else if (
+      lifecycleGap &&
+      !trusted.has(identity) &&
+      !active.has(identity) &&
+      !authoritative
+    ) {
+      this._lifecycleEvidenceGap(kind);
     }
 
-    if (mapped.documentId) {
-      const documentId = mapped.documentId;
-      const documentGeneration = authority.documentGeneration;
-      const activeGeneration = this.activeDocuments.get(documentId);
-      if (this.invalidDocuments.has(documentId)) {
-        const compactedFence = this.compactedDocuments.get(documentId);
-        if (
-          !authority.documentAuthoritative ||
-          !this._passesAuthorityFence(
-            this.documentAuthorityFences,
-            documentId,
-            documentGeneration,
-            compactedFence,
-          )
-        ) {
-          return false;
-        }
-        this.invalidDocuments.delete(documentId);
-        this.documentAuthorityFences.delete(documentId);
-        this.compactedDocuments.delete(documentId);
-      } else if (
-        this.compactedDocuments.has(documentId) &&
-        !this.trustedDocuments.has(documentId) &&
-        !this.activeDocuments.has(documentId)
-      ) {
-        if (!authority.documentAuthoritative) this._lifecycleEvidenceGap("document");
-        if (!this._passesAuthorityFence(
-          this.documentAuthorityFences,
-          documentId,
-          documentGeneration,
-          this.compactedDocuments.get(documentId),
-        )) {
-          return false;
-        }
-        this.compactedDocuments.delete(documentId);
-        this.documentAuthorityFences.delete(documentId);
-      } else if (
-        this.documentLifecycleGap &&
-        !this.trustedDocuments.has(documentId) &&
-        !this.activeDocuments.has(documentId) &&
-        !authority.documentAuthoritative
-      ) {
-        this._lifecycleEvidenceGap("document");
-      }
-      if (
-        activeGeneration !== undefined &&
-        documentGeneration !== null &&
-        activeGeneration !== null &&
-        documentGeneration < activeGeneration
-      ) {
-        return false;
-      }
+    const activeGeneration = active.get(identity);
+    if (
+      activeGeneration !== undefined &&
+      generation !== null &&
+      activeGeneration !== null &&
+      generation < activeGeneration
+    ) {
+      return null;
     }
-    return true;
+    return admission;
+  }
+
+  _commitLifecycleAdmission(admission) {
+    if (admission.clearInvalid) {
+      const invalid = admission.kind === "target" ? this.invalidTargets : this.invalidDocuments;
+      invalid.delete(admission.identity);
+    }
+    if (admission.clearCompacted) {
+      const compacted = admission.kind === "target"
+        ? this.compactedTargets
+        : this.compactedDocuments;
+      compacted.delete(admission.identity);
+    }
+    if (admission.clearFence) {
+      const fences = admission.kind === "target"
+        ? this.targetAuthorityFences
+        : this.documentAuthorityFences;
+      fences.delete(admission.identity);
+    }
   }
 
   _passesAuthorityFence(fences, identity, generation, fallbackFence = undefined) {
@@ -686,9 +702,9 @@ export class BrowserEventJournal {
     while (this.activeTargets.size > this.maxLifecycleEntries) {
       this.activeTargets.delete(this.activeTargets.keys().next().value);
     }
-    while (this.activeDocuments.size > this.maxLifecycleEntries) {
-      this.activeDocuments.delete(this.activeDocuments.keys().next().value);
-    }
+    // Active documents are the live navigation registry. Retiring one by
+    // budget would lose the target-to-document fence needed on the next
+    // navigation, so they leave this map only through lifecycle invalidation.
     while (this.trustedTargets.size > this.maxLifecycleEntries) {
       this.trustedTargets.delete(this.trustedTargets.values().next().value);
     }
@@ -696,7 +712,15 @@ export class BrowserEventJournal {
       this.trustedDocuments.delete(this.trustedDocuments.values().next().value);
     }
     while (this.targetDocuments.size > this.maxLifecycleEntries) {
-      this.targetDocuments.delete(this.targetDocuments.keys().next().value);
+      let removable;
+      for (const [targetId, documentId] of this.targetDocuments) {
+        if (!this.activeTargets.has(targetId) && !this.activeDocuments.has(documentId)) {
+          removable = targetId;
+          break;
+        }
+      }
+      if (removable === undefined) break;
+      this.targetDocuments.delete(removable);
     }
     while (this.targetAuthorityFences.size > this.maxLifecycleEntries) {
       const identity = this.targetAuthorityFences.keys().next().value;
@@ -762,6 +786,12 @@ export class BrowserEventJournal {
       throw new BrowserEventError(
         "browser_event_serialization_impossible",
         "browser event serialization budget cannot fit the required envelope",
+      );
+    }
+    if (!fits(1)) {
+      throw new BrowserEventError(
+        "browser_event_serialization_impossible",
+        "browser event serialization budget cannot fit the first event",
       );
     }
 
