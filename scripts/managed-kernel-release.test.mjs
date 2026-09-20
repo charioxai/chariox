@@ -1152,6 +1152,10 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
 })
 
 test("managed image installer migrates legacy home state without clobbering canonical state", async (context) => {
+  if (process.platform !== "linux" || process.getuid?.() !== 0) {
+    context.skip("requires Linux root ownership semantics")
+    return
+  }
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-install-migration-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const fixture = await makeFixture(root)
@@ -1235,6 +1239,10 @@ test("managed image installer migrates legacy home state without clobbering cano
 })
 
 test("managed image installer resumes interrupted home migration by identity", async (context) => {
+  if (process.platform !== "linux" || process.getuid?.() !== 0) {
+    context.skip("requires Linux root ownership semantics")
+    return
+  }
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-install-migration-recovery-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const fixture = await makeFixture(root)
