@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -17,6 +17,7 @@ const MAX_STATE_BYTES: u64 = 96 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct BootstrapConfig {
+    pub(super) process_home: PathBuf,
     pub(super) chariox_home: PathBuf,
     pub(super) envelope_path: PathBuf,
     pub(super) receipt_path: PathBuf,
@@ -136,7 +137,7 @@ pub(super) enum BootstrapReceiptDocument {
 
 impl BootstrapConfig {
     pub(super) fn from_env() -> Result<Self, DaemonError> {
-        let chariox_home = required_absolute_env_path("CHARIOX_HOME")?;
+        let (process_home, chariox_home) = managed_home_paths()?;
         let envelope_path = absolute_env_path(
             "CHARIOX_MANAGED_BOOTSTRAP_PATH",
             "/var/lib/chariox/managed-bootstrap.json",
@@ -144,12 +145,8 @@ impl BootstrapConfig {
         let receipt_path = env::var_os("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT")
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
-            .unwrap_or_else(|| chariox_home.join("managed").join("bootstrap-receipt.json"));
-        if !receipt_path.is_absolute() || !receipt_path.starts_with(&chariox_home) {
-            return Err(state_error(
-                "managed bootstrap receipt must remain inside CHARIOX_HOME",
-            ));
-        }
+            .unwrap_or_else(default_managed_bootstrap_receipt_path);
+        validate_managed_state_path(&receipt_path, "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT")?;
         let manifest_path = absolute_env_path(
             "CHARIOX_MANAGED_RELEASE_MANIFEST",
             "/usr/lib/chariox/release-manifest.json",
@@ -181,6 +178,7 @@ impl BootstrapConfig {
             return Err(state_error("managed kernel port is invalid"));
         }
         Ok(Self {
+            process_home,
             chariox_home,
             envelope_path,
             receipt_path,
@@ -192,6 +190,42 @@ impl BootstrapConfig {
             kernel_port,
         })
     }
+}
+
+pub(super) fn managed_home_paths() -> Result<(PathBuf, PathBuf), DaemonError> {
+    let process_home = required_absolute_env_path("HOME")?;
+    let chariox_home = required_absolute_env_path("CHARIOX_HOME")?;
+    if process_home == Path::new("/") || chariox_home != process_home.join(".chariox") {
+        return Err(state_error(
+            "CHARIOX_HOME must equal HOME/.chariox for a managed kernel",
+        ));
+    }
+    Ok((process_home, chariox_home))
+}
+
+pub(super) fn default_managed_bootstrap_receipt_path() -> PathBuf {
+    PathBuf::from("/var/lib/chariox/managed/bootstrap-receipt.json")
+}
+
+pub(super) fn default_disposable_worker_receipt_path() -> PathBuf {
+    PathBuf::from("/var/lib/chariox/disposable-worker/bootstrap-receipt.json")
+}
+
+pub(super) fn validate_managed_state_path(
+    path: &Path,
+    variable_name: &str,
+) -> Result<(), DaemonError> {
+    if !path.is_absolute()
+        || path == Path::new("/")
+        || path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(state_error(&format!(
+            "{variable_name} must be an absolute non-root path without parent-directory components"
+        )));
+    }
+    Ok(())
 }
 
 impl BootstrapEnvelope {
@@ -513,5 +547,70 @@ fn state_error(message: &str) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "managed kernel bootstrap state",
         message: message.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn restore_env(name: &str, value: Option<std::ffi::OsString>) {
+        match value {
+            Some(value) => env::set_var(name, value),
+            None => env::remove_var(name),
+        }
+    }
+
+    #[test]
+    fn managed_paths_keep_process_home_separate_from_chariox_state() {
+        let _lock = crate::env_lock::lock();
+        let previous_home = env::var_os("HOME");
+        let previous_chariox_home = env::var_os("CHARIOX_HOME");
+        let previous_receipt = env::var_os("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT");
+        let root = env::temp_dir().join(format!(
+            "chariox-managed-home-paths-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let process_home = root.join("home");
+        let chariox_home = process_home.join(".chariox");
+        env::set_var("HOME", &process_home);
+        env::set_var("CHARIOX_HOME", &chariox_home);
+        env::remove_var("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT");
+
+        let (observed_process_home, observed_chariox_home) =
+            managed_home_paths().expect("managed HOME relationship should be accepted");
+        assert_eq!(observed_process_home, process_home);
+        assert_eq!(observed_chariox_home, chariox_home);
+
+        let config = BootstrapConfig::from_env().expect("managed config should be accepted");
+        assert_eq!(config.process_home, process_home);
+        assert_eq!(config.chariox_home, chariox_home);
+        assert_eq!(
+            config.receipt_path,
+            PathBuf::from("/var/lib/chariox/managed/bootstrap-receipt.json")
+        );
+
+        let root_receipt = root.join("var/lib/chariox/managed/bootstrap-receipt.json");
+        env::set_var("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT", &root_receipt);
+        assert_eq!(
+            BootstrapConfig::from_env()
+                .expect("explicit root-owned receipt should be accepted")
+                .receipt_path,
+            root_receipt
+        );
+
+        env::set_var(
+            "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
+            root.join("../unsafe-receipt.json"),
+        );
+        assert!(BootstrapConfig::from_env().is_err());
+
+        env::set_var("CHARIOX_HOME", &process_home);
+        assert!(managed_home_paths().is_err());
+
+        restore_env("HOME", previous_home);
+        restore_env("CHARIOX_HOME", previous_chariox_home);
+        restore_env("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT", previous_receipt);
     }
 }

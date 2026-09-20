@@ -173,10 +173,10 @@ fn spawn_kernel(config: &BootstrapConfig, release: &VerifiedRelease) -> Result<C
     let local_auth_path = prepare_kernel_local_auth_file(config)?;
     let mut command = Command::new(&release.kernel_binary);
     command
-        .current_dir(&config.chariox_home)
+        .current_dir(&config.process_home)
+        .env("HOME", &config.process_home)
         .env("CHARIOX_HOME", &config.chariox_home)
         .env("CHARIOX_CAPABILITY_ISOLATION_ROOT", isolation_root)
-        .env("CHARIOX_MANAGED_PROVIDER_ISOLATION", "1")
         .env("CHARIOX_MANAGED_PROVIDER_HOME", provider_home)
         .env(
             crate::runtime_transport::KERNEL_LOCAL_AUTH_TOKEN_FILE_ENV,
@@ -186,12 +186,13 @@ fn spawn_kernel(config: &BootstrapConfig, release: &VerifiedRelease) -> Result<C
             "CHARIOX_MANAGED_VAULT_PATH",
             config
                 .chariox_home
-                .join(".chariox")
                 .join("vault")
                 .join("vault.json"),
         )
+        .env("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT", &config.receipt_path)
         .env("CHARIOX_KERNEL_HOST", &config.kernel_host)
         .env("CHARIOX_KERNEL_PORT", config.kernel_port.to_string())
+        .env_remove("CHARIOX_MANAGED_PROVIDER_ISOLATION")
         .env_remove("CHARIOX_DAEMON_ID")
         .env_remove("CHARIOX_MACHINE_ID")
         .env_remove("CHARIOX_RELAY_TOKEN")
@@ -318,7 +319,14 @@ fn prepare_managed_provider_home(
                 .unwrap_or(&config.chariox_home)
                 .join("provider-home")
         });
-    if !path.is_absolute() || path.starts_with(config.chariox_home.join(".chariox")) {
+    if !path.is_absolute()
+        || path == std::path::Path::new("/")
+        || path == config.chariox_home
+        || path.starts_with(&config.chariox_home)
+        || path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
         return Err(supervisor_error(
             "managed provider HOME must be absolute and separate from kernel state",
         ));
@@ -554,6 +562,11 @@ mod broker_proxy_tests {
         std::fs::create_dir_all(&publication_root).expect("publication root should exist");
         let script = r##"#!/bin/sh
 {
+  printf 'home=%s\n' "${HOME-}"
+  printf 'chariox_home=%s\n' "${CHARIOX_HOME-}"
+  printf 'cwd=%s\n' "$(pwd)"
+  printf 'provider_isolation=%s\n' "${CHARIOX_MANAGED_PROVIDER_ISOLATION-<unset>}"
+  printf 'vault=%s\n' "${CHARIOX_MANAGED_VAULT_PATH-}"
   printf 'service=%s\n' "${CHARIOX_MANAGED_SLICE_SERVICE_ROOT-}"
   printf 'publication=%s\n' "${CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT-}"
   printf 'socket=%s\n' "${CHARIOX_SLICE_DOCKER_BROKER_SOCKET-}"
@@ -577,6 +590,8 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         let previous_socket = std::env::var_os(BROKER_SOCKET_ENV);
         let previous_fd = std::env::var_os(BROKER_FD_ENV);
         let previous_required = std::env::var_os(BROKER_REQUIRED_ENV);
+        let previous_provider_isolation =
+            std::env::var_os("CHARIOX_MANAGED_PROVIDER_ISOLATION");
         let previous_record = std::env::var_os("CHARIOX_ENV_RECORD");
         std::env::set_var(
             crate::provider::MANAGED_SLICE_SERVICE_ROOT_ENV,
@@ -593,9 +608,11 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         );
         std::env::remove_var(BROKER_FD_ENV);
         std::env::remove_var(BROKER_REQUIRED_ENV);
+        std::env::set_var("CHARIOX_MANAGED_PROVIDER_ISOLATION", "1");
 
         let config = BootstrapConfig {
-            chariox_home: home,
+            process_home: home.clone(),
+            chariox_home: home.join(".chariox"),
             envelope_path: root.join("managed-bootstrap.json"),
             receipt_path: root.join("bootstrap-receipt.json"),
             manifest_path: root.join("release-manifest.json"),
@@ -619,6 +636,17 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         let mut child = spawn_kernel(&config, &release).expect("fallback kernel should spawn");
         child.wait().expect("fallback kernel should exit");
         let fallback = std::fs::read_to_string(&fallback_record).expect("fallback env record");
+        assert!(fallback.contains(&format!("home={}\n", home.display())));
+        assert!(fallback.contains(&format!(
+            "chariox_home={}\n",
+            home.join(".chariox").display()
+        )));
+        assert!(fallback.contains(&format!("cwd={}\n", home.display())));
+        assert!(fallback.contains(&format!(
+            "vault={}\n",
+            home.join(".chariox/vault/vault.json").display()
+        )));
+        assert!(fallback.contains("provider_isolation=<unset>\n"));
         assert!(fallback.contains(&format!("service={}\n", service_root.display())));
         assert!(fallback.contains(&format!("publication={}\n", publication_root.display())));
         assert!(fallback.contains("socket=\n"));
@@ -661,6 +689,10 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         restore_env(BROKER_SOCKET_ENV, previous_socket);
         restore_env(BROKER_FD_ENV, previous_fd);
         restore_env(BROKER_REQUIRED_ENV, previous_required);
+        restore_env(
+            "CHARIOX_MANAGED_PROVIDER_ISOLATION",
+            previous_provider_isolation,
+        );
         restore_env("CHARIOX_ENV_RECORD", previous_record);
         let _ = std::fs::remove_dir_all(root);
     }
