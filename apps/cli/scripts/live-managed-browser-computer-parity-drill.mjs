@@ -9,13 +9,16 @@ import { promisify } from "node:util"
 import { writeDrillJsonArtifactOutput } from "./lib/drill-artifacts.mjs"
 import {
   assertBrowserComputerEvidencePath,
+  assertBrowserComputerResourceTelemetry,
   assertSecretSafeBrowserComputerEvidence,
   collectBrowserComputerResourceSnapshot,
   evaluateBrowserComputerPreflight,
   evaluateBrowserComputerDockerPreconditions,
+  evaluateBrowserComputerPersistenceMutationSeams,
   evaluateBrowserComputerResourceCaps,
-  normalizeBrowserComputerCaps,
+  evaluateBrowserComputerResourceWatchdogSample,
   redactBrowserComputerEvidence,
+  resolveBrowserComputerCaps,
   runBrowserComputerFaultGuard,
 } from "./lib/browser-computer-drill-guard.mjs"
 import {
@@ -35,6 +38,7 @@ const LIVE_STEP_CHECKPOINTS = Object.freeze({
   "selkies.browser": { before: "during-browser" },
   "selkies.destroy": { before: "after-browser-stop" },
 })
+const DEFAULT_WATCHDOG_INTERVAL_MS = 250
 
 export async function runManagedBrowserComputerParityLive({
   config,
@@ -59,7 +63,10 @@ export async function runManagedBrowserComputerParityLive({
     ?? config.browserComputerGuard?.caps
     ?? config.browserComputerCaps
     ?? config.resourceCaps
-  const normalizedCaps = normalizeBrowserComputerCaps(declaredCaps)
+  const normalizedCaps = resolveBrowserComputerCaps({
+    caps: declaredCaps,
+    resourceCeilings: config.resourceCeilings,
+  })
   const requestedFaultAt = faultAt ?? config.browserComputerGuard?.faultAt ?? null
   const declaredDockerPreconditions = dockerPreconditions
     ?? config.browserComputerGuard?.dockerPreconditions
@@ -68,29 +75,61 @@ export async function runManagedBrowserComputerParityLive({
     throw new Error("managed parity browser/computer Docker preconditions must be an array")
   }
 
+  const telemetryPolicy = config.browserComputerGuard?.resourceTelemetry
+    ?? config.browserComputerGuard?.telemetry
+    ?? {}
+  const explicitLocalTransport = transport.resourceScope === "local"
+    || transport.transportScope === "local"
+    || transport.transportKind === "local"
+    || transport.local === true
+    || config.transport?.scope === "local"
+  const localFallbackRequested = telemetryPolicy.mode === "local"
+    || telemetryPolicy.allowLocalFallback === true
+    || config.browserComputerGuard?.allowLocalResourceFallback === true
+  if (localFallbackRequested && !explicitLocalTransport) {
+    throw new Error("local resource telemetry fallback requires an explicitly local transport")
+  }
+  const allowLocalFallback = localFallbackRequested && explicitLocalTransport
+  const watchdogIntervalMs = resolveWatchdogInterval(config.browserComputerGuard?.watchdogIntervalMs)
+
   const samples = []
+  const watchdogSamples = []
   let report = null
   let resourcePreflight = null
   let activeCheckpoint = null
+  let persistenceMutationSeam = null
+  let persistenceMutationError = null
+  let watchdogError = null
+  let watchdogTimer = null
+  let watchdogInFlight = null
+  const workloadController = new AbortController()
+  const forwardAbort = () => workloadController.abort(signal?.reason)
+  if (signal?.aborted) forwardAbort()
+  else signal?.addEventListener?.("abort", forwardAbort, { once: true })
 
-  const capture = async (phase) => {
-    if (samples.some((sample) => sample.phase === phase)) {
+  const capture = async (phase, { watchdog = false } = {}) => {
+    const bucket = watchdog ? watchdogSamples : samples
+    if (!watchdog && bucket.some((sample) => sample.phase === phase)) {
       throw new Error(`managed parity resource sample phase was captured more than once: ${phase}`)
     }
     const sample = await (typeof collectResourceSnapshot === "function"
       ? collectResourceSnapshot({
         phase,
-        sampleId: `${config.runId}:${phase}`,
+        sampleId: `${config.runId}:${phase}${watchdog ? `:${watchdogSamples.length}` : ""}`,
         evidenceRoot: resolvedEvidenceRoot,
         transport,
         now,
+        allowLocalFallback,
+        explicitLocalTransport,
       })
       : collectLiveResourceSnapshot({
         phase,
-        sampleId: `${config.runId}:${phase}`,
+        sampleId: `${config.runId}:${phase}${watchdog ? `:${watchdogSamples.length}` : ""}`,
         evidenceRoot: resolvedEvidenceRoot,
         transport,
         now,
+        allowLocalFallback,
+        explicitLocalTransport,
       }))
     if (!sample || typeof sample !== "object" || Array.isArray(sample)) {
       throw new Error(`managed parity ${phase} resource sample must be an object`)
@@ -100,25 +139,144 @@ export async function runManagedBrowserComputerParityLive({
       phase,
       sampleId: sample.sampleId ?? `${config.runId}:${phase}`,
     }, { secretValues })
+    assertBrowserComputerResourceTelemetry(normalized, { allowLocalFallback })
     assertSecretSafeBrowserComputerEvidence(normalized, { secretValues })
-    samples.push(normalized)
+    bucket.push(normalized)
     return normalized
   }
 
   const guardedTransport = {
     ...transport,
-    run: async (step, request, options) => {
+    run: async (step, request, options = {}) => {
       const checkpoints = LIVE_STEP_CHECKPOINTS[step]
       if (step === "selkies.browser") await capture("during")
       if (checkpoints?.before && activeCheckpoint) {
         await activeCheckpoint(checkpoints.before, { step })
       }
-      const result = await transport.run(step, request, options)
+      let persistencePlan = null
+      let persistenceEvents = []
+      let persistencePlanResult = null
+      let onPersistenceMutation = null
+      if (step === "selkies.persistence") {
+        if (typeof transport.describePersistenceMutations !== "function") {
+          throw new Error("managed parity transport must expose a validated persistence mutation plan")
+        }
+        persistencePlan = await transport.describePersistenceMutations(request)
+        persistencePlanResult = evaluateBrowserComputerPersistenceMutationSeams({
+          result: persistencePlan,
+          dockerPreconditions: declaredDockerPreconditions,
+        })
+        if (!persistencePlanResult.ok) {
+          throw new Error(`managed parity persistence plan failed: ${persistencePlanResult.violations.join("; ")}`)
+        }
+        onPersistenceMutation = async (event) => {
+          const mutation = event?.mutation ?? event
+          const phase = event?.phase ?? event?.checkpointPhase
+          const expectedIndex = Math.floor(persistenceEvents.length / 2)
+          const expected = persistencePlanResult.mutations[expectedIndex]
+          if (!expected || mutation?.action !== expected.action) {
+            throw new Error("managed parity persistence callback did not identify the planned mutation")
+          }
+          if (phase !== "before" && phase !== "after") {
+            throw new Error("managed parity persistence callback must identify before or after")
+          }
+          if (phase === "before") {
+            if (persistenceEvents.length % 2 !== 0) {
+              throw new Error("managed parity persistence before callback was out of order")
+            }
+            if (!sameArgv(mutation.argv, expected.argv)) {
+              throw new Error(`managed parity ${mutation.action} callback argv differs from its validated plan`)
+            }
+            await activeCheckpoint(expected.checkpoints.before, {
+              step,
+              action: mutation.action,
+              argv: mutation.argv,
+            })
+          } else {
+            if (persistenceEvents.length % 2 !== 1) {
+              throw new Error("managed parity persistence after callback was out of order")
+            }
+            if (!expected || expected.action !== mutation.action) {
+              throw new Error("managed parity persistence after callback was out of order")
+            }
+            await activeCheckpoint(expected.checkpoints.after, {
+              step,
+              action: mutation.action,
+              argv: mutation.argv,
+            })
+          }
+          persistenceEvents.push({ phase, action: mutation.action, argv: mutation.argv })
+        }
+      }
+      let result
+      try {
+        result = await transport.run(step, request, {
+          ...options,
+          signal: step.startsWith("cleanup.") ? (options.signal ?? null) : workloadController.signal,
+          ...(onPersistenceMutation ? { onPersistenceMutation } : {}),
+        })
+      } catch (error) {
+        if (step === "selkies.persistence") persistenceMutationError = error
+        throw error
+      }
+      if (step === "selkies.persistence") {
+        if (persistenceEvents.length !== persistencePlanResult.mutations.length * 2) {
+          throw new Error("managed parity persistence transport did not report every save/remove/restore mutation seam")
+        }
+        const actual = evaluateBrowserComputerPersistenceMutationSeams({
+          result,
+          plan: persistencePlan,
+          dockerPreconditions: declaredDockerPreconditions,
+        })
+        if (!actual.ok) {
+          const error = new Error(`managed parity persistence mutation evidence failed: ${actual.violations.join("; ")}`)
+          persistenceMutationError = error
+          throw error
+        }
+        persistenceMutationSeam = actual
+      }
       if (checkpoints?.after && activeCheckpoint) {
         await activeCheckpoint(checkpoints.after, { step })
       }
       return result
     },
+  }
+
+  const runWatchdogTick = async (beforeSample) => {
+    if (watchdogError || workloadController.signal.aborted) return
+    if (watchdogInFlight) return watchdogInFlight
+    watchdogInFlight = (async () => {
+      try {
+        const sample = await capture("watchdog", { watchdog: true })
+        const evaluation = evaluateBrowserComputerResourceWatchdogSample(beforeSample, sample, normalizedCaps)
+        if (!evaluation.ok) {
+          const error = new Error(`managed parity browser/computer watchdog failed: ${evaluation.violations.join("; ")}`)
+          error.code = "browser_computer_watchdog_failed"
+          error.evaluation = evaluation
+          watchdogError = error
+          workloadController.abort(error)
+        }
+      } catch (error) {
+        watchdogError = error
+        workloadController.abort(error)
+      } finally {
+        watchdogInFlight = null
+      }
+    })()
+    return watchdogInFlight
+  }
+
+  const startWatchdog = (beforeSample) => {
+    watchdogTimer = setInterval(() => {
+      void runWatchdogTick(beforeSample)
+    }, watchdogIntervalMs)
+    watchdogTimer.unref?.()
+  }
+
+  const stopWatchdog = async () => {
+    if (watchdogTimer) clearInterval(watchdogTimer)
+    watchdogTimer = null
+    if (watchdogInFlight) await watchdogInFlight
   }
 
   const faultGuard = await runBrowserComputerFaultGuard({
@@ -133,23 +291,31 @@ export async function runManagedBrowserComputerParityLive({
         resourcePreflight = evaluateBrowserComputerPreflight(beforeSample, {
           requiredMemoryBytes: config.browserComputerGuard?.preflight?.requiredMemoryBytes
             ?? config.browserComputerGuard?.requiredMemoryBytes
+            ?? config.resourceCeilings?.minimumFreeMemoryBytes
             ?? 0,
           requiredDiskBytes: config.browserComputerGuard?.preflight?.requiredDiskBytes
             ?? config.browserComputerGuard?.requiredDiskBytes
+            ?? config.resourceCeilings?.minimumFreeDiskBytes
             ?? 0,
           allowExistingHeadedSlices: config.browserComputerGuard?.preflight?.allowExistingHeadedSlices === true,
         })
         if (!resourcePreflight.ok) {
           throw new Error(`managed parity browser/computer resource preflight failed: ${resourcePreflight.violations.join("; ")}`)
         }
-        report = await runManagedBrowserComputerParityHarness({
-          config,
-          transport: guardedTransport,
-          signal,
-          now,
-        })
-        if (report.status !== "passed") {
-          throw new Error(`managed parity harness failed: ${report.failure?.code ?? "unknown"}`)
+        startWatchdog(beforeSample)
+        try {
+          report = await runManagedBrowserComputerParityHarness({
+            config,
+            transport: guardedTransport,
+            signal: workloadController.signal,
+            now,
+          })
+          if (report.status !== "passed") {
+            throw new Error(`managed parity harness failed: ${report.failure?.code ?? "unknown"}`)
+          }
+          if (watchdogError) throw watchdogError
+        } finally {
+          await stopWatchdog()
         }
       } finally {
         try {
@@ -160,6 +326,7 @@ export async function runManagedBrowserComputerParityLive({
       }
     },
     cleanup: async () => {
+      if (!report) return { clean: true, ok: true, skipped: true }
       if (report?.cleanup?.clean !== true) {
         return {
           clean: false,
@@ -171,12 +338,26 @@ export async function runManagedBrowserComputerParityLive({
     },
   })
 
-  const resourceEvaluation = evaluateBrowserComputerResourceCaps(samples, normalizedCaps)
+  const resourceEvaluation = evaluateBrowserComputerResourceCaps(samples, normalizedCaps, {
+    additionalSamples: watchdogSamples,
+  })
   const failed = faultGuard.status !== "passed"
     || !resourceEvaluation.ok
+    || watchdogError !== null
     || report?.status !== "passed"
-  const failure = report?.failure ?? (faultGuard.status !== "passed"
-    ? { code: "browser_computer_guard_failed", step: faultGuard.faultAt ?? "guard" }
+  const failure = watchdogError
+    ? { code: watchdogError.code ?? "browser_computer_watchdog_failed", step: "watchdog", message: watchdogError.message }
+    : report?.failure
+      ? {
+        ...report.failure,
+        ...(persistenceMutationError ? { message: persistenceMutationError.message } : {}),
+      }
+      : (faultGuard.status !== "passed"
+    ? {
+      code: "browser_computer_guard_failed",
+      step: faultGuard.faultAt ?? "guard",
+      message: faultGuard.failure?.message ?? null,
+    }
     : !resourceEvaluation.ok
       ? { code: "browser_computer_resource_cap_failed", step: "resource-caps", violations: resourceEvaluation.violations }
       : { code: "managed_parity_failed", step: "harness" })
@@ -196,8 +377,15 @@ export async function runManagedBrowserComputerParityLive({
       fault: faultGuard,
       resourcePreflight,
       resourceSamples: samples,
+      watchdogSamples,
+      watchdog: {
+        intervalMs: watchdogIntervalMs,
+        telemetryMode: samples[0]?.telemetry?.scope ?? null,
+        error: watchdogError ? { code: watchdogError.code ?? null, message: watchdogError.message } : null,
+      },
       resourceEvaluation,
       dockerPreconditions: declaredDockerPreconditions,
+      persistenceMutationSeam,
     },
   }, { secretValues })
   assertSecretSafeBrowserComputerEvidence(finalReport, { secretValues })
@@ -213,11 +401,25 @@ function assertConfiguredDockerPreconditions(preconditions) {
   }
 }
 
-async function collectLiveResourceSnapshot({ phase, sampleId, evidenceRoot, transport, now }) {
+async function collectLiveResourceSnapshot({
+  phase,
+  sampleId,
+  evidenceRoot,
+  transport,
+  now,
+  allowLocalFallback,
+  explicitLocalTransport,
+}) {
+  if (typeof transport.collectManagedTargetResourceSnapshot === "function") {
+    return transport.collectManagedTargetResourceSnapshot({ phase, sampleId, evidenceRoot, now })
+  }
   if (typeof transport.collectResourceSnapshot === "function") {
     return transport.collectResourceSnapshot({ phase, sampleId, evidenceRoot, now })
   }
-  return collectBrowserComputerResourceSnapshot({
+  if (!allowLocalFallback || !explicitLocalTransport) {
+    throw new Error("managed parity remote transport must provide authoritative managed-target resource telemetry")
+  }
+  const snapshot = await collectBrowserComputerResourceSnapshot({
     runCommand: runExternalCommand,
     filesystemPath: evidenceRoot,
     phase,
@@ -226,6 +428,15 @@ async function collectLiveResourceSnapshot({ phase, sampleId, evidenceRoot, tran
     processCount: async () => countProcessRows((await runExternalCommand("ps", ["-e", "-o", "pid="])).stdout),
     logBytes: () => directoryBytes(evidenceRoot),
   })
+  return {
+    ...snapshot,
+    telemetry: {
+      scope: "local-host",
+      authoritative: true,
+      fallback: true,
+      source: "explicit-local-fallback",
+    },
+  }
 }
 
 async function runExternalCommand(command, args) {
@@ -260,6 +471,21 @@ async function directoryBytes(directory) {
     else if (entry.isFile()) total += (await stat(entryPath)).size
   }
   return total
+}
+
+function resolveWatchdogInterval(value) {
+  if (value === undefined || value === null) return DEFAULT_WATCHDOG_INTERVAL_MS
+  const interval = Number(value)
+  if (!Number.isSafeInteger(interval) || interval < 1 || interval > 60_000) {
+    throw new Error("browser/computer watchdog interval must be a safe integer from 1ms through 60000ms")
+  }
+  return interval
+}
+
+function sameArgv(left, right) {
+  return Array.isArray(left) && Array.isArray(right)
+    && left.length === right.length
+    && left.every((value, index) => String(value) === String(right[index]))
 }
 
 async function main() {

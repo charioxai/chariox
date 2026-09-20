@@ -37,6 +37,9 @@ function config() {
     },
     browserComputerGuard: {
       caps: { diskBytes: 10, memoryBytes: 20, processCount: 4, logBytes: 5 },
+      preflight: { requiredMemoryBytes: 0, requiredDiskBytes: 0 },
+      watchdogIntervalMs: 1,
+      dockerPreconditions: persistenceDeclarations(),
     },
   }
 }
@@ -109,8 +112,13 @@ function transport() {
   const calls = []
   return {
     calls,
-    async run(step, input) {
+    resourceScope: "managed",
+    async describePersistenceMutations() {
+      return persistenceEvidence()
+    },
+    async run(step, input, options = {}) {
       calls.push({ step, input })
+      await new Promise((resolve) => setTimeout(resolve, 2))
       if (step === "preflight") return preflight()
       if (step === "selkies.create") return target("selkies")
       if (step === "novnc.create") return target("novnc")
@@ -120,7 +128,22 @@ function transport() {
       if (step.endsWith(".browser")) return { ...binding, structuredActions: true, mutationCount: 1, browserCount: 1 }
       if (step.endsWith(".computer")) return { ...binding, screenshot: true, pointer: true, keyboard: true }
       if (step.endsWith(".takeover")) return { ...binding, overlayVisible: true, takeoverCompleted: true, actorAttributed: true }
-      if (step.endsWith(".persistence")) return { ...binding, saved: true, restarted: true, sameRoom: true, sameEnvironment: true, sameProfile: true }
+      if (step.endsWith(".persistence")) {
+        const evidence = persistenceEvidence()
+        for (const mutation of evidence.persistenceMutations) {
+          await options.onPersistenceMutation?.({ phase: "before", mutation })
+          await options.onPersistenceMutation?.({ phase: "after", mutation })
+        }
+        return {
+          ...binding,
+          saved: true,
+          restarted: true,
+          sameRoom: true,
+          sameEnvironment: true,
+          sameProfile: true,
+          ...evidence,
+        }
+      }
       if (step.endsWith(".vault")) return {
         ...binding,
         syntheticValueInserted: true,
@@ -144,6 +167,9 @@ function sample(phase, overrun = false) {
     during: overrun
       ? { diskAvailableBytes: 70, memoryAvailableBytes: 60, processCount: 6, logBytes: 10 }
       : { diskAvailableBytes: 90, memoryAvailableBytes: 90, processCount: 2, logBytes: 2 },
+    watchdog: overrun
+      ? { diskAvailableBytes: 70, memoryAvailableBytes: 60, processCount: 6, logBytes: 10 }
+      : { diskAvailableBytes: 90, memoryAvailableBytes: 90, processCount: 2, logBytes: 2 },
     after: { diskAvailableBytes: 95, memoryAvailableBytes: 95, processCount: 2, logBytes: 3 },
   }[phase]
   return {
@@ -153,10 +179,106 @@ function sample(phase, overrun = false) {
     process: { count: values.processCount },
     logs: { bytes: values.logBytes },
     docker: { containers: [], volumes: [], images: [] },
+    telemetry: {
+      scope: "managed-target",
+      authoritative: true,
+      source: "managed-target-test",
+      targetId: "machine-managed-1",
+    },
   }
 }
 
-test("live M0 entry fails an executing resource overrun after the real harness returns", async () => {
+function persistenceInventory() {
+  return {
+    docker: {
+      containers: ["chariox-slice-owned"],
+      volumes: ["chariox-slice-owned-home"],
+      networks: ["chariox-slice-owned-net"],
+      images: ["chariox/browser:fixture"],
+    },
+  }
+}
+
+function persistenceEvidence() {
+  const saveArgv = ["docker", "save", "chariox/browser:fixture", "-o", "/tmp/browser-state.tar"]
+  const removeArgv = ["docker", "rm", "chariox-slice-owned"]
+  const restoreArgv = [
+    "docker", "create", "--name", "chariox-slice-owned",
+    "--volume", "chariox-slice-owned-home:/data",
+    "--network", "chariox-slice-owned-net", "chariox/browser:fixture",
+  ]
+  return {
+    persistenceMutations: [
+      {
+        action: "save",
+        argv: saveArgv,
+        request: { action: "save", argv: saveArgv },
+        before: persistenceInventory(),
+        checkpoints: { before: "before-docker-save", after: "after-docker-save" },
+      },
+      {
+        action: "remove",
+        argv: removeArgv,
+        request: { action: "remove", argv: removeArgv },
+        before: persistenceInventory(),
+        saved: true,
+        checkpoints: { before: "before-docker-remove", after: "after-docker-remove" },
+      },
+      {
+        action: "restore",
+        argv: restoreArgv,
+        request: { action: "restore", argv: restoreArgv },
+        before: persistenceInventory(),
+        saved: true,
+        removed: true,
+        checkpoints: { before: "before-docker-restore", after: "after-docker-restore" },
+      },
+    ],
+  }
+}
+
+function persistenceDeclarations() {
+  const before = persistenceInventory()
+  return [
+    {
+      action: "save",
+      before,
+      imageRef: "chariox/browser:fixture",
+      savePath: "/tmp/browser-state.tar",
+      command: ["docker", "save", "chariox/browser:fixture", "-o", "/tmp/browser-state.tar"],
+    },
+    {
+      action: "remove",
+      before,
+      ownedContainers: ["chariox-slice-owned"],
+      targetContainers: ["chariox-slice-owned"],
+      saved: true,
+      command: ["docker", "rm", "chariox-slice-owned"],
+    },
+    {
+      action: "restore",
+      before,
+      ownedContainers: ["chariox-slice-owned"],
+      ownedVolumes: ["chariox-slice-owned-home"],
+      ownedNetworks: ["chariox-slice-owned-net"],
+      targetContainers: ["chariox-slice-owned"],
+      targetVolumes: ["chariox-slice-owned-home"],
+      targetNetworks: ["chariox-slice-owned-net"],
+      targetMounts: ["chariox-slice-owned-home:/data"],
+      imageRef: "chariox/browser:fixture",
+      saved: true,
+      removed: true,
+      restorePath: "/tmp/browser-state.tar",
+      command: [
+        "docker", "create", "--name", "chariox-slice-owned",
+        "--volume", "chariox-slice-owned-home:/data",
+        "--network", "chariox-slice-owned-net", "chariox/browser:fixture",
+      ],
+    },
+  ]
+}
+
+test("live M0 watchdog aborts an executing resource overrun before unowned work can continue", async () => {
   const injected = transport()
   const report = await runManagedBrowserComputerParityLive({
     config: config(),
@@ -166,10 +288,11 @@ test("live M0 entry fails an executing resource overrun after the real harness r
   })
 
   assert.equal(report.status, "failed")
-  assert.equal(report.failure.code, "browser_computer_resource_cap_failed")
+  assert.equal(report.failure.code, "browser_computer_watchdog_failed")
   assert.equal(report.browserComputerGuard.resourceEvaluation.ok, false)
   assert.equal(report.browserComputerGuard.resourcePreflight.ok, true)
-  assert.equal(report.browserComputerGuard.resourceSamples.map(({ phase }) => phase).join(","), "before,during,after")
+  assert.equal(report.browserComputerGuard.resourceSamples.map(({ phase }) => phase).join(","), "before,after")
+  assert.equal(report.browserComputerGuard.watchdogSamples.length > 0, true)
   assert.equal(injected.calls.filter(({ step }) => step === "cleanup.inspect").length, 1)
 })
 
@@ -193,4 +316,58 @@ test("live M0 entry executes a fault checkpoint and fails the run while cleanup 
   })
   assert.equal(injected.calls.some(({ step }) => step === "cleanup.perform"), true)
   assert.equal(injected.calls.some(({ step }) => step === "cleanup.inspect"), true)
+})
+
+test("runbook-shaped ceilings remain runnable without a duplicate guard cap declaration", async () => {
+  const runbookConfig = config()
+  delete runbookConfig.browserComputerGuard.caps
+  const report = await runManagedBrowserComputerParityLive({
+    config: runbookConfig,
+    transport: transport(),
+    evidenceRoot: EVIDENCE_ROOT,
+    collectResourceSnapshot: ({ phase }) => sample(phase),
+  })
+  assert.equal(report.status, "passed", report.failure?.code ?? "runbook-shaped config did not pass")
+  assert.equal(report.browserComputerGuard.resourceEvaluation.ok, true)
+  assert.equal(report.browserComputerGuard.resourceEvaluation.caps.memoryBytes, 2_000_000_000)
+})
+
+test("remote live entry fails closed when managed-target telemetry is absent", async () => {
+  const injected = transport()
+  const report = await runManagedBrowserComputerParityLive({
+    config: config(),
+    transport: injected,
+    evidenceRoot: EVIDENCE_ROOT,
+    collectResourceSnapshot: ({ phase }) => {
+      const value = sample(phase)
+      delete value.telemetry
+      return value
+    },
+  })
+  assert.equal(report.status, "failed")
+  assert.match(report.failure.message, /managed-target telemetry/)
+  assert.equal(injected.calls.some(({ step }) => step === "preflight"), false)
+})
+
+test("explicitly local transport may use only an explicitly marked local fallback", async () => {
+  const localConfig = config()
+  localConfig.browserComputerGuard.resourceTelemetry = { mode: "local", allowLocalFallback: true }
+  const localTransport = transport()
+  localTransport.resourceScope = "local"
+  const report = await runManagedBrowserComputerParityLive({
+    config: localConfig,
+    transport: localTransport,
+    evidenceRoot: EVIDENCE_ROOT,
+    collectResourceSnapshot: ({ phase }) => ({
+      ...sample(phase),
+      telemetry: {
+        scope: "local-host",
+        authoritative: true,
+        fallback: true,
+        source: "explicit-local-test",
+      },
+    }),
+  })
+  assert.equal(report.status, "passed")
+  assert.equal(report.browserComputerGuard.watchdog.telemetryMode, "local-host")
 })

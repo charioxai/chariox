@@ -14,14 +14,14 @@ export const BROWSER_COMPUTER_GUARD_SCHEMA = "chariox.browser_computer_m0_guard.
 export const BROWSER_COMPUTER_SAMPLE_PHASES = Object.freeze(["before", "during", "after"])
 export const BROWSER_COMPUTER_FAULT_CHECKPOINTS = Object.freeze([
   "before-operation",
+  "before-browser-start",
+  "during-browser",
   "before-docker-save",
   "after-docker-save",
   "before-docker-remove",
   "after-docker-remove",
   "before-docker-restore",
   "after-docker-restore",
-  "before-browser-start",
-  "during-browser",
   "after-browser-stop",
   "after-operation",
   "before-cleanup",
@@ -44,6 +44,7 @@ export function parseBrowserComputerByteBudget(value) {
 
 export function normalizeBrowserComputerCaps(value, { required = true } = {}) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
+    if (!required && (value === undefined || value === null)) return Object.freeze({})
     throw new Error("browser/computer resource caps are required")
   }
   const caps = {}
@@ -64,6 +65,58 @@ export function normalizeBrowserComputerCaps(value, { required = true } = {}) {
 }
 
 export const normalizeBrowserComputerResourceCaps = normalizeBrowserComputerCaps
+
+/**
+ * The runbook predates the guard's four metric names and only declares the
+ * ceilings it can actually observe. Derive the guard caps from those
+ * ceilings, while still allowing a stricter guard cap to be declared. A
+ * stricter cap is safe; a looser cap would silently weaken the runbook.
+ */
+export function deriveBrowserComputerCapsFromResourceCeilings(resourceCeilings) {
+  if (!resourceCeilings || typeof resourceCeilings !== "object" || Array.isArray(resourceCeilings)) {
+    throw new Error("browser/computer resource ceilings are required to derive caps")
+  }
+  const maximumRssBytes = safeCeiling(resourceCeilings.maximumRssBytes, "maximumRssBytes")
+  const maximumPostRunDiskDeltaBytes = safeCeiling(
+    resourceCeilings.maximumPostRunDiskDeltaBytes,
+    "maximumPostRunDiskDeltaBytes",
+  )
+  const declaredProcessCount = resourceCeilings.maximumProcessCount
+    ?? resourceCeilings.maximumProcesses
+    ?? resourceCeilings.processCount
+  const processCount = declaredProcessCount === undefined
+    ? Math.max(1, Math.ceil(maximumRssBytes / (64 * 1024 * 1024)))
+    : safeCeiling(declaredProcessCount, "maximumProcessCount")
+  const declaredLogBytes = resourceCeilings.maximumLogBytes
+    ?? resourceCeilings.maximumLogGrowthBytes
+    ?? resourceCeilings.logBytes
+  const logBytes = declaredLogBytes === undefined
+    ? maximumPostRunDiskDeltaBytes
+    : safeCeiling(declaredLogBytes, "maximumLogBytes")
+  return normalizeBrowserComputerCaps({
+    diskBytes: maximumPostRunDiskDeltaBytes,
+    memoryBytes: maximumRssBytes,
+    processCount,
+    logBytes,
+  })
+}
+
+export function resolveBrowserComputerCaps({ caps, resourceCeilings } = {}) {
+  const derived = resourceCeilings === undefined
+    ? {}
+    : deriveBrowserComputerCapsFromResourceCeilings(resourceCeilings)
+  const explicit = normalizeBrowserComputerCaps(caps, { required: false })
+  const merged = { ...derived, ...explicit }
+  if (Object.keys(merged).length === 0) {
+    throw new Error("browser/computer resource caps or resource ceilings are required")
+  }
+  for (const name of Object.keys(derived)) {
+    if (explicit[name] !== undefined && explicit[name] > derived[name]) {
+      throw new Error(`browser/computer resource cap ${name} exceeds its runbook ceiling`)
+    }
+  }
+  return normalizeBrowserComputerCaps(merged)
+}
 
 export function defaultBrowserComputerEvidenceDir(runId, homeDir = os.homedir()) {
   if (!nonEmptyString(runId)) throw new Error("browser/computer drill run id is required")
@@ -95,11 +148,12 @@ export async function collectBrowserComputerResourceSnapshot({
   if (typeof runCommand !== "function") throw new Error("runCommand is required")
   if (!nonEmptyString(filesystemPath)) throw new Error("filesystemPath is required")
 
-  const [disk, dockerContainers, dockerVolumes, dockerImages, availableMemoryBytes, resolvedProcessCount, resolvedLogBytes] = await Promise.all([
+  const [disk, dockerContainers, dockerVolumes, dockerImages, dockerNetworks, availableMemoryBytes, resolvedProcessCount, resolvedLogBytes] = await Promise.all([
     statfs(filesystemPath),
     dockerNames(runCommand, ["ps", "-a", "--format", "{{.Names}}"]),
     dockerNames(runCommand, ["volume", "ls", "--format", "{{.Name}}"]),
     dockerImageRefs(runCommand),
+    dockerNames(runCommand, ["network", "ls", "--format", "{{.Name}}"]),
     resolveAvailableMemoryBytes(runCommand, platform),
     resolveMetric(processCount),
     resolveMetric(logBytes),
@@ -125,11 +179,59 @@ export async function collectBrowserComputerResourceSnapshot({
       containers: dockerContainers,
       volumes: dockerVolumes,
       images: dockerImages,
+      networks: dockerNetworks,
     },
   }
   if (resolvedProcessCount !== undefined) snapshot.process = { count: resolvedProcessCount }
   if (resolvedLogBytes !== undefined) snapshot.logs = { bytes: resolvedLogBytes }
   return snapshot
+}
+
+export function evaluateBrowserComputerResourceTelemetry(sample, { allowLocalFallback = false } = {}) {
+  const telemetry = sample?.telemetry
+  const targetId = telemetry?.targetId ?? telemetry?.targetRef ?? telemetry?.machineId
+  if (telemetry?.scope === "managed-target"
+    && telemetry.authoritative === true
+    && nonEmptyString(targetId)
+    && nonEmptyString(telemetry.source)) {
+    return {
+      ok: true,
+      mode: "managed-target",
+      source: String(telemetry.source),
+      targetId: String(targetId),
+      violations: [],
+    }
+  }
+  if (allowLocalFallback
+    && telemetry?.scope === "local-host"
+    && telemetry.fallback === true
+    && telemetry.authoritative === true) {
+    return {
+      ok: true,
+      mode: "local-fallback",
+      source: String(telemetry.source ?? "local-host"),
+      targetId: null,
+      violations: [],
+    }
+  }
+  const mode = telemetry?.scope ?? "missing"
+  return {
+    ok: false,
+    mode,
+    source: null,
+    targetId: null,
+    violations: [
+      allowLocalFallback
+        ? "resource sample must carry authoritative managed-target telemetry or an explicitly-authorized local fallback marker"
+        : "resource sample must carry authoritative managed-target telemetry; remote/local host fallback is forbidden",
+    ],
+  }
+}
+
+export function assertBrowserComputerResourceTelemetry(sample, options = {}) {
+  const result = evaluateBrowserComputerResourceTelemetry(sample, options)
+  if (!result.ok) throw new Error(`browser/computer resource telemetry failed: ${result.violations.join("; ")}`)
+  return result
 }
 
 export function evaluateBrowserComputerPreflight(snapshot, options = {}) {
@@ -188,7 +290,7 @@ export function assertBrowserComputerPreflight(snapshot, options = {}) {
  * Disk and log caps are operation growth caps; memory and process caps are
  * peak caps. Missing process or log measurements fail closed when caps apply.
  */
-export function evaluateBrowserComputerResourceCaps(samples, caps) {
+export function evaluateBrowserComputerResourceCaps(samples, caps, { additionalSamples = [] } = {}) {
   const normalizedCaps = normalizeBrowserComputerCaps(caps)
   const violations = []
   const rows = []
@@ -207,6 +309,20 @@ export function evaluateBrowserComputerResourceCaps(samples, caps) {
     if (row) rows.push({ phase, ...row })
   }
 
+  const additionalRows = []
+  if (!Array.isArray(additionalSamples)) {
+    violations.push("additional resource evidence must be an array")
+  } else {
+    for (const sample of additionalSamples) {
+      if (!sample || typeof sample !== "object" || Array.isArray(sample)) {
+        violations.push("additional resource evidence contains an invalid sample")
+        continue
+      }
+      const row = resourceMetrics(sample, sample.phase ?? "watchdog", violations)
+      if (row) additionalRows.push({ phase: sample.phase ?? "watchdog", ...row })
+    }
+  }
+
   const metrics = {
     diskGrowthBytes: null,
     peakMemoryBytes: null,
@@ -216,11 +332,12 @@ export function evaluateBrowserComputerResourceCaps(samples, caps) {
   }
   if (rows.length === BROWSER_COMPUTER_SAMPLE_PHASES.length) {
     const baseline = rows[0]
-    metrics.diskGrowthBytes = Math.max(...rows.map((row) => Math.max(0, row.diskUsedBytes - baseline.diskUsedBytes)))
-    metrics.peakMemoryBytes = Math.max(...rows.map((row) => row.memoryUsedBytes))
-    metrics.peakProcessCount = Math.max(...rows.map((row) => row.processCount))
-    metrics.logGrowthBytes = Math.max(...rows.map((row) => Math.max(0, row.logBytes - baseline.logBytes)))
-    metrics.peakLogBytes = Math.max(...rows.map((row) => row.logBytes))
+    const allRows = [...rows, ...additionalRows]
+    metrics.diskGrowthBytes = Math.max(...allRows.map((row) => Math.max(0, row.diskUsedBytes - baseline.diskUsedBytes)))
+    metrics.peakMemoryBytes = Math.max(...allRows.map((row) => row.memoryUsedBytes))
+    metrics.peakProcessCount = Math.max(...allRows.map((row) => row.processCount))
+    metrics.logGrowthBytes = Math.max(...allRows.map((row) => Math.max(0, row.logBytes - baseline.logBytes)))
+    metrics.peakLogBytes = Math.max(...allRows.map((row) => row.logBytes))
     if (metrics.diskGrowthBytes > normalizedCaps.diskBytes) {
       violations.push(`disk growth ${metrics.diskGrowthBytes} bytes exceeds cap ${normalizedCaps.diskBytes} bytes`)
     }
@@ -245,6 +362,46 @@ export function evaluateBrowserComputerResourceCaps(samples, caps) {
   }
 }
 
+export function evaluateBrowserComputerResourceWatchdogSample(before, sample, caps) {
+  const normalizedCaps = normalizeBrowserComputerCaps(caps)
+  const violations = []
+  const baseline = resourceMetrics(before, "before", violations)
+  const current = resourceMetrics(sample, sample?.phase ?? "watchdog", violations)
+  const metrics = {
+    diskGrowthBytes: null,
+    peakMemoryBytes: null,
+    peakProcessCount: null,
+    logGrowthBytes: null,
+    peakLogBytes: null,
+  }
+  if (baseline && current) {
+    metrics.diskGrowthBytes = Math.max(0, current.diskUsedBytes - baseline.diskUsedBytes)
+    metrics.peakMemoryBytes = current.memoryUsedBytes
+    metrics.peakProcessCount = current.processCount
+    metrics.logGrowthBytes = Math.max(0, current.logBytes - baseline.logBytes)
+    metrics.peakLogBytes = current.logBytes
+    if (metrics.diskGrowthBytes > normalizedCaps.diskBytes) {
+      violations.push(`watchdog disk growth ${metrics.diskGrowthBytes} bytes exceeds cap ${normalizedCaps.diskBytes} bytes`)
+    }
+    if (metrics.peakMemoryBytes > normalizedCaps.memoryBytes) {
+      violations.push(`watchdog peak memory ${metrics.peakMemoryBytes} bytes exceeds cap ${normalizedCaps.memoryBytes} bytes`)
+    }
+    if (metrics.peakProcessCount > normalizedCaps.processCount) {
+      violations.push(`watchdog peak process count ${metrics.peakProcessCount} exceeds cap ${normalizedCaps.processCount}`)
+    }
+    if (metrics.logGrowthBytes > normalizedCaps.logBytes) {
+      violations.push(`watchdog log growth ${metrics.logGrowthBytes} bytes exceeds cap ${normalizedCaps.logBytes} bytes`)
+    }
+  }
+  return {
+    schema: BROWSER_COMPUTER_GUARD_SCHEMA,
+    ok: violations.length === 0,
+    caps: normalizedCaps,
+    metrics,
+    violations,
+  }
+}
+
 export const evaluateBrowserComputerResourceSamples = evaluateBrowserComputerResourceCaps
 
 export function assertBrowserComputerResourceCaps(samples, caps) {
@@ -262,6 +419,7 @@ export async function evaluateBrowserComputerCleanup({
   after,
   ownedContainers = [],
   ownedVolumes = [],
+  ownedNetworks = [],
   tempRoots = [],
   childProcesses = [],
   cleanupActions = [],
@@ -272,27 +430,36 @@ export async function evaluateBrowserComputerCleanup({
   const afterInventory = dockerInventory(after)
   const afterContainers = new Set(afterInventory.containers)
   const afterVolumes = new Set(afterInventory.volumes)
+  const afterNetworks = new Set(afterInventory.networks)
   const beforeContainers = new Set(beforeInventory.containers)
   const beforeVolumes = new Set(beforeInventory.volumes)
+  const beforeNetworks = new Set(beforeInventory.networks)
   const ownedContainerNames = new Set(names(ownedContainers))
   const ownedVolumeNames = new Set(names(ownedVolumes))
+  const ownedNetworkNames = new Set(names(ownedNetworks))
   const violations = [...beforeInventory.violations, ...afterInventory.violations]
 
   const createdContainers = difference(afterContainers, beforeContainers)
   const createdVolumes = difference(afterVolumes, beforeVolumes)
+  const createdNetworks = difference(afterNetworks, beforeNetworks)
   const removedOwnedContainers = [...ownedContainerNames].filter((name) => beforeContainers.has(name) && !afterContainers.has(name))
   const removedOwnedVolumes = [...ownedVolumeNames].filter((name) => beforeVolumes.has(name) && !afterVolumes.has(name))
   const removedUnownedContainers = [...beforeContainers].filter((name) => !afterContainers.has(name) && !ownedContainerNames.has(name))
   const removedUnownedVolumes = [...beforeVolumes].filter((name) => !afterVolumes.has(name) && !ownedVolumeNames.has(name))
+  const removedOwnedNetworks = [...ownedNetworkNames].filter((name) => beforeNetworks.has(name) && !afterNetworks.has(name))
+  const removedUnownedNetworks = [...beforeNetworks].filter((name) => !afterNetworks.has(name) && !ownedNetworkNames.has(name))
   const remainingOwnedContainers = [...ownedContainerNames].filter((name) => afterContainers.has(name))
   const remainingOwnedVolumes = [...ownedVolumeNames].filter((name) => afterVolumes.has(name))
+  const remainingOwnedNetworks = [...ownedNetworkNames].filter((name) => afterNetworks.has(name))
 
   for (const name of removedUnownedContainers) violations.push(`pre-existing unowned container disappeared: ${name}`)
   for (const name of removedUnownedVolumes) violations.push(`pre-existing unowned volume disappeared: ${name}`)
+  for (const name of removedUnownedNetworks) violations.push(`pre-existing unowned network disappeared: ${name}`)
 
   if (!allowRetainedResources) {
     for (const name of remainingOwnedContainers) violations.push(`owned container remains: ${name}`)
     for (const name of remainingOwnedVolumes) violations.push(`owned volume remains: ${name}`)
+    for (const name of remainingOwnedNetworks) violations.push(`owned network remains: ${name}`)
     for (const name of createdContainers) {
       if (name.startsWith(SLICE_CONTAINER_PREFIX) && !ownedContainerNames.has(name)) {
         violations.push(`new slice container remains: ${name}`)
@@ -303,12 +470,17 @@ export async function evaluateBrowserComputerCleanup({
         violations.push(`new slice volume remains: ${name}`)
       }
     }
+    for (const name of createdNetworks) {
+      if (name.startsWith(SLICE_CONTAINER_PREFIX) && !ownedNetworkNames.has(name)) {
+        violations.push(`new slice network remains: ${name}`)
+      }
+    }
     for (const tempRoot of tempRoots) {
       if (await exists(tempRoot)) violations.push(`temporary root remains: ${tempRoot}`)
     }
   }
 
-  const actionAccounting = accountCleanupActions(cleanupActions, ownedContainerNames, ownedVolumeNames, violations)
+  const actionAccounting = accountCleanupActions(cleanupActions, ownedContainerNames, ownedVolumeNames, ownedNetworkNames, violations)
   for (const command of cleanupCommands) {
     const result = evaluateBrowserComputerDockerPreconditions(command)
     if (!result.ok) violations.push(...result.violations.map((entry) => `cleanup command rejected: ${entry}`))
@@ -326,10 +498,10 @@ export async function evaluateBrowserComputerCleanup({
     memoryAvailableDeltaBytes: numeric(after?.memory?.availableBytes) - numeric(before?.memory?.availableBytes),
     diskAvailableDeltaBytes: numeric(after?.disk?.availableBytes) - numeric(before?.disk?.availableBytes),
     cleanupAccounting: {
-      created: { containers: [...createdContainers], volumes: [...createdVolumes] },
-      removedOwned: { containers: removedOwnedContainers, volumes: removedOwnedVolumes },
-      removedUnowned: { containers: removedUnownedContainers, volumes: removedUnownedVolumes },
-      remainingOwned: { containers: remainingOwnedContainers, volumes: remainingOwnedVolumes },
+      created: { containers: [...createdContainers], volumes: [...createdVolumes], networks: [...createdNetworks] },
+      removedOwned: { containers: removedOwnedContainers, volumes: removedOwnedVolumes, networks: removedOwnedNetworks },
+      removedUnowned: { containers: removedUnownedContainers, volumes: removedUnownedVolumes, networks: removedUnownedNetworks },
+      remainingOwned: { containers: remainingOwnedContainers, volumes: remainingOwnedVolumes, networks: remainingOwnedNetworks },
       actions: actionAccounting,
     },
   }
@@ -347,8 +519,12 @@ export function evaluateBrowserComputerDockerPreconditions({
   before,
   ownedContainers = [],
   ownedVolumes = [],
+  ownedNetworks = [],
   targetContainers = [],
   targetVolumes = [],
+  targetNetworks = [],
+  targetMounts = [],
+  targetContainerName = null,
   imageRef,
   savePath,
   restorePath,
@@ -367,12 +543,21 @@ export function evaluateBrowserComputerDockerPreconditions({
   const owned = {
     containers: new Set(names(ownedContainers)),
     volumes: new Set(names(ownedVolumes)),
+    networks: new Set(names(ownedNetworks)),
   }
   const targets = {
     containers: names(targetContainers),
     volumes: names(targetVolumes),
+    networks: names(targetNetworks),
+    mounts: names(targetMounts),
   }
-  const allTargets = [...targets.containers, ...targets.volumes]
+  if (nonEmptyString(targetContainerName) && !targets.containers.includes(targetContainerName)) {
+    targets.containers.push(targetContainerName)
+  }
+  const allTargets = [...targets.containers, ...targets.volumes, ...targets.networks, ...targets.mounts]
+  if (targets.networks.length > 0 && !Array.isArray(before?.docker?.networks)) {
+    violations.push("Docker network targets require an authoritative network inventory")
+  }
   if (allTargets.some(isBroadResourceSelector)) {
     violations.push("Docker mutation must name exact owned resources; broad prune selectors are forbidden")
   }
@@ -381,6 +566,8 @@ export function evaluateBrowserComputerDockerPreconditions({
       action,
       targetContainers: targets.containers,
       targetVolumes: targets.volumes,
+      targetNetworks: targets.networks,
+      targetMounts: targets.mounts,
       imageRef,
     }, violations)
   }
@@ -407,6 +594,10 @@ export function evaluateBrowserComputerDockerPreconditions({
       if (!owned.volumes.has(name)) violations.push(`Docker remove target is not an owned volume: ${name}`)
       if (!inventory.volumes.includes(name)) violations.push(`Docker remove volume is absent from the preflight inventory: ${name}`)
     }
+    for (const name of targets.networks) {
+      if (!owned.networks.has(name)) violations.push(`Docker remove target is not an owned network: ${name}`)
+      if (!inventory.networks.includes(name)) violations.push(`Docker remove network is absent from the preflight inventory: ${name}`)
+    }
   }
   if (action === "restore") {
     if (!saveReady) violations.push("Docker restore requires a successful exact save receipt")
@@ -420,6 +611,16 @@ export function evaluateBrowserComputerDockerPreconditions({
     }
     for (const name of targets.volumes) {
       if (!owned.volumes.has(name)) violations.push(`Docker restore target is not an owned volume: ${name}`)
+      if (Array.isArray(before?.docker?.volumes) && !inventory.volumes.includes(name)) {
+        violations.push(`Docker restore volume is absent from the pre-mutation inventory: ${name}`)
+      }
+    }
+    for (const name of targets.networks) {
+      if (!owned.networks.has(name)) violations.push(`Docker restore target is not an owned network: ${name}`)
+      if (!inventory.networks.includes(name)) violations.push(`Docker restore network is absent from the pre-mutation inventory: ${name}`)
+    }
+    if (targets.mounts.some((mount) => !targets.volumes.some((volume) => mount.startsWith(`${volume}:`)))) {
+      violations.push("Docker restore mounts must use an exact declared target volume")
     }
   }
 
@@ -444,6 +645,125 @@ export function assertBrowserComputerDockerPreconditions(input) {
 }
 
 export const assertBrowserComputerDockerMutationPreconditions = assertBrowserComputerDockerPreconditions
+
+const PERSISTENCE_MUTATION_ORDER = Object.freeze(["save", "remove", "restore"])
+const PERSISTENCE_MUTATION_CHECKPOINTS = Object.freeze({
+  save: Object.freeze({ before: "before-docker-save", after: "after-docker-save" }),
+  remove: Object.freeze({ before: "before-docker-remove", after: "after-docker-remove" }),
+  restore: Object.freeze({ before: "before-docker-restore", after: "after-docker-restore" }),
+})
+
+/**
+ * A persistence result is not authoritative merely because it says "saved".
+ * The transport must expose the exact request/argv, pre-mutation inventory,
+ * receipt state, and the checkpoints surrounding each mutation. This lets the
+ * live wrapper inject faults at the real save/remove/restore seams without
+ * ever accepting a broad or reconstructed Docker command.
+ */
+export function evaluateBrowserComputerPersistenceMutationSeams({
+  result,
+  plan = null,
+  dockerPreconditions = [],
+} = {}) {
+  const mutations = extractPersistenceMutations(result)
+  const plannedMutations = plan === null ? null : extractPersistenceMutations(plan)
+  const violations = []
+  if (!Array.isArray(mutations)) {
+    violations.push("persistence transport must return exact save/remove/restore mutation evidence")
+    return { schema: BROWSER_COMPUTER_GUARD_SCHEMA, ok: false, mutations: [], violations }
+  }
+  if (mutations.length !== PERSISTENCE_MUTATION_ORDER.length) {
+    violations.push("persistence mutation evidence must contain exactly one save, remove, and restore")
+  }
+  if (plannedMutations !== null && !Array.isArray(plannedMutations)) {
+    violations.push("persistence mutation plan must contain exact save/remove/restore entries")
+  }
+  const declarations = Array.isArray(dockerPreconditions) ? dockerPreconditions : []
+  const seen = new Set()
+  const validated = []
+  for (let index = 0; index < PERSISTENCE_MUTATION_ORDER.length; index += 1) {
+    const expectedAction = PERSISTENCE_MUTATION_ORDER[index]
+    const mutation = mutations[index]
+    if (!mutation || mutation.action !== expectedAction) {
+      violations.push(`persistence mutation ${index} must be ${expectedAction}`)
+      continue
+    }
+    if (seen.has(mutation.action)) violations.push(`persistence mutation repeated: ${mutation.action}`)
+    seen.add(mutation.action)
+    const declaration = declarations.find((entry) => entry?.action === mutation.action)
+    if (!declaration) {
+      violations.push(`persistence mutation has no declared Docker precondition: ${mutation.action}`)
+      continue
+    }
+    const argv = Array.isArray(mutation.argv) ? mutation.argv.map((entry) => String(entry)) : null
+    if (!argv) violations.push(`persistence ${mutation.action} must expose its exact argv array`)
+    const request = mutation.request
+    if (!request || typeof request !== "object" || Array.isArray(request)) {
+      violations.push(`persistence ${mutation.action} must expose its exact request object`)
+    } else {
+      const requestAction = request.action ?? request.operation ?? request.mutation
+      if (requestAction !== mutation.action) {
+        violations.push(`persistence ${mutation.action} request identity does not match its mutation action`)
+      }
+      if (!Array.isArray(request.argv) || !sameArray(request.argv, argv ?? [])) {
+        violations.push(`persistence ${mutation.action} request argv does not equal the exact mutation argv`)
+      }
+    }
+    const checkpoint = mutation.checkpoints
+    const expectedCheckpoint = PERSISTENCE_MUTATION_CHECKPOINTS[mutation.action]
+    if (checkpoint?.before !== expectedCheckpoint.before || checkpoint?.after !== expectedCheckpoint.after) {
+      violations.push(`persistence ${mutation.action} checkpoints do not fence its exact Docker mutation`)
+    }
+    const before = mutation.before ?? mutation.inventory
+    if (!before || typeof before !== "object" || Array.isArray(before)) {
+      violations.push(`persistence ${mutation.action} must expose its pre-mutation inventory`)
+    }
+    const dockerInput = {
+      ...declaration,
+      action: mutation.action,
+      before,
+      command: argv,
+      saved: mutation.saved,
+      removed: mutation.removed,
+      saveReceipt: mutation.saveReceipt,
+      removeReceipt: mutation.removeReceipt,
+    }
+    const precondition = evaluateBrowserComputerDockerPreconditions(dockerInput)
+    if (!precondition.ok) {
+      violations.push(...precondition.violations.map((entry) => `persistence ${mutation.action}: ${entry}`))
+    }
+    if (plannedMutations) {
+      const planned = plannedMutations[index]
+      if (!planned || planned.action !== mutation.action
+        || !sameArray(planned.argv, mutation.argv)
+        || !sameJson(planned.request, mutation.request)
+        || !sameJson(planned.checkpoints, mutation.checkpoints)) {
+        violations.push(`persistence ${mutation.action} result does not equal its validated mutation plan`)
+      }
+    }
+    validated.push({
+      action: mutation.action,
+      argv,
+      request: request ?? null,
+      checkpoints: checkpoint ?? null,
+      precondition,
+    })
+  }
+  return {
+    schema: BROWSER_COMPUTER_GUARD_SCHEMA,
+    ok: violations.length === 0,
+    mutations: validated,
+    violations,
+  }
+}
+
+export function assertBrowserComputerPersistenceMutationSeams(input) {
+  const result = evaluateBrowserComputerPersistenceMutationSeams(input)
+  if (!result.ok) {
+    throw new Error(`browser/computer persistence mutation seams failed:\n- ${result.violations.join("\n- ")}`)
+  }
+  return result
+}
 
 export function parseBrowserComputerDockerMutationArgv(command, action) {
   const args = commandArgs(command)
@@ -475,6 +795,11 @@ export function parseBrowserComputerDockerMutationArgv(command, action) {
     affected.volumes = positionals
   } else if (action === "restore" && subcommand === "create") {
     affected.images = positionals.slice(0, 1)
+    const createResources = parseDockerCreateResources(args, start, violations)
+    affected.containers = createResources.containers
+    affected.volumes = createResources.volumes
+    affected.networks = createResources.networks
+    affected.mounts = createResources.mounts
   } else if (positionals.length > 0 && action !== "restore") {
     violations.push(`Docker ${action ?? "mutation"} argv has unrecognized positional resources: ${positionals.join(", ")}`)
   }
@@ -673,12 +998,69 @@ function dockerPositionalArgs(args, start, optionValues) {
   return positionals
 }
 
+function parseDockerCreateResources(args, start, violations) {
+  const resources = { containers: [], volumes: [], networks: [], mounts: [] }
+  for (let index = start; index < args.length; index += 1) {
+    const raw = args[index]
+    const [option, inlineValue] = raw.split(/=(.*)/s, 2)
+    if (option === "--") break
+    if (option === "--name") {
+      const value = inlineValue ?? args[++index]
+      if (nonEmptyString(value)) resources.containers.push(value)
+      else violations.push("Docker create --name requires an exact container name")
+      continue
+    }
+    if (option === "--network") {
+      const value = inlineValue ?? args[++index]
+      if (nonEmptyString(value)) resources.networks.push(value)
+      else violations.push("Docker create --network requires an exact network")
+      continue
+    }
+    if (option === "--volume" || option === "-v") {
+      const value = inlineValue ?? args[++index]
+      const source = volumeSource(value)
+      if (source) resources.volumes.push(source)
+      else violations.push("Docker create --volume requires an exact source volume")
+      if (nonEmptyString(value)) resources.mounts.push(String(value))
+      continue
+    }
+    if (option === "--mount") {
+      const value = inlineValue ?? args[++index]
+      const parsed = mountValue(value)
+      if (parsed.source) resources.volumes.push(parsed.source)
+      else violations.push("Docker create --mount requires an exact source volume")
+      if (nonEmptyString(value)) resources.mounts.push(String(value))
+      continue
+    }
+    if (optionValuesForCreate().has(option) && inlineValue === undefined) index += 1
+  }
+  return resources
+}
+
+function optionValuesForCreate() {
+  return new Set(["--label", "--env", "-e"])
+}
+
+function volumeSource(value) {
+  if (!nonEmptyString(value)) return null
+  const source = String(value).split(":", 1)[0]
+  return isBroadResourceSelector(source) || /[\s\u0000-\u001f\u007f]/.test(source) ? null : source
+}
+
+function mountValue(value) {
+  if (!nonEmptyString(value)) return { source: null }
+  const fields = String(value).split(",")
+  const source = fields.find((field) => field.startsWith("source="))?.slice("source=".length)
+    ?? fields.find((field) => field.startsWith("src="))?.slice("src=".length)
+  return { source: volumeSource(source) }
+}
+
 function emptyDockerResources() {
-  return { containers: [], volumes: [], images: [] }
+  return { containers: [], volumes: [], images: [], networks: [], mounts: [] }
 }
 
 function sameDockerResourceSet(left, right) {
-  return ["containers", "volumes", "images"].every((kind) => sameNames(left?.[kind], right?.[kind]))
+  return ["containers", "volumes", "images", "networks", "mounts"].every((kind) => sameNames(left?.[kind], right?.[kind]))
 }
 
 function sameNames(left, right) {
@@ -692,6 +1074,8 @@ function formatDockerResources(resources) {
     containers: names(resources?.containers),
     volumes: names(resources?.volumes),
     images: names(resources?.images),
+    networks: names(resources?.networks),
+    mounts: names(resources?.mounts),
   })
 }
 
@@ -728,7 +1112,7 @@ function resourceMetrics(sample, phase, violations) {
   }
 }
 
-function accountCleanupActions(actions, ownedContainers, ownedVolumes, violations) {
+function accountCleanupActions(actions, ownedContainers, ownedVolumes, ownedNetworks, violations) {
   const counts = new Map()
   const records = []
   if (!Array.isArray(actions)) {
@@ -738,7 +1122,13 @@ function accountCleanupActions(actions, ownedContainers, ownedVolumes, violation
   for (const action of actions) {
     const kind = action?.kind ?? action?.type
     const name = typeof action?.name === "string" ? action.name : ""
-    const owned = kind === "container" ? ownedContainers.has(name) : kind === "volume" ? ownedVolumes.has(name) : false
+    const owned = kind === "container"
+      ? ownedContainers.has(name)
+      : kind === "volume"
+        ? ownedVolumes.has(name)
+        : kind === "network"
+          ? ownedNetworks.has(name)
+          : false
     if (!owned) violations.push(`cleanup action is not for an owned resource: ${kind ?? "unknown"}/${name || "unknown"}`)
     if (action?.ok === false || action?.status === "failed") violations.push(`cleanup action failed: ${kind ?? "unknown"}/${name || "unknown"}`)
     const key = `${kind ?? "unknown"}:${name}`
@@ -750,7 +1140,14 @@ function accountCleanupActions(actions, ownedContainers, ownedVolumes, violation
   return records
 }
 
-function validateDockerCommand(command, { action, targetContainers, targetVolumes, imageRef }, violations) {
+function validateDockerCommand(command, {
+  action,
+  targetContainers,
+  targetVolumes,
+  targetNetworks,
+  targetMounts,
+  imageRef,
+}, violations) {
   const parsed = parseBrowserComputerDockerMutationArgv(command, action)
   violations.push(...parsed.violations)
   const args = parsed.args
@@ -771,11 +1168,13 @@ function validateDockerCommand(command, { action, targetContainers, targetVolume
   }
 
   const expected = {
-    containers: action === "remove" ? targetContainers : [],
-    volumes: action === "remove" ? targetVolumes : [],
+    containers: action === "remove" || (action === "restore" && parsed.subcommand === "create") ? targetContainers : [],
+    volumes: action === "remove" || (action === "restore" && parsed.subcommand === "create") ? targetVolumes : [],
     images: action === "save" || (action === "restore" && parsed.subcommand === "create")
       ? (nonEmptyString(imageRef) ? [imageRef] : [])
       : [],
+    networks: action === "restore" && parsed.subcommand === "create" ? targetNetworks : [],
+    mounts: action === "restore" && parsed.subcommand === "create" ? targetMounts : [],
   }
   if (!sameDockerResourceSet(parsed.affected, expected)) {
     violations.push(
@@ -794,6 +1193,7 @@ function dockerInventory(snapshot) {
     containers: names(docker?.containers),
     volumes: names(docker?.volumes),
     images: Array.isArray(docker?.images) ? names(docker.images) : undefined,
+    networks: names(docker?.networks),
     violations,
   }
 }
@@ -828,6 +1228,14 @@ function assertByteBudget(value, label) {
   }
 }
 
+function safeCeiling(value, label) {
+  const candidate = Number(value)
+  if (!Number.isSafeInteger(candidate) || candidate < 0) {
+    throw new Error(`resource ceiling ${label} must be a non-negative safe integer`)
+  }
+  return candidate
+}
+
 function requireSafeToken(value, label, violations) {
   if (!nonEmptyString(value) || /[\s\u0000-\u001f\u007f]/.test(String(value))) {
     violations.push(`${label} must be an exact non-empty token`)
@@ -846,6 +1254,24 @@ function commandArgs(command) {
 
 function difference(left, right) {
   return [...left].filter((entry) => !right.has(entry))
+}
+
+function extractPersistenceMutations(value) {
+  if (Array.isArray(value)) return value
+  return value?.persistenceMutations
+    ?? value?.persistence?.mutations
+    ?? value?.mutations
+    ?? null
+}
+
+function sameArray(left, right) {
+  return Array.isArray(left) && Array.isArray(right)
+    && left.length === right.length
+    && left.every((value, index) => String(value) === String(right[index]))
+}
+
+function sameJson(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right)
 }
 
 function safeCounter(value) {
