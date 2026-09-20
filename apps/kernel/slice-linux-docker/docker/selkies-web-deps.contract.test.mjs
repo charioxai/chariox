@@ -4,7 +4,8 @@ import path from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
 
-const dockerDir = path.dirname(fileURLToPath(import.meta.url))
+export const selkiesWebDepsContractPath = fileURLToPath(import.meta.url)
+const dockerDir = path.dirname(selkiesWebDepsContractPath)
 const dockerfile = fs.readFileSync(path.join(dockerDir, "Dockerfile"), "utf8")
 
 const lockFiles = [
