@@ -410,6 +410,7 @@ test("managed Docker authority and publication access remain narrowly separated"
   assert.match(managed, /Environment=CHARIOX_HOME=\/home\/chariox\/\.chariox/)
   assert.match(managed, /CHARIOX_CAPABILITY_ISOLATION_ROOT=\/home\/chariox\/\.chariox\/managed-context\/kernel/)
   assert.match(managed, /Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=shared_host/)
+  assert.match(managed, /Environment=CHARIOX_MANAGED_PROVIDER_ISOLATION=1/)
   assert.match(managed, /CHARIOX_MANAGED_VAULT_PATH=\/home\/chariox\/\.chariox\/vault\/vault\.json/)
   assert.match(managed, /CHARIOX_MANAGED_BOOTSTRAP_RECEIPT=\/var\/lib\/chariox\/managed\/bootstrap-receipt\.json/)
   assert.match(managed, /ProtectHome=read-only/)
@@ -437,6 +438,19 @@ test("managed Docker authority and publication access remain narrowly separated"
   assert.match(worker, /Environment=CHARIOX_DISPOSABLE_WORKER_RECEIPT=\/var\/lib\/chariox\/disposable-worker\/bootstrap-receipt\.json/)
   assert.match(worker, /Environment=CHARIOX_MANAGED_PROVIDER_HOME=\/var\/lib\/chariox\/provider-home/)
   assert.match(worker, /Environment=CHARIOX_MANAGED_VAULT_PATH=\/home\/chariox\/\.chariox\/vault\/vault\.json/)
+  for (const sharedHostSelector of [
+    "CHARIOX_CAPABILITY_ISOLATION_ROOT=",
+    "CHARIOX_MANAGED_PROVIDER_ISOLATION=",
+    "CHARIOX_MANAGED_PROVIDER_BWRAP=",
+    "CHARIOX_MANAGED_SLICE_SERVICE_ROOT=",
+    "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT=",
+    "CHARIOX_SLICE_ROOT=",
+    "CHARIOX_SLICE_DOCKER_BROKER_SOCKET=",
+    "CHARIOX_SLICE_DOCKER_BROKER_FD=",
+    "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED=",
+  ]) {
+    assert.doesNotMatch(worker, new RegExp(`^Environment=${sharedHostSelector}`, "m"))
+  }
   assert.match(worker, /Restart=always/)
   assert.match(worker, /RestartSteps=8/)
   assert.match(worker, /RestartMaxDelaySec=5min/)
