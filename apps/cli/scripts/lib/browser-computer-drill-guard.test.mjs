@@ -230,6 +230,9 @@ test("documented resource ceilings derive a complete stricter guard cap", () => 
 test("resource telemetry requires an authoritative managed target or explicit local fallback", () => {
   const managed = { telemetry: { scope: "managed-target", authoritative: true, source: "agent-1", targetId: "machine-1" } }
   assert.equal(assertBrowserComputerResourceTelemetry(managed).mode, "managed-target")
+  const mismatched = evaluateBrowserComputerResourceTelemetry(managed, { expectedTargetIds: ["machine-2"] })
+  assert.equal(mismatched.ok, false)
+  assert.match(mismatched.violations.join("\n"), /does not match an expected machine/)
   assert.equal(evaluateBrowserComputerResourceTelemetry({}).ok, false)
   assert.throws(() => assertBrowserComputerResourceTelemetry({}), /remote\/local host fallback is forbidden/)
   assert.equal(evaluateBrowserComputerResourceTelemetry({
@@ -353,6 +356,15 @@ test("Docker save/remove/restore preconditions fail closed and reject broad prun
     command: ["docker", "save", "chariox/browser:fixture", "-o", "/tmp/browser-state.tar"],
   })
   assert.equal(save.ok, true)
+  const wrongSavePath = evaluateBrowserComputerDockerPreconditions({
+    action: "save",
+    before: inventory,
+    imageRef: "chariox/browser:fixture",
+    savePath: "/tmp/browser-state.tar",
+    command: ["docker", "save", "chariox/browser:fixture", "-o", "/tmp/other-state.tar"],
+  })
+  assert.equal(wrongSavePath.ok, false)
+  assert.match(wrongSavePath.violations.join("\n"), /archive path does not equal the declared savePath/)
 
   const broadRemove = evaluateBrowserComputerDockerPreconditions({
     action: "remove",
@@ -412,6 +424,7 @@ test("Docker save/remove/restore preconditions fail closed and reject broad prun
     images: ["chariox/browser:fixture"],
     networks: ["chariox-slice-owned-net"],
     mounts: ["chariox-slice-owned-home:/data"],
+    mountSources: ["chariox-slice-owned-home"],
   })
   assert.equal(evaluateBrowserComputerDockerPreconditions({
     action: "restore",
@@ -426,9 +439,63 @@ test("Docker save/remove/restore preconditions fail closed and reject broad prun
     imageRef: "chariox/browser:fixture",
     saved: true,
     removed: true,
-    restorePath: "/tmp/browser-state.tar",
     command: restoreCommand,
   }).ok, true)
+  const mountRestoreCommand = [
+    "docker", "create", "--name", "chariox-slice-owned",
+    "--mount", "type=volume,source=chariox-slice-owned-home,target=/data",
+    "--network", "chariox-slice-owned-net", "chariox/browser:fixture",
+  ]
+  const parsedMountRestore = parseBrowserComputerDockerMutationArgv(mountRestoreCommand, "restore")
+  assert.deepEqual(parsedMountRestore.affected, {
+    containers: ["chariox-slice-owned"],
+    volumes: ["chariox-slice-owned-home"],
+    images: ["chariox/browser:fixture"],
+    networks: ["chariox-slice-owned-net"],
+    mounts: ["type=volume,source=chariox-slice-owned-home,target=/data"],
+    mountSources: ["chariox-slice-owned-home"],
+  })
+  assert.equal(evaluateBrowserComputerDockerPreconditions({
+    action: "restore",
+    before: inventory,
+    ownedContainers: ["chariox-slice-owned"],
+    ownedVolumes: ["chariox-slice-owned-home"],
+    ownedNetworks: ["chariox-slice-owned-net"],
+    targetContainers: ["chariox-slice-owned"],
+    targetVolumes: ["chariox-slice-owned-home"],
+    targetNetworks: ["chariox-slice-owned-net"],
+    targetMounts: ["type=volume,source=chariox-slice-owned-home,target=/data"],
+    targetMountSources: ["chariox-slice-owned-home"],
+    imageRef: "chariox/browser:fixture",
+    saved: true,
+    removed: true,
+    command: mountRestoreCommand,
+  }).ok, true)
+  const malformedMount = parseBrowserComputerDockerMutationArgv([
+    "docker", "create", "--mount", "type=volume,target=/data", "chariox/browser:fixture",
+  ], "restore")
+  assert.match(malformedMount.violations.join("\n"), /requires an exact source volume/)
+  const wrongLoadPath = evaluateBrowserComputerDockerPreconditions({
+    action: "restore",
+    before: inventory,
+    saved: true,
+    removed: true,
+    imageRef: "chariox/browser:fixture",
+    restorePath: "/tmp/browser-state.tar",
+    command: ["docker", "load", "-i", "/tmp/other-state.tar"],
+  })
+  assert.equal(wrongLoadPath.ok, false)
+  assert.match(wrongLoadPath.violations.join("\n"), /archive path does not equal the declared restorePath/)
+  const exactLoad = evaluateBrowserComputerDockerPreconditions({
+    action: "restore",
+    before: inventory,
+    saved: true,
+    removed: true,
+    imageRef: "chariox/browser:fixture",
+    restorePath: "/tmp/browser-state.tar",
+    command: ["docker", "load", "-i", "/tmp/browser-state.tar"],
+  })
+  assert.equal(exactLoad.ok, true)
   assert.throws(() => assertBrowserComputerDockerPreconditions({
     action: "remove",
     before: inventory,
@@ -487,6 +554,19 @@ test("persistence evidence binds actual argv, requests, inventories, and seam ch
   })
   assert.equal(failed.ok, false)
   assert.match(failed.violations.join("\n"), /argv does not equal the exact mutation argv|mutation plan|broad prune/)
+
+  const brokenReceiptChain = structuredClone(evidence)
+  brokenReceiptChain.persistenceMutations[1].saveReceipt = {
+    ...brokenReceiptChain.persistenceMutations[0].receipt,
+    id: "foreign-save-receipt",
+  }
+  const broken = evaluateBrowserComputerPersistenceMutationSeams({
+    result: brokenReceiptChain,
+    plan: evidence,
+    dockerPreconditions: declarations,
+  })
+  assert.equal(broken.ok, false)
+  assert.match(broken.violations.join("\n"), /exact successful save receipt/)
 })
 
 test("fault guard returns a deterministic pass with after-cleanup evidence", async () => {
@@ -578,6 +658,8 @@ function persistenceEvidence() {
     "--volume", "chariox-slice-owned-home:/data",
     "--network", "chariox-slice-owned-net", "chariox/browser:fixture",
   ]
+  const saveReceipt = { ok: true, id: "save-receipt-1", archivePath: "/tmp/browser-state.tar" }
+  const removeReceipt = { ok: true, id: "remove-receipt-1", parentReceiptId: saveReceipt.id }
   return {
     persistenceMutations: [
       {
@@ -585,6 +667,7 @@ function persistenceEvidence() {
         argv: saveArgv,
         request: { action: "save", argv: saveArgv },
         before: persistenceInventory(),
+        receipt: saveReceipt,
         checkpoints: { before: "before-docker-save", after: "after-docker-save" },
       },
       {
@@ -592,7 +675,8 @@ function persistenceEvidence() {
         argv: removeArgv,
         request: { action: "remove", argv: removeArgv },
         before: persistenceInventory(),
-        saved: true,
+        saveReceipt,
+        receipt: removeReceipt,
         checkpoints: { before: "before-docker-remove", after: "after-docker-remove" },
       },
       {
@@ -600,8 +684,9 @@ function persistenceEvidence() {
         argv: restoreArgv,
         request: { action: "restore", argv: restoreArgv },
         before: persistenceInventory(),
-        saved: true,
-        removed: true,
+        saveReceipt,
+        removeReceipt,
+        receipt: { ok: true, id: "restore-receipt-1", parentReceiptId: removeReceipt.id },
         checkpoints: { before: "before-docker-restore", after: "after-docker-restore" },
       },
     ],
@@ -633,7 +718,6 @@ function persistenceDeclarations() {
       imageRef: "chariox/browser:fixture",
       saved: true,
       removed: true,
-      restorePath: "/tmp/browser-state.tar",
     },
   ]
 }

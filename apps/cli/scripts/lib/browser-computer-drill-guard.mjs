@@ -144,19 +144,20 @@ export async function collectBrowserComputerResourceSnapshot({
   now = () => new Date(),
   processCount,
   logBytes,
+  signal = null,
 }) {
   if (typeof runCommand !== "function") throw new Error("runCommand is required")
   if (!nonEmptyString(filesystemPath)) throw new Error("filesystemPath is required")
 
   const [disk, dockerContainers, dockerVolumes, dockerImages, dockerNetworks, availableMemoryBytes, resolvedProcessCount, resolvedLogBytes] = await Promise.all([
     statfs(filesystemPath),
-    dockerNames(runCommand, ["ps", "-a", "--format", "{{.Names}}"]),
-    dockerNames(runCommand, ["volume", "ls", "--format", "{{.Name}}"]),
-    dockerImageRefs(runCommand),
-    dockerNames(runCommand, ["network", "ls", "--format", "{{.Name}}"]),
-    resolveAvailableMemoryBytes(runCommand, platform),
-    resolveMetric(processCount),
-    resolveMetric(logBytes),
+    dockerNames(runCommand, ["ps", "-a", "--format", "{{.Names}}"], signal),
+    dockerNames(runCommand, ["volume", "ls", "--format", "{{.Name}}"], signal),
+    dockerImageRefs(runCommand, signal),
+    dockerNames(runCommand, ["network", "ls", "--format", "{{.Name}}"], signal),
+    resolveAvailableMemoryBytes(runCommand, platform, signal),
+    resolveMetric(processCount, signal),
+    resolveMetric(logBytes, signal),
   ])
   const blockSize = Number(disk.bsize)
   const capturedAt = toIso(now)
@@ -187,13 +188,26 @@ export async function collectBrowserComputerResourceSnapshot({
   return snapshot
 }
 
-export function evaluateBrowserComputerResourceTelemetry(sample, { allowLocalFallback = false } = {}) {
+export function evaluateBrowserComputerResourceTelemetry(sample, {
+  allowLocalFallback = false,
+  expectedTargetIds = [],
+} = {}) {
   const telemetry = sample?.telemetry
   const targetId = telemetry?.targetId ?? telemetry?.targetRef ?? telemetry?.machineId
+  const expectedTargets = names(expectedTargetIds)
   if (telemetry?.scope === "managed-target"
     && telemetry.authoritative === true
     && nonEmptyString(targetId)
     && nonEmptyString(telemetry.source)) {
+    if (expectedTargets.length > 0 && !expectedTargets.includes(String(targetId))) {
+      return {
+        ok: false,
+        mode: "managed-target",
+        source: String(telemetry.source),
+        targetId: String(targetId),
+        violations: [`managed-target telemetry target ${targetId} does not match an expected machine, kernel, or resolved target`],
+      }
+    }
     return {
       ok: true,
       mode: "managed-target",
@@ -524,6 +538,7 @@ export function evaluateBrowserComputerDockerPreconditions({
   targetVolumes = [],
   targetNetworks = [],
   targetMounts = [],
+  targetMountSources = [],
   targetContainerName = null,
   imageRef,
   savePath,
@@ -550,6 +565,7 @@ export function evaluateBrowserComputerDockerPreconditions({
     volumes: names(targetVolumes),
     networks: names(targetNetworks),
     mounts: names(targetMounts),
+    mountSources: names(targetMountSources.length > 0 ? targetMountSources : targetVolumes),
   }
   if (nonEmptyString(targetContainerName) && !targets.containers.includes(targetContainerName)) {
     targets.containers.push(targetContainerName)
@@ -568,7 +584,10 @@ export function evaluateBrowserComputerDockerPreconditions({
       targetVolumes: targets.volumes,
       targetNetworks: targets.networks,
       targetMounts: targets.mounts,
+      targetMountSources: targets.mountSources,
       imageRef,
+      savePath,
+      restorePath,
     }, violations)
   }
 
@@ -602,7 +621,14 @@ export function evaluateBrowserComputerDockerPreconditions({
   if (action === "restore") {
     if (!saveReady) violations.push("Docker restore requires a successful exact save receipt")
     if (!removeReady) violations.push("Docker restore requires a successful exact remove receipt")
-    requireSafeToken(restorePath, "Docker restore evidence path", violations)
+    const restoreCommand = command === undefined ? null : parseBrowserComputerDockerMutationArgv(command, action)
+    if (restoreCommand?.subcommand === "create") {
+      if (nonEmptyString(restorePath)) {
+        violations.push("Docker create restore cannot claim an archive restorePath; use docker load for archive restoration")
+      }
+    } else {
+      requireSafeToken(restorePath, "Docker restore evidence path", violations)
+    }
     if (allTargets.length === 0 && !nonEmptyString(imageRef)) {
       violations.push("Docker restore requires an exact resource or image target")
     }
@@ -619,7 +645,10 @@ export function evaluateBrowserComputerDockerPreconditions({
       if (!owned.networks.has(name)) violations.push(`Docker restore target is not an owned network: ${name}`)
       if (!inventory.networks.includes(name)) violations.push(`Docker restore network is absent from the pre-mutation inventory: ${name}`)
     }
-    if (targets.mounts.some((mount) => !targets.volumes.some((volume) => mount.startsWith(`${volume}:`)))) {
+    if (targets.mounts.some((mount) => {
+      const source = String(mount).includes("=") ? mountValue(mount).source : volumeSource(mount)
+      return !source || !targets.mountSources.includes(source)
+    })) {
       violations.push("Docker restore mounts must use an exact declared target volume")
     }
   }
@@ -681,6 +710,8 @@ export function evaluateBrowserComputerPersistenceMutationSeams({
   const declarations = Array.isArray(dockerPreconditions) ? dockerPreconditions : []
   const seen = new Set()
   const validated = []
+  let saveReceipt = null
+  let removeReceipt = null
   for (let index = 0; index < PERSISTENCE_MUTATION_ORDER.length; index += 1) {
     const expectedAction = PERSISTENCE_MUTATION_ORDER[index]
     const mutation = mutations[index]
@@ -718,6 +749,42 @@ export function evaluateBrowserComputerPersistenceMutationSeams({
     if (!before || typeof before !== "object" || Array.isArray(before)) {
       violations.push(`persistence ${mutation.action} must expose its pre-mutation inventory`)
     }
+    const receipt = mutation.receipt ?? mutation.receipts?.[mutation.action]
+    const receiptId = receipt?.id ?? receipt?.receiptId
+    if (!receipt || typeof receipt !== "object" || receipt.ok !== true || !nonEmptyString(receiptId)) {
+      violations.push(`persistence ${mutation.action} must expose a successful receipt with an exact id`)
+    }
+    if (mutation.action === "save") {
+      if (nonEmptyString(declaration.savePath) && receipt?.archivePath !== declaration.savePath) {
+        violations.push(`persistence save receipt archivePath must equal savePath: ${receipt?.archivePath ?? "<missing>"} != ${declaration.savePath}`)
+      }
+      saveReceipt = receipt
+    }
+    if (mutation.action === "remove") {
+      if (!sameJson(mutation.saveReceipt, saveReceipt)) {
+        violations.push("persistence remove must carry the exact successful save receipt")
+      }
+      if (receipt?.parentReceiptId !== (saveReceipt?.id ?? saveReceipt?.receiptId)) {
+        violations.push("persistence remove receipt must chain from the save receipt")
+      }
+      removeReceipt = receipt
+    }
+    if (mutation.action === "restore") {
+      if (!sameJson(mutation.saveReceipt, saveReceipt)) {
+        violations.push("persistence restore must carry the exact successful save receipt")
+      }
+      if (!sameJson(mutation.removeReceipt, removeReceipt)) {
+        violations.push("persistence restore must carry the exact successful remove receipt")
+      }
+      if (receipt?.parentReceiptId !== (removeReceipt?.id ?? removeReceipt?.receiptId)) {
+        violations.push("persistence restore receipt must chain from the remove receipt")
+      }
+      if (declaration.restorePath !== undefined && declaration.restorePath !== null
+        && declaration.restorePath !== "" && argv?.[1] === "load"
+        && receipt?.archivePath !== declaration.restorePath) {
+        violations.push(`persistence restore receipt archivePath must equal restorePath: ${receipt?.archivePath ?? "<missing>"} != ${declaration.restorePath}`)
+      }
+    }
     const dockerInput = {
       ...declaration,
       action: mutation.action,
@@ -737,7 +804,10 @@ export function evaluateBrowserComputerPersistenceMutationSeams({
       if (!planned || planned.action !== mutation.action
         || !sameArray(planned.argv, mutation.argv)
         || !sameJson(planned.request, mutation.request)
-        || !sameJson(planned.checkpoints, mutation.checkpoints)) {
+        || !sameJson(planned.checkpoints, mutation.checkpoints)
+        || !sameJson(planned.receipt, mutation.receipt)
+        || !sameJson(planned.saveReceipt, mutation.saveReceipt)
+        || !sameJson(planned.removeReceipt, mutation.removeReceipt)) {
         violations.push(`persistence ${mutation.action} result does not equal its validated mutation plan`)
       }
     }
@@ -746,6 +816,7 @@ export function evaluateBrowserComputerPersistenceMutationSeams({
       argv,
       request: request ?? null,
       checkpoints: checkpoint ?? null,
+      receipt: receipt ?? null,
       precondition,
     })
   }
@@ -770,7 +841,7 @@ export function parseBrowserComputerDockerMutationArgv(command, action) {
   const violations = []
   if (!args || args.length < 2 || !["docker", "podman"].includes(path.basename(args[0]))) {
     violations.push("Docker mutation command must be an explicit docker/podman argv")
-    return { args: null, action, subcommand: null, affected: emptyDockerResources(), violations }
+    return { args: null, action, subcommand: null, archivePath: null, affected: emptyDockerResources(), violations }
   }
 
   const subcommand = args[1]
@@ -786,6 +857,11 @@ export function parseBrowserComputerDockerMutationArgv(command, action) {
           ? new Set(["--name", "--label", "--env", "-e", "--network", "--volume", "-v", "--mount"])
           : new Set()
   const positionals = dockerPositionalArgs(args, start, optionValues)
+  const archivePath = subcommand === "save"
+    ? dockerOptionValue(args, start, ["-o", "--output"])
+    : subcommand === "load"
+      ? dockerOptionValue(args, start, ["-i", "--input"])
+      : null
   const affected = emptyDockerResources()
   if (action === "save" && subcommand === "save") {
     affected.images = positionals
@@ -800,11 +876,12 @@ export function parseBrowserComputerDockerMutationArgv(command, action) {
     affected.volumes = createResources.volumes
     affected.networks = createResources.networks
     affected.mounts = createResources.mounts
+    affected.mountSources = createResources.mountSources
   } else if (positionals.length > 0 && action !== "restore") {
     violations.push(`Docker ${action ?? "mutation"} argv has unrecognized positional resources: ${positionals.join(", ")}`)
   }
 
-  return { args, action, subcommand, nestedSubcommand, affected, violations }
+  return { args, action, subcommand, nestedSubcommand, archivePath, affected, violations }
 }
 
 export const parseBrowserComputerDockerArgv = parseBrowserComputerDockerMutationArgv
@@ -942,14 +1019,14 @@ export function assertSecretSafeBrowserComputerEvidence(value, options = {}) {
   return sanitized
 }
 
-async function resolveAvailableMemoryBytes(runCommand, platform) {
+async function resolveAvailableMemoryBytes(runCommand, platform, signal = null) {
   if (platform === "linux") {
-    const result = await runCommand("sh", ["-c", "awk '/^MemAvailable:/ { print $2 * 1024 }' /proc/meminfo"], { timeoutMs: 5_000 })
+    const result = await runCommand("sh", ["-c", "awk '/^MemAvailable:/ { print $2 * 1024 }' /proc/meminfo"], { timeoutMs: 5_000, signal })
     const value = Number(result.stdout.trim())
     if (result.code === 0 && Number.isFinite(value) && value >= 0) return value
   }
   if (platform === "darwin") {
-    const result = await runCommand("vm_stat", [], { timeoutMs: 5_000 })
+    const result = await runCommand("vm_stat", [], { timeoutMs: 5_000, signal })
     const value = parseDarwinAvailableMemory(result.stdout)
     if (result.code === 0 && value !== null) return value
   }
@@ -968,16 +1045,16 @@ function parseDarwinAvailableMemory(output) {
   return availablePages > 0 ? availablePages * pageSize : null
 }
 
-async function dockerNames(runCommand, args) {
-  const result = await runCommand("docker", args, { timeoutMs: 10_000 })
+async function dockerNames(runCommand, args, signal = null) {
+  const result = await runCommand("docker", args, { timeoutMs: 10_000, signal })
   if (result.code !== 0) {
     throw new Error(`docker ${args.join(" ")} failed during resource inventory\n${result.stdout}${result.stderr}`)
   }
   return names(result.stdout.split("\n"))
 }
 
-async function dockerImageRefs(runCommand) {
-  const refs = await dockerNames(runCommand, ["image", "ls", "--no-trunc", "--format", "{{.Repository}}:{{.Tag}}"])
+async function dockerImageRefs(runCommand, signal = null) {
+  const refs = await dockerNames(runCommand, ["image", "ls", "--no-trunc", "--format", "{{.Repository}}:{{.Tag}}"], signal)
   return refs.filter((ref) => ref !== "<none>:<none>" && !ref.startsWith("<none>:") && !ref.endsWith(":<none>"))
 }
 
@@ -998,8 +1075,18 @@ function dockerPositionalArgs(args, start, optionValues) {
   return positionals
 }
 
+function dockerOptionValue(args, start, options) {
+  const accepted = new Set(options)
+  for (let index = start; index < args.length; index += 1) {
+    const [option, inlineValue] = String(args[index]).split(/=(.*)/s, 2)
+    if (!accepted.has(option)) continue
+    return inlineValue ?? args[index + 1] ?? null
+  }
+  return null
+}
+
 function parseDockerCreateResources(args, start, violations) {
-  const resources = { containers: [], volumes: [], networks: [], mounts: [] }
+  const resources = { containers: [], volumes: [], networks: [], mounts: [], mountSources: [] }
   for (let index = start; index < args.length; index += 1) {
     const raw = args[index]
     const [option, inlineValue] = raw.split(/=(.*)/s, 2)
@@ -1020,6 +1107,7 @@ function parseDockerCreateResources(args, start, violations) {
       const value = inlineValue ?? args[++index]
       const source = volumeSource(value)
       if (source) resources.volumes.push(source)
+      if (source) resources.mountSources.push(source)
       else violations.push("Docker create --volume requires an exact source volume")
       if (nonEmptyString(value)) resources.mounts.push(String(value))
       continue
@@ -1028,6 +1116,7 @@ function parseDockerCreateResources(args, start, violations) {
       const value = inlineValue ?? args[++index]
       const parsed = mountValue(value)
       if (parsed.source) resources.volumes.push(parsed.source)
+      if (parsed.source) resources.mountSources.push(parsed.source)
       else violations.push("Docker create --mount requires an exact source volume")
       if (nonEmptyString(value)) resources.mounts.push(String(value))
       continue
@@ -1056,11 +1145,12 @@ function mountValue(value) {
 }
 
 function emptyDockerResources() {
-  return { containers: [], volumes: [], images: [], networks: [], mounts: [] }
+  return { containers: [], volumes: [], images: [], networks: [], mounts: [], mountSources: [] }
 }
 
 function sameDockerResourceSet(left, right) {
-  return ["containers", "volumes", "images", "networks", "mounts"].every((kind) => sameNames(left?.[kind], right?.[kind]))
+  return ["containers", "volumes", "images", "networks", "mounts", "mountSources"]
+    .every((kind) => sameNames(left?.[kind], right?.[kind]))
 }
 
 function sameNames(left, right) {
@@ -1076,6 +1166,7 @@ function formatDockerResources(resources) {
     images: names(resources?.images),
     networks: names(resources?.networks),
     mounts: names(resources?.mounts),
+    mountSources: names(resources?.mountSources),
   })
 }
 
@@ -1146,7 +1237,10 @@ function validateDockerCommand(command, {
   targetVolumes,
   targetNetworks,
   targetMounts,
+  targetMountSources,
   imageRef,
+  savePath,
+  restorePath,
 }, violations) {
   const parsed = parseBrowserComputerDockerMutationArgv(command, action)
   violations.push(...parsed.violations)
@@ -1166,6 +1260,15 @@ function validateDockerCommand(command, {
   if (nonEmptyString(imageRef) && action === "save" && !args.includes(imageRef)) {
     violations.push(`Docker save argv omits its exact image: ${imageRef}`)
   }
+  if (action === "save" && parsed.subcommand === "save" && parsed.archivePath !== savePath) {
+    violations.push(`Docker save argv archive path does not equal the declared savePath: ${parsed.archivePath ?? "<missing>"} != ${savePath ?? "<missing>"}`)
+  }
+  if (action === "restore" && parsed.subcommand === "load" && parsed.archivePath !== restorePath) {
+    violations.push(`Docker load argv archive path does not equal the declared restorePath: ${parsed.archivePath ?? "<missing>"} != ${restorePath ?? "<missing>"}`)
+  }
+  if (action === "restore" && parsed.subcommand === "create" && nonEmptyString(restorePath)) {
+    violations.push("Docker create restore cannot claim an archive restorePath; use docker load for archive restoration")
+  }
 
   const expected = {
     containers: action === "remove" || (action === "restore" && parsed.subcommand === "create") ? targetContainers : [],
@@ -1175,6 +1278,7 @@ function validateDockerCommand(command, {
       : [],
     networks: action === "restore" && parsed.subcommand === "create" ? targetNetworks : [],
     mounts: action === "restore" && parsed.subcommand === "create" ? targetMounts : [],
+    mountSources: action === "restore" && parsed.subcommand === "create" ? targetMountSources : [],
   }
   if (!sameDockerResourceSet(parsed.affected, expected)) {
     violations.push(
@@ -1305,8 +1409,8 @@ function toIso(value) {
   return new Date(resolved).toISOString()
 }
 
-async function resolveMetric(value) {
-  const resolved = typeof value === "function" ? await value() : value
+async function resolveMetric(value, signal = null) {
+  const resolved = typeof value === "function" ? await value({ signal }) : value
   if (resolved === undefined || resolved === null) return undefined
   if (resolved && typeof resolved === "object") return resolved.count ?? resolved.bytes
   return Number(resolved)

@@ -3,7 +3,10 @@ import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 
-import { runManagedBrowserComputerParityLive } from "./live-managed-browser-computer-parity-drill.mjs"
+import {
+  combineBrowserComputerAbortSignals,
+  runManagedBrowserComputerParityLive,
+} from "./live-managed-browser-computer-parity-drill.mjs"
 
 const OSS_SHA = "1".repeat(40)
 const CLOUD_SHA = "2".repeat(40)
@@ -202,11 +205,9 @@ function persistenceInventory() {
 function persistenceEvidence() {
   const saveArgv = ["docker", "save", "chariox/browser:fixture", "-o", "/tmp/browser-state.tar"]
   const removeArgv = ["docker", "rm", "chariox-slice-owned"]
-  const restoreArgv = [
-    "docker", "create", "--name", "chariox-slice-owned",
-    "--volume", "chariox-slice-owned-home:/data",
-    "--network", "chariox-slice-owned-net", "chariox/browser:fixture",
-  ]
+  const restoreArgv = ["docker", "load", "-i", "/tmp/browser-state.tar"]
+  const saveReceipt = { ok: true, id: "save-receipt-1", archivePath: "/tmp/browser-state.tar" }
+  const removeReceipt = { ok: true, id: "remove-receipt-1", parentReceiptId: saveReceipt.id }
   return {
     persistenceMutations: [
       {
@@ -214,6 +215,7 @@ function persistenceEvidence() {
         argv: saveArgv,
         request: { action: "save", argv: saveArgv },
         before: persistenceInventory(),
+        receipt: saveReceipt,
         checkpoints: { before: "before-docker-save", after: "after-docker-save" },
       },
       {
@@ -221,7 +223,8 @@ function persistenceEvidence() {
         argv: removeArgv,
         request: { action: "remove", argv: removeArgv },
         before: persistenceInventory(),
-        saved: true,
+        saveReceipt,
+        receipt: removeReceipt,
         checkpoints: { before: "before-docker-remove", after: "after-docker-remove" },
       },
       {
@@ -229,8 +232,9 @@ function persistenceEvidence() {
         argv: restoreArgv,
         request: { action: "restore", argv: restoreArgv },
         before: persistenceInventory(),
-        saved: true,
-        removed: true,
+        saveReceipt,
+        removeReceipt,
+        receipt: { ok: true, id: "restore-receipt-1", parentReceiptId: removeReceipt.id, archivePath: "/tmp/browser-state.tar" },
         checkpoints: { before: "before-docker-restore", after: "after-docker-restore" },
       },
     ],
@@ -258,21 +262,12 @@ function persistenceDeclarations() {
     {
       action: "restore",
       before,
-      ownedContainers: ["chariox-slice-owned"],
-      ownedVolumes: ["chariox-slice-owned-home"],
-      ownedNetworks: ["chariox-slice-owned-net"],
-      targetContainers: ["chariox-slice-owned"],
-      targetVolumes: ["chariox-slice-owned-home"],
-      targetNetworks: ["chariox-slice-owned-net"],
-      targetMounts: ["chariox-slice-owned-home:/data"],
       imageRef: "chariox/browser:fixture",
       saved: true,
       removed: true,
       restorePath: "/tmp/browser-state.tar",
       command: [
-        "docker", "create", "--name", "chariox-slice-owned",
-        "--volume", "chariox-slice-owned-home:/data",
-        "--network", "chariox-slice-owned-net", "chariox/browser:fixture",
+        "docker", "load", "-i", "/tmp/browser-state.tar",
       ],
     },
   ]
@@ -293,6 +288,36 @@ test("live M0 watchdog aborts an executing resource overrun before unowned work 
   assert.equal(report.browserComputerGuard.resourcePreflight.ok, true)
   assert.equal(report.browserComputerGuard.resourceSamples.map(({ phase }) => phase).join(","), "before,after")
   assert.equal(report.browserComputerGuard.watchdogSamples.length > 0, true)
+  assert.equal(injected.calls.filter(({ step }) => step === "cleanup.inspect").length, 1)
+})
+
+test("live M0 watchdog bounds a hung telemetry probe and still completes owned cleanup", async () => {
+  const watchdogConfig = config()
+  watchdogConfig.browserComputerGuard.watchdogProbeTimeoutMs = 5
+  const injected = transport()
+  let probeAborted = false
+  const report = await runManagedBrowserComputerParityLive({
+    config: watchdogConfig,
+    transport: injected,
+    evidenceRoot: EVIDENCE_ROOT,
+    collectResourceSnapshot: ({ phase, signal }) => {
+      if (phase === "watchdog") {
+        return new Promise(() => {
+          signal.addEventListener("abort", () => {
+            probeAborted = true
+          }, { once: true })
+        })
+      }
+      return sample(phase)
+    },
+  })
+
+  assert.equal(report.status, "failed")
+  assert.equal(report.failure.code, "browser_computer_watchdog_sampling_failed")
+  assert.equal(report.browserComputerGuard.watchdog.samplingFailures.length, 1)
+  assert.equal(report.browserComputerGuard.watchdog.samplingFailures[0].code, "browser_computer_watchdog_sampling_timeout")
+  assert.equal(probeAborted, true)
+  assert.equal(injected.calls.filter(({ step }) => step === "cleanup.perform").length, 1)
   assert.equal(injected.calls.filter(({ step }) => step === "cleanup.inspect").length, 1)
 })
 
@@ -347,6 +372,45 @@ test("remote live entry fails closed when managed-target telemetry is absent", a
   assert.equal(report.status, "failed")
   assert.match(report.failure.message, /managed-target telemetry/)
   assert.equal(injected.calls.some(({ step }) => step === "preflight"), false)
+})
+
+test("remote live entry fails closed when managed telemetry belongs to another target", async () => {
+  const injected = transport()
+  const report = await runManagedBrowserComputerParityLive({
+    config: config(),
+    transport: injected,
+    evidenceRoot: EVIDENCE_ROOT,
+    collectResourceSnapshot: ({ phase }) => ({
+      ...sample(phase),
+      telemetry: {
+        scope: "managed-target",
+        authoritative: true,
+        source: "foreign-managed-target",
+        targetId: "machine-foreign-1",
+      },
+    }),
+  })
+  assert.equal(report.status, "failed")
+  assert.match(report.failure.message, /does not match an expected machine/)
+  assert.equal(injected.calls.some(({ step }) => step === "preflight"), false)
+})
+
+test("live transport preserves caller cancellation while combining workload cancellation", () => {
+  const caller = new AbortController()
+  const workload = new AbortController()
+  assert.equal(combineBrowserComputerAbortSignals(caller.signal), caller.signal)
+  const combined = combineBrowserComputerAbortSignals(caller.signal, workload.signal)
+  assert.notEqual(combined, caller.signal)
+  caller.abort(new Error("caller cancelled"))
+  assert.equal(combined.aborted, true)
+  assert.equal(combined.reason.message, "caller cancelled")
+
+  const secondCaller = new AbortController()
+  const secondWorkload = new AbortController()
+  const secondCombined = combineBrowserComputerAbortSignals(secondCaller.signal, secondWorkload.signal)
+  secondWorkload.abort(new Error("watchdog cancelled"))
+  assert.equal(secondCombined.aborted, true)
+  assert.equal(secondCombined.reason.message, "watchdog cancelled")
 })
 
 test("explicitly local transport may use only an explicitly marked local fallback", async () => {

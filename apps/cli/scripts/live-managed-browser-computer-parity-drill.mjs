@@ -91,9 +91,30 @@ export async function runManagedBrowserComputerParityLive({
   }
   const allowLocalFallback = localFallbackRequested && explicitLocalTransport
   const watchdogIntervalMs = resolveWatchdogInterval(config.browserComputerGuard?.watchdogIntervalMs)
+  const watchdogProbeTimeoutMs = resolveWatchdogProbeTimeout(
+    config.browserComputerGuard?.watchdogProbeTimeoutMs
+      ?? config.browserComputerGuard?.watchdogCaptureTimeoutMs,
+  )
+  const expectedTelemetryTargetIds = [
+    config.expected?.machineId,
+    config.expected?.kernelId,
+    config.expected?.targetId,
+    config.expected?.targetRef,
+    config.expected?.resolvedTargetId,
+    config.expected?.resolvedTarget?.id,
+    config.expected?.resolvedTarget?.targetId,
+    config.expected?.target?.id,
+    config.expected?.target?.targetId,
+    transport.targetId,
+    transport.targetRef,
+    transport.resolvedTargetId,
+    transport.resolvedTarget?.id,
+    transport.resolvedTarget?.targetId,
+  ].filter((value) => typeof value === "string" && value.trim())
 
   const samples = []
   const watchdogSamples = []
+  const watchdogSamplingFailures = []
   let report = null
   let resourcePreflight = null
   let activeCheckpoint = null
@@ -107,7 +128,8 @@ export async function runManagedBrowserComputerParityLive({
   if (signal?.aborted) forwardAbort()
   else signal?.addEventListener?.("abort", forwardAbort, { once: true })
 
-  const capture = async (phase, { watchdog = false } = {}) => {
+  const capture = async (phase, { watchdog = false, signal: probeSignal = null } = {}) => {
+    if (probeSignal?.aborted) throw probeSignal.reason ?? new Error(`managed parity ${phase} resource probe was cancelled`)
     const bucket = watchdog ? watchdogSamples : samples
     if (!watchdog && bucket.some((sample) => sample.phase === phase)) {
       throw new Error(`managed parity resource sample phase was captured more than once: ${phase}`)
@@ -121,6 +143,7 @@ export async function runManagedBrowserComputerParityLive({
         now,
         allowLocalFallback,
         explicitLocalTransport,
+        signal: probeSignal,
       })
       : collectLiveResourceSnapshot({
         phase,
@@ -130,7 +153,9 @@ export async function runManagedBrowserComputerParityLive({
         now,
         allowLocalFallback,
         explicitLocalTransport,
+        signal: probeSignal,
       }))
+    if (probeSignal?.aborted) throw probeSignal.reason ?? new Error(`managed parity ${phase} resource probe was cancelled`)
     if (!sample || typeof sample !== "object" || Array.isArray(sample)) {
       throw new Error(`managed parity ${phase} resource sample must be an object`)
     }
@@ -139,7 +164,10 @@ export async function runManagedBrowserComputerParityLive({
       phase,
       sampleId: sample.sampleId ?? `${config.runId}:${phase}`,
     }, { secretValues })
-    assertBrowserComputerResourceTelemetry(normalized, { allowLocalFallback })
+    assertBrowserComputerResourceTelemetry(normalized, {
+      allowLocalFallback,
+      expectedTargetIds: expectedTelemetryTargetIds,
+    })
     assertSecretSafeBrowserComputerEvidence(normalized, { secretValues })
     bucket.push(normalized)
     return normalized
@@ -212,7 +240,9 @@ export async function runManagedBrowserComputerParityLive({
       try {
         result = await transport.run(step, request, {
           ...options,
-          signal: step.startsWith("cleanup.") ? (options.signal ?? null) : workloadController.signal,
+          signal: step.startsWith("cleanup.")
+            ? (options.signal ?? null)
+            : combineBrowserComputerAbortSignals(options.signal, workloadController.signal),
           ...(onPersistenceMutation ? { onPersistenceMutation } : {}),
         })
       } catch (error) {
@@ -242,12 +272,50 @@ export async function runManagedBrowserComputerParityLive({
     },
   }
 
+  const recordWatchdogSamplingFailure = (error) => {
+    const failure = {
+      code: error?.code ?? "browser_computer_watchdog_sampling_failed",
+      message: error?.message ?? String(error),
+    }
+    watchdogSamplingFailures.push(failure)
+    if (!watchdogError) {
+      const samplingError = new Error(`managed parity browser/computer watchdog sampling failed: ${failure.message}`)
+      samplingError.code = "browser_computer_watchdog_sampling_failed"
+      samplingError.samplingFailure = failure
+      watchdogError = samplingError
+      workloadController.abort(samplingError)
+    }
+  }
+
+  const captureWatchdogProbe = async () => {
+    const probeController = new AbortController()
+    let timeout
+    let timeoutError = null
+    try {
+      const timeoutPromise = new Promise((_, reject) => {
+        timeout = setTimeout(() => {
+          timeoutError = new Error(`managed parity watchdog resource probe exceeded ${watchdogProbeTimeoutMs}ms`)
+          timeoutError.code = "browser_computer_watchdog_sampling_timeout"
+          probeController.abort(timeoutError)
+          reject(timeoutError)
+        }, watchdogProbeTimeoutMs)
+      })
+      return await Promise.race([
+        capture("watchdog", { watchdog: true, signal: probeController.signal }),
+        timeoutPromise,
+      ])
+    } finally {
+      clearTimeout(timeout)
+      if (!probeController.signal.aborted) probeController.abort(timeoutError ?? new Error("watchdog resource probe complete"))
+    }
+  }
+
   const runWatchdogTick = async (beforeSample) => {
     if (watchdogError || workloadController.signal.aborted) return
     if (watchdogInFlight) return watchdogInFlight
     watchdogInFlight = (async () => {
       try {
-        const sample = await capture("watchdog", { watchdog: true })
+        const sample = await captureWatchdogProbe()
         const evaluation = evaluateBrowserComputerResourceWatchdogSample(beforeSample, sample, normalizedCaps)
         if (!evaluation.ok) {
           const error = new Error(`managed parity browser/computer watchdog failed: ${evaluation.violations.join("; ")}`)
@@ -257,8 +325,7 @@ export async function runManagedBrowserComputerParityLive({
           workloadController.abort(error)
         }
       } catch (error) {
-        watchdogError = error
-        workloadController.abort(error)
+        recordWatchdogSamplingFailure(error)
       } finally {
         watchdogInFlight = null
       }
@@ -380,7 +447,9 @@ export async function runManagedBrowserComputerParityLive({
       watchdogSamples,
       watchdog: {
         intervalMs: watchdogIntervalMs,
+        probeTimeoutMs: watchdogProbeTimeoutMs,
         telemetryMode: samples[0]?.telemetry?.scope ?? null,
+        samplingFailures: watchdogSamplingFailures,
         error: watchdogError ? { code: watchdogError.code ?? null, message: watchdogError.message } : null,
       },
       resourceEvaluation,
@@ -409,12 +478,13 @@ async function collectLiveResourceSnapshot({
   now,
   allowLocalFallback,
   explicitLocalTransport,
+  signal,
 }) {
   if (typeof transport.collectManagedTargetResourceSnapshot === "function") {
-    return transport.collectManagedTargetResourceSnapshot({ phase, sampleId, evidenceRoot, now })
+    return transport.collectManagedTargetResourceSnapshot({ phase, sampleId, evidenceRoot, now, signal })
   }
   if (typeof transport.collectResourceSnapshot === "function") {
-    return transport.collectResourceSnapshot({ phase, sampleId, evidenceRoot, now })
+    return transport.collectResourceSnapshot({ phase, sampleId, evidenceRoot, now, signal })
   }
   if (!allowLocalFallback || !explicitLocalTransport) {
     throw new Error("managed parity remote transport must provide authoritative managed-target resource telemetry")
@@ -425,8 +495,9 @@ async function collectLiveResourceSnapshot({
     phase,
     sampleId,
     now,
-    processCount: async () => countProcessRows((await runExternalCommand("ps", ["-e", "-o", "pid="])).stdout),
-    logBytes: () => directoryBytes(evidenceRoot),
+    processCount: async ({ signal: processSignal } = {}) => countProcessRows((await runExternalCommand("ps", ["-e", "-o", "pid="], { signal: processSignal })).stdout),
+    logBytes: ({ signal: logSignal } = {}) => directoryBytes(evidenceRoot, logSignal),
+    signal,
   })
   return {
     ...snapshot,
@@ -439,9 +510,9 @@ async function collectLiveResourceSnapshot({
   }
 }
 
-async function runExternalCommand(command, args) {
+async function runExternalCommand(command, args, { signal = null } = {}) {
   try {
-    const result = await execFile(command, args, { encoding: "utf8", maxBuffer: 1_000_000 })
+    const result = await execFile(command, args, { encoding: "utf8", maxBuffer: 1_000_000, signal })
     return { code: 0, stdout: result.stdout ?? "", stderr: result.stderr ?? "" }
   } catch (error) {
     return {
@@ -456,7 +527,8 @@ function countProcessRows(stdout) {
   return String(stdout).split("\n").map((line) => line.trim()).filter(Boolean).length
 }
 
-async function directoryBytes(directory) {
+async function directoryBytes(directory, signal = null) {
+  if (signal?.aborted) throw signal.reason ?? new Error("directory byte probe cancelled")
   let total = 0
   let entries
   try {
@@ -467,7 +539,7 @@ async function directoryBytes(directory) {
   }
   for (const entry of entries) {
     const entryPath = path.join(directory, entry.name)
-    if (entry.isDirectory()) total += await directoryBytes(entryPath)
+    if (entry.isDirectory()) total += await directoryBytes(entryPath, signal)
     else if (entry.isFile()) total += (await stat(entryPath)).size
   }
   return total
@@ -480,6 +552,31 @@ function resolveWatchdogInterval(value) {
     throw new Error("browser/computer watchdog interval must be a safe integer from 1ms through 60000ms")
   }
   return interval
+}
+
+function resolveWatchdogProbeTimeout(value) {
+  if (value === undefined || value === null) return 5_000
+  const timeout = Number(value)
+  if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 60_000) {
+    throw new Error("browser/computer watchdog probe timeout must be a safe integer from 1ms through 60000ms")
+  }
+  return timeout
+}
+
+export function combineBrowserComputerAbortSignals(...values) {
+  const signals = values.flat().filter((value) => value && typeof value.aborted === "boolean")
+  if (signals.length === 0) return null
+  if (signals.length === 1) return signals[0]
+  if (typeof AbortSignal.any === "function") return AbortSignal.any(signals)
+  const controller = new AbortController()
+  const abort = (signal) => {
+    if (!controller.signal.aborted) controller.abort(signal.reason)
+  }
+  for (const signal of signals) {
+    if (signal.aborted) abort(signal)
+    else signal.addEventListener("abort", () => abort(signal), { once: true })
+  }
+  return controller.signal
 }
 
 function sameArgv(left, right) {
