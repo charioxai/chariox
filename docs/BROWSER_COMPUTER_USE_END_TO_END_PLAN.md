@@ -155,6 +155,9 @@ validation steps are not closed by local tests.
 
 ## Managed and ordinary kernel parity
 
+Status: open. Do not mark this work complete until every ledger item below has
+reviewed source proof and fresh-machine Path-1 evidence.
+
 A kernel on a Chariox-managed machine must expose the same user-visible runtime
 behavior as an ordinary kernel. The only intended differences are how Chariox
 deploys the kernel and its mandatory automatic shutdown policy, including every
