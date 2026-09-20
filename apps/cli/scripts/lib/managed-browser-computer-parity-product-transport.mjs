@@ -249,7 +249,6 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
         client: displayClient,
         identityClient: displayClient,
         requestApi,
-        parityConfig,
       }))
   const residueAdapter = cleanupInspector
     ?? residueInspector
@@ -530,7 +529,6 @@ function createKernelPersistenceAdapter({
   clientRef = null,
   identityClientRef = null,
   requestApi,
-  parityConfig,
 }) {
   if (typeof requestApi?.saveSliceStateRequest !== "function"
     || typeof requestApi?.stopSliceRequest !== "function"
@@ -542,50 +540,186 @@ function createKernelPersistenceAdapter({
   }
   return {
     async describe(input) {
-      return createKernelPersistencePlan(input, parityConfig)
+      return createKernelPersistencePlan(input, requestApi)
     },
     async run(input) {
       return executeKernelPersistence({
         ...input,
-        client: clientRef?.current ?? client,
-        identityClient: identityClientRef?.current ?? identityClient,
+        client: input.client ?? clientRef?.current ?? client,
+        identityClient: input.identityClient ?? identityClientRef?.current ?? identityClient,
         requestApi,
       })
     },
   }
 }
 
-function createKernelPersistencePlan(input, parityConfig) {
+const PERSISTENCE_MUTATION_ACTIONS = Object.freeze(["save", "remove", "restore"])
+
+const PERSISTENCE_MUTATION_REQUEST_VARIANTS = Object.freeze({
+  save: "SaveSliceState",
+  remove: "StopSlice",
+  restore: "StartSlice",
+})
+
+const PERSISTENCE_MUTATION_RESPONSE_VARIANTS = Object.freeze({
+  save: "SliceStateSaved",
+  remove: "SliceStopped",
+  restore: "SliceStarted",
+})
+
+const PERSISTENCE_MUTATION_CHECKPOINTS = Object.freeze({
+  save: Object.freeze({ before: "before-docker-save", after: "after-docker-save" }),
+  remove: Object.freeze({ before: "before-docker-remove", after: "after-docker-remove" }),
+  restore: Object.freeze({ before: "before-docker-restore", after: "after-docker-restore" }),
+})
+
+function createKernelPersistencePlan(input, requestApi) {
   const sliceId = requireText(input?.ownedResource?.sliceId, "persistence owned slice id")
-  const configured = parityConfig?.browserComputerGuard?.dockerPreconditions
-    ?? parityConfig?.dockerPreconditions
-    ?? []
-  const fallbackArgv = {
-    save: ["kernel", "SaveSliceState", sliceId],
-    remove: ["kernel", "StopSlice", sliceId],
-    restore: ["kernel", "StartSlice", sliceId],
+  const requests = {
+    save: requireRequestConstructor(requestApi, "saveSliceStateRequest")(
+      sliceId,
+      "restart_agents",
+      "this_slice",
+    ),
+    remove: requireRequestConstructor(requestApi, "stopSliceRequest")(sliceId),
+    restore: requireRequestConstructor(requestApi, "startSliceRequest")(sliceId),
   }
-  const checkpoints = {
-    save: { before: "before-docker-save", after: "after-docker-save" },
-    remove: { before: "before-docker-remove", after: "after-docker-remove" },
-    restore: { before: "before-docker-restore", after: "after-docker-restore" },
-  }
-  const mutations = ["save", "remove", "restore"].map((action, index) => {
-    const declaration = configured[index]
-    const argv = declaration?.command ?? declaration?.argv ?? fallbackArgv[action]
-    requireSafeArgv(argv, `persistence ${action}`)
-    return {
-      action,
-      argv: [...argv],
-      request: { action, argv: [...argv] },
-      checkpoints: checkpoints[action],
-    }
-  })
-  return {
+  const plan = {
     schema: MANAGED_PARITY_SCHEMA,
-    persistenceMutations: mutations,
+    persistenceMutations: PERSISTENCE_MUTATION_ACTIONS.map((action) => (
+      createPersistenceMutationDefinition(action, requests[action])
+    )),
     ownedResource: redactManagedValue(input?.ownedResource ?? null),
   }
+  return deepFreeze(plan)
+}
+
+function createPersistenceMutationDefinition(action, request) {
+  const requestVariant = PERSISTENCE_MUTATION_REQUEST_VARIANTS[action]
+  if (!request || typeof request !== "object" || Array.isArray(request)
+    || Object.keys(request).length !== 1 || !Object.hasOwn(request, requestVariant)) {
+    throw new Error(`managed parity persistence ${action} request must be the exact public ${requestVariant} request`)
+  }
+  const normalizedRequest = redactManagedValue(request)
+  const argv = persistenceRequestArgv(action, normalizedRequest)
+  return {
+    action,
+    argv,
+    request: normalizedRequest,
+    requestIdentity: persistenceRequestIdentity(normalizedRequest),
+    responseVariant: PERSISTENCE_MUTATION_RESPONSE_VARIANTS[action],
+    checkpoints: PERSISTENCE_MUTATION_CHECKPOINTS[action],
+  }
+}
+
+function persistenceRequestArgv(action, request) {
+  const requestVariant = PERSISTENCE_MUTATION_REQUEST_VARIANTS[action]
+  const payload = request?.[requestVariant]
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error(`managed parity persistence ${action} request payload is malformed`)
+  }
+  const sliceId = requireText(payload.slice_ref, `${requestVariant}.slice_ref`)
+  const argv = ["kernel", requestVariant, sliceId]
+  if (action === "save") {
+    for (const field of ["mode", "scope"]) {
+      if (payload[field] !== undefined && payload[field] !== null) {
+        if (typeof payload[field] !== "string" || payload[field].trim() === "") {
+          throw new Error(`managed parity persistence ${action} request ${field} is malformed`)
+        }
+        argv.push(`${field}=${payload[field]}`)
+      }
+    }
+  }
+  return requireSafeArgv(argv, `persistence ${action}`)
+}
+
+function persistenceRequestIdentity(request) {
+  return JSON.stringify(request)
+}
+
+function persistenceReceiptId(action, requestIdentity, responseSlice) {
+  return `${action}:${responseSlice.id}:${requestIdentity}`
+}
+
+function requirePersistenceResponseSlice(payload, sliceId, step) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error(`managed parity ${step} response payload is malformed`)
+  }
+  const slice = payload.slice
+  if (!slice || typeof slice !== "object" || slice.id !== sliceId) {
+    throw new Error(`managed parity ${step} response returned a different slice identity`)
+  }
+  return slice
+}
+
+function requireSavedState(value, sliceId, step) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`managed parity ${step} response did not return a saved state`)
+  }
+  if (value.source_slice_id !== sliceId) {
+    throw new Error(`managed parity ${step} saved state belongs to a different slice`)
+  }
+  requireText(value.id, `${step}.state.id`)
+  requireText(value.home_archive_path, `${step}.state.home_archive_path`)
+  return value
+}
+
+function validatePersistenceTransition({
+  action,
+  before,
+  after,
+  response,
+  responseVariant,
+  sliceId,
+  savedState,
+}) {
+  if (!before?.slice || !after?.slice) {
+    throw new Error(`managed parity persistence ${action} requires authoritative before and after slice state`)
+  }
+  if (before.slice.id !== sliceId || after.slice.id !== sliceId) {
+    throw new Error(`managed parity persistence ${action} changed slice identity`)
+  }
+  if (!samePersistenceObservationIdentity(before, after)) {
+    throw new Error(`managed parity persistence ${action} changed its authoritative Room or resource identity`)
+  }
+  const expectedStatuses = {
+    save: { before: "running", after: "running" },
+    remove: { before: "running", after: "stopped" },
+    restore: { before: "stopped", after: "running" },
+  }[action]
+  if (before.slice.status !== expectedStatuses.before || after.slice.status !== expectedStatuses.after) {
+    throw new Error(
+      `managed parity persistence ${action} observed an invalid authoritative slice transition: `
+      + `${before.slice.status} -> ${after.slice.status}`,
+    )
+  }
+  const responseSlice = requirePersistenceResponseSlice(response, sliceId, `persistence ${action}`)
+  if (responseSlice.status !== after.slice.status) {
+    throw new Error(`managed parity persistence ${action} response slice state differs from its authoritative after state`)
+  }
+  if (responseVariant === PERSISTENCE_MUTATION_RESPONSE_VARIANTS.save) {
+    const state = requireSavedState(response.state, sliceId, `persistence ${action}`)
+    if (state.id !== savedState?.id) {
+      throw new Error("managed parity persistence save response changed saved-state identity")
+    }
+  }
+  if (responseVariant === PERSISTENCE_MUTATION_RESPONSE_VARIANTS.restore
+    && savedState?.id !== undefined
+    && after.slice.saved_state_ref !== undefined
+    && after.slice.saved_state_ref !== null
+    && after.slice.saved_state_ref !== savedState.id) {
+    throw new Error("managed parity persistence restore authoritative slice references a stale saved state")
+  }
+}
+
+function samePersistenceObservationIdentity(left, right) {
+  return left?.slice?.id === right?.slice?.id
+    && left?.slice?.environment_session_id === right?.slice?.environment_session_id
+    && left?.slice?.environment_id === right?.slice?.environment_id
+    && left?.inventory?.session_id === right?.inventory?.session_id
+    && left?.inventory?.environment_id === right?.inventory?.environment_id
+    && left?.inventory?.slice_id === right?.inventory?.slice_id
+    && sameArray(left?.inventory?.profile_ids, right?.inventory?.profile_ids)
 }
 
 async function executeKernelPersistence({
@@ -605,11 +739,13 @@ async function executeKernelPersistence({
   }
   const before = []
   const receipts = []
+  const executed = []
   let savedState = null
   let initialInventory = null
   let finalInventory = null
+  let previousAfterInventory = null
   for (const [index, mutation] of planned.entries()) {
-    const inventory = await readKernelPersistenceInventory({
+    const beforeInventory = await readKernelPersistenceInventory({
       client: identityClient ?? client,
       requestApi,
       sliceId,
@@ -617,38 +753,65 @@ async function executeKernelPersistence({
       signal,
       step: `persistence ${mutation.action} inventory`,
     })
-    before.push(inventory)
-    if (index === 0) initialInventory = inventory
-    await onPersistenceMutation?.({ phase: "before", mutation: redactManagedValue(mutation) })
+    if (previousAfterInventory && !samePersistenceObservationIdentity(previousAfterInventory, beforeInventory)) {
+      throw new Error(`managed parity persistence ${mutation.action} did not continue from the previous authoritative slice state`)
+    }
+    before.push(beforeInventory)
+    if (index === 0) initialInventory = beforeInventory
+    await onPersistenceMutation?.({
+      phase: "before",
+      mutation: redactManagedValue({ ...mutation, before: beforeInventory }),
+    })
+    const requestIdentity = persistenceRequestIdentity(mutation.request)
+    if (mutation.requestIdentity !== requestIdentity) {
+      throw new Error(`managed parity persistence ${mutation.action} request identity changed after planning`)
+    }
     let response
+    let responseVariantName
+    let responsePayload
     let receipt
     if (mutation.action === "save") {
       response = await sendWithAbortSignal(
         client,
-        requestApi.saveSliceStateRequest(sliceId, "restart_agents", "this_slice"),
+        mutation.request,
         signal,
         "persistence save",
       )
-      const saved = responseVariant(response, "SliceStateSaved", "persistence save")
-      savedState = saved.state
+      responseVariantName = PERSISTENCE_MUTATION_RESPONSE_VARIANTS.save
+      responsePayload = responseVariant(response, responseVariantName, "persistence save")
+      const saved = responsePayload
+      const responseSlice = requirePersistenceResponseSlice(saved, sliceId, "persistence save")
+      savedState = requireSavedState(saved.state, sliceId, "persistence save")
       const archivePath = requireText(savedState?.home_archive_path, "SliceStateSaved.state.home_archive_path")
       receipt = {
         ok: true,
-        id: requireText(savedState?.id, "SliceStateSaved.state.id"),
+        id: savedState.id,
+        action: mutation.action,
+        requestIdentity,
+        responseVariant: responseVariantName,
+        responseSliceId: responseSlice.id,
+        savedStateId: savedState.id,
         archivePath,
         authoritative: true,
       }
     } else if (mutation.action === "remove") {
       response = await sendWithAbortSignal(
         client,
-        requestApi.stopSliceRequest(sliceId),
+        mutation.request,
         signal,
         "persistence remove",
       )
-      responseVariantAny(response, ["SliceStopped", "Slice"], "persistence remove")
+      responseVariantName = PERSISTENCE_MUTATION_RESPONSE_VARIANTS.remove
+      responsePayload = responseVariant(response, responseVariantName, "persistence remove")
+      const responseSlice = requirePersistenceResponseSlice(responsePayload, sliceId, "persistence remove")
       receipt = {
         ok: true,
-        id: `${receiptId(receipts[0])}:remove`,
+        id: persistenceReceiptId(mutation.action, requestIdentity, responseSlice),
+        action: mutation.action,
+        requestIdentity,
+        responseVariant: responseVariantName,
+        responseSliceId: responseSlice.id,
+        savedStateId: requireText(savedState?.id, "persistence remove saved state id"),
         parentReceiptId: receiptId(receipts[0]),
         archivePath: requireText(savedState?.home_archive_path, "saved state archive path"),
         authoritative: true,
@@ -656,12 +819,14 @@ async function executeKernelPersistence({
     } else {
       response = await sendWithAbortSignal(
         client,
-        requestApi.startSliceRequest(sliceId),
+        mutation.request,
         signal,
         "persistence restore",
         SLICE_LIFECYCLE_TIMEOUT_MS,
       )
-      responseVariant(response, "SliceStarted", "persistence restore")
+      responseVariantName = PERSISTENCE_MUTATION_RESPONSE_VARIANTS.restore
+      responsePayload = responseVariant(response, responseVariantName, "persistence restore")
+      const responseSlice = requirePersistenceResponseSlice(responsePayload, sliceId, "persistence restore")
       const statusResponse = await sendWithAbortSignal(
         client,
         requestApi.getSliceStateStatusRequest(sliceId),
@@ -669,28 +834,60 @@ async function executeKernelPersistence({
         "persistence restore state status",
       )
       const status = responseVariant(statusResponse, "SliceStateStatus", "persistence restore state status")
+      if (!status.slice || status.slice.id !== sliceId) {
+        throw new Error("managed parity persistence restore state status returned a different slice identity")
+      }
       if (!status.state || status.state.id !== savedState?.id) {
         throw new Error("managed parity persistence restore did not restore the authoritative saved state")
       }
       receipt = {
         ok: true,
-        id: `${receiptId(receipts[1])}:restore`,
+        id: persistenceReceiptId(mutation.action, requestIdentity, responseSlice),
+        action: mutation.action,
+        requestIdentity,
+        responseVariant: responseVariantName,
+        responseSliceId: responseSlice.id,
+        savedStateId: status.state.id,
         parentReceiptId: receiptId(receipts[1]),
         archivePath: requireText(savedState?.home_archive_path, "saved state archive path"),
         authoritative: true,
       }
     }
+    const afterInventory = await readKernelPersistenceInventory({
+      client: identityClient ?? client,
+      requestApi,
+      sliceId,
+      roomId: ownedResource?.roomId,
+      signal,
+      step: `persistence ${mutation.action} after inventory`,
+    })
+    validatePersistenceTransition({
+      action: mutation.action,
+      before: beforeInventory,
+      after: afterInventory,
+      response: responsePayload,
+      responseVariant: responseVariantName,
+      sliceId,
+      savedState,
+    })
+    previousAfterInventory = afterInventory
+    const evidence = {
+      ...mutation,
+      before: beforeInventory,
+      response: {
+        variant: responseVariantName,
+        payload: redactManagedValue(responsePayload),
+      },
+      after: afterInventory,
+      receipt,
+      ...(index > 0 ? { saveReceipt: receipts[0] } : {}),
+      ...(index > 1 ? { removeReceipt: receipts[1] } : {}),
+    }
     receipts.push(receipt)
-    await onPersistenceMutation?.({ phase: "after", mutation: redactManagedValue({ ...mutation, receipt }) })
+    executed.push(evidence)
+    await onPersistenceMutation?.({ phase: "after", mutation: redactManagedValue(evidence) })
     if (mutation.action === "restore") {
-      finalInventory = await readKernelPersistenceInventory({
-        client: identityClient ?? client,
-        requestApi,
-        sliceId,
-        roomId: ownedResource?.roomId,
-        signal,
-        step: "persistence restore inventory",
-      })
+      finalInventory = afterInventory
     }
   }
   if (!initialInventory || !finalInventory) {
@@ -716,13 +913,7 @@ async function executeKernelPersistence({
     sameRoom,
     sameEnvironment,
     sameProfile,
-    persistenceMutations: planned.map((mutation, index) => ({
-      ...mutation,
-      before: before[index],
-      receipt: receipts[index],
-      ...(index > 0 ? { saveReceipt: receipts[0] } : {}),
-      ...(index > 1 ? { removeReceipt: receipts[1] } : {}),
-    })),
+    persistenceMutations: executed.map((mutation) => redactManagedValue(mutation)),
   }
 }
 
@@ -737,6 +928,9 @@ async function readKernelPersistenceInventory({ client, requestApi, sliceId, roo
   if (!slice || slice.id !== sliceId) throw new Error(`${step} returned a different slice identity`)
   const resolvedRoomId = roomId ?? slice.environment_session_id ?? slice.session_id
   if (!hasText(resolvedRoomId)) throw new Error(`${step} returned no Room identity`)
+  if ((slice.environment_session_id ?? slice.session_id) !== resolvedRoomId) {
+    throw new Error(`${step} returned a different Room identity`)
+  }
   const inventoryResponse = await sendWithAbortSignal(
     client,
     requestApi.getRoomEnvironmentResourceInventoryRequest(resolvedRoomId, sliceId),
@@ -748,6 +942,12 @@ async function readKernelPersistenceInventory({ client, requestApi, sliceId, roo
     "RoomEnvironmentResourceInventory",
     `${step} browser/profile inventory`,
   ).inventory
+  if (!inventory || typeof inventory !== "object" || Array.isArray(inventory)
+    || inventory.slice_id !== sliceId
+    || inventory.session_id !== resolvedRoomId
+    || !hasText(inventory.environment_id)) {
+    throw new Error(`${step} returned a different authoritative resource identity`)
+  }
   requireUniqueIdentityArray(inventory?.profile_ids, `${step} profile_ids`)
   requireUniqueIdentityArray(inventory?.browser_ids, `${step} browser_ids`)
   return {
@@ -756,6 +956,10 @@ async function readKernelPersistenceInventory({ client, requestApi, sliceId, roo
       status: slice.status,
       environment_session_id: slice.environment_session_id ?? slice.session_id ?? null,
       environment_id: slice.environment_id ?? null,
+      saved_state_ref: slice.saved_state_ref ?? null,
+      saved_state_status: slice.saved_state_status ?? null,
+      last_operation: slice.last_operation ?? null,
+      last_operation_status: slice.last_operation_status ?? null,
     }),
     inventory: redactManagedValue({
       environment_id: inventory.environment_id,
@@ -2087,10 +2291,13 @@ async function runPersistenceMutations({
   if (!runMethod) {
     throw new Error("managed parity persistence has no kernel-managed execution seam")
   }
+  const requestLedger = []
+  const executionClient = wrapPersistenceExecutionClient(client, requestLedger)
+  const executionIdentityClient = wrapPersistenceExecutionClient(identityClient, requestLedger)
   const raw = await runMethod.call(persistenceAdapter, {
     ...persistenceAdapterInput({
-      client,
-      identityClient,
+      client: executionClient,
+      identityClient: executionIdentityClient,
       requestApi,
       targetKernelRef,
       targetMachineRef,
@@ -2103,7 +2310,35 @@ async function runPersistenceMutations({
       ? (event) => onPersistenceMutation(redactManagedValue(event))
       : undefined,
   })
+  validatePersistenceRequestLedger(requestLedger, plan)
   return normalizePersistenceEvidence(raw, ownedResources, plan)
+}
+
+function wrapPersistenceExecutionClient(client, requestLedger) {
+  if (!client || typeof client.send !== "function") {
+    throw new Error("managed parity persistence execution requires a public client send seam")
+  }
+  return {
+    ...client,
+    async send(request) {
+      requestLedger.push(request)
+      return client.send(request)
+    },
+  }
+}
+
+function validatePersistenceRequestLedger(requestLedger, plan) {
+  const lifecycleRequests = requestLedger.filter((request) => Object.keys(PERSISTENCE_MUTATION_REQUEST_VARIANTS)
+    .some((action) => Object.hasOwn(request ?? {}, PERSISTENCE_MUTATION_REQUEST_VARIANTS[action])))
+  if (!Array.isArray(plan?.persistenceMutations)
+    || lifecycleRequests.length !== plan.persistenceMutations.length) {
+    throw new Error("managed parity persistence execution must send exactly one planned public lifecycle request per mutation")
+  }
+  for (const [index, request] of lifecycleRequests.entries()) {
+    if (!sameJson(request, plan.persistenceMutations[index].request)) {
+      throw new Error(`managed parity persistence execution request ${index} does not match its immutable plan`)
+    }
+  }
 }
 
 function persistenceAdapterInput({
@@ -2129,51 +2364,108 @@ function persistenceAdapterInput({
 }
 
 function normalizePersistencePlan(value, ownedResources) {
+  for (const field of [
+    "before",
+    "after",
+    "afterState",
+    "inventory",
+    "response",
+    "receipt",
+    "receipts",
+    "successReceipt",
+    "mutationReceipt",
+    "savedState",
+    "saveReceipt",
+    "removeReceipt",
+  ]) {
+    if (value && typeof value === "object" && Object.hasOwn(value, field)) {
+      throw new Error(`managed parity persistence plan must not contain pre-execution ${field} evidence`)
+    }
+  }
   const source = value?.persistenceMutations ?? value?.mutations
   if (!Array.isArray(source) || source.length !== 3) {
     throw new Error("managed parity persistence plan must contain exact save/remove/restore mutations")
   }
   const normalized = source.map((mutation, index) => {
-    for (const field of ["before", "inventory", "receipt", "receipts", "saveReceipt", "removeReceipt"]) {
+    for (const field of [
+      "before",
+      "after",
+      "afterState",
+      "inventory",
+      "response",
+      "receipt",
+      "receipts",
+      "successReceipt",
+      "mutationReceipt",
+      "savedState",
+      "saveReceipt",
+      "removeReceipt",
+    ]) {
       if (mutation && Object.hasOwn(mutation, field)) {
         throw new Error(`managed parity persistence plan must not contain pre-execution ${field} evidence`)
       }
     }
-    return normalizePersistenceMutationDefinition(mutation, index)
+    return normalizePersistenceMutationDefinition(mutation, index, ownedResources)
   })
   const output = redactManagedValue({
     schema: value?.schema ?? MANAGED_PARITY_SCHEMA,
     persistenceMutations: normalized,
   })
   output.ownedResource = stableOwnedIdentity(ownedResources)
-  return output
+  return deepFreeze(output)
 }
 
-function normalizePersistenceMutationDefinition(mutation, index) {
-  const actions = ["save", "remove", "restore"]
-  const action = actions[index]
+function normalizePersistenceMutationDefinition(mutation, index, ownedResources = null) {
+  const action = PERSISTENCE_MUTATION_ACTIONS[index]
   if (!mutation || mutation.action !== action) {
     throw new Error(`managed parity persistence mutation ${index} must be ${action}`)
   }
   const argv = requireSafeArgv(mutation.argv, `persistence ${action}`)
   const request = mutation.request
-  const requestAction = request?.action ?? request?.operation ?? request?.mutation
+  const requestVariant = PERSISTENCE_MUTATION_REQUEST_VARIANTS[action]
   if (!request || typeof request !== "object" || Array.isArray(request)
-    || requestAction !== action || !sameArray(request.argv, argv)) {
-    throw new Error(`managed parity persistence ${action} request must exactly repeat its argv`)
+    || Object.keys(request).length !== 1 || !Object.hasOwn(request, requestVariant)) {
+    throw new Error(`managed parity persistence ${action} request must be the exact public ${requestVariant} request`)
   }
-  const expectedCheckpoint = {
-    save: { before: "before-docker-save", after: "after-docker-save" },
-    remove: { before: "before-docker-remove", after: "after-docker-remove" },
-    restore: { before: "before-docker-restore", after: "after-docker-restore" },
-  }[action]
+  const requestPayload = request[requestVariant]
+  const allowedPayloadFields = action === "save"
+    ? ["slice_ref", "mode", "scope"]
+    : ["slice_ref"]
+  if (!requestPayload || typeof requestPayload !== "object" || Array.isArray(requestPayload)
+    || Object.keys(requestPayload).some((field) => !allowedPayloadFields.includes(field))) {
+    throw new Error(`managed parity persistence ${action} request payload is not the released public shape`)
+  }
+  if (action === "save"
+    && (requestPayload.mode !== "restart_agents" || requestPayload.scope !== "this_slice")) {
+    throw new Error("managed parity persistence save request must use restart_agents for this_slice")
+  }
+  const requestSliceId = requireText(requestPayload.slice_ref, `${requestVariant}.slice_ref`)
+  const ownedSliceId = ownedResources?.sliceId ?? ownedResources?.stableIdentity?.sliceId
+  if (hasText(ownedSliceId) && requestSliceId !== ownedSliceId) {
+    throw new Error(`managed parity persistence ${action} request targets a different slice identity`)
+  }
+  const expectedArgv = persistenceRequestArgv(action, request)
+  if (!sameArray(argv, expectedArgv)) {
+    throw new Error(`managed parity persistence ${action} argv does not describe its exact public request`)
+  }
+  const requestIdentity = persistenceRequestIdentity(request)
+  if (mutation.requestIdentity !== undefined && mutation.requestIdentity !== requestIdentity) {
+    throw new Error(`managed parity persistence ${action} request identity does not match its public request`)
+  }
+  const expectedResponseVariant = PERSISTENCE_MUTATION_RESPONSE_VARIANTS[action]
+  if (mutation.responseVariant !== undefined && mutation.responseVariant !== expectedResponseVariant) {
+    throw new Error(`managed parity persistence ${action} response variant is not authoritative`)
+  }
+  const expectedCheckpoint = PERSISTENCE_MUTATION_CHECKPOINTS[action]
   if (!sameJson(mutation.checkpoints, expectedCheckpoint)) {
     throw new Error(`managed parity persistence ${action} checkpoints are not exact`)
   }
   return {
     action,
     argv,
-    request: redactManagedValue({ ...request, argv }),
+    request: redactManagedValue(request),
+    requestIdentity,
+    responseVariant: expectedResponseVariant,
     checkpoints: expectedCheckpoint,
   }
 }
@@ -2188,29 +2480,72 @@ function normalizePersistenceEvidence(value, ownedResources, plan) {
     throw new Error("managed parity persistence execution requires an immutable mutation plan")
   }
   const normalized = []
+  let previousAfter = null
   for (const [index, mutation] of source.entries()) {
-    const definition = normalizePersistenceMutationDefinition(mutation, index)
-    const plannedDefinition = normalizePersistenceMutationDefinition(plannedMutations[index], index)
+    const definition = normalizePersistenceMutationDefinition(mutation, index, ownedResources)
+    const plannedDefinition = normalizePersistenceMutationDefinition(plannedMutations[index], index, ownedResources)
     if (!sameJson(definition, plannedDefinition)) {
       throw new Error(`managed parity persistence ${definition.action} result does not match its plan`)
     }
-    const { action, argv, request } = definition
+    const { action, argv, request, requestIdentity, responseVariant } = definition
     const before = mutation.before ?? mutation.inventory
     if (!before || typeof before !== "object" || Array.isArray(before)) {
-      throw new Error(`managed parity persistence ${action} requires a pre-mutation inventory`)
+      throw new Error(`managed parity persistence ${action} requires an authoritative pre-mutation slice state`)
+    }
+    const after = mutation.after
+    if (!after || typeof after !== "object" || Array.isArray(after)) {
+      throw new Error(`managed parity persistence ${action} requires an authoritative post-mutation slice state`)
+    }
+    validateNormalizedPersistenceObservation(action, before, "before", ownedResources)
+    validateNormalizedPersistenceObservation(action, after, "after", ownedResources)
+    if (previousAfter && !samePersistenceObservationIdentity(previousAfter, before)) {
+      throw new Error(`managed parity persistence ${action} evidence is not continuous with the previous mutation`)
+    }
+    validateNormalizedPersistenceTransition(action, before, after)
+    const response = mutation.response
+    if (!response || typeof response !== "object" || Array.isArray(response)
+      || response.variant !== responseVariant
+      || !response.payload || typeof response.payload !== "object" || Array.isArray(response.payload)) {
+      throw new Error(`managed parity persistence ${action} requires the actual ${responseVariant} response`)
+    }
+    const requestVariant = PERSISTENCE_MUTATION_REQUEST_VARIANTS[action]
+    const sliceId = requireText(request[requestVariant]?.slice_ref, `${requestVariant}.slice_ref`)
+    const responseSlice = requirePersistenceResponseSlice(
+      response.payload,
+      sliceId,
+      `persistence ${action}`,
+    )
+    if (responseSlice.status !== after.slice.status) {
+      throw new Error(`managed parity persistence ${action} response does not match its authoritative after state`)
+    }
+    if (action === "save") {
+      requireSavedState(response.payload.state, sliceId, "persistence save")
     }
     const receipt = mutation.receipt ?? mutation.receipts?.[action]
     if (!receipt || receipt.ok !== true || !hasText(receipt.id ?? receipt.receiptId)) {
       throw new Error(`managed parity persistence ${action} requires a successful receipt`)
     }
+    if (receipt.authoritative !== true
+      || receipt.action !== action
+      || receipt.requestIdentity !== requestIdentity
+      || receipt.responseVariant !== responseVariant
+      || receipt.responseSliceId !== responseSlice.id) {
+      throw new Error(`managed parity persistence ${action} receipt is not bound to its actual request and response`)
+    }
     if (action === "save" && !hasText(receipt.archivePath)) {
       throw new Error("managed parity persistence save requires an archive path receipt")
+    }
+    if (action === "save" && receipt.savedStateId !== response.payload.state?.id) {
+      throw new Error("managed parity persistence save receipt has a stale saved-state identity")
     }
     if (action === "remove" && !sameJson(mutation.saveReceipt, normalized[0]?.receipt)) {
       throw new Error("managed parity persistence remove must carry the exact save receipt")
     }
     if (action === "remove" && receipt.parentReceiptId !== receiptId(normalized[0]?.receipt)) {
       throw new Error("managed parity persistence remove receipt must chain from save")
+    }
+    if (action === "remove" && receipt.savedStateId !== normalized[0]?.receipt?.savedStateId) {
+      throw new Error("managed parity persistence remove receipt has a stale saved-state identity")
     }
     if (action === "restore") {
       if (!sameJson(mutation.saveReceipt, normalized[0]?.receipt)
@@ -2223,6 +2558,9 @@ function normalizePersistenceEvidence(value, ownedResources, plan) {
       if (!hasText(receipt.archivePath)) {
         throw new Error("managed parity persistence restore requires an archive path receipt")
       }
+      if (receipt.savedStateId !== normalized[0]?.receipt?.savedStateId) {
+        throw new Error("managed parity persistence restore receipt has a stale saved-state identity")
+      }
     }
     normalized.push({
       ...redactManagedValue(mutation),
@@ -2231,10 +2569,16 @@ function normalizePersistenceEvidence(value, ownedResources, plan) {
       request,
       checkpoints: definition.checkpoints,
       before: redactManagedValue(before),
+      response: redactManagedValue(response),
+      after: redactManagedValue(after),
       receipt: redactManagedValue(receipt),
       ...(mutation.saveReceipt ? { saveReceipt: redactManagedValue(mutation.saveReceipt) } : {}),
       ...(mutation.removeReceipt ? { removeReceipt: redactManagedValue(mutation.removeReceipt) } : {}),
     })
+    previousAfter = after
+  }
+  if (!samePersistenceObservationIdentity(normalized[0]?.before, normalized.at(-1)?.after)) {
+    throw new Error("managed parity persistence evidence changed its final authoritative identity")
   }
   const output = redactManagedValue({
     ...(value && typeof value === "object" && !Array.isArray(value) ? value : {}),
@@ -2245,6 +2589,42 @@ function normalizePersistenceEvidence(value, ownedResources, plan) {
   // cleanup inspection correlate receipts without trusting caller-supplied IDs.
   output.ownedResource = stableOwnedIdentity(ownedResources)
   return output
+}
+
+function validateNormalizedPersistenceObservation(action, observation, phase, ownedResources) {
+  const slice = observation?.slice
+  if (!slice || typeof slice !== "object" || Array.isArray(slice)) {
+    throw new Error(`managed parity persistence ${action} ${phase} evidence requires an authoritative slice state`)
+  }
+  const ownedSliceId = ownedResources?.sliceId ?? ownedResources?.stableIdentity?.sliceId
+  if (!hasText(slice.id) || (hasText(ownedSliceId) && slice.id !== ownedSliceId)) {
+    throw new Error(`managed parity persistence ${action} ${phase} evidence has a foreign slice identity`)
+  }
+  if (!hasText(slice.status) || !hasText(slice.environment_session_id)) {
+    throw new Error(`managed parity persistence ${action} ${phase} evidence lacks authoritative slice identity or status`)
+  }
+  const inventory = observation.inventory
+  if (!inventory || typeof inventory !== "object" || Array.isArray(inventory)
+    || inventory.slice_id !== slice.id
+    || !hasText(inventory.environment_id)) {
+    throw new Error(`managed parity persistence ${action} ${phase} evidence lacks authoritative resource identity`)
+  }
+  requireUniqueIdentityArray(inventory.browser_ids, `persistence ${action} ${phase} browser_ids`)
+  requireUniqueIdentityArray(inventory.profile_ids, `persistence ${action} ${phase} profile_ids`)
+}
+
+function validateNormalizedPersistenceTransition(action, before, after) {
+  const expectedStatuses = {
+    save: { before: "running", after: "running" },
+    remove: { before: "running", after: "stopped" },
+    restore: { before: "stopped", after: "running" },
+  }[action]
+  if (before.slice.status !== expectedStatuses.before || after.slice.status !== expectedStatuses.after) {
+    throw new Error(`managed parity persistence ${action} evidence has an invalid authoritative state transition`)
+  }
+  if (!samePersistenceObservationIdentity(before, after)) {
+    throw new Error(`managed parity persistence ${action} evidence changed its authoritative identity`)
+  }
 }
 
 function receiptId(receipt) {
@@ -2500,6 +2880,12 @@ function redactManagedValue(value, key = "") {
     result[entryKey] = redactManagedValue(entryValue, entryKey)
   }
   return result
+}
+
+function deepFreeze(value) {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value
+  for (const child of Object.values(value)) deepFreeze(child)
+  return Object.freeze(value)
 }
 
 function isSensitiveKey(key) {
