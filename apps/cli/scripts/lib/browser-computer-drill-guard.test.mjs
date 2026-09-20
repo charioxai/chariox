@@ -84,6 +84,7 @@ test("resource collection is deterministic and uses injected Docker/macOS probes
     assert.equal(result.phase, "before")
     assert.equal(result.sampleId, "sample-0")
     assert.equal(result.memory.availableBytes, 37 * 16_384)
+    assert.equal(result.disk.usedBytes >= 0, true)
     assert.deepEqual(result.process, { count: 3 })
     assert.deepEqual(result.logs, { bytes: 7 })
     assert.deepEqual(result.docker.containers, ["chariox-slice-existing", "unrelated"])
@@ -159,8 +160,8 @@ test("resource caps fail closed for declared disk/memory/process/log overruns", 
 
 test("resource growth is measured against the before sample, not only the final sample", () => {
   const result = evaluateBrowserComputerResourceCaps(resourceSamples({
-    during: { diskAvailableBytes: 96, memoryAvailableBytes: 96, processCount: 2, logBytes: 2 },
-    after: { diskAvailableBytes: 80, memoryAvailableBytes: 98, processCount: 2, logBytes: 9 },
+    during: { diskAvailableBytes: 80, memoryAvailableBytes: 96, processCount: 2, logBytes: 2 },
+    after: { diskAvailableBytes: 98, memoryAvailableBytes: 98, processCount: 2, logBytes: 9 },
   }), { diskBytes: 10, memoryBytes: 5, processCount: 2, logBytes: 5 })
 
   assert.equal(result.ok, false)
@@ -168,6 +169,15 @@ test("resource growth is measured against the before sample, not only the final 
   assert.equal(result.metrics.logGrowthBytes, 9)
   assert.match(result.violations.join("\n"), /disk growth 20 bytes/)
   assert.match(result.violations.join("\n"), /log growth 9 bytes/)
+})
+
+test("post-run disk delta is not a transient resource cap", () => {
+  const result = evaluateBrowserComputerResourceCaps(resourceSamples({
+    after: { diskAvailableBytes: 0, memoryAvailableBytes: 100, rssBytes: 0, processCount: 2, logBytes: 0 },
+  }), { diskBytes: 0, memoryBytes: 0, processCount: 2, logBytes: 0 })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.metrics.diskGrowthBytes, 0)
 })
 
 test("resource evidence rejects a missing phase or missing process/log sample", () => {
@@ -190,6 +200,18 @@ test("resource evidence rejects a missing phase or missing process/log sample", 
   assert.match(missingResult.violations.join("\n"), /after sample is missing a safe log byte count/)
 })
 
+test("local total-memory fallback is not treated as workload RSS", () => {
+  const localFallback = resourceSamples()
+  for (const sample of localFallback) delete sample.memory.rssBytes
+  const result = evaluateBrowserComputerResourceCaps(localFallback, {
+    diskBytes: 10, memoryBytes: 20, processCount: 3, logBytes: 4,
+  })
+
+  assert.equal(result.ok, false)
+  assert.match(result.violations.join("\n"), /explicit workload RSS byte count/)
+  assert.equal(result.metrics.peakMemoryBytes, null)
+})
+
 test("blank budgets remain observational while malformed caps are rejected", () => {
   for (const value of [undefined, "", " ", "\t\n"]) {
     const budget = parseBrowserComputerByteBudget(value)
@@ -206,25 +228,30 @@ test("blank budgets remain observational while malformed caps are rejected", () 
   assert.throws(() => normalizeBrowserComputerCaps({ diskBytes: -1, memoryBytes: 1, processCount: 1, logBytes: 1 }), /non-negative/)
 })
 
-test("documented resource ceilings derive a complete stricter guard cap", () => {
+test("resource ceilings only derive caps for explicitly matching metrics", () => {
   const ceilings = {
     maximumRssBytes: 2_000_000_000,
     maximumPostRunDiskDeltaBytes: 10_000_000,
   }
   assert.deepEqual(deriveBrowserComputerCapsFromResourceCeilings(ceilings), {
-    diskBytes: 10_000_000,
     memoryBytes: 2_000_000_000,
-    processCount: 30,
-    logBytes: 10_000_000,
   })
+  assert.throws(() => resolveBrowserComputerCaps({ resourceCeilings: ceilings }), /diskBytes is required/)
   assert.deepEqual(resolveBrowserComputerCaps({
     caps: { diskBytes: 9, memoryBytes: 19, processCount: 4, logBytes: 5 },
     resourceCeilings: ceilings,
   }), { diskBytes: 9, memoryBytes: 19, processCount: 4, logBytes: 5 })
-  assert.throws(() => resolveBrowserComputerCaps({
-    caps: { diskBytes: 10_000_001, memoryBytes: 19, processCount: 4, logBytes: 5 },
-    resourceCeilings: ceilings,
-  }), /exceeds its runbook ceiling/)
+  assert.deepEqual(deriveBrowserComputerCapsFromResourceCeilings({
+    maximumRssBytes: 2_000_000_000,
+    maximumTransientDiskBytes: 10_000_000,
+    maximumProcessCount: 4,
+    maximumLogBytes: 5,
+  }), {
+    diskBytes: 10_000_000,
+    memoryBytes: 2_000_000_000,
+    processCount: 4,
+    logBytes: 5,
+  })
 })
 
 test("resource telemetry requires an authoritative managed target or explicit local fallback", () => {
@@ -536,24 +563,55 @@ test("fault checkpoint interruption still runs owned cleanup", async () => {
 
 test("persistence evidence binds actual argv, requests, inventories, and seam checkpoints", () => {
   const evidence = persistenceEvidence()
+  const plan = persistencePlan()
   const declarations = persistenceDeclarations()
+  const planned = evaluateBrowserComputerPersistenceMutationSeams({
+    result: plan,
+    dockerPreconditions: declarations,
+    planOnly: true,
+  })
+  assert.equal(planned.ok, true)
+  assert.deepEqual(planned.mutations.map(({ action }) => action), ["save", "remove", "restore"])
+
   const result = evaluateBrowserComputerPersistenceMutationSeams({
     result: evidence,
-    plan: evidence,
+    plan,
     dockerPreconditions: declarations,
+    observedReceipts: evidence.persistenceMutations.map(({ receipt }) => receipt),
   })
   assert.equal(result.ok, true)
   assert.deepEqual(result.mutations.map(({ action }) => action), ["save", "remove", "restore"])
+
+  const predeclaredReceipt = structuredClone(plan)
+  predeclaredReceipt.persistenceMutations[0].receipt = evidence.persistenceMutations[0].receipt
+  const rejectedPlan = evaluateBrowserComputerPersistenceMutationSeams({
+    result: predeclaredReceipt,
+    dockerPreconditions: declarations,
+    planOnly: true,
+  })
+  assert.equal(rejectedPlan.ok, false)
+  assert.match(rejectedPlan.violations.join("\n"), /contains execution state: receipt/)
 
   const altered = structuredClone(evidence)
   altered.persistenceMutations[2].request.argv[2] = "--all"
   const failed = evaluateBrowserComputerPersistenceMutationSeams({
     result: altered,
-    plan: evidence,
+    plan,
     dockerPreconditions: declarations,
   })
   assert.equal(failed.ok, false)
   assert.match(failed.violations.join("\n"), /argv does not equal the exact mutation argv|mutation plan|broad prune/)
+
+  const replayedReceipt = structuredClone(evidence)
+  replayedReceipt.persistenceMutations[2].receipt = replayedReceipt.persistenceMutations[0].receipt
+  const replayed = evaluateBrowserComputerPersistenceMutationSeams({
+    result: replayedReceipt,
+    plan,
+    dockerPreconditions: declarations,
+    observedReceipts: replayedReceipt.persistenceMutations.map(({ receipt }) => receipt),
+  })
+  assert.equal(replayed.ok, false)
+  assert.match(replayed.violations.join("\n"), /newly produced, not replayed|chain from the remove receipt/)
 
   const brokenReceiptChain = structuredClone(evidence)
   brokenReceiptChain.persistenceMutations[1].saveReceipt = {
@@ -562,7 +620,7 @@ test("persistence evidence binds actual argv, requests, inventories, and seam ch
   }
   const broken = evaluateBrowserComputerPersistenceMutationSeams({
     result: brokenReceiptChain,
-    plan: evidence,
+    plan,
     dockerPreconditions: declarations,
   })
   assert.equal(broken.ok, false)
@@ -650,7 +708,7 @@ function persistenceInventory() {
   }
 }
 
-function persistenceEvidence() {
+function persistencePlan() {
   const saveArgv = ["docker", "save", "chariox/browser:fixture", "-o", "/tmp/browser-state.tar"]
   const removeArgv = ["docker", "rm", "chariox-slice-owned"]
   const restoreArgv = [
@@ -658,38 +716,48 @@ function persistenceEvidence() {
     "--volume", "chariox-slice-owned-home:/data",
     "--network", "chariox-slice-owned-net", "chariox/browser:fixture",
   ]
-  const saveReceipt = { ok: true, id: "save-receipt-1", archivePath: "/tmp/browser-state.tar" }
-  const removeReceipt = { ok: true, id: "remove-receipt-1", parentReceiptId: saveReceipt.id }
   return {
     persistenceMutations: [
       {
         action: "save",
         argv: saveArgv,
         request: { action: "save", argv: saveArgv },
-        before: persistenceInventory(),
-        receipt: saveReceipt,
         checkpoints: { before: "before-docker-save", after: "after-docker-save" },
       },
       {
         action: "remove",
         argv: removeArgv,
         request: { action: "remove", argv: removeArgv },
-        before: persistenceInventory(),
-        saveReceipt,
-        receipt: removeReceipt,
         checkpoints: { before: "before-docker-remove", after: "after-docker-remove" },
       },
       {
         action: "restore",
         argv: restoreArgv,
         request: { action: "restore", argv: restoreArgv },
-        before: persistenceInventory(),
-        saveReceipt,
-        removeReceipt,
-        receipt: { ok: true, id: "restore-receipt-1", parentReceiptId: removeReceipt.id },
         checkpoints: { before: "before-docker-restore", after: "after-docker-restore" },
       },
     ],
+  }
+}
+
+function persistenceEvidence() {
+  const plan = persistencePlan()
+  const saveReceipt = { ok: true, id: "save-receipt-1", archivePath: "/tmp/browser-state.tar" }
+  const removeReceipt = { ok: true, id: "remove-receipt-1", parentReceiptId: saveReceipt.id }
+  return {
+    persistenceMutations: plan.persistenceMutations.map((planned) => ({
+      ...planned,
+      before: persistenceInventory(),
+      ...(planned.action === "save"
+        ? { receipt: saveReceipt }
+        : planned.action === "remove"
+          ? { saveReceipt, receipt: removeReceipt }
+          : {
+            saveReceipt,
+            removeReceipt,
+            receipt: { ok: true, id: "restore-receipt-1", parentReceiptId: removeReceipt.id },
+          }),
+    })),
   }
 }
 
@@ -725,6 +793,7 @@ function persistenceDeclarations() {
 function snapshot({
   memoryAvailableBytes = 100,
   diskAvailableBytes = 100,
+  rssBytes,
   containers = [],
   volumes = [],
   networks = [],
@@ -732,8 +801,16 @@ function snapshot({
   logBytes = 0,
 } = {}) {
   return {
-    memory: { totalBytes: 100, availableBytes: memoryAvailableBytes },
-    disk: { totalBytes: 100, availableBytes: diskAvailableBytes },
+    memory: {
+      totalBytes: 100,
+      availableBytes: memoryAvailableBytes,
+      rssBytes: rssBytes ?? 100 - memoryAvailableBytes,
+    },
+    disk: {
+      totalBytes: 100,
+      availableBytes: diskAvailableBytes,
+      usedBytes: 100 - diskAvailableBytes,
+    },
     process: { count: processCount },
     logs: { bytes: logBytes },
     docker: { containers, volumes, networks },

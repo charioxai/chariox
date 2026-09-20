@@ -95,6 +95,10 @@ export async function runManagedBrowserComputerParityLive({
     config.browserComputerGuard?.watchdogProbeTimeoutMs
       ?? config.browserComputerGuard?.watchdogCaptureTimeoutMs,
   )
+  const resourceCaptureTimeoutMs = resolveResourceCaptureTimeout(
+    config.browserComputerGuard?.resourceCaptureTimeoutMs
+      ?? config.browserComputerGuard?.resourceProbeTimeoutMs
+  )
   const expectedTelemetryTargetIds = [
     config.expected?.machineId,
     config.expected?.kernelId,
@@ -115,6 +119,7 @@ export async function runManagedBrowserComputerParityLive({
   const samples = []
   const watchdogSamples = []
   const watchdogSamplingFailures = []
+  const resourceCaptureFailures = []
   let report = null
   let resourcePreflight = null
   let activeCheckpoint = null
@@ -173,11 +178,68 @@ export async function runManagedBrowserComputerParityLive({
     return normalized
   }
 
+  const captureWithDeadline = async (phase, {
+    watchdog = false,
+    parentSignal = null,
+    timeoutMs = resourceCaptureTimeoutMs,
+  } = {}) => {
+    const probeController = new AbortController()
+    const probeSignal = combineBrowserComputerAbortSignals(parentSignal, probeController.signal)
+    let timeout
+    let removeAbort = () => {}
+    let timeoutError = null
+    try {
+      const aborted = new Promise((_, reject) => {
+        if (!probeSignal) return
+        const onAbort = () => reject(probeSignal.reason ?? new Error(`managed parity ${phase} resource probe was cancelled`))
+        if (probeSignal.aborted) onAbort()
+        else {
+          probeSignal.addEventListener("abort", onAbort, { once: true })
+          removeAbort = () => probeSignal.removeEventListener("abort", onAbort)
+        }
+      })
+      const deadline = new Promise((_, reject) => {
+        timeout = setTimeout(() => {
+          timeoutError = new Error(`managed parity ${phase} resource probe exceeded ${timeoutMs}ms`)
+          timeoutError.code = `browser_computer_${phase}_sampling_timeout`
+          probeController.abort(timeoutError)
+          reject(timeoutError)
+        }, timeoutMs)
+      })
+      return await Promise.race([
+        capture(phase, { watchdog, signal: probeSignal }),
+        aborted,
+        deadline,
+      ])
+    } catch (error) {
+      const errorCode = typeof error?.code === "string" ? error.code : null
+      const failure = {
+        phase,
+        code: errorCode
+          ?? timeoutError?.code
+          ?? (parentSignal?.aborted
+            ? `browser_computer_${phase}_sampling_cancelled`
+            : `browser_computer_${phase}_sampling_failed`),
+        message: error?.message ?? String(error),
+      }
+      resourceCaptureFailures.push(failure)
+      throw error
+    } finally {
+      clearTimeout(timeout)
+      removeAbort()
+      if (!probeController.signal.aborted) {
+        probeController.abort(timeoutError ?? new Error(`managed parity ${phase} resource probe complete`))
+      }
+    }
+  }
+
   const guardedTransport = {
     ...transport,
     run: async (step, request, options = {}) => {
       const checkpoints = LIVE_STEP_CHECKPOINTS[step]
-      if (step === "selkies.browser") await capture("during")
+      if (step === "selkies.browser") {
+        await captureWithDeadline("during", { parentSignal: signal })
+      }
       if (checkpoints?.before && activeCheckpoint) {
         await activeCheckpoint(checkpoints.before, { step })
       }
@@ -193,6 +255,7 @@ export async function runManagedBrowserComputerParityLive({
         persistencePlanResult = evaluateBrowserComputerPersistenceMutationSeams({
           result: persistencePlan,
           dockerPreconditions: declaredDockerPreconditions,
+          planOnly: true,
         })
         if (!persistencePlanResult.ok) {
           throw new Error(`managed parity persistence plan failed: ${persistencePlanResult.violations.join("; ")}`)
@@ -212,6 +275,10 @@ export async function runManagedBrowserComputerParityLive({
             if (persistenceEvents.length % 2 !== 0) {
               throw new Error("managed parity persistence before callback was out of order")
             }
+            if (mutation?.receipt || mutation?.receipts?.[mutation.action]
+              || mutation?.saveReceipt || mutation?.removeReceipt) {
+              throw new Error("managed parity persistence before callback must not carry execution receipts")
+            }
             if (!sameArgv(mutation.argv, expected.argv)) {
               throw new Error(`managed parity ${mutation.action} callback argv differs from its validated plan`)
             }
@@ -227,13 +294,31 @@ export async function runManagedBrowserComputerParityLive({
             if (!expected || expected.action !== mutation.action) {
               throw new Error("managed parity persistence after callback was out of order")
             }
+            const receipt = mutation?.receipt ?? mutation?.receipts?.[mutation.action]
+            const previousReceipt = persistenceEvents.filter(({ phase: eventPhase }) => eventPhase === "after").at(-1)?.receipt ?? null
+            const receiptId = receipt?.id ?? receipt?.receiptId
+            if (!receipt || receipt.ok !== true || typeof receiptId !== "string" || receiptId.length === 0) {
+              throw new Error(`managed parity persistence ${mutation.action} after callback must carry a new successful receipt`)
+            }
+            if (persistenceEvents.some((event) => event.receipt?.id === receiptId
+              || event.receipt?.receiptId === receiptId)) {
+              throw new Error(`managed parity persistence ${mutation.action} after callback replayed receipt ${receiptId}`)
+            }
+            if (mutation.action !== "save" && receipt.parentReceiptId !== (previousReceipt?.id ?? previousReceipt?.receiptId)) {
+              throw new Error(`managed parity persistence ${mutation.action} after receipt must chain from the preceding receipt`)
+            }
             await activeCheckpoint(expected.checkpoints.after, {
               step,
               action: mutation.action,
               argv: mutation.argv,
             })
           }
-          persistenceEvents.push({ phase, action: mutation.action, argv: mutation.argv })
+          persistenceEvents.push({
+            phase,
+            action: mutation.action,
+            argv: mutation.argv,
+            ...(phase === "after" ? { receipt: mutation.receipt ?? mutation.receipts?.[mutation.action] } : {}),
+          })
         }
       }
       let result
@@ -257,6 +342,9 @@ export async function runManagedBrowserComputerParityLive({
           result,
           plan: persistencePlan,
           dockerPreconditions: declaredDockerPreconditions,
+          observedReceipts: persistenceEvents
+            .filter(({ phase }) => phase === "after")
+            .map(({ receipt }) => receipt),
         })
         if (!actual.ok) {
           const error = new Error(`managed parity persistence mutation evidence failed: ${actual.violations.join("; ")}`)
@@ -288,26 +376,11 @@ export async function runManagedBrowserComputerParityLive({
   }
 
   const captureWatchdogProbe = async () => {
-    const probeController = new AbortController()
-    let timeout
-    let timeoutError = null
-    try {
-      const timeoutPromise = new Promise((_, reject) => {
-        timeout = setTimeout(() => {
-          timeoutError = new Error(`managed parity watchdog resource probe exceeded ${watchdogProbeTimeoutMs}ms`)
-          timeoutError.code = "browser_computer_watchdog_sampling_timeout"
-          probeController.abort(timeoutError)
-          reject(timeoutError)
-        }, watchdogProbeTimeoutMs)
-      })
-      return await Promise.race([
-        capture("watchdog", { watchdog: true, signal: probeController.signal }),
-        timeoutPromise,
-      ])
-    } finally {
-      clearTimeout(timeout)
-      if (!probeController.signal.aborted) probeController.abort(timeoutError ?? new Error("watchdog resource probe complete"))
-    }
+    return captureWithDeadline("watchdog", {
+      watchdog: true,
+      parentSignal: combineBrowserComputerAbortSignals(signal, workloadController.signal),
+      timeoutMs: watchdogProbeTimeoutMs,
+    })
   }
 
   const runWatchdogTick = async (beforeSample) => {
@@ -354,7 +427,7 @@ export async function runManagedBrowserComputerParityLive({
       activeCheckpoint = checkpoint
       try {
         assertConfiguredDockerPreconditions(declaredDockerPreconditions)
-        const beforeSample = await capture("before")
+        const beforeSample = await captureWithDeadline("before", { parentSignal: signal })
         resourcePreflight = evaluateBrowserComputerPreflight(beforeSample, {
           requiredMemoryBytes: config.browserComputerGuard?.preflight?.requiredMemoryBytes
             ?? config.browserComputerGuard?.requiredMemoryBytes
@@ -386,7 +459,7 @@ export async function runManagedBrowserComputerParityLive({
         }
       } finally {
         try {
-          await capture("after")
+          await captureWithDeadline("after", { parentSignal: signal })
         } finally {
           activeCheckpoint = null
         }
@@ -408,12 +481,20 @@ export async function runManagedBrowserComputerParityLive({
   const resourceEvaluation = evaluateBrowserComputerResourceCaps(samples, normalizedCaps, {
     additionalSamples: watchdogSamples,
   })
+  const resourceCaptureFailure = resourceCaptureFailures.find(({ phase }) => phase === "after")
+    ?? resourceCaptureFailures.find(({ phase }) => phase !== "watchdog")
   const failed = faultGuard.status !== "passed"
     || !resourceEvaluation.ok
     || watchdogError !== null
     || report?.status !== "passed"
   const failure = watchdogError
     ? { code: watchdogError.code ?? "browser_computer_watchdog_failed", step: "watchdog", message: watchdogError.message }
+    : resourceCaptureFailure
+      ? {
+        code: resourceCaptureFailure.code,
+        step: resourceCaptureFailure.phase,
+        message: resourceCaptureFailure.message,
+      }
     : report?.failure
       ? {
         ...report.failure,
@@ -448,10 +529,12 @@ export async function runManagedBrowserComputerParityLive({
       watchdog: {
         intervalMs: watchdogIntervalMs,
         probeTimeoutMs: watchdogProbeTimeoutMs,
+        captureTimeoutMs: resourceCaptureTimeoutMs,
         telemetryMode: samples[0]?.telemetry?.scope ?? null,
         samplingFailures: watchdogSamplingFailures,
         error: watchdogError ? { code: watchdogError.code ?? null, message: watchdogError.message } : null,
       },
+      resourceCaptureFailures,
       resourceEvaluation,
       dockerPreconditions: declaredDockerPreconditions,
       persistenceMutationSeam,
@@ -559,6 +642,15 @@ function resolveWatchdogProbeTimeout(value) {
   const timeout = Number(value)
   if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 60_000) {
     throw new Error("browser/computer watchdog probe timeout must be a safe integer from 1ms through 60000ms")
+  }
+  return timeout
+}
+
+function resolveResourceCaptureTimeout(value) {
+  if (value === undefined || value === null) return 5_000
+  const timeout = Number(value)
+  if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 60_000) {
+    throw new Error("browser/computer resource capture timeout must be a safe integer from 1ms through 60000ms")
   }
   return timeout
 }

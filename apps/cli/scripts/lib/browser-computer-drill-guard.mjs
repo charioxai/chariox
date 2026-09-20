@@ -66,39 +66,34 @@ export function normalizeBrowserComputerCaps(value, { required = true } = {}) {
 
 export const normalizeBrowserComputerResourceCaps = normalizeBrowserComputerCaps
 
-/**
- * The runbook predates the guard's four metric names and only declares the
- * ceilings it can actually observe. Derive the guard caps from those
- * ceilings, while still allowing a stricter guard cap to be declared. A
- * stricter cap is safe; a looser cap would silently weaken the runbook.
- */
 export function deriveBrowserComputerCapsFromResourceCeilings(resourceCeilings) {
   if (!resourceCeilings || typeof resourceCeilings !== "object" || Array.isArray(resourceCeilings)) {
     throw new Error("browser/computer resource ceilings are required to derive caps")
   }
-  const maximumRssBytes = safeCeiling(resourceCeilings.maximumRssBytes, "maximumRssBytes")
-  const maximumPostRunDiskDeltaBytes = safeCeiling(
-    resourceCeilings.maximumPostRunDiskDeltaBytes,
-    "maximumPostRunDiskDeltaBytes",
-  )
+  const caps = {}
+  if (resourceCeilings.maximumRssBytes !== undefined) {
+    caps.memoryBytes = safeCeiling(resourceCeilings.maximumRssBytes, "maximumRssBytes")
+  }
+  const transientDiskBytes = resourceCeilings.maximumTransientDiskBytes
+    ?? resourceCeilings.maximumTransientDiskGrowthBytes
+    ?? resourceCeilings.maximumDiskGrowthBytes
+    ?? resourceCeilings.transientDiskBytes
+  if (transientDiskBytes !== undefined) {
+    caps.diskBytes = safeCeiling(transientDiskBytes, "maximumTransientDiskBytes")
+  }
   const declaredProcessCount = resourceCeilings.maximumProcessCount
     ?? resourceCeilings.maximumProcesses
     ?? resourceCeilings.processCount
-  const processCount = declaredProcessCount === undefined
-    ? Math.max(1, Math.ceil(maximumRssBytes / (64 * 1024 * 1024)))
-    : safeCeiling(declaredProcessCount, "maximumProcessCount")
+  if (declaredProcessCount !== undefined) {
+    caps.processCount = safeCeiling(declaredProcessCount, "maximumProcessCount")
+  }
   const declaredLogBytes = resourceCeilings.maximumLogBytes
     ?? resourceCeilings.maximumLogGrowthBytes
     ?? resourceCeilings.logBytes
-  const logBytes = declaredLogBytes === undefined
-    ? maximumPostRunDiskDeltaBytes
-    : safeCeiling(declaredLogBytes, "maximumLogBytes")
-  return normalizeBrowserComputerCaps({
-    diskBytes: maximumPostRunDiskDeltaBytes,
-    memoryBytes: maximumRssBytes,
-    processCount,
-    logBytes,
-  })
+  if (declaredLogBytes !== undefined) {
+    caps.logBytes = safeCeiling(declaredLogBytes, "maximumLogBytes")
+  }
+  return normalizeBrowserComputerCaps(caps, { required: false })
 }
 
 export function resolveBrowserComputerCaps({ caps, resourceCeilings } = {}) {
@@ -174,6 +169,7 @@ export async function collectBrowserComputerResourceSnapshot({
     disk: {
       totalBytes: Number(disk.blocks) * blockSize,
       availableBytes: Number(disk.bavail) * blockSize,
+      usedBytes: (Number(disk.blocks) - Number(disk.bavail)) * blockSize,
       filesystemPath: path.resolve(filesystemPath),
     },
     docker: {
@@ -301,8 +297,8 @@ export function assertBrowserComputerPreflight(snapshot, options = {}) {
 
 /**
  * Validate exactly one deterministic before/during/after resource sample set.
- * Disk and log caps are operation growth caps; memory and process caps are
- * peak caps. Missing process or log measurements fail closed when caps apply.
+ * Transient disk and log caps are operation growth caps; workload RSS and
+ * process caps are peak caps. Missing authoritative measurements fail closed.
  */
 export function evaluateBrowserComputerResourceCaps(samples, caps, { additionalSamples = [] } = {}) {
   const normalizedCaps = normalizeBrowserComputerCaps(caps)
@@ -347,7 +343,8 @@ export function evaluateBrowserComputerResourceCaps(samples, caps, { additionalS
   if (rows.length === BROWSER_COMPUTER_SAMPLE_PHASES.length) {
     const baseline = rows[0]
     const allRows = [...rows, ...additionalRows]
-    metrics.diskGrowthBytes = Math.max(...allRows.map((row) => Math.max(0, row.diskUsedBytes - baseline.diskUsedBytes)))
+    const transientRows = [...rows.filter((row) => row.phase !== "after"), ...additionalRows]
+    metrics.diskGrowthBytes = Math.max(...transientRows.map((row) => Math.max(0, row.diskUsedBytes - baseline.diskUsedBytes)))
     metrics.peakMemoryBytes = Math.max(...allRows.map((row) => row.memoryUsedBytes))
     metrics.peakProcessCount = Math.max(...allRows.map((row) => row.processCount))
     metrics.logGrowthBytes = Math.max(...allRows.map((row) => Math.max(0, row.logBytes - baseline.logBytes)))
@@ -684,15 +681,17 @@ const PERSISTENCE_MUTATION_CHECKPOINTS = Object.freeze({
 
 /**
  * A persistence result is not authoritative merely because it says "saved".
- * The transport must expose the exact request/argv, pre-mutation inventory,
- * receipt state, and the checkpoints surrounding each mutation. This lets the
+ * Plans expose only the exact request/argv and checkpoints; execution results
+ * add the pre-mutation inventory and newly chained receipts. This lets the
  * live wrapper inject faults at the real save/remove/restore seams without
- * ever accepting a broad or reconstructed Docker command.
+ * accepting a broad or reconstructed Docker command or a predeclared receipt.
  */
 export function evaluateBrowserComputerPersistenceMutationSeams({
   result,
   plan = null,
   dockerPreconditions = [],
+  planOnly = false,
+  observedReceipts = null,
 } = {}) {
   const mutations = extractPersistenceMutations(result)
   const plannedMutations = plan === null ? null : extractPersistenceMutations(plan)
@@ -704,11 +703,23 @@ export function evaluateBrowserComputerPersistenceMutationSeams({
   if (mutations.length !== PERSISTENCE_MUTATION_ORDER.length) {
     violations.push("persistence mutation evidence must contain exactly one save, remove, and restore")
   }
+  if (planOnly) {
+    return validatePersistenceMutationPlan(mutations, dockerPreconditions, violations)
+  }
   if (plannedMutations !== null && !Array.isArray(plannedMutations)) {
     violations.push("persistence mutation plan must contain exact save/remove/restore entries")
   }
+  if (Array.isArray(plannedMutations)) {
+    const planValidation = validatePersistenceMutationPlan(plannedMutations, dockerPreconditions, [])
+    violations.push(...planValidation.violations.map((entry) => `persistence plan: ${entry}`))
+  }
+  if (observedReceipts !== null && (!Array.isArray(observedReceipts)
+    || observedReceipts.length !== PERSISTENCE_MUTATION_ORDER.length)) {
+    violations.push("persistence after callbacks must produce exactly one receipt per mutation")
+  }
   const declarations = Array.isArray(dockerPreconditions) ? dockerPreconditions : []
   const seen = new Set()
+  const seenReceiptIds = new Set()
   const validated = []
   let saveReceipt = null
   let removeReceipt = null
@@ -753,6 +764,13 @@ export function evaluateBrowserComputerPersistenceMutationSeams({
     const receiptId = receipt?.id ?? receipt?.receiptId
     if (!receipt || typeof receipt !== "object" || receipt.ok !== true || !nonEmptyString(receiptId)) {
       violations.push(`persistence ${mutation.action} must expose a successful receipt with an exact id`)
+    } else if (seenReceiptIds.has(receiptId)) {
+      violations.push(`persistence ${mutation.action} receipt must be newly produced, not replayed: ${receiptId}`)
+    } else {
+      seenReceiptIds.add(receiptId)
+    }
+    if (Array.isArray(observedReceipts) && !sameJson(observedReceipts[index], receipt)) {
+      violations.push(`persistence ${mutation.action} result receipt must equal its after-operation receipt`)
     }
     if (mutation.action === "save") {
       if (nonEmptyString(declaration.savePath) && receipt?.archivePath !== declaration.savePath) {
@@ -804,10 +822,7 @@ export function evaluateBrowserComputerPersistenceMutationSeams({
       if (!planned || planned.action !== mutation.action
         || !sameArray(planned.argv, mutation.argv)
         || !sameJson(planned.request, mutation.request)
-        || !sameJson(planned.checkpoints, mutation.checkpoints)
-        || !sameJson(planned.receipt, mutation.receipt)
-        || !sameJson(planned.saveReceipt, mutation.saveReceipt)
-        || !sameJson(planned.removeReceipt, mutation.removeReceipt)) {
+        || !sameJson(planned.checkpoints, mutation.checkpoints)) {
         violations.push(`persistence ${mutation.action} result does not equal its validated mutation plan`)
       }
     }
@@ -819,6 +834,59 @@ export function evaluateBrowserComputerPersistenceMutationSeams({
       receipt: receipt ?? null,
       precondition,
     })
+  }
+  return {
+    schema: BROWSER_COMPUTER_GUARD_SCHEMA,
+    ok: violations.length === 0,
+    mutations: validated,
+    violations,
+  }
+}
+
+function validatePersistenceMutationPlan(mutations, dockerPreconditions, violations) {
+  const declarations = Array.isArray(dockerPreconditions) ? dockerPreconditions : []
+  const allowedPlanFields = new Set(["action", "argv", "request", "checkpoints"])
+  const seen = new Set()
+  const validated = []
+  for (let index = 0; index < PERSISTENCE_MUTATION_ORDER.length; index += 1) {
+    const expectedAction = PERSISTENCE_MUTATION_ORDER[index]
+    const mutation = mutations[index]
+    if (!mutation || mutation.action !== expectedAction) {
+      violations.push(`persistence mutation ${index} must be ${expectedAction}`)
+      continue
+    }
+    if (seen.has(mutation.action)) violations.push(`persistence mutation repeated: ${mutation.action}`)
+    seen.add(mutation.action)
+    const extraFields = Object.keys(mutation).filter((key) => !allowedPlanFields.has(key))
+    if (extraFields.length > 0) {
+      violations.push(`persistence ${mutation.action} plan contains execution state: ${extraFields.join(", ")}`)
+    }
+    const argv = Array.isArray(mutation.argv) ? mutation.argv.map((entry) => String(entry)) : null
+    if (!argv) violations.push(`persistence ${mutation.action} plan must expose its exact argv array`)
+    const declaration = declarations.find((entry) => entry?.action === mutation.action)
+    if (!declaration) {
+      violations.push(`persistence mutation has no declared Docker precondition: ${mutation.action}`)
+    } else if (Array.isArray(declaration.command) && !sameArray(declaration.command, argv ?? [])) {
+      violations.push(`persistence ${mutation.action} plan argv does not equal its declared Docker command`)
+    }
+    const request = mutation.request
+    if (!request || typeof request !== "object" || Array.isArray(request)) {
+      violations.push(`persistence ${mutation.action} plan must expose its exact request object`)
+    } else {
+      const requestAction = request.action ?? request.operation ?? request.mutation
+      if (requestAction !== mutation.action) {
+        violations.push(`persistence ${mutation.action} plan request identity does not match its mutation action`)
+      }
+      if (!Array.isArray(request.argv) || !sameArray(request.argv, argv ?? [])) {
+        violations.push(`persistence ${mutation.action} plan request argv does not equal the exact mutation argv`)
+      }
+    }
+    const checkpoint = mutation.checkpoints
+    const expectedCheckpoint = PERSISTENCE_MUTATION_CHECKPOINTS[mutation.action]
+    if (checkpoint?.before !== expectedCheckpoint.before || checkpoint?.after !== expectedCheckpoint.after) {
+      violations.push(`persistence ${mutation.action} plan checkpoints do not fence its exact Docker mutation`)
+    }
+    validated.push({ action: mutation.action, argv, request: request ?? null, checkpoints: checkpoint ?? null })
   }
   return {
     schema: BROWSER_COMPUTER_GUARD_SCHEMA,
@@ -1175,29 +1243,38 @@ function resourceMetrics(sample, phase, violations) {
   const memory = sample?.memory
   const processCount = sample?.process?.count ?? sample?.processCount ?? sample?.resources?.processCount
   const logBytes = sample?.logs?.bytes ?? sample?.logBytes ?? sample?.resources?.logBytes
+  const workloadRssBytes = memory?.rssBytes
+    ?? sample?.workload?.rssBytes
+    ?? sample?.resources?.rssBytes
+    ?? sample?.rssBytes
   const diskTotalBytes = safeCounter(disk?.totalBytes)
   const diskAvailableBytes = safeCounter(disk?.availableBytes)
+  const diskUsedBytes = safeCounter(disk?.usedBytes
+    ?? sample?.resources?.diskUsedBytes
+    ?? sample?.diskUsedBytes)
   const memoryTotalBytes = safeCounter(memory?.totalBytes)
   const memoryAvailableBytes = safeCounter(memory?.availableBytes)
   const processValue = safeCounter(processCount)
   const logValue = safeCounter(logBytes)
+  const rssValue = safeCounter(workloadRssBytes)
   if (diskTotalBytes === null || diskTotalBytes <= 0 || diskAvailableBytes === null || diskAvailableBytes > diskTotalBytes) {
     violations.push(`${phase} sample has missing or invalid disk totals/availability`)
   }
+  if (diskUsedBytes === null) violations.push(`${phase} sample is missing an explicit transient disk usage byte count`)
   if (memoryTotalBytes === null || memoryTotalBytes <= 0 || memoryAvailableBytes === null || memoryAvailableBytes > memoryTotalBytes) {
     violations.push(`${phase} sample has missing or invalid memory totals/availability`)
   }
+  if (rssValue === null) violations.push(`${phase} sample is missing an explicit workload RSS byte count`)
   if (processValue === null) violations.push(`${phase} sample is missing a safe process count`)
   if (logValue === null) violations.push(`${phase} sample is missing a safe log byte count`)
-  if (diskTotalBytes === null || diskAvailableBytes === null || memoryTotalBytes === null
-    || memoryAvailableBytes === null || processValue === null || logValue === null) return null
-  const explicitDiskUsed = safeCounter(disk?.usedBytes)
-  const explicitMemoryUsed = safeCounter(memory?.usedBytes)
-  if (explicitDiskUsed !== null && explicitDiskUsed < 0) violations.push(`${phase} sample has invalid disk usage`)
-  if (explicitMemoryUsed !== null && explicitMemoryUsed < 0) violations.push(`${phase} sample has invalid memory usage`)
+  if (diskTotalBytes === null || diskAvailableBytes === null || diskUsedBytes === null
+    || memoryTotalBytes === null || memoryAvailableBytes === null || rssValue === null
+    || processValue === null || logValue === null) return null
+  if (diskUsedBytes < 0 || diskUsedBytes > diskTotalBytes) violations.push(`${phase} sample has invalid disk usage`)
+  if (rssValue < 0) violations.push(`${phase} sample has invalid workload RSS`)
   return {
-    diskUsedBytes: explicitDiskUsed ?? (diskTotalBytes - diskAvailableBytes),
-    memoryUsedBytes: explicitMemoryUsed ?? (memoryTotalBytes - memoryAvailableBytes),
+    diskUsedBytes,
+    memoryUsedBytes: rssValue,
     processCount: processValue,
     logBytes: logValue,
   }

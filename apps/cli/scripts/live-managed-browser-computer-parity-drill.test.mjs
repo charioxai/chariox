@@ -113,11 +113,12 @@ function cleanInventory() {
 
 function transport() {
   const calls = []
+  let receiptGeneration = 0
   return {
     calls,
     resourceScope: "managed",
     async describePersistenceMutations() {
-      return persistenceEvidence()
+      return persistencePlan()
     },
     async run(step, input, options = {}) {
       calls.push({ step, input })
@@ -132,9 +133,13 @@ function transport() {
       if (step.endsWith(".computer")) return { ...binding, screenshot: true, pointer: true, keyboard: true }
       if (step.endsWith(".takeover")) return { ...binding, overlayVisible: true, takeoverCompleted: true, actorAttributed: true }
       if (step.endsWith(".persistence")) {
-        const evidence = persistenceEvidence()
-        for (const mutation of evidence.persistenceMutations) {
-          await options.onPersistenceMutation?.({ phase: "before", mutation })
+        const evidence = persistenceEvidence(++receiptGeneration)
+        const plan = persistencePlan()
+        for (const [index, mutation] of evidence.persistenceMutations.entries()) {
+          await options.onPersistenceMutation?.({
+            phase: "before",
+            mutation: plan.persistenceMutations[index],
+          })
           await options.onPersistenceMutation?.({ phase: "after", mutation })
         }
         return {
@@ -177,8 +182,16 @@ function sample(phase, overrun = false) {
   }[phase]
   return {
     phase,
-    memory: { totalBytes: 100, availableBytes: values.memoryAvailableBytes },
-    disk: { totalBytes: 100, availableBytes: values.diskAvailableBytes },
+    memory: {
+      totalBytes: 100,
+      availableBytes: values.memoryAvailableBytes,
+      rssBytes: overrun ? 30 : phase === "after" ? 5 : 10,
+    },
+    disk: {
+      totalBytes: 100,
+      availableBytes: values.diskAvailableBytes,
+      usedBytes: 100 - values.diskAvailableBytes,
+    },
     process: { count: values.processCount },
     logs: { bytes: values.logBytes },
     docker: { containers: [], volumes: [], images: [] },
@@ -202,42 +215,57 @@ function persistenceInventory() {
   }
 }
 
-function persistenceEvidence() {
+function persistencePlan() {
   const saveArgv = ["docker", "save", "chariox/browser:fixture", "-o", "/tmp/browser-state.tar"]
   const removeArgv = ["docker", "rm", "chariox-slice-owned"]
   const restoreArgv = ["docker", "load", "-i", "/tmp/browser-state.tar"]
-  const saveReceipt = { ok: true, id: "save-receipt-1", archivePath: "/tmp/browser-state.tar" }
-  const removeReceipt = { ok: true, id: "remove-receipt-1", parentReceiptId: saveReceipt.id }
   return {
     persistenceMutations: [
       {
         action: "save",
         argv: saveArgv,
         request: { action: "save", argv: saveArgv },
-        before: persistenceInventory(),
-        receipt: saveReceipt,
         checkpoints: { before: "before-docker-save", after: "after-docker-save" },
       },
       {
         action: "remove",
         argv: removeArgv,
         request: { action: "remove", argv: removeArgv },
-        before: persistenceInventory(),
-        saveReceipt,
-        receipt: removeReceipt,
         checkpoints: { before: "before-docker-remove", after: "after-docker-remove" },
       },
       {
         action: "restore",
         argv: restoreArgv,
         request: { action: "restore", argv: restoreArgv },
-        before: persistenceInventory(),
-        saveReceipt,
-        removeReceipt,
-        receipt: { ok: true, id: "restore-receipt-1", parentReceiptId: removeReceipt.id, archivePath: "/tmp/browser-state.tar" },
         checkpoints: { before: "before-docker-restore", after: "after-docker-restore" },
       },
     ],
+  }
+}
+
+function persistenceEvidence(generation = 1) {
+  const plan = persistencePlan()
+  const saveReceipt = { ok: true, id: `save-receipt-${generation}`, archivePath: "/tmp/browser-state.tar" }
+  const removeReceipt = { ok: true, id: `remove-receipt-${generation}`, parentReceiptId: saveReceipt.id }
+  return {
+    persistenceMutations: plan.persistenceMutations.map((planned) => ({
+      ...planned,
+      before: persistenceInventory(),
+      ...(planned.action === "save"
+        ? { receipt: saveReceipt }
+        : planned.action === "remove"
+          ? { saveReceipt, receipt: removeReceipt }
+          : {
+            saveReceipt,
+            removeReceipt,
+            receipt: {
+              ok: true,
+              id: `restore-receipt-${generation}`,
+              parentReceiptId: removeReceipt.id,
+              archivePath: "/tmp/browser-state.tar",
+            },
+          }),
+    })),
   }
 }
 
@@ -321,6 +349,96 @@ test("live M0 watchdog bounds a hung telemetry probe and still completes owned c
   assert.equal(injected.calls.filter(({ step }) => step === "cleanup.inspect").length, 1)
 })
 
+test("live M0 bounds before, during, and after resource collectors", async () => {
+  for (const stalledPhase of ["before", "during", "after"]) {
+    const phaseConfig = config()
+    phaseConfig.browserComputerGuard.resourceCaptureTimeoutMs = 5
+    phaseConfig.browserComputerGuard.watchdogIntervalMs = 1000
+    const injected = transport()
+    let collectorAborted = false
+    const report = await runManagedBrowserComputerParityLive({
+      config: phaseConfig,
+      transport: injected,
+      evidenceRoot: EVIDENCE_ROOT,
+      collectResourceSnapshot: ({ phase, signal }) => {
+        if (phase !== stalledPhase) return sample(phase)
+        return new Promise((resolve) => {
+          signal.addEventListener("abort", () => {
+            collectorAborted = true
+            resolve(sample(phase))
+          }, { once: true })
+        })
+      },
+    })
+
+    assert.equal(report.status, "failed", stalledPhase)
+    assert.equal(collectorAborted, true, stalledPhase)
+    assert.equal(
+      report.browserComputerGuard.resourceCaptureFailures.some(({ phase }) => phase === stalledPhase),
+      true,
+      stalledPhase,
+    )
+    assert.match(report.failure.code, new RegExp(`browser_computer_${stalledPhase}_sampling_timeout`), stalledPhase)
+    if (stalledPhase === "after") {
+      assert.equal(injected.calls.filter(({ step }) => step === "cleanup.inspect").length, 1)
+    }
+  }
+})
+
+test("after-sample failure emits failed evidence without suppressing cleanup", async () => {
+  const injected = transport()
+  const report = await runManagedBrowserComputerParityLive({
+    config: config(),
+    transport: injected,
+    evidenceRoot: EVIDENCE_ROOT,
+    collectResourceSnapshot: ({ phase }) => {
+      if (phase === "after") throw new Error("after sample unavailable")
+      return sample(phase)
+    },
+  })
+
+  assert.equal(report.status, "failed")
+  assert.equal(report.failure.code, "browser_computer_after_sampling_failed")
+  assert.match(report.failure.message, /after sample unavailable/)
+  assert.equal(report.browserComputerGuard.resourceSamples.some(({ phase }) => phase === "after"), false)
+  assert.equal(injected.calls.filter(({ step }) => step === "cleanup.perform").length, 1)
+  assert.equal(injected.calls.filter(({ step }) => step === "cleanup.inspect").length, 1)
+})
+
+test("caller cancellation aborts a stalled resource collector and returns failed evidence", async () => {
+  const caller = new AbortController()
+  const injected = transport()
+  let collectorAborted = false
+  const pending = runManagedBrowserComputerParityLive({
+    config: {
+      ...config(),
+      browserComputerGuard: {
+        ...config().browserComputerGuard,
+        resourceCaptureTimeoutMs: 1000,
+        watchdogIntervalMs: 1000,
+      },
+    },
+    transport: injected,
+    evidenceRoot: EVIDENCE_ROOT,
+    signal: caller.signal,
+    collectResourceSnapshot: ({ phase, signal }) => {
+      if (phase !== "before") return sample(phase)
+      return new Promise((resolve) => {
+        signal.addEventListener("abort", () => {
+          collectorAborted = true
+          resolve(sample(phase))
+        }, { once: true })
+      })
+    },
+  })
+  setTimeout(() => caller.abort(new Error("caller cancelled")), 5)
+  const report = await pending
+
+  assert.equal(report.status, "failed")
+  assert.equal(collectorAborted, true)
+  assert.equal(report.browserComputerGuard.resourceCaptureFailures.some(({ code }) => code.endsWith("_cancelled")), true)
+})
+
 test("live M0 entry executes a fault checkpoint and fails the run while cleanup still executes", async () => {
   const injected = transport()
   const report = await runManagedBrowserComputerParityLive({
@@ -343,18 +461,18 @@ test("live M0 entry executes a fault checkpoint and fails the run while cleanup 
   assert.equal(injected.calls.some(({ step }) => step === "cleanup.inspect"), true)
 })
 
-test("runbook-shaped ceilings remain runnable without a duplicate guard cap declaration", async () => {
+test("runbook ceilings do not invent transient guard caps", async () => {
   const runbookConfig = config()
   delete runbookConfig.browserComputerGuard.caps
-  const report = await runManagedBrowserComputerParityLive({
-    config: runbookConfig,
-    transport: transport(),
-    evidenceRoot: EVIDENCE_ROOT,
-    collectResourceSnapshot: ({ phase }) => sample(phase),
-  })
-  assert.equal(report.status, "passed", report.failure?.code ?? "runbook-shaped config did not pass")
-  assert.equal(report.browserComputerGuard.resourceEvaluation.ok, true)
-  assert.equal(report.browserComputerGuard.resourceEvaluation.caps.memoryBytes, 2_000_000_000)
+  await assert.rejects(
+    runManagedBrowserComputerParityLive({
+      config: runbookConfig,
+      transport: transport(),
+      evidenceRoot: EVIDENCE_ROOT,
+      collectResourceSnapshot: ({ phase }) => sample(phase),
+    }),
+    /resource cap diskBytes is required/,
+  )
 })
 
 test("remote live entry fails closed when managed-target telemetry is absent", async () => {
