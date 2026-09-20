@@ -959,8 +959,28 @@ async fn run_repaired_definition_on_fresh_worker(
 }
 
 #[cfg(unix)]
-#[tokio::test]
-async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_preserve_operation() {
+#[test]
+fn public_setup_status_transport_recovery_and_missing_dispatch_replay_preserve_operation() {
+    std::thread::Builder::new()
+        .name("project-environment-setup-transport-recovery".to_string())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("transport-recovery test runtime should build")
+                .block_on(
+                    public_setup_status_transport_recovery_and_missing_dispatch_replay_preserve_operation_inner(),
+                );
+        })
+        .expect("transport-recovery test thread should spawn")
+        .join()
+        .expect("transport-recovery test thread should not panic");
+}
+
+#[cfg(unix)]
+async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_preserve_operation_inner(
+) {
     let _environment_lock = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
         "chariox-project-environment-transport-recovery-{}-{}",
