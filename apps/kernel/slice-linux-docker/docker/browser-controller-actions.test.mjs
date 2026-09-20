@@ -3,6 +3,10 @@ import assert from "node:assert/strict";
 
 import {
   ACTION_ERROR_CODES,
+  actionabilityFunction,
+  fillFunction,
+  fillRequestBytes,
+  MAX_FILL_REQUEST_BYTES,
   performBrowserAction,
 } from "./browser-controller-actions.mjs";
 
@@ -65,7 +69,7 @@ class FakeConnection {
     } else {
       throw new Error(`unexpected method ${method}`);
     }
-    this.afterSend?.(method, timeoutMs);
+    this.afterSend?.(method, timeoutMs, params);
     return result;
   }
 }
@@ -139,6 +143,33 @@ test("requires two equal actionable geometries before mutation", async () => {
   assert.equal(
     connection.calls.filter((call) => call.method === "Input.dispatchMouseEvent").length,
     3,
+  );
+});
+
+test("rechecks the hit target after hover and retries a replaced menu without pressing", async () => {
+  const time = fakeTime();
+  const connection = new FakeConnection({
+    actionability: [READY, READY, { state: "obscured" }, READY, READY],
+  });
+  const result = await performBrowserAction({
+    connection,
+    element: ELEMENT,
+    action: { kind: "click" },
+    ...time,
+  });
+
+  assert.equal(result.attempts, 3);
+  assert.deepEqual(
+    connection.calls
+      .filter((call) => call.method === "Input.dispatchMouseEvent")
+      .map((call) => call.params.type),
+    ["mouseMoved", "mouseMoved", "mousePressed", "mouseReleased"],
+  );
+  assert.equal(
+    connection.calls.filter(
+      (call) => call.method === "Input.dispatchMouseEvent" && call.params.type === "mousePressed",
+    ).length,
+    1,
   );
 });
 
@@ -261,6 +292,273 @@ test("enforces one wall-clock deadline across CDP calls and cleanup", async () =
   assert.equal(
     connection.calls.every((call) => Number.isSafeInteger(call.timeoutMs) && call.timeoutMs > 0),
     true,
+  );
+});
+
+test("does not retry after a pressed/released pair crosses the deadline", async () => {
+  const time = fakeTime();
+  const connection = new FakeConnection({
+    actionability: [READY, READY],
+    afterSend: (method, _timeoutMs, params) => {
+      if (method === "Input.dispatchMouseEvent" && params.type === "mouseReleased") {
+        time.advance(51);
+      }
+    },
+  });
+  await assert.rejects(
+    performBrowserAction({
+      connection,
+      element: ELEMENT,
+      action: { kind: "click" },
+      timeoutMs: 100,
+      ...time,
+    }),
+    (error) => {
+      assert.equal(error.code, ACTION_ERROR_CODES.POST_ACTION_UNCERTAIN);
+      assert.deepEqual(error.details, {
+        outcome: "post_action_uncertain",
+        phase: "mouseReleased",
+        attempts: 2,
+        timeout_ms: 100,
+        cause_code: ACTION_ERROR_CODES.TIMEOUT,
+      });
+      return true;
+    },
+  );
+  const mouseEvents = connection.calls
+    .filter((call) => call.method === "Input.dispatchMouseEvent")
+    .map((call) => call.params.type);
+  assert.deepEqual(mouseEvents, ["mouseMoved", "mousePressed", "mouseReleased"]);
+  assert.equal(mouseEvents.filter((type) => type === "mousePressed").length, 1);
+  assert.equal(mouseEvents.filter((type) => type === "mouseReleased").length, 1);
+  assert.equal(connection.calls.filter((call) => call.method === "Runtime.releaseObject").length, 1);
+});
+
+test("reports an indeterminate fill when its mutation response crosses the deadline", async () => {
+  const time = fakeTime();
+  const connection = new FakeConnection({
+    actionability: [READY, READY],
+    afterSend: (method, _timeoutMs, params) => {
+      if (method === "Runtime.callFunctionOn" && Array.isArray(params.arguments)) {
+        time.advance(51);
+      }
+    },
+  });
+  await assert.rejects(
+    performBrowserAction({
+      connection,
+      element: ELEMENT,
+      action: { kind: "fill", text: "one-shot", append: false },
+      timeoutMs: 100,
+      ...time,
+    }),
+    (error) => {
+      assert.equal(error.code, ACTION_ERROR_CODES.POST_ACTION_UNCERTAIN);
+      assert.deepEqual(error.details, {
+        outcome: "post_action_uncertain",
+        phase: "fill",
+        attempts: 2,
+        timeout_ms: 100,
+        cause_code: ACTION_ERROR_CODES.TIMEOUT,
+      });
+      return true;
+    },
+  );
+  assert.equal(
+    connection.calls.filter(
+      (call) => call.method === "Runtime.callFunctionOn" && Array.isArray(call.params.arguments),
+    ).length,
+    1,
+  );
+});
+
+test("restores the prior value when a native number setter sanitizes fill text", () => {
+  const previousDocument = globalThis.document;
+  const events = [];
+  const document = { activeElement: null };
+  class NumberInput {
+    constructor() {
+      this.isConnected = true;
+      this.disabled = false;
+      this.readOnly = false;
+      this.tagName = "input";
+      this.type = "number";
+      this._value = "7";
+    }
+
+    get value() {
+      return this._value;
+    }
+
+    set value(value) {
+      this._value = /^-?\d+(?:\.\d+)?$/.test(String(value)) ? String(value) : "";
+    }
+
+    focus() {
+      document.activeElement = this;
+    }
+
+    dispatchEvent(event) {
+      events.push(event.type);
+    }
+  }
+  const control = new NumberInput();
+  globalThis.document = document;
+  try {
+    const result = fillFunction.call(control, "opaque-not-a-number", false);
+    assert.deepEqual(result, { ok: false });
+    assert.equal(control.value, "7");
+    assert.deepEqual(events, []);
+    assert.doesNotMatch(JSON.stringify(result), /opaque-not-a-number/);
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document;
+    else globalThis.document = previousDocument;
+  }
+});
+
+test("follows open shadow roots for hit testing and focus", () => {
+  const previousDocument = globalThis.document;
+  const previousWindow = globalThis.window;
+  const previousEvent = globalThis.Event;
+  const shadowRoot = { activeElement: null, host: null };
+  const host = { shadowRoot, parentElement: null, getRootNode: () => document };
+  shadowRoot.host = host;
+  const document = {
+    activeElement: host,
+    elementFromPoint: () => host,
+  };
+  const control = {
+    isConnected: true,
+    disabled: false,
+    readOnly: false,
+    tagName: "input",
+    type: "text",
+    value: "",
+    parentElement: null,
+    getRootNode: () => shadowRoot,
+    scrollIntoView() {},
+    getBoundingClientRect: () => ({ left: 10, top: 20, width: 100, height: 20 }),
+    matches: () => false,
+    closest: () => null,
+    getAttribute: () => null,
+    contains: () => false,
+    focus() {
+      shadowRoot.activeElement = control;
+      document.activeElement = host;
+    },
+    dispatchEvent() {},
+  };
+  globalThis.document = document;
+  globalThis.window = {
+    getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
+  };
+  globalThis.Event = class Event {
+    constructor(type, init) {
+      this.type = type;
+      this.init = init;
+    }
+  };
+  try {
+    assert.deepEqual(actionabilityFunction.call(control), {
+      state: "ready",
+      x: 60,
+      y: 30,
+      width: 100,
+      height: 20,
+      editable: true,
+    });
+    assert.deepEqual(fillFunction.call(control, "shadow-value", false), { ok: true });
+    assert.equal(control.value, "shadow-value");
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document;
+    else globalThis.document = previousDocument;
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+    if (previousEvent === undefined) delete globalThis.Event;
+    else globalThis.Event = previousEvent;
+  }
+});
+
+test("does not treat an ordinary ancestor hit as actionable for a pointer-events-none target", () => {
+  const previousDocument = globalThis.document;
+  const previousWindow = globalThis.window;
+  const ancestor = { parentElement: null, style: { pointerEvents: "none" } };
+  const document = {
+    activeElement: null,
+    elementFromPoint: () => ancestor,
+  };
+  const control = {
+    isConnected: true,
+    disabled: false,
+    readOnly: false,
+    tagName: "button",
+    parentElement: ancestor,
+    getRootNode: () => document,
+    scrollIntoView() {},
+    getBoundingClientRect: () => ({ left: 10, top: 20, width: 100, height: 20 }),
+    matches: () => false,
+    closest: () => null,
+    getAttribute: () => null,
+    contains: () => false,
+  };
+  globalThis.document = document;
+  globalThis.window = {
+    getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
+  };
+  try {
+    assert.deepEqual(actionabilityFunction.call(control), { state: "obscured" });
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document;
+    else globalThis.document = previousDocument;
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
+
+test("bounds the JSON-encoded fill frame near the 64 KiB CDP limit", async () => {
+  const objectId = "object-91";
+  const escapedUnit = "\\\"";
+  let acceptedText = "";
+  while (fillRequestBytes(objectId, acceptedText + escapedUnit, false) <= MAX_FILL_REQUEST_BYTES) {
+    acceptedText += escapedUnit;
+  }
+  const acceptedBytes = fillRequestBytes(objectId, acceptedText, false);
+  const rejectedBytes = fillRequestBytes(objectId, acceptedText + escapedUnit, false);
+  assert.ok(acceptedText.length > 0);
+  assert.ok(acceptedBytes <= MAX_FILL_REQUEST_BYTES);
+  assert.ok(rejectedBytes > MAX_FILL_REQUEST_BYTES);
+
+  const acceptedConnection = new FakeConnection({ actionability: [READY, READY] });
+  await performBrowserAction({
+    connection: acceptedConnection,
+    element: ELEMENT,
+    action: { kind: "fill", text: acceptedText, append: false },
+    ...fakeTime(),
+  });
+  const acceptedFillCall = acceptedConnection.calls.find(
+    (call) => call.method === "Runtime.callFunctionOn" && Array.isArray(call.params.arguments),
+  );
+  assert.equal(acceptedFillCall.params.arguments[0].value, acceptedText);
+
+  const rejectedConnection = new FakeConnection({ actionability: [READY, READY] });
+  await assert.rejects(
+    performBrowserAction({
+      connection: rejectedConnection,
+      element: ELEMENT,
+      action: { kind: "fill", text: acceptedText + escapedUnit, append: false },
+      ...fakeTime(),
+    }),
+    (error) => {
+      assert.equal(error.code, ACTION_ERROR_CODES.INVALID_ARGUMENT);
+      assert.equal(error.details.reason, "fill_request_too_large");
+      return true;
+    },
+  );
+  assert.equal(
+    rejectedConnection.calls.filter(
+      (call) => call.method === "Runtime.callFunctionOn" && Array.isArray(call.params.arguments),
+    ).length,
+    0,
   );
 });
 
