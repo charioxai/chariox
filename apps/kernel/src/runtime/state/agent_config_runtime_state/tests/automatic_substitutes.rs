@@ -7,25 +7,504 @@ use crate::account_profile::{
 
 #[tokio::test]
 async fn automatic_substitution_settles_failure_before_relaunching_queued_work() {
-    assert_queued_substitution(false, false).await;
+    assert_queued_substitution(false, false, false, false).await;
 }
 
 #[tokio::test]
 async fn automatic_substitution_advances_a_queued_workflow_once() {
-    assert_queued_substitution(true, false).await;
+    assert_queued_substitution(true, false, false, false).await;
 }
 
 #[tokio::test]
 async fn claude_stop_failure_hook_activates_substitute_without_replaying_failed_prompt() {
-    assert_queued_substitution(false, true).await;
+    assert_queued_substitution(false, true, false, false).await;
 }
 
 #[tokio::test]
 async fn claude_stop_failure_hook_advances_queued_workflow_on_substitute_once() {
-    assert_queued_substitution(true, true).await;
+    assert_queued_substitution(true, true, false, false).await;
 }
 
-async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
+#[tokio::test]
+async fn late_claude_stop_failure_activates_substitute_after_prompt_settlement() {
+    assert_queued_substitution(false, true, true, false).await;
+}
+
+#[tokio::test]
+async fn late_claude_stop_failure_does_not_replace_a_newer_same_profile_run() {
+    assert_queued_substitution(false, true, true, true).await;
+}
+
+#[tokio::test]
+async fn late_provider_failure_reserves_idle_agent_during_retirement() {
+    let (runtime, session_id, agent_id, _) =
+        runtime_with_substitutes(&["opencode/deepseek-v4-pro"], true).await;
+    runtime
+        .owned
+        .agent_store
+        .set_agent_runtime_profile_with_account_profile(
+            &agent_id,
+            "claude-headless",
+            Some("claude-opus-4-8".to_string()),
+            Some("high".to_string()),
+            Some("default".to_string()),
+            crate::provider::ProviderResumeState::default(),
+        )
+        .unwrap();
+    let request = crate::provider::LaunchProviderRequest::new(
+        &session_id,
+        "claude",
+        "claude-headless",
+        "default",
+        "claude-opus-4-8",
+    )
+    .with_agent_id(&agent_id)
+    .with_variant(Some("high".to_string()));
+    let mut failed_run = crate::provider::RuntimeProviderRun::new(
+        "late-failure-retirement-run",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "late-failure-retirement".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("late-failure-retirement-runtime".to_string()),
+        },
+    );
+    failed_run.mark_running();
+    let attachment_id = runtime
+        .with_app_side_effect(|app| {
+            app.providers_mut().insert_run_for_test(failed_run.clone());
+            app.sessions_mut()
+                .set_active_provider_run(&session_id, Some(failed_run.id().to_string()))?;
+            Ok::<_, DaemonError>(
+                crate::app::KernelSessionService::new(app)
+                    .attach(crate::attachment::AttachRequest::new(
+                        &session_id,
+                        "late-failure-retirement-test",
+                        crate::attachment::ClientCapabilityLevel::FullTerminal,
+                    ))?
+                    .id()
+                    .to_string(),
+            )
+        })
+        .await
+        .unwrap();
+
+    let barrier = runtime.install_provider_retirement_test_barrier(failed_run.id());
+    let failure_runtime = runtime.clone();
+    let failure_session_id = session_id.clone();
+    let failed_run_id = failed_run.id().to_string();
+    let failure = tokio::spawn(async move {
+        failure_runtime
+            .fail_owned_provider_prompt(
+                &failure_session_id,
+                &failed_run_id,
+                "You've hit your session limit",
+                true,
+            )
+            .await
+    });
+    barrier.wait_until_reached().await;
+
+    let arrival = runtime
+        .with_app_side_effect(|app| {
+            app.prompt_owner_submit_prepared_prompt(
+                &session_id,
+                crate::session::PromptQueueItem::new(
+                    "arriving-during-retirement",
+                    &attachment_id,
+                    &agent_id,
+                    "new work",
+                    crate::session::PromptStatus::Queued,
+                ),
+                false,
+            )
+        })
+        .await
+        .unwrap();
+    if matches!(
+        arrival,
+        crate::session::PromptSubmissionOutcome::Started { .. }
+    ) {
+        let mut replacement = crate::provider::RuntimeProviderRun::new(
+            "same-profile-run-started-during-retirement",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::External,
+                process_label: "same-profile-retirement-race".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("same-profile-retirement-race-runtime".to_string()),
+            },
+        );
+        replacement.mark_running();
+        runtime
+            .with_app_side_effect(|app| {
+                app.providers_mut().insert_run_for_test(replacement.clone());
+                app.sessions_mut()
+                    .set_active_provider_run(&session_id, Some(replacement.id().to_string()))?;
+                Ok::<_, DaemonError>(())
+            })
+            .await
+            .unwrap();
+    }
+    barrier.release();
+    failure
+        .await
+        .expect("failure task should not panic")
+        .expect("late failure should settle");
+
+    assert!(
+        matches!(arrival, crate::session::PromptSubmissionOutcome::Queued { .. }),
+        "prompt admission must remain queued while late-failure cleanup owns the profile transition"
+    );
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    let (active, queued) = runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&session, &agent_id);
+    assert!(active.is_none());
+    assert_eq!(queued.len(), 1);
+    assert_eq!(
+        runtime
+            .owned
+            .agent_store
+            .get_agent(&agent_id)
+            .unwrap()
+            .active_substitute_index(),
+        Some(0)
+    );
+}
+
+#[tokio::test]
+async fn delayed_failure_does_not_settle_newer_runs_active_prompt() {
+    let (runtime, session_id, agent_id, _) =
+        runtime_with_substitutes(&["opencode/deepseek-v4-pro"], true).await;
+    runtime
+        .owned
+        .agent_store
+        .set_agent_runtime_profile_with_account_profile(
+            &agent_id,
+            "claude-headless",
+            Some("claude-opus-4-8".to_string()),
+            Some("high".to_string()),
+            Some("default".to_string()),
+            crate::provider::ProviderResumeState::default(),
+        )
+        .unwrap();
+    let request = crate::provider::LaunchProviderRequest::new(
+        &session_id,
+        "claude",
+        "claude-headless",
+        "default",
+        "claude-opus-4-8",
+    )
+    .with_agent_id(&agent_id)
+    .with_variant(Some("high".to_string()));
+    let launch_result = |label: &str| crate::provider::ProviderLaunchResult {
+        endpoint_mode: crate::provider::AgentEndpointMode::External,
+        process_label: label.to_string(),
+        pty_target: None,
+        pty_program: None,
+        pty_args: Vec::new(),
+        pty_env: std::collections::BTreeMap::new(),
+        pty_env_remove: Vec::new(),
+        working_directory: None,
+        structured_endpoint: Some(format!("{label}-runtime")),
+    };
+    let mut old_run = crate::provider::RuntimeProviderRun::new(
+        "delayed-failure-old-run",
+        &request,
+        launch_result("delayed-failure-old"),
+    );
+    old_run.mark_running();
+    let mut replacement_run = crate::provider::RuntimeProviderRun::new(
+        "delayed-failure-replacement-run",
+        &request,
+        launch_result("delayed-failure-replacement"),
+    );
+    replacement_run.mark_running();
+
+    let attachment_id = runtime
+        .with_app_side_effect(|app| {
+            app.providers_mut().insert_run_for_test(old_run.clone());
+            app.sessions_mut()
+                .set_active_provider_run(&session_id, Some(old_run.id().to_string()))?;
+            let attachment = crate::app::KernelSessionService::new(app).attach(
+                crate::attachment::AttachRequest::new(
+                    &session_id,
+                    "delayed-failure-owner-test",
+                    crate::attachment::ClientCapabilityLevel::FullTerminal,
+                ),
+            )?;
+            let old_prompt = crate::session::PromptQueueItem::new(
+                "old-run-prompt",
+                attachment.id(),
+                &agent_id,
+                "old work",
+                crate::session::PromptStatus::Queued,
+            );
+            assert!(matches!(
+                app.prompt_owner_submit_prepared_prompt(&session_id, old_prompt, false)?,
+                crate::session::PromptSubmissionOutcome::Started { .. }
+            ));
+            app.mark_active_prompt_delivery(
+                &session_id,
+                &agent_id,
+                "old-run-prompt",
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+                Some(old_run.id().to_string()),
+                Some("old-provider-session".to_string()),
+            )?;
+            Ok::<_, DaemonError>(attachment.id().to_string())
+        })
+        .await
+        .unwrap();
+    runtime
+        .owned
+        .fail_local_prompt_without_advance(&session_id, &agent_id, Some(old_run.id()))
+        .unwrap()
+        .expect("the old prompt should settle before its delayed failure arrives");
+    runtime
+        .with_app_side_effect(|app| {
+            app.providers_mut()
+                .insert_run_for_test(replacement_run.clone());
+            app.sessions_mut()
+                .set_active_provider_run(&session_id, Some(replacement_run.id().to_string()))?;
+            let new_prompt = crate::session::PromptQueueItem::new(
+                "replacement-run-prompt",
+                &attachment_id,
+                &agent_id,
+                "new work",
+                crate::session::PromptStatus::Queued,
+            );
+            assert!(matches!(
+                app.prompt_owner_submit_prepared_prompt(&session_id, new_prompt, false)?,
+                crate::session::PromptSubmissionOutcome::Started { .. }
+            ));
+            app.mark_active_prompt_delivery(
+                &session_id,
+                &agent_id,
+                "replacement-run-prompt",
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+                Some(replacement_run.id().to_string()),
+                Some("replacement-provider-session".to_string()),
+            )?;
+            Ok::<_, DaemonError>(())
+        })
+        .await
+        .unwrap();
+
+    runtime
+        .fail_owned_provider_prompt(
+            &session_id,
+            old_run.id(),
+            "You've hit your session limit",
+            true,
+        )
+        .await
+        .expect("the stale failure should retire only its old run");
+
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    let active = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &agent_id)
+        .expect("the replacement prompt must remain active");
+    assert_eq!(active.id(), "replacement-run-prompt");
+    assert_eq!(
+        active.durable_delivery_provider_run_id(),
+        Some(replacement_run.id())
+    );
+    assert_eq!(session.active_provider_run_id(), Some(replacement_run.id()));
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(replacement_run.id())
+            .unwrap()
+            .state(),
+        crate::provider::ProviderRunState::Running
+    );
+    assert_eq!(
+        runtime
+            .owned
+            .agent_store
+            .get_agent(&agent_id)
+            .unwrap()
+            .active_substitute_index(),
+        None
+    );
+}
+
+#[tokio::test]
+async fn late_failure_identity_mismatch_readmits_queued_prompt_once() {
+    let (runtime, session_id, agent_id, _) = runtime_with_substitutes(&[], true).await;
+    runtime
+        .owned
+        .agent_store
+        .set_agent_runtime_profile_with_account_profile(
+            &agent_id,
+            "claude-headless",
+            Some("claude-opus-4-8".to_string()),
+            Some("high".to_string()),
+            Some("default".to_string()),
+            crate::provider::ProviderResumeState::default(),
+        )
+        .unwrap();
+    let request = crate::provider::LaunchProviderRequest::new(
+        &session_id,
+        "claude",
+        "claude-headless",
+        "default",
+        "claude-opus-4-8",
+    )
+    .with_agent_id(&agent_id)
+    .with_variant(Some("high".to_string()));
+    let launch_result = |label: &str| crate::provider::ProviderLaunchResult {
+        endpoint_mode: crate::provider::AgentEndpointMode::External,
+        process_label: label.to_string(),
+        pty_target: None,
+        pty_program: None,
+        pty_args: Vec::new(),
+        pty_env: std::collections::BTreeMap::new(),
+        pty_env_remove: Vec::new(),
+        working_directory: None,
+        structured_endpoint: Some(format!("{label}-runtime")),
+    };
+    let mut failed_run = crate::provider::RuntimeProviderRun::new(
+        "identity-mismatch-failed-run",
+        &request,
+        launch_result("identity-mismatch-failed"),
+    );
+    failed_run.mark_running();
+    let mut replacement = crate::provider::RuntimeProviderRun::new(
+        "identity-mismatch-replacement-run",
+        &request,
+        launch_result("identity-mismatch-replacement"),
+    );
+    replacement.mark_running();
+    let attachment_id = runtime
+        .with_app_side_effect(|app| {
+            app.providers_mut().insert_run_for_test(failed_run.clone());
+            app.sessions_mut()
+                .set_active_provider_run(&session_id, Some(failed_run.id().to_string()))?;
+            Ok::<_, DaemonError>(
+                crate::app::KernelSessionService::new(app)
+                    .attach(crate::attachment::AttachRequest::new(
+                        &session_id,
+                        "identity-mismatch-owner-test",
+                        crate::attachment::ClientCapabilityLevel::FullTerminal,
+                    ))?
+                    .id()
+                    .to_string(),
+            )
+        })
+        .await
+        .unwrap();
+
+    let barrier = runtime.install_provider_retirement_test_barrier(failed_run.id());
+    let failure_runtime = runtime.clone();
+    let failure_session_id = session_id.clone();
+    let failed_run_id = failed_run.id().to_string();
+    let failure = tokio::spawn(async move {
+        failure_runtime
+            .fail_owned_provider_prompt(
+                &failure_session_id,
+                &failed_run_id,
+                "You've hit your session limit",
+                true,
+            )
+            .await
+    });
+    barrier.wait_until_reached().await;
+    let arrival = runtime
+        .with_app_side_effect(|app| {
+            app.prompt_owner_submit_prepared_prompt(
+                &session_id,
+                crate::session::PromptQueueItem::new(
+                    "identity-mismatch-arrival",
+                    &attachment_id,
+                    &agent_id,
+                    "queued during retirement",
+                    crate::session::PromptStatus::Queued,
+                ),
+                false,
+            )
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        arrival,
+        crate::session::PromptSubmissionOutcome::Queued { .. }
+    ));
+    runtime
+        .with_app_side_effect(|app| {
+            app.providers_mut().insert_run_for_test(replacement.clone());
+            app.sessions_mut()
+                .set_active_provider_run(&session_id, Some(replacement.id().to_string()))?;
+            Ok::<_, DaemonError>(())
+        })
+        .await
+        .unwrap();
+    barrier.release();
+    failure
+        .await
+        .expect("failure task should not panic")
+        .expect("identity mismatch recovery should settle");
+
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    let (active, queued) = runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&session, &agent_id);
+    assert_eq!(
+        active.as_ref().map(crate::session::PromptQueueItem::id),
+        Some("identity-mismatch-arrival")
+    );
+    assert!(
+        queued.is_empty(),
+        "the queued prompt must activate exactly once"
+    );
+    assert_eq!(session.active_provider_run_id(), Some(replacement.id()));
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(replacement.id())
+            .unwrap()
+            .state(),
+        crate::provider::ProviderRunState::Running
+    );
+}
+
+async fn assert_queued_substitution(
+    workflow_prompt: bool,
+    claude_hook: bool,
+    settle_before_failure: bool,
+    same_profile_relaunch_before_failure: bool,
+) {
     let (runtime, session_id, agent_id, profile_id) =
         runtime_with_substitutes(&["opencode/deepseek-v4-pro"], true).await;
     let starter_provider = if claude_hook {
@@ -58,7 +537,8 @@ async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
         starter_account,
         starter_model,
     )
-    .with_agent_id(&agent_id);
+    .with_agent_id(&agent_id)
+    .with_variant(Some("high".to_string()));
     let hook_root = std::env::temp_dir().join(format!(
         "chariox-stop-failure-{:016x}",
         rand::random::<u64>()
@@ -170,11 +650,81 @@ async fn assert_queued_substitution(workflow_prompt: bool, claude_hook: bool) {
         })
         .await
         .unwrap();
+    if settle_before_failure {
+        runtime
+            .owned
+            .fail_local_prompt_without_advance(&session_id, &agent_id, Some(run.id()))
+            .unwrap()
+            .expect("the failed prompt should still be active before the race is simulated");
+    }
+    let replacement_run_id = if same_profile_relaunch_before_failure {
+        let mut replacement = crate::provider::RuntimeProviderRun::new(
+            "same-profile-replacement-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::External,
+                process_label: "same-profile-replacement".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("same-profile-replacement-runtime".to_string()),
+            },
+        );
+        replacement.mark_running();
+        runtime
+            .with_app_side_effect(|app| {
+                app.providers_mut().insert_run_for_test(replacement.clone());
+                app.sessions_mut()
+                    .set_active_provider_run(&session_id, Some(replacement.id().to_string()))?;
+                Ok::<_, DaemonError>(())
+            })
+            .await
+            .unwrap();
+        Some(replacement.id().to_string())
+    } else {
+        None
+    };
     if claude_hook {
         let result = runtime
             .pump_owned_provider_output(&session_id, run.id(), Vec::new(), true)
             .await;
         std::fs::remove_dir_all(&hook_root).unwrap();
+        if let Some(replacement_run_id) = replacement_run_id.as_deref() {
+            result.expect("stale failure should settle without replacing the current run");
+            assert_eq!(
+                runtime
+                    .owned
+                    .agent_store
+                    .get_agent(&agent_id)
+                    .unwrap()
+                    .active_substitute_index(),
+                None,
+                "a stale failure must not advance the substitute chain"
+            );
+            let session = runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .unwrap();
+            assert_eq!(
+                session.active_provider_run_id(),
+                Some(replacement_run_id),
+                "the newer same-profile run must remain active"
+            );
+            assert_eq!(
+                runtime
+                    .owned
+                    .provider_store
+                    .get_run(replacement_run_id)
+                    .unwrap()
+                    .state(),
+                crate::provider::ProviderRunState::Running,
+            );
+            return;
+        }
         assert_eq!(runtime.owned.agent_store.get_agent(&agent_id).unwrap().active_substitute_index(), Some(0),
             "StopFailure must select a substitute, not complete the prompt; pump result: {result:?}");
         result.expect("failure hook should settle without reading a missing PTY");

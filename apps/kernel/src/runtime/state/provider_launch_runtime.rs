@@ -1,11 +1,27 @@
 use super::*;
 
+#[cfg(test)]
+fn provider_launch_finalization_test_failures(
+) -> &'static std::sync::Mutex<std::collections::BTreeSet<String>> {
+    static FAILURES: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeSet<String>>> =
+        std::sync::OnceLock::new();
+    FAILURES.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeSet::new()))
+}
+
 pub(crate) enum ProviderLaunchStartOutcome {
     Reused(crate::provider::RuntimeProviderRun),
     Started(crate::app::StartedProviderLaunch, u64),
 }
 
 impl KernelRuntimeState {
+    #[cfg(test)]
+    pub(super) fn inject_provider_launch_finalization_failure(&self, provider_run_id: &str) {
+        provider_launch_finalization_test_failures()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(provider_run_id.to_string());
+    }
+
     pub(crate) async fn launch_provider_for_remote_lease_detached(
         &self,
         launch_request: crate::provider::LaunchProviderRequest,
@@ -26,7 +42,9 @@ impl KernelRuntimeState {
                     "session_id": launch_request.session_id.clone(),
                 }),
             );
-            let started = owned.start_provider_launch(launch_request)?;
+            let mut started = owned.start_provider_launch(launch_request)?;
+            self.retire_non_resumable_replaced_provider_run(&mut started)
+                .await;
             let run = started.run.clone();
             if let Some(previous_active_run_id) = started.previous_active_run_id.as_deref() {
                 if let Ok(previous_run) = owned.provider_store.get_run(previous_active_run_id) {
@@ -250,7 +268,9 @@ impl KernelRuntimeState {
                     "session_id": launch_request.session_id.clone(),
                 }),
             );
-            let started = owned.start_provider_launch(launch_request)?;
+            let mut started = owned.start_provider_launch(launch_request)?;
+            self.retire_non_resumable_replaced_provider_run(&mut started)
+                .await;
             let run = started.run.clone();
             if let Some(previous_active_run_id) = started.previous_active_run_id.as_deref() {
                 if let Ok(previous_run) = owned.provider_store.get_run(previous_active_run_id) {
@@ -386,6 +406,22 @@ impl KernelRuntimeState {
                                 return;
                             }
                         }
+                        #[cfg(test)]
+                        let inject_finalization_failure = {
+                            provider_launch_finalization_test_failures()
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .remove(run.id())
+                        };
+                        #[cfg(test)]
+                        if inject_finalization_failure {
+                            let error = DaemonError::LocalTransport {
+                                operation: "finish provider launch",
+                                message: "injected launch finalization failure".to_string(),
+                            };
+                            self.fail_provider_launch_in_lane(started, &error).await;
+                            return;
+                        }
                         match owned.retry_pending_metaagent_event_prompts_for_provider_run(&run) {
                             Ok(dispatches) => {
                                 retry_metaagent_event_dispatches = dispatches;
@@ -397,6 +433,8 @@ impl KernelRuntimeState {
                         }
                         let _ = owned.session_snapshot(run.session_id());
                     }
+                    self.retire_replaced_provider_run_after_launch_success(started, &run)
+                        .await;
                 }
                 Err(error) => {
                     self.fail_provider_launch_in_lane(started, &error).await;
@@ -404,6 +442,50 @@ impl KernelRuntimeState {
             }
         }
         self.spawn_workflow_prompt_dispatches(retry_metaagent_event_dispatches);
+    }
+
+    async fn retire_replaced_provider_run_after_launch_success(
+        &self,
+        started: &crate::app::StartedProviderLaunch,
+        replacement: &crate::provider::RuntimeProviderRun,
+    ) {
+        let Some(previous_run_id) = started.previous_active_run_id.as_deref() else {
+            return;
+        };
+        let Ok(previous_run) = self.owned.provider_store.get_run(previous_run_id) else {
+            return;
+        };
+        if previous_run.session_id() != replacement.session_id()
+            || previous_run.agent_instance_id() != replacement.agent_instance_id()
+            || !previous_run.client_interface().is_chariox()
+        {
+            return;
+        }
+        self.retire_owned_provider_run(replacement.session_id(), previous_run_id)
+            .await;
+    }
+
+    async fn retire_non_resumable_replaced_provider_run(
+        &self,
+        started: &mut crate::app::StartedProviderLaunch,
+    ) {
+        let Some(previous_run_id) = started.previous_active_run_id.as_deref() else {
+            return;
+        };
+        let Ok(previous_run) = self.owned.provider_store.get_run(previous_run_id) else {
+            return;
+        };
+        if previous_run.state() != crate::provider::ProviderRunState::Ended
+            || previous_run.session_id() != started.run.session_id()
+            || previous_run.agent_instance_id() != started.run.agent_instance_id()
+            || !previous_run.client_interface().is_chariox()
+        {
+            return;
+        }
+        let previous_run_id = previous_run.id().to_string();
+        self.retire_owned_provider_run(started.run.session_id(), &previous_run_id)
+            .await;
+        started.previous_active_run_id = None;
     }
 }
 

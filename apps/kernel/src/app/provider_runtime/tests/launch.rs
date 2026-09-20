@@ -617,6 +617,11 @@ fn provider_launch_replaces_existing_chariox_run_for_target_agent() {
             .with_agent_id(first_agent.id()),
         )
         .expect("first agent provider run should launch");
+    let first_pid = app
+        .pty
+        .process_id(first_run.id())
+        .expect("first provider pid should resolve")
+        .expect("first managed provider should have a pid");
     let second_run = app
         .launch_provider(
             LaunchProviderRequest::new(session.id(), "dev-stub", "claude-code", "default", "opus")
@@ -655,6 +660,21 @@ fn provider_launch_replaces_existing_chariox_run_for_target_agent() {
         "normal Chariox relaunch should not leave a second non-ended run for the same agent"
     );
     assert_eq!(replacement.state(), ProviderRunState::Running);
+    assert!(
+        app.pty.process_id(first_run.id()).is_err(),
+        "replacing an agent provider must retire its superseded process alias"
+    );
+    let replacement_pid = app
+        .pty
+        .process_id(replacement.id())
+        .expect("replacement provider pid should resolve")
+        .expect("replacement managed provider should have a pid");
+    if replacement_pid != first_pid {
+        assert!(
+            !crate::runtime::process_health::process_running(first_pid),
+            "a superseded dedicated process must stop"
+        );
+    }
     assert_eq!(replacement.agent_instance_id(), Some(first_agent.id()));
     let non_ended_first_agent_runs = app
         .providers()
@@ -672,6 +692,71 @@ fn provider_launch_replaces_existing_chariox_run_for_target_agent() {
             .map(|run| run.id())
             .collect::<Vec<_>>(),
         vec![replacement.id()]
+    );
+}
+
+#[test]
+fn provider_launch_retires_previous_run_for_same_agent_after_success() {
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session create should succeed");
+    let first_run = app
+        .launch_provider(
+            LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("first provider run should launch");
+    let first_pid = app
+        .pty
+        .process_id(first_run.id())
+        .expect("first provider pid should resolve")
+        .expect("first managed provider should have a pid");
+
+    let replacement = app
+        .launch_provider(
+            LaunchProviderRequest::new(session.id(), "dev-stub", "claude-code", "default", "opus")
+                .with_agent_id(agent.id()),
+        )
+        .expect("replacement provider run should launch");
+
+    assert_eq!(
+        app.providers()
+            .get_run(first_run.id())
+            .expect("first run should remain addressable")
+            .state(),
+        ProviderRunState::Ended,
+    );
+    assert!(
+        app.pty.process_id(first_run.id()).is_err(),
+        "successful same-agent replacement must retire the rollback alias"
+    );
+    let replacement_pid = app
+        .pty
+        .process_id(replacement.id())
+        .expect("replacement provider pid should resolve")
+        .expect("replacement managed provider should have a pid");
+    if replacement_pid != first_pid {
+        assert!(
+            !crate::runtime::process_health::process_running(first_pid),
+            "a superseded dedicated process must stop"
+        );
+    }
+    assert_eq!(
+        app.provider_process_tracking
+            .snapshot()
+            .run_processes
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![replacement.id().to_string()],
     );
 }
 

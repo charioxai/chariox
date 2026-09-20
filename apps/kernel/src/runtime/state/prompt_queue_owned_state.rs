@@ -524,6 +524,31 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         provider_run_id: &str,
     ) -> Result<Option<crate::app::KernelPromptDispatch>, DaemonError> {
+        self.prepare_next_queued_prompt_dispatch(session_id, agent_id, provider_run_id, None)
+    }
+
+    pub(super) fn finish_local_profile_transition_queued_prompt_dispatch(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+        profile_transition: crate::runtime::prompt_state::AgentProfileTransitionClaim,
+    ) -> Result<Option<crate::app::KernelPromptDispatch>, DaemonError> {
+        self.prepare_next_queued_prompt_dispatch(
+            session_id,
+            agent_id,
+            provider_run_id,
+            Some(profile_transition),
+        )
+    }
+
+    fn prepare_next_queued_prompt_dispatch(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+        profile_transition: Option<crate::runtime::prompt_state::AgentProfileTransitionClaim>,
+    ) -> Result<Option<crate::app::KernelPromptDispatch>, DaemonError> {
         let (session, next_prompt) = loop {
             let session = self.session_store.get_session(session_id)?;
             let Some(next_prompt) = self
@@ -594,14 +619,18 @@ impl KernelRuntimeOwnedState {
                 Err(DaemonError::WorkspaceClaimConflict { .. }) => return Ok(None),
                 Err(error) => return Err(error),
             };
-        let started_next = self
-            .prompt_state_owner
-            .activate_next_queued_prompt_with_prompt_id(
-                &session,
-                agent_id,
-                Some(next_prompt.id()),
-                self.session_store.reserve_prompt_id(),
-            );
+        let prompt_id = self.session_store.reserve_prompt_id();
+        let started_next = if let Some(profile_transition) = profile_transition {
+            profile_transition.finish_and_activate_next(&session, agent_id, prompt_id)
+        } else {
+            self.prompt_state_owner
+                .activate_next_queued_prompt_with_prompt_id(
+                    &session,
+                    agent_id,
+                    Some(next_prompt.id()),
+                    prompt_id,
+                )
+        };
         let started_next = match started_next {
             Ok(Some(prompt)) => prompt,
             Ok(None) => {

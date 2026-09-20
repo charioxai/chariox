@@ -105,6 +105,22 @@ impl KernelRuntimeOwnedState {
         )
     }
 
+    pub(super) fn fail_local_prompt_without_advance_if_matches(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: Option<&str>,
+        expected_prompt_id: &str,
+    ) -> Result<Option<OwnedPromptCompletion>, DaemonError> {
+        self.settle_local_prompt_without_advance_if_matches(
+            session_id,
+            agent_id,
+            provider_run_id,
+            Some(expected_prompt_id),
+            crate::git_observer::CompletedTurnSettlementStatus::Failed,
+        )
+    }
+
     pub(super) fn complete_local_prompt_without_advance_if_matches(
         &self,
         session_id: &str,
