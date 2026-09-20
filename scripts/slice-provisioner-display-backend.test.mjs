@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { spawnSync } from "node:child_process"
 import { readFile } from "node:fs/promises"
 import { test } from "node:test"
 import { fileURLToPath } from "node:url"
@@ -74,6 +75,127 @@ test("exec and diagnostics carry only non-secret display settings", async () => 
   assert.match(diagnostics, /\[REDACTED\]/)
   assert.match(diagnostics, /\[Bb\]\[Ee\]\[Aa\]\[Rr\]\[Ee\]\[Rr\]/)
   assert.doesNotMatch(diagnostics, /SLICE_RELAY_TOKEN|SLICE_CLOUD_RELAY_CONFIG/)
+})
+
+function runSavedStateProbe(source, mode) {
+  const runtimeCompatible = section(source, "image_runtime_compatible() {", "image_selkies_capable() {")
+  const selkiesCapable = section(source, "image_selkies_capable() {", "require_saved_state_compatibility() {")
+  const compatibility = section(source, "require_saved_state_compatibility() {", "build_standard_runtime_image() {")
+  const restore = section(source, "restore_saved_home_volume() {", "machine_id_hex() {")
+  return spawnSync(
+    "bash",
+    [
+      "-c",
+      [
+        "set -Eeuo pipefail",
+        "log() { printf '[probe] %s\\n' \"$*\" >&2; }",
+        "fail() { printf 'FAIL %s\\n' \"$*\" >&2; return 91; }",
+        "run_with_timeout() { local seconds=\"$1\"; shift; \"$@\"; }",
+        "docker() {",
+        "  printf 'DOCKER_CALL %s\\n' \"$*\" >&2",
+        "  [[ \"$1\" == image && \"$2\" == inspect ]] || return 0",
+        "  local format image capable=0",
+        "  if [[ \"$3\" == -f ]]; then format=\"$4\"; image=\"$5\"; else image=\"$3\"; fi",
+        "  case \"$image\" in",
+        "    saved-current) [[ \"$PROBE_MODE\" == compatible ]] && capable=1 ;;",
+        "    current-base) capable=1 ;;",
+        "    legacy-saved) capable=0 ;;",
+        "    missing-base) return 1 ;;",
+        "    *) return 1 ;;",
+        "  esac",
+        "  [[ \"$3\" == -f ]] || return 0",
+        "  case \"$format\" in",
+        "    *io.chariox.relay-peer-protocol-version*) printf '9\\n' ;;",
+        "    *io.chariox.runtime-source-revision*) printf 'runtime-current\\n' ;;",
+        "    *io.chariox.selkies-version*) (( capable )) && printf '0.0.0.dev0\\n' || printf '<no value>\\n' ;;",
+        "    *io.chariox.selkies-source-revision*) (( capable )) && printf '0123456789012345678901234567890123456789\\n' || printf '<no value>\\n' ;;",
+        "    *io.chariox.selkies-source*) (( capable )) && printf 'https://github.com/selkies-project/selkies/commit/0123456789012345678901234567890123456789\\n' || printf '<no value>\\n' ;;",
+        "    *io.chariox.selkies-license*) (( capable )) && printf 'MPL-2.0\\n' || printf '<no value>\\n' ;;",
+        "    *) printf '<no value>\\n' ;;",
+        "  esac",
+        "}",
+        "SLICE_DISPLAY_BACKEND=selkies",
+        "SLICE_SAVED_HOME_ARCHIVE=/dev/null",
+        "SLICE_HOME_VOLUME=saved-home",
+        "SLICE_NAME=saved-state-probe",
+        "SLICE_IMAGE=\"${PROBE_SAVED_IMAGE}\"",
+        "SLICE_BASE_IMAGE=\"${PROBE_BASE_IMAGE}\"",
+        "SLICE_RELAY_PEER_PROTOCOL_VERSION=9",
+        "SLICE_RUNTIME_SOURCE_REVISION=runtime-current",
+        "SLICE_BUILD_IMAGE=never",
+        runtimeCompatible,
+        selkiesCapable,
+        compatibility,
+        restore,
+        "if require_saved_state_compatibility; then status=0; else status=$?; fi",
+        "printf 'STATUS=%s\\nIMAGE=%s\\n' \"$status\" \"$SLICE_IMAGE\"",
+        "if [[ \"$PROBE_MODE\" == legacy ]]; then",
+        "  if restore_saved_home_volume; then restore_status=0; else restore_status=$?; fi",
+        "  printf 'RESTORE_STATUS=%s\\n' \"$restore_status\"",
+        "fi",
+      ].join("\n"),
+    ],
+    {
+      env: {
+        ...process.env,
+        PROBE_MODE: mode,
+        PROBE_SAVED_IMAGE: mode === "compatible" ? "saved-current" : "legacy-saved",
+        PROBE_BASE_IMAGE: mode === "rejected" ? "missing-base" : "current-base",
+      },
+      encoding: "utf8",
+    },
+  )
+}
+
+test("saved state accepts a current image only from authoritative runtime and Selkies labels", async () => {
+  const source = await readFile(provisionerPath, "utf8")
+  const compatibility = section(source, "require_saved_state_compatibility() {", "build_standard_runtime_image() {")
+  const ensure = section(source, "ensure_container() {", "ensure_auth_target_container() {")
+
+  assert.match(compatibility, /io\.chariox\.selkies-version/)
+  assert.match(compatibility, /io\.chariox\.selkies-source-revision/)
+  assert.match(compatibility, /io\.chariox\.selkies-source/)
+  assert.match(compatibility, /io\.chariox\.selkies-license/)
+  assert.match(compatibility, /no container or home-volume mutation was attempted/)
+  assert.ok(ensure.indexOf("require_saved_state_compatibility") < ensure.indexOf("container_exists"))
+
+  const probe = runSavedStateProbe(source, "compatible")
+  const output = `${probe.stdout}${probe.stderr}`
+  assert.equal(probe.status, 0, probe.stderr)
+  assert.match(output, /STATUS=0/)
+  assert.match(output, /IMAGE=saved-current/)
+  assert.doesNotMatch(output, /DOCKER_CALL (?!image inspect)/)
+})
+
+test("legacy saved state rebases onto a capable runtime while preserving the home archive", async () => {
+  const source = await readFile(provisionerPath, "utf8")
+  const probe = runSavedStateProbe(source, "legacy")
+  const output = `${probe.stdout}${probe.stderr}`
+
+  assert.equal(probe.status, 0, probe.stderr)
+  assert.match(output, /STATUS=0/)
+  assert.match(output, /IMAGE=current-base/)
+  assert.match(output, /RESTORE_STATUS=0/)
+  assert.match(output, /saved state migration: restoring \/dev\/null on Selkies-capable runtime image current-base/)
+  assert.match(output, /home\/slice state is preserved/)
+  assert.match(output, /DOCKER_CALL create .* -v saved-home:\/home-dst current-base sleep infinity/)
+  assert.match(output, /DOCKER_CALL cp -L \/dev\/null .*:\/tmp\/home\.tar\.zst/)
+})
+
+test("legacy saved state rejects without a capable base before any mutation and explains migration", async () => {
+  const source = await readFile(provisionerPath, "utf8")
+  const probe = runSavedStateProbe(source, "rejected")
+  const output = `${probe.stdout}${probe.stderr}`
+
+  assert.equal(probe.status, 0, probe.stderr)
+  assert.match(output, /STATUS=91/)
+  assert.match(output, /saved state migration required before selecting Selkies/)
+  assert.match(output, /no container or home-volume mutation was attempted/)
+  assert.match(output, /CHARIOX_SLICE_DISPLAY_BACKEND=novnc/)
+  const nonInspectCalls = output
+    .split("\n")
+    .filter((line) => line.startsWith("DOCKER_CALL ") && !line.startsWith("DOCKER_CALL image inspect"))
+  assert.deepEqual(nonInspectCalls, [])
 })
 
 test("existing-container reprovision covers noVNC-to-Selkies and Selkies-to-noVNC transitions", async () => {
