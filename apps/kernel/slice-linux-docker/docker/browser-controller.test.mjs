@@ -8,6 +8,7 @@ import {
   ERROR_CODES,
   redactDiagnostic,
 } from "./browser-controller.mjs";
+import { OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES } from "./browser-controller-observations.mjs";
 
 class FakeClock {
   constructor() {
@@ -386,6 +387,58 @@ test("captures bounded observations through stable tabs and invalidates detached
   );
   assert.equal(FakeWebSocket.instances[1].closed, true);
 
+  t.after(async () => {
+    await controller.shutdown("owner-a", 1);
+  });
+});
+
+test("allows bounded raw AX and DOM snapshots above ordinary CDP frames and rejects overflow", async (t) => {
+  const fixture = makeFixture();
+  const { controller } = fixture;
+  await controller.start("owner-a");
+  const tab = controller.getTabRegistrySnapshot("owner-a", 1).tabs[0];
+  let padding = "x".repeat(70 * 1024);
+  FakeWebSocket.onSend = (socket, message) => {
+    let result = {};
+    if (message.method === "Page.getFrameTree") {
+      result = { frameTree: { frame: { id: "root-frame", loaderId: "document-raw" } } };
+    } else if (message.method === "Accessibility.getFullAXTree") {
+      result = { nodes: [], padding };
+    } else if (message.method === "DOMSnapshot.captureSnapshot") {
+      result = {
+        padding,
+        strings: ["BUTTON"],
+        documents: [{
+          nodes: {
+            backendNodeId: [50],
+            parentIndex: [-1],
+            nodeType: [1],
+            nodeName: [0],
+            nodeValue: [-1],
+            attributes: [[]],
+          },
+          layout: { nodeIndex: [0], bounds: [[1, 2, 30, 20]] },
+        }],
+      };
+    }
+    queueMicrotask(() => socket.respond(message.id, result));
+  };
+
+  const snapshot = await controller.captureTabSnapshot("owner-a", 1, {
+    tab_id: tab.tab_id,
+    target_generation: tab.target_generation,
+  });
+  assert.equal(snapshot.document_id, "document-raw");
+  assert.equal(snapshot.dom_nodes[0].node_name, "BUTTON");
+
+  padding = "x".repeat(OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES + 1);
+  await assert.rejects(
+    controller.captureTabSnapshot("owner-a", 1, {
+      tab_id: tab.tab_id,
+      target_generation: tab.target_generation,
+    }),
+    (error) => error.code === ERROR_CODES.CDP_PROTOCOL_INVALID,
+  );
   t.after(async () => {
     await controller.shutdown("owner-a", 1);
   });

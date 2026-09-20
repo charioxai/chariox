@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   BrowserObservationStore,
   OBSERVATION_ERROR_CODES,
+  OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES,
 } from "./browser-controller-observations.mjs";
 
 const TAB = Object.freeze({
@@ -12,8 +13,12 @@ const TAB = Object.freeze({
   target_generation: 2,
 });
 
-function frameTree(documentId) {
-  return { frameTree: { frame: { loaderId: documentId } } };
+function frameTree(documentId, childDocumentId = null) {
+  const root = { frame: { id: "root-frame", loaderId: documentId } };
+  if (childDocumentId !== null) {
+    root.childFrames = [{ frame: { id: "child-frame", loaderId: childDocumentId } }];
+  }
+  return { frameTree: root };
 }
 
 function accessibility({ password = "secret-value", extra = [] } = {}) {
@@ -72,8 +77,9 @@ function domSnapshot({ password = "secret-value", scriptText = "token=hidden" } 
 }
 
 class FakeConnection {
-  constructor({ documents = ["document-1"], accessibilityResults, domResults } = {}) {
+  constructor({ documents = ["document-1"], frameTrees, accessibilityResults, domResults } = {}) {
     this.documents = [...documents];
+    this.frameTrees = frameTrees ?? this.documents.map((documentId) => frameTree(documentId));
     this.accessibilityResults = accessibilityResults ?? [accessibility()];
     this.domResults = domResults ?? [domSnapshot()];
     this.calls = [];
@@ -81,11 +87,11 @@ class FakeConnection {
     this.captureIndex = 0;
   }
 
-  async send(method, params) {
-    this.calls.push({ method, params });
+  async send(method, params, timeoutMs, options) {
+    this.calls.push({ method, params, timeoutMs, options });
     if (method === "Page.getFrameTree") {
-      const index = Math.min(this.frameIndex++, this.documents.length - 1);
-      return frameTree(this.documents[index]);
+      const index = Math.min(this.frameIndex++, this.frameTrees.length - 1);
+      return this.frameTrees[index];
     }
     if (method === "Accessibility.getFullAXTree") {
       return this.accessibilityResults[Math.min(this.captureIndex, this.accessibilityResults.length - 1)];
@@ -156,7 +162,101 @@ test("rejects navigation during capture without committing a partial snapshot", 
     }),
     (error) => error.code === OBSERVATION_ERROR_CODES.STALE_DOCUMENT,
   );
-  assert.equal(store.resolve(TAB, stable.accessibility_nodes[0].element_ref).snapshot_revision, 1);
+  assert.throws(
+    () => store.resolve(TAB, stable.accessibility_nodes[0].element_ref),
+    (error) => error.code === OBSERVATION_ERROR_CODES.ELEMENT_REFERENCE_INVALIDATED,
+  );
+});
+
+test("invalidates references when a child frame navigates during capture", async () => {
+  const store = new BrowserObservationStore();
+  const first = await store.capture({
+    connection: new FakeConnection({
+      frameTrees: [frameTree("document-1", "child-1"), frameTree("document-1", "child-1")],
+    }),
+    tab: TAB,
+  });
+  const reference = first.accessibility_nodes[0].element_ref;
+
+  await assert.rejects(
+    store.capture({
+      connection: new FakeConnection({
+        frameTrees: [frameTree("document-1", "child-1"), frameTree("document-1", "child-2")],
+      }),
+      tab: TAB,
+    }),
+    (error) => error.code === OBSERVATION_ERROR_CODES.STALE_DOCUMENT,
+  );
+  assert.throws(
+    () => store.resolve(TAB, reference),
+    (error) => error.code === OBSERVATION_ERROR_CODES.ELEMENT_REFERENCE_INVALIDATED,
+  );
+});
+
+test("redacts secret-bearing attribute values while preserving public URLs", async () => {
+  const strings = [
+    "A",
+    "href",
+    "https://public.example/docs/start",
+    "src",
+    "https://cdn.example/app.js?access_token=private",
+    "action",
+    "https://user:password@example.test/submit",
+    "data-info",
+    "kind=public token=private",
+    "signed",
+    "https://cdn.example/app.js?X-Amz-Signature=private",
+    "json",
+    "{\"access_token\":\"private\"}",
+    "relative",
+    "//user:password@example.test/path",
+  ];
+  const rawDom = {
+    strings,
+    documents: [{
+      nodes: {
+        backendNodeId: [21],
+        parentIndex: [-1],
+        nodeType: [1],
+        nodeName: [0],
+        nodeValue: [-1],
+        attributes: [[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]],
+      },
+    }],
+  };
+  const store = new BrowserObservationStore();
+  const snapshot = await store.capture({
+    connection: new FakeConnection({ domResults: [rawDom] }),
+    tab: TAB,
+  });
+  const attributes = snapshot.dom_nodes[0].attributes;
+  assert.equal(attributes.href, "https://public.example/docs/start");
+  assert.equal(attributes.src, "[redacted]");
+  assert.equal(attributes.action, "[redacted]");
+  assert.equal(attributes["data-info"], "[redacted]");
+  assert.equal(attributes.signed, "[redacted]");
+  assert.equal(attributes.json, "[redacted]");
+  assert.equal(attributes.relative, "[redacted]");
+  assert.doesNotMatch(JSON.stringify(snapshot), /private|password/);
+});
+
+test("uses the finite raw snapshot budget without changing compact result bounds", async () => {
+  const padding = "x".repeat(70 * 1024);
+  const connection = new FakeConnection({
+    accessibilityResults: [{ nodes: [], padding }],
+    domResults: [{ ...domSnapshot(), padding }],
+  });
+  const store = new BrowserObservationStore();
+  const snapshot = await store.capture({ connection, tab: TAB });
+  assert.equal(snapshot.accessibility_nodes.length, 0);
+  const snapshotCalls = connection.calls.filter(({ method }) => (
+    method === "Accessibility.getFullAXTree" || method === "DOMSnapshot.captureSnapshot"
+  ));
+  assert.equal(snapshotCalls.length, 2);
+  assert.deepEqual(
+    snapshotCalls.map(({ options }) => options?.maxResponseBytes),
+    [OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES, OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES],
+  );
 });
 
 test("invalidates references when registry generation or target generation changes", async () => {

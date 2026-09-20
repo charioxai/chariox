@@ -9,6 +9,7 @@ import {
   BrowserObservationError,
   BrowserObservationStore,
   OBSERVATION_ERROR_CODES,
+  OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES,
 } from "./browser-controller-observations.mjs";
 
 export const CONTROLLER_STATES = Object.freeze([
@@ -97,6 +98,10 @@ const MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const MAX_CDP_BODY_BYTES = 64 * 1024;
 const MAX_CDP_FRAME_BYTES = 64 * 1024;
+const LARGE_CDP_RESPONSE_METHODS = new Set([
+  "Accessibility.getFullAXTree",
+  "DOMSnapshot.captureSnapshot",
+]);
 const MAX_IDENTIFIER_BYTES = 128;
 const MAX_PENDING_CDP = 32;
 const MAX_SEEN_REQUEST_IDS = 1024;
@@ -332,7 +337,7 @@ class CdpConnection {
     });
   }
 
-  async send(method, params = {}, timeoutMs = this.commandTimeoutMs) {
+  async send(method, params = {}, timeoutMs = this.commandTimeoutMs, options = {}) {
     if (this.closed || !this.opened) {
       throw controllerError(ERROR_CODES.CDP_DISCONNECTED);
     }
@@ -345,6 +350,18 @@ class CdpConnection {
     if (!isPlainObject(params)) {
       throw controllerError(ERROR_CODES.SCHEMA_INVALID);
     }
+    if (!isPlainObject(options)) {
+      throw controllerError(ERROR_CODES.SCHEMA_INVALID);
+    }
+    const maxResponseBytes = options.maxResponseBytes ?? MAX_CDP_FRAME_BYTES;
+    if (
+      !Number.isSafeInteger(maxResponseBytes) ||
+      maxResponseBytes < MAX_CDP_FRAME_BYTES ||
+      maxResponseBytes > OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES ||
+      (maxResponseBytes > MAX_CDP_FRAME_BYTES && !LARGE_CDP_RESPONSE_METHODS.has(method))
+    ) {
+      throw controllerError(ERROR_CODES.SCHEMA_INVALID);
+    }
     const id = this.nextId++;
     const message = { id, method, params };
     const encoded = boundedJson(message, MAX_CDP_FRAME_BYTES);
@@ -353,7 +370,7 @@ class CdpConnection {
         this.pending.delete(id);
         reject(controllerError(ERROR_CODES.CDP_COMMAND_TIMEOUT));
       }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { resolve, reject, timer, maxResponseBytes });
       try {
         this.socket.send(encoded);
       } catch {
@@ -439,7 +456,8 @@ class CdpConnection {
       this._failConnection(ERROR_CODES.CDP_PROTOCOL_INVALID);
       return;
     }
-    if (Buffer.byteLength(encoded, "utf8") > MAX_CDP_FRAME_BYTES) {
+    const encodedBytes = Buffer.byteLength(encoded, "utf8");
+    if (encodedBytes > OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES) {
       this._failConnection(ERROR_CODES.CDP_PROTOCOL_INVALID);
       return;
     }
@@ -453,6 +471,10 @@ class CdpConnection {
       return;
     }
     const pending = this.pending.get(message.id);
+    if (encodedBytes > (pending?.maxResponseBytes ?? MAX_CDP_FRAME_BYTES)) {
+      this._failConnection(ERROR_CODES.CDP_PROTOCOL_INVALID);
+      return;
+    }
     if (!pending) {
       return;
     }

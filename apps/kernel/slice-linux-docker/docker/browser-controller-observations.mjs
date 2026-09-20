@@ -3,6 +3,8 @@ const DEFAULT_MAX_STRING_BYTES = 512;
 const DEFAULT_MAX_ATTRIBUTES = 24;
 const DEFAULT_MAX_RESULT_BYTES = 1024 * 1024;
 
+export const OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES = 4 * 1024 * 1024;
+
 export const OBSERVATION_ERROR_CODES = Object.freeze({
   INVALID_ARGUMENT: "INVALID_ARGUMENT",
   CDP_PROTOCOL_INVALID: "CDP_PROTOCOL_INVALID",
@@ -82,12 +84,57 @@ function normalizeTab(raw) {
   };
 }
 
-function currentDocumentId(frameTree) {
-  const documentId = frameTree?.frameTree?.frame?.loaderId;
-  if (typeof documentId !== "string" || documentId.length === 0 || documentId.length > 512) {
+function frameIdentities(frameTree) {
+  const root = frameTree?.frameTree;
+  if (!isPlainObject(root) || !isPlainObject(root.frame)) {
     fail(OBSERVATION_ERROR_CODES.CDP_PROTOCOL_INVALID);
   }
-  return documentId;
+  const identities = new Map();
+  const visit = (entry, path, isRoot = false) => {
+    const frame = entry?.frame;
+    if (!isPlainObject(frame)) {
+      fail(OBSERVATION_ERROR_CODES.CDP_PROTOCOL_INVALID);
+    }
+    const loaderId = frame.loaderId ?? "";
+    if (typeof loaderId !== "string" || loaderId.length > 512) {
+      fail(OBSERVATION_ERROR_CODES.CDP_PROTOCOL_INVALID);
+    }
+    if (
+      frame.id !== undefined &&
+      (typeof frame.id !== "string" || frame.id.length === 0 || frame.id.length > 512)
+    ) {
+      fail(OBSERVATION_ERROR_CODES.CDP_PROTOCOL_INVALID);
+    }
+    const frameId = typeof frame.id === "string"
+      ? `frame:${frame.id}`
+      : `frame-path:${path}`;
+    const identityKey = isRoot ? "root" : frameId;
+    if (identities.has(identityKey)) {
+      fail(OBSERVATION_ERROR_CODES.CDP_PROTOCOL_INVALID);
+    }
+    identities.set(identityKey, loaderId);
+    if (entry.childFrames !== undefined && !Array.isArray(entry.childFrames)) {
+      fail(OBSERVATION_ERROR_CODES.CDP_PROTOCOL_INVALID);
+    }
+    const children = Array.isArray(entry.childFrames) ? entry.childFrames : [];
+    children.forEach((child, index) => visit(child, `${path}.${index}`));
+  };
+  visit(root, "root", true);
+  const rootDocumentId = identities.get("root");
+  if (typeof rootDocumentId !== "string" || rootDocumentId.length === 0) {
+    fail(OBSERVATION_ERROR_CODES.CDP_PROTOCOL_INVALID);
+  }
+  return identities;
+}
+
+function sameFrameIdentities(left, right) {
+  if (!(left instanceof Map) || !(right instanceof Map) || left.size !== right.size) {
+    return false;
+  }
+  for (const [frameId, loaderId] of left) {
+    if (right.get(frameId) !== loaderId) return false;
+  }
+  return true;
 }
 
 function boundedString(value, maxBytes) {
@@ -135,6 +182,75 @@ function sensitiveAttribute(nodeName, attributeName) {
   return attribute === "value" && ["input", "textarea", "option"].includes(node);
 }
 
+function normalizedSecretKey(value) {
+  return String(value ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function looksSecretKey(value) {
+  const key = normalizedSecretKey(value);
+  return (
+    key === "authorization" ||
+    key === "cookie" ||
+    key === "credential" ||
+    key === "password" ||
+    key === "passwd" ||
+    key === "secret" ||
+    key === "apikey" ||
+    key === "accesskey" ||
+    key === "privatekey" ||
+    key === "bearer" ||
+    key === "auth" ||
+    key === "nonce" ||
+    key === "session" ||
+    key === "sessionid" ||
+    key === "signature" ||
+    key === "sig" ||
+    key === "hmac" ||
+    key === "jwt" ||
+    key.endsWith("token") ||
+    key.endsWith("secret") ||
+    key.endsWith("credential") ||
+    key.endsWith("signature")
+  );
+}
+
+function containsSecretAssignment(value) {
+  const assignment = /(?:^|[^A-Za-z0-9])["']?([A-Za-z][A-Za-z0-9_.-]{1,96})["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s&#,;}\]]+)/g;
+  for (const match of String(value ?? "").matchAll(assignment)) {
+    if (looksSecretKey(match[1])) return true;
+  }
+  return false;
+}
+
+function containsSecretValue(value) {
+  if (typeof value !== "string" || value.length === 0) return false;
+  if (containsSecretAssignment(value)) return true;
+  if (/(?:^|[^A-Za-z0-9_])(?:[A-Za-z][A-Za-z0-9+.-]*:)?\/\/[^/\s:@]+:[^/\s@]*@/i.test(value)) {
+    return true;
+  }
+  try {
+    const parsed = new URL(value.startsWith("//") ? `http:${value}` : value);
+    if (parsed.username || parsed.password) return true;
+    for (const [key] of parsed.searchParams) {
+      if (looksSecretKey(key)) return true;
+    }
+  } catch {
+    // Non-URL attribute values are covered by the assignment check above.
+  }
+  try {
+    const decoded = decodeURIComponent(value);
+    return decoded !== value && containsSecretAssignment(decoded);
+  } catch {
+    return false;
+  }
+}
+
+function compactAttributeValue(strings, valueIndex, nodeName, attributeName, limits) {
+  if (sensitiveAttribute(nodeName, attributeName)) return "[redacted]";
+  const value = snapshotString(strings, valueIndex, limits.maxStringBytes);
+  return containsSecretValue(value) ? "[redacted]" : value;
+}
+
 function compactAttributes(strings, indexes, nodeName, limits) {
   const result = {};
   const values = Array.isArray(indexes) ? indexes : [];
@@ -142,9 +258,7 @@ function compactAttributes(strings, indexes, nodeName, limits) {
     if (Object.keys(result).length >= limits.maxAttributes) break;
     const name = snapshotString(strings, values[index], limits.maxStringBytes);
     if (!name) continue;
-    result[name] = sensitiveAttribute(nodeName, name)
-      ? "[redacted]"
-      : snapshotString(strings, values[index + 1], limits.maxStringBytes);
+    result[name] = compactAttributeValue(strings, values[index + 1], nodeName, name, limits);
   }
   return result;
 }
@@ -179,6 +293,7 @@ function makeDraft(previous, documentId, referenceEpoch) {
       ...previous,
       refsByBackendId: new Map(previous.refsByBackendId),
       backendIdByRef: new Map(previous.backendIdByRef),
+      frameIdentities: new Map(previous.frameIdentities ?? []),
     };
   }
   return {
@@ -340,10 +455,20 @@ export class BrowserObservationStore {
     }
     const tab = normalizeTab(rawTab);
     const limits = observationLimits(rawLimits);
-    const before = currentDocumentId(await connection.send("Page.getFrameTree", {}));
+    const beforeIdentities = frameIdentities(await connection.send("Page.getFrameTree", {}));
+    const before = beforeIdentities.get("root");
     const previous = this.statesByTabId.get(tab.tabId);
-    const base = tabStateMatches(previous, tab) ? previous : null;
+    if (
+      previous &&
+      (!tabStateMatches(previous, tab) || !sameFrameIdentities(previous.frameIdentities, beforeIdentities))
+    ) {
+      this.invalidate(tab.tabId);
+    }
+    const base = tabStateMatches(previous, tab) && sameFrameIdentities(previous?.frameIdentities, beforeIdentities)
+      ? previous
+      : null;
     const draft = makeDraft(base, before, this.nextReferenceEpoch);
+    draft.frameIdentities = new Map(beforeIdentities);
     if (base === null || base.documentId !== before) {
       this.nextReferenceEpoch += 1;
     }
@@ -351,15 +476,21 @@ export class BrowserObservationStore {
     draft.targetGeneration = tab.targetGeneration;
 
     const [accessibilityRaw, domRaw] = await Promise.all([
-      connection.send("Accessibility.getFullAXTree", {}),
+      connection.send("Accessibility.getFullAXTree", {}, undefined, {
+        maxResponseBytes: OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES,
+      }),
       connection.send("DOMSnapshot.captureSnapshot", {
         computedStyles: [],
         includeDOMRects: true,
         includePaintOrder: false,
+      }, undefined, {
+        maxResponseBytes: OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES,
       }),
     ]);
-    const after = currentDocumentId(await connection.send("Page.getFrameTree", {}));
-    if (after !== before) {
+    const afterIdentities = frameIdentities(await connection.send("Page.getFrameTree", {}));
+    const after = afterIdentities.get("root");
+    if (after !== before || !sameFrameIdentities(beforeIdentities, afterIdentities)) {
+      this.invalidate(tab.tabId);
       fail(OBSERVATION_ERROR_CODES.STALE_DOCUMENT);
     }
 
