@@ -4651,7 +4651,7 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_kernel_keeps_provider_launch_unwrapped() {
+    fn path1_ordinary_provider_launch_is_unwrapped_and_scrubs_managed_controls() {
         let _env = crate::env_lock::lock();
         let previous_isolation = std::env::var_os(MANAGED_PROVIDER_ISOLATION_ENV);
         std::env::remove_var(MANAGED_PROVIDER_ISOLATION_ENV);
@@ -4666,6 +4666,22 @@ mod tests {
                 (
                     String::from("CODEX_HOME"),
                     String::from("/home/chariox/.codex"),
+                ),
+                (
+                    String::from("CHARIOX_MANAGED_PROVIDER_ISOLATION"),
+                    String::from("1"),
+                ),
+                (
+                    String::from("CHARIOX_MANAGED_PROVIDER_BWRAP"),
+                    String::from("/usr/bin/bwrap"),
+                ),
+                (
+                    String::from("CHARIOX_MANAGED_PROVIDER_HOME"),
+                    String::from("/home/chariox/provider-home"),
+                ),
+                (
+                    String::from("CHARIOX_CAPABILITY_ISOLATION_ROOT"),
+                    String::from("/home/chariox/.chariox/managed-context/kernel"),
                 ),
                 (
                     String::from("CHARIOX_RELAY_TOKEN"),
@@ -4702,7 +4718,14 @@ mod tests {
             prepared.pty_env.get("CODEX_HOME").map(String::as_str),
             Some("/home/chariox/.codex")
         );
-        for name in ["CHARIOX_RELAY_TOKEN", "GIT_CONFIG_KEY_0"] {
+        for name in [
+            "CHARIOX_MANAGED_PROVIDER_ISOLATION",
+            "CHARIOX_MANAGED_PROVIDER_BWRAP",
+            "CHARIOX_MANAGED_PROVIDER_HOME",
+            "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+            "CHARIOX_RELAY_TOKEN",
+            "GIT_CONFIG_KEY_0",
+        ] {
             assert!(!prepared.pty_env.contains_key(name));
             assert!(prepared
                 .pty_env_remove

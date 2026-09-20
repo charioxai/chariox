@@ -980,6 +980,7 @@ mod tests {
             kernel_port: fixture.config.kernel_port,
         };
         fs::create_dir_all(&config.process_home).expect("worker HOME should exist");
+        fs::create_dir_all(&config.chariox_home).expect("worker CHARIOX_HOME should exist");
         let marker = config.chariox_home.join("worker-isolation-env.txt");
         let provider_home = config
             .chariox_home
@@ -988,6 +989,12 @@ mod tests {
             .join("provider-home");
         let capability_root = config.chariox_home.join("managed-context/kernel");
         let kernel_script = b"#!/bin/sh\nset -eu\nmarker=\"${CHARIOX_WORKER_ISOLATION_PROBE_MARKER:?}\"\nprintf 'home=%s\\n' \"${HOME-<unset>}\" > \"$marker\"\nprintf 'chariox_home=%s\\n' \"${CHARIOX_HOME-<unset>}\" >> \"$marker\"\nprintf 'cwd=%s\\n' \"$(pwd)\" >> \"$marker\"\nprintf 'isolation=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_ISOLATION-<unset>}\" >> \"$marker\"\nprintf 'provider_home=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_HOME-<unset>}\" >> \"$marker\"\nprintf 'capability_root=%s\\n' \"${CHARIOX_CAPABILITY_ISOLATION_ROOT-<unset>}\" >> \"$marker\"\nprintf 'vault=%s\\n' \"${CHARIOX_MANAGED_VAULT_PATH-<unset>}\" >> \"$marker\"\nprintf 'daemon_socket=%s\\n' \"${CHARIOX_DAEMON_SOCKET-<unset>}\" >> \"$marker\"\nprintf 'broker_socket=%s\\n' \"${CHARIOX_SLICE_DOCKER_BROKER_SOCKET-<unset>}\" >> \"$marker\"\nprintf 'slice_root=%s\\n' \"${CHARIOX_SLICE_ROOT-<unset>}\" >> \"$marker\"\nprintf 'relay_token=%s\\n' \"${CHARIOX_RELAY_TOKEN-<unset>}\" >> \"$marker\"\nprintf 'daemon_id=%s\\n' \"${CHARIOX_DAEMON_ID-<unset>}\" >> \"$marker\"\nprintf 'machine_id=%s\\n' \"${CHARIOX_MACHINE_ID-<unset>}\" >> \"$marker\"\nprintf 'bootstrap_path=%s\\n' \"${CHARIOX_MANAGED_BOOTSTRAP_PATH-<unset>}\" >> \"$marker\"\nprintf ordinary > \"$HOME/ordinary-worker-write\"\n";
+        let kernel_script = [
+            kernel_script.as_slice(),
+            b"printf 'provider_bwrap=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_BWRAP-<unset>}\" >> \"$marker\"\nprintf 'slice_service=%s\\n' \"${CHARIOX_MANAGED_SLICE_SERVICE_ROOT-<unset>}\" >> \"$marker\"\nprintf 'slice_publication=%s\\n' \"${CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT-<unset>}\" >> \"$marker\"\n"
+                .as_slice(),
+        ]
+        .concat();
         fs::write(&config.kernel_binary, kernel_script).expect("write worker probe kernel");
         fs::set_permissions(&config.kernel_binary, fs::Permissions::from_mode(0o755))
             .expect("make worker probe kernel executable");
@@ -996,11 +1003,14 @@ mod tests {
             "HOME",
             "CHARIOX_WORKER_ISOLATION_PROBE_MARKER",
             "CHARIOX_MANAGED_PROVIDER_ISOLATION",
+            "CHARIOX_MANAGED_PROVIDER_BWRAP",
             "CHARIOX_MANAGED_PROVIDER_HOME",
             "CHARIOX_CAPABILITY_ISOLATION_ROOT",
             "CHARIOX_MANAGED_VAULT_PATH",
             "CHARIOX_DAEMON_SOCKET",
             "CHARIOX_SLICE_DOCKER_BROKER_SOCKET",
+            "CHARIOX_MANAGED_SLICE_SERVICE_ROOT",
+            "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT",
             "CHARIOX_SLICE_ROOT",
             "CHARIOX_RELAY_TOKEN",
             "CHARIOX_DAEMON_ID",
@@ -1013,7 +1023,10 @@ mod tests {
             .collect::<Vec<_>>();
         env::set_var("HOME", &config.process_home);
         env::set_var("CHARIOX_WORKER_ISOLATION_PROBE_MARKER", &marker);
-        env::set_var("CHARIOX_MANAGED_PROVIDER_ISOLATION", "0");
+        // Model the managed bootstrap parent: Path 1 must strip its marker
+        // and shared-host slice controls before starting the worker kernel.
+        env::set_var("CHARIOX_MANAGED_PROVIDER_ISOLATION", "1");
+        env::set_var("CHARIOX_MANAGED_PROVIDER_BWRAP", "/usr/bin/bwrap");
         env::set_var("CHARIOX_MANAGED_PROVIDER_HOME", &provider_home);
         env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", &capability_root);
         env::set_var(
@@ -1024,6 +1037,14 @@ mod tests {
         env::set_var(
             "CHARIOX_SLICE_DOCKER_BROKER_SOCKET",
             "/run/chariox/broker.sock",
+        );
+        env::set_var(
+            "CHARIOX_MANAGED_SLICE_SERVICE_ROOT",
+            "/var/lib/chariox-slice-share",
+        );
+        env::set_var(
+            "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT",
+            "/var/lib/chariox-slice-share/slices",
         );
         env::set_var("CHARIOX_SLICE_ROOT", "/var/lib/chariox-slice-share");
         env::set_var("CHARIOX_RELAY_TOKEN", "mrelay_parent_secret");
@@ -1067,6 +1088,9 @@ mod tests {
         )));
         assert!(observed.contains(&format!("cwd={}\n", config.process_home.display())));
         assert!(observed.contains("isolation=<unset>"));
+        assert!(observed.contains("provider_bwrap=<unset>"));
+        assert!(observed.contains("slice_service=<unset>"));
+        assert!(observed.contains("slice_publication=<unset>"));
         assert!(observed.contains(&format!("provider_home={}\n", provider_home.display())));
         assert!(observed.contains(&format!(
             "capability_root={}\n",
@@ -1079,6 +1103,8 @@ mod tests {
         for name in [
             "daemon_socket",
             "broker_socket",
+            "slice_service",
+            "slice_publication",
             "slice_root",
             "relay_token",
             "daemon_id",
