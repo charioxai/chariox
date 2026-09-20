@@ -130,6 +130,23 @@ test("cancels queued mutations and marks active work indeterminate on tab invali
   );
 });
 
+test("does not start an admitted mutation after its tab is invalidated", async () => {
+  const coordinator = new BrowserMutationCoordinator();
+  let started = false;
+  const result = coordinator.mutate(attribution(), async () => {
+    started = true;
+    return "must-not-run";
+  });
+
+  coordinator.invalidateTab("tab-1", 1);
+
+  await assert.rejects(
+    result,
+    (error) => error.code === MUTATION_ERROR_CODES.INDETERMINATE,
+  );
+  assert.equal(started, false);
+});
+
 test("browser generation advance invalidates old authority", async () => {
   const coordinator = new BrowserMutationCoordinator({ browserGeneration: 1 });
   const gate = deferred();
@@ -149,6 +166,60 @@ test("browser generation advance invalidates old authority", async () => {
     ),
     "ok",
   );
+});
+
+test("bounds invalidation tombstones and fails closed until browser generation advances", async () => {
+  const coordinator = new BrowserMutationCoordinator({ maxInvalidatedTabs: 2 });
+  coordinator.invalidateTab("tab-1", 1);
+  coordinator.invalidateTab("tab-2", 2);
+  coordinator.invalidateTab("tab-3", 3);
+
+  assert.deepEqual(
+    {
+      browser_generation: coordinator.snapshot().browser_generation,
+      invalidated_tab_count: coordinator.snapshot().invalidated_tab_count,
+      invalidation_overflowed: coordinator.snapshot().invalidation_overflowed,
+    },
+    {
+      browser_generation: null,
+      invalidated_tab_count: 2,
+      invalidation_overflowed: true,
+    },
+  );
+  assert.throws(
+    () => coordinator.mutate(attribution(), async () => "must-not-run"),
+    (error) => error.code === MUTATION_ERROR_CODES.QUEUE_SATURATED,
+  );
+
+  coordinator.advanceBrowserGeneration(1);
+  assert.equal(
+    await coordinator.mutate(attribution({ action_id: "after-reset" }), async () => "ok"),
+    "ok",
+  );
+  assert.equal(coordinator.snapshot().invalidated_tab_count, 0);
+  assert.equal(coordinator.snapshot().invalidation_overflowed, false);
+});
+
+test("preserves undefined rejection for the original action and deduplicated replay", async () => {
+  const coordinator = new BrowserMutationCoordinator();
+  let calls = 0;
+  const observe = (promise) => promise.then(
+    (value) => ({ status: "fulfilled", value }),
+    (reason) => ({ status: "rejected", reason }),
+  );
+
+  const first = await observe(coordinator.mutate(attribution(), async () => {
+    calls += 1;
+    return Promise.reject();
+  }));
+  const replay = await observe(coordinator.mutate(attribution(), async () => {
+    calls += 1;
+    return "must-not-run";
+  }));
+
+  assert.deepEqual(first, { status: "rejected", reason: undefined });
+  assert.deepEqual(replay, { status: "rejected", reason: undefined });
+  assert.equal(calls, 1);
 });
 
 test("bounds queued tabs, per-tab work, and completed deduplication", async () => {

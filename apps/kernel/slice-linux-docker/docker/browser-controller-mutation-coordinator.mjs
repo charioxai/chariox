@@ -97,7 +97,7 @@ function finiteLimit(value, fallback) {
 }
 
 function terminalPromise(record) {
-  return record.error === undefined
+  return record.outcome === "fulfilled"
     ? Promise.resolve(record.result)
     : Promise.reject(record.error);
 }
@@ -108,6 +108,7 @@ export class BrowserMutationCoordinator {
     this.maxTabs = finiteLimit(options.maxTabs, 256);
     this.maxQueuedPerTab = finiteLimit(options.maxQueuedPerTab, 16);
     this.maxCompleted = finiteLimit(options.maxCompleted, 1024);
+    this.maxInvalidatedTabs = finiteLimit(options.maxInvalidatedTabs, this.maxTabs);
     this.browserGeneration = options.browserGeneration === undefined
       ? null
       : positiveInteger(options.browserGeneration);
@@ -116,11 +117,15 @@ export class BrowserMutationCoordinator {
     this.actions = new Map();
     this.completedOrder = [];
     this.invalidatedTargetGeneration = new Map();
+    this.invalidationOverflowed = false;
   }
 
   mutate(rawAttribution, run) {
     const attribution = normalizeAttribution(rawAttribution);
     if (typeof run !== "function") fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
+    if (this.invalidationOverflowed) {
+      fail(MUTATION_ERROR_CODES.QUEUE_SATURATED);
+    }
     this._admitGeneration(attribution.browser_generation);
     const invalidatedGeneration = this.invalidatedTargetGeneration.get(attribution.tab_id) ?? 0;
     if (attribution.target_generation <= invalidatedGeneration) {
@@ -164,6 +169,7 @@ export class BrowserMutationCoordinator {
       reject: rejectPromise,
       resolve: resolvePromise,
       run,
+      outcome: null,
       state: "queued",
     };
     this.actions.set(attribution.action_id, record);
@@ -176,7 +182,13 @@ export class BrowserMutationCoordinator {
     const normalizedTabId = identifier(tabId);
     const normalizedGeneration = positiveInteger(targetGeneration);
     const previous = this.invalidatedTargetGeneration.get(normalizedTabId) ?? 0;
-    this.invalidatedTargetGeneration.set(normalizedTabId, Math.max(previous, normalizedGeneration));
+    if (previous > 0 || this.invalidatedTargetGeneration.size < this.maxInvalidatedTabs) {
+      this.invalidatedTargetGeneration.set(normalizedTabId, Math.max(previous, normalizedGeneration));
+    } else {
+      // Preserve safety with bounded memory: after exact tombstone capacity is
+      // exhausted, reject every mutation until a new browser generation begins.
+      this.invalidationOverflowed = true;
+    }
     this._cancelQueued(normalizedTabId, MUTATION_ERROR_CODES.CANCELLED);
     const active = this.active.get(normalizedTabId);
     if (active && active.attribution.target_generation <= normalizedGeneration) {
@@ -197,6 +209,7 @@ export class BrowserMutationCoordinator {
       record.abortController.abort(MUTATION_ERROR_CODES.INDETERMINATE);
     }
     this.invalidatedTargetGeneration.clear();
+    this.invalidationOverflowed = false;
   }
 
   snapshot() {
@@ -214,6 +227,8 @@ export class BrowserMutationCoordinator {
       active,
       queued,
       completed_count: this.completedOrder.length,
+      invalidated_tab_count: this.invalidatedTargetGeneration.size,
+      invalidation_overflowed: this.invalidationOverflowed,
     };
   }
 
@@ -231,6 +246,7 @@ export class BrowserMutationCoordinator {
     for (const record of queue) {
       const error = new BrowserMutationError(code);
       record.state = "completed";
+      record.outcome = "rejected";
       record.error = error;
       record.reject(error);
       this._retainCompleted(record);
@@ -249,26 +265,33 @@ export class BrowserMutationCoordinator {
     record.state = "active";
     this.active.set(tabId, record);
     Promise.resolve()
-      .then(() => record.run({ signal: record.abortController.signal, attribution: record.attribution }))
+      .then(() => {
+        if (record.abortController.signal.aborted) {
+          throw new BrowserMutationError(MUTATION_ERROR_CODES.INDETERMINATE);
+        }
+        return record.run({ signal: record.abortController.signal, attribution: record.attribution });
+      })
       .then(
-        (result) => this._settle(record, result, undefined),
-        (error) => this._settle(record, undefined, error),
+        (result) => this._settle(record, "fulfilled", result),
+        (error) => this._settle(record, "rejected", error),
       );
   }
 
-  _settle(record, result, error) {
+  _settle(record, outcome, value) {
     const { tab_id: tabId } = record.attribution;
     const wasAborted = record.abortController.signal.aborted;
-    const terminalError = wasAborted
+    const terminalOutcome = wasAborted ? "rejected" : outcome;
+    const terminalValue = wasAborted
       ? new BrowserMutationError(MUTATION_ERROR_CODES.INDETERMINATE)
-      : error;
+      : value;
     record.state = "completed";
-    if (terminalError === undefined) {
-      record.result = result;
-      record.resolve(result);
+    record.outcome = terminalOutcome;
+    if (terminalOutcome === "fulfilled") {
+      record.result = terminalValue;
+      record.resolve(terminalValue);
     } else {
-      record.error = terminalError;
-      record.reject(terminalError);
+      record.error = terminalValue;
+      record.reject(terminalValue);
     }
     if (this.active.get(tabId) === record) this.active.delete(tabId);
     this._retainCompleted(record);
