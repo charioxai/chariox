@@ -469,6 +469,149 @@ test("preserves destroyed-generation fences through lifecycle pruning and serial
   assert.equal(reopened.kind, "target_created");
 });
 
+test("bounds active lifecycle registries while retaining evicted generation fences", () => {
+  const journal = new BrowserEventJournal({
+    maxEvents: 32,
+    maxBytes: 32_768,
+    maxLifecycleEntries: 2,
+  });
+  const authoritative = {
+    browserGeneration: 7,
+    activeTargetGenerationForTarget: () => 1,
+    activeDocumentGenerationForDocument: () => 1,
+  };
+
+  for (let index = 0; index < 8; index += 1) {
+    assert.equal(journal.record({
+      kind: "page_navigated",
+      eventId: `bounded-navigation-${index}`,
+      browserGeneration: 7,
+      targetId: `bounded-target-${index}`,
+      documentId: `bounded-document-${index}`,
+      data: { url: "https://example.test/bounded" },
+    }, authoritative).kind, "page_navigated");
+  }
+
+  assert.ok(journal.activeTargets.size <= 2);
+  assert.ok(journal.activeDocuments.size <= 2);
+  assert.ok(journal.targetDocuments.size <= 2);
+  assert.ok(journal.compactedTargets.size <= 2);
+  assert.ok(journal.compactedDocuments.size <= 2);
+  const fencedTarget = journal.compactedTargets.keys().next().value;
+  assert.equal(journal.record({
+    kind: "page_loaded",
+    eventId: "bounded-stale-event",
+    browserGeneration: 7,
+    targetId: fencedTarget,
+    data: {},
+  }, authoritative), null);
+});
+
+test("preserves old document and target generation fences through invalidation", () => {
+  const journal = new BrowserEventJournal({ maxEvents: 16, maxBytes: 16_384 });
+  const authoritative = {
+    browserGeneration: 7,
+    activeTargetGenerationForTarget: () => 5,
+    activeDocumentGenerationForDocument: () => 5,
+  };
+  journal.record({
+    kind: "page_navigated",
+    eventId: "fence-navigation-a",
+    browserGeneration: 7,
+    targetId: "fenced-target",
+    documentId: "fenced-document-a",
+    data: { url: "https://example.test/a" },
+  }, authoritative);
+  journal.record({
+    kind: "page_navigated",
+    eventId: "fence-navigation-b",
+    browserGeneration: 7,
+    targetId: "fenced-target",
+    documentId: "fenced-document-b",
+    data: { url: "https://example.test/b" },
+  }, authoritative);
+
+  assert.equal(journal.documentAuthorityFences.get("fenced-document-a"), 5);
+  assert.equal(journal.record({
+    kind: "page_loaded",
+    eventId: "fence-late-document",
+    browserGeneration: 7,
+    targetId: "fenced-target",
+    documentId: "fenced-document-a",
+    data: {},
+  }, authoritative), null);
+
+  assert.equal(journal.invalidateTarget({
+    targetId: "fenced-target",
+    browserGeneration: 7,
+  }), true);
+  assert.equal(journal.targetAuthorityFences.get("fenced-target"), 5);
+  assert.equal(journal.documentAuthorityFences.get("fenced-document-b"), 5);
+  assert.equal(journal.record({
+    kind: "page_loaded",
+    eventId: "fence-late-target",
+    browserGeneration: 7,
+    targetId: "fenced-target",
+    documentId: "fenced-document-b",
+    data: {},
+  }, authoritative), null);
+});
+
+test("rejects every supplied malformed serialized cursor instead of snapshotting", () => {
+  const journal = new BrowserEventJournal({ maxEvents: 8, maxBytes: 16_384 });
+  journal.record({ kind: "console", eventId: "cursor-event", browserGeneration: 7, data: {} });
+  for (const cursor of ["0", 1.5, -1, null, undefined, Number.NaN, Number.POSITIVE_INFINITY, {}, []]) {
+    assert.throws(() => journal.serialize({ cursor }), (error) => {
+      return error instanceof BrowserEventError && error.code === "browser_event_cursor_invalid";
+    });
+  }
+  assert.equal(JSON.parse(journal.serialize()).events.length, 1);
+  assert.equal(JSON.parse(journal.serialize({ cursor: 0 })).events.length, 1);
+});
+
+test("does not commit lifecycle reopening for an oversized rejected event", () => {
+  const journal = new BrowserEventJournal({
+    maxEvents: 8,
+    maxBytes: 16_384,
+    maxEventBytes: 1,
+  });
+  journal.invalidateTarget({ targetId: "oversized-target", targetGeneration: 1, browserGeneration: 7 });
+  journal.invalidateDocument({ documentId: "oversized-document", documentGeneration: 1, browserGeneration: 7 });
+
+  assert.equal(journal.record({
+    kind: "page_loaded",
+    eventId: "oversized-reopen",
+    browserGeneration: 7,
+    targetId: "oversized-target",
+    documentId: "oversized-document",
+    data: {},
+  }, {
+    browserGeneration: 7,
+    activeTargetGenerationForTarget: () => 2,
+    activeDocumentGenerationForDocument: () => 2,
+  }), null);
+  assert.equal(journal.isTargetInvalid("oversized-target"), true);
+  assert.equal(journal.isDocumentInvalid("oversized-document"), true);
+  assert.equal(journal.targetAuthorityFences.get("oversized-target"), 1);
+  assert.equal(journal.documentAuthorityFences.get("oversized-document"), 1);
+  assert.equal(journal.size, 0);
+
+  journal.maxEventBytes = 4_096;
+  assert.equal(journal.record({
+    kind: "page_loaded",
+    eventId: "oversized-stale-after-rejection",
+    browserGeneration: 7,
+    targetId: "oversized-target",
+    documentId: "oversized-document",
+    data: {},
+  }, {
+    browserGeneration: 7,
+    activeTargetGenerationForTarget: () => 1,
+    activeDocumentGenerationForDocument: () => 1,
+  }), null);
+  assert.equal(journal.size, 0);
+});
+
 test("returns an oldest-first byte-bounded prefix and losslessly continues past 128 events", () => {
   const journal = new BrowserEventJournal({
     maxEvents: 256,
