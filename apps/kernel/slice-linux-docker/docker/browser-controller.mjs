@@ -1,9 +1,15 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
-import NodeWebSocket from "ws";
+
+const browserControllerRequire = createRequire(
+  process.env.CHARIOX_BROWSER_CONTROLLER_PACKAGE_JSON ??
+    new URL("../toolchain/package.json", import.meta.url),
+);
+const NodeWebSocket = browserControllerRequire("ws");
 
 import { BrowserTabRegistry } from "./browser-tab-registry.mjs";
 import {
