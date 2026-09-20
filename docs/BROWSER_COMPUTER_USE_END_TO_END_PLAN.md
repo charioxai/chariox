@@ -163,6 +163,52 @@ Parity work must preserve and test that managed-machine shutdown behavior.
 Managed placement must not create a second workspace, session, provider,
 terminal, file, Git, or reconnect model.
 
+### Managed-parity implementation ledger
+
+This ledger is part of the completion gate, not background context. Keep an
+item open until its exact reviewed head has focused tests and live evidence on
+a fresh Path-1 machine. A source-only implementation or a manual observation
+does not close a box.
+
+- [ ] Remove Bubblewrap and any equivalent inherited systemd filesystem or
+  process restriction from the Path-1 provider launch. Prove the provider has
+  no Bubblewrap ancestor or managed-isolation marker.
+- [ ] Make directory discovery, exact-path entry, session creation, and
+  provider execution match an ordinary Linux kernel for every path allowed by
+  the worker user's Unix permissions. Cover `/home`, `/tmp`, nested paths,
+  newly created directories, and repositories created after enrollment.
+- [ ] Protect only the exact managed control files and dedicated service-state
+  directories that require protection. A protected file must not make its
+  parent or an unrelated sibling unavailable as a workspace.
+- [ ] Run the managed service account with `HOME=/home/chariox` and
+  `CHARIOX_HOME=/home/chariox/.chariox`. Keep repositories, user state, and
+  mutable kernel state out of root-owned release directories.
+- [ ] Materialize a copied repository at
+  `/home/chariox/<source-repository-basename>` by default, preserve the source
+  basename, and fail safely on a collision.
+- [ ] Let the user choose a different absolute trusted repository root when
+  creating the managed machine. Persist one authoritative value through the
+  Cloud API, provisioning, bootstrap, kernel receipt, child-worker creation,
+  and Web projections. A child worker inherits it and cannot accept a second
+  browser-supplied override.
+- [ ] Install and upgrade managed kernels as signed, immutable,
+  content-addressed native releases under
+  `/usr/lib/chariox/releases/<digest>`, activated through
+  `/usr/local/bin/chariox-kernel`. Prove atomic activation, rollback, and
+  crash-safe migration without moving or replacing `~/.chariox`.
+- [ ] Keep the ordinary kernel protocol, provider adapters, state model,
+  history, reconnect behavior, Project setup behavior, and clients unchanged
+  by managed placement. Record and close every difference found by the parity
+  audit rather than waiting for users to find them one at a time.
+- [ ] Preserve and test every managed-machine automatic shutdown trigger,
+  including the delay measured from the last agent finishing. Shutdown is the
+  required managed lifecycle difference and must not be removed in the name of
+  parity.
+- [ ] Pass the executable ordinary-versus-managed comparison matrix and the
+  full fresh-machine Path-1 acceptance drill. Record exact commits, commands,
+  results, resource samples, cleanup, and retained evidence before marking any
+  ledger item complete.
+
 For Path 1, the disposable worker VM is the provider security and filesystem
 isolation boundary. Once the signed kernel has enrolled, provider runs must use
 the same ordinary kernel launch path as a user-managed machine. Path-1 service
