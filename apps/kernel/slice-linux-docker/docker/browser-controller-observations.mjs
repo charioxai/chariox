@@ -159,10 +159,42 @@ function arrayValue(value, index) {
   return Array.isArray(value) ? value[index] : undefined;
 }
 
+function rareDataByIndex(rawData) {
+  const indexes = Array.isArray(rawData?.index) ? rawData.index : [];
+  const values = Array.isArray(rawData?.value) ? rawData.value : [];
+  const result = new Map();
+  for (let offset = 0; offset < indexes.length && offset < values.length; offset += 1) {
+    const nodeIndex = indexes[offset];
+    if (Number.isSafeInteger(nodeIndex)) {
+      result.set(nodeIndex, values[offset]);
+    }
+  }
+  return result;
+}
+
 function snapshotString(strings, index, maxBytes) {
   return Number.isSafeInteger(index)
     ? boundedString(strings[index], maxBytes)
     : "";
+}
+
+function shadowRootTypeForNode(data, strings, nodeIndex, maxBytes) {
+  const shadowRootTypes = rareDataByIndex(data?.shadowRootType);
+  const parentIndexes = Array.isArray(data?.parentIndex) ? data.parentIndex : [];
+  const seen = new Set();
+  let current = nodeIndex;
+  while (
+    Number.isSafeInteger(current) &&
+    current >= 0 &&
+    current < parentIndexes.length &&
+    !seen.has(current)
+  ) {
+    seen.add(current);
+    const shadowRootType = snapshotString(strings, shadowRootTypes.get(current), maxBytes);
+    if (shadowRootType) return shadowRootType;
+    current = parentIndexes[current];
+  }
+  return null;
 }
 
 function validBackendNodeId(value) {
@@ -301,6 +333,7 @@ function makeDraft(previous, documentId, mainFrameId, referenceEpoch) {
       backendIdByRef: new Map(previous.backendIdByRef),
       frameIdentities: new Map(previous.frameIdentities ?? []),
       frameIdByRef: new Map(previous.frameIdByRef ?? []),
+      shadowRootTypeByRef: new Map(previous.shadowRootTypeByRef ?? []),
     };
   }
   return {
@@ -312,6 +345,7 @@ function makeDraft(previous, documentId, mainFrameId, referenceEpoch) {
     refsByBackendId: new Map(),
     backendIdByRef: new Map(),
     frameIdByRef: new Map(),
+    shadowRootTypeByRef: new Map(),
   };
 }
 
@@ -320,7 +354,11 @@ function elementReference(draft, backendNodeId, frameId = null) {
   if (validId === null) return null;
   const existing = draft.refsByBackendId.get(validId);
   if (existing) {
-    if (typeof frameId === "string" && frameId.length > 0) {
+    if (
+      typeof frameId === "string" &&
+      frameId.length > 0 &&
+      !draft.frameIdByRef.has(existing)
+    ) {
       draft.frameIdByRef.set(existing, frameId);
     }
     return existing;
@@ -378,6 +416,7 @@ function compactAccessibility(raw, draft, limits) {
 function compactDom(raw, draft, limits) {
   const strings = Array.isArray(raw?.strings) ? raw.strings : [];
   const documents = Array.isArray(raw?.documents) ? raw.documents : [];
+  draft.shadowRootTypeByRef.clear();
   const nodes = [];
   let sourceCount = 0;
   for (let documentIndex = 0; documentIndex < documents.length; documentIndex += 1) {
@@ -395,6 +434,14 @@ function compactDom(raw, draft, limits) {
       if (nodes.length >= limits.maxNodes) break;
       const reference = elementReference(draft, backendIds[nodeIndex], frameId);
       if (!reference) continue;
+      const shadowRootType = shadowRootTypeForNode(
+        data,
+        strings,
+        nodeIndex,
+        limits.maxStringBytes,
+      );
+      if (shadowRootType) draft.shadowRootTypeByRef.set(reference, shadowRootType);
+      else draft.shadowRootTypeByRef.delete(reference);
       const parentIndex = arrayValue(data.parentIndex, nodeIndex);
       const parentReference = Number.isSafeInteger(parentIndex)
         ? elementReference(draft, backendIds[parentIndex], frameId)
@@ -547,7 +594,7 @@ export class BrowserObservationStore {
     if (!Number.isSafeInteger(backendNodeId)) {
       fail(OBSERVATION_ERROR_CODES.ELEMENT_REFERENCE_INVALIDATED);
     }
-    return {
+    const resolved = {
       tab_id: tab.tabId,
       browser_generation: tab.generation,
       target_generation: tab.targetGeneration,
@@ -557,5 +604,15 @@ export class BrowserObservationStore {
       snapshot_revision: state.revision,
       backend_node_id: backendNodeId,
     };
+    const shadowRootType = state.shadowRootTypeByRef.get(elementRef);
+    if (typeof shadowRootType === "string" && shadowRootType.length > 0) {
+      Object.defineProperty(resolved, "shadow_root_type", {
+        configurable: false,
+        enumerable: false,
+        value: shadowRootType,
+        writable: false,
+      });
+    }
+    return resolved;
   }
 }

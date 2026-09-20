@@ -560,6 +560,12 @@ test("wires bounded page features through controller-owned tabs and connections"
       isDirectory: () => candidate === "/safe" || candidate === "/safe/downloads",
       isFile: () => candidate === "/safe/report.txt",
       size: candidate === "/safe/report.txt" ? 1024 : 0,
+      dev: 1,
+      ino: candidate === "/safe" ? 10 : candidate === "/safe/downloads" ? 11 : 20,
+    }),
+    stageUpload: async ({ destinationPath, expectedSize }) => ({
+      path: destinationPath,
+      size: expectedSize,
     }),
   });
   const fixture = makeFixture({ targets, pageFeatures });

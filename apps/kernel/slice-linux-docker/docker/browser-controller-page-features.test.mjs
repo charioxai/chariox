@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   BrowserPageFeatureError,
   BrowserPageFeatures,
+  CHROMIUM_PERMISSION_TYPES,
   PAGE_FEATURE_ERROR_CODES,
 } from "./browser-controller-page-features.mjs";
 
@@ -12,7 +13,51 @@ const ELEMENT = Object.freeze({
   document_id: "document-3",
   snapshot_revision: 4,
   backend_node_id: 91,
+  frame_id: "frame-main",
+  main_frame_id: "frame-main",
 });
+
+const EXPECTED_CHROMIUM_PERMISSION_TYPES = Object.freeze([
+  "ar",
+  "audioCapture",
+  "automaticFullscreen",
+  "backgroundFetch",
+  "backgroundSync",
+  "cameraPanTiltZoom",
+  "capturedSurfaceControl",
+  "clipboardReadWrite",
+  "clipboardSanitizedWrite",
+  "displayCapture",
+  "durableStorage",
+  "geolocation",
+  "handTracking",
+  "idleDetection",
+  "keyboardLock",
+  "localFonts",
+  "localNetwork",
+  "localNetworkAccess",
+  "loopbackNetwork",
+  "midi",
+  "midiSysex",
+  "nfc",
+  "notifications",
+  "paymentHandler",
+  "periodicBackgroundSync",
+  "pointerLock",
+  "protectedMediaIdentifier",
+  "sensors",
+  "smartCard",
+  "speakerSelection",
+  "storageAccess",
+  "topLevelStorageAccess",
+  "videoCapture",
+  "vr",
+  "wakeLockScreen",
+  "wakeLockSystem",
+  "webAppInstallation",
+  "webPrinting",
+  "windowManagement",
+]);
 
 class FakeConnection {
   constructor(responses = {}) {
@@ -56,6 +101,12 @@ function fakeFilesystem() {
       isDirectory: () => candidate === "/safe" || candidate === "/safe/downloads",
       isFile: () => candidate.endsWith(".txt"),
       size: candidate === "/safe/large.txt" ? 64 * 1024 * 1024 + 1 : 1024,
+      dev: 1,
+      ino: candidate === "/safe" ? 10 : candidate === "/safe/downloads" ? 11 : 20,
+    }),
+    stageUpload: async ({ destinationPath, expectedSize }) => ({
+      path: destinationPath,
+      size: expectedSize,
     }),
   };
 }
@@ -68,8 +119,6 @@ test("describes frame and shadow context without returning page content", async 
   const connection = new FakeConnection({
     "DOM.describeNode": {
       node: {
-        frameId: "frame-2",
-        shadowRootType: "open",
         nodeName: "INPUT",
         localName: "input",
         nodeValue: "secret page value",
@@ -78,13 +127,21 @@ test("describes frame and shadow context without returning page content", async 
     },
   });
   const features = new BrowserPageFeatures();
-  const result = await features.describeElement({ connection, element: ELEMENT });
+  const result = await features.describeElement({
+    connection,
+    element: {
+      ...ELEMENT,
+      frame_id: "frame-child",
+      main_frame_id: "frame-main",
+      shadow_root_type: "open",
+    },
+  });
 
   assert.deepEqual(result, {
     tab_id: "tab-7",
     document_id: "document-3",
     snapshot_revision: 4,
-    frame_id: "frame-2",
+    frame_id: "frame-child",
     shadow_root_type: "open",
     node_name: "INPUT",
     local_name: "input",
@@ -180,7 +237,9 @@ test("configures downloads only inside the controller-owned root", async () => {
 
 test("uploads regular files from allowed roots without returning their paths", async () => {
   const filesystem = fakeFilesystem();
-  const connection = new FakeConnection();
+  const connection = new FakeConnection({
+    "Page.getFrameTree": { frameTree: { frame: { loaderId: "document-3" } } },
+  });
   const features = new BrowserPageFeatures({
     ...filesystem,
     uploadRoots: ["/safe"],
@@ -197,10 +256,125 @@ test("uploads regular files from allowed roots without returning their paths", a
     file_count: 1,
   });
   assert.doesNotMatch(JSON.stringify(result), /report\.txt/);
-  assert.deepEqual(connection.calls[0], {
+  const setFilesCall = connection.calls.find(({ method }) => method === "DOM.setFileInputFiles");
+  assert.ok(setFilesCall);
+  assert.deepEqual(setFilesCall, {
     method: "DOM.setFileInputFiles",
-    params: { backendNodeId: 91, files: ["/safe/report.txt"] },
+    params: { backendNodeId: 91, files: [setFilesCall.params.files[0]] },
   });
+  assert.notEqual(setFilesCall.params.files[0], "/safe/report.txt");
+  assert.match(setFilesCall.params.files[0], /chariox-browser-upload-/);
+});
+
+test("keeps configured roots fixed and rejects source swaps or staged growth", async () => {
+  const rootReplacementStat = async (candidate) => ({
+    isDirectory: () => candidate === "/safe",
+    isFile: () => candidate === "/safe/report.txt",
+    size: 1024,
+    dev: candidate === "/safe" ? 1 : 1,
+    ino: candidate === "/safe" ? (rootReplacementStat.calls++ === 0 ? 10 : 11) : 20,
+  });
+  rootReplacementStat.calls = 0;
+  const rootReplacement = new BrowserPageFeatures({
+    uploadRoots: ["/safe"],
+    realpath: async (candidate) => candidate,
+    stat: rootReplacementStat,
+    stageUpload: async ({ destinationPath, expectedSize }) => ({
+      path: destinationPath,
+      size: expectedSize,
+    }),
+  });
+  await rootReplacement.prepare();
+  const replacementConnection = new FakeConnection({
+    "Page.getFrameTree": { frameTree: { frame: { loaderId: "document-3" } } },
+  });
+  await assert.rejects(
+    rootReplacement.uploadFiles({
+      connection: replacementConnection,
+      element: ELEMENT,
+      paths: ["/safe/report.txt"],
+    }),
+    assertCode(PAGE_FEATURE_ERROR_CODES.PATH_DENIED),
+  );
+  assert.equal(replacementConnection.calls.length, 0);
+
+  let filePathLookups = 0;
+  const swappedPath = new BrowserPageFeatures({
+    uploadRoots: ["/safe"],
+    realpath: async (candidate) => {
+      if (candidate === "/safe/report.txt") {
+        filePathLookups += 1;
+        return filePathLookups === 1 ? candidate : "/private/secret.txt";
+      }
+      return candidate;
+    },
+    stat: async (candidate) => ({
+      isDirectory: () => candidate === "/safe",
+      isFile: () => candidate === "/safe/report.txt",
+      size: 1024,
+      dev: candidate === "/safe" ? 1 : 1,
+      ino: candidate === "/safe" ? 10 : 20,
+    }),
+    stageUpload: async ({ destinationPath, expectedSize }) => ({
+      path: destinationPath,
+      size: expectedSize,
+    }),
+  });
+  const swapConnection = new FakeConnection({
+    "Page.getFrameTree": { frameTree: { frame: { loaderId: "document-3" } } },
+  });
+  await assert.rejects(
+    swappedPath.uploadFiles({
+      connection: swapConnection,
+      element: ELEMENT,
+      paths: ["/safe/report.txt"],
+    }),
+    assertCode(PAGE_FEATURE_ERROR_CODES.PATH_DENIED),
+  );
+  assert.equal(swapConnection.calls.length, 0);
+
+  const grownStage = new BrowserPageFeatures({
+    uploadRoots: ["/safe"],
+    realpath: async (candidate) => candidate,
+    stat: async (candidate) => ({
+      isDirectory: () => candidate === "/safe",
+      isFile: () => candidate === "/safe/report.txt",
+      size: 1024,
+      dev: candidate === "/safe" ? 1 : 1,
+      ino: candidate === "/safe" ? 10 : 20,
+    }),
+    stageUpload: async ({ destinationPath }) => ({
+      path: destinationPath,
+      size: 64 * 1024 * 1024 + 1,
+    }),
+  });
+  const growthConnection = new FakeConnection({
+    "Page.getFrameTree": { frameTree: { frame: { loaderId: "document-3" } } },
+  });
+  await assert.rejects(
+    grownStage.uploadFiles({
+      connection: growthConnection,
+      element: ELEMENT,
+      paths: ["/safe/report.txt"],
+    }),
+    assertCode(PAGE_FEATURE_ERROR_CODES.PATH_DENIED),
+  );
+  assert.equal(growthConnection.calls.length, 0);
+});
+
+test("returns STALE_DOCUMENT when navigation wins the final upload check", async () => {
+  const connection = new FakeConnection({
+    "Page.getFrameTree": { frameTree: { frame: { loaderId: "document-4" } } },
+  });
+  const features = new BrowserPageFeatures({
+    ...fakeFilesystem(),
+    uploadRoots: ["/safe"],
+  });
+  await assert.rejects(
+    features.uploadFiles({ connection, element: ELEMENT, paths: ["/safe/report.txt"] }),
+    assertCode(PAGE_FEATURE_ERROR_CODES.STALE_DOCUMENT),
+  );
+  assert.deepEqual(connection.calls.map(({ method }) => method), ["Page.getFrameTree"]);
 });
 
 test("rejects traversal, symlink escape, missing, and non-regular upload files before CDP", async () => {
@@ -233,6 +407,8 @@ test("rejects traversal, symlink escape, missing, and non-regular upload files b
       isDirectory: () => candidate === "/safe",
       isFile: () => candidate !== "/safe",
       size: candidate === "/safe" ? 0 : 20 * 1024 * 1024,
+      dev: 1,
+      ino: candidate === "/safe" ? 10 : 20,
     }),
   });
   await assert.rejects(
@@ -271,6 +447,26 @@ test("grants only bounded origin-scoped permissions and can reset them", async (
   ]);
 });
 
+test("accepts every permission entry from the pinned Chromium protocol", async () => {
+  assert.deepEqual([...CHROMIUM_PERMISSION_TYPES], EXPECTED_CHROMIUM_PERMISSION_TYPES);
+  assert.equal(new Set(CHROMIUM_PERMISSION_TYPES).size, EXPECTED_CHROMIUM_PERMISSION_TYPES.length);
+  const connection = new FakeConnection();
+  const features = new BrowserPageFeatures();
+  const granted = await features.grantPermissions({
+    connection,
+    origin: "https://example.test",
+    permissions: EXPECTED_CHROMIUM_PERMISSION_TYPES,
+  });
+  assert.deepEqual(granted.permissions, EXPECTED_CHROMIUM_PERMISSION_TYPES);
+  assert.deepEqual(connection.calls, [{
+    method: "Browser.grantPermissions",
+    params: {
+      origin: "https://example.test",
+      permissions: EXPECTED_CHROMIUM_PERMISSION_TYPES,
+    },
+  }]);
+});
+
 test("rejects credentialed, path-bearing, and unsupported permission requests before CDP", async () => {
   const features = new BrowserPageFeatures();
   for (const request of [
@@ -278,6 +474,8 @@ test("rejects credentialed, path-bearing, and unsupported permission requests be
     { origin: "https://example.test/path", permissions: ["notifications"] },
     { origin: "file:///tmp/page", permissions: ["notifications"] },
     { origin: "https://example.test", permissions: ["unknownPermission"] },
+    { origin: "https://example.test", permissions: ["accessibilityEvents"] },
+    { origin: "https://example.test", permissions: ["videoCapturePanTiltZoom"] },
   ]) {
     const connection = new FakeConnection();
     await assert.rejects(

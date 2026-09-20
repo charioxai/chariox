@@ -652,6 +652,14 @@ export class BrowserController {
       throw controllerError(ERROR_CODES.RESTART_REQUIRED);
     }
 
+    if (typeof this.pageFeatures.prepare === "function") {
+      try {
+        await this.pageFeatures.prepare();
+      } catch (error) {
+        throw normalizeError(error, ERROR_CODES.PAGE_FEATURE_PATH_DENIED);
+      }
+    }
+
     this.generation += 1;
     this.state = "starting";
     this.fatalCode = null;
