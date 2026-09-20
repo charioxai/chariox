@@ -10,6 +10,7 @@ import {
   ERROR_CODES,
   redactDiagnostic,
 } from "./browser-controller.mjs";
+import { MUTATION_ERROR_CODES } from "./browser-controller-mutation-coordinator.mjs";
 import { OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES } from "./browser-controller-observations.mjs";
 import { BrowserPageFeatures } from "./browser-controller-page-features.mjs";
 import { UPLOAD_ARTIFACT_KIND } from "./browser-controller-upload-staging.mjs";
@@ -162,9 +163,44 @@ class FakeWebSocket extends EventEmitter {
 }
 
 async function flush() {
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let index = 0; index < 8; index += 1) {
+    await Promise.resolve();
+  }
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, reject, resolve };
+}
+
+function mutationAttribution(actionId, actorId = "agent-1") {
+  return { action_id: actionId, actor_id: actorId };
+}
+
+function dialogRequest(tab, action = "accept") {
+  return {
+    tab_id: tab.tab_id,
+    target_generation: tab.target_generation,
+    dialog: { action },
+  };
+}
+
+function makeMutationPageFeatures() {
+  const calls = [];
+  return {
+    calls,
+    async handleDialog({ dialog }) {
+      const gate = deferred();
+      calls.push({ dialog, gate });
+      await gate.promise;
+      return { action: dialog.action };
+    },
+  };
 }
 
 function encodeServerFrame(opcode, payload, final = true) {
@@ -697,7 +733,7 @@ test("runs a bounded locator action through an opaque observed element reference
     element_ref: elementRef,
     action: { kind: "click" },
     timeout_ms: 250,
-  });
+  }, { action_id: "action-locator", actor_id: "agent-1" });
 
   assert.deepEqual(action, {
     tab_id: tab.tab_id,
@@ -720,6 +756,277 @@ test("runs a bounded locator action through an opaque observed element reference
   assert.doesNotMatch(JSON.stringify(action), /73|object-action/);
   t.after(async () => {
     await controller.shutdown("owner-a", 1);
+  });
+});
+
+test("serializes attributed dialog mutations on one tab through the controller", async (t) => {
+  const targets = [
+    { id: "page-a", type: "page", webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/a" },
+  ];
+  const pageFeatures = makeMutationPageFeatures();
+  const fixture = makeFixture({ targets, pageFeatures });
+  const { controller } = fixture;
+  await controller.start("owner-a");
+  const tab = controller.getTabRegistrySnapshot("owner-a", 1).tabs[0];
+
+  const first = controller.handleDialog(
+    "owner-a",
+    1,
+    dialogRequest(tab),
+    mutationAttribution("dialog-1"),
+  );
+  const second = controller.handleDialog(
+    "owner-a",
+    1,
+    dialogRequest(tab, "dismiss"),
+    mutationAttribution("dialog-2"),
+  );
+  await flush();
+  assert.equal(pageFeatures.calls.length, 1);
+  pageFeatures.calls[0].gate.resolve();
+  assert.deepEqual(await first, { action: "accept" });
+  await flush();
+  assert.equal(pageFeatures.calls.length, 2);
+  pageFeatures.calls[1].gate.resolve();
+  assert.deepEqual(await second, { action: "dismiss" });
+  t.after(async () => {
+    await controller.shutdown("owner-a", 1);
+  });
+});
+
+test("runs attributed mutations concurrently on different tabs", async (t) => {
+  const targets = [
+    { id: "page-a", type: "page", webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/a" },
+    { id: "page-b", type: "page", webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/b" },
+  ];
+  const pageFeatures = makeMutationPageFeatures();
+  const fixture = makeFixture({ targets, pageFeatures });
+  const { controller } = fixture;
+  await controller.start("owner-a");
+  const tabs = controller.getTabRegistrySnapshot("owner-a", 1).tabs;
+  const left = controller.handleDialog(
+    "owner-a",
+    1,
+    dialogRequest(tabs[0]),
+    mutationAttribution("dialog-left"),
+  );
+  const right = controller.handleDialog(
+    "owner-a",
+    1,
+    dialogRequest(tabs[1]),
+    mutationAttribution("dialog-right"),
+  );
+  await flush();
+  assert.equal(pageFeatures.calls.length, 2);
+  pageFeatures.calls[0].gate.resolve();
+  pageFeatures.calls[1].gate.resolve();
+  assert.deepEqual(await Promise.all([left, right]), [{ action: "accept" }, { action: "accept" }]);
+  t.after(async () => {
+    await controller.shutdown("owner-a", 1);
+  });
+});
+
+test("deduplicates controller action retries and rejects stale actor authority", async (t) => {
+  const pageFeatures = makeMutationPageFeatures();
+  const fixture = makeFixture({ pageFeatures });
+  const { controller } = fixture;
+  await controller.start("owner-a");
+  const tab = controller.getTabRegistrySnapshot("owner-a", 1).tabs[0];
+  const request = dialogRequest(tab);
+  const attribution = mutationAttribution("dialog-retry");
+  await assert.rejects(
+    controller.handleDialog("owner-a", 1, request),
+    (error) => error.code === ERROR_CODES.SCHEMA_INVALID,
+  );
+  const first = controller.handleDialog("owner-a", 1, request, attribution);
+  const duplicate = controller.handleDialog("owner-a", 1, request, attribution);
+  const staleActor = controller.handleDialog(
+    "owner-a",
+    1,
+    request,
+    mutationAttribution("dialog-retry", "agent-2"),
+  );
+  const staleActorResult = assert.rejects(
+    staleActor,
+    (error) => error.code === MUTATION_ERROR_CODES.ACTION_ID_CONFLICT,
+  );
+  await flush();
+  assert.equal(pageFeatures.calls.length, 1);
+  await staleActorResult;
+  pageFeatures.calls[0].gate.resolve();
+  assert.deepEqual(await Promise.all([first, duplicate]), [{ action: "accept" }, { action: "accept" }]);
+  const retry = await controller.handleDialog("owner-a", 1, request, attribution);
+  assert.deepEqual(retry, { action: "accept" });
+  assert.equal(pageFeatures.calls.length, 1);
+  t.after(async () => {
+    await controller.shutdown("owner-a", 1);
+  });
+});
+
+test("revokes a queued controller mutation before it starts", async (t) => {
+  const pageFeatures = makeMutationPageFeatures();
+  const fixture = makeFixture({ pageFeatures });
+  const { controller } = fixture;
+  await controller.start("owner-a");
+  const tab = controller.getTabRegistrySnapshot("owner-a", 1).tabs[0];
+  const active = controller.handleDialog(
+    "owner-a",
+    1,
+    dialogRequest(tab),
+    mutationAttribution("dialog-active"),
+  );
+  const queued = controller.handleDialog(
+    "owner-a",
+    1,
+    dialogRequest(tab),
+    mutationAttribution("dialog-queued"),
+  );
+  await flush();
+  assert.equal(pageFeatures.calls.length, 1);
+  assert.deepEqual(controller.cancelMutation(mutationAttribution("dialog-queued")), {
+    accepted: true,
+    state: "cancelled",
+  });
+  await assert.rejects(
+    queued,
+    (error) => error.code === MUTATION_ERROR_CODES.CANCELLED,
+  );
+  pageFeatures.calls[0].gate.resolve();
+  await active;
+  assert.equal(pageFeatures.calls.length, 1);
+  t.after(async () => {
+    await controller.shutdown("owner-a", 1);
+  });
+});
+
+test("human takeover cancellation makes active work indeterminate without replay", async (t) => {
+  const pageFeatures = makeMutationPageFeatures();
+  const fixture = makeFixture({ pageFeatures });
+  const { controller } = fixture;
+  await controller.start("owner-a");
+  const tab = controller.getTabRegistrySnapshot("owner-a", 1).tabs[0];
+  const request = dialogRequest(tab);
+  const attribution = mutationAttribution("dialog-takeover");
+  const active = controller.handleDialog("owner-a", 1, request, attribution);
+  await flush();
+  assert.equal(pageFeatures.calls.length, 1);
+  assert.deepEqual(controller.cancelMutation(attribution), {
+    accepted: true,
+    state: "indeterminate",
+  });
+  pageFeatures.calls[0].gate.resolve();
+  await assert.rejects(
+    active,
+    (error) => error.code === MUTATION_ERROR_CODES.INDETERMINATE,
+  );
+  await assert.rejects(
+    controller.handleDialog("owner-a", 1, request, attribution),
+    (error) => error.code === MUTATION_ERROR_CODES.INDETERMINATE,
+  );
+  assert.equal(pageFeatures.calls.length, 1);
+  t.after(async () => {
+    await controller.shutdown("owner-a", 1);
+  });
+});
+
+test("detached tabs invalidate active controller mutations", async (t) => {
+  const targets = [
+    { id: "page-a", type: "page", webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/a" },
+  ];
+  const pageFeatures = makeMutationPageFeatures();
+  const fixture = makeFixture({ targets, pageFeatures });
+  const { controller } = fixture;
+  await controller.start("owner-a");
+  const tab = controller.getTabRegistrySnapshot("owner-a", 1).tabs[0];
+  const active = controller.handleDialog(
+    "owner-a",
+    1,
+    dialogRequest(tab),
+    mutationAttribution("dialog-detach"),
+  );
+  await flush();
+  targets.splice(0, targets.length);
+  const reconciliation = await controller.refreshTabs("owner-a", 1);
+  assert.deepEqual(reconciliation.detached.map(({ tab_id }) => tab_id), [tab.tab_id]);
+  pageFeatures.calls[0].gate.resolve();
+  await assert.rejects(
+    active,
+    (error) => error.code === MUTATION_ERROR_CODES.INDETERMINATE,
+  );
+  targets.push({
+    id: "page-a",
+    type: "page",
+    webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/a-replacement",
+  });
+  const replacement = await controller.refreshTabs("owner-a", 1);
+  const replacementTab = replacement.tabs.find((candidate) => candidate.target_id === "page-a");
+  assert.notEqual(replacementTab.tab_id, tab.tab_id);
+  assert.equal(replacementTab.target_generation, tab.target_generation + 1);
+  const replacementAction = controller.handleDialog(
+    "owner-a",
+    1,
+    dialogRequest(replacementTab),
+    mutationAttribution("dialog-replacement"),
+  );
+  await flush();
+  pageFeatures.calls[1].gate.resolve();
+  assert.deepEqual(await replacementAction, { action: "accept" });
+  t.after(async () => {
+    await controller.shutdown("owner-a", 1);
+  });
+});
+
+test("controller restart invalidates old-generation mutations and authority", async (t) => {
+  const pageFeatures = makeMutationPageFeatures();
+  const fixture = makeFixture({ autoExitOnBrowserClose: true, pageFeatures });
+  const { controller } = fixture;
+  await controller.start("owner-a");
+  const oldTab = controller.getTabRegistrySnapshot("owner-a", 1).tabs[0];
+  const active = controller.handleDialog(
+    "owner-a",
+    1,
+    dialogRequest(oldTab),
+    mutationAttribution("dialog-restart"),
+  );
+  await flush();
+  const restarted = await controller.restart("owner-a", 1);
+  assert.equal(restarted.generation, 2);
+  pageFeatures.calls[0].gate.resolve();
+  await assert.rejects(
+    active,
+    (error) => error.code === MUTATION_ERROR_CODES.INDETERMINATE,
+  );
+  await assert.rejects(
+    controller.handleDialog("owner-a", 1, dialogRequest(oldTab), mutationAttribution("dialog-restart")),
+    (error) => error.code === ERROR_CODES.STALE_GENERATION,
+  );
+  t.after(async () => {
+    await controller.shutdown("owner-a", 2);
+  });
+});
+
+test("browser crash invalidates active controller mutations", async (t) => {
+  const pageFeatures = makeMutationPageFeatures();
+  const fixture = makeFixture({ pageFeatures });
+  const { controller } = fixture;
+  await controller.start("owner-a");
+  const tab = controller.getTabRegistrySnapshot("owner-a", 1).tabs[0];
+  const active = controller.handleDialog(
+    "owner-a",
+    1,
+    dialogRequest(tab),
+    mutationAttribution("dialog-crash"),
+  );
+  await flush();
+  fixture.currentProcess.exit(1, "SIGSEGV");
+  assert.equal(controller.health("owner-a").state, "fatal");
+  pageFeatures.calls[0].gate.resolve();
+  await assert.rejects(
+    active,
+    (error) => error.code === MUTATION_ERROR_CODES.INDETERMINATE,
+  );
+  t.after(async () => {
+    await controller.shutdownForSignal();
   });
 });
 
@@ -829,12 +1136,12 @@ test("wires bounded page features through controller-owned tabs and connections"
     tab_id: tab.tab_id,
     target_generation: tab.target_generation,
     dialog: { action: "accept", prompt_text: "private response" },
-  }), { action: "accept" });
+  }, { action_id: "action-dialog", actor_id: "agent-1" }), { action: "accept" });
   assert.deepEqual(await controller.configureDownloads("owner-a", 1), { enabled: true });
   const upload = await controller.uploadFiles("owner-a", 1, {
     ...elementRequest,
     paths: ["/safe/report.txt"],
-  });
+  }, { action_id: "action-upload", actor_id: "agent-1" });
   assert.equal(upload.file_count, 1);
   assert.doesNotMatch(JSON.stringify(upload), /report\.txt/);
   assert.deepEqual(await controller.grantPermissions("owner-a", 1, {
@@ -926,7 +1233,7 @@ test("propagates post-action uncertainty through the public controller action AP
       element_ref: "opaque-element",
       action: { kind: "click" },
       timeout_ms: 500,
-    }),
+    }, { action_id: "action-post-uncertain", actor_id: "agent-1" }),
     (error) => {
       assert.equal(error.code, ERROR_CODES.ACTION_POST_ACTION_UNCERTAIN);
       assert.equal(error.message, "browser action outcome is uncertain after a post-action failure");
@@ -1143,7 +1450,14 @@ test("expires a 100ms action while it waits behind longer queued work", async (t
   const blocker = new Promise((resolve) => {
     releaseBlocker = resolve;
   });
-  const held = controller._enqueue(1, async () => blocker);
+  const held = controller._enqueueTabMutation({
+    action_id: "action-deadline-blocker",
+    actor_id: "agent-1",
+    browser_generation: 1,
+    operation: "perform_element_action",
+    tab_id: tab.tab_id,
+    target_generation: tab.target_generation,
+  }, async () => blocker);
   await flush();
 
   const queuedAction = controller.performElementAction("owner-a", 1, {
@@ -1152,7 +1466,7 @@ test("expires a 100ms action while it waits behind longer queued work", async (t
     element_ref: "never-resolved",
     action: { kind: "click" },
     timeout_ms: 100,
-  });
+  }, { action_id: "action-deadline-queued", actor_id: "agent-1" });
   clock.advance(101);
   releaseBlocker();
   await held;

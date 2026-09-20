@@ -80,6 +80,12 @@ function normalizeAction(raw) {
     }
     return { kind: "click" };
   }
+  if (raw.kind === "submit") {
+    if (Object.keys(raw).some((key) => key !== "kind")) {
+      fail(ACTION_ERROR_CODES.INVALID_ARGUMENT);
+    }
+    return { kind: "submit" };
+  }
   if (raw.kind === "fill") {
     if (
       Object.keys(raw).some((key) => !["kind", "text", "append"].includes(key)) ||
@@ -387,6 +393,34 @@ async function fill(connection, objectId, action, budget) {
   }
 }
 
+async function submit(connection, objectId, budget) {
+  const response = await sendWithinBudget(connection, "Runtime.callFunctionOn", {
+    objectId,
+    functionDeclaration: submitFunction.toString(),
+    returnByValue: true,
+    awaitPromise: false,
+  }, budget);
+  if (response?.exceptionDetails || response?.result?.value?.ok !== true) {
+    fail(ACTION_ERROR_CODES.FAILED);
+  }
+}
+
+function submitFunction() {
+  if (!this.isConnected) return { ok: false };
+  const form = this.matches?.("form") ? this : this.closest?.("form");
+  if (!form) return { ok: false };
+  if (typeof form.requestSubmit === "function") {
+    const isSubmitter = this !== form && this.matches?.("button[type=submit], input[type=submit], button:not([type])");
+    if (isSubmitter) form.requestSubmit(this);
+    else form.requestSubmit();
+  } else if (typeof form.submit === "function") {
+    form.submit();
+  } else {
+    return { ok: false };
+  }
+  return { ok: true };
+}
+
 export function fillFunction(text, append) {
   function composedContains(ancestor, candidate) {
     for (let current = candidate; current; ) {
@@ -519,8 +553,11 @@ export async function performBrowserAction({
         remainingBudget(budget);
         if (action.kind === "click") {
           completed = await click(connection, objectId, element, geometry, budget);
-        } else {
+        } else if (action.kind === "fill") {
           await fill(connection, objectId, action, budget);
+          completed = true;
+        } else {
+          await submit(connection, objectId, budget);
           completed = true;
         }
       }
