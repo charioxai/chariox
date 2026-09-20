@@ -286,6 +286,11 @@ test("bounds lifecycle churn while retaining current target authority determinis
     maxBytes: 32_768,
     maxLifecycleEntries: 3,
   });
+  const authoritative = {
+    browserGeneration: 7,
+    activeTargetGenerationForTarget: () => 1,
+    activeDocumentGenerationForDocument: () => 1,
+  };
   journal.record({
     kind: "page_navigated",
     eventId: "active-1",
@@ -312,7 +317,7 @@ test("bounds lifecycle churn while retaining current target authority determinis
       targetId: `churn-target-${index}`,
       documentId: `churn-document-${index}`,
       data: { url: "https://example.test/churn" },
-    });
+    }, authoritative);
   }
   assert.ok(journal.targetDocuments.size <= 3);
   journal.record({
@@ -322,7 +327,7 @@ test("bounds lifecycle churn while retaining current target authority determinis
     targetId: "active-target",
     documentId: "active-document-2",
     data: { url: "https://example.test/active-2" },
-  });
+  }, authoritative);
   assert.equal(journal.targetDocuments.get("active-target"), "active-document-2");
   assert.equal(journal.invalidateTarget({ targetId: "active-target", browserGeneration: 7 }), true);
   assert.equal(journal.isTargetInvalid("active-target"), true);
@@ -385,6 +390,55 @@ test("returns an oldest-first byte-bounded prefix and losslessly continues past 
   }
   assert.equal(complete.snapshot().events.length, 180);
   assert.equal(JSON.parse(complete.serialize()).events.length, 180);
+});
+
+test("advances filtered cursors across examined traffic and retained eviction", () => {
+  const journal = new BrowserEventJournal({ maxEvents: 3, maxBytes: 16_384 });
+  const record = (eventId, actorId, tabId) => journal.record({
+    kind: "console",
+    eventId,
+    browserGeneration: 7,
+    actorId,
+    tabId,
+    data: { type: "log", args: [] },
+  });
+
+  record("noise-1", "actor-noise", "tab-noise");
+  record("wanted-1", "actor-wanted", "tab-wanted");
+  record("noise-2", "actor-wanted", "tab-other");
+  record("wanted-2", "actor-wanted", "tab-wanted");
+
+  const matches = journal.poll({
+    cursor: 1,
+    limit: 2,
+    actorId: "actor-wanted",
+    tabId: "tab-wanted",
+    browserGeneration: 7,
+  });
+  assert.deepEqual(matches.events.map((event) => event.sequence_id), [2, 4]);
+  assert.equal(matches.next_cursor, 4);
+
+  const noMatches = journal.poll({
+    cursor: 1,
+    limit: 2,
+    actorId: "actor-missing",
+    tabId: "tab-wanted",
+    browserGeneration: 7,
+  });
+  assert.deepEqual(noMatches.events, []);
+  assert.equal(noMatches.next_cursor, 4);
+  assert.equal(noMatches.replay_gap, false);
+
+  record("wanted-3", "actor-wanted", "tab-wanted");
+  const continued = journal.poll({
+    cursor: noMatches.next_cursor,
+    limit: 1,
+    actorId: "actor-wanted",
+    tabId: "tab-wanted",
+    browserGeneration: 7,
+  });
+  assert.deepEqual(continued.events.map((event) => event.sequence_id), [5]);
+  assert.equal(continued.next_cursor, 5);
 });
 
 test("evicts oldest entries first and bounds count, event bytes, and serialization", () => {
@@ -487,21 +541,24 @@ test("rejects evicted tombstones while allowing an explicitly authoritative acti
 
   assert.ok(journal.invalidTargets.size <= 2);
   assert.ok(journal.invalidDocuments.size <= 2);
-  assert.equal(journal.record({
+  assert.throws(() => journal.record({
     kind: "target_created",
     eventId: "replayed-evicted-target",
     browserGeneration: 7,
     targetId: "dead-target-0",
     data: { url: "https://example.test/replayed" },
-  }), null);
-  assert.equal(journal.record({
+  }), (error) => error instanceof BrowserEventError && error.code === "browser_event_lifecycle_gap");
+  assert.throws(() => journal.record({
     kind: "page_loaded",
     eventId: "replayed-evicted-document",
     browserGeneration: 7,
     targetId: "fresh-target",
     documentId: "dead-document-0",
     data: {},
-  }), null);
+  }, {
+    browserGeneration: 7,
+    activeTargetGenerationForTarget: () => 1,
+  }), (error) => error instanceof BrowserEventError && error.code === "browser_event_lifecycle_gap");
 
   const reopened = journal.record({
     kind: "target_created",
@@ -515,6 +572,71 @@ test("rejects evicted tombstones while allowing an explicitly authoritative acti
       targetId === "dead-target-0" ? 2 : null,
   });
   assert.equal(reopened.kind, "target_created");
+});
+
+test("scopes lifecycle generation fences to each target identity", () => {
+  const journal = new BrowserEventJournal({
+    maxEvents: 16,
+    maxBytes: 16_384,
+    maxLifecycleEntries: 1,
+  });
+  journal.invalidateTarget({
+    targetId: "target-a",
+    targetGeneration: 10,
+    browserGeneration: 7,
+  });
+  journal.invalidateTarget({
+    targetId: "target-b",
+    targetGeneration: 1,
+    browserGeneration: 7,
+  });
+
+  const reopened = journal.record({
+    kind: "target_created",
+    eventId: "target-b-generation-2",
+    browserGeneration: 7,
+    targetId: "target-b",
+    data: { url: "https://example.test/reopened" },
+  }, {
+    browserGeneration: 7,
+    activeTargetGenerationForTarget: (targetId) => (targetId === "target-b" ? 2 : null),
+  });
+  assert.equal(reopened.kind, "target_created");
+  assert.equal(journal.isTargetInvalid("target-b"), false);
+});
+
+test("reports bounded lifecycle evidence gaps instead of false-positive churn drops", () => {
+  const journal = new BrowserEventJournal({
+    maxEvents: 16,
+    maxBytes: 16_384,
+    maxLifecycleEntries: 2,
+  });
+  for (let index = 0; index < 6; index += 1) {
+    journal.invalidateTarget({ targetId: `churned-target-${index}`, browserGeneration: 7 });
+  }
+
+  assert.equal(journal.compactedTargets instanceof Map, true);
+  assert.ok(journal.compactedTargets.size <= 2);
+  assert.equal(journal.targetLifecycleGap, true);
+  assert.throws(() => journal.record({
+    kind: "target_created",
+    eventId: "fresh-without-authority",
+    browserGeneration: 7,
+    targetId: "fresh-target-not-a-bloom-match",
+    data: { url: "https://example.test/fresh" },
+  }), (error) => error instanceof BrowserEventError && error.code === "browser_event_lifecycle_gap");
+
+  const authoritativeFresh = journal.record({
+    kind: "target_created",
+    eventId: "fresh-with-authority",
+    browserGeneration: 7,
+    targetId: "fresh-target-authoritative",
+    data: { url: "https://example.test/fresh-authoritative" },
+  }, {
+    browserGeneration: 7,
+    activeTargetGenerationForTarget: () => 1,
+  });
+  assert.equal(authoritativeFresh.kind, "target_created");
 });
 
 test("reports a high-water cursor for byte-truncated poll, snapshot, and serialization pages", () => {
@@ -585,6 +707,19 @@ test("retains only a structural extension projection for page-controlled downloa
   assert.equal(event.data.suggested_extension, ".pdf");
   assert.equal(JSON.stringify(event).includes(SECRET), false);
   assert.equal(JSON.stringify(event).includes("Bearer"), false);
+
+  const opaque = journal.recordCdp({
+    method: "Browser.downloadWillBegin",
+    eventId: "download-filename-opaque",
+    params: {
+      guid: "download-a",
+      url: "https://example.test/opaque",
+      frameId: "frame-a",
+      suggestedFilename: "report.0123456789abcdef",
+    },
+  }, context());
+  assert.equal(opaque.data.suggested_extension, undefined);
+  assert.equal(JSON.stringify(opaque).includes("0123456789abcdef"), false);
 });
 
 test("rejects explicit malformed generations instead of treating them as absent", () => {

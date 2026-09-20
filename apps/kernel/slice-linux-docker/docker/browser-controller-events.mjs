@@ -13,11 +13,28 @@ const MAX_URL_BYTES = 2_048;
 const MAX_SEEN_KEYS = 65_536;
 const MAX_SERIALIZATION_NODES = 4_096;
 const MIN_VALID_JSON_BYTES = 4;
-const LIFECYCLE_FILTER_BITS = 32_768;
-const LIFECYCLE_FILTER_HASHES = 3;
 const DEFAULT_MAX_LIFECYCLE_ENTRIES = 8_192;
 const MAX_MAX_LIFECYCLE_ENTRIES = 65_536;
 const REDACTED = "[redacted]";
+const SAFE_FILENAME_EXTENSIONS = new Set([
+  ".bin",
+  ".csv",
+  ".doc",
+  ".docx",
+  ".gif",
+  ".html",
+  ".jpeg",
+  ".jpg",
+  ".json",
+  ".log",
+  ".pdf",
+  ".png",
+  ".svg",
+  ".txt",
+  ".webp",
+  ".xml",
+  ".zip",
+]);
 
 const UTF8_ENCODER = typeof TextEncoder === "function" ? new TextEncoder() : null;
 
@@ -70,34 +87,6 @@ export class BrowserEventError extends Error {
     super(message);
     this.name = "BrowserEventError";
     this.code = code;
-  }
-}
-
-// Compacted tombstones use fixed-size Bloom filters: insertions never produce
-// false negatives, while a false positive only causes conservative rejection.
-// This keeps lifecycle admission bounded without silently reopening old IDs.
-class BoundedIdentityFilter {
-  constructor() {
-    this.bits = new Uint8Array(LIFECYCLE_FILTER_BITS / 8);
-  }
-
-  clear() {
-    this.bits.fill(0);
-  }
-
-  add(identity) {
-    for (let index = 0; index < LIFECYCLE_FILTER_HASHES; index += 1) {
-      const bit = hashIdentity(identity, index) % LIFECYCLE_FILTER_BITS;
-      this.bits[bit >> 3] |= 1 << (bit & 7);
-    }
-  }
-
-  has(identity) {
-    for (let index = 0; index < LIFECYCLE_FILTER_HASHES; index += 1) {
-      const bit = hashIdentity(identity, index) % LIFECYCLE_FILTER_BITS;
-      if ((this.bits[bit >> 3] & (1 << (bit & 7))) === 0) return false;
-    }
-    return true;
   }
 }
 
@@ -158,14 +147,14 @@ export class BrowserEventJournal {
     this.targetDocuments = new Map();
     this.activeTargets = new Map();
     this.activeDocuments = new Map();
-    this.compactedTargets = new BoundedIdentityFilter();
-    this.compactedDocuments = new BoundedIdentityFilter();
+    this.compactedTargets = new Map();
+    this.compactedDocuments = new Map();
     this.trustedTargets = new Set();
     this.trustedDocuments = new Set();
     this.targetAuthorityFences = new Map();
     this.documentAuthorityFences = new Map();
-    this.targetGenerationFloor = 0;
-    this.documentGenerationFloor = 0;
+    this.targetLifecycleGap = false;
+    this.documentLifecycleGap = false;
     this.seen = new Map();
   }
 
@@ -250,20 +239,24 @@ export class BrowserEventJournal {
 
     const wantedActor = normalizeIdentity(actorId);
     const wantedTab = normalizeIdentity(tabId);
-    const events = this.events
-      .filter((event) => event.sequence_id > cursor)
-      .filter((event) => wantedActor === null || event.actor_id === wantedActor)
-      .filter((event) => wantedTab === null || event.tab_id === wantedTab)
-      .slice(0, limit)
-      .map(cloneJsonValue);
+    const events = [];
+    let examinedCursor = cursor;
+    for (const event of this.events) {
+      if (event.sequence_id <= cursor) continue;
+      examinedCursor = event.sequence_id;
+      if (wantedActor !== null && event.actor_id !== wantedActor) continue;
+      if (wantedTab !== null && event.tab_id !== wantedTab) continue;
+      events.push(cloneJsonValue(event));
+      if (events.length >= limit) break;
+    }
 
     return this._boundedBatch(
       {
         browser_generation: this.browserGeneration,
         events,
-        next_cursor: events.at(-1)?.sequence_id ?? cursor,
+        next_cursor: examinedCursor,
         replay_gap: false,
-        high_water_cursor: currentCursor,
+        high_water_cursor: examinedCursor,
       },
       { cursor, maxSerializedBytes: serializationBudget },
     );
@@ -345,6 +338,7 @@ export class BrowserEventJournal {
     const normalized = normalizeIdentity(targetId);
     if (normalized === null) return false;
     const wasInvalid = this.invalidTargets.delete(normalized);
+    this.compactedTargets.delete(normalized);
     this.targetAuthorityFences.delete(normalized);
     this.trustedTargets.add(normalized);
     this.activeTargets.set(normalized, null);
@@ -357,6 +351,7 @@ export class BrowserEventJournal {
     const normalized = normalizeIdentity(documentId);
     if (normalized === null) return false;
     const wasInvalid = this.invalidDocuments.delete(normalized);
+    this.compactedDocuments.delete(normalized);
     this.documentAuthorityFences.delete(normalized);
     this.trustedDocuments.add(normalized);
     this.activeDocuments.set(normalized, null);
@@ -400,10 +395,10 @@ export class BrowserEventJournal {
     this.compactedDocuments.clear();
     this.trustedTargets.clear();
     this.trustedDocuments.clear();
-    this.targetGenerationFloor = 0;
-    this.documentGenerationFloor = 0;
     this.targetAuthorityFences.clear();
     this.documentAuthorityFences.clear();
+    this.targetLifecycleGap = false;
+    this.documentLifecycleGap = false;
     this.seen.clear();
   }
 
@@ -496,30 +491,48 @@ export class BrowserEventJournal {
 
   _admitLifecycle(mapped, authority) {
     if (mapped.targetId) {
+      const targetId = mapped.targetId;
       const targetGeneration = authority.targetGeneration;
-      const activeGeneration = this.activeTargets.get(mapped.targetId);
-      if (this.invalidTargets.has(mapped.targetId)) {
+      const activeGeneration = this.activeTargets.get(targetId);
+      if (this.invalidTargets.has(targetId)) {
+        const compactedFence = this.compactedTargets.get(targetId);
         if (
           !authority.targetAuthoritative ||
           !this._passesAuthorityFence(
             this.targetAuthorityFences,
-            mapped.targetId,
+            targetId,
             targetGeneration,
-            this.targetGenerationFloor,
+            compactedFence,
           )
         ) {
           return false;
         }
-        this.invalidTargets.delete(mapped.targetId);
-        this.targetAuthorityFences.delete(mapped.targetId);
+        this.invalidTargets.delete(targetId);
+        this.targetAuthorityFences.delete(targetId);
+        this.compactedTargets.delete(targetId);
       } else if (
-        this.compactedTargets.has(mapped.targetId) &&
-        !this.trustedTargets.has(mapped.targetId) &&
-        !this.activeTargets.has(mapped.targetId) &&
-        (!authority.targetAuthoritative ||
-          (targetGeneration !== null && targetGeneration <= this.targetGenerationFloor))
+        this.compactedTargets.has(targetId) &&
+        !this.trustedTargets.has(targetId) &&
+        !this.activeTargets.has(targetId)
       ) {
-        return false;
+        if (!authority.targetAuthoritative) this._lifecycleEvidenceGap("target");
+        if (!this._passesAuthorityFence(
+          this.targetAuthorityFences,
+          targetId,
+          targetGeneration,
+          this.compactedTargets.get(targetId),
+        )) {
+          return false;
+        }
+        this.compactedTargets.delete(targetId);
+        this.targetAuthorityFences.delete(targetId);
+      } else if (
+        this.targetLifecycleGap &&
+        !this.trustedTargets.has(targetId) &&
+        !this.activeTargets.has(targetId) &&
+        !authority.targetAuthoritative
+      ) {
+        this._lifecycleEvidenceGap("target");
       }
       if (
         activeGeneration !== undefined &&
@@ -532,31 +545,48 @@ export class BrowserEventJournal {
     }
 
     if (mapped.documentId) {
+      const documentId = mapped.documentId;
       const documentGeneration = authority.documentGeneration;
-      const activeGeneration = this.activeDocuments.get(mapped.documentId);
-      if (this.invalidDocuments.has(mapped.documentId)) {
+      const activeGeneration = this.activeDocuments.get(documentId);
+      if (this.invalidDocuments.has(documentId)) {
+        const compactedFence = this.compactedDocuments.get(documentId);
         if (
           !authority.documentAuthoritative ||
           !this._passesAuthorityFence(
             this.documentAuthorityFences,
-            mapped.documentId,
+            documentId,
             documentGeneration,
-            this.documentGenerationFloor,
+            compactedFence,
           )
         ) {
           return false;
         }
-        this.invalidDocuments.delete(mapped.documentId);
-        this.documentAuthorityFences.delete(mapped.documentId);
+        this.invalidDocuments.delete(documentId);
+        this.documentAuthorityFences.delete(documentId);
+        this.compactedDocuments.delete(documentId);
       } else if (
-        this.compactedDocuments.has(mapped.documentId) &&
-        !this.trustedDocuments.has(mapped.documentId) &&
-        !this.activeDocuments.has(mapped.documentId) &&
-        (!authority.documentAuthoritative ||
-          (documentGeneration !== null &&
-            documentGeneration <= this.documentGenerationFloor))
+        this.compactedDocuments.has(documentId) &&
+        !this.trustedDocuments.has(documentId) &&
+        !this.activeDocuments.has(documentId)
       ) {
-        return false;
+        if (!authority.documentAuthoritative) this._lifecycleEvidenceGap("document");
+        if (!this._passesAuthorityFence(
+          this.documentAuthorityFences,
+          documentId,
+          documentGeneration,
+          this.compactedDocuments.get(documentId),
+        )) {
+          return false;
+        }
+        this.compactedDocuments.delete(documentId);
+        this.documentAuthorityFences.delete(documentId);
+      } else if (
+        this.documentLifecycleGap &&
+        !this.trustedDocuments.has(documentId) &&
+        !this.activeDocuments.has(documentId) &&
+        !authority.documentAuthoritative
+      ) {
+        this._lifecycleEvidenceGap("document");
       }
       if (
         activeGeneration !== undefined &&
@@ -570,12 +600,18 @@ export class BrowserEventJournal {
     return true;
   }
 
-  _passesAuthorityFence(fences, identity, generation, floor) {
+  _passesAuthorityFence(fences, identity, generation, fallbackFence = undefined) {
     if (!Number.isSafeInteger(generation) || generation <= 0) return false;
-    if (generation <= floor) return false;
-    const fence = fences.get(identity);
+    const fence = fences.has(identity) ? fences.get(identity) : fallbackFence;
     if (fence !== undefined && fence !== null && generation <= fence) return false;
     return true;
+  }
+
+  _lifecycleEvidenceGap(kind) {
+    throw new BrowserEventError(
+      "browser_event_lifecycle_gap",
+      `authoritative ${kind} lifecycle generation is required after bounded compaction`,
+    );
   }
 
   _recordActiveLifecycle(mapped, authority) {
@@ -635,22 +671,16 @@ export class BrowserEventJournal {
   _trimLifecycleState() {
     while (this.invalidTargets.size > this.maxLifecycleEntries) {
       const identity = this.invalidTargets.values().next().value;
+      const fence = this.targetAuthorityFences.get(identity) ?? null;
       this.invalidTargets.delete(identity);
-      this.compactedTargets.add(identity);
-      this.targetGenerationFloor = Math.max(
-        this.targetGenerationFloor,
-        this.targetAuthorityFences.get(identity) ?? 0,
-      );
+      this._compactLifecycle("target", identity, fence);
       this.targetAuthorityFences.delete(identity);
     }
     while (this.invalidDocuments.size > this.maxLifecycleEntries) {
       const identity = this.invalidDocuments.values().next().value;
+      const fence = this.documentAuthorityFences.get(identity) ?? null;
       this.invalidDocuments.delete(identity);
-      this.compactedDocuments.add(identity);
-      this.documentGenerationFloor = Math.max(
-        this.documentGenerationFloor,
-        this.documentAuthorityFences.get(identity) ?? 0,
-      );
+      this._compactLifecycle("document", identity, fence);
       this.documentAuthorityFences.delete(identity);
     }
     while (this.activeTargets.size > this.maxLifecycleEntries) {
@@ -670,21 +700,26 @@ export class BrowserEventJournal {
     }
     while (this.targetAuthorityFences.size > this.maxLifecycleEntries) {
       const identity = this.targetAuthorityFences.keys().next().value;
-      this.targetGenerationFloor = Math.max(
-        this.targetGenerationFloor,
-        this.targetAuthorityFences.get(identity) ?? 0,
-      );
+      const fence = this.targetAuthorityFences.get(identity) ?? null;
       this.targetAuthorityFences.delete(identity);
-      this.compactedTargets.add(identity);
+      this._compactLifecycle("target", identity, fence);
     }
     while (this.documentAuthorityFences.size > this.maxLifecycleEntries) {
       const identity = this.documentAuthorityFences.keys().next().value;
-      this.documentGenerationFloor = Math.max(
-        this.documentGenerationFloor,
-        this.documentAuthorityFences.get(identity) ?? 0,
-      );
+      const fence = this.documentAuthorityFences.get(identity) ?? null;
       this.documentAuthorityFences.delete(identity);
-      this.compactedDocuments.add(identity);
+      this._compactLifecycle("document", identity, fence);
+    }
+  }
+
+  _compactLifecycle(kind, identity, fence) {
+    const compacted = kind === "target" ? this.compactedTargets : this.compactedDocuments;
+    compacted.delete(identity);
+    compacted.set(identity, fence ?? null);
+    while (compacted.size > this.maxLifecycleEntries) {
+      compacted.delete(compacted.keys().next().value);
+      if (kind === "target") this.targetLifecycleGap = true;
+      else this.documentLifecycleGap = true;
     }
   }
 
@@ -692,15 +727,20 @@ export class BrowserEventJournal {
     const events = batch.events.map(cloneJsonValue);
     const makeResult = (end) => {
       const retainedEvents = events.slice(0, end);
-      const nextCursor =
+      const deliveredCursor =
         retainedEvents.at(-1)?.sequence_id ??
-        (batch.replay_gap === true || batch.head_discarded === true
-          ? batch.next_cursor
-          : Number.isSafeInteger(cursor)
+        (Number.isSafeInteger(cursor)
           ? cursor
           : events[0]?.sequence_id !== undefined
             ? Math.max(0, events[0].sequence_id - 1)
-            : batch.next_cursor);
+            : 0);
+      const nextCursor = end < events.length
+        ? deliveredCursor
+        : batch.replay_gap === true || batch.head_discarded === true
+          ? batch.next_cursor
+          : Number.isSafeInteger(batch.next_cursor)
+            ? batch.next_cursor
+            : deliveredCursor;
       const result = {
         browser_generation: batch.browser_generation,
         events: retainedEvents,
@@ -1256,7 +1296,11 @@ function filenameProjection(value) {
   if (typeof value !== "string" || value.length === 0 || value.length > 16_384) return {};
   const filename = value.split(/[\\/]/).at(-1);
   const match = /\.([a-z0-9]{1,16})$/i.exec(filename);
-  return match ? { suggested_extension: `.${match[1].toLowerCase()}` } : {};
+  if (!match) return {};
+  const extension = `.${match[1].toLowerCase()}`;
+  return SAFE_FILENAME_EXTENSIONS.has(extension)
+    ? { suggested_extension: extension }
+    : {};
 }
 
 function safeDownloadReason(value) {
@@ -1482,15 +1526,6 @@ function identityOptions(value, options) {
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function hashIdentity(identity, salt) {
-  let hash = (2_166_136_261 ^ (salt * 2_654_435_761)) >>> 0;
-  for (const character of identity) {
-    hash ^= character.codePointAt(0);
-    hash = Math.imul(hash, 16_777_619) >>> 0;
-  }
-  return hash >>> 0;
 }
 
 function safeCall(fn, ...args) {
