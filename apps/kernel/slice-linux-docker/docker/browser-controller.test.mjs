@@ -158,7 +158,11 @@ function makeFixture(options = {}) {
     text: async () => JSON.stringify(
       options.targetMode === "none"
         ? []
-        : [{ type: "page", webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/1" }],
+        : options.targets || [{
+          id: "page-1",
+          type: "page",
+          webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/1",
+        }],
     ),
   }));
   const spawnBrowser = async () => {
@@ -250,6 +254,59 @@ test("emits ready state and keeps heartbeat monotonic", async (t) => {
   assert.equal(events.some((event) => event.event === "ready"), true);
   assert.equal(second.heartbeat_seq > first.heartbeat_seq, true);
   assert.equal(third.last_heartbeat_ms >= second.last_heartbeat_ms, true);
+  t.after(async () => {
+    await controller.shutdown("owner-a", 1);
+  });
+});
+
+test("integrates CDP refresh and reconnect reconciliation with stable tab identities", async (t) => {
+  let targets = [
+    { id: "page-a", type: "page", webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/a" },
+    { id: "page-b", type: "page", webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/b" },
+  ];
+  const fixture = makeFixture({ targets });
+  const { controller } = fixture;
+  await controller.start("owner-a");
+  const initial = controller.getTabRegistrySnapshot("owner-a", 1);
+  const tabIds = new Map(initial.tabs.map((tab) => [tab.target_id, tab.tab_id]));
+  assert.deepEqual([...tabIds.keys()], ["page-a", "page-b"]);
+
+  targets.splice(0, targets.length, targets[1], targets[0]);
+  const refreshed = await controller.refreshTabs("owner-a", 1);
+  assert.deepEqual(refreshed.tabs.map((tab) => tab.tab_id), [tabIds.get("page-a"), tabIds.get("page-b")]);
+
+  targets.push(targets[0]);
+  const reconnected = await controller.refreshTabs("owner-a", 1, { reconnect: true });
+  assert.equal(reconnected.duplicates_suppressed, 1);
+  assert.deepEqual(reconnected.tabs.map((tab) => tab.tab_id), [tabIds.get("page-a"), tabIds.get("page-b")]);
+
+  targets.splice(0, targets.length, targets[0]);
+  const detached = await controller.refreshTabs("owner-a", 1);
+  assert.deepEqual(detached.detached.map((tab) => tab.tab_id), [tabIds.get("page-a")]);
+  assert.throws(
+    () => controller.tabRegistry.getTab(tabIds.get("page-a"), { generation: 1 }),
+    (error) => error.code === "TAB_INVALIDATED",
+  );
+  assert.equal(controller.getTabRegistrySnapshot("owner-a", 1).tabs[0].tab_id, tabIds.get("page-b"));
+
+  const claimed = controller.claimViewport("owner-a", 1, { owner_id: "owner-a", version: 0 });
+  assert.deepEqual(claimed, {
+    width: 1280,
+    height: 800,
+    owner_id: "owner-a",
+    version: 1,
+    changed: true,
+    idempotent: false,
+  });
+  const resized = controller.resizeViewport("owner-a", 1, {
+    owner_id: "owner-a",
+    version: claimed.version,
+    width: 1440,
+    height: 900,
+  });
+  assert.equal(resized.version, 2);
+  assert.equal(controller.getTabRegistrySnapshot("owner-a", 1).viewport.owner_id, "owner-a");
+  assert.equal(controller.getTabRegistrySnapshot("owner-a", 1).viewport.version, 2);
   t.after(async () => {
     await controller.shutdown("owner-a", 1);
   });
