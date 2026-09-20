@@ -704,6 +704,21 @@ pub(crate) fn apply_managed_provider_isolation(
     request: &LaunchProviderRequest,
 ) -> Result<ProviderLaunchResult, DaemonError> {
     if !managed_provider_isolation_required() {
+        let mut environment_remove = managed_provider_control_env_remove();
+        environment_remove.extend(launch.pty_env.keys().filter_map(|name| {
+            (name.starts_with("GIT_CONFIG_KEY_") || name.starts_with("GIT_CONFIG_VALUE_"))
+                .then_some(name.clone())
+        }));
+        environment_remove.sort();
+        environment_remove.dedup();
+        for name in environment_remove {
+            launch.pty_env.remove(&name);
+            if !launch.pty_env_remove.iter().any(|value| value == &name) {
+                launch.pty_env_remove.push(name);
+            }
+        }
+        launch.pty_env_remove.sort();
+        launch.pty_env_remove.dedup();
         return Ok(launch);
     }
 
@@ -4646,7 +4661,21 @@ mod tests {
             pty_target: None,
             pty_program: Some("/bin/sh".to_string()),
             pty_args: vec!["-c".to_string(), "printf ordinary".to_string()],
-            pty_env: BTreeMap::from([(String::from("ORDINARY_FS"), String::from("1"))]),
+            pty_env: BTreeMap::from([
+                (String::from("ORDINARY_FS"), String::from("1")),
+                (
+                    String::from("CODEX_HOME"),
+                    String::from("/home/chariox/.codex"),
+                ),
+                (
+                    String::from("CHARIOX_RELAY_TOKEN"),
+                    String::from("relay-secret"),
+                ),
+                (
+                    String::from("GIT_CONFIG_KEY_0"),
+                    String::from("credential.helper"),
+                ),
+            ]),
             pty_env_remove: Vec::new(),
             working_directory: Some(PathBuf::from("/tmp")),
             structured_endpoint: None,
@@ -4665,6 +4694,25 @@ mod tests {
         assert_eq!(prepared.pty_program.as_deref(), Some("/bin/sh"));
         assert_eq!(prepared.pty_args, ["-c", "printf ordinary"]);
         assert_eq!(prepared.working_directory, Some(PathBuf::from("/tmp")));
+        assert_eq!(
+            prepared.pty_env.get("ORDINARY_FS").map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            prepared.pty_env.get("CODEX_HOME").map(String::as_str),
+            Some("/home/chariox/.codex")
+        );
+        for name in ["CHARIOX_RELAY_TOKEN", "GIT_CONFIG_KEY_0"] {
+            assert!(!prepared.pty_env.contains_key(name));
+            assert!(prepared
+                .pty_env_remove
+                .iter()
+                .any(|removed| removed == name));
+        }
+        assert!(!prepared
+            .pty_env_remove
+            .iter()
+            .any(|removed| removed == "CODEX_HOME"));
         assert!(!prepared
             .pty_args
             .windows(3)
