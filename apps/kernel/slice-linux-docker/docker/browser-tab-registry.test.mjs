@@ -5,6 +5,7 @@ import {
   BrowserTabRegistry,
   DEFAULT_VIEWPORT,
   ERROR_CODES,
+  REGISTRY_LIMITS,
   VIEWPORT_LIMITS,
 } from "./browser-tab-registry.mjs";
 
@@ -137,4 +138,41 @@ test("keeps same-version viewport resize idempotent", () => {
   assert.equal(first.changed, false);
   assert.equal(second.idempotent, true);
   assert.equal(second.version, first.version);
+});
+
+test("bounds retired state and never reuses an evicted tab handle", () => {
+  const registry = new BrowserTabRegistry();
+  const retiredHandles = [];
+  let current = registry.reconcile(1, [target("churn-0")]).tabs[0];
+  const churnCount = REGISTRY_LIMITS.maxRetiredRecords + REGISTRY_LIMITS.maxTombstones + 8;
+
+  for (let index = 1; index <= churnCount; index += 1) {
+    retiredHandles.push(current.tab_id);
+    current = registry.reconcile(1, [target(`churn-${index}`)]).tabs[0];
+  }
+
+  const generationHandles = [];
+  const generationCount = REGISTRY_LIMITS.maxTargetEpochs + 8;
+  for (let generation = 2; generation <= generationCount + 1; generation += 1) {
+    generationHandles.push(current.tab_id);
+    current = registry.reconcile(generation, [target("restarted")]).tabs[0];
+  }
+
+  const retiredRecordCount = [...registry._recordsByTabId.values()]
+    .filter((record) => !record.active)
+    .length;
+  assert.ok(retiredRecordCount <= REGISTRY_LIMITS.maxRetiredRecords);
+  assert.ok(registry._recordsByTabId.size <= REGISTRY_LIMITS.maxRetiredRecords + registry._activeByTarget.size);
+  assert.ok(registry._tombstones.size <= REGISTRY_LIMITS.maxTombstones);
+  assert.ok(registry._targetEpochs.size <= REGISTRY_LIMITS.maxTargetEpochs);
+  assert.equal(registry.listTabs().length, 1);
+  assert.equal(registry.listTabs()[0].tab_id, current.tab_id);
+  assert.ok(![...retiredHandles, ...generationHandles].includes(current.tab_id));
+
+  for (const tabId of [retiredHandles[0], retiredHandles.at(-1), generationHandles[0], generationHandles.at(-1)]) {
+    assert.throws(
+      () => registry.getTab(tabId),
+      (error) => [ERROR_CODES.TARGET_NOT_FOUND, ERROR_CODES.TAB_INVALIDATED, ERROR_CODES.STALE_GENERATION].includes(error.code),
+    );
+  }
 });

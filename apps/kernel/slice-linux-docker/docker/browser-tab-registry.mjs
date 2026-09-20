@@ -1,6 +1,12 @@
 const MAX_IDENTIFIER_LENGTH = 128;
 const MAX_WEBSOCKET_URL_LENGTH = 2048;
 
+export const REGISTRY_LIMITS = Object.freeze({
+  maxRetiredRecords: 64,
+  maxTombstones: 64,
+  maxTargetEpochs: 128,
+});
+
 export const ERROR_CODES = Object.freeze({
   INVALID_ARGUMENT: "INVALID_ARGUMENT",
   INVALID_GENERATION: "INVALID_GENERATION",
@@ -346,6 +352,7 @@ export class BrowserTabRegistry {
     this._nextOrdinal = 1;
     this._recordsByTabId = new Map();
     this._activeByTarget = new Map();
+    this._tombstones = new Map();
     this._targetEpochs = new Map();
     this.viewport = new CanonicalViewport(options.viewport ?? {});
     if (options.generation !== undefined) {
@@ -370,21 +377,65 @@ export class BrowserTabRegistry {
       return;
     }
     for (const record of this._activeByTarget.values()) {
-      record.active = false;
-      record.invalidatedCode = ERROR_CODES.STALE_GENERATION;
+      this._retireRecord(record, ERROR_CODES.STALE_GENERATION);
     }
     this._activeByTarget.clear();
     this._browserGeneration = generation;
+    this._trimRetainedState();
   }
 
   _targetEpochKey(generation, targetId) {
     return `${generation}\u0000${targetId}`;
   }
 
+  _retireRecord(record, code) {
+    record.active = false;
+    record.invalidatedCode = code;
+    this._tombstones.set(record.tabId, code);
+    if (this._activeByTarget.get(record.targetId) === record) {
+      this._activeByTarget.delete(record.targetId);
+    }
+  }
+
+  _trimRetiredRecords() {
+    let retired = [...this._recordsByTabId.values()].filter((record) => !record.active).length;
+    while (retired > REGISTRY_LIMITS.maxRetiredRecords) {
+      let oldestRetiredId;
+      for (const [tabId, record] of this._recordsByTabId) {
+        if (!record.active) {
+          oldestRetiredId = tabId;
+          break;
+        }
+      }
+      if (oldestRetiredId === undefined) {
+        break;
+      }
+      this._recordsByTabId.delete(oldestRetiredId);
+      retired -= 1;
+    }
+  }
+
+  _trimMap(map, limit) {
+    while (map.size > limit) {
+      const oldest = map.keys().next();
+      if (oldest.done) {
+        break;
+      }
+      map.delete(oldest.value);
+    }
+  }
+
+  _trimRetainedState() {
+    this._trimRetiredRecords();
+    this._trimMap(this._tombstones, REGISTRY_LIMITS.maxTombstones);
+    this._trimMap(this._targetEpochs, REGISTRY_LIMITS.maxTargetEpochs);
+  }
+
   _allocateTarget(target) {
     const epochKey = this._targetEpochKey(this._browserGeneration, target.targetId);
     const targetGeneration = (this._targetEpochs.get(epochKey) ?? 0) + 1;
     this._targetEpochs.set(epochKey, targetGeneration);
+    this._trimMap(this._targetEpochs, REGISTRY_LIMITS.maxTargetEpochs);
     const ordinal = this._nextOrdinal++;
     const record = {
       ordinal,
@@ -403,11 +454,7 @@ export class BrowserTabRegistry {
   }
 
   _detach(record, code = ERROR_CODES.TAB_INVALIDATED) {
-    record.active = false;
-    record.invalidatedCode = code;
-    if (this._activeByTarget.get(record.targetId) === record) {
-      this._activeByTarget.delete(record.targetId);
-    }
+    this._retireRecord(record, code);
   }
 
   reconcile(generation, targets, options = {}) {
@@ -454,6 +501,7 @@ export class BrowserTabRegistry {
         }
       }
     }
+    this._trimRetainedState();
     return {
       generation: this._browserGeneration,
       added,
@@ -484,6 +532,7 @@ export class BrowserTabRegistry {
       fail(ERROR_CODES.TARGET_NOT_FOUND);
     }
     this._detach(record);
+    this._trimRetainedState();
     return cloneTab(record);
   }
 
@@ -495,6 +544,10 @@ export class BrowserTabRegistry {
     requireIdentifier(tabId, ERROR_CODES.TARGET_NOT_FOUND);
     const record = this._recordsByTabId.get(tabId);
     if (record === undefined) {
+      const tombstoneCode = this._tombstones.get(tabId);
+      if (tombstoneCode !== undefined) {
+        fail(tombstoneCode);
+      }
       fail(ERROR_CODES.TARGET_NOT_FOUND);
     }
     if (expectedGeneration !== undefined && expectedGeneration !== record.generation) {
