@@ -8,17 +8,23 @@ import {
   assertBrowserComputerEvidencePath,
   assertBrowserComputerPreflight,
   assertBrowserComputerResourceCaps,
+  assertBrowserComputerResourceTelemetry,
   assertSecretSafeBrowserComputerEvidence,
   collectBrowserComputerResourceSnapshot,
   defaultBrowserComputerEvidenceDir,
+  deriveBrowserComputerCapsFromResourceCeilings,
   evaluateBrowserComputerCleanup,
   evaluateBrowserComputerDockerPreconditions,
+  evaluateBrowserComputerPersistenceMutationSeams,
   evaluateBrowserComputerPreflight,
   evaluateBrowserComputerResourceCaps,
+  evaluateBrowserComputerResourceTelemetry,
+  evaluateBrowserComputerResourceWatchdogSample,
   normalizeBrowserComputerCaps,
   parseBrowserComputerByteBudget,
   parseBrowserComputerDockerMutationArgv,
   redactBrowserComputerEvidence,
+  resolveBrowserComputerCaps,
   runBrowserComputerFaultGuard,
   serializeBrowserComputerEvidence,
 } from "./browser-computer-drill-guard.mjs"
@@ -69,6 +75,7 @@ test("resource collection is deterministic and uses injected Docker/macOS probes
         if (args[0] === "ps") return { code: 0, stdout: "chariox-slice-existing\nunrelated\n", stderr: "" }
         if (args[0] === "volume") return { code: 0, stdout: "chariox-slice-existing-home\n", stderr: "" }
         if (args[0] === "image") return { code: 0, stdout: "chariox/browser:fixture\n<none>:<none>\n", stderr: "" }
+        if (args[0] === "network") return { code: 0, stdout: "chariox-slice-existing-net\n", stderr: "" }
         throw new Error(`unexpected command: ${command} ${args.join(" ")}`)
       },
     })
@@ -77,15 +84,18 @@ test("resource collection is deterministic and uses injected Docker/macOS probes
     assert.equal(result.phase, "before")
     assert.equal(result.sampleId, "sample-0")
     assert.equal(result.memory.availableBytes, 37 * 16_384)
+    assert.equal(result.disk.usedBytes >= 0, true)
     assert.deepEqual(result.process, { count: 3 })
     assert.deepEqual(result.logs, { bytes: 7 })
     assert.deepEqual(result.docker.containers, ["chariox-slice-existing", "unrelated"])
     assert.deepEqual(result.docker.volumes, ["chariox-slice-existing-home"])
     assert.deepEqual(result.docker.images, ["chariox/browser:fixture"])
+    assert.deepEqual(result.docker.networks, ["chariox-slice-existing-net"])
     assert.deepEqual(commands.map((command) => command.slice(0, 2)), [
       ["docker", "ps"],
       ["docker", "volume"],
       ["docker", "image"],
+      ["docker", "network"],
       ["vm_stat"],
     ])
 
@@ -150,8 +160,8 @@ test("resource caps fail closed for declared disk/memory/process/log overruns", 
 
 test("resource growth is measured against the before sample, not only the final sample", () => {
   const result = evaluateBrowserComputerResourceCaps(resourceSamples({
-    during: { diskAvailableBytes: 96, memoryAvailableBytes: 96, processCount: 2, logBytes: 2 },
-    after: { diskAvailableBytes: 80, memoryAvailableBytes: 98, processCount: 2, logBytes: 9 },
+    during: { diskAvailableBytes: 80, memoryAvailableBytes: 96, processCount: 2, logBytes: 2 },
+    after: { diskAvailableBytes: 98, memoryAvailableBytes: 98, processCount: 2, logBytes: 9 },
   }), { diskBytes: 10, memoryBytes: 5, processCount: 2, logBytes: 5 })
 
   assert.equal(result.ok, false)
@@ -159,6 +169,15 @@ test("resource growth is measured against the before sample, not only the final 
   assert.equal(result.metrics.logGrowthBytes, 9)
   assert.match(result.violations.join("\n"), /disk growth 20 bytes/)
   assert.match(result.violations.join("\n"), /log growth 9 bytes/)
+})
+
+test("post-run disk delta is not a transient resource cap", () => {
+  const result = evaluateBrowserComputerResourceCaps(resourceSamples({
+    after: { diskAvailableBytes: 0, memoryAvailableBytes: 100, rssBytes: 0, processCount: 2, logBytes: 0 },
+  }), { diskBytes: 0, memoryBytes: 0, processCount: 2, logBytes: 0 })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.metrics.diskGrowthBytes, 0)
 })
 
 test("resource evidence rejects a missing phase or missing process/log sample", () => {
@@ -181,6 +200,18 @@ test("resource evidence rejects a missing phase or missing process/log sample", 
   assert.match(missingResult.violations.join("\n"), /after sample is missing a safe log byte count/)
 })
 
+test("local total-memory fallback is not treated as workload RSS", () => {
+  const localFallback = resourceSamples()
+  for (const sample of localFallback) delete sample.memory.rssBytes
+  const result = evaluateBrowserComputerResourceCaps(localFallback, {
+    diskBytes: 10, memoryBytes: 20, processCount: 3, logBytes: 4,
+  })
+
+  assert.equal(result.ok, false)
+  assert.match(result.violations.join("\n"), /explicit workload RSS byte count/)
+  assert.equal(result.metrics.peakMemoryBytes, null)
+})
+
 test("blank budgets remain observational while malformed caps are rejected", () => {
   for (const value of [undefined, "", " ", "\t\n"]) {
     const budget = parseBrowserComputerByteBudget(value)
@@ -195,6 +226,56 @@ test("blank budgets remain observational while malformed caps are rejected", () 
   }), { diskBytes: 1, memoryBytes: 2, processCount: 3, logBytes: 4 })
   assert.throws(() => normalizeBrowserComputerCaps({ diskBytes: 1 }), /memoryBytes is required/)
   assert.throws(() => normalizeBrowserComputerCaps({ diskBytes: -1, memoryBytes: 1, processCount: 1, logBytes: 1 }), /non-negative/)
+})
+
+test("resource ceilings only derive caps for explicitly matching metrics", () => {
+  const ceilings = {
+    maximumRssBytes: 2_000_000_000,
+    maximumPostRunDiskDeltaBytes: 10_000_000,
+  }
+  assert.deepEqual(deriveBrowserComputerCapsFromResourceCeilings(ceilings), {
+    memoryBytes: 2_000_000_000,
+  })
+  assert.throws(() => resolveBrowserComputerCaps({ resourceCeilings: ceilings }), /diskBytes is required/)
+  assert.deepEqual(resolveBrowserComputerCaps({
+    caps: { diskBytes: 9, memoryBytes: 19, processCount: 4, logBytes: 5 },
+    resourceCeilings: ceilings,
+  }), { diskBytes: 9, memoryBytes: 19, processCount: 4, logBytes: 5 })
+  assert.deepEqual(deriveBrowserComputerCapsFromResourceCeilings({
+    maximumRssBytes: 2_000_000_000,
+    maximumTransientDiskBytes: 10_000_000,
+    maximumProcessCount: 4,
+    maximumLogBytes: 5,
+  }), {
+    diskBytes: 10_000_000,
+    memoryBytes: 2_000_000_000,
+    processCount: 4,
+    logBytes: 5,
+  })
+})
+
+test("resource telemetry requires an authoritative managed target or explicit local fallback", () => {
+  const managed = { telemetry: { scope: "managed-target", authoritative: true, source: "agent-1", targetId: "machine-1" } }
+  assert.equal(assertBrowserComputerResourceTelemetry(managed).mode, "managed-target")
+  const mismatched = evaluateBrowserComputerResourceTelemetry(managed, { expectedTargetIds: ["machine-2"] })
+  assert.equal(mismatched.ok, false)
+  assert.match(mismatched.violations.join("\n"), /does not match an expected machine/)
+  assert.equal(evaluateBrowserComputerResourceTelemetry({}).ok, false)
+  assert.throws(() => assertBrowserComputerResourceTelemetry({}), /remote\/local host fallback is forbidden/)
+  assert.equal(evaluateBrowserComputerResourceTelemetry({
+    telemetry: { scope: "local-host", authoritative: true, fallback: true },
+  }, { allowLocalFallback: true }).mode, "local-fallback")
+})
+
+test("watchdog rejects a transient owned-workload resource spike", () => {
+  const result = evaluateBrowserComputerResourceWatchdogSample(
+    resourceSamples()[0],
+    { phase: "watchdog", ...snapshot({ diskAvailableBytes: 70, memoryAvailableBytes: 60, processCount: 6, logBytes: 10 }) },
+    { diskBytes: 10, memoryBytes: 20, processCount: 4, logBytes: 5 },
+  )
+  assert.equal(result.ok, false)
+  assert.match(result.violations.join("\n"), /watchdog disk growth 30 bytes/)
+  assert.match(result.violations.join("\n"), /watchdog peak process count 6/)
 })
 
 test("cleanup accounts for owned resources and rejects residue", async () => {
@@ -226,6 +307,7 @@ test("cleanup accounts for owned resources and rejects residue", async () => {
     assert.deepEqual(result.cleanupAccounting.remainingOwned, {
       containers: ["chariox-slice-owned"],
       volumes: ["chariox-slice-owned-home"],
+      networks: [],
     })
   } finally {
     await rm(tempRoot, { recursive: true, force: true })
@@ -257,6 +339,7 @@ test("cleanup passes with exact owned action accounting and restored inventory",
   assert.deepEqual(result.cleanupAccounting.removedOwned, {
     containers: ["chariox-slice-owned"],
     volumes: ["chariox-slice-owned-home"],
+    networks: [],
   })
   assert.equal(result.memoryAvailableDeltaBytes, 5)
   assert.equal(result.diskAvailableDeltaBytes, -2)
@@ -277,6 +360,7 @@ test("cleanup rejects disappearance of pre-existing unowned resources", async ()
   assert.deepEqual(result.cleanupAccounting.removedUnowned, {
     containers: ["chariox-slice-unrelated"],
     volumes: ["chariox-slice-unrelated-home"],
+    networks: [],
   })
 })
 
@@ -287,6 +371,7 @@ test("Docker save/remove/restore preconditions fail closed and reject broad prun
     docker: {
       containers: ["chariox-slice-owned"],
       volumes: ["chariox-slice-owned-home"],
+      networks: ["chariox-slice-owned-net"],
       images: ["chariox/browser:fixture"],
     },
   }
@@ -298,6 +383,15 @@ test("Docker save/remove/restore preconditions fail closed and reject broad prun
     command: ["docker", "save", "chariox/browser:fixture", "-o", "/tmp/browser-state.tar"],
   })
   assert.equal(save.ok, true)
+  const wrongSavePath = evaluateBrowserComputerDockerPreconditions({
+    action: "save",
+    before: inventory,
+    imageRef: "chariox/browser:fixture",
+    savePath: "/tmp/browser-state.tar",
+    command: ["docker", "save", "chariox/browser:fixture", "-o", "/tmp/other-state.tar"],
+  })
+  assert.equal(wrongSavePath.ok, false)
+  assert.match(wrongSavePath.violations.join("\n"), /archive path does not equal the declared savePath/)
 
   const broadRemove = evaluateBrowserComputerDockerPreconditions({
     action: "remove",
@@ -345,6 +439,90 @@ test("Docker save/remove/restore preconditions fail closed and reject broad prun
     saved: true,
     command: ["docker", "rm", "chariox-slice-owned"],
   }).ok, true)
+  const restoreCommand = [
+    "docker", "create", "--name", "chariox-slice-owned",
+    "--volume", "chariox-slice-owned-home:/data",
+    "--network", "chariox-slice-owned-net", "chariox/browser:fixture",
+  ]
+  const parsedRestore = parseBrowserComputerDockerMutationArgv(restoreCommand, "restore")
+  assert.deepEqual(parsedRestore.affected, {
+    containers: ["chariox-slice-owned"],
+    volumes: ["chariox-slice-owned-home"],
+    images: ["chariox/browser:fixture"],
+    networks: ["chariox-slice-owned-net"],
+    mounts: ["chariox-slice-owned-home:/data"],
+    mountSources: ["chariox-slice-owned-home"],
+  })
+  assert.equal(evaluateBrowserComputerDockerPreconditions({
+    action: "restore",
+    before: inventory,
+    ownedContainers: ["chariox-slice-owned"],
+    ownedVolumes: ["chariox-slice-owned-home"],
+    ownedNetworks: ["chariox-slice-owned-net"],
+    targetContainers: ["chariox-slice-owned"],
+    targetVolumes: ["chariox-slice-owned-home"],
+    targetNetworks: ["chariox-slice-owned-net"],
+    targetMounts: ["chariox-slice-owned-home:/data"],
+    imageRef: "chariox/browser:fixture",
+    saved: true,
+    removed: true,
+    command: restoreCommand,
+  }).ok, true)
+  const mountRestoreCommand = [
+    "docker", "create", "--name", "chariox-slice-owned",
+    "--mount", "type=volume,source=chariox-slice-owned-home,target=/data",
+    "--network", "chariox-slice-owned-net", "chariox/browser:fixture",
+  ]
+  const parsedMountRestore = parseBrowserComputerDockerMutationArgv(mountRestoreCommand, "restore")
+  assert.deepEqual(parsedMountRestore.affected, {
+    containers: ["chariox-slice-owned"],
+    volumes: ["chariox-slice-owned-home"],
+    images: ["chariox/browser:fixture"],
+    networks: ["chariox-slice-owned-net"],
+    mounts: ["type=volume,source=chariox-slice-owned-home,target=/data"],
+    mountSources: ["chariox-slice-owned-home"],
+  })
+  assert.equal(evaluateBrowserComputerDockerPreconditions({
+    action: "restore",
+    before: inventory,
+    ownedContainers: ["chariox-slice-owned"],
+    ownedVolumes: ["chariox-slice-owned-home"],
+    ownedNetworks: ["chariox-slice-owned-net"],
+    targetContainers: ["chariox-slice-owned"],
+    targetVolumes: ["chariox-slice-owned-home"],
+    targetNetworks: ["chariox-slice-owned-net"],
+    targetMounts: ["type=volume,source=chariox-slice-owned-home,target=/data"],
+    targetMountSources: ["chariox-slice-owned-home"],
+    imageRef: "chariox/browser:fixture",
+    saved: true,
+    removed: true,
+    command: mountRestoreCommand,
+  }).ok, true)
+  const malformedMount = parseBrowserComputerDockerMutationArgv([
+    "docker", "create", "--mount", "type=volume,target=/data", "chariox/browser:fixture",
+  ], "restore")
+  assert.match(malformedMount.violations.join("\n"), /requires an exact source volume/)
+  const wrongLoadPath = evaluateBrowserComputerDockerPreconditions({
+    action: "restore",
+    before: inventory,
+    saved: true,
+    removed: true,
+    imageRef: "chariox/browser:fixture",
+    restorePath: "/tmp/browser-state.tar",
+    command: ["docker", "load", "-i", "/tmp/other-state.tar"],
+  })
+  assert.equal(wrongLoadPath.ok, false)
+  assert.match(wrongLoadPath.violations.join("\n"), /archive path does not equal the declared restorePath/)
+  const exactLoad = evaluateBrowserComputerDockerPreconditions({
+    action: "restore",
+    before: inventory,
+    saved: true,
+    removed: true,
+    imageRef: "chariox/browser:fixture",
+    restorePath: "/tmp/browser-state.tar",
+    command: ["docker", "load", "-i", "/tmp/browser-state.tar"],
+  })
+  assert.equal(exactLoad.ok, true)
   assert.throws(() => assertBrowserComputerDockerPreconditions({
     action: "remove",
     before: inventory,
@@ -381,6 +559,72 @@ test("fault checkpoint interruption still runs owned cleanup", async () => {
   ])
   assert.match(result.failure.message, /injected browser\/computer fault at during-browser/)
   assert.equal(JSON.stringify(result).includes("do-not-record"), false)
+})
+
+test("persistence evidence binds actual argv, requests, inventories, and seam checkpoints", () => {
+  const evidence = persistenceEvidence()
+  const plan = persistencePlan()
+  const declarations = persistenceDeclarations()
+  const planned = evaluateBrowserComputerPersistenceMutationSeams({
+    result: plan,
+    dockerPreconditions: declarations,
+    planOnly: true,
+  })
+  assert.equal(planned.ok, true)
+  assert.deepEqual(planned.mutations.map(({ action }) => action), ["save", "remove", "restore"])
+
+  const result = evaluateBrowserComputerPersistenceMutationSeams({
+    result: evidence,
+    plan,
+    dockerPreconditions: declarations,
+    observedReceipts: evidence.persistenceMutations.map(({ receipt }) => receipt),
+  })
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.mutations.map(({ action }) => action), ["save", "remove", "restore"])
+
+  const predeclaredReceipt = structuredClone(plan)
+  predeclaredReceipt.persistenceMutations[0].receipt = evidence.persistenceMutations[0].receipt
+  const rejectedPlan = evaluateBrowserComputerPersistenceMutationSeams({
+    result: predeclaredReceipt,
+    dockerPreconditions: declarations,
+    planOnly: true,
+  })
+  assert.equal(rejectedPlan.ok, false)
+  assert.match(rejectedPlan.violations.join("\n"), /contains execution state: receipt/)
+
+  const altered = structuredClone(evidence)
+  altered.persistenceMutations[2].request.argv[2] = "--all"
+  const failed = evaluateBrowserComputerPersistenceMutationSeams({
+    result: altered,
+    plan,
+    dockerPreconditions: declarations,
+  })
+  assert.equal(failed.ok, false)
+  assert.match(failed.violations.join("\n"), /argv does not equal the exact mutation argv|mutation plan|broad prune/)
+
+  const replayedReceipt = structuredClone(evidence)
+  replayedReceipt.persistenceMutations[2].receipt = replayedReceipt.persistenceMutations[0].receipt
+  const replayed = evaluateBrowserComputerPersistenceMutationSeams({
+    result: replayedReceipt,
+    plan,
+    dockerPreconditions: declarations,
+    observedReceipts: replayedReceipt.persistenceMutations.map(({ receipt }) => receipt),
+  })
+  assert.equal(replayed.ok, false)
+  assert.match(replayed.violations.join("\n"), /newly produced, not replayed|chain from the remove receipt/)
+
+  const brokenReceiptChain = structuredClone(evidence)
+  brokenReceiptChain.persistenceMutations[1].saveReceipt = {
+    ...brokenReceiptChain.persistenceMutations[0].receipt,
+    id: "foreign-save-receipt",
+  }
+  const broken = evaluateBrowserComputerPersistenceMutationSeams({
+    result: brokenReceiptChain,
+    plan,
+    dockerPreconditions: declarations,
+  })
+  assert.equal(broken.ok, false)
+  assert.match(broken.violations.join("\n"), /exact successful save receipt/)
 })
 
 test("fault guard returns a deterministic pass with after-cleanup evidence", async () => {
@@ -453,20 +697,123 @@ test("evidence redaction removes secret values, secret-shaped fields, and contro
   assert.equal(redactBrowserComputerEvidence("x".repeat(20), { maxStringLength: 8 }).startsWith("<truncated>"), true)
 })
 
+function persistenceInventory() {
+  return {
+    docker: {
+      containers: ["chariox-slice-owned"],
+      volumes: ["chariox-slice-owned-home"],
+      networks: ["chariox-slice-owned-net"],
+      images: ["chariox/browser:fixture"],
+    },
+  }
+}
+
+function persistencePlan() {
+  const saveArgv = ["docker", "save", "chariox/browser:fixture", "-o", "/tmp/browser-state.tar"]
+  const removeArgv = ["docker", "rm", "chariox-slice-owned"]
+  const restoreArgv = [
+    "docker", "create", "--name", "chariox-slice-owned",
+    "--volume", "chariox-slice-owned-home:/data",
+    "--network", "chariox-slice-owned-net", "chariox/browser:fixture",
+  ]
+  return {
+    persistenceMutations: [
+      {
+        action: "save",
+        argv: saveArgv,
+        request: { action: "save", argv: saveArgv },
+        checkpoints: { before: "before-docker-save", after: "after-docker-save" },
+      },
+      {
+        action: "remove",
+        argv: removeArgv,
+        request: { action: "remove", argv: removeArgv },
+        checkpoints: { before: "before-docker-remove", after: "after-docker-remove" },
+      },
+      {
+        action: "restore",
+        argv: restoreArgv,
+        request: { action: "restore", argv: restoreArgv },
+        checkpoints: { before: "before-docker-restore", after: "after-docker-restore" },
+      },
+    ],
+  }
+}
+
+function persistenceEvidence() {
+  const plan = persistencePlan()
+  const saveReceipt = { ok: true, id: "save-receipt-1", archivePath: "/tmp/browser-state.tar" }
+  const removeReceipt = { ok: true, id: "remove-receipt-1", parentReceiptId: saveReceipt.id }
+  return {
+    persistenceMutations: plan.persistenceMutations.map((planned) => ({
+      ...planned,
+      before: persistenceInventory(),
+      ...(planned.action === "save"
+        ? { receipt: saveReceipt }
+        : planned.action === "remove"
+          ? { saveReceipt, receipt: removeReceipt }
+          : {
+            saveReceipt,
+            removeReceipt,
+            receipt: { ok: true, id: "restore-receipt-1", parentReceiptId: removeReceipt.id },
+          }),
+    })),
+  }
+}
+
+function persistenceDeclarations() {
+  return [
+    {
+      action: "save",
+      imageRef: "chariox/browser:fixture",
+      savePath: "/tmp/browser-state.tar",
+    },
+    {
+      action: "remove",
+      ownedContainers: ["chariox-slice-owned"],
+      targetContainers: ["chariox-slice-owned"],
+      saved: true,
+    },
+    {
+      action: "restore",
+      ownedContainers: ["chariox-slice-owned"],
+      ownedVolumes: ["chariox-slice-owned-home"],
+      ownedNetworks: ["chariox-slice-owned-net"],
+      targetContainers: ["chariox-slice-owned"],
+      targetVolumes: ["chariox-slice-owned-home"],
+      targetNetworks: ["chariox-slice-owned-net"],
+      targetMounts: ["chariox-slice-owned-home:/data"],
+      imageRef: "chariox/browser:fixture",
+      saved: true,
+      removed: true,
+    },
+  ]
+}
+
 function snapshot({
   memoryAvailableBytes = 100,
   diskAvailableBytes = 100,
+  rssBytes,
   containers = [],
   volumes = [],
+  networks = [],
   processCount = 2,
   logBytes = 0,
 } = {}) {
   return {
-    memory: { totalBytes: 100, availableBytes: memoryAvailableBytes },
-    disk: { totalBytes: 100, availableBytes: diskAvailableBytes },
+    memory: {
+      totalBytes: 100,
+      availableBytes: memoryAvailableBytes,
+      rssBytes: rssBytes ?? 100 - memoryAvailableBytes,
+    },
+    disk: {
+      totalBytes: 100,
+      availableBytes: diskAvailableBytes,
+      usedBytes: 100 - diskAvailableBytes,
+    },
     process: { count: processCount },
     logs: { bytes: logBytes },
-    docker: { containers, volumes },
+    docker: { containers, volumes, networks },
   }
 }
 
