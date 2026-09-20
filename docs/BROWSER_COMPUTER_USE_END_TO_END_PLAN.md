@@ -158,6 +158,11 @@ validation steps are not closed by local tests.
 Status: open. Do not mark this work complete until every ledger item below has
 reviewed source proof and fresh-machine Path-1 evidence.
 
+The decisions in this section are the user's locked product requirements and
+must survive handoffs, resumed turns, delegation, review, and deployment. They
+are not provisional research conclusions and cannot be deferred as follow-up
+work while Path 1 or the overall program is declared complete.
+
 A kernel on a Chariox-managed machine must expose the same user-visible runtime
 behavior as an ordinary kernel. The only intended differences are how Chariox
 deploys the kernel and its mandatory automatic shutdown policy, including every
@@ -260,8 +265,10 @@ replace them with a managed-only approximation:
   memory, CPU, process health, and build growth on local and managed machines.
   Reclaim disposable artifacts and stop unhealthy or unbounded work, but do
   not interrupt a bounded build or validation because it crosses an arbitrary
-  fixed threshold. Record the measurement and the concrete exhaustion or
-  stability risk whenever resource pressure changes the implementation plan.
+  fixed threshold. Fast critical-path progress takes precedence over
+  conservative guardrails unless current measurements show a concrete
+  exhaustion, corruption, or stability risk. Record that measurement and risk
+  whenever resource pressure changes the implementation plan.
 
 For Path 1, the disposable worker VM is the provider security and filesystem
 isolation boundary. Once the signed kernel has enrolled, provider runs must use
