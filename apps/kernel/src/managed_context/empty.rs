@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::cell::RefCell;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
@@ -172,15 +174,60 @@ pub(crate) fn managed_user_workspace_root() -> Result<PathBuf, DaemonError> {
     crate::managed_bootstrap::managed_repository_root_from_env()
 }
 
-pub(crate) fn managed_path_overlaps_protected_root(path: &Path) -> bool {
+fn path_overlaps_protected_roots<'a>(
+    path: &Path,
+    protected_roots: impl IntoIterator<Item = &'a Path>,
+) -> bool {
     path == Path::new("/")
-        || [
+        || protected_roots
+            .into_iter()
+            .any(|protected| path == protected || path.starts_with(protected))
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_PROTECTED_ROOTS: RefCell<Option<Vec<PathBuf>>> = RefCell::new(None);
+}
+
+#[cfg(test)]
+pub(crate) struct ProtectedRootTestScope {
+    previous: Option<Vec<PathBuf>>,
+}
+
+#[cfg(test)]
+pub(crate) fn protected_root_test_scope(protected_roots: &[PathBuf]) -> ProtectedRootTestScope {
+    let previous =
+        TEST_PROTECTED_ROOTS.with(|current| current.replace(Some(protected_roots.to_vec())));
+    ProtectedRootTestScope { previous }
+}
+
+#[cfg(test)]
+impl Drop for ProtectedRootTestScope {
+    fn drop(&mut self) {
+        TEST_PROTECTED_ROOTS.with(|current| {
+            let _ = current.replace(self.previous.take());
+        });
+    }
+}
+
+pub(crate) fn managed_path_overlaps_protected_root(path: &Path) -> bool {
+    #[cfg(test)]
+    if let Some(overlaps) = TEST_PROTECTED_ROOTS.with(|current| {
+        current.borrow().as_ref().map(|protected_roots| {
+            path_overlaps_protected_roots(path, protected_roots.iter().map(PathBuf::as_path))
+        })
+    }) {
+        return overlaps;
+    }
+
+    path_overlaps_protected_roots(
+        path,
+        [
             Path::new("/var/lib/chariox"),
             Path::new("/usr/lib/chariox"),
             Path::new("/home/chariox/.chariox"),
-        ]
-        .iter()
-        .any(|protected| path == *protected || path.starts_with(protected))
+        ],
+    )
 }
 
 pub(crate) fn resolve_managed_path_for_creation(

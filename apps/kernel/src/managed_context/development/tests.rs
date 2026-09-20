@@ -200,6 +200,23 @@ impl Drop for PlainWorkspaceCleanup {
 }
 
 #[cfg(unix)]
+fn protected_root_fixture(label: &str) -> (PathBuf, Vec<PathBuf>) {
+    let root = test_root(label);
+    let protected_roots = [
+        "protected-var-lib-chariox",
+        "protected-usr-lib-chariox",
+        "protected-home-chariox",
+    ]
+    .into_iter()
+    .map(|name| root.join(name))
+    .collect::<Vec<_>>();
+    for protected_root in &protected_roots {
+        fs::create_dir_all(protected_root).expect("create protected-root fixture");
+    }
+    (root, protected_roots)
+}
+
+#[cfg(unix)]
 #[test]
 fn plain_workspace_rejects_symlinks_and_special_files_without_publishing() {
     let root = test_root("plain-unsafe");
@@ -1611,12 +1628,14 @@ fn managed_materialization_uses_the_bootstrap_repository_root() {
 #[cfg(unix)]
 #[test]
 fn managed_repository_root_boundary_rejects_intermediate_symlinks_into_protected_service_roots() {
-    let root = test_root("managed-root-protected-aliases");
+    let (root, protected_roots) = protected_root_fixture("managed-root-protected-aliases");
     let _cleanup = PlainWorkspaceCleanup(root.clone());
+    let _protected_scope =
+        crate::managed_context::empty::protected_root_test_scope(&protected_roots);
     for (label, protected_root) in [
-        ("var-lib", Path::new("/var/lib/chariox")),
-        ("usr-lib", Path::new("/usr/lib/chariox")),
-        ("home-state", Path::new("/home/chariox/.chariox")),
+        ("var-lib", protected_roots[0].as_path()),
+        ("usr-lib", protected_roots[1].as_path()),
+        ("home-state", protected_roots[2].as_path()),
     ] {
         let alias = root.join(format!("{label}-alias"));
         std::os::unix::fs::symlink(protected_root, &alias).expect("create protected alias");
@@ -1650,14 +1669,16 @@ fn managed_repository_root_boundary_rejects_protected_intermediate_symlinks_befo
 {
     let _lock = crate::env_lock::lock();
     let previous = std::env::var_os(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV);
-    let root = test_root("managed-root-materialization-alias");
+    let (root, protected_roots) = protected_root_fixture("managed-root-materialization-alias");
     let _cleanup = PlainWorkspaceCleanup(root.clone());
+    let _protected_scope =
+        crate::managed_context::empty::protected_root_test_scope(&protected_roots);
     let trusted_parent = root.join("control/managed-context-workspaces");
     fs::create_dir_all(&trusted_parent).expect("create trusted control parent");
     for (label, protected_root) in [
-        ("var-lib", Path::new("/var/lib/chariox")),
-        ("usr-lib", Path::new("/usr/lib/chariox")),
-        ("home-state", Path::new("/home/chariox/.chariox")),
+        ("var-lib", protected_roots[0].as_path()),
+        ("usr-lib", protected_roots[1].as_path()),
+        ("home-state", protected_roots[2].as_path()),
     ] {
         let alias = root.join(format!("{label}-materialization-alias"));
         std::os::unix::fs::symlink(protected_root, &alias).expect("create protected alias");
@@ -1747,10 +1768,12 @@ fn managed_repository_root_boundary_rejects_final_target_symlink() {
 fn managed_repository_root_boundary_creates_no_partial_empty_workspace_on_rejection() {
     let _lock = crate::env_lock::lock();
     let previous = std::env::var_os(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV);
-    let root = test_root("managed-root-empty-alias");
+    let (root, protected_roots) = protected_root_fixture("managed-root-empty-alias");
     let _cleanup = PlainWorkspaceCleanup(root.clone());
+    let _protected_scope =
+        crate::managed_context::empty::protected_root_test_scope(&protected_roots);
     let alias = root.join("empty-workspace-alias");
-    std::os::unix::fs::symlink("/var/lib/chariox", &alias).expect("create protected alias");
+    std::os::unix::fs::symlink(&protected_roots[0], &alias).expect("create protected alias");
     let configured_root = alias.join("managed-root");
     let context_id = format!("empty-boundary-{}", root.display());
     std::env::set_var(
@@ -1760,7 +1783,7 @@ fn managed_repository_root_boundary_creates_no_partial_empty_workspace_on_reject
     let requested_workspace =
         crate::managed_context::empty::managed_user_empty_context_workspace_path(&context_id)
             .expect("build empty workspace path");
-    let blocked_target = Path::new("/var/lib/chariox").join(
+    let blocked_target = protected_roots[0].join(
         requested_workspace
             .file_name()
             .expect("empty workspace basename"),
