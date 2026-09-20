@@ -52,11 +52,17 @@ const PORT_METHODS = Object.freeze({
 
 const FORBIDDEN_RESULT_KEYS = new Set([
   "backend_node_id",
+  "backendNodeId",
   "browser_context_id",
+  "browserContextId",
   "object_id",
+  "objectId",
   "session_id",
+  "sessionId",
   "target_id",
+  "targetId",
   "websocket_url",
+  "websocketUrl",
   "webSocketDebuggerUrl",
 ]);
 
@@ -104,7 +110,9 @@ function optionalTimeout(value) {
 
 function optionalTarget(value, key) {
   if (value === undefined) return undefined;
-  return boundedString(value, { maximum: 8 * 1024 });
+  const target = boundedString(value, { required: true, maximum: 8 * 1024 });
+  if (target.trim().length === 0) fail(RUNTIME_MCP_ERROR_CODES.INVALID_ARGUMENT);
+  return target;
 }
 
 function targetArgs(value, { required = false } = {}) {

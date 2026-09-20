@@ -103,6 +103,23 @@ test("requires exactly one fill or click target", async () => {
   assert.equal(fake.calls.length, 2);
 });
 
+test("rejects empty and blank targets before forwarding", async () => {
+  const fake = port();
+  const adapter = new BrowserRuntimeMcpAdapter(fake.methods);
+  for (const [tool, args] of [
+    ["slice_browser_fill", { selector: "", text: "value" }],
+    ["slice_browser_fill", { field_id: " \t ", text: "value" }],
+    ["slice_browser_click", { selector: "\n" }],
+    ["slice_browser_submit", { field_id: " " }],
+  ]) {
+    await assert.rejects(
+      adapter.invoke(tool, args),
+      (error) => error.code === RUNTIME_MCP_ERROR_CODES.INVALID_ARGUMENT,
+    );
+  }
+  assert.deepEqual(fake.calls, []);
+});
+
 test("keeps submit target optional but unambiguous", async () => {
   const fake = port();
   const adapter = new BrowserRuntimeMcpAdapter(fake.methods);
@@ -159,13 +176,30 @@ test("rejects oversized requests before forwarding", async () => {
   assert.deepEqual(fake.calls, []);
 });
 
-test("rejects controller-private identifiers in results", async () => {
-  const fake = port({ status: async () => ({ tabs: [{ backend_node_id: 7 }] }) });
-  const adapter = new BrowserRuntimeMcpAdapter(fake.methods);
-  await assert.rejects(
-    adapter.invoke("slice_browser_status", {}),
-    (error) => error.code === RUNTIME_MCP_ERROR_CODES.RESULT_INVALID,
-  );
+test("rejects every controller-private identifier spelling in results", async () => {
+  for (const key of [
+    "backend_node_id",
+    "backendNodeId",
+    "browser_context_id",
+    "browserContextId",
+    "object_id",
+    "objectId",
+    "session_id",
+    "sessionId",
+    "target_id",
+    "targetId",
+    "websocket_url",
+    "websocketUrl",
+    "webSocketDebuggerUrl",
+  ]) {
+    const fake = port({ status: async () => ({ tabs: [{ [key]: "private" }] }) });
+    const adapter = new BrowserRuntimeMcpAdapter(fake.methods);
+    await assert.rejects(
+      adapter.invoke("slice_browser_status", {}),
+      (error) => error.code === RUNTIME_MCP_ERROR_CODES.RESULT_INVALID,
+      key,
+    );
+  }
 });
 
 test("rejects cyclic and oversized results", async () => {
