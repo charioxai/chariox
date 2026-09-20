@@ -328,7 +328,7 @@ test("captures bounded observations through stable tabs and invalidates detached
   FakeWebSocket.onSend = (socket, message) => {
     let result = {};
     if (message.method === "Page.getFrameTree") {
-      result = { frameTree: { frame: { loaderId: "document-b" } } };
+      result = { frameTree: { frame: { id: "frame-b", loaderId: "document-b" } } };
     } else if (message.method === "Accessibility.getFullAXTree") {
       result = {
         nodes: [{
@@ -342,6 +342,7 @@ test("captures bounded observations through stable tabs and invalidates detached
       result = {
         strings: ["BUTTON"],
         documents: [{
+          frameId: "frame-b",
           nodes: {
             backendNodeId: [41],
             parentIndex: [-1],
@@ -452,7 +453,7 @@ test("runs a bounded locator action through an opaque observed element reference
   FakeWebSocket.onSend = (socket, message) => {
     let result = {};
     if (message.method === "Page.getFrameTree") {
-      result = { frameTree: { frame: { loaderId: "document-action" } } };
+      result = { frameTree: { frame: { id: "frame-action", loaderId: "document-action" } } };
     } else if (message.method === "Accessibility.getFullAXTree") {
       result = {
         nodes: [{
@@ -466,6 +467,7 @@ test("runs a bounded locator action through an opaque observed element reference
       result = {
         strings: ["BUTTON"],
         documents: [{
+          frameId: "frame-action",
           nodes: {
             backendNodeId: [73],
             parentIndex: [-1],
@@ -491,7 +493,7 @@ test("runs a bounded locator action through an opaque observed element reference
     actionMethods.push(message);
     let result = {};
     if (message.method === "Page.getFrameTree") {
-      result = { frameTree: { frame: { loaderId: "document-action" } } };
+      result = { frameTree: { frame: { id: "frame-action", loaderId: "document-action" } } };
     } else if (message.method === "DOM.resolveNode") {
       result = { object: { objectId: "object-action" } };
     } else if (message.method === "Runtime.callFunctionOn") {

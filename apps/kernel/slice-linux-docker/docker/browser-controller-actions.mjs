@@ -11,6 +11,7 @@ export const ACTION_ERROR_CODES = Object.freeze({
   FAILED: "ACTION_FAILED",
   STALE_DOCUMENT: "STALE_DOCUMENT",
   ELEMENT_REFERENCE_INVALIDATED: "ELEMENT_REFERENCE_INVALIDATED",
+  FRAME_UNSUPPORTED: "FRAME_UNSUPPORTED",
 });
 
 export class BrowserActionError extends Error {
@@ -54,6 +55,8 @@ function normalizeElement(raw) {
   return {
     tabId: requireIdentifier(raw.tab_id),
     documentId: requireIdentifier(raw.document_id),
+    frameId: requireIdentifier(raw.frame_id),
+    mainFrameId: requireIdentifier(raw.main_frame_id),
     snapshotRevision: requirePositiveInteger(raw.snapshot_revision),
     backendNodeId: requirePositiveInteger(raw.backend_node_id),
   };
@@ -101,17 +104,48 @@ function readNow(now) {
   return value;
 }
 
-async function assertCurrentDocument(connection, documentId) {
-  const frameTree = await connection.send("Page.getFrameTree", {});
+function timeoutDetails(budget) {
+  return {
+    attempts: budget.attempts,
+    timeout_ms: budget.timeoutMs,
+    reason: budget.lastReason,
+  };
+}
+
+function remainingBudget(budget) {
+  const remaining = Math.ceil(budget.deadline - readNow(budget.now));
+  if (remaining <= 0) {
+    fail(ACTION_ERROR_CODES.TIMEOUT, timeoutDetails(budget));
+  }
+  return remaining;
+}
+
+async function sendWithinBudget(connection, method, params, budget) {
+  const timeoutMs = remainingBudget(budget);
+  try {
+    const result = await connection.send(method, params, timeoutMs);
+    remainingBudget(budget);
+    return result;
+  } catch (error) {
+    if (error instanceof BrowserActionError) throw error;
+    if (error?.code === "CDP_COMMAND_TIMEOUT" || readNow(budget.now) >= budget.deadline) {
+      fail(ACTION_ERROR_CODES.TIMEOUT, timeoutDetails(budget));
+    }
+    throw error;
+  }
+}
+
+async function assertCurrentDocument(connection, documentId, budget) {
+  const frameTree = await sendWithinBudget(connection, "Page.getFrameTree", {}, budget);
   if (frameTree?.frameTree?.frame?.loaderId !== documentId) {
     fail(ACTION_ERROR_CODES.STALE_DOCUMENT);
   }
 }
 
-async function resolveBackendNode(connection, backendNodeId) {
+async function resolveBackendNode(connection, backendNodeId, budget) {
   let response;
   try {
-    response = await connection.send("DOM.resolveNode", { backendNodeId });
+    response = await sendWithinBudget(connection, "DOM.resolveNode", { backendNodeId }, budget);
   } catch (error) {
     if (error?.code === "CDP_COMMAND_FAILED") {
       fail(ACTION_ERROR_CODES.ELEMENT_REFERENCE_INVALIDATED);
@@ -125,13 +159,13 @@ async function resolveBackendNode(connection, backendNodeId) {
   return objectId;
 }
 
-async function inspectActionability(connection, objectId) {
-  const response = await connection.send("Runtime.callFunctionOn", {
+async function inspectActionability(connection, objectId, budget) {
+  const response = await sendWithinBudget(connection, "Runtime.callFunctionOn", {
     objectId,
     functionDeclaration: actionabilityFunction.toString(),
     returnByValue: true,
     awaitPromise: false,
-  });
+  }, budget);
   if (response?.exceptionDetails) fail(ACTION_ERROR_CODES.FAILED);
   const result = response?.result?.value;
   if (!isPlainObject(result) || typeof result.state !== "string") {
@@ -219,36 +253,36 @@ function sameGeometry(left, right) {
     left.height === right.height;
 }
 
-async function click(connection, geometry) {
-  await connection.send("Input.dispatchMouseEvent", {
+async function click(connection, geometry, budget) {
+  await sendWithinBudget(connection, "Input.dispatchMouseEvent", {
     type: "mouseMoved",
     x: geometry.x,
     y: geometry.y,
-  });
-  await connection.send("Input.dispatchMouseEvent", {
+  }, budget);
+  await sendWithinBudget(connection, "Input.dispatchMouseEvent", {
     type: "mousePressed",
     x: geometry.x,
     y: geometry.y,
     button: "left",
     clickCount: 1,
-  });
-  await connection.send("Input.dispatchMouseEvent", {
+  }, budget);
+  await sendWithinBudget(connection, "Input.dispatchMouseEvent", {
     type: "mouseReleased",
     x: geometry.x,
     y: geometry.y,
     button: "left",
     clickCount: 1,
-  });
+  }, budget);
 }
 
-async function fill(connection, objectId, action) {
-  const response = await connection.send("Runtime.callFunctionOn", {
+async function fill(connection, objectId, action, budget) {
+  const response = await sendWithinBudget(connection, "Runtime.callFunctionOn", {
     objectId,
     functionDeclaration: fillFunction.toString(),
     arguments: [{ value: action.text }, { value: action.append }],
     returnByValue: true,
     awaitPromise: false,
-  });
+  }, budget);
   if (response?.exceptionDetails || response?.result?.value?.ok !== true) {
     fail(ACTION_ERROR_CODES.FAILED);
   }
@@ -286,9 +320,9 @@ function fillFunction(text, append) {
   return { ok: true };
 }
 
-async function releaseObject(connection, objectId) {
+async function releaseObject(connection, objectId, budget) {
   try {
-    await connection.send("Runtime.releaseObject", { objectId });
+    await sendWithinBudget(connection, "Runtime.releaseObject", { objectId }, budget);
   } catch {
     // A click may navigate and invalidate the object before release.
   }
@@ -309,44 +343,60 @@ export async function performBrowserAction({
   const action = normalizeAction(rawAction);
   const boundedTimeoutMs = normalizeTimeout(timeoutMs);
   const startedAt = readNow(now);
-  let attempts = 0;
+  const budget = {
+    deadline: startedAt + boundedTimeoutMs,
+    lastReason: "not_ready",
+    attempts: 0,
+    now,
+    timeoutMs: boundedTimeoutMs,
+  };
+  if (element.frameId !== element.mainFrameId) {
+    fail(ACTION_ERROR_CODES.FRAME_UNSUPPORTED);
+  }
   let previousGeometry = null;
-  let lastReason = "not_ready";
 
   while (true) {
     const elapsed = Math.max(0, readNow(now) - startedAt);
-    if (attempts > 0 && elapsed >= boundedTimeoutMs) {
-      fail(ACTION_ERROR_CODES.TIMEOUT, {
-        attempts,
-        timeout_ms: boundedTimeoutMs,
-        reason: lastReason,
-      });
+    if (budget.attempts > 0 && elapsed >= boundedTimeoutMs) {
+      fail(ACTION_ERROR_CODES.TIMEOUT, timeoutDetails(budget));
     }
-    attempts += 1;
-    await assertCurrentDocument(connection, element.documentId);
-    const objectId = await resolveBackendNode(connection, element.backendNodeId);
+    budget.attempts += 1;
+    await assertCurrentDocument(connection, element.documentId, budget);
+    const objectId = await resolveBackendNode(connection, element.backendNodeId, budget);
+    let completed = false;
     try {
-      const result = await inspectActionability(connection, objectId);
+      const result = await inspectActionability(connection, objectId, budget);
+      if (result.state === "detached") {
+        fail(ACTION_ERROR_CODES.ELEMENT_REFERENCE_INVALIDATED);
+      }
       const geometry = actionableGeometry(result, action);
-      lastReason = result.state;
+      budget.lastReason = result.state;
       if (geometry && sameGeometry(previousGeometry, geometry)) {
-        await assertCurrentDocument(connection, element.documentId);
-        if (action.kind === "click") await click(connection, geometry);
-        else await fill(connection, objectId, action);
-        return {
-          tab_id: element.tabId,
-          document_id: element.documentId,
-          snapshot_revision: element.snapshotRevision,
-          action_kind: action.kind,
-          attempts,
-          elapsed_ms: Math.max(0, readNow(now) - startedAt),
-        };
+        await assertCurrentDocument(connection, element.documentId, budget);
+        remainingBudget(budget);
+        if (action.kind === "click") await click(connection, geometry, budget);
+        else await fill(connection, objectId, action, budget);
+        completed = true;
       }
       previousGeometry = geometry;
     } finally {
-      await releaseObject(connection, objectId);
+      await releaseObject(connection, objectId, budget);
+    }
+    if (completed) {
+      remainingBudget(budget);
+      return {
+        tab_id: element.tabId,
+        document_id: element.documentId,
+        snapshot_revision: element.snapshotRevision,
+        action_kind: action.kind,
+        attempts: budget.attempts,
+        elapsed_ms: Math.max(0, readNow(now) - startedAt),
+      };
     }
     const remaining = boundedTimeoutMs - Math.max(0, readNow(now) - startedAt);
+    if (remaining <= 0) {
+      fail(ACTION_ERROR_CODES.TIMEOUT, timeoutDetails(budget));
+    }
     await sleep(Math.max(1, Math.min(ACTION_POLL_INTERVAL_MS, remaining)));
   }
 }

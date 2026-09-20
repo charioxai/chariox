@@ -9,6 +9,8 @@ import {
 const ELEMENT = Object.freeze({
   tab_id: "tab-7",
   document_id: "document-3",
+  frame_id: "frame-main",
+  main_frame_id: "frame-main",
   snapshot_revision: 4,
   backend_node_id: 91,
 });
@@ -23,39 +25,48 @@ const READY = Object.freeze({
 });
 
 class FakeConnection {
-  constructor({ documentId = "document-3", actionability = [READY], resolveError, fillOk = true } = {}) {
+  constructor({
+    documentId = "document-3",
+    actionability = [READY],
+    resolveError,
+    fillOk = true,
+    afterSend,
+  } = {}) {
     this.documentId = documentId;
     this.actionability = [...actionability];
     this.resolveError = resolveError;
     this.fillOk = fillOk;
+    this.afterSend = afterSend;
     this.calls = [];
   }
 
-  async send(method, params) {
-    this.calls.push({ method, params });
+  async send(method, params, timeoutMs) {
+    this.calls.push({ method, params, timeoutMs });
+    let result;
     if (method === "Page.getFrameTree") {
-      return { frameTree: { frame: { loaderId: this.documentId } } };
-    }
-    if (method === "DOM.resolveNode") {
+      result = { frameTree: { frame: { id: "frame-main", loaderId: this.documentId } } };
+    } else if (method === "DOM.resolveNode") {
       if (this.resolveError) throw this.resolveError;
-      return { object: { objectId: "object-91" } };
-    }
-    if (method === "Runtime.callFunctionOn") {
+      result = { object: { objectId: "object-91" } };
+    } else if (method === "Runtime.callFunctionOn") {
       if (Array.isArray(params.arguments)) {
-        return { result: { value: { ok: this.fillOk } } };
+        result = { result: { value: { ok: this.fillOk } } };
+      } else {
+        result = {
+          result: {
+            value: this.actionability.length > 1
+              ? this.actionability.shift()
+              : this.actionability[0],
+          },
+        };
       }
-      return {
-        result: {
-          value: this.actionability.length > 1
-            ? this.actionability.shift()
-            : this.actionability[0],
-        },
-      };
+    } else if (method === "Input.dispatchMouseEvent" || method === "Runtime.releaseObject") {
+      result = {};
+    } else {
+      throw new Error(`unexpected method ${method}`);
     }
-    if (method === "Input.dispatchMouseEvent" || method === "Runtime.releaseObject") {
-      return {};
-    }
-    throw new Error(`unexpected method ${method}`);
+    this.afterSend?.(method, timeoutMs);
+    return result;
   }
 }
 
@@ -63,6 +74,9 @@ function fakeTime() {
   let value = 0;
   return {
     now: () => value,
+    advance: (milliseconds) => {
+      value += milliseconds;
+    },
     sleep: async (milliseconds) => {
       value += milliseconds;
     },
@@ -194,6 +208,59 @@ test("rejects navigation and detached opaque references before mutation", async 
       action: { kind: "click" },
     }),
     (error) => error.code === ACTION_ERROR_CODES.ELEMENT_REFERENCE_INVALIDATED,
+  );
+
+  await assert.rejects(
+    performBrowserAction({
+      connection: new FakeConnection({ actionability: [{ state: "detached" }] }),
+      element: ELEMENT,
+      action: { kind: "click" },
+    }),
+    (error) => error.code === ACTION_ERROR_CODES.ELEMENT_REFERENCE_INVALIDATED,
+  );
+});
+
+test("rejects child-frame references before dispatching root-frame input", async () => {
+  const connection = new FakeConnection();
+  await assert.rejects(
+    performBrowserAction({
+      connection,
+      element: { ...ELEMENT, frame_id: "frame-child" },
+      action: { kind: "click" },
+    }),
+    (error) => error.code === ACTION_ERROR_CODES.FRAME_UNSUPPORTED,
+  );
+  assert.equal(connection.calls.length, 0);
+});
+
+test("enforces one wall-clock deadline across CDP calls and cleanup", async () => {
+  const time = fakeTime();
+  const connection = new FakeConnection({
+    actionability: [READY, READY],
+    afterSend: () => time.advance(20),
+  });
+  await assert.rejects(
+    performBrowserAction({
+      connection,
+      element: ELEMENT,
+      action: { kind: "click" },
+      timeoutMs: 100,
+      now: time.now,
+      sleep: time.sleep,
+    }),
+    (error) => {
+      assert.equal(error.code, ACTION_ERROR_CODES.TIMEOUT);
+      assert.equal(error.details.timeout_ms, 100);
+      return true;
+    },
+  );
+  assert.equal(
+    connection.calls.some((call) => call.method === "Input.dispatchMouseEvent"),
+    false,
+  );
+  assert.equal(
+    connection.calls.every((call) => Number.isSafeInteger(call.timeoutMs) && call.timeoutMs > 0),
+    true,
   );
 });
 

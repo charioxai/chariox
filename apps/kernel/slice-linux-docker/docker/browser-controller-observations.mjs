@@ -127,6 +127,11 @@ function frameIdentities(frameTree) {
   return identities;
 }
 
+function mainFrameId(frameTree, documentId) {
+  const frameId = frameTree?.frameTree?.frame?.id;
+  return typeof frameId === "string" && frameId.length > 0 ? frameId : documentId;
+}
+
 function sameFrameIdentities(left, right) {
   if (!(left instanceof Map) || !(right instanceof Map) || left.size !== right.size) {
     return false;
@@ -287,33 +292,45 @@ function boundsByNodeIndex(layout) {
   return result;
 }
 
-function makeDraft(previous, documentId, referenceEpoch) {
+function makeDraft(previous, documentId, mainFrameId, referenceEpoch) {
   if (previous?.documentId === documentId) {
     return {
       ...previous,
+      mainFrameId,
       refsByBackendId: new Map(previous.refsByBackendId),
       backendIdByRef: new Map(previous.backendIdByRef),
       frameIdentities: new Map(previous.frameIdentities ?? []),
+      frameIdByRef: new Map(previous.frameIdByRef ?? []),
     };
   }
   return {
     documentId,
+    mainFrameId,
     revision: 0,
     referenceEpoch,
     nextElementOrdinal: 1,
     refsByBackendId: new Map(),
     backendIdByRef: new Map(),
+    frameIdByRef: new Map(),
   };
 }
 
-function elementReference(draft, backendNodeId) {
+function elementReference(draft, backendNodeId, frameId = null) {
   const validId = validBackendNodeId(backendNodeId);
   if (validId === null) return null;
   const existing = draft.refsByBackendId.get(validId);
-  if (existing) return existing;
+  if (existing) {
+    if (typeof frameId === "string" && frameId.length > 0) {
+      draft.frameIdByRef.set(existing, frameId);
+    }
+    return existing;
+  }
   const reference = `element-${draft.referenceEpoch}-${draft.nextElementOrdinal++}`;
   draft.refsByBackendId.set(validId, reference);
   draft.backendIdByRef.set(reference, validId);
+  if (typeof frameId === "string" && frameId.length > 0) {
+    draft.frameIdByRef.set(reference, frameId);
+  }
   return reference;
 }
 
@@ -322,7 +339,7 @@ function compactAccessibility(raw, draft, limits) {
   const nodes = source.slice(0, limits.maxNodes);
   const referenceByAxNodeId = new Map();
   for (const node of nodes) {
-    const reference = elementReference(draft, node?.backendDOMNodeId);
+    const reference = elementReference(draft, node?.backendDOMNodeId, node?.frameId);
     if (reference && typeof node?.nodeId === "string") {
       referenceByAxNodeId.set(node.nodeId, reference);
     }
@@ -330,7 +347,7 @@ function compactAccessibility(raw, draft, limits) {
   return {
     truncated: source.length > nodes.length,
     nodes: nodes.flatMap((node) => {
-      const reference = elementReference(draft, node?.backendDOMNodeId);
+      const reference = elementReference(draft, node?.backendDOMNodeId, node?.frameId);
       if (!reference) return [];
       const properties = new Map(
         (Array.isArray(node?.properties) ? node.properties : [])
@@ -365,17 +382,22 @@ function compactDom(raw, draft, limits) {
   let sourceCount = 0;
   for (let documentIndex = 0; documentIndex < documents.length; documentIndex += 1) {
     const document = documents[documentIndex];
+    const frameId = typeof document?.frameId === "string" && document.frameId.length > 0
+      ? document.frameId
+      : documentIndex === 0
+        ? draft.mainFrameId
+        : null;
     const data = document?.nodes ?? {};
     const backendIds = Array.isArray(data.backendNodeId) ? data.backendNodeId : [];
     sourceCount += backendIds.length;
     const layoutBounds = boundsByNodeIndex(document?.layout);
     for (let nodeIndex = 0; nodeIndex < backendIds.length; nodeIndex += 1) {
       if (nodes.length >= limits.maxNodes) break;
-      const reference = elementReference(draft, backendIds[nodeIndex]);
+      const reference = elementReference(draft, backendIds[nodeIndex], frameId);
       if (!reference) continue;
       const parentIndex = arrayValue(data.parentIndex, nodeIndex);
       const parentReference = Number.isSafeInteger(parentIndex)
-        ? elementReference(draft, backendIds[parentIndex])
+        ? elementReference(draft, backendIds[parentIndex], frameId)
         : null;
       const nodeType = arrayValue(data.nodeType, nodeIndex);
       const nodeName = snapshotString(strings, arrayValue(data.nodeName, nodeIndex), limits.maxStringBytes);
@@ -455,7 +477,8 @@ export class BrowserObservationStore {
     }
     const tab = normalizeTab(rawTab);
     const limits = observationLimits(rawLimits);
-    const beforeIdentities = frameIdentities(await connection.send("Page.getFrameTree", {}));
+    const beforeFrameTree = await connection.send("Page.getFrameTree", {});
+    const beforeIdentities = frameIdentities(beforeFrameTree);
     const before = beforeIdentities.get("root");
     const previous = this.statesByTabId.get(tab.tabId);
     if (
@@ -467,7 +490,7 @@ export class BrowserObservationStore {
     const base = tabStateMatches(previous, tab) && sameFrameIdentities(previous?.frameIdentities, beforeIdentities)
       ? previous
       : null;
-    const draft = makeDraft(base, before, this.nextReferenceEpoch);
+    const draft = makeDraft(base, before, mainFrameId(beforeFrameTree, before), this.nextReferenceEpoch);
     draft.frameIdentities = new Map(beforeIdentities);
     if (base === null || base.documentId !== before) {
       this.nextReferenceEpoch += 1;
@@ -520,6 +543,7 @@ export class BrowserObservationStore {
       fail(OBSERVATION_ERROR_CODES.ELEMENT_REFERENCE_INVALIDATED);
     }
     const backendNodeId = state.backendIdByRef.get(elementRef);
+    const frameId = state.frameIdByRef.get(elementRef);
     if (!Number.isSafeInteger(backendNodeId)) {
       fail(OBSERVATION_ERROR_CODES.ELEMENT_REFERENCE_INVALIDATED);
     }
@@ -528,6 +552,8 @@ export class BrowserObservationStore {
       browser_generation: tab.generation,
       target_generation: tab.targetGeneration,
       document_id: state.documentId,
+      frame_id: typeof frameId === "string" ? frameId : null,
+      main_frame_id: state.mainFrameId,
       snapshot_revision: state.revision,
       backend_node_id: backendNodeId,
     };
