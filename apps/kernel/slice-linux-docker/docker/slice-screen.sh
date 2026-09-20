@@ -9,17 +9,44 @@ SCREEN_GEOMETRY="${CHARIOX_SLICE_SCREEN_GEOMETRY:-1280x800x24}"
 SCREEN_SIZE="${SCREEN_GEOMETRY%x*}"
 VNC_PORT="${CHARIOX_SLICE_VNC_PORT:-5900}"
 NOVNC_PORT="${CHARIOX_SLICE_NOVNC_PORT:-6080}"
+DISPLAY_BACKEND="${CHARIOX_SLICE_DISPLAY_BACKEND:-novnc}"
+SELKIES_PORT="${CHARIOX_SLICE_SELKIES_PORT:-$NOVNC_PORT}"
+SELKIES_BIN="${CHARIOX_SLICE_SELKIES_BIN:-/opt/chariox-selkies/bin/selkies}"
+SELKIES_PID_FILE="${CHARIOX_SLICE_SELKIES_PID_FILE:-$LOGS/selkies.pid}"
+SELKIES_HEALTH_TIMEOUT="${CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT:-15}"
 CHROME_URL="${CHARIOX_SLICE_CHROME_URL:-about:blank}"
 CHROME_PROFILE="${CHARIOX_SLICE_CHROME_PROFILE:-$HOME/.config/chariox-slice-chromium}"
 CHROME_TRUSTED_INSECURE_ORIGINS="${CHARIOX_SLICE_CHROME_TRUSTED_INSECURE_ORIGINS:-http://host.docker.internal:4321}"
 
 export DISPLAY="$DISPLAY_ID"
+START_IN_PROGRESS=0
 
 mkdir -p "$LOGS" "$CHROME_PROFILE"
 
 log() {
   printf '[slice-screen] %s\n' "$*" >&2
 }
+
+case "$DISPLAY_BACKEND" in
+  novnc|selkies) ;;
+  *)
+    log "unknown display backend: $DISPLAY_BACKEND"
+    exit 2
+    ;;
+esac
+
+if [[ "$DISPLAY_BACKEND" == selkies ]]; then
+  case "$SELKIES_PORT" in
+    ''|*[!0-9]*) log "Selkies port must be numeric"; exit 2 ;;
+  esac
+  (( SELKIES_PORT >= 1 && SELKIES_PORT <= 65535 )) \
+    || { log "Selkies port is outside the valid range"; exit 2; }
+  case "$SELKIES_HEALTH_TIMEOUT" in
+    ''|*[!0-9]*) log "Selkies health timeout must be numeric"; exit 2 ;;
+  esac
+  (( SELKIES_HEALTH_TIMEOUT >= 1 && SELKIES_HEALTH_TIMEOUT <= 120 )) \
+    || { log "Selkies health timeout is outside the bounded range"; exit 2; }
+fi
 
 run_xdotool() {
   timeout 10s xdotool "$@"
@@ -61,6 +88,198 @@ require_process() {
 
 process_running() {
   pgrep -af "$1" | grep -v defunct >/dev/null
+}
+
+selkies_pid_state_present() {
+  [[ -e "$SELKIES_PID_FILE" || -L "$SELKIES_PID_FILE" ]]
+}
+
+selkies_process_start_ticks() {
+  local pid="$1"
+  [[ -r "/proc/$pid/stat" ]] || return 1
+  awk '{ print $22 }' "/proc/$pid/stat"
+}
+
+selkies_read_pid_state() {
+  local line_count
+  [[ -f "$SELKIES_PID_FILE" && ! -L "$SELKIES_PID_FILE" ]] || {
+    log "Selkies PID state is absent or unsafe"
+    return 1
+  }
+  line_count="$(wc -l <"$SELKIES_PID_FILE" | tr -d ' ')"
+  [[ "$line_count" == 2 ]] || {
+    log "Selkies PID state is stale or malformed"
+    return 1
+  }
+  SELKIES_PID="$(sed -n '1p' "$SELKIES_PID_FILE")"
+  SELKIES_START_TICKS="$(sed -n '2p' "$SELKIES_PID_FILE")"
+  [[ "$SELKIES_PID" =~ ^[1-9][0-9]*$ ]] \
+    && [[ "$SELKIES_START_TICKS" =~ ^[0-9]+$ ]] \
+    || { log "Selkies PID state is stale or malformed"; return 1; }
+}
+
+selkies_process_matches() {
+  local pid="$1"
+  local start_ticks="$2"
+  local command_line
+  [[ -r "/proc/$pid/cmdline" ]] || return 1
+  [[ "$(selkies_process_start_ticks "$pid")" == "$start_ticks" ]] || return 1
+  command_line="$(tr '\0' ' ' <"/proc/$pid/cmdline")"
+  [[ "$command_line" == *"$SELKIES_BIN"* ]]
+}
+
+selkies_process_owned() {
+  selkies_read_pid_state || return 1
+  selkies_process_matches "$SELKIES_PID" "$SELKIES_START_TICKS"
+}
+
+selkies_require_binary() {
+  [[ -x "$SELKIES_BIN" ]] || {
+    log "Selkies binary is missing or not executable: $SELKIES_BIN"
+    return 1
+  }
+  command -v curl >/dev/null 2>&1 || {
+    log "curl is required for the Selkies health gate"
+    return 1
+  }
+  command -v lsof >/dev/null 2>&1 || {
+    log "lsof is required for the Selkies port-conflict gate"
+    return 1
+  }
+}
+
+selkies_port_is_free() {
+  if lsof -nP -iTCP:"$SELKIES_PORT" -sTCP:LISTEN 2>/dev/null | tail -n +2 | grep -q .; then
+    log "Selkies port is already in use: $SELKIES_PORT"
+    return 1
+  fi
+}
+
+selkies_health() {
+  selkies_process_owned || return 1
+  curl --fail --silent --show-error --max-time 1 \
+    "http://127.0.0.1:$SELKIES_PORT/api/health" \
+    | grep -Fxq 'OK'
+}
+
+selkies_write_pid_state() {
+  local temporary
+  [[ ! -L "$SELKIES_PID_FILE" ]] || {
+    log "Selkies PID state is a symlink"
+    return 1
+  }
+  temporary="$(mktemp "$SELKIES_PID_FILE.XXXXXX")" || return 1
+  chmod 0600 "$temporary"
+  printf '%s\n%s\n' "$SELKIES_PID" "$SELKIES_START_TICKS" >"$temporary"
+  mv -f "$temporary" "$SELKIES_PID_FILE"
+}
+
+selkies_stop_pid() {
+  local pid="$1"
+  local start_ticks="$2"
+  local attempt
+  if ! selkies_process_matches "$pid" "$start_ticks"; then
+    return 0
+  fi
+  kill -TERM "$pid" >/dev/null 2>&1 || true
+  for attempt in $(seq 1 50); do
+    if ! selkies_process_matches "$pid" "$start_ticks"; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  kill -KILL "$pid" >/dev/null 2>&1 || true
+  for attempt in $(seq 1 20); do
+    if ! selkies_process_matches "$pid" "$start_ticks"; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  log "Selkies process did not stop within the bounded timeout"
+  return 1
+}
+
+selkies_stop() {
+  local stop_status=0
+  if ! selkies_pid_state_present; then
+    return 0
+  fi
+  selkies_read_pid_state || return 1
+  if [[ -e "/proc/$SELKIES_PID" ]]; then
+    selkies_process_owned || {
+      log "Selkies PID state does not identify an owned process"
+      return 1
+    }
+    selkies_stop_pid "$SELKIES_PID" "$SELKIES_START_TICKS" || stop_status=1
+    [[ "$stop_status" == 0 ]] || return 1
+  fi
+  if [[ -L "$SELKIES_PID_FILE" ]]; then
+    log "Selkies PID state became a symlink"
+    return 1
+  fi
+  rm -f "$SELKIES_PID_FILE"
+  return "$stop_status"
+}
+
+selkies_start() {
+  local attempt
+  local health_attempts=$((SELKIES_HEALTH_TIMEOUT * 10))
+  SELKIES_START_TICKS=""
+  selkies_require_binary
+  if selkies_pid_state_present; then
+    selkies_process_owned && selkies_health && return 0
+    log "Selkies PID state is stale or the existing streamer is unhealthy"
+    return 1
+  fi
+  selkies_port_is_free
+  nohup "$SELKIES_BIN" \
+    --addr=127.0.0.1 \
+    --port="$SELKIES_PORT" \
+    --mode=websockets \
+    --encoder=h264enc \
+    --use-cpu=true\|locked \
+    --framerate=30 \
+    --enable-https=false \
+    --enable-basic-auth=false \
+    --enable-resize=false\|locked \
+    --enable-collab=false\|locked \
+    --audio-enabled=false\|locked \
+    --microphone-enabled=false\|locked \
+    --webcam-enabled=false\|locked \
+    --gamepad-enabled=false\|locked \
+    --command-enabled=false\|locked \
+    --file-transfers=none \
+    --enable-clipboard=false \
+    >"$LOGS/selkies.log" 2>&1 &
+  SELKIES_PID="$!"
+  for attempt in $(seq 1 10); do
+    SELKIES_START_TICKS="$(selkies_process_start_ticks "$SELKIES_PID" || true)"
+    [[ -n "$SELKIES_START_TICKS" ]] && break
+    sleep 0.1
+  done
+  [[ -n "${SELKIES_START_TICKS:-}" ]] || {
+    log "Selkies exited before PID state could be recorded"
+    return 1
+  }
+  selkies_write_pid_state || {
+    log "unable to record Selkies PID state"
+    selkies_stop_pid "$SELKIES_PID" "$SELKIES_START_TICKS" || true
+    return 1
+  }
+  for attempt in $(seq 1 "$health_attempts"); do
+    if ! selkies_process_owned; then
+      log "Selkies exited before becoming healthy"
+      selkies_stop || true
+      return 1
+    fi
+    if selkies_health; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  log "Selkies health check timed out after ${SELKIES_HEALTH_TIMEOUT}s"
+  selkies_stop || true
+  return 1
 }
 
 stop_process_pattern() {
@@ -151,11 +370,17 @@ screen_missing_components() {
   if ! process_running "Xvfb $DISPLAY_ID"; then
     missing+=("xvfb")
   fi
-  if ! process_running "x11vnc.*$DISPLAY_ID"; then
-    missing+=("x11vnc")
-  fi
-  if ! novnc_running; then
-    missing+=("novnc")
+  if [[ "$DISPLAY_BACKEND" == selkies ]]; then
+    if ! selkies_health; then
+      missing+=("selkies")
+    fi
+  else
+    if ! process_running "x11vnc.*$DISPLAY_ID"; then
+      missing+=("x11vnc")
+    fi
+    if ! novnc_running; then
+      missing+=("novnc")
+    fi
   fi
   if ! process_running "chromium.*$CHROME_PROFILE"; then
     missing+=("chromium")
@@ -193,6 +418,7 @@ require_screen_available() {
 }
 
 start_desktop() {
+  START_IN_PROGRESS=1
   local -a chrome_secure_context_args=()
   if [[ -n "$CHROME_TRUSTED_INSECURE_ORIGINS" ]]; then
     chrome_secure_context_args+=(
@@ -200,8 +426,12 @@ start_desktop() {
     )
   fi
 
-  if process_running "chromium.*$CHROME_PROFILE" || process_running "Xvfb $DISPLAY_ID" || process_running "x11vnc.*$DISPLAY_ID" || novnc_running; then
-    stop_desktop || true
+  if selkies_pid_state_present || process_running "chromium.*$CHROME_PROFILE" || process_running "Xvfb $DISPLAY_ID" || process_running "x11vnc.*$DISPLAY_ID" || novnc_running; then
+    if [[ "$DISPLAY_BACKEND" == selkies ]] || selkies_pid_state_present; then
+      stop_desktop
+    else
+      stop_desktop || true
+    fi
   fi
   stop_process_pattern "websockify.*127\\.0\\.0\\.1:$VNC_PORT"
   stop_process_pattern "websockify.*$NOVNC_PORT"
@@ -219,8 +449,12 @@ start_desktop() {
   wait_for_display
 
   nohup openbox >"$LOGS/openbox.log" 2>&1 &
-  nohup x11vnc -display "$DISPLAY_ID" -localhost -nopw -forever -shared -rfbport "$VNC_PORT" >"$LOGS/x11vnc.log" 2>&1 &
-  nohup websockify --web=/usr/share/novnc/ "0.0.0.0:$NOVNC_PORT" "127.0.0.1:$VNC_PORT" >"$LOGS/novnc.log" 2>&1 &
+  if [[ "$DISPLAY_BACKEND" == selkies ]]; then
+    selkies_start
+  else
+    nohup x11vnc -display "$DISPLAY_ID" -localhost -nopw -forever -shared -rfbport "$VNC_PORT" >"$LOGS/x11vnc.log" 2>&1 &
+    nohup websockify --web=/usr/share/novnc/ "0.0.0.0:$NOVNC_PORT" "127.0.0.1:$VNC_PORT" >"$LOGS/novnc.log" 2>&1 &
+  fi
 
   nohup chromium \
     --user-data-dir="$CHROME_PROFILE" \
@@ -238,10 +472,15 @@ start_desktop() {
 
   sleep 2
   require_process "Xvfb $DISPLAY_ID" "Xvfb" "$LOGS/xvfb.log"
-  require_process "x11vnc.*$DISPLAY_ID" "x11vnc" "$LOGS/x11vnc.log"
-  require_process "websockify.*$NOVNC_PORT" "noVNC websockify" "$LOGS/novnc.log"
+  if [[ "$DISPLAY_BACKEND" == selkies ]]; then
+    selkies_health || { log "Selkies failed its post-start health check"; return 1; }
+  else
+    require_process "x11vnc.*$DISPLAY_ID" "x11vnc" "$LOGS/x11vnc.log"
+    require_process "websockify.*$NOVNC_PORT" "noVNC websockify" "$LOGS/novnc.log"
+  fi
   require_process "chromium.*$CHROME_PROFILE" "Chromium" "$LOGS/chromium-gui.log"
   status
+  START_IN_PROGRESS=0
 }
 
 status() {
@@ -252,6 +491,11 @@ status() {
   printf 'mode=%s\n' "$DISPLAY_MODE"
   if [[ -z "$missing" ]]; then
     printf 'available=true\n'
+    if [[ "$DISPLAY_BACKEND" == selkies ]]; then
+      printf 'viewer=http://127.0.0.1:%s/\n' "$SELKIES_PORT"
+      pgrep -af "Xvfb $DISPLAY_ID|openbox|$SELKIES_BIN|chromium.*$CHROME_PROFILE" | grep -v defunct || true
+      return 0
+    fi
     local viewer_port="$NOVNC_PORT"
     local discovered_port
     discovered_port="$(running_novnc_port)"
@@ -271,6 +515,10 @@ status() {
 }
 
 stop_desktop() {
+  local selkies_status=0
+  if selkies_pid_state_present; then
+    selkies_stop || selkies_status=$?
+  fi
   if process_running "chromium.*$CHROME_PROFILE"; then
     node "$ROOT/browser-cdp.mjs" close-browser >/dev/null 2>&1 || true
   fi
@@ -297,6 +545,7 @@ stop_desktop() {
   stop_process_pattern "openbox"
   stop_process_pattern "Xvfb $DISPLAY_ID"
   clear_chromium_profile_locks
+  return "$selkies_status"
 }
 
 screenshot() {
@@ -594,6 +843,18 @@ open_url() {
   sleep 1
   focus_chromium
 }
+
+cleanup_failed_start() {
+  local status=$?
+  if [[ "$START_IN_PROGRESS" == 1 && "$DISPLAY_BACKEND" == selkies ]]; then
+    START_IN_PROGRESS=0
+    set +e
+    stop_desktop
+  fi
+  exit "$status"
+}
+
+trap cleanup_failed_start EXIT
 
 case "${1:-status}" in
   start) start_desktop ;;
