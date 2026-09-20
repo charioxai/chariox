@@ -504,7 +504,7 @@ test("captures bounded observations through stable tabs and invalidates detached
   FakeWebSocket.onSend = (socket, message) => {
     let result = {};
     if (message.method === "Page.getFrameTree") {
-      result = { frameTree: { frame: { loaderId: "document-b" } } };
+      result = { frameTree: { frame: { id: "frame-b", loaderId: "document-b" } } };
     } else if (message.method === "Accessibility.getFullAXTree") {
       result = {
         nodes: [{
@@ -518,6 +518,7 @@ test("captures bounded observations through stable tabs and invalidates detached
       result = {
         strings: ["BUTTON"],
         documents: [{
+          frameId: "frame-b",
           nodes: {
             backendNodeId: [41],
             parentIndex: [-1],
@@ -599,7 +600,6 @@ test("allows bounded raw AX and DOM snapshots above ordinary CDP frames and reje
     }
     queueMicrotask(() => socket.respond(message.id, result));
   };
-
   const snapshot = await controller.captureTabSnapshot("owner-a", 1, {
     tab_id: tab.tab_id,
     target_generation: tab.target_generation,
@@ -615,6 +615,174 @@ test("allows bounded raw AX and DOM snapshots above ordinary CDP frames and reje
     }),
     (error) => error.code === ERROR_CODES.CDP_PROTOCOL_INVALID,
   );
+  t.after(async () => {
+    await controller.shutdown("owner-a", 1);
+  });
+});
+
+test("runs a bounded locator action through an opaque observed element reference", async (t) => {
+  const fixture = makeFixture();
+  const { controller } = fixture;
+  await controller.start("owner-a");
+  const tab = controller.getTabRegistrySnapshot("owner-a", 1).tabs[0];
+
+  FakeWebSocket.onSend = (socket, message) => {
+    let result = {};
+    if (message.method === "Page.getFrameTree") {
+      result = { frameTree: { frame: { id: "frame-action", loaderId: "document-action" } } };
+    } else if (message.method === "Accessibility.getFullAXTree") {
+      result = {
+        nodes: [{
+          nodeId: "ax-action",
+          backendDOMNodeId: 73,
+          role: { value: "button" },
+          name: { value: "Continue" },
+        }],
+      };
+    } else if (message.method === "DOMSnapshot.captureSnapshot") {
+      result = {
+        strings: ["BUTTON"],
+        documents: [{
+          frameId: "frame-action",
+          nodes: {
+            backendNodeId: [73],
+            parentIndex: [-1],
+            nodeType: [1],
+            nodeName: [0],
+            nodeValue: [-1],
+            attributes: [[]],
+          },
+          layout: { nodeIndex: [0], bounds: [[2, 3, 80, 24]] },
+        }],
+      };
+    }
+    queueMicrotask(() => socket.respond(message.id, result));
+  };
+  const snapshot = await controller.captureTabSnapshot("owner-a", 1, {
+    tab_id: tab.tab_id,
+    target_generation: tab.target_generation,
+  });
+  const elementRef = snapshot.accessibility_nodes[0].element_ref;
+
+  const actionMethods = [];
+  FakeWebSocket.onSend = (socket, message) => {
+    actionMethods.push(message);
+    let result = {};
+    if (message.method === "Page.getFrameTree") {
+      result = { frameTree: { frame: { id: "frame-action", loaderId: "document-action" } } };
+    } else if (message.method === "DOM.resolveNode") {
+      result = { object: { objectId: "object-action" } };
+    } else if (message.method === "Runtime.callFunctionOn") {
+      result = {
+        result: {
+          value: {
+            state: "ready",
+            x: 42,
+            y: 19,
+            width: 80,
+            height: 24,
+            editable: false,
+          },
+        },
+      };
+    }
+    queueMicrotask(() => socket.respond(message.id, result));
+  };
+  const action = await controller.performElementAction("owner-a", 1, {
+    tab_id: tab.tab_id,
+    target_generation: tab.target_generation,
+    element_ref: elementRef,
+    action: { kind: "click" },
+    timeout_ms: 250,
+  });
+
+  assert.deepEqual(action, {
+    tab_id: tab.tab_id,
+    document_id: "document-action",
+    snapshot_revision: 1,
+    action_kind: "click",
+    attempts: 2,
+    elapsed_ms: 50,
+  });
+  assert.deepEqual(
+    actionMethods
+      .filter((message) => message.method === "Input.dispatchMouseEvent")
+      .map((message) => message.params.type),
+    ["mouseMoved", "mousePressed", "mouseReleased"],
+  );
+  assert.deepEqual(
+    actionMethods.find((message) => message.method === "DOM.resolveNode")?.params,
+    { backendNodeId: 73 },
+  );
+  assert.doesNotMatch(JSON.stringify(action), /73|object-action/);
+  t.after(async () => {
+    await controller.shutdown("owner-a", 1);
+  });
+});
+
+test("propagates post-action uncertainty through the public controller action API", async (t) => {
+  const fixture = makeFixture();
+  const { controller } = fixture;
+  await controller.start("owner-a");
+  const tab = controller.getTabRegistrySnapshot("owner-a", 1).tabs[0];
+  controller.observationStore.resolve = () => ({
+    tab_id: tab.tab_id,
+    document_id: "document-action",
+    frame_id: "frame-main",
+    main_frame_id: "frame-main",
+    snapshot_revision: 1,
+    backend_node_id: 91,
+  });
+  FakeWebSocket.onSend = (socket, message) => {
+    if (
+      message.method === "Input.dispatchMouseEvent" &&
+      message.params.type === "mousePressed"
+    ) {
+      queueMicrotask(() => socket.emit("message", {
+        data: JSON.stringify({
+          id: message.id,
+          error: { code: -32000, message: "synthetic post-action failure" },
+        }),
+      }));
+      return;
+    }
+    let result = {};
+    if (message.method === "Page.getFrameTree") {
+      result = { frameTree: { frame: { id: "frame-main", loaderId: "document-action" } } };
+    } else if (message.method === "DOM.resolveNode") {
+      result = { object: { objectId: "object-action" } };
+    } else if (message.method === "Runtime.callFunctionOn") {
+      result = {
+        result: {
+          value: {
+            state: "ready",
+            x: 42,
+            y: 19,
+            width: 80,
+            height: 24,
+            editable: false,
+          },
+        },
+      };
+    }
+    queueMicrotask(() => socket.respond(message.id, result));
+  };
+
+  await assert.rejects(
+    controller.performElementAction("owner-a", 1, {
+      tab_id: tab.tab_id,
+      target_generation: tab.target_generation,
+      element_ref: "opaque-element",
+      action: { kind: "click" },
+      timeout_ms: 500,
+    }),
+    (error) => {
+      assert.equal(error.code, ERROR_CODES.ACTION_POST_ACTION_UNCERTAIN);
+      assert.equal(error.message, "browser action outcome is uncertain after a post-action failure");
+      return true;
+    },
+  );
+  assert.equal(ERROR_CODES.ACTION_POST_ACTION_UNCERTAIN, "ACTION_POST_ACTION_UNCERTAIN");
   t.after(async () => {
     await controller.shutdown("owner-a", 1);
   });
@@ -778,6 +946,37 @@ test("bounds the operation queue and keeps the probe data-only", async (t) => {
     generation: 1,
     cdp_connected: true,
   });
+  t.after(async () => {
+    await controller.shutdown("owner-a", 1);
+  });
+});
+
+test("expires a 100ms action while it waits behind longer queued work", async (t) => {
+  const fixture = makeFixture();
+  const { controller, clock } = fixture;
+  await controller.start("owner-a");
+  const tab = controller.getTabRegistrySnapshot("owner-a", 1).tabs[0];
+  let releaseBlocker;
+  const blocker = new Promise((resolve) => {
+    releaseBlocker = resolve;
+  });
+  const held = controller._enqueue(1, async () => blocker);
+  await flush();
+
+  const queuedAction = controller.performElementAction("owner-a", 1, {
+    tab_id: tab.tab_id,
+    target_generation: tab.target_generation,
+    element_ref: "never-resolved",
+    action: { kind: "click" },
+    timeout_ms: 100,
+  });
+  clock.advance(101);
+  releaseBlocker();
+  await held;
+  await assert.rejects(
+    queuedAction,
+    (error) => error.code === ERROR_CODES.ACTION_TIMEOUT,
+  );
   t.after(async () => {
     await controller.shutdown("owner-a", 1);
   });

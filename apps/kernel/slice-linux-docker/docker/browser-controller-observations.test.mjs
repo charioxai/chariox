@@ -14,7 +14,7 @@ const TAB = Object.freeze({
 });
 
 function frameTree(documentId, childDocumentId = null) {
-  const root = { frame: { id: "root-frame", loaderId: documentId } };
+  const root = { frame: { id: "frame-main", loaderId: documentId } };
   if (childDocumentId !== null) {
     root.childFrames = [{ frame: { id: "child-frame", loaderId: childDocumentId } }];
   }
@@ -60,6 +60,7 @@ function domSnapshot({ password = "secret-value", scriptText = "token=hidden" } 
   return {
     strings,
     documents: [{
+      frameId: "frame-main",
       nodes: {
         backendNodeId: [10, 11, 12, 13],
         parentIndex: [-1, 0, 0, 2],
@@ -127,8 +128,73 @@ test("keeps opaque element references stable across snapshots of one document", 
     browser_generation: 3,
     target_generation: 2,
     document_id: "document-1",
+    frame_id: "frame-main",
+    main_frame_id: "frame-main",
     snapshot_revision: 2,
     backend_node_id: 11,
+  });
+});
+
+test("binds every element reference to its owning frame", async () => {
+  const store = new BrowserObservationStore();
+  const connection = new FakeConnection({
+    accessibilityResults: [{
+      nodes: [
+        {
+          nodeId: "main",
+          backendDOMNodeId: 10,
+          frameId: "frame-main",
+          role: { value: "document" },
+        },
+        {
+          nodeId: "child-button",
+          backendDOMNodeId: 21,
+          frameId: "frame-child",
+          role: { value: "button" },
+        },
+      ],
+    }],
+    domResults: [{
+      strings: ["HTML", "BUTTON"],
+      documents: [
+        {
+          frameId: "frame-main",
+          nodes: {
+            backendNodeId: [10],
+            parentIndex: [-1],
+            nodeType: [1],
+            nodeName: [0],
+            nodeValue: [-1],
+            attributes: [[]],
+          },
+          layout: { nodeIndex: [], bounds: [] },
+        },
+        {
+          frameId: "frame-child",
+          nodes: {
+            backendNodeId: [21],
+            parentIndex: [-1],
+            nodeType: [1],
+            nodeName: [1],
+            nodeValue: [-1],
+            attributes: [[]],
+          },
+          layout: { nodeIndex: [0], bounds: [[1, 2, 30, 20]] },
+        },
+      ],
+    }],
+  });
+  const snapshot = await store.capture({ connection, tab: TAB });
+  const child = snapshot.accessibility_nodes.find((node) => node.role === "button");
+  assert.deepEqual(store.resolve(TAB, child.element_ref), {
+    tab_id: "tab-1",
+    browser_generation: 3,
+    target_generation: 2,
+    document_id: "document-1",
+    frame_id: "frame-child",
+    main_frame_id: "frame-main",
+    snapshot_revision: 1,
+    backend_node_id: 21,
   });
 });
 
