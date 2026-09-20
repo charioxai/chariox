@@ -170,6 +170,13 @@ item open until its exact reviewed head has focused tests and live evidence on
 a fresh Path-1 machine. A source-only implementation or a manual observation
 does not close a box.
 
+This ledger is also the continuity source of truth. At the start of every
+resumed implementation cycle and in every plan-level progress report, reconcile
+current code, delegated work, reviews, and retained evidence against each open
+item below. Do not omit, weaken, or silently treat an item as complete because
+the active work moved to another milestone or because one reported symptom was
+fixed.
+
 - [ ] Remove Bubblewrap and any equivalent inherited systemd filesystem or
   process restriction from the Path-1 provider launch. Prove the provider has
   no Bubblewrap ancestor or managed-isolation marker.
