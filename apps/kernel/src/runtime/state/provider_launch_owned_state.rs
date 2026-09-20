@@ -211,7 +211,7 @@ impl KernelRuntimeOwnedState {
                 working_directory,
                 "launch provider run",
                 false,
-                &request.workspace_live_sync_roots,
+                &[],
             )?;
         }
         if request.runtime_mcp_binding.is_none() {

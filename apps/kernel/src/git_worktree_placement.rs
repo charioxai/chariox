@@ -95,6 +95,20 @@ pub(crate) fn preflight_working_directory(
         .iter()
         .map(|root| canonical_or_lexical_path(root, operation))
         .collect::<Result<Vec<_>, _>>()?;
+    if reexposed_roots.iter().any(|root| {
+        protection
+            .directories
+            .iter()
+            .any(|protected| root == protected)
+    }) {
+        return Err(working_directory_error(
+            operation,
+            format!(
+                "working directory `{}` cannot re-expose protected Chariox service state",
+                path.display()
+            ),
+        ));
+    }
     if protection
         .directories
         .iter()
@@ -150,7 +164,7 @@ fn ordinary_working_directory_protection(
     operation: &'static str,
 ) -> Result<WorkingDirectoryProtection, DaemonError> {
     let mut protection = WorkingDirectoryProtection::default();
-    if let Some(raw_home) = std::env::var_os("CHARIOX_HOME").or_else(|| std::env::var_os("HOME")) {
+    if let Some(raw_home) = std::env::var_os("CHARIOX_HOME") {
         let home = configured_protected_path(&raw_home, "CHARIOX_HOME", operation)?;
         if home.file_name() == Some(std::ffi::OsStr::new(".chariox")) {
             protection.directories.push(home);
@@ -159,6 +173,12 @@ fn ordinary_working_directory_protection(
                 protection.directories.push(home.join(name));
             }
         }
+    } else if let Some(raw_home) = std::env::var_os("HOME") {
+        let home = configured_protected_path(&raw_home, "HOME", operation)?;
+        protection.directories.push(canonical_or_lexical_path(
+            &home.join(".chariox"),
+            operation,
+        )?);
     }
     for name in PROTECTED_DIRECTORY_ENV_NAMES {
         if let Some(raw) = std::env::var_os(name) {
@@ -228,10 +248,11 @@ fn canonical_or_lexical_path(path: &Path, operation: &'static str) -> Result<Pat
     let mut ancestor = absolute.clone();
     loop {
         if let Ok(canonical) = ancestor.canonicalize() {
+            let mut result = canonical;
             for component in unresolved.iter().rev() {
-                ancestor = ancestor_from_canonical(&canonical, component);
+                result.push(component);
             }
-            return Ok(ancestor);
+            return Ok(result);
         }
         let Some(name) = ancestor.file_name() else {
             break;
@@ -246,12 +267,6 @@ fn canonical_or_lexical_path(path: &Path, operation: &'static str) -> Result<Pat
         ancestor = parent.to_path_buf();
     }
     lexically_normalized_absolute_path(&absolute, operation)
-}
-
-fn ancestor_from_canonical(canonical: &Path, component: &std::ffi::OsStr) -> PathBuf {
-    let mut path = canonical.to_path_buf();
-    path.push(component);
-    path
 }
 
 fn lexically_normalized_absolute_path(
@@ -708,7 +723,7 @@ mod tests {
             assert_eq!(result.canonical_path, target.canonicalize().unwrap());
         }
         let planned = preflight_working_directory(
-            &alias.join("created-after-enrollment"),
+            &alias.join("created-after-enrollment").join("deeper"),
             "path1.create",
             true,
             &[],
@@ -716,10 +731,41 @@ mod tests {
         .expect("missing children below symlinked directories should be plan-able");
         assert_eq!(
             planned.canonical_path,
-            target.join("created-after-enrollment")
+            target.join("created-after-enrollment").join("deeper")
         );
         std::fs::remove_file(alias).expect("directory alias should be removable");
         std::fs::remove_dir_all(root).expect("symlink fixture should be removable");
+    }
+
+    #[test]
+    fn home_fallback_protects_only_home_chariox_state() {
+        let _env = crate::env_lock::lock();
+        let root = plain_temp_directory("common-preflight-home-fallback");
+        let home = root.join("home");
+        let chariox_state = home.join(".chariox");
+        std::fs::create_dir_all(chariox_state.join("child"))
+            .expect("fallback Chariox state should exist");
+        std::fs::create_dir_all(home.join("state")).expect("ordinary state workspace should exist");
+        std::fs::create_dir_all(home.join("sessions"))
+            .expect("ordinary sessions workspace should exist");
+
+        let prior_home = std::env::var_os("HOME");
+        let prior_chariox_home = std::env::var_os("CHARIOX_HOME");
+        std::env::set_var("HOME", &home);
+        std::env::remove_var("CHARIOX_HOME");
+
+        preflight_working_directory(&home.join("state"), "path1.cwd", false, &[])
+            .expect("HOME/state should remain an ordinary workspace");
+        preflight_working_directory(&home.join("sessions"), "path1.cwd", false, &[])
+            .expect("HOME/sessions should remain an ordinary workspace");
+        preflight_working_directory(&chariox_state, "path1.cwd", false, &[])
+            .expect_err("HOME/.chariox must remain protected");
+        preflight_working_directory(&chariox_state.join("child"), "path1.cwd", false, &[])
+            .expect_err("HOME/.chariox descendants must remain protected");
+
+        restore_env("HOME", prior_home);
+        restore_env("CHARIOX_HOME", prior_chariox_home);
+        std::fs::remove_dir_all(root).expect("fallback fixture should be removable");
     }
 
     #[test]
@@ -728,15 +774,18 @@ mod tests {
         let root = plain_temp_directory("common-preflight-control-state");
         let service = root.join("service-state");
         let selected = service.join("selected-repository");
+        let nested_selected = selected.join("nested-repository");
         let sibling = root.join("sibling");
         let control_file = root.join("bootstrap-receipt.json");
-        std::fs::create_dir_all(&selected).expect("selected repository should exist");
+        std::fs::create_dir_all(&nested_selected).expect("selected repository should exist");
         std::fs::create_dir_all(&sibling).expect("sibling should exist");
         std::fs::write(&control_file, "control\n").expect("control file should exist");
 
         let prior_service = std::env::var_os("CHARIOX_MANAGED_SLICE_SERVICE_ROOT");
+        let prior_publication = std::env::var_os("CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT");
         let prior_receipt = std::env::var_os("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT");
         std::env::set_var("CHARIOX_MANAGED_SLICE_SERVICE_ROOT", &service);
+        std::env::set_var("CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT", &selected);
         std::env::set_var("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT", &control_file);
 
         let service_error = preflight_working_directory(&service, "ordinary.cwd", false, &[])
@@ -755,12 +804,19 @@ mod tests {
         preflight_working_directory(&sibling, "path1.cwd", false, &[])
             .expect("an unrelated sibling must remain usable");
         preflight_working_directory(
-            &selected,
+            &nested_selected,
             "managed.selected.cwd",
+            false,
+            std::slice::from_ref(&nested_selected),
+        )
+        .expect("a selected managed child may be explicitly re-exposed");
+        preflight_working_directory(
+            &selected,
+            "managed.publication.cwd",
             false,
             std::slice::from_ref(&selected),
         )
-        .expect("a selected managed child may be explicitly re-exposed");
+        .expect_err("a re-exposed root equal to any protected root is forbidden");
         preflight_working_directory(
             &service,
             "managed.service.cwd",
@@ -773,6 +829,7 @@ mod tests {
         assert!(file_error.to_string().contains("not a directory"));
 
         restore_env("CHARIOX_MANAGED_SLICE_SERVICE_ROOT", prior_service);
+        restore_env("CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT", prior_publication);
         restore_env("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT", prior_receipt);
         std::fs::remove_dir_all(root).expect("control-state fixture should be removable");
     }

@@ -21,7 +21,7 @@ fn preflight_provider_working_directory(
             working_directory,
             "provider launch",
             false,
-            &request.workspace_live_sync_roots,
+            &[],
         )?;
     }
     Ok(())
@@ -356,5 +356,60 @@ mod tests {
             launch_result.structured_endpoint.as_deref(),
             Some(endpoint.as_str())
         );
+    }
+
+    #[test]
+    fn ordinary_provider_adapter_does_not_reexpose_live_sync_roots() {
+        let _guard = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-registry-ordinary-preflight-{}",
+            std::process::id()
+        ));
+        let service_root = root.join("service-state");
+        let working_directory = service_root.join("workspace");
+        let executable = root.join("opencode");
+        fs::create_dir_all(&working_directory).expect("working directory should exist");
+        fs::write(&executable, "#!/bin/sh\n").expect("fixture executable should exist");
+
+        let previous_service_root = std::env::var_os("CHARIOX_MANAGED_SLICE_SERVICE_ROOT");
+        let previous_isolation = std::env::var_os("CHARIOX_MANAGED_PROVIDER_ISOLATION");
+        let previous_binary = std::env::var_os("CHARIOX_OPENCODE_BIN");
+        let previous_port = std::env::var_os("CHARIOX_OPENCODE_PORT");
+        std::env::set_var("CHARIOX_MANAGED_SLICE_SERVICE_ROOT", &service_root);
+        std::env::remove_var("CHARIOX_MANAGED_PROVIDER_ISOLATION");
+        std::env::set_var("CHARIOX_OPENCODE_BIN", &executable);
+        std::env::set_var("CHARIOX_OPENCODE_PORT", "43112");
+
+        let request = LaunchProviderRequest::new(
+            "session-ordinary-preflight",
+            "opencode",
+            "opencode",
+            "default",
+            "anthropic/claude-sonnet-4",
+        )
+        .with_working_directory(working_directory.clone())
+        .with_workspace_live_sync_roots(vec![working_directory]);
+        let error = ProviderRegistry::new()
+            .resolve("opencode")
+            .expect("opencode adapter should exist")
+            .connect(&request)
+            .expect_err("ordinary live-sync roots must not exempt protected state");
+
+        restore_env("CHARIOX_MANAGED_SLICE_SERVICE_ROOT", previous_service_root);
+        restore_env("CHARIOX_MANAGED_PROVIDER_ISOLATION", previous_isolation);
+        restore_env("CHARIOX_OPENCODE_BIN", previous_binary);
+        restore_env("CHARIOX_OPENCODE_PORT", previous_port);
+        let _ = fs::remove_dir_all(root);
+
+        assert!(error
+            .to_string()
+            .contains("protected Chariox service state"));
+    }
+
+    fn restore_env(name: &str, value: Option<std::ffi::OsString>) {
+        match value {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
     }
 }

@@ -53,7 +53,14 @@ pub(crate) fn search_workspace_directories(
             if let Ok(entries) = std::fs::read_dir(root) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.is_dir() {
+                    if crate::git_worktree_placement::preflight_working_directory(
+                        &path,
+                        "search workspace directories",
+                        false,
+                        &[],
+                    )
+                    .is_ok()
+                    {
                         push_unique_path(&mut results, &mut seen, path.display().to_string());
                         if results.len() >= limit {
                             break;
@@ -494,6 +501,42 @@ mod tests {
     }
 
     #[test]
+    fn empty_query_filters_protected_workspace_children() {
+        let _guard = crate::env_lock::lock();
+        let root = unique_test_dir("workspace-search-protected-children");
+        let home = root.join("home");
+        let protected = home.join(".chariox");
+        let ordinary = home.join("workspace");
+        create_test_dir(protected.join("state"));
+        create_test_dir(ordinary.clone());
+
+        let previous_home = std::env::var_os("HOME");
+        let previous_chariox_home = std::env::var_os("CHARIOX_HOME");
+        std::env::set_var("HOME", &home);
+        std::env::remove_var("CHARIOX_HOME");
+
+        let results = search_workspace_directories("", 100, None)
+            .expect("empty workspace search should succeed");
+
+        restore_env("HOME", previous_home);
+        restore_env("CHARIOX_HOME", previous_chariox_home);
+        remove_test_dir(&root);
+
+        assert!(
+            results.contains(&home.display().to_string()),
+            "search should retain the exact accessible root: {results:?}"
+        );
+        assert!(
+            results.contains(&ordinary.display().to_string()),
+            "search should retain an ordinary child: {results:?}"
+        );
+        assert!(
+            !results.contains(&protected.display().to_string()),
+            "search must filter protected children: {results:?}"
+        );
+    }
+
+    #[test]
     fn directory_completion_prioritizes_hidden_dirs_when_query_starts_hidden() {
         let root = unique_test_dir("workspace-directory-completion-hidden");
         create_test_dir(root.join(".chariox"));
@@ -533,5 +576,12 @@ mod tests {
             .iter()
             .position(|result| result == value)
             .unwrap_or_else(|| panic!("missing {value} in {results:?}"))
+    }
+
+    fn restore_env(name: &str, value: Option<std::ffi::OsString>) {
+        match value {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
     }
 }

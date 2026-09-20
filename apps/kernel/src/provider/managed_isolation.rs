@@ -709,7 +709,7 @@ pub(crate) fn apply_managed_provider_isolation(
                 working_directory,
                 "provider launch",
                 false,
-                &request.workspace_live_sync_roots,
+                &[],
             )?;
         }
         let mut environment_remove = managed_provider_control_env_remove();
