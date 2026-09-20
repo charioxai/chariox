@@ -645,23 +645,53 @@ fn bounds_bundle_writes_and_handles_unicode_ignore_patterns() {
 }
 
 #[test]
-fn bounds_origin_derived_target_directories_with_a_stable_suffix() {
+fn preserves_source_repository_basename_as_the_target_directory() {
     let root = test_root("bounded-target-directory");
     let repository = root.join("repository");
     init_repository(&repository, "tracked.txt", "base\n");
-    let long_name = "a".repeat(400);
+    let long_name = "remote-name";
     let origin = format!("https://example.com/org/{long_name}.git");
     git(&repository, &["remote", "add", "origin", &origin]);
 
-    let first = one_repo_export(&root, &repository, "long-target-first")
-        .expect("long origin should export with a bounded target");
-    let target = &first.manifest.repositories[0].target_directory;
-    assert!(target.len() <= MAX_TARGET_DIRECTORY_BASE_BYTES);
-    assert!(target.starts_with(&"a".repeat(100)));
-    let repeated = one_repo_export(&root, &repository, "long-target-repeated")
-        .expect("repeated long origin should keep the same target");
-    assert_eq!(repeated.manifest.repositories[0].target_directory, *target);
+    let first = one_repo_export(&root, &repository, "source-basename-first")
+        .expect("source basename should be the target");
+    assert_eq!(
+        first.manifest.repositories[0].target_directory,
+        "repository"
+    );
+    assert_eq!(first.manifest.repositories[0].logical_name, long_name);
 
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn source_repository_basename_collision_fails_closed() {
+    let root = test_root("target-directory-collision");
+    let first = root.join("first").join("same-name");
+    let second = root.join("second").join("same-name");
+    init_repository(&first, "first.txt", "first\n");
+    init_repository(&second, "second.txt", "second\n");
+    let error = export_development_context(DevelopmentContextExportRequest {
+        project_id: "collision-project".to_string(),
+        repositories: vec![
+            DevelopmentRepositorySelection {
+                workspace_id: "first".to_string(),
+                worktree_id: None,
+                worktree_path: first,
+                role: DevelopmentRepositoryRole::Primary,
+            },
+            DevelopmentRepositorySelection {
+                workspace_id: "second".to_string(),
+                worktree_id: None,
+                worktree_path: second,
+                role: DevelopmentRepositoryRole::Supporting,
+            },
+        ],
+        archive_path: root.join("collision.tar.gz"),
+    })
+    .expect_err("duplicate source basenames must fail closed");
+    assert!(error.to_string().contains("basename `same-name` collides"));
+    assert!(!root.join("collision.tar.gz").exists());
     fs::remove_dir_all(root).expect("remove test root");
 }
 

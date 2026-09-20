@@ -17,10 +17,10 @@ pub(super) fn export_directory(
     DaemonError,
 > {
     let logical_name = export::repository_logical_name(worktree, None);
+    let source_basename = export::source_repository_basename(worktree)?;
     let repository_id =
         export::unique_repository_id(None, "directory", &logical_name, repository_ids);
-    let target_directory =
-        export::unique_target_directory(&logical_name, &repository_id, target_directories);
+    let target_directory = export::unique_target_directory(&source_basename, target_directories)?;
     budget.consume(logical_name.len() + target_directory.len() + 2048)?;
     let root = open_root(worktree)?;
     let (entries, directories, size) =
