@@ -149,6 +149,66 @@ inside a disposable VM, run the bounded Rust/Cargo/native-dependency build from
 the transferred repository, and prove cleanup. Those deployment and live
 validation steps are not closed by local tests.
 
+## Managed and ordinary kernel parity
+
+A kernel on a Chariox-managed machine must expose the same user-visible runtime
+behavior as an ordinary kernel. The only intended differences are how Chariox
+deploys the kernel and its mandatory automatic shutdown policy, including every
+configured trigger and the idle delay measured from the last agent finishing.
+Parity work must preserve and test that managed-machine shutdown behavior.
+Managed placement must not create a second workspace, session, provider,
+terminal, file, Git, or reconnect model.
+
+Parity work is an explicit audit, not a bug-by-bug reaction to manual reports.
+Before the managed-machine gate can pass, maintain one executable comparison
+matrix covering both an ordinary Linux kernel and the same reviewed build on a
+fresh managed Linux machine. Every row needs an automated test or drill and
+must compare result data, errors, persistence, and reconnect behavior:
+
+- directory discovery, exact-path entry, directory creation, and arbitrary
+  accessible working-directory selection, including `/home` and nested paths
+- empty workspace creation, copied repository materialization, worktree
+  placement, repository basename preservation, and basename collisions
+- session and agent creation, official provider launch, terminal, file, Git,
+  attachment, permission, capability, and project-environment setup behavior
+- local and relay reconnect, orphan recovery, kernel restart, provider restart,
+  durable history, queued prompts, and active-turn state
+- filesystem permissions, control-file protection, resource limits, error
+  shapes, protocol versions, and cleanup
+
+Directory discovery must return an exact accessible directory even when the
+kernel cannot enumerate its children. A denied child listing may suppress
+completion candidates, but it must not reject the exact path or prevent the
+user from attempting a session there. Session launch then applies the same
+real filesystem access checks used by an ordinary kernel.
+
+Managed service state and user workspaces must use separate namespaces.
+Chariox may keep bootstrap files, receipts, credentials, logs, and other
+control state under `/var/lib/chariox`, but those paths must not become the
+user-facing repository or workspace root. Copied repositories default to:
+
+```text
+/home/chariox/<source-repository-basename>
+```
+
+The final component must preserve the source repository basename after the
+minimum safety validation needed for one path component. Chariox must fail
+closed on a collision instead of overwriting or silently renaming an existing
+repository. Machine creation may provide a different trusted repository root;
+that value must flow through managed provisioning and kernel bootstrap as one
+authoritative setting. Clients must not infer or invent it. If this setting
+changes a serialized contract, follow the protocol change rule in this plan.
+
+Protected managed state must be expressed as exact control files or dedicated
+state directories. A control file must never make its shared parent, such as
+`/var/lib/chariox`, unavailable when that parent also contains a legitimate
+user-selected directory. Add regressions for exact-file protection, sibling
+workspace access, `/home` discovery, custom repository roots, source-basename
+preservation, collision failure, and ordinary-versus-managed result parity.
+The managed-machine drill separately proves every automatic shutdown trigger,
+including the last-agent-finished idle timer, without treating shutdown as a
+parity defect.
+
 ## Product and architecture decisions
 
 ### One Room environment

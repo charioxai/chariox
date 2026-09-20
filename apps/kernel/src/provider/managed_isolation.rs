@@ -35,6 +35,13 @@ const MANAGED_PROTECTED_FILE_ENV_NAMES: &[&str] = &[
     "CHARIOX_DAEMON_SOCKET",
 ];
 #[cfg(target_os = "linux")]
+const MANAGED_EXACT_PROTECTED_FILE_ENV_NAMES: &[&str] = &[
+    "CHARIOX_MANAGED_BOOTSTRAP_PATH",
+    "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
+    "CHARIOX_DISPOSABLE_WORKER_BOOTSTRAP_PATH",
+    "CHARIOX_DISPOSABLE_WORKER_RECEIPT",
+];
+#[cfg(target_os = "linux")]
 const MANAGED_RUNTIME_USER_STARTUP_FILE_NAMES: &[&str] = &[
     ".bash_profile",
     ".bash_login",
@@ -399,6 +406,9 @@ fn managed_protected_namespace_directories(
             return Err(isolation_error(format!("{name} must not be empty")));
         }
         let path = validate_control_file_path(&PathBuf::from(raw), name)?;
+        if MANAGED_EXACT_PROTECTED_FILE_ENV_NAMES.contains(name) {
+            continue;
+        }
         if let Some(parent) = path.parent().map(Path::to_path_buf) {
             paths.push(parent.clone());
             if *name == "CHARIOX_SLICE_DOCKER_BROKER_SOCKET"
@@ -439,7 +449,9 @@ fn managed_protected_namespace_files() -> Result<Vec<PathBuf>, DaemonError> {
             return Err(isolation_error(format!("{name} must not be empty")));
         }
         let path = validate_control_file_path(&PathBuf::from(raw), name)?;
-        if path.parent() == Some(Path::new("/")) {
+        if path.parent() == Some(Path::new("/"))
+            || MANAGED_EXACT_PROTECTED_FILE_ENV_NAMES.contains(name)
+        {
             files.push(path);
         }
     }
@@ -649,6 +661,34 @@ fn append_managed_protected_namespace_files(
 }
 
 #[cfg(target_os = "linux")]
+fn append_managed_protected_namespace_file_parent_anchors(
+    args: &mut Vec<String>,
+    files: &[PathBuf],
+    protected_directories: &[PathBuf],
+    created: &mut BTreeSet<PathBuf>,
+) {
+    let mut parents = files
+        .iter()
+        .filter_map(|file| file.parent())
+        .filter(|parent| *parent != Path::new("/"))
+        .filter(|parent| {
+            !protected_directories
+                .iter()
+                .any(|protected| parent.starts_with(protected))
+        })
+        .map(Path::to_path_buf)
+        .collect::<Vec<_>>();
+    parents.sort();
+    parents.dedup();
+    for parent in parents {
+        // Keep a writable shared parent stable without hiding unrelated user
+        // workspaces below it. Exact control-file masks are applied after all
+        // protected child directories have been hidden.
+        append_bind(args, &parent, &parent, created);
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn append_managed_trusted_read_only_paths(
     args: &mut Vec<String>,
     paths: &[PathBuf],
@@ -764,6 +804,12 @@ pub(crate) fn apply_managed_provider_isolation(
         let mut protected_directories = protected_namespace_roots.clone();
         protected_directories.push(provider_home.clone());
         protected_directories.extend(account_bindings.iter().map(|(source, _)| source.clone()));
+        append_managed_protected_namespace_file_parent_anchors(
+            &mut args,
+            &protected_namespace_files,
+            &protected_directories,
+            &mut created_directories,
+        );
         append_managed_protected_namespace_directories(
             &mut args,
             &protected_directories,
@@ -2072,6 +2118,127 @@ mod tests {
         assert!(args
             .windows(3)
             .any(|window| window == ["--ro-bind", "/dev/null", "/managed-vault.json"]));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_bootstrap_control_does_not_protect_the_shared_user_home() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-managed-shared-home-parity-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let home = root.join("home");
+        let provider_home = root.join("provider-home");
+        let bootstrap = root.join("managed-bootstrap.json");
+        std::fs::create_dir_all(home.join("state")).expect("managed state directory should exist");
+        std::fs::create_dir_all(home.join(".chariox"))
+            .expect("managed Chariox state directory should exist");
+        std::fs::create_dir_all(&provider_home).expect("provider home should exist");
+        std::fs::write(&bootstrap, "protected\n").expect("bootstrap control should exist");
+
+        let _env = crate::env_lock::lock();
+        let names = [
+            "HOME",
+            "CHARIOX_HOME",
+            "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+            "CHARIOX_MANAGED_PROVIDER_HOME",
+            "CHARIOX_SLICE_ROOT",
+            MANAGED_SLICE_SERVICE_ROOT_ENV,
+            MANAGED_SLICE_PUBLICATION_ROOT_ENV,
+        ];
+        let mut previous = names
+            .iter()
+            .map(|name| (*name, std::env::var_os(name)))
+            .collect::<Vec<_>>();
+        previous.extend(
+            MANAGED_PROTECTED_FILE_ENV_NAMES
+                .iter()
+                .map(|name| (*name, std::env::var_os(name))),
+        );
+        for name in names {
+            std::env::remove_var(name);
+        }
+        for name in MANAGED_PROTECTED_FILE_ENV_NAMES {
+            std::env::remove_var(name);
+        }
+        std::env::set_var("HOME", &home);
+        std::env::set_var("CHARIOX_HOME", &home);
+        std::env::set_var("CHARIOX_MANAGED_PROVIDER_HOME", &provider_home);
+        std::env::set_var("CHARIOX_MANAGED_BOOTSTRAP_PATH", &bootstrap);
+
+        let request = LaunchProviderRequest::new(
+            "managed-shared-home-session",
+            "codex",
+            "codex",
+            "default",
+            "gpt-5.6-luna",
+        )
+        .with_working_directory(home.clone());
+        let roots = managed_workspace_roots(&request).expect("workspace roots should resolve");
+        let working_directory = managed_working_directory(&request, &roots)
+            .expect("the shared user home should remain a valid workspace");
+        let protected = managed_protected_namespace_directories(&[])
+            .expect("managed protected roots should resolve");
+        let files = managed_protected_namespace_files().expect("protected files should resolve");
+        let mut protected_with_provider_home = protected.clone();
+        protected_with_provider_home.push(provider_home.clone());
+        let (mut args, mut created) = managed_namespace_args(None, Path::exists, None);
+        append_managed_protected_namespace_file_parent_anchors(
+            &mut args,
+            &files,
+            &protected_with_provider_home,
+            &mut created,
+        );
+        append_managed_protected_namespace_directories(
+            &mut args,
+            &protected_with_provider_home,
+            &mut created,
+        );
+        append_managed_protected_namespace_files(&mut args, &files, &mut created);
+
+        for (name, value) in previous {
+            restore_env(name, value);
+        }
+
+        let root = root
+            .canonicalize()
+            .expect("fixture root should canonicalize");
+        let home = home
+            .canonicalize()
+            .expect("fixture home should canonicalize");
+        let bootstrap = bootstrap
+            .canonicalize()
+            .expect("bootstrap control should canonicalize");
+        assert_eq!(working_directory, home.clone());
+        assert!(!protected.iter().any(|path| home.starts_with(path)));
+        assert!(protected.contains(&home.join("state")));
+        assert_eq!(files, vec![bootstrap.clone()]);
+        assert!(args.windows(3).any(|window| {
+            window
+                == [
+                    "--bind",
+                    root.to_str().expect("fixture root should be utf8"),
+                    root.to_str().expect("fixture root should be utf8"),
+                ]
+        }));
+        assert!(args.windows(3).any(|window| {
+            window
+                == [
+                    "--ro-bind",
+                    "/dev/null",
+                    bootstrap.to_str().expect("bootstrap should be utf8"),
+                ]
+        }));
+        assert!(!args.windows(2).any(|window| {
+            window
+                == [
+                    "--tmpfs",
+                    root.to_str().expect("fixture root should be utf8"),
+                ]
+        }));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(target_os = "linux")]
