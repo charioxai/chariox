@@ -37,3 +37,94 @@ serialized into a public request/config shape, the local daemon protocol version
 snapshots/hashes, and the minimum dependent client version would need the standard
 protocol-change update. This slice adds no such field and makes no serialized
 protocol change.
+
+## Executable runtime parity evidence contract
+
+The static Path-1 source assertions are not acceptance evidence. The executable
+matrix is owned by:
+
+`
+scripts/managed-path1-provider-parity-drill.mjs
+scripts/managed-path1-provider-parity.test.mjs
+scripts/managed-path1-provider-parity-drill.test.mjs
+`
+
+Capture must be invoked inside the official provider turn or an approved remote
+command boundary on each target. It must run on Linux, use the same reviewed
+kernel/provider build, declare @@ordinary@@ or @@path1@@, and write one signed
+machine-readable snapshot:
+
+`bash
+node scripts/managed-path1-provider-parity-drill.mjs capture --topology ordinary --reviewed-commit "$CHARIOX_PARITY_REVIEWED_COMMIT" --build-id "$CHARIOX_PARITY_BUILD_ID" --provider "$CHARIOX_PARITY_PROVIDER" --provider-version "$CHARIOX_PARITY_PROVIDER_VERSION" --boundary official-provider-turn --fresh-worker --inside-provider-turn --output ordinary.json
+`
+
+The same command is run inside the fresh Path-1 worker with
+`--topology path1`. The signing key is read from
+`CHARIOX_PARITY_SIGNING_KEY`; it is never printed or stored in a snapshot.
+Capture probes must be supplied by the provider/remote boundary through the
+`CHARIOX_PARITY_*` context fields. Missing context produces a missing result,
+not a pass.
+
+Comparison is a separate fail-closed operation:
+
+`bash
+node scripts/managed-path1-provider-parity-drill.mjs compare --ordinary ordinary.json --path1 path1.json --reviewed-commit "$CHARIOX_PARITY_REVIEWED_COMMIT" --build-id "$CHARIOX_PARITY_BUILD_ID" --report parity-report.json
+`
+
+The comparator requires valid signatures, the same reviewed commit and build
+identity, the declared @@ordinary@@/@@path1@@ topologies, a fresh worker, an
+official provider identity, and a runtime provider-turn/remote-command
+boundary. It rejects source-only captures, unsigned or tampered snapshots,
+missing rows, topology/head mismatches, different normalized results, and
+cleanup failures. It emits row names and statuses only; provider output,
+environment contents, credentials, and command output are not printed.
+
+The required result fields are:
+
+`
+exact_cwd
+arbitrary_accessible_directory
+home_access
+tmp_access
+post_enrollment_repository
+git_file_terminal
+provider_ancestry
+managed_isolation_environment
+mount_visibility
+privilege_state
+network_reachability
+package_tool_installation
+official_provider_identity
+reconnect_history_result_identity
+errors
+cleanup
+shutdown_agents_done
+shutdown_idle_15m
+shutdown_idle_30m
+shutdown_minimum_3h
+shutdown_manual
+shutdown_custom
+shutdown_explicit_lifecycle_reconciliation
+shutdown_deployment_reconciliation
+`
+
+`provider_ancestry` must prove no Bubblewrap ancestor on Path 1;
+`managed_isolation_environment` must prove the managed isolation and Bubblewrap
+environment markers are absent. The remaining rows compare exact cwd semantics,
+arbitrary accessible directory create/read/write, `/home`, `/tmp`, a repository
+created after enrollment, Git/file/terminal behavior, mount visibility,
+`NoNewPrivs`, `CapEff`, umask, network reachability, the permitted
+package/tool probe, official provider identity, reconnect/history result
+identity, structured errors, and cleanup.
+
+The shutdown rows are mandatory even when a policy means that automatic stop is
+not expected. They cover all configured modes (`agents_done`, 15-minute idle,
+30-minute idle, minimum three-hour runtime, manual, and custom) plus explicit
+lifecycle and deployment reconciliation. Each row must report its observed
+outcome; omission is a failed comparison.
+
+The focused Node tests contain green-parity, tamper, missing-row,
+topology/head-mismatch, different-result, and cleanup-failure fixtures. They
+validate the comparator contract only. A successful focused test run does not
+replace live capture from an ordinary Linux kernel and a fresh Path-1 worker;
+that live execution remains required before parity is accepted.
