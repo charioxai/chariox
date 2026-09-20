@@ -6,7 +6,7 @@
   "scripts": {
     "build": "pnpm --workspace-root run build:kernel-client && node scripts/build.mjs",
     "test:managed-ordinary-parity-matrix": "node --test scripts/managed-ordinary-parity-matrix.test.mjs",
-    "test:managed-ordinary-parity": "node --test scripts/managed-ordinary-parity-matrix.test.mjs scripts/managed-ordinary-parity-collector.test.mjs",
+    "test:managed-ordinary-parity": "node --test scripts/managed-ordinary-parity-matrix.test.mjs scripts/managed-ordinary-parity-collector.test.mjs scripts/managed-ordinary-parity-probe.test.mjs",
     "managed-ordinary-parity:collect": "node scripts/managed-ordinary-parity-collector.mjs",
     "managed-ordinary-parity:compare": "node scripts/managed-ordinary-parity-matrix.mjs compare",
     "graph:drills": "pnpm run build && node scripts/workflow-graph-drills.mjs",

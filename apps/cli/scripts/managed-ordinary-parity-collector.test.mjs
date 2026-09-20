@@ -7,6 +7,7 @@ import {
   defaultRunCommand,
 } from "./managed-ordinary-parity-collector.mjs"
 import {
+  SHUTDOWN_EXPECTATIONS,
   compareManifests,
   validateManifest,
 } from "./managed-ordinary-parity-matrix.mjs"
@@ -53,25 +54,25 @@ function fixedClock() {
 }
 
 function genericResult(rowId, checkId, topology) {
-  if (rowId === "MP-01" && checkId === "fresh_worker") {
+  if (rowId === "MP-10" && checkId === "fresh_worker") {
     return { observed: true, fresh_worker: true, worker_id: `${topology}-worker-1` }
   }
-  if (rowId === "MP-01" && checkId === "official_provider_identity") {
+  if (rowId === "MP-08" && checkId === "official_provider_identity") {
     return { observed: true, official: true, provider_name: "codex", executable_matches: true }
   }
-  if (rowId === "MP-01" && checkId === "capture_boundary") {
+  if (rowId === "MP-10" && checkId === "capture_boundary") {
     return { observed: true, boundary: "official-provider-turn", inside_provider_turn: true, independent: true }
   }
-  if (rowId === "MP-04" && checkId === "provider_ancestry") {
+  if (rowId === "MP-01" && checkId === "provider_ancestry") {
     return { observed: true, provider_observed: true, bwrap_ancestor: false, fresh_worker: true, ancestry_complete: true }
   }
-  if (rowId === "MP-04" && checkId === "managed_isolation_environment") {
+  if (rowId === "MP-01" && checkId === "managed_isolation_environment") {
     return { observed: true, managed_marker_absent: true, bwrap_environment_absent: true }
   }
-  if (rowId === "MP-04" && checkId === "privilege_state") {
+  if (rowId === "MP-01" && checkId === "privilege_state") {
     return { observed: true, no_new_privs: false, capabilities_match_ordinary: true, umask_matches_ordinary: true }
   }
-  if (rowId === "MP-09") {
+  if (rowId === "MP-07") {
     return topology === "ordinary"
       ? {
           observed: true,
@@ -90,46 +91,61 @@ function genericResult(rowId, checkId, topology) {
           release_digest: "sha256:" + "b".repeat(64),
         }
   }
-  if (rowId === "MP-10") {
+  if (rowId === "MP-09") {
     const trigger = checkId.slice("shutdown_".length)
+    const expectation = SHUTDOWN_EXPECTATIONS[trigger]
+    const configuredDelay = expectation.delay === "positive"
+      ? (trigger === "agents_done" ? 900 : 600)
+      : expectation.delay
+    const ordinary = topology === "ordinary"
+    const expectedOutcome = ordinary ? "ordinary-remained-running" : expectation.outcome
     return {
       observed: true,
       trigger,
-      observed_outcome: `${topology}-${trigger}-observed`,
-      managed_policy: topology === "path1",
-      shutdown_evidence: true,
-      measured_from_last_agent_finished: trigger === "idle_15m" || trigger === "idle_30m",
+      expected_outcome: expectedOutcome,
+      observed_outcome: expectedOutcome,
+      managed_policy: !ordinary,
+      observation_complete: true,
+      worker_stopped: ordinary ? false : expectation.workerStopped,
+      cleanup_confirmed: ordinary ? false : expectation.cleanupConfirmed,
+      measured_from_last_agent_finished: ordinary ? false : expectation.measuredFromLastAgentFinished,
+      configured_delay_seconds: ordinary ? null : configuredDelay,
+      observed_delay_seconds: ordinary || !expectation.observesDelay ? null : configuredDelay,
     }
   }
   const flags = {
+    "MP-01/mount_visibility": { mounts_match_ordinary: true, mount_probe_complete: true },
+    "MP-01/network_reachability": { network_matches_ordinary: true, address_families_recorded: true },
+    "MP-01/package_tool_installation": { tool_probe_succeeded: true, install_probe_succeeded: true },
     "MP-02/directory_discovery": { exact_path_accessible: true, child_enumeration_denied: false },
     "MP-02/exact_path_entry": { exact_path_accessible: true, cwd_matches_requested: true },
     "MP-02/directory_creation": { created_and_accessible: true },
     "MP-02/home_access": { accessible: true },
     "MP-02/tmp_access": { accessible: true },
-    "MP-03/empty_workspace": { workspace_created: true, control_state_separate: true },
-    "MP-03/copied_repository": { repository_accessible: true },
-    "MP-03/repository_basename": { source_basename_preserved: true },
-    "MP-03/basename_collision": { collision_rejected: true },
-    "MP-03/worktree_placement": { worktree_user_path: true, control_root_not_workspace: true },
+    "MP-03/control_file_protection": { control_file_denied: true, sibling_accessible: true },
+    "MP-03/filesystem_permissions": { permissions_match_ordinary: true },
     "MP-04/provider_environment": { home_matches_ordinary: true, chariox_home_matches_ordinary: true, cwd_matches_requested: true, ordinary_user: true },
-    "MP-04/mount_visibility": { mounts_match_ordinary: true, mount_probe_complete: true },
-    "MP-04/network_reachability": { network_matches_ordinary: true, address_families_recorded: true },
-    "MP-04/package_tool_installation": { tool_probe_succeeded: true, install_probe_succeeded: true },
-    "MP-05/session_agent_launch": { session_created: true, agent_created: true, official_command: true },
-    "MP-05/terminal_file_git": { terminal_ok: true, file_ok: true, git_ok: true },
-    "MP-05/attachments_permissions_capabilities": { attachments_ok: true, permissions_ok: true, capabilities_ok: true },
-    "MP-05/project_setup": { project_setup_ok: true },
-    "MP-06/reconnect_orphan_recovery": { reconnect_ok: true, orphan_recovered: true },
-    "MP-06/restart_recovery": { restart_recovered: true },
-    "MP-06/reconnect_history_result_identity": { history_preserved: true, result_identity_preserved: true },
-    "MP-06/queued_prompts": { queued_prompt_preserved: true, queued_prompt_advanced: true },
-    "MP-06/active_turn_state": { active_turn_state_preserved: true },
-    "MP-07/control_file_protection": { control_file_denied: true, sibling_accessible: true },
-    "MP-07/filesystem_permissions": { permissions_match_ordinary: true },
-    "MP-07/resource_limits": { limits_observed: true },
-    "MP-07/structured_errors": { structured_errors: true },
-    "MP-07/protocol_behavior": { protocol_behavior_ok: true },
+    "MP-05/empty_workspace": { workspace_created: true, control_state_separate: true },
+    "MP-05/copied_repository": { repository_accessible: true },
+    "MP-05/repository_basename": { source_basename_preserved: true },
+    "MP-05/basename_collision": { collision_rejected: true },
+    "MP-05/worktree_placement": { worktree_user_path: true, control_root_not_workspace: true },
+    "MP-06/repository_root_default": { default_root_correct: true },
+    "MP-06/repository_root_custom": { custom_root_persisted: true },
+    "MP-06/repository_root_inheritance": { child_inherits_root: true },
+    "MP-06/repository_root_override_rejected": { client_override_rejected: true },
+    "MP-08/session_agent_launch": { session_created: true, agent_created: true, official_command: true },
+    "MP-08/terminal_file_git": { terminal_ok: true, file_ok: true, git_ok: true },
+    "MP-08/attachments_permissions_capabilities": { attachments_ok: true, permissions_ok: true, capabilities_ok: true },
+    "MP-08/project_setup": { project_setup_ok: true },
+    "MP-08/reconnect_orphan_recovery": { reconnect_ok: true, orphan_recovered: true },
+    "MP-08/restart_recovery": { restart_recovered: true },
+    "MP-08/reconnect_history_result_identity": { history_preserved: true, result_identity_preserved: true },
+    "MP-08/queued_prompts": { queued_prompt_preserved: true, queued_prompt_advanced: true },
+    "MP-08/active_turn_state": { active_turn_state_preserved: true },
+    "MP-08/resource_limits": { limits_observed: true },
+    "MP-08/structured_errors": { structured_errors: true },
+    "MP-08/protocol_behavior": { protocol_behavior_ok: true },
     "MP-08/cleanup": { owned_processes_gone: true, owned_artifacts_removed: true, foreign_processes_untouched: true, cleanup_complete: true },
   }
   return { observed: true, ...(flags[`${rowId}/${checkId}`] ?? {}) }
@@ -238,8 +254,36 @@ test("collects a fresh Path-1 managed snapshot and the comparator accepts ordina
     signingKey: SIGNING_KEY,
   })
   assert.equal(report.status, "pass", JSON.stringify(report, null, 2))
-  assert.equal(path1.manifest.rows["MP-09"].checks.signed_release_activation.result.signed_release, true)
-  assert.equal(path1.manifest.rows["MP-10"].checks.shutdown_idle_15m.result.managed_policy, true)
+  assert.equal(path1.manifest.rows["MP-07"].checks.signed_release_activation.result.signed_release, true)
+  assert.equal(path1.manifest.rows["MP-09"].checks.shutdown_idle_15m.result.managed_policy, true)
+})
+
+test("collector rejects arbitrary shutdown outcomes and premature deadlines", async () => {
+  const wrongOutcome = makeHarness("path1", {
+    results: {
+      "MP-09/shutdown_idle_30m": {
+        ...genericResult("MP-09", "shutdown_idle_30m", "path1"),
+        observed_outcome: "non-empty-but-wrong",
+      },
+    },
+  })
+  await assert.rejects(() => wrongOutcome.collector.collect(wrongOutcome.options), (error) => {
+    assert.equal(error.code, "shutdown_outcome_mismatch")
+    return true
+  })
+
+  const premature = makeHarness("path1", {
+    results: {
+      "MP-09/shutdown_custom": {
+        ...genericResult("MP-09", "shutdown_custom", "path1"),
+        observed_delay_seconds: 599,
+      },
+    },
+  })
+  await assert.rejects(() => premature.collector.collect(premature.options), (error) => {
+    assert.equal(error.code, "shutdown_delay_invalid")
+    return true
+  })
 })
 
 test("denied child enumeration still records a valid exact-path result", async () => {
@@ -300,7 +344,7 @@ test("signed kernel release identity must bind the selected binary to the review
 test("Bubblewrap ancestry is a product-boundary failure", async () => {
   const harness = makeHarness("path1", {
     results: {
-      "MP-04/provider_ancestry": {
+      "MP-01/provider_ancestry": {
         observed: true,
         provider_observed: true,
         bwrap_ancestor: true,
@@ -311,7 +355,7 @@ test("Bubblewrap ancestry is a product-boundary failure", async () => {
   })
   await assert.rejects(() => harness.collector.collect(harness.options), (error) => {
     assert.equal(error.code, "probe_assertion_failed")
-    assert.equal(error.rowId, "MP-04")
+    assert.equal(error.rowId, "MP-01")
     return true
   })
 })
@@ -424,12 +468,12 @@ test("partial cleanup is rejected instead of becoming an MP-08 pass", async () =
 test("evidence output is deterministic and redacts credentials", async () => {
   const first = makeHarness("ordinary", {
     results: {
-      "MP-05/project_setup": { observed: true, project_setup_ok: true, token: "supersecret-token" },
+      "MP-08/project_setup": { observed: true, project_setup_ok: true, token: "supersecret-token" },
     },
   })
   const second = makeHarness("ordinary", {
     results: {
-      "MP-05/project_setup": { observed: true, project_setup_ok: true, token: "supersecret-token" },
+      "MP-08/project_setup": { observed: true, project_setup_ok: true, token: "supersecret-token" },
     },
   })
   await first.collector.collect(first.options)

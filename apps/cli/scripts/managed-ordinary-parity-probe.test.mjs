@@ -9,6 +9,7 @@ import { test } from "node:test"
 
 const execFileAsync = promisify(execFile)
 const probeSource = fileURLToPath(new URL("./managed-ordinary-parity-probe.mjs", import.meta.url))
+const matrixSource = fileURLToPath(new URL("./managed-ordinary-parity-matrix.mjs", import.meta.url))
 
 async function git(root, args) {
   const result = await execFileAsync("git", args, {
@@ -22,12 +23,14 @@ async function git(root, args) {
 test("repo-owned probe executes its real command path and binds its file to the reviewed commit", async () => {
   const root = await mkdtemp(join(os.tmpdir(), "chariox-managed-ordinary-parity-probe-"))
   const destination = join(root, "apps/cli/scripts/managed-ordinary-parity-probe.mjs")
+  const matrixDestination = join(root, "apps/cli/scripts/managed-ordinary-parity-matrix.mjs")
   await mkdir(dirname(destination), { recursive: true })
   await writeFile(destination, await readFile(probeSource))
+  await writeFile(matrixDestination, await readFile(matrixSource))
   await git(root, ["init", "--quiet"])
   await git(root, ["config", "user.name", "parity-probe-test"])
   await git(root, ["config", "user.email", "parity-probe-test@example.invalid"])
-  await git(root, ["add", "apps/cli/scripts/managed-ordinary-parity-probe.mjs"])
+  await git(root, ["add", "apps/cli/scripts/managed-ordinary-parity-probe.mjs", "apps/cli/scripts/managed-ordinary-parity-matrix.mjs"])
   await git(root, ["commit", "--quiet", "-m", "probe fixture"])
   const reviewedCommit = await git(root, ["rev-parse", "HEAD"])
   const output = await execFileAsync(process.execPath, [

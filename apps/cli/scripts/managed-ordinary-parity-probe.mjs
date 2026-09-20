@@ -2,27 +2,18 @@
 
 import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
-import { access, constants, mkdir, readFile, readdir, stat } from "node:fs/promises"
+import { access, constants, mkdir, readFile, readdir, realpath, stat } from "node:fs/promises"
 import { basename, isAbsolute, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
+
+import { ROW_DEFINITIONS } from "./managed-ordinary-parity-matrix.mjs"
 
 const execFileAsync = promisify(execFile)
 const PROBE_RELATIVE_PATH = "apps/cli/scripts/managed-ordinary-parity-probe.mjs"
 const REVIEWED_COMMIT = /^[0-9a-f]{40}$/i
 const TOPOLOGIES = new Set(["ordinary", "path1"])
-const CHECKS = new Map([
-  ["MP-01", new Set(["fresh_worker", "official_provider_identity", "capture_boundary"])],
-  ["MP-02", new Set(["directory_discovery", "exact_path_entry", "directory_creation", "home_access", "tmp_access"])],
-  ["MP-03", new Set(["empty_workspace", "copied_repository", "repository_basename", "basename_collision", "worktree_placement"])],
-  ["MP-04", new Set(["provider_ancestry", "provider_environment", "managed_isolation_environment", "mount_visibility", "privilege_state", "network_reachability", "package_tool_installation"])],
-  ["MP-05", new Set(["session_agent_launch", "terminal_file_git", "attachments_permissions_capabilities", "project_setup"])],
-  ["MP-06", new Set(["reconnect_orphan_recovery", "restart_recovery", "reconnect_history_result_identity", "queued_prompts", "active_turn_state"])],
-  ["MP-07", new Set(["control_file_protection", "filesystem_permissions", "resource_limits", "structured_errors", "protocol_behavior"])],
-  ["MP-08", new Set(["cleanup"])],
-  ["MP-09", new Set(["signed_release_activation"])],
-  ["MP-10", new Set(["shutdown_agents_done", "shutdown_idle_15m", "shutdown_idle_30m", "shutdown_minimum_3h", "shutdown_manual", "shutdown_custom", "shutdown_explicit_lifecycle_reconciliation", "shutdown_deployment_reconciliation"])],
-])
+const CHECKS = new Map(ROW_DEFINITIONS.map(({ id, checks }) => [id, new Set(checks)]))
 
 class ProbeError extends Error {
   constructor(message, details = {}) {
@@ -95,8 +86,8 @@ function parseTreeBlob(text) {
 
 async function verifyProbeIdentity(values) {
   const sourceRoot = resolve(values.source_root)
-  const ownPath = resolve(fileURLToPath(import.meta.url))
-  const expectedPath = resolve(sourceRoot, PROBE_RELATIVE_PATH)
+  const ownPath = await realpath(fileURLToPath(import.meta.url))
+  const expectedPath = await realpath(resolve(sourceRoot, PROBE_RELATIVE_PATH))
   if (ownPath !== expectedPath) throw new ProbeError("probe was not executed from the repo-owned path")
   const actualCommit = await runGit(sourceRoot, ["rev-parse", "HEAD"])
   if (actualCommit !== values.reviewed_commit) throw new ProbeError("probe source commit does not match reviewed commit")
@@ -151,18 +142,18 @@ async function observe(values) {
     const metadata = await stat(values.new_directory)
     return { ...identity, observed: true, created_and_accessible: metadata.isDirectory() && await accessible(values.new_directory) }
   }
-  if (rowId === "MP-03" && checkId === "empty_workspace") {
+  if (rowId === "MP-05" && checkId === "empty_workspace") {
     await mkdir(values.nested_path, { recursive: true })
     return { ...identity, observed: true, workspace_created: (await stat(values.nested_path)).isDirectory(), control_state_separate: resolve(values.nested_path) !== sourceRoot }
   }
-  if (rowId === "MP-03" && checkId === "copied_repository") {
+  if (rowId === "MP-05" && checkId === "copied_repository") {
     return { ...identity, observed: true, repository_accessible: await accessible(sourceRoot) }
   }
-  if (rowId === "MP-03" && checkId === "repository_basename") {
+  if (rowId === "MP-05" && checkId === "repository_basename") {
     const top = resolve(await runGit(sourceRoot, ["rev-parse", "--show-toplevel"]))
     return { ...identity, observed: true, source_basename_preserved: top === sourceRoot && basename(top) === basename(sourceRoot) }
   }
-  if (rowId === "MP-03" && checkId === "basename_collision") {
+  if (rowId === "MP-05" && checkId === "basename_collision") {
     await mkdir(values.new_directory, { recursive: true })
     let collisionRejected = false
     try {
@@ -172,11 +163,11 @@ async function observe(values) {
     }
     return { ...identity, observed: true, collision_rejected: collisionRejected }
   }
-  if (rowId === "MP-03" && checkId === "worktree_placement") {
+  if (rowId === "MP-05" && checkId === "worktree_placement") {
     const nested = resolve(values.nested_path)
     return { ...identity, observed: true, worktree_user_path: await accessible(sourceRoot), control_root_not_workspace: !nested.startsWith(`${sourceRoot}/`) }
   }
-  if (rowId === "MP-04" && checkId === "managed_isolation_environment") {
+  if (rowId === "MP-01" && checkId === "managed_isolation_environment") {
     return {
       ...identity,
       observed: true,
@@ -184,11 +175,11 @@ async function observe(values) {
       bwrap_environment_absent: !process.env.CHARIOX_MANAGED_PROVIDER_BWRAP,
     }
   }
-  if (rowId === "MP-04" && checkId === "mount_visibility") {
+  if (rowId === "MP-01" && checkId === "mount_visibility") {
     const mountInfo = await readFile("/proc/self/mountinfo", "utf8")
     return { ...identity, observed: true, mounts_match_ordinary: mountInfo.length > 0, mount_probe_complete: true }
   }
-  if (rowId === "MP-04" && checkId === "privilege_state") {
+  if (rowId === "MP-01" && checkId === "privilege_state") {
     const status = await readFile("/proc/self/status", "utf8")
     const noNewPrivs = /^NoNewPrivs:\s*(\d+)$/m.exec(status)?.[1]
     return { ...identity, observed: true, no_new_privs: noNewPrivs === "1", capabilities_match_ordinary: /^CapEff:\s*0+$/m.test(status), umask_matches_ordinary: Number.isInteger(process.umask()) }
@@ -211,6 +202,15 @@ async function main(argv = process.argv.slice(2)) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) process.exitCode = await main()
+async function isMainModule() {
+  if (!process.argv[1]) return false
+  try {
+    return await realpath(process.argv[1]) === await realpath(fileURLToPath(import.meta.url))
+  } catch {
+    return false
+  }
+}
+
+if (await isMainModule()) process.exitCode = await main()
 
 export { main, parseArgs, verifyProbeIdentity }

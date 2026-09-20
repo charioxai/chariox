@@ -7,27 +7,28 @@ import { promisify } from "node:util"
 
 const execFileAsync = promisify(execFile)
 
-export const MATRIX_SCHEMA = "chariox.managed-ordinary-parity-matrix/v1"
-export const REPORT_SCHEMA = "chariox.managed-ordinary-parity-report/v1"
+export const MATRIX_SCHEMA = "chariox.managed-ordinary-parity-matrix/v2"
+export const REPORT_SCHEMA = "chariox.managed-ordinary-parity-report/v2"
 export const ALLOWED_TOPOLOGIES = Object.freeze(["ordinary", "path1"])
 export const ALLOWED_CAPTURE_BOUNDARIES = Object.freeze([
   "official-provider-turn",
   "remote-command",
 ])
 
-// MP-01..MP-10 are the executable grouping of the locked parity inventory in
-// docs/MANAGED_ORDINARY_KERNEL_PARITY_INVENTORY.md. The check names intentionally
-// retain the inventory's evidence vocabulary so a live collector can feed this
-// comparator without turning a parity result into an unreviewed assertion.
+// These IDs match the locked MP-01..MP-10 ledger in
+// docs/BROWSER_COMPUTER_USE_END_TO_END_PLAN.md. MP-11 is the separate source
+// inventory. Do not renumber runtime checks independently from that ledger.
 export const ROW_DEFINITIONS = Object.freeze([
   Object.freeze({
     id: "MP-01",
-    title: "source, protocol, and capture identity",
+    title: "ordinary provider launch without managed isolation",
     checks: Object.freeze([
-      "source_protocol_identity",
-      "fresh_worker",
-      "official_provider_identity",
-      "capture_boundary",
+      "provider_ancestry",
+      "managed_isolation_environment",
+      "mount_visibility",
+      "privilege_state",
+      "network_reachability",
+      "package_tool_installation",
     ]),
   }),
   Object.freeze({
@@ -43,7 +44,20 @@ export const ROW_DEFINITIONS = Object.freeze([
   }),
   Object.freeze({
     id: "MP-03",
-    title: "workspace, repository basename, collisions, and worktree",
+    title: "exact managed control-state protection",
+    checks: Object.freeze([
+      "control_file_protection",
+      "filesystem_permissions",
+    ]),
+  }),
+  Object.freeze({
+    id: "MP-04",
+    title: "ordinary user home and mutable kernel state",
+    checks: Object.freeze(["provider_environment"]),
+  }),
+  Object.freeze({
+    id: "MP-05",
+    title: "workspace and repository materialization",
     checks: Object.freeze([
       "empty_workspace",
       "copied_repository",
@@ -53,58 +67,18 @@ export const ROW_DEFINITIONS = Object.freeze([
     ]),
   }),
   Object.freeze({
-    id: "MP-04",
-    title: "provider launch, environment, mounts, privilege, and network",
-    checks: Object.freeze([
-      "provider_ancestry",
-      "provider_environment",
-      "managed_isolation_environment",
-      "mount_visibility",
-      "privilege_state",
-      "network_reachability",
-      "package_tool_installation",
-    ]),
-  }),
-  Object.freeze({
-    id: "MP-05",
-    title: "session, provider, terminal, file, Git, and project setup",
-    checks: Object.freeze([
-      "session_agent_launch",
-      "terminal_file_git",
-      "attachments_permissions_capabilities",
-      "project_setup",
-    ]),
-  }),
-  Object.freeze({
     id: "MP-06",
-    title: "reconnect, restart, history, queued prompts, and active turns",
+    title: "server-authoritative repository root",
     checks: Object.freeze([
-      "reconnect_orphan_recovery",
-      "restart_recovery",
-      "reconnect_history_result_identity",
-      "queued_prompts",
-      "active_turn_state",
+      "repository_root_default",
+      "repository_root_custom",
+      "repository_root_inheritance",
+      "repository_root_override_rejected",
     ]),
   }),
   Object.freeze({
     id: "MP-07",
-    title: "control-file protection, permissions, limits, and errors",
-    checks: Object.freeze([
-      "control_file_protection",
-      "filesystem_permissions",
-      "resource_limits",
-      "structured_errors",
-      "protocol_behavior",
-    ]),
-  }),
-  Object.freeze({
-    id: "MP-08",
-    title: "cleanup and post-cleanup state",
-    checks: Object.freeze(["cleanup"]),
-  }),
-  Object.freeze({
-    id: "MP-09",
-    title: "signed release activation",
+    title: "signed managed release activation",
     exemption: Object.freeze({
       kind: "managed-signed-release-activation",
       reason: "managed deployment may use signed atomic release activation",
@@ -112,7 +86,27 @@ export const ROW_DEFINITIONS = Object.freeze([
     checks: Object.freeze(["signed_release_activation"]),
   }),
   Object.freeze({
-    id: "MP-10",
+    id: "MP-08",
+    title: "ordinary runtime, protocol, provider, client, and recovery parity",
+    checks: Object.freeze([
+      "official_provider_identity",
+      "session_agent_launch",
+      "terminal_file_git",
+      "attachments_permissions_capabilities",
+      "project_setup",
+      "reconnect_orphan_recovery",
+      "restart_recovery",
+      "reconnect_history_result_identity",
+      "queued_prompts",
+      "active_turn_state",
+      "resource_limits",
+      "structured_errors",
+      "protocol_behavior",
+      "cleanup",
+    ]),
+  }),
+  Object.freeze({
+    id: "MP-09",
     title: "mandatory managed automatic shutdown",
     exemption: Object.freeze({
       kind: "managed-automatic-shutdown",
@@ -123,10 +117,22 @@ export const ROW_DEFINITIONS = Object.freeze([
       "shutdown_idle_15m",
       "shutdown_idle_30m",
       "shutdown_minimum_3h",
+      "shutdown_disabled",
+      "shutdown_keep_running",
+      "shutdown_restart_reconciliation",
       "shutdown_manual",
       "shutdown_custom",
       "shutdown_explicit_lifecycle_reconciliation",
       "shutdown_deployment_reconciliation",
+    ]),
+  }),
+  Object.freeze({
+    id: "MP-10",
+    title: "fresh-machine comparison identity and evidence",
+    checks: Object.freeze([
+      "source_protocol_identity",
+      "fresh_worker",
+      "capture_boundary",
     ]),
   }),
 ])
@@ -177,35 +183,39 @@ const RELEASE_RESULT_KEYS = Object.freeze([
   "release_digest",
 ])
 const GENERIC_RESULT_REQUIREMENTS = Object.freeze({
+  "MP-01/mount_visibility": Object.freeze(["mounts_match_ordinary", "mount_probe_complete"]),
+  "MP-01/privilege_state": Object.freeze(["capabilities_match_ordinary", "umask_matches_ordinary"]),
+  "MP-01/network_reachability": Object.freeze(["network_matches_ordinary", "address_families_recorded"]),
+  "MP-01/package_tool_installation": Object.freeze(["tool_probe_succeeded", "install_probe_succeeded"]),
   "MP-02/directory_discovery": Object.freeze(["exact_path_accessible"]),
   "MP-02/exact_path_entry": Object.freeze(["exact_path_accessible", "cwd_matches_requested"]),
   "MP-02/directory_creation": Object.freeze(["created_and_accessible"]),
   "MP-02/home_access": Object.freeze(["accessible"]),
   "MP-02/tmp_access": Object.freeze(["accessible"]),
-  "MP-03/empty_workspace": Object.freeze(["workspace_created", "control_state_separate"]),
-  "MP-03/copied_repository": Object.freeze(["repository_accessible"]),
-  "MP-03/repository_basename": Object.freeze(["source_basename_preserved"]),
-  "MP-03/basename_collision": Object.freeze(["collision_rejected"]),
-  "MP-03/worktree_placement": Object.freeze(["worktree_user_path", "control_root_not_workspace"]),
+  "MP-03/control_file_protection": Object.freeze(["control_file_denied", "sibling_accessible"]),
+  "MP-03/filesystem_permissions": Object.freeze(["permissions_match_ordinary"]),
   "MP-04/provider_environment": Object.freeze(["home_matches_ordinary", "chariox_home_matches_ordinary", "cwd_matches_requested", "ordinary_user"]),
-  "MP-04/mount_visibility": Object.freeze(["mounts_match_ordinary", "mount_probe_complete"]),
-  "MP-04/privilege_state": Object.freeze(["capabilities_match_ordinary", "umask_matches_ordinary"]),
-  "MP-04/network_reachability": Object.freeze(["network_matches_ordinary", "address_families_recorded"]),
-  "MP-04/package_tool_installation": Object.freeze(["tool_probe_succeeded", "install_probe_succeeded"]),
-  "MP-05/session_agent_launch": Object.freeze(["session_created", "agent_created", "official_command"]),
-  "MP-05/terminal_file_git": Object.freeze(["terminal_ok", "file_ok", "git_ok"]),
-  "MP-05/attachments_permissions_capabilities": Object.freeze(["attachments_ok", "permissions_ok", "capabilities_ok"]),
-  "MP-05/project_setup": Object.freeze(["project_setup_ok"]),
-  "MP-06/reconnect_orphan_recovery": Object.freeze(["reconnect_ok", "orphan_recovered"]),
-  "MP-06/restart_recovery": Object.freeze(["restart_recovered"]),
-  "MP-06/reconnect_history_result_identity": Object.freeze(["history_preserved", "result_identity_preserved"]),
-  "MP-06/queued_prompts": Object.freeze(["queued_prompt_preserved", "queued_prompt_advanced"]),
-  "MP-06/active_turn_state": Object.freeze(["active_turn_state_preserved"]),
-  "MP-07/control_file_protection": Object.freeze(["control_file_denied", "sibling_accessible"]),
-  "MP-07/filesystem_permissions": Object.freeze(["permissions_match_ordinary"]),
-  "MP-07/resource_limits": Object.freeze(["limits_observed"]),
-  "MP-07/structured_errors": Object.freeze(["structured_errors"]),
-  "MP-07/protocol_behavior": Object.freeze(["protocol_behavior_ok"]),
+  "MP-05/empty_workspace": Object.freeze(["workspace_created", "control_state_separate"]),
+  "MP-05/copied_repository": Object.freeze(["repository_accessible"]),
+  "MP-05/repository_basename": Object.freeze(["source_basename_preserved"]),
+  "MP-05/basename_collision": Object.freeze(["collision_rejected"]),
+  "MP-05/worktree_placement": Object.freeze(["worktree_user_path", "control_root_not_workspace"]),
+  "MP-06/repository_root_default": Object.freeze(["default_root_correct"]),
+  "MP-06/repository_root_custom": Object.freeze(["custom_root_persisted"]),
+  "MP-06/repository_root_inheritance": Object.freeze(["child_inherits_root"]),
+  "MP-06/repository_root_override_rejected": Object.freeze(["client_override_rejected"]),
+  "MP-08/session_agent_launch": Object.freeze(["session_created", "agent_created", "official_command"]),
+  "MP-08/terminal_file_git": Object.freeze(["terminal_ok", "file_ok", "git_ok"]),
+  "MP-08/attachments_permissions_capabilities": Object.freeze(["attachments_ok", "permissions_ok", "capabilities_ok"]),
+  "MP-08/project_setup": Object.freeze(["project_setup_ok"]),
+  "MP-08/reconnect_orphan_recovery": Object.freeze(["reconnect_ok", "orphan_recovered"]),
+  "MP-08/restart_recovery": Object.freeze(["restart_recovered"]),
+  "MP-08/reconnect_history_result_identity": Object.freeze(["history_preserved", "result_identity_preserved"]),
+  "MP-08/queued_prompts": Object.freeze(["queued_prompt_preserved", "queued_prompt_advanced"]),
+  "MP-08/active_turn_state": Object.freeze(["active_turn_state_preserved"]),
+  "MP-08/resource_limits": Object.freeze(["limits_observed"]),
+  "MP-08/structured_errors": Object.freeze(["structured_errors"]),
+  "MP-08/protocol_behavior": Object.freeze(["protocol_behavior_ok"]),
   "MP-08/cleanup": Object.freeze(["owned_processes_gone", "owned_artifacts_removed", "foreign_processes_untouched", "cleanup_complete"]),
 })
 const SOURCE_IDENTITY_RESULT_KEYS = Object.freeze([
@@ -215,6 +225,11 @@ const SOURCE_IDENTITY_RESULT_KEYS = Object.freeze([
   "kernel_protocol",
   "relay_protocol",
   "build_identity_verified",
+  "kernel_release_verified",
+  "kernel_release_digest",
+  "kernel_artifact_digest",
+  "kernel_source_commit",
+  "probe_identity_verified",
 ])
 const FRESH_WORKER_RESULT_KEYS = Object.freeze([
   "observed",
@@ -249,17 +264,36 @@ const MANAGED_ISOLATION_RESULT_KEYS = Object.freeze([
 const SHUTDOWN_RESULT_KEYS = Object.freeze([
   "exemption",
   "trigger",
+  "expected_outcome",
   "observed_outcome",
   "managed_policy",
-  "shutdown_evidence",
+  "observation_complete",
+  "worker_stopped",
+  "cleanup_confirmed",
   "measured_from_last_agent_finished",
+  "configured_delay_seconds",
+  "observed_delay_seconds",
 ])
+export const SHUTDOWN_EXPECTATIONS = Object.freeze({
+  agents_done: Object.freeze({ outcome: "idle-deadline-scheduled", workerStopped: false, cleanupConfirmed: false, measuredFromLastAgentFinished: true, delay: "positive", observesDelay: false }),
+  idle_15m: Object.freeze({ outcome: "worker-stopped", workerStopped: true, cleanupConfirmed: true, measuredFromLastAgentFinished: true, delay: 900, observesDelay: true }),
+  idle_30m: Object.freeze({ outcome: "worker-stopped", workerStopped: true, cleanupConfirmed: true, measuredFromLastAgentFinished: true, delay: 1_800, observesDelay: true }),
+  minimum_3h: Object.freeze({ outcome: "worker-remained-running", workerStopped: false, cleanupConfirmed: false, measuredFromLastAgentFinished: false, delay: 10_800, observesDelay: true }),
+  disabled: Object.freeze({ outcome: "worker-remained-running", workerStopped: false, cleanupConfirmed: false, measuredFromLastAgentFinished: false, delay: null, observesDelay: false }),
+  keep_running: Object.freeze({ outcome: "worker-remained-running", workerStopped: false, cleanupConfirmed: false, measuredFromLastAgentFinished: false, delay: null, observesDelay: false }),
+  restart_reconciliation: Object.freeze({ outcome: "shutdown-policy-restored", workerStopped: false, cleanupConfirmed: false, measuredFromLastAgentFinished: false, delay: null, observesDelay: false }),
+  manual: Object.freeze({ outcome: "worker-stopped", workerStopped: true, cleanupConfirmed: true, measuredFromLastAgentFinished: false, delay: 0, observesDelay: true }),
+  custom: Object.freeze({ outcome: "worker-stopped", workerStopped: true, cleanupConfirmed: true, measuredFromLastAgentFinished: true, delay: "positive", observesDelay: true }),
+  explicit_lifecycle_reconciliation: Object.freeze({ outcome: "worker-stopped", workerStopped: true, cleanupConfirmed: true, measuredFromLastAgentFinished: false, delay: 0, observesDelay: true }),
+  deployment_reconciliation: Object.freeze({ outcome: "worker-stopped", workerStopped: true, cleanupConfirmed: true, measuredFromLastAgentFinished: false, delay: 0, observesDelay: true }),
+})
 const PARITY_ROW_IDS = new Set(
   ROW_DEFINITIONS.filter((definition) => !definition.exemption).map(({ id }) => id),
 )
-const RELEASE_ROW_ID = "MP-09"
-const SHUTDOWN_ROW_ID = "MP-10"
+const RELEASE_ROW_ID = "MP-07"
+const SHUTDOWN_ROW_ID = "MP-09"
 const REVIEWED_COMMIT = /^[0-9a-f]{40}$/i
+const SHA256_DIGEST = /^sha256:[0-9a-f]{64}$/i
 const MIN_SIGNING_KEY_BYTES = 16
 
 const NODE_FILESYSTEM = Object.freeze({ readFile, writeFile })
@@ -475,41 +509,70 @@ function validateShutdownResult(result, topology, rowId, checkId, failures) {
   }
   const trigger = checkId.slice("shutdown_".length)
   if (result.trigger !== trigger) addFailure(failures, "shutdown_trigger_mismatch", topology, rowId, checkId)
-  if (!nonEmptyString(result.exemption) || !nonEmptyString(result.observed_outcome)) {
+  const expectation = SHUTDOWN_EXPECTATIONS[trigger]
+  if (!expectation) addFailure(failures, "shutdown_trigger_unsupported", topology, rowId, checkId)
+  if (!nonEmptyString(result.exemption) || !nonEmptyString(result.expected_outcome)
+    || !nonEmptyString(result.observed_outcome)) {
     addFailure(failures, "shutdown_evidence_missing", topology, rowId, checkId)
   }
-  for (const key of ["managed_policy", "shutdown_evidence", "measured_from_last_agent_finished"]) {
+  for (const key of ["managed_policy", "observation_complete", "worker_stopped", "cleanup_confirmed", "measured_from_last_agent_finished"]) {
     if (typeof result[key] !== "boolean") {
       addFailure(failures, `shutdown_${key}_invalid`, topology, rowId, checkId)
     }
   }
-  if (result.shutdown_evidence !== true) {
+  if (result.observation_complete !== true) {
     addFailure(failures, "shutdown_evidence_missing", topology, rowId, checkId)
   }
-  const idleTrigger = trigger === "idle_15m" || trigger === "idle_30m"
-  if (result.measured_from_last_agent_finished !== idleTrigger) {
-    addFailure(failures, "shutdown_measurement_boundary_invalid", topology, rowId, checkId)
-  }
   if (topology === "ordinary") {
-    if (result.exemption !== "ordinary-no-managed-shutdown" || result.managed_policy !== false) {
+    if (result.exemption !== "ordinary-no-managed-shutdown" || result.managed_policy !== false
+      || result.expected_outcome !== "ordinary-remained-running"
+      || result.observed_outcome !== "ordinary-remained-running"
+      || result.worker_stopped !== false || result.cleanup_confirmed !== false
+      || result.measured_from_last_agent_finished !== false
+      || result.configured_delay_seconds !== null || result.observed_delay_seconds !== null) {
       addFailure(failures, "ordinary_shutdown_exemption_invalid", topology, rowId, checkId)
     }
-  } else if (result.exemption !== "managed-auto-shutdown" || result.managed_policy !== true) {
+    return
+  }
+  if (!expectation || result.exemption !== "managed-auto-shutdown" || result.managed_policy !== true
+    || result.expected_outcome !== expectation.outcome || result.observed_outcome !== expectation.outcome
+    || result.worker_stopped !== expectation.workerStopped
+    || result.cleanup_confirmed !== expectation.cleanupConfirmed
+    || result.measured_from_last_agent_finished !== expectation.measuredFromLastAgentFinished) {
     addFailure(failures, "managed_shutdown_evidence_invalid", topology, rowId, checkId)
+    return
+  }
+  const configured = result.configured_delay_seconds
+  const observed = result.observed_delay_seconds
+  if (expectation.delay === null) {
+    if (configured !== null || observed !== null) {
+      addFailure(failures, "shutdown_delay_invalid", topology, rowId, checkId)
+    }
+  } else {
+    const delayValid = Number.isInteger(configured) && configured >= 0
+      && (expectation.delay === "positive" ? configured > 0 : configured === expectation.delay)
+    if (!delayValid) addFailure(failures, "shutdown_delay_invalid", topology, rowId, checkId)
+    if (expectation.observesDelay) {
+      if (!Number.isFinite(observed) || observed < configured || observed > configured + 120) {
+        addFailure(failures, "shutdown_observed_delay_invalid", topology, rowId, checkId)
+      }
+    } else if (observed !== null) {
+      addFailure(failures, "shutdown_observed_delay_invalid", topology, rowId, checkId)
+    }
   }
 }
 
 function validateProviderSafety(rows, topology, failures) {
-  const ancestry = rows?.["MP-04"]?.checks?.provider_ancestry?.result
+  const ancestry = rows?.["MP-01"]?.checks?.provider_ancestry?.result
   if (!checkResultIsObject(ancestry) || ancestry.bwrap_ancestor !== false) {
-    addFailure(failures, "bwrap_ancestor_present", topology, "MP-04", "provider_ancestry")
+    addFailure(failures, "bwrap_ancestor_present", topology, "MP-01", "provider_ancestry")
   }
-  const isolation = rows?.["MP-04"]?.checks?.managed_isolation_environment?.result
+  const isolation = rows?.["MP-01"]?.checks?.managed_isolation_environment?.result
   if (!checkResultIsObject(isolation) || isolation.managed_marker_absent !== true) {
-    addFailure(failures, "managed_isolation_marker_present", topology, "MP-04", "managed_isolation_environment")
+    addFailure(failures, "managed_isolation_marker_present", topology, "MP-01", "managed_isolation_environment")
   }
   if (!checkResultIsObject(isolation) || isolation.bwrap_environment_absent !== true) {
-    addFailure(failures, "bwrap_environment_marker_present", topology, "MP-04", "managed_isolation_environment")
+    addFailure(failures, "bwrap_environment_marker_present", topology, "MP-01", "managed_isolation_environment")
   }
 }
 
@@ -535,13 +598,28 @@ function validateCheckResult(result, manifest, topology, rowId, checkId, failure
     validateShutdownResult(result, topology, rowId, checkId, failures)
     return
   }
-  if (rowId === "MP-01" && checkId === "source_protocol_identity") {
+  if (rowId === "MP-10" && checkId === "source_protocol_identity") {
     if (!checkResultIsObject(result) || !sameKeys(result, SOURCE_IDENTITY_RESULT_KEYS)) {
       addFailure(failures, "check_result_shape_invalid", topology, rowId, checkId)
       return
     }
-    for (const key of ["observed", "source_sha_verified", "source_clean", "build_identity_verified"]) {
+    for (const key of [
+      "observed",
+      "source_sha_verified",
+      "source_clean",
+      "build_identity_verified",
+      "kernel_release_verified",
+      "probe_identity_verified",
+    ]) {
       if (result[key] !== true) addFailure(failures, "check_result_semantics_invalid", topology, rowId, checkId, key)
+    }
+    for (const key of ["kernel_release_digest", "kernel_artifact_digest"]) {
+      if (!SHA256_DIGEST.test(result[key] ?? "")) {
+        addFailure(failures, "check_result_semantics_invalid", topology, rowId, checkId, key)
+      }
+    }
+    if (result.kernel_source_commit !== manifest?.identity?.reviewed_commit) {
+      addFailure(failures, "check_result_identity_mismatch", topology, rowId, checkId, "kernel_source_commit")
     }
     if (result.kernel_protocol !== manifest?.identity?.kernel_protocol) {
       addFailure(failures, "check_result_identity_mismatch", topology, rowId, checkId, "kernel_protocol")
@@ -551,11 +629,11 @@ function validateCheckResult(result, manifest, topology, rowId, checkId, failure
     }
     return
   }
-  if (rowId === "MP-01" && checkId === "fresh_worker") {
+  if (rowId === "MP-10" && checkId === "fresh_worker") {
     requireExactTrueResult(result, FRESH_WORKER_RESULT_KEYS.slice(1), topology, rowId, checkId, failures)
     return
   }
-  if (rowId === "MP-01" && checkId === "official_provider_identity") {
+  if (rowId === "MP-08" && checkId === "official_provider_identity") {
     if (!checkResultIsObject(result) || !sameKeys(result, PROVIDER_IDENTITY_RESULT_KEYS)) {
       addFailure(failures, "check_result_shape_invalid", topology, rowId, checkId)
       return
@@ -571,11 +649,11 @@ function validateCheckResult(result, manifest, topology, rowId, checkId, failure
     }
     return
   }
-  if (rowId === "MP-01" && checkId === "capture_boundary") {
+  if (rowId === "MP-10" && checkId === "capture_boundary") {
     requireExactTrueResult(result, CAPTURE_BOUNDARY_RESULT_KEYS.slice(1), topology, rowId, checkId, failures)
     return
   }
-  if (rowId === "MP-04" && checkId === "provider_ancestry") {
+  if (rowId === "MP-01" && checkId === "provider_ancestry") {
     if (!checkResultIsObject(result) || !sameKeys(result, PROVIDER_ANCESTRY_RESULT_KEYS)) {
       addFailure(failures, "check_result_shape_invalid", topology, rowId, checkId)
       return
@@ -588,7 +666,7 @@ function validateCheckResult(result, manifest, topology, rowId, checkId, failure
     }
     return
   }
-  if (rowId === "MP-04" && checkId === "managed_isolation_environment") {
+  if (rowId === "MP-01" && checkId === "managed_isolation_environment") {
     requireExactTrueResult(result, MANAGED_ISOLATION_RESULT_KEYS.slice(1), topology, rowId, checkId, failures)
     return
   }
@@ -599,7 +677,7 @@ function validateCheckResult(result, manifest, topology, rowId, checkId, failure
   }
   const extraKeys = []
   if (rowId === "MP-02" && checkId === "directory_discovery") extraKeys.push("child_enumeration_denied")
-  if (rowId === "MP-04" && checkId === "privilege_state") extraKeys.push("no_new_privs")
+  if (rowId === "MP-01" && checkId === "privilege_state") extraKeys.push("no_new_privs")
   const expectedKeys = ["observed", ...required, ...extraKeys]
   if (!checkResultIsObject(result) || !sameKeys(result, expectedKeys)) {
     addFailure(failures, "check_result_shape_invalid", topology, rowId, checkId)
@@ -762,12 +840,12 @@ function compareIdentity(ordinary, path1, failures) {
   if (!isPlainObject(ordinary?.identity) || !isPlainObject(path1?.identity)) return
   for (const field of identityFields()) {
     if (canonicalJson(ordinary.identity[field]) !== canonicalJson(path1.identity[field])) {
-      addFailure(failures, "identity_mismatch", "both", "MP-01", "source_protocol_identity", field)
+      addFailure(failures, "identity_mismatch", "both", "MP-10", "source_protocol_identity", field)
     }
   }
   for (const field of PROVIDER_KEYS) {
     if (canonicalJson(ordinary?.provider?.[field]) !== canonicalJson(path1?.provider?.[field])) {
-      addFailure(failures, "provider_identity_mismatch", "both", "MP-01", "official_provider_identity", field)
+      addFailure(failures, "provider_identity_mismatch", "both", "MP-08", "official_provider_identity", field)
     }
   }
 }

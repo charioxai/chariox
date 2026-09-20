@@ -46,18 +46,21 @@ contract owns capture, validation, and comparison:
 ```text
 apps/cli/scripts/managed-ordinary-parity-collector.mjs
 apps/cli/scripts/managed-ordinary-parity-matrix.mjs
+apps/cli/scripts/managed-ordinary-parity-probe.mjs
 apps/cli/scripts/managed-ordinary-parity-collector.test.mjs
 apps/cli/scripts/managed-ordinary-parity-matrix.test.mjs
+apps/cli/scripts/managed-ordinary-parity-probe.test.mjs
 ```
 
-The older `scripts/managed-path1-provider-parity-drill.mjs` schema is not an
-acceptance source for this matrix. Do not add another snapshot format. Any
-remaining useful runtime probes from that script must move behind the
-repository-owned collector contract above.
+The retired `scripts/managed-path1-provider-parity-drill.mjs` implementation
+and its v1 snapshot schema have been removed. The collector and matrix above
+are the only runtime parity evidence contract. Do not restore, wrap, or add a
+second snapshot format; add any required observation behind the repository-owned
+collector and its v2 matrix schema.
 
 Capture must be invoked inside the official provider turn or an approved remote
 command boundary on each target. It must run on Linux, use the same reviewed
-kernel/provider build, declare @@ordinary@@ or @@path1@@, and write one signed
+kernel/provider build, declare `ordinary` or `path1`, and write one signed
 machine-readable manifest. The collector uses a repository-owned probe whose
 source/build identity must match the reviewed commit. It does not accept a
 caller-selected probe executable.
@@ -103,27 +106,41 @@ cleanup failures. It emits row names and statuses only; provider output,
 environment contents, credentials, and command output are not printed.
 
 `ROW_DEFINITIONS` in `managed-ordinary-parity-matrix.mjs` is the sole
-machine-readable list of required rows and checks. It groups the contract as
-`MP-01` through `MP-10`. The plan-level `MP-11` source inventory is a separate
-proactive audit gate and cannot be represented by a runtime snapshot alone.
+machine-readable list of required rows and checks. Its identifiers match the
+locked plan ledger exactly:
 
-`provider_ancestry` must prove no Bubblewrap ancestor on Path 1;
-`managed_isolation_environment` must prove the managed isolation and Bubblewrap
-environment markers are absent. The remaining rows compare exact cwd semantics,
-arbitrary accessible directory create/read/write, `/home`, `/tmp`, a repository
-created after enrollment, Git/file/terminal behavior, mount visibility,
-`NoNewPrivs`, `CapEff`, umask, network reachability, the permitted
-package/tool probe, official provider identity, reconnect/history result
-identity, structured errors, and cleanup.
+| Row | Runtime evidence |
+| --- | --- |
+| `MP-01` | Ordinary provider launch: ancestry, managed-isolation environment, mounts, privileges, network, and permitted tool/package installation. |
+| `MP-02` | Directory discovery, exact-path entry, creation, `/home`, and `/tmp`. |
+| `MP-03` | Exact managed control-file protection and ordinary filesystem permissions. |
+| `MP-04` | Ordinary `HOME`, `CHARIOX_HOME`, cwd, and worker-user environment. |
+| `MP-05` | Empty workspace, copied repository, preserved basename, collision rejection, and worktree placement. |
+| `MP-06` | Default/custom server-authoritative repository root, inheritance, and client-override rejection. |
+| `MP-07` | Signed immutable managed release, atomic activation, rollback, and reviewed source identity. |
+| `MP-08` | Provider, session, terminal, file, Git, attachment, permission, Project setup, reconnect, restart, history, queued/active turn, resource, error, protocol, and cleanup parity. |
+| `MP-09` | Every mandatory managed automatic-shutdown policy and reconciliation trigger. |
+| `MP-10` | Reviewed source/protocol identity, fresh worker, and authorized capture boundary. |
+
+The plan-level `MP-11` source inventory is a separate proactive audit gate and
+cannot be represented by a runtime snapshot alone. `MP-01/provider_ancestry`
+must prove no Bubblewrap ancestor on Path 1, and
+`MP-01/managed_isolation_environment` must prove the managed isolation and
+Bubblewrap environment markers are absent.
 
 The shutdown rows are mandatory even when a policy means that automatic stop is
-not expected. They cover all configured modes (`agents_done`, 15-minute idle,
-30-minute idle, minimum three-hour runtime, manual, and custom) plus explicit
-lifecycle and deployment reconciliation. Each row must report its observed
-outcome; omission is a failed comparison.
+not expected. They cover `agents_done`, 15-minute idle, 30-minute idle, minimum
+three-hour runtime, disabled mode, keep-running mode, restart reconciliation,
+manual stop, custom delay, explicit lifecycle reconciliation, and deployment
+reconciliation. Each row records the exact expected and observed outcome,
+whether the worker stopped, cleanup confirmation, the configured delay, the
+observed delay, and whether timing was measured from the last agent finishing.
+Arbitrary nonempty outcome strings, premature deadlines, excessive delay, or a
+stop in disabled/keep-running mode fail closed.
 
-The focused Node tests contain green-parity, tamper, missing-row,
-topology/head-mismatch, different-result, and cleanup-failure fixtures. They
-validate the comparator contract only. A successful focused test run does not
+The focused Node tests contain green parity, tamper, missing-row,
+topology/head mismatch, different-result, cleanup-failure, invalid shutdown
+outcome, premature deadline, and disabled-mode negative fixtures. They validate
+the collector/comparator contract only. A successful focused test run does not
 replace live capture from an ordinary Linux kernel and a fresh Path-1 worker;
 that live execution remains required before parity is accepted.
