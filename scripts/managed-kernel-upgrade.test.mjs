@@ -284,6 +284,12 @@ set -eu
 printf '%s\n' "$*" >> "$HARNESS_STATE/systemctl.log"
 presence="$CHARIOX_MANAGED_UPGRADE_ROOT/var/lib/chariox/kernels/active/kernel-1.json"
 if [ "$1" = "stop" ]; then
+  if [ -f "$HARNESS_STATE/write-legacy-home-on-stop" ]; then
+    legacy_home="$CHARIOX_MANAGED_UPGRADE_ROOT/var/lib/chariox/home"
+    mkdir -p "$legacy_home"
+    printf 'late-service-write\n' > "$legacy_home/late-service-write"
+    rm -f -- "$HARNESS_STATE/write-legacy-home-on-stop"
+  fi
   rm -f -- "$presence"
 fi
 if [ "$1" = "start" ]; then
@@ -517,6 +523,30 @@ test("managed kernel upgrade migrates legacy home state and rejects a home colli
   assert.equal(
     await lstat(join(collisionHarness.state, "systemctl.log")).then(() => true, () => false),
     false,
+  )
+})
+
+test("managed kernel upgrade stops the live service before migrating legacy home", async (context) => {
+  const harness = await makeHarness(context)
+  const canonicalHome = join(harness.installRoot, "home/chariox")
+  const legacyHome = join(harness.installRoot, "var/lib/chariox/home")
+  const legacyReceipt = join(legacyHome, "managed/bootstrap-receipt.json")
+  await rename(canonicalHome, legacyHome)
+  await mkdir(dirname(legacyReceipt), { recursive: true })
+  await rename(harness.receiptPath, legacyReceipt)
+  await put(join(harness.state, "write-legacy-home-on-stop"), "write\n")
+
+  const result = harness.run()
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(
+    await lstat(legacyHome).then(() => true, () => false),
+    false,
+    "the stopped service must not recreate a legacy state tree after migration",
+  )
+  assert.equal(
+    await readFile(join(canonicalHome, "late-service-write"), "utf8"),
+    "late-service-write\n",
+    "the migration must retain the service's final write",
   )
 })
 
