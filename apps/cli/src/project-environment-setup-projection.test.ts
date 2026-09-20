@@ -12,14 +12,16 @@ test("project environment setup projection preserves the server phase and bounds
   const requests: unknown[] = []
   const projection = createProjectEnvironmentSetupProjection({
     client: fakeClient(requests, {
-      ProjectEnvironmentSetupStarted: {
-        status: status({
-          phase: "failed",
-          progress_percent: 150,
-          failure_code: "setup_failed",
-          failure_message: "bad\nworker\u0000detail",
-          retryable: true,
-        }),
+      StartProjectEnvironmentSetup: {
+        ProjectEnvironmentSetupStarted: {
+          status: status({
+            phase: "failed",
+            progress_percent: 150,
+            failure_code: "setup_failed",
+            failure_message: "bad\nworker\u0000detail",
+            retryable: true,
+          }),
+        },
       },
     }),
   })
@@ -98,11 +100,24 @@ test("project environment setup cancel and retry use the persisted server identi
   const requests: unknown[] = []
   const projection = createProjectEnvironmentSetupProjection({
     client: fakeClient(requests, {
-      ProjectEnvironmentSetupCancelled: {
-        status: status({ phase: "cancelled", retryable: true }),
+      CancelProjectEnvironmentSetup: {
+        ProjectEnvironmentSetupCancelled: {
+          status: status({
+            phase: "cancelled",
+            retryable: true,
+            session_id: "authoritative-session",
+          }),
+        },
       },
-      ProjectEnvironmentSetupRetried: {
-        status: status({ phase: "requested", attempt: 2, progress_percent: 0 }),
+      RetryProjectEnvironmentSetup: {
+        ProjectEnvironmentSetupRetried: {
+          status: status({
+            phase: "requested",
+            attempt: 2,
+            progress_percent: 0,
+            session_id: "authoritative-session",
+          }),
+        },
       },
     }),
   })
