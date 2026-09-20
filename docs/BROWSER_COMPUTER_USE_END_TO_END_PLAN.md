@@ -56,10 +56,14 @@ failure in an earlier one.
    Browser and Computer feature work, implement path 1 from
    `chariox-cloud/docs/C9_MANAGED_REMOTE_KERNELS_MILESTONE.md`: one disposable
    Cloud VM per isolated worker behind the provider-neutral worker contract.
-   Prove ordinary-kernel behavior, all three official provider harnesses, selected
-   context and credential transfer, remote Git, reconnect/recovery, resource
-   bounds, cost controls, and complete provider-resource deletion. Hetzner is the
-   first live adapter; no kernel, protocol, or client behavior may depend on it.
+   The disposable VM is the provider isolation boundary: after enrollment, its
+   provider processes use the ordinary kernel launch path and normal
+   developer-machine filesystem behavior, without a managed-only Bubblewrap
+   namespace or workspace allowlist. Prove ordinary-kernel behavior, all three
+   official provider harnesses, selected context and credential transfer,
+   remote Git, reconnect/recovery, resource bounds, cost controls, and complete
+   provider-resource deletion. Hetzner is the first live adapter; no kernel,
+   protocol, or client behavior may depend on it.
    Bare-metal or nested-virtualization microVM hosting is path 2 and is explicitly
    deferred until path 1 is accepted.
 3. Deploy the locally proven Browser and Computer implementation to a fresh
@@ -159,6 +163,37 @@ Parity work must preserve and test that managed-machine shutdown behavior.
 Managed placement must not create a second workspace, session, provider,
 terminal, file, Git, or reconnect model.
 
+For Path 1, the disposable worker VM is the provider security and filesystem
+isolation boundary. Once the signed kernel has enrolled, provider runs must use
+the same ordinary kernel launch path as a user-managed machine. Path-1 service
+units and bootstrap must not set `CHARIOX_MANAGED_PROVIDER_ISOLATION`, invoke
+`/usr/bin/bwrap`, require a Bubblewrap acceptance probe, or project a
+managed-only filesystem allowlist. A provider may use any working directory and
+filesystem operation permitted to the worker's ordinary user by normal Unix
+permissions, including repositories and user-created directories outside the
+initial transferred repository. This is the intended product behavior for a
+disposable developer machine, comparable to other full-machine agent products.
+
+Bubblewrap may remain only where it protects a genuinely different topology,
+such as an inner Docker-slice boundary or an explicitly documented legacy
+shared-host mode. That code must not be selected merely because the worker was
+provisioned by Chariox, and it cannot be used as evidence that Path-1 parity has
+passed. The Path-1 acceptance evidence must prove the launched provider process
+has no Bubblewrap ancestor, no managed-isolation marker, and no path behavior
+that differs from an ordinary kernel running the same reviewed build.
+
+Removing Bubblewrap from Path 1 does not expose Chariox infrastructure secrets.
+Immutable signed releases remain root-owned under
+`/usr/lib/chariox/releases/<digest>`. Bootstrap envelopes, release verification,
+broker state, relay credentials, and other managed control data remain in
+root-owned service locations under `/var/lib/chariox` or another dedicated
+service root and must not be inherited in provider environment variables or
+arguments. Provider-account credentials still use the normal kernel-owned
+selection and materialization path. These service boundaries, host resource
+limits, provider-resource deletion, and every managed automatic-shutdown
+trigger remain mandatory; they are not reasons to fork provider filesystem
+semantics.
+
 Parity work is an explicit audit, not a bug-by-bug reaction to manual reports.
 Before the managed-machine gate can pass, maintain one executable comparison
 matrix covering both an ordinary Linux kernel and the same reviewed build on a
@@ -175,6 +210,9 @@ must compare result data, errors, persistence, and reconnect behavior:
   durable history, queued prompts, and active-turn state
 - filesystem permissions, control-file protection, resource limits, error
   shapes, protocol versions, and cleanup
+- provider process ancestry/environment and arbitrary-path behavior, proving a
+  Path-1 worker uses the ordinary launch path with no Bubblewrap or managed
+  filesystem allowlist
 
 Directory discovery must return an exact accessible directory even when the
 kernel cannot enumerate its children. A denied child listing may suppress
@@ -734,6 +772,12 @@ The managed-machine drill must prove:
 4. A headed slice starts with explicit CPU, memory, process, and disk limits.
 5. All three providers can launch through official provider harnesses when
    credentials are configured.
+   Each launch must use the ordinary kernel provider path: no
+   `CHARIOX_MANAGED_PROVIDER_ISOLATION`, no Bubblewrap ancestor, and no
+   managed-only cwd or filesystem restriction. Exercise at least the copied
+   repository, `/home`, another user-created directory, `/tmp`, package/tool
+   installation permitted to the worker user, and a repository created after
+   enrollment.
 6. Web View displays the environment through the hosted relay.
 7. Local and remote TUI clients attach to the same Room.
 8. A browser task and a non-browser desktop task complete.
@@ -1306,9 +1350,11 @@ CHA-16 is complete only when:
 - the OpenShip-backed Chariox managed-machine drill passes from provisioning
   through teardown
 - disposable Cloud-VM workers pass the provider-neutral path-1 allocation,
-  enrollment, ordinary-kernel parity, Codex/Claude/OpenCode, selected context and
+  enrollment, no-Bubblewrap ordinary-kernel provider launch, arbitrary
+  accessible cwd/filesystem parity, Codex/Claude/OpenCode, selected context and
   credential transfer, remote Git, reconnect/recovery, bounded lifetime, cost,
-  and residue-free deletion gates before Browser and Computer feature work resumes
+  mandatory managed shutdown, and residue-free deletion gates before Browser
+  and Computer feature work resumes
 - Chariox has a verified first-place public result on every relevant maintained
   browser-use and computer-use benchmark, with all inclusions and exclusions
   recorded
