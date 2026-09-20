@@ -36,6 +36,7 @@ import {
 } from "./browser-controller-history.mjs";
 import { BrowserDialogDefaults } from "./browser-controller-dialogs.mjs";
 import { acquireBrowserCookieWriterFence } from "./browser-controller-cookie-fence.mjs";
+import { BrowserCdpAuthorityRegistry } from "./browser-controller-cdp-authority-registry.mjs";
 
 const DEFAULT_DEBUGGER_ENDPOINT = "http://127.0.0.1:9222";
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
@@ -89,10 +90,13 @@ export class BrowserCdpClient {
     this.connection = null;
     this.unsubscribeFromConnection = null;
     this.browserGeneration = 0;
+    this.authorityRegistry = new BrowserCdpAuthorityRegistry();
+    this.connectionAttempt = null;
+    this.connectionAttemptSerial = 0;
     this.sessionsByTarget = new Map();
     this.targetsBySession = new Map();
     this.targetsByFrame = new BrowserFrameTargets();
-    this.frameSessions = new BrowserFrameSessions(this.targetsByFrame, (id) => this.targetsBySession.get(id));
+    this.frameSessions = this.createFrameSessions();
     this.targetsByDownload = new Map();
     this.downloadCancellationReasons = new Map();
     this.downloadDiskCheckPending = false;
@@ -105,20 +109,154 @@ export class BrowserCdpClient {
     this.cookieWriterFenceInUse = false;
   }
 
+  createFrameSessions() {
+    const targetsBySession = this.targetsBySession;
+    return new BrowserFrameSessions(
+      this.targetsByFrame,
+      (id) => targetsBySession.get(id),
+    );
+  }
+
+  resetAuthorityState() {
+    const oldFrameSessions = this.frameSessions;
+    this.sessionsByTarget = new Map();
+    this.targetsBySession = new Map();
+    this.targetsByFrame = new BrowserFrameTargets();
+    this.frameSessions = this.createFrameSessions();
+    this.targetsByDownload = new Map();
+    this.downloadCancellationReasons = new Map();
+    this.downloadDiskCheckPending = false;
+    this.downloadDiskCheckRequested = false;
+    this.documentIdsByTarget = new Map();
+    this.snapshotStateByTarget = new Map();
+    this.dialogDefaults = new BrowserDialogDefaults();
+    this.networkRequestsBySession = new Map();
+    this.cookieWriterFence = null;
+    this.cookieWriterFenceInUse = false;
+    void oldFrameSessions?.close();
+  }
+
+  requireAuthority(connection) {
+    const authority = this.authorityRegistry.currentFor(connection, { ready: true });
+    if (!authority) {
+      throw new BrowserControllerError(
+        "browser_cdp_disconnected",
+        "browser CDP authority is no longer current",
+      );
+    }
+    return authority;
+  }
+
+  assertAuthority(authority, { ready = true } = {}) {
+    if (!this.authorityRegistry.isCurrent(authority, { ready })) {
+      throw new BrowserControllerError(
+        "browser_cdp_disconnected",
+        "browser CDP authority was replaced",
+      );
+    }
+  }
+
+  observeTargetAuthority(authority, target) {
+    this.assertAuthority(authority, { ready: false });
+    const observed = this.authorityRegistry.observeTarget(
+      authority,
+      target?.targetId,
+      target?.webSocketDebuggerUrl,
+    );
+    if (!observed) {
+      this.assertAuthority(authority, { ready: false });
+      throw new BrowserControllerError(
+        "browser_target_not_found",
+        `browser target ${JSON.stringify(target?.targetId)} has no current debugger authority`,
+      );
+    }
+    if (observed.rotated) {
+      const targetId = target.targetId;
+      const sessionId = this.sessionsByTarget.get(targetId);
+      if (sessionId) this.targetsBySession.delete(sessionId);
+      this.sessionsByTarget.delete(targetId);
+      this.documentIdsByTarget.delete(targetId);
+      this.snapshotStateByTarget.delete(targetId);
+      this.dialogDefaults.delete(targetId);
+      this.targetsByFrame.removeTarget(targetId);
+      void this.frameSessions.removeTarget(targetId);
+    }
+    return observed;
+  }
+
+  captureTargetOperation(connection, targetId, documentId) {
+    const authority = this.requireAuthority(connection);
+    const target = this.authorityRegistry.getTarget(authority, targetId);
+    if (
+      !target ||
+      target.documentId !== documentId ||
+      this.documentIdsByTarget.get(targetId) !== documentId
+    ) {
+      throw new BrowserControllerError(
+        "stale_document_reference",
+        `browser target ${JSON.stringify(targetId)} moved away from the requested document`,
+      );
+    }
+    return {
+      authority,
+      targetId,
+      documentId,
+      targetGeneration: target.targetGeneration,
+      documentGeneration: target.documentGeneration,
+      sessionId: target.sessionId,
+    };
+  }
+
+  assertTargetOperation(operation) {
+    this.assertAuthority(operation.authority);
+    if (
+      !this.authorityRegistry.isTargetCurrent(operation.authority, operation.targetId, {
+        targetGeneration: operation.targetGeneration,
+        documentGeneration: operation.documentGeneration,
+        documentId: operation.documentId,
+        sessionId: operation.sessionId,
+      }) ||
+      this.documentIdsByTarget.get(operation.targetId) !== operation.documentId
+    ) {
+      throw new BrowserControllerError(
+        "stale_document_reference",
+        `browser target ${JSON.stringify(operation.targetId)} moved away from the requested document`,
+      );
+    }
+  }
+
+  retireConnection(connection) {
+    const authority = this.authorityRegistry.currentFor(connection, { ready: false });
+    if (!authority) return false;
+    this.authorityRegistry.abort(authority);
+    if (this.connection === connection) {
+      this.connection = null;
+      this.unsubscribeFromConnection?.();
+      this.unsubscribeFromConnection = null;
+      this.resetAuthorityState();
+    }
+    return true;
+  }
+
   async reconcile(rawViewport) {
     const viewport = canonicalViewport(rawViewport);
     const connection = await this.ensureConnection();
+    const authority = this.requireAuthority(connection);
     try {
       const { targetInfos = [] } = await connection.send("Target.getTargets");
+      this.assertAuthority(authority);
       const pages = targetInfos.filter(
         (target) => target?.type === "page" && typeof target.targetId === "string",
-      );
+      ).filter((target) => !this.observeTargetAuthority(authority, target)?.stale);
       const writerTargets = targetInfos.filter(
         (target) => PERSISTENT_COOKIE_WRITER_TARGET_TYPES.has(target?.type)
           && typeof target.targetId === "string",
-      );
+      ).filter((target) => !this.observeTargetAuthority(authority, target)?.stale);
       const persistentTargetIds = new Set(
-        [...pages, ...writerTargets].map((target) => target.targetId),
+        [...targetInfos.filter((target) =>
+          (target?.type === "page" || PERSISTENT_COOKIE_WRITER_TARGET_TYPES.has(target?.type))
+          && typeof target.targetId === "string",
+        )].map((target) => target.targetId),
       );
       for (const targetId of this.sessionsByTarget.keys()) {
         if (!persistentTargetIds.has(targetId)) {
@@ -131,62 +269,41 @@ export class BrowserCdpClient {
           this.dialogDefaults.delete(targetId);
           this.targetsByFrame.removeTarget(targetId);
           await this.frameSessions.removeTarget(targetId);
+          this.authorityRegistry.removeTarget(authority, targetId);
         }
       }
       const inspected = await Promise.all(
-        pages.map((target) => this.inspectPage(connection, target, viewport)),
+        pages.map((target) => this.inspectPage(connection, target, viewport, authority)),
       );
       await Promise.all(
-        writerTargets.map((target) => this.ensureWriterTargetSession(connection, target.targetId)),
+        writerTargets.map((target) => this.ensureWriterTargetSession(connection, target.targetId, authority)),
       );
+      this.assertAuthority(authority);
       const focused = inspected.find((tab) => tab.focused)?.target_id ?? null;
       return {
-        browser_generation: this.browserGeneration,
+        browser_generation: authority.browserGeneration,
         tabs: inspected.map(({ focused: _focused, ...tab }) => tab),
         focused_target_id: focused,
         viewport,
         event_cursor: this.eventJournal.cursor(),
       };
     } catch (error) {
-      if (!connection.isOpen()) {
-        this.connection = null;
-        this.sessionsByTarget.clear();
-        this.targetsBySession.clear();
-        this.targetsByFrame.clear();
-        this.frameSessions.clear();
-        this.targetsByDownload.clear();
-        this.downloadCancellationReasons.clear();
-        this.downloadDiskCheckPending = false;
-        this.downloadDiskCheckRequested = false;
-        this.documentIdsByTarget.clear();
-        this.dialogDefaults.clear();
-        this.networkRequestsBySession.clear();
-        this.cookieWriterFence = null;
-        this.cookieWriterFenceInUse = false;
+      if (!connection.isOpen() || !this.authorityRegistry.isCurrent(authority)) {
+        this.retireConnection(connection);
       }
       throw normalizeControllerError(error);
     }
   }
 
   async close() {
+    this.connectionAttemptSerial += 1;
     const connection = this.connection;
     this.connection = null;
     this.unsubscribeFromConnection?.();
     this.unsubscribeFromConnection = null;
-    this.sessionsByTarget.clear();
-    this.targetsBySession.clear();
-    this.targetsByFrame.clear();
-    await this.frameSessions.close();
-    this.targetsByDownload.clear();
-    this.downloadCancellationReasons.clear();
-    this.downloadDiskCheckPending = false;
-    this.downloadDiskCheckRequested = false;
-    this.documentIdsByTarget.clear();
-    this.snapshotStateByTarget.clear();
-    this.dialogDefaults.clear();
-    this.networkRequestsBySession.clear();
-    this.cookieWriterFence = null;
-    this.cookieWriterFenceInUse = false;
+    this.connectionAttempt = null;
+    this.authorityRegistry.retireCurrent();
+    this.resetAuthorityState();
     if (connection) {
       await connection.close();
     }
@@ -200,13 +317,15 @@ export class BrowserCdpClient {
       );
     }
     const connection = await this.ensureConnection();
+    const authority = this.requireAuthority(connection);
     if (!this.cookieWriterFence) {
       const { targetInfos = [] } = await connection.send("Target.getTargets");
+      this.assertAuthority(authority);
       const pageTargets = targetInfos.filter(
         (target) => target?.type === "page" && typeof target.targetId === "string",
       );
       const pageSessions = await Promise.all(
-        pageTargets.map((target) => this.ensureTargetSession(connection, target.targetId)),
+        pageTargets.map((target) => this.ensureTargetSession(connection, target.targetId, authority)),
       );
       const writerTargets = targetInfos.filter(
         (target) => PERSISTENT_COOKIE_WRITER_TARGET_TYPES.has(target?.type)
@@ -220,15 +339,18 @@ export class BrowserCdpClient {
         connection,
         pageSessions,
         knownWriterTargets,
-        waitForNetworkIdle: (sessions) => this.waitForNetworkIdle(sessions),
-        waitForWriterTargetsGone: (targetIds) => this.waitForWriterTargetsGone(connection, targetIds),
+        waitForNetworkIdle: (sessions) => this.waitForNetworkIdle(sessions, authority),
+        waitForWriterTargetsGone: (targetIds) => this.waitForWriterTargetsGone(connection, targetIds, authority),
       });
     }
+    this.assertAuthority(authority);
     const fence = this.cookieWriterFence;
     this.cookieWriterFenceInUse = true;
     let retained = false;
     try {
-      return await operation({ retain: () => { retained = true; } });
+      const result = await operation({ retain: () => { retained = true; } });
+      this.assertAuthority(authority);
+      return result;
     } finally {
       this.cookieWriterFenceInUse = false;
       if (!retained && this.cookieWriterFence === fence) {
@@ -238,9 +360,10 @@ export class BrowserCdpClient {
     }
   }
 
-  async waitForNetworkIdle(sessionIds) {
+  async waitForNetworkIdle(sessionIds, authority = this.requireAuthority(this.connection)) {
     const deadline = Date.now() + this.requestTimeoutMs;
     while (sessionIds.some((sessionId) => (this.networkRequestsBySession.get(sessionId)?.size ?? 0) > 0)) {
+      this.assertAuthority(authority);
       if (Date.now() >= deadline) {
         throw new BrowserControllerError(
           "browser_cookie_writer_fence_timeout",
@@ -251,11 +374,12 @@ export class BrowserCdpClient {
     }
   }
 
-  async waitForWriterTargetsGone(connection, targetIds) {
+  async waitForWriterTargetsGone(connection, targetIds, authority = this.requireAuthority(connection)) {
     const pending = new Set(targetIds);
     const deadline = Date.now() + this.requestTimeoutMs;
     while (true) {
       const { targetInfos = [] } = await connection.send("Target.getTargets");
+      this.assertAuthority(authority);
       const live = targetInfos.some((target) => pending.has(target?.targetId));
       if (!live) return;
       const remainingMs = deadline - Date.now();
@@ -270,58 +394,73 @@ export class BrowserCdpClient {
   }
 
   async ensureConnection() {
-    if (this.connection?.isOpen()) {
-      return this.connection;
+    if (this.connection) {
+      if (this.connection.isOpen() && this.authorityRegistry.currentFor(this.connection, { ready: true })) {
+        return this.connection;
+      }
+      this.retireConnection(this.connection);
     }
-    this.unsubscribeFromConnection?.();
-    this.unsubscribeFromConnection = null;
-    this.sessionsByTarget.clear();
-    this.targetsBySession.clear();
-    this.targetsByFrame.clear();
-    this.frameSessions.clear();
-    this.targetsByDownload.clear();
-    this.downloadCancellationReasons.clear();
-    this.downloadDiskCheckPending = false;
-    this.downloadDiskCheckRequested = false;
-    this.documentIdsByTarget.clear();
-    this.snapshotStateByTarget.clear();
-    this.dialogDefaults.clear();
-    this.networkRequestsBySession.clear();
-    this.cookieWriterFence = null;
-    this.cookieWriterFenceInUse = false;
-    const connection = this.connectionFactory
-      ? await this.connectionFactory()
-      : await connectToBrowser({
-          debuggerEndpoint: this.debuggerEndpoint,
-          requestTimeoutMs: this.requestTimeoutMs,
-          fetchImpl: this.fetchImpl,
-          webSocketFactory: this.webSocketFactory,
-        });
-    this.connection = connection;
-    this.browserGeneration += 1;
-    if (typeof connection.subscribe === "function") {
-      this.unsubscribeFromConnection = connection.subscribe(
-        (message) => this.recordConnectionEvent(message),
-      );
+    if (this.connectionAttempt) {
+      return this.connectionAttempt;
     }
+    const serial = ++this.connectionAttemptSerial;
+    const attempt = (async () => {
+      const connection = this.connectionFactory
+        ? await this.connectionFactory()
+        : await connectToBrowser({
+            debuggerEndpoint: this.debuggerEndpoint,
+            requestTimeoutMs: this.requestTimeoutMs,
+            fetchImpl: this.fetchImpl,
+            webSocketFactory: this.webSocketFactory,
+          });
+      if (serial !== this.connectionAttemptSerial) {
+        await connection.close().catch(() => {});
+        throw new BrowserControllerError(
+          "browser_cdp_disconnected",
+          "browser CDP connection attempt was superseded",
+        );
+      }
+      const authority = this.authorityRegistry.begin(connection);
+      this.browserGeneration = authority.browserGeneration;
+      this.connection = connection;
+      if (typeof connection.subscribe === "function") {
+        this.unsubscribeFromConnection = connection.subscribe(
+          (message) => this.recordConnectionEvent(message, authority),
+        );
+      }
+      try {
+        await connection.send("Target.setDiscoverTargets", { discover: true });
+        this.assertAuthority(authority, { ready: false });
+        this.authorityRegistry.commit(authority);
+        this.eventJournal.recordCdp(
+          { method: "Chariox.browserConnected", params: {} },
+          this.eventContext(authority),
+        );
+        return connection;
+      } catch (error) {
+        this.retireConnection(connection);
+        await connection.close().catch(() => {});
+        throw error;
+      }
+    })();
+    this.connectionAttempt = attempt;
     try {
-      await connection.send("Target.setDiscoverTargets", { discover: true });
-      this.eventJournal.recordCdp(
-        { method: "Chariox.browserConnected", params: {} },
-        this.eventContext(),
-      );
-      return connection;
-    } catch (error) {
-      this.unsubscribeFromConnection?.();
-      this.unsubscribeFromConnection = null;
-      if (this.connection === connection) this.connection = null;
-      await connection.close().catch(() => {});
-      throw error;
+      return await attempt;
+    } finally {
+      if (this.connectionAttempt === attempt) this.connectionAttempt = null;
     }
   }
 
-  async inspectPage(connection, target, viewport) {
-    const sessionId = await this.ensureTargetSession(connection, target.targetId);
+  async inspectPage(connection, target, viewport, authority = this.requireAuthority(connection)) {
+    const observed = this.observeTargetAuthority(authority, target);
+    if (observed?.stale) {
+      throw new BrowserControllerError(
+        "browser_cdp_disconnected",
+        `browser target ${JSON.stringify(target.targetId)} was observed on a retired debugger endpoint`,
+      );
+    }
+    const sessionId = await this.ensureTargetSession(connection, target.targetId, authority);
+    this.assertAuthority(authority);
     await connection.send(
       "Emulation.setDeviceMetricsOverride",
       deviceMetricsFor(viewport),
@@ -339,6 +478,7 @@ export class BrowserCdpClient {
         sessionId,
       ),
     ]);
+    this.assertAuthority(authority);
     const documentId = frameTree?.frameTree?.frame?.loaderId;
     if (typeof documentId !== "string" || !documentId) {
       throw new BrowserControllerError(
@@ -347,7 +487,11 @@ export class BrowserCdpClient {
       );
     }
     this.documentIdsByTarget.set(target.targetId, documentId);
+    if (!this.authorityRegistry.setDocument(authority, target.targetId, documentId)) {
+      this.assertAuthority(authority);
+    }
     await registerBrowserFrameTargets(connection, sessionId, target.targetId, documentId, this.targetsByFrame);
+    this.assertAuthority(authority);
     return {
       target_id: target.targetId,
       document_id: documentId,
@@ -369,7 +513,9 @@ export class BrowserCdpClient {
       );
     }
     const connection = await this.ensureConnection();
+    const authority = this.requireAuthority(connection);
     const { targetInfos = [] } = await connection.send("Target.getTargets");
+    this.assertAuthority(authority);
     const target = targetInfos.find(
       (candidate) => candidate?.type === "page" && candidate.targetId === targetId,
     );
@@ -379,12 +525,8 @@ export class BrowserCdpClient {
         `browser target ${JSON.stringify(targetId)} is not available`,
       );
     }
-    if (this.documentIdsByTarget.get(targetId) !== documentId) {
-      throw new BrowserControllerError(
-        "stale_document_reference",
-        `browser target ${JSON.stringify(targetId)} moved away from the requested document`,
-      );
-    }
+    this.observeTargetAuthority(authority, target);
+    this.captureTargetOperation(connection, targetId, documentId);
     assertNotCancelled(signal);
     if (action === "activate") {
       await connection.send("Target.activateTarget", { targetId });
@@ -396,20 +538,22 @@ export class BrowserCdpClient {
           `browser target ${JSON.stringify(targetId)} did not close`,
         );
       }
-      await this.waitForTargetClosure(connection, targetId);
+      await this.waitForTargetClosure(connection, targetId, authority);
     }
+    this.assertAuthority(authority);
     return {
-      browser_generation: this.browserGeneration,
+      browser_generation: authority.browserGeneration,
       target_id: targetId,
       document_id: documentId,
       action,
     };
   }
 
-  async waitForTargetClosure(connection, targetId) {
+  async waitForTargetClosure(connection, targetId, authority = this.requireAuthority(connection)) {
     const deadline = Date.now() + this.requestTimeoutMs;
     while (true) {
       const { targetInfos = [] } = await connection.send("Target.getTargets");
+      this.assertAuthority(authority);
       const targetStillOpen = targetInfos.some(
         (candidate) => candidate?.type === "page" && candidate.targetId === targetId,
       );
@@ -432,7 +576,9 @@ export class BrowserCdpClient {
       "document_id",
     );
     const connection = await this.ensureConnection();
+    const authority = this.requireAuthority(connection);
     const { targetInfos = [] } = await connection.send("Target.getTargets");
+    this.assertAuthority(authority);
     const target = targetInfos.find(
       (candidate) =>
         candidate?.type === "page" && candidate.targetId === targetId,
@@ -443,7 +589,9 @@ export class BrowserCdpClient {
         `browser target ${JSON.stringify(targetId)} is not available`,
       );
     }
-    const sessionId = await this.ensureTargetSession(connection, targetId);
+    this.observeTargetAuthority(authority, target);
+    const sessionId = await this.ensureTargetSession(connection, targetId, authority);
+    const operation = this.captureTargetOperation(connection, targetId, documentId);
     const previous = this.snapshotStateByTarget.get(targetId);
     const snapshotRevision =
       previous?.documentId === documentId ? previous.revision + 1 : 1;
@@ -452,16 +600,18 @@ export class BrowserCdpClient {
       revision: snapshotRevision,
     });
     try {
-      return await captureBrowserFrames({
+      const result = await captureBrowserFrames({
         connection,
         sessionId,
         targetId,
         documentId,
-        browserGeneration: this.browserGeneration,
+        browserGeneration: authority.browserGeneration,
         snapshotRevision,
       });
+      this.assertTargetOperation(operation);
+      return result;
     } catch (error) {
-      if (this.snapshotStateByTarget.get(targetId)?.revision === snapshotRevision) {
+      if (this.authorityRegistry.isCurrent(authority) && this.snapshotStateByTarget.get(targetId)?.revision === snapshotRevision) {
         if (previous) {
           this.snapshotStateByTarget.set(targetId, previous);
         } else {
@@ -476,7 +626,9 @@ export class BrowserCdpClient {
     const targetId = requiredIdentity(rawRequest?.target_id, "target_id");
     const documentId = requiredIdentity(rawRequest?.document_id, "document_id");
     const connection = await this.ensureConnection();
+    const authority = this.requireAuthority(connection);
     const { targetInfos = [] } = await connection.send("Target.getTargets");
+    this.assertAuthority(authority);
     const target = targetInfos.find(
       (candidate) =>
         candidate?.type === "page" && candidate.targetId === targetId,
@@ -487,7 +639,9 @@ export class BrowserCdpClient {
         `browser target ${JSON.stringify(targetId)} is not available`,
       );
     }
-    const sessionId = await this.ensureTargetSession(connection, targetId);
+    this.observeTargetAuthority(authority, target);
+    const sessionId = await this.ensureTargetSession(connection, targetId, authority);
+    const operation = this.captureTargetOperation(connection, targetId, documentId);
     try {
       const result = await withBrowserActionFrame({
         connection,
@@ -499,8 +653,9 @@ export class BrowserCdpClient {
         timeoutMs: rawRequest?.timeout_ms,
         signal,
       }, performBrowserAction);
+      this.assertTargetOperation(operation);
       return {
-        browser_generation: this.browserGeneration,
+        browser_generation: authority.browserGeneration,
         ...result,
       };
     } catch (error) {
@@ -512,7 +667,7 @@ export class BrowserCdpClient {
     assertNotCancelled(signal);
     const targetId = requiredIdentity(rawRequest?.target_id, "target_id");
     const documentId = requiredIdentity(rawRequest?.document_id, "document_id");
-    const { connection, sessionId } = await this.resolvePageTarget(targetId);
+    const { connection, sessionId, authority } = await this.resolvePageTarget(targetId, documentId);
     try {
       const result = await navigateBrowser({
         connection,
@@ -522,10 +677,12 @@ export class BrowserCdpClient {
         url: rawRequest?.url,
         signal,
       });
+      this.assertAuthority(authority);
       this.documentIdsByTarget.set(targetId, result.document_id);
+      this.authorityRegistry.setDocument(authority, targetId, result.document_id);
       this.snapshotStateByTarget.delete(targetId);
       return {
-        browser_generation: this.browserGeneration,
+        browser_generation: authority.browserGeneration,
         ...result,
       };
     } catch (error) {
@@ -537,7 +694,7 @@ export class BrowserCdpClient {
     assertNotCancelled(signal);
     const targetId = requiredIdentity(rawRequest?.target_id, "target_id");
     const documentId = requiredIdentity(rawRequest?.document_id, "document_id");
-    const { connection, sessionId } = await this.resolvePageTarget(targetId);
+    const { connection, sessionId, authority } = await this.resolvePageTarget(targetId, documentId);
     try {
       const result = await navigateBrowserHistory({
         connection,
@@ -547,10 +704,12 @@ export class BrowserCdpClient {
         action: rawRequest?.action,
         signal,
       });
+      this.assertAuthority(authority);
       this.documentIdsByTarget.set(targetId, result.document_id);
+      this.authorityRegistry.setDocument(authority, targetId, result.document_id);
       this.snapshotStateByTarget.delete(targetId);
       return {
-        browser_generation: this.browserGeneration,
+        browser_generation: authority.browserGeneration,
         ...result,
       };
     } catch (error) {
@@ -561,11 +720,9 @@ export class BrowserCdpClient {
   async wait(rawRequest) {
     const targetId = requiredIdentity(rawRequest?.target_id, "target_id");
     const documentId = requiredIdentity(rawRequest?.document_id, "document_id");
-    const { connection, sessionId } = await this.resolvePageTarget(targetId);
+    const { connection, sessionId, authority, operation } = await this.resolvePageTarget(targetId, documentId);
     try {
-      return {
-        browser_generation: this.browserGeneration,
-        ...(await waitForBrowserState({
+      const result = await waitForBrowserState({
           connection,
           sessionId,
           targetId,
@@ -573,8 +730,9 @@ export class BrowserCdpClient {
           kind: rawRequest?.kind,
           selector: rawRequest?.selector,
           timeoutMs: rawRequest?.timeout_ms,
-        })),
-      };
+        });
+      this.assertTargetOperation(operation);
+      return { browser_generation: authority.browserGeneration, ...result };
     } catch (error) {
       throw normalizeControllerError(error);
     }
@@ -602,7 +760,9 @@ export class BrowserCdpClient {
       );
     }
     const connection = await this.ensureConnection();
+    const authority = this.requireAuthority(connection);
     const { targetInfos = [] } = await connection.send("Target.getTargets");
+    this.assertAuthority(authority);
     const target = targetInfos.find(
       (candidate) => candidate?.type === "page" && candidate.targetId === targetId,
     );
@@ -612,13 +772,9 @@ export class BrowserCdpClient {
         `browser target ${JSON.stringify(targetId)} is not available`,
       );
     }
-    const sessionId = await this.ensureTargetSession(connection, targetId);
-    if (this.documentIdsByTarget.get(targetId) !== documentId) {
-      throw new BrowserControllerError(
-        "stale_document_reference",
-        `browser target ${JSON.stringify(targetId)} moved away from the requested document`,
-      );
-    }
+    this.observeTargetAuthority(authority, target);
+    const sessionId = await this.ensureTargetSession(connection, targetId, authority);
+    const operation = this.captureTargetOperation(connection, targetId, documentId);
     const defaultPrompt = action === "accept" && promptText == null
       ? this.dialogDefaults.get(targetId, documentId)
       : undefined;
@@ -638,8 +794,9 @@ export class BrowserCdpClient {
       },
       sessionId,
     );
+    this.assertTargetOperation(operation);
     return {
-      browser_generation: this.browserGeneration,
+      browser_generation: authority.browserGeneration,
       target_id: targetId,
       document_id: documentId,
       action,
@@ -650,11 +807,9 @@ export class BrowserCdpClient {
     assertNotCancelled(signal);
     const targetId = requiredIdentity(rawRequest?.target_id, "target_id");
     const documentId = requiredIdentity(rawRequest?.document_id, "document_id");
-    const { connection, sessionId } = await this.resolvePageTarget(targetId);
+    const { connection, sessionId, authority, operation } = await this.resolvePageTarget(targetId, documentId);
     try {
-      return {
-        browser_generation: this.browserGeneration,
-        ...await configureBrowserDownloads({
+      const result = await configureBrowserDownloads({
           connection,
           sessionId,
           targetId,
@@ -663,7 +818,11 @@ export class BrowserCdpClient {
           minimumFreeBytes: this.minimumDownloadFreeBytes,
           fileSystem: this.fileSystem,
           signal,
-        }),
+        });
+      this.assertTargetOperation(operation);
+      return {
+        browser_generation: authority.browserGeneration,
+        ...result,
       };
     } catch (error) {
       throw normalizeControllerError(error);
@@ -672,14 +831,17 @@ export class BrowserCdpClient {
 
   async cancelDownload(rawRequest) {
     const connection = await this.ensureConnection();
+    const authority = this.requireAuthority(connection);
     try {
-      return await cancelBrowserDownload({
+      const result = await cancelBrowserDownload({
         connection,
-        browserGeneration: this.browserGeneration,
+        browserGeneration: authority.browserGeneration,
         requestedBrowserGeneration: rawRequest?.browser_generation,
         guid: rawRequest?.guid,
         targetsByDownload: this.targetsByDownload,
       });
+      this.assertAuthority(authority);
+      return result;
     } catch (error) {
       throw normalizeControllerError(error);
     }
@@ -689,11 +851,9 @@ export class BrowserCdpClient {
     assertNotCancelled(signal);
     const targetId = requiredIdentity(rawRequest?.target_id, "target_id");
     const documentId = requiredIdentity(rawRequest?.document_id, "document_id");
-    const { connection, sessionId } = await this.resolvePageTarget(targetId);
+    const { connection, sessionId, authority, operation } = await this.resolvePageTarget(targetId, documentId);
     try {
-      return {
-        browser_generation: this.browserGeneration,
-        ...await withBrowserActionFrame({
+      const result = await withBrowserActionFrame({
           connection,
           sessionId,
           targetId,
@@ -703,7 +863,11 @@ export class BrowserCdpClient {
           uploadRoots: this.uploadRoots,
           fileSystem: this.fileSystem,
           signal,
-        }, uploadBrowserFiles),
+        }, uploadBrowserFiles);
+      this.assertTargetOperation(operation);
+      return {
+        browser_generation: authority.browserGeneration,
+        ...result,
       };
     } catch (error) {
       throw normalizeControllerError(error);
@@ -714,11 +878,9 @@ export class BrowserCdpClient {
     assertNotCancelled(signal);
     const targetId = requiredIdentity(rawRequest?.target_id, "target_id");
     const documentId = requiredIdentity(rawRequest?.document_id, "document_id");
-    const { connection, sessionId, target } = await this.resolvePageTarget(targetId);
+    const { connection, sessionId, authority, target, operation } = await this.resolvePageTarget(targetId, documentId);
     try {
-      return {
-        browser_generation: this.browserGeneration,
-        ...await setBrowserPermission({
+      const result = await setBrowserPermission({
           connection,
           sessionId,
           targetId,
@@ -727,7 +889,11 @@ export class BrowserCdpClient {
           permission: rawRequest?.permission,
           setting: rawRequest?.setting,
           signal,
-        }),
+        });
+      this.assertTargetOperation(operation);
+      return {
+        browser_generation: authority.browserGeneration,
+        ...result,
       };
     } catch (error) {
       throw normalizeControllerError(error);
@@ -746,9 +912,11 @@ export class BrowserCdpClient {
     }
   }
 
-  async resolvePageTarget(targetId) {
+  async resolvePageTarget(targetId, documentId) {
     const connection = await this.ensureConnection();
+    const authority = this.requireAuthority(connection);
     const { targetInfos = [] } = await connection.send("Target.getTargets");
+    this.assertAuthority(authority);
     const target = targetInfos.find(
       (candidate) => candidate?.type === "page" && candidate.targetId === targetId,
     );
@@ -758,22 +926,41 @@ export class BrowserCdpClient {
         `browser target ${JSON.stringify(targetId)} is not available`,
       );
     }
+    const observed = this.observeTargetAuthority(authority, target);
+    if (observed?.stale) {
+      throw new BrowserControllerError(
+        "browser_cdp_disconnected",
+        `browser target ${JSON.stringify(targetId)} was observed on a retired debugger endpoint`,
+      );
+    }
+    const sessionId = await this.ensureTargetSession(connection, targetId, authority);
     return {
       connection,
       target,
-      sessionId: await this.ensureTargetSession(connection, targetId),
+      authority,
+      sessionId,
+      operation: documentId === undefined
+        ? null
+        : this.captureTargetOperation(connection, targetId, documentId),
     };
   }
 
-  async ensureTargetSession(connection, targetId) {
+  async ensureTargetSession(connection, targetId, authority = this.requireAuthority(connection)) {
+    this.assertAuthority(authority);
     let sessionId = this.sessionsByTarget.get(targetId);
-    if (sessionId) {
+    if (sessionId && this.authorityRegistry.isSessionCurrent(authority, targetId, sessionId)) {
       return sessionId;
+    }
+    if (sessionId) {
+      this.sessionsByTarget.delete(targetId);
+      this.targetsBySession.delete(sessionId);
+      this.authorityRegistry.clearSession(authority, targetId, sessionId);
     }
     const attached = await connection.send("Target.attachToTarget", {
       targetId,
       flatten: true,
     });
+    this.assertAuthority(authority);
     if (typeof attached?.sessionId !== "string" || !attached.sessionId) {
       throw new BrowserControllerError(
         "browser_attach_failed",
@@ -783,6 +970,14 @@ export class BrowserCdpClient {
     sessionId = attached.sessionId;
     this.sessionsByTarget.set(targetId, sessionId);
     this.targetsBySession.set(sessionId, targetId);
+    const frameSessions = this.frameSessions;
+    if (!this.authorityRegistry.setSession(authority, targetId, sessionId)) {
+      await connection.send("Target.detachFromTarget", { sessionId }).catch(() => {});
+      throw new BrowserControllerError(
+        "browser_cdp_disconnected",
+        "browser CDP authority was replaced while attaching a target",
+      );
+    }
     try {
       await Promise.all([
         connection.send("Page.enable", {}, sessionId),
@@ -790,25 +985,36 @@ export class BrowserCdpClient {
         connection.send("Runtime.enable", {}, sessionId),
         connection.send("Network.enable", {}, sessionId),
         connection.send("Inspector.enable", {}, sessionId),
-        this.frameSessions.start(connection, sessionId),
+        frameSessions.start(connection, sessionId),
       ]);
+      this.assertAuthority(authority);
     } catch (error) {
-      this.sessionsByTarget.delete(targetId);
-      this.targetsBySession.delete(sessionId);
-      await this.frameSessions.removeTarget(targetId);
+      if (this.authorityRegistry.isCurrent(authority, { ready: false })) {
+        if (this.sessionsByTarget.get(targetId) === sessionId) this.sessionsByTarget.delete(targetId);
+        this.targetsBySession.delete(sessionId);
+        this.authorityRegistry.clearSession(authority, targetId, sessionId);
+        await frameSessions.removeTarget(targetId);
+      }
       await connection.send("Target.detachFromTarget", { sessionId }).catch(() => {});
       throw error;
     }
     return sessionId;
   }
 
-  async ensureWriterTargetSession(connection, targetId) {
+  async ensureWriterTargetSession(connection, targetId, authority = this.requireAuthority(connection)) {
+    this.assertAuthority(authority);
     let sessionId = this.sessionsByTarget.get(targetId);
-    if (sessionId) return sessionId;
+    if (sessionId && this.authorityRegistry.isSessionCurrent(authority, targetId, sessionId)) return sessionId;
+    if (sessionId) {
+      this.sessionsByTarget.delete(targetId);
+      this.targetsBySession.delete(sessionId);
+      this.authorityRegistry.clearSession(authority, targetId, sessionId);
+    }
     const attached = await connection.send("Target.attachToTarget", {
       targetId,
       flatten: true,
     });
+    this.assertAuthority(authority);
     if (typeof attached?.sessionId !== "string" || !attached.sessionId) {
       throw new BrowserControllerError(
         "browser_attach_failed",
@@ -818,21 +1024,38 @@ export class BrowserCdpClient {
     sessionId = attached.sessionId;
     this.sessionsByTarget.set(targetId, sessionId);
     this.targetsBySession.set(sessionId, targetId);
+    if (!this.authorityRegistry.setSession(authority, targetId, sessionId)) {
+      await connection.send("Target.detachFromTarget", { sessionId }).catch(() => {});
+      throw new BrowserControllerError(
+        "browser_cdp_disconnected",
+        "browser CDP authority was replaced while attaching a writer target",
+      );
+    }
     try {
       await Promise.all([
         connection.send("Network.enable", {}, sessionId),
         connection.send("Debugger.enable", {}, sessionId),
       ]);
     } catch (error) {
-      this.sessionsByTarget.delete(targetId);
+      if (this.sessionsByTarget.get(targetId) === sessionId) this.sessionsByTarget.delete(targetId);
       this.targetsBySession.delete(sessionId);
+      this.authorityRegistry.clearSession(authority, targetId, sessionId);
       await connection.send("Target.detachFromTarget", { sessionId }).catch(() => {});
       throw error;
     }
     return sessionId;
   }
 
-  recordConnectionEvent(message) {
+  recordConnectionEvent(
+    message,
+    authority = this.authorityRegistry.currentFor(this.connection, { ready: true }),
+  ) {
+    if (!authority || !this.authorityRegistry.isCurrent(authority, { ready: true })) return;
+    const connection = authority.connection;
+    if (message?.method === "Target.targetInfoChanged" && message.params?.targetInfo) {
+      const observed = this.observeTargetAuthority(authority, message.params.targetInfo);
+      if (observed?.stale) return;
+    }
     if (message?.method === "Network.requestWillBeSent" && typeof message.sessionId === "string"
         && typeof message.params?.requestId === "string") {
       const requests = this.networkRequestsBySession.get(message.sessionId) ?? new Set();
@@ -845,7 +1068,7 @@ export class BrowserCdpClient {
       requests?.delete(message.params.requestId);
       if (requests?.size === 0) this.networkRequestsBySession.delete(message.sessionId);
     }
-    if (this.frameSessions.observe(message, this.connection)) return;
+    if (this.frameSessions.observe(message, connection)) return;
     const dialogTargetId = this.targetsBySession.get(message?.sessionId) ?? message?.params?.targetId;
     this.dialogDefaults.observe(message, dialogTargetId, this.documentIdsByTarget.get(dialogTargetId));
     if (message?.method === "Target.detachedFromTarget") {
@@ -860,6 +1083,7 @@ export class BrowserCdpClient {
         this.dialogDefaults.delete(targetId);
         this.targetsByFrame.removeTarget(targetId);
         void this.frameSessions.removeTarget(targetId);
+        this.authorityRegistry.clearSession(authority, targetId, sessionId);
       }
     }
     this.targetsByFrame.record(message, this.targetsBySession.get(message?.sessionId));
@@ -868,6 +1092,7 @@ export class BrowserCdpClient {
       const documentId = message.params?.frame?.loaderId;
       if (targetId && typeof documentId === "string" && documentId) {
         this.documentIdsByTarget.set(targetId, documentId);
+        this.authorityRegistry.setDocument(authority, targetId, documentId);
       }
     }
     if (message?.method === "Browser.downloadWillBegin") {
@@ -875,16 +1100,16 @@ export class BrowserCdpClient {
       const guid = message.params?.guid;
       if (typeof guid === "string" && guid) {
         this.targetsByDownload.set(guid, targetId ?? null);
-        this.scheduleDownloadDiskCheck();
+        this.scheduleDownloadDiskCheck(authority);
       }
     }
     if (
       message?.method === "Browser.downloadProgress" &&
       message.params?.state === "inProgress"
     ) {
-      this.scheduleDownloadDiskCheck();
+      this.scheduleDownloadDiskCheck(authority);
     }
-    this.eventJournal.recordCdp(message, this.eventContext());
+    this.eventJournal.recordCdp(message, this.eventContext(authority));
     if (
       message?.method === "Browser.downloadProgress" &&
       message.params?.state !== "inProgress"
@@ -897,15 +1122,16 @@ export class BrowserCdpClient {
     }
   }
 
-  scheduleDownloadDiskCheck() {
+  scheduleDownloadDiskCheck(authority = this.authorityRegistry.currentFor(this.connection, { ready: true })) {
+    if (!authority || !this.authorityRegistry.isCurrent(authority, { ready: true })) return;
     if (this.targetsByDownload.size === 0) return;
     if (this.downloadDiskCheckPending) {
       this.downloadDiskCheckRequested = true;
       return;
     }
     this.downloadDiskCheckPending = true;
-    const connection = this.connection;
-    const browserGeneration = this.browserGeneration;
+    const connection = authority.connection;
+    const browserGeneration = authority.browserGeneration;
     void assertBrowserDownloadHeadroom({
       downloadDirectory: this.downloadDirectory,
       minimumFreeBytes: this.minimumDownloadFreeBytes,
@@ -918,7 +1144,8 @@ export class BrowserCdpClient {
           "browser_download_unconfigured",
         ].includes(error?.code) ||
         connection !== this.connection ||
-        browserGeneration !== this.browserGeneration
+        browserGeneration !== this.browserGeneration ||
+        !this.authorityRegistry.isCurrent(authority, { ready: true })
       ) return;
       const active = [...this.targetsByDownload.keys()]
         .filter((guid) => !this.downloadCancellationReasons.has(guid));
@@ -933,7 +1160,8 @@ export class BrowserCdpClient {
     }).finally(() => {
       if (
         connection !== this.connection ||
-        browserGeneration !== this.browserGeneration
+        browserGeneration !== this.browserGeneration ||
+        !this.authorityRegistry.isCurrent(authority, { ready: true })
       ) return;
       this.downloadDiskCheckPending = false;
       if (this.downloadDiskCheckRequested) {
@@ -943,9 +1171,9 @@ export class BrowserCdpClient {
     });
   }
 
-  eventContext() {
+  eventContext(authority = this.authorityRegistry.current) {
     return {
-      browserGeneration: this.browserGeneration,
+      browserGeneration: authority?.browserGeneration ?? this.browserGeneration,
       targetIdForSession: (sessionId) => this.targetsBySession.get(sessionId) ?? null,
       targetIdForFrame: (frameId) => this.targetsByFrame.get(frameId) ?? null,
       targetIdForDownload: (guid) => this.targetsByDownload.get(guid) ?? null,

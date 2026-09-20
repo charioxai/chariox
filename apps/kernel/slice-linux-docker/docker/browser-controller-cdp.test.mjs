@@ -982,6 +982,137 @@ test("timed-out or disconnected dialog replies terminate and do not leak default
   assert.equal(JSON.stringify(trace).includes("old private default"), false);
 });
 
+test("endpoint rotation creates fresh target authority and fences stale events", async (t) => {
+  const connection = new EndpointConnection("endpoint-a");
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  t.after(() => browser.close());
+
+  const first = await browser.reconcile(viewport);
+  const authority = browser.authorityRegistry.current;
+  const firstTarget = browser.authorityRegistry.getTarget(authority, "target-a");
+  const cursor = first.event_cursor;
+  connection.endpoint = "endpoint-b";
+  const rotated = await browser.reconcile(viewport);
+  const freshTarget = browser.authorityRegistry.getTarget(authority, "target-a");
+
+  assert.equal(rotated.browser_generation, first.browser_generation);
+  assert.equal(freshTarget.targetGeneration, firstTarget.targetGeneration + 1);
+  assert.ok(freshTarget.documentGeneration > firstTarget.documentGeneration);
+  assert.equal(freshTarget.endpointKey, "ws://127.0.0.1/endpoint-b/target-a");
+  assert.equal(freshTarget.sessionId, "session-a");
+  assert.equal(browser.authorityRegistry.isTargetCurrent(authority, "target-a", {
+    targetGeneration: firstTarget.targetGeneration,
+    documentGeneration: firstTarget.documentGeneration,
+    documentId: firstTarget.documentId,
+    sessionId: firstTarget.sessionId,
+  }), false);
+  assert.throws(
+    () => browser.assertTargetOperation({
+      authority,
+      targetId: "target-a",
+      documentId: firstTarget.documentId,
+      targetGeneration: firstTarget.targetGeneration,
+      documentGeneration: firstTarget.documentGeneration,
+      sessionId: firstTarget.sessionId,
+    }),
+    (error) => error.code === "stale_document_reference",
+  );
+  browser.recordConnectionEvent({
+    method: "Target.targetInfoChanged",
+    params: {
+      targetInfo: {
+        targetId: "target-a",
+        webSocketDebuggerUrl: "ws://127.0.0.1/endpoint-a/target-a",
+      },
+    },
+  }, authority);
+  assert.equal(
+    browser.authorityRegistry.getTarget(authority, "target-a").endpointKey,
+    "ws://127.0.0.1/endpoint-b/target-a",
+  );
+
+  browser.recordConnectionEvent(
+    { method: "Runtime.consoleAPICalled", params: { value: "stale endpoint" } },
+    { ...authority, active: false },
+  );
+  const events = browser.pollEvents({
+    browser_generation: rotated.browser_generation,
+    cursor,
+    limit: 100,
+  });
+  assert.equal(events.events.some((event) => JSON.stringify(event).includes("stale endpoint")), false);
+});
+
+test("reconnect fences stale sessions and mutations while the replacement wins", async (t) => {
+  const oldConnection = new DeferredActivateConnection("endpoint-old");
+  const newConnection = new EndpointConnection("endpoint-new");
+  const connections = [oldConnection, newConnection];
+  const browser = new BrowserCdpClient({
+    connectionFactory: async () => connections.shift(),
+  });
+  t.after(() => browser.close());
+
+  await browser.reconcile(viewport);
+  const oldAuthority = browser.authorityRegistry.current;
+  const mutation = browser.manageTab({
+    target_id: "target-a",
+    document_id: "loader-a",
+    action: "activate",
+  });
+  await oldConnection.activationStarted.promise;
+  await oldConnection.close();
+  const replacement = browser.reconcile(viewport);
+  oldConnection.activation.resolve({});
+
+  await assert.rejects(
+    mutation,
+    (error) => error.code === "browser_cdp_disconnected",
+  );
+  const state = await replacement;
+  assert.equal(state.browser_generation, oldAuthority.browserGeneration + 1);
+  assert.equal(browser.authorityRegistry.current.connection, newConnection);
+  await assert.rejects(
+    browser.ensureTargetSession(oldConnection, "target-a", oldAuthority),
+    (error) => error.code === "browser_cdp_disconnected",
+  );
+
+  const cursor = state.event_cursor;
+  browser.recordConnectionEvent(
+    { method: "Runtime.consoleAPICalled", params: { value: "old authority" } },
+    oldAuthority,
+  );
+  const events = browser.pollEvents({
+    browser_generation: state.browser_generation,
+    cursor,
+    limit: 100,
+  });
+  assert.equal(events.events.some((event) => JSON.stringify(event).includes("old authority")), false);
+});
+
+test("concurrent connection requests share one authoritative reconnect attempt", async (t) => {
+  const connection = new EndpointConnection("endpoint-concurrent");
+  const gate = Promise.withResolvers();
+  let factoryCalls = 0;
+  const browser = new BrowserCdpClient({
+    connectionFactory: async () => {
+      factoryCalls += 1;
+      await gate.promise;
+      return connection;
+    },
+  });
+  t.after(() => browser.close());
+
+  const first = browser.ensureConnection();
+  await Promise.resolve();
+  const second = browser.ensureConnection();
+  assert.equal(factoryCalls, 1);
+  gate.resolve();
+  const [firstConnection, secondConnection] = await Promise.all([first, second]);
+  assert.equal(firstConnection, connection);
+  assert.equal(secondConnection, connection);
+  assert.equal(factoryCalls, 1);
+});
+
 class FakeConnection {
   constructor() {
     this.calls = [];
@@ -1055,6 +1186,42 @@ class FakeConnection {
     if (method === "DOM.resolveNode") return { object: { objectId: "file-object" } };
     if (method === "Runtime.callFunctionOn") return { result: { value: "file" } };
     return {};
+  }
+}
+
+class EndpointConnection extends FakeConnection {
+  constructor(endpoint) {
+    super();
+    this.endpoint = endpoint;
+  }
+
+  async send(method, params = {}, sessionId) {
+    const result = await super.send(method, params, sessionId);
+    if (method === "Target.getTargets") {
+      result.targetInfos = result.targetInfos.map((target) => ({
+        ...target,
+        webSocketDebuggerUrl: `ws://127.0.0.1/${this.endpoint}/${target.targetId}`,
+      }));
+    }
+    return result;
+  }
+}
+
+class DeferredActivateConnection extends EndpointConnection {
+  constructor(endpoint) {
+    super(endpoint);
+    this.activationStarted = Promise.withResolvers();
+    this.activation = Promise.withResolvers();
+  }
+
+  async send(method, params = {}, sessionId) {
+    if (method === "Target.activateTarget") {
+      this.calls.push({ method, params, sessionId });
+      this.activationStarted.resolve();
+      await this.activation.promise;
+      return {};
+    }
+    return super.send(method, params, sessionId);
   }
 }
 
