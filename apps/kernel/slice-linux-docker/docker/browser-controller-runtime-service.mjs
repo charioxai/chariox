@@ -260,14 +260,16 @@ class BrowserRuntimeSemanticPort {
     return this.startPromise;
   }
 
-  async page(operation) {
+  async page(operation, selection = null) {
     await this.ensureReady();
-    const generation = this.controller.generation;
+    const selected = selection ?? await this.tab();
+    const generation = selected.generation;
     return this.controller._enqueue(generation, async () => {
       if (this.controller.state !== "ready" || !this.controller._cdp) {
         throw new ControllerError(ERROR_CODES.CONTROLLER_NOT_READY);
       }
-      return operation(this.controller._cdp, this.controller.cdpCommandTimeoutMs);
+      const { connection } = await this.targetConnection(selected);
+      return operation(connection, this.controller.cdpCommandTimeoutMs);
     });
   }
 
@@ -346,7 +348,27 @@ class BrowserRuntimeSemanticPort {
     return { generation, tab };
   }
 
-  async backendNodeIdForSelector(selector) {
+  async targetConnection(selection) {
+    const registry = this.controller.tabRegistry;
+    if (
+      !registry ||
+      typeof registry.resolveTarget !== "function" ||
+      typeof this.controller._ensureTargetConnection !== "function"
+    ) {
+      throw new ControllerError(ERROR_CODES.CDP_UNAVAILABLE);
+    }
+    const target = registry.resolveTarget(selection.tab.tab_id, {
+      generation: selection.generation,
+      target_generation: selection.tab.target_generation,
+    });
+    const connection = await this.controller._ensureTargetConnection(target);
+    if (!connection || connection.closed) {
+      throw new ControllerError(ERROR_CODES.CDP_UNAVAILABLE);
+    }
+    return { target, connection };
+  }
+
+  async backendNodeIdForSelector(selector, selection = null) {
     if (typeof selector !== "string" || selector.trim().length === 0) return null;
     return this.page(async (cdp, timeoutMs) => {
       const document = await cdp.send("DOM.getDocument", { depth: 1, pierce: true }, timeoutMs);
@@ -362,16 +384,17 @@ class BrowserRuntimeSemanticPort {
       const described = await cdp.send("DOM.describeNode", { nodeId: match.nodeId }, timeoutMs);
       const backendNodeId = described?.node?.backendNodeId;
       return Number.isSafeInteger(backendNodeId) && backendNodeId > 0 ? backendNodeId : null;
-    });
+    }, selection);
   }
 
-  async elementReferenceForSelector(selector) {
-    const { generation, tab } = await this.tab();
+  async elementReferenceForSelector(selector, selection = null) {
+    selection = selection ?? await this.tab();
+    const { generation, tab } = selection;
     const snapshot = await this.controller.captureTabSnapshot(this.ownerId, generation, {
       tab_id: tab.tab_id,
       target_generation: tab.target_generation,
     });
-    const backendNodeId = await this.backendNodeIdForSelector(selector);
+    const backendNodeId = await this.backendNodeIdForSelector(selector, selection);
     if (backendNodeId === null) throw new ControllerError(ERROR_CODES.ACTION_FAILED);
     const candidates = [
       ...(snapshot.accessibility_nodes ?? []),
@@ -405,7 +428,7 @@ class BrowserRuntimeSemanticPort {
     throw new ControllerError(ERROR_CODES.ELEMENT_REFERENCE_INVALIDATED);
   }
 
-  async submitSelector(args) {
+  async submitSelector(args, selection = null) {
     const target = this.semanticTarget(args);
     return this.page((cdp, timeoutMs) => evaluate(cdp, `
       ${domScript()}
@@ -419,7 +442,7 @@ class BrowserRuntimeSemanticPort {
         ? target
         : form.querySelector("button[type=submit], input[type=submit], button, [role=button]");
       return submit ? selectorFor(submit) : null;
-    `, { target: target ?? null }, timeoutMs));
+    `, { target: target ?? null }, timeoutMs), selection);
   }
 
   status() {
@@ -488,9 +511,10 @@ class BrowserRuntimeSemanticPort {
   }
 
   async submit(args) {
-    const selector = await this.submitSelector(args);
+    const selection = await this.tab();
+    const selector = await this.submitSelector(args, selection);
     if (!selector) throw new ControllerError(ERROR_CODES.ACTION_FAILED);
-    const target = await this.elementReferenceForSelector(selector);
+    const target = await this.elementReferenceForSelector(selector, selection);
     await this.withMutation((mutation) => this.controller.performElementAction(
       this.ownerId,
       target.generation,

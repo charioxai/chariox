@@ -187,22 +187,45 @@ test("runtime service owns one semantic endpoint for status and mutation", async
 
 test("semantic mutation dispatch supplies the controller attribution seam", async () => {
   const calls = [];
+  const targetCalls = [];
+  const target = {
+    tab_id: "tab-1",
+    target_id: "target-a",
+    target_type: "page",
+    generation: 7,
+    target_generation: 3,
+    websocket_url: "ws://target-a",
+  };
+  const targetConnection = {
+    send: async (method) => {
+      targetCalls.push(method);
+      if (method === "DOM.getDocument") return { root: { nodeId: 1 } };
+      if (method === "DOM.querySelector") return { nodeId: 2 };
+      if (method === "DOM.describeNode") return { node: { backendNodeId: 42 } };
+      throw new Error(`unexpected CDP method ${method}`);
+    },
+  };
   const controller = {
     state: "ready",
     generation: 7,
     cdpCommandTimeoutMs: 100,
-    _cdp: {
-      send: async (method) => {
-        if (method === "DOM.getDocument") return { root: { nodeId: 1 } };
-        if (method === "DOM.querySelector") return { nodeId: 2 };
-        if (method === "DOM.describeNode") return { node: { backendNodeId: 42 } };
-        throw new Error(`unexpected CDP method ${method}`);
-      },
-    },
+    _cdp: { send: async () => { throw new Error("wrong browser-level target"); } },
     _enqueue: async (_generation, operation) => operation(),
     getTabRegistrySnapshot: () => ({
       tabs: [{ tab_id: "tab-1", target_generation: 3 }],
     }),
+    tabRegistry: {
+      resolveTarget: (tabId, options) => {
+        assert.equal(tabId, target.tab_id);
+        assert.equal(options.generation, target.generation);
+        assert.equal(options.target_generation, target.target_generation);
+        return { ...target };
+      },
+    },
+    _ensureTargetConnection: async (resolvedTarget) => {
+      assert.equal(resolvedTarget.target_id, target.target_id);
+      return targetConnection;
+    },
     captureTabSnapshot: () => ({
       accessibility_nodes: [{ element_ref: "element-1" }],
       dom_nodes: [],
@@ -225,10 +248,75 @@ test("semantic mutation dispatch supplies the controller attribution seam", asyn
     actor_id: "kernel:slice-1",
   });
   assert.match(calls[0].mutation.action_id, /^runtime-\d+-\d+$/);
+  assert.deepEqual(targetCalls, ["DOM.getDocument", "DOM.querySelector", "DOM.describeNode"]);
   assert.deepEqual(calls[0].request, {
     tab_id: "tab-1",
     target_generation: 3,
     element_ref: "element-1",
     action: { kind: "fill", text: "alice@example.test", append: false },
   });
+});
+
+test("rejects a target rotation between selector discovery and mutation", async () => {
+  const target = {
+    tab_id: "tab-1",
+    target_id: "target-a",
+    target_type: "page",
+    generation: 7,
+    target_generation: 3,
+    websocket_url: "ws://target-a",
+  };
+  const controller = {
+    state: "ready",
+    generation: 7,
+    cdpCommandTimeoutMs: 100,
+    _cdp: {},
+    _enqueue: async (_generation, operation) => operation(),
+    getTabRegistrySnapshot: () => ({
+      tabs: [{ tab_id: target.tab_id, target_generation: target.target_generation }],
+    }),
+    tabRegistry: {
+      resolveTarget: (tabId, options) => {
+        if (options.target_generation !== target.target_generation) {
+          const error = new Error("stale target generation");
+          error.code = "STALE_TARGET_GENERATION";
+          throw error;
+        }
+        return { ...target, tab_id: tabId };
+      },
+    },
+    _ensureTargetConnection: async () => ({
+      send: async (method) => {
+        if (method === "DOM.getDocument") return { root: { nodeId: 1 } };
+        if (method === "DOM.querySelector") return { nodeId: 2 };
+        if (method === "DOM.describeNode") return { node: { backendNodeId: 42 } };
+        throw new Error(`unexpected CDP method ${method}`);
+      },
+    }),
+    captureTabSnapshot: () => ({
+      accessibility_nodes: [{ element_ref: "element-1" }],
+      dom_nodes: [],
+    }),
+    resolveElementReference: () => {
+      target.target_generation = 4;
+      return { backend_node_id: 42 };
+    },
+    performElementAction: async (_ownerId, _generation, request) => {
+      if (request.target_generation !== target.target_generation) {
+        const error = new Error("stale target generation");
+        error.code = "STALE_TARGET_GENERATION";
+        throw error;
+      }
+      throw new Error("mutation should not run for this regression");
+    },
+    cancelMutation: () => ({ accepted: false, state: "unknown" }),
+  };
+  const semantic = new BrowserRuntimeSemanticPort(controller, "kernel:slice-1", {
+    getStore: () => ({ requestId: "request-rotation" }),
+  });
+
+  await assert.rejects(
+    semantic.fill({ selector: "#email", text: "alice@example.test" }),
+    (error) => error.code === "STALE_TARGET_GENERATION",
+  );
 });

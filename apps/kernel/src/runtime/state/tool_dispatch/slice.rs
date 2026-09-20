@@ -160,8 +160,11 @@ impl KernelRuntimeState {
                 let browser_status = slice_browser_json(&status_output)?;
                 let browser_url = browser_status_url(&browser_status)?;
                 ensure_browser_target_matches_expectations(&browser_status, &args)?;
-                let selector = browser_selector(args.selector.as_deref(), args.field_id.as_deref());
-                ensure_browser_fill_target(&browser_status, selector.as_deref())?;
+                let target_arguments = browser_fill_target_arguments(
+                    &browser_status,
+                    args.selector.as_deref(),
+                    args.field_id.as_deref(),
+                )?;
                 let secret = match self
                     .resolve_remote_home_credential_secret(
                         provider_run,
@@ -192,12 +195,7 @@ impl KernelRuntimeState {
                         )?
                     }
                 };
-                let mut fill_arguments = serde_json::Map::new();
-                add_browser_target_arguments(
-                    &mut fill_arguments,
-                    args.selector.as_deref(),
-                    args.field_id.as_deref(),
-                );
+                let mut fill_arguments = target_arguments.clone();
                 fill_arguments.insert("text".to_string(), serde_json::Value::String(secret));
                 let mut output = run_browser_runtime_mcp_call(
                     crate::transport::runtime_tools::SLICE_BROWSER_FILL_TOOL,
@@ -205,12 +203,7 @@ impl KernelRuntimeState {
                 )
                 .await?;
                 if output.success && args.submit {
-                    let mut submit_arguments = serde_json::Map::new();
-                    add_browser_target_arguments(
-                        &mut submit_arguments,
-                        args.selector.as_deref(),
-                        args.field_id.as_deref(),
-                    );
+                    let submit_arguments = target_arguments;
                     output = run_browser_runtime_mcp_call(
                         crate::transport::runtime_tools::SLICE_BROWSER_SUBMIT_TOOL,
                         serde_json::Value::Object(submit_arguments),
@@ -259,7 +252,13 @@ async fn dispatch_browser_runtime_tool_call(
     arguments: serde_json::Value,
 ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
     let output = run_browser_runtime_mcp_call(tool_name, arguments).await?;
-    Ok(slice_browser_tool_result(slice_id, agent_id, output))
+    let text = (tool_name == crate::transport::runtime_tools::SLICE_BROWSER_TEXT_TOOL)
+        .then(|| output.stdout.clone());
+    let mut result = slice_browser_tool_result(slice_id, agent_id, output);
+    if let Some(text) = text {
+        result.payload["text"] = serde_json::Value::String(text);
+    }
+    Ok(result)
 }
 
 #[derive(Debug)]
@@ -606,29 +605,62 @@ fn required_string(
         })
 }
 
-fn add_browser_target_arguments(
-    arguments: &mut serde_json::Map<String, serde_json::Value>,
+fn browser_fill_target_arguments(
+    status: &serde_json::Value,
     selector: Option<&str>,
     field_id: Option<&str>,
-) {
-    if let Some(selector) = selector {
-        arguments.insert(
-            "selector".to_string(),
-            serde_json::Value::String(selector.to_string()),
-        );
-    } else if let Some(field_id) = field_id {
-        arguments.insert(
-            "field_id".to_string(),
-            serde_json::Value::String(field_id.to_string()),
-        );
+) -> Result<serde_json::Map<String, serde_json::Value>, DaemonError> {
+    if selector.is_some() {
+        let selector = browser_selector(selector, None).ok_or_else(|| DaemonError::LocalTransport {
+            operation: "runtime_tool_paste_secret_to_slice",
+            message: "selector must not be empty".to_string(),
+        })?;
+        ensure_browser_fill_target(status, Some(&selector))?;
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("selector".to_string(), serde_json::Value::String(selector));
+        return Ok(arguments);
     }
+    if field_id.is_some() {
+        let field_id = browser_selector(None, field_id).ok_or_else(|| DaemonError::LocalTransport {
+            operation: "runtime_tool_paste_secret_to_slice",
+            message: "field_id must not be empty".to_string(),
+        })?;
+        ensure_browser_fill_target(status, Some(&field_id))?;
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("field_id".to_string(), serde_json::Value::String(field_id));
+        return Ok(arguments);
+    }
+
+    ensure_browser_fill_target(status, None)?;
+    let focused = status.get("focusedElement");
+    let focused_selector = focused
+        .and_then(|value| value.get("selector"))
+        .and_then(serde_json::Value::as_str);
+    let focused_field_id = focused
+        .and_then(|value| value.get("field_id"))
+        .and_then(serde_json::Value::as_str);
+    if let Some(selector) = browser_selector(focused_selector, None) {
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("selector".to_string(), serde_json::Value::String(selector));
+        return Ok(arguments);
+    }
+    if let Some(field_id) = browser_selector(None, focused_field_id) {
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("field_id".to_string(), serde_json::Value::String(field_id));
+        return Ok(arguments);
+    }
+    Err(DaemonError::LocalTransport {
+        operation: "runtime_tool_paste_secret_to_slice",
+        message: "focused browser field did not expose a selector or field_id".to_string(),
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex as StdMutex};
 
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::sync::Mutex;
     use tokio::net::UnixListener;
 
     use super::*;
@@ -766,6 +798,26 @@ mod tests {
     }
 
     #[test]
+    fn targetless_secret_paste_uses_the_focused_field_target() {
+        let status = serde_json::json!({
+            "focusedElement": {
+                "kind": "field",
+                "selector": "#password",
+                "field_id": "field:password"
+            },
+            "fields": [{
+                "selector": "#password",
+                "field_id": "field:password"
+            }]
+        });
+
+        let arguments = browser_fill_target_arguments(&status, None, None)
+            .expect("focused field should provide a normal fill target");
+        assert_eq!(arguments.get("selector").and_then(|value| value.as_str()), Some("#password"));
+        assert!(arguments.get("field_id").is_none());
+    }
+
+    #[test]
     fn read_child_output_caps_stored_bytes_while_draining() {
         let input = vec![b'a'; SLICE_SCREEN_COMMAND_OUTPUT_MAX_BYTES + 1024];
 
@@ -830,7 +882,7 @@ mod tests {
         }
         std::fs::write(&auth_file, "local-test-token\n").expect("auth file should be written");
         let listener = UnixListener::bind(&socket).expect("controller socket should bind");
-        let seen_tools = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen_tools = Arc::new(StdMutex::new(Vec::<String>::new()));
         let seen_tools_task = Arc::clone(&seen_tools);
         let server = tokio::spawn(async move {
             loop {
@@ -873,6 +925,8 @@ mod tests {
                             "buttons": [],
                             "links": []
                         })
+                    } else if tool_name.ends_with("slice_browser_text") {
+                        serde_json::Value::String("visible page text".to_string())
                     } else {
                         serde_json::json!({"ok": true, "selector": "#email"})
                     };
@@ -931,6 +985,17 @@ mod tests {
             status.payload["browser"]["url"],
             "https://example.test/login"
         );
+
+        let text = runtime
+            .dispatch_slice_runtime_tool_call(
+                &provider_run,
+                crate::transport::runtime_tools::SLICE_BROWSER_TEXT_TOOL,
+                serde_json::json!({}),
+            )
+            .await
+            .expect("text dispatch should complete");
+        assert!(text.ok);
+        assert_eq!(text.payload["text"], "visible page text");
 
         let fill = runtime
             .dispatch_slice_runtime_tool_call(
@@ -995,6 +1060,7 @@ mod tests {
             seen_tools,
             vec![
                 crate::transport::runtime_tools::SLICE_BROWSER_STATUS_TOOL,
+                crate::transport::runtime_tools::SLICE_BROWSER_TEXT_TOOL,
                 crate::transport::runtime_tools::SLICE_BROWSER_FILL_TOOL,
                 crate::transport::runtime_tools::SLICE_BROWSER_FIND_TOOL,
                 crate::transport::runtime_tools::SLICE_BROWSER_WAIT_FOR_TEXT_TOOL,

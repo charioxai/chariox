@@ -77,6 +77,17 @@ test("forwards canonicalized calls to the semantic controller port", async () =>
   assert.deepEqual(result.result.matches, []);
 });
 
+test("preserves the public plain-text result shape", async () => {
+  const fake = port({ text: async () => "visible page text" });
+  const adapter = new BrowserRuntimeMcpAdapter(fake.methods);
+  const result = await adapter.invoke("slice_browser_text", {});
+
+  assert.deepEqual(result, {
+    tool_name: "chariox.slice_browser_text",
+    result: "visible page text",
+  });
+});
+
 test("normalizes the optional find kind", async () => {
   const fake = port();
   const adapter = new BrowserRuntimeMcpAdapter(fake.methods);
@@ -84,23 +95,26 @@ test("normalizes the optional find kind", async () => {
   assert.deepEqual(fake.calls[0], { name: "find", args: { query: "Continue", kind: "any" } });
 });
 
-test("requires exactly one fill or click target", async () => {
+test("requires a fill or click target and preserves selector precedence", async () => {
   const fake = port();
   const adapter = new BrowserRuntimeMcpAdapter(fake.methods);
-  for (const args of [
-    { text: "hello" },
-    { selector: "#email", field_id: "element:1", text: "hello" },
-  ]) {
+  for (const args of [{ text: "hello" }]) {
     await assert.rejects(adapter.invoke("slice_browser_fill", args), (error) =>
       error.code === RUNTIME_MCP_ERROR_CODES.INVALID_ARGUMENT);
   }
   await adapter.invoke("slice_browser_fill", { field_id: "element:1", text: "" });
+  await adapter.invoke("slice_browser_fill", {
+    selector: "#preferred",
+    field_id: "element:ignored",
+    text: "hello",
+  });
   await adapter.invoke("slice_browser_click", { selector: "button[type=submit]" });
   await assert.rejects(
     adapter.invoke("slice_browser_fill", { field_id: "element:1", text: undefined }),
     (error) => error.code === RUNTIME_MCP_ERROR_CODES.INVALID_ARGUMENT,
   );
-  assert.equal(fake.calls.length, 2);
+  assert.equal(fake.calls.length, 3);
+  assert.deepEqual(fake.calls[1].args, { selector: "#preferred", text: "hello" });
 });
 
 test("rejects empty and blank targets before forwarding", async () => {
@@ -125,11 +139,12 @@ test("keeps submit target optional but unambiguous", async () => {
   const adapter = new BrowserRuntimeMcpAdapter(fake.methods);
   await adapter.invoke("slice_browser_submit", {});
   await adapter.invoke("slice_browser_submit", { field_id: "element:2" });
-  await assert.rejects(
-    adapter.invoke("slice_browser_submit", { selector: "form", field_id: "element:2" }),
-    (error) => error.code === RUNTIME_MCP_ERROR_CODES.INVALID_ARGUMENT,
-  );
-  assert.deepEqual(fake.calls.map(({ args }) => args), [{}, { field_id: "element:2" }]);
+  await adapter.invoke("slice_browser_submit", { selector: "form", field_id: "element:2" });
+  assert.deepEqual(fake.calls.map(({ args }) => args), [
+    {},
+    { field_id: "element:2" },
+    { selector: "form" },
+  ]);
 });
 
 test("validates dialog action and prompt semantics", async () => {
@@ -180,8 +195,24 @@ test("rejects every controller-private identifier spelling in results", async ()
   for (const key of [
     "backend_node_id",
     "backendNodeId",
+    "backend_dom_node_id",
+    "backendDOMNodeId",
     "browser_context_id",
     "browserContextId",
+    "context_id",
+    "contextId",
+    "document_id",
+    "documentId",
+    "execution_context_id",
+    "executionContextId",
+    "frame_id",
+    "frameId",
+    "loader_id",
+    "loaderId",
+    "main_frame_id",
+    "mainFrameId",
+    "node_id",
+    "nodeId",
     "object_id",
     "objectId",
     "session_id",
