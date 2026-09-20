@@ -18,7 +18,7 @@ use crate::error::DaemonError;
 
 use super::cloud::BootstrapCloudClient;
 use super::release::VerifiedRelease;
-use super::state::BootstrapConfig;
+use super::state::{BootstrapConfig, BootstrapReceiptDocument};
 use super::{jittered, PendingConfirmation};
 
 const MIN_RESTART_DELAY: Duration = Duration::from_secs(1);
@@ -165,6 +165,7 @@ pub(super) fn run_kernel_once(
 }
 
 fn spawn_kernel(config: &BootstrapConfig, release: &VerifiedRelease) -> Result<Child, DaemonError> {
+    let managed_repository_root = managed_repository_root_for_kernel(config)?;
     let isolation_root = std::env::var_os("CHARIOX_CAPABILITY_ISOLATION_ROOT")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| config.chariox_home.join("managed-context").join("kernel"));
@@ -176,6 +177,7 @@ fn spawn_kernel(config: &BootstrapConfig, release: &VerifiedRelease) -> Result<C
         .current_dir(&config.process_home)
         .env("HOME", &config.process_home)
         .env("CHARIOX_HOME", &config.chariox_home)
+        .env("CHARIOX_MANAGED_REPOSITORY_ROOT", managed_repository_root)
         .env("CHARIOX_CAPABILITY_ISOLATION_ROOT", isolation_root)
         .env("CHARIOX_MANAGED_PROVIDER_HOME", provider_home)
         .env(
@@ -225,6 +227,21 @@ fn spawn_kernel(config: &BootstrapConfig, release: &VerifiedRelease) -> Result<C
     };
     wait_for_local_auth_consumption(&mut child, &local_auth_path)?;
     Ok(child)
+}
+
+fn managed_repository_root_for_kernel(
+    config: &BootstrapConfig,
+) -> Result<std::path::PathBuf, DaemonError> {
+    let document = BootstrapReceiptDocument::read(&config.receipt_path)?
+        .ok_or_else(|| supervisor_error("managed bootstrap receipt is missing"))?;
+    let BootstrapReceiptDocument::ManagedEnvironment(receipt) = document else {
+        return Err(supervisor_error(
+            "managed kernel cannot launch from a disposable worker receipt",
+        ));
+    };
+    receipt
+        .managed_repository_root()
+        .map_err(|error| supervisor_error(&format!("managed repository root is invalid: {error}")))
 }
 
 fn configured_managed_slice_boundary(
@@ -564,6 +581,7 @@ mod broker_proxy_tests {
 {
   printf 'home=%s\n' "${HOME-}"
   printf 'chariox_home=%s\n' "${CHARIOX_HOME-}"
+  printf 'repository_root=%s\n' "${CHARIOX_MANAGED_REPOSITORY_ROOT-}"
   printf 'cwd=%s\n' "$(pwd)"
   printf 'provider_isolation=%s\n' "${CHARIOX_MANAGED_PROVIDER_ISOLATION-<unset>}"
   printf 'vault=%s\n' "${CHARIOX_MANAGED_VAULT_PATH-}"
@@ -626,6 +644,24 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             digest: "test".to_string(),
             kernel_binary: kernel,
         };
+        let repository_root = root.join("repositories");
+        std::fs::create_dir_all(&repository_root).expect("repository root should exist");
+        std::fs::write(
+            &config.receipt_path,
+            serde_json::to_vec(&serde_json::json!({
+                "schemaVersion": 2,
+                "status": "confirmed",
+                "environmentId": "managed-env",
+                "machineId": "machine",
+                "kernelId": "kernel",
+                "relayPublicKey": "relay-public-key",
+                "runtimeReleaseDigest": format!("sha256:{}", "a".repeat(64)),
+                "confirmedAt": "2026-09-20T00:00:00Z",
+                "managedRepositoryRoot": repository_root,
+            }))
+            .expect("encode bootstrap receipt"),
+        )
+        .expect("bootstrap receipt should exist");
 
         // No broker lease exercises the required-fallback path. The
         // supervisor strips transport variables, but the explicit service
@@ -640,6 +676,10 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         assert!(fallback.contains(&format!(
             "chariox_home={}\n",
             home.join(".chariox").display()
+        )));
+        assert!(fallback.contains(&format!(
+            "repository_root={}\n",
+            repository_root.display()
         )));
         assert!(fallback.contains(&format!("cwd={}\n", home.display())));
         assert!(fallback.contains(&format!(
@@ -668,6 +708,10 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         let fd = std::fs::read_to_string(&fd_record).expect("FD env record");
         assert!(fd.contains(&format!("service={}\n", service_root.display())));
         assert!(fd.contains(&format!("publication={}\n", publication_root.display())));
+        assert!(fd.contains(&format!(
+            "repository_root={}\n",
+            repository_root.display()
+        )));
         assert!(fd.contains("socket=\n"));
         assert!(fd.lines().any(|line| {
             line.strip_prefix("fd=")

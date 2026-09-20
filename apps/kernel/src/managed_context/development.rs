@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::env;
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -39,6 +40,150 @@ const MAX_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
 const MAX_GIT_TEXT_BYTES: usize = 64 * 1024;
 const MAX_GIT_COMMAND_OUTPUT_BYTES: usize = MAX_OVERLAY_FILE_BYTES as usize + 64 * 1024;
 const MAX_GIT_ERROR_BYTES: usize = 64 * 1024;
+
+pub(crate) const DEFAULT_MANAGED_REPOSITORY_ROOT: &str = "/home/chariox";
+pub(crate) const MANAGED_REPOSITORY_ROOT_ENV: &str = "CHARIOX_MANAGED_REPOSITORY_ROOT";
+
+/// Resolve the Cloud-authorized managed repository root without turning the
+/// environment into a filesystem allowlist. The Cloud trust boundary applies
+/// the same lexical rules; the kernel additionally rejects service/control
+/// roots which are present in its managed launch environment.
+pub(crate) fn normalize_managed_repository_root(
+    value: Option<&str>,
+) -> Result<PathBuf, DaemonError> {
+    let value = value.unwrap_or(DEFAULT_MANAGED_REPOSITORY_ROOT);
+    if value.is_empty()
+        || value.len() > 4096
+        || value != value.trim()
+        || value.starts_with("//")
+        || value.bytes().any(|byte| byte == 0 || byte < 0x20 || byte == 0x7f)
+        || !value.starts_with('/')
+    {
+        return Err(context_error("managed repository root is invalid"));
+    }
+    let components = value.split('/').filter(|component| !component.is_empty());
+    if components.clone().any(|component| matches!(component, "." | "..")) {
+        return Err(context_error("managed repository root is invalid"));
+    }
+    let normalized = format!("/{}", components.collect::<Vec<_>>().join("/"));
+    let path = PathBuf::from(if normalized == "/" { "/" } else { &normalized });
+    if path == Path::new("/") || managed_repository_root_overlaps_protected(&path) {
+        return Err(context_error(
+            "managed repository root overlaps protected managed service state",
+        ));
+    }
+    reject_observable_managed_repository_root_symlink(&path)?;
+    Ok(path)
+}
+
+pub(crate) fn configured_managed_repository_root() -> Result<PathBuf, DaemonError> {
+    let configured = match env::var_os(MANAGED_REPOSITORY_ROOT_ENV) {
+        Some(value) if value.is_empty() => {
+            return Err(context_error(
+                "CHARIOX_MANAGED_REPOSITORY_ROOT must not be empty",
+            ))
+        }
+        Some(value) => Some(
+            value
+                .to_str()
+                .ok_or_else(|| {
+                    context_error("CHARIOX_MANAGED_REPOSITORY_ROOT must be valid UTF-8")
+                })?
+                .to_string(),
+        ),
+        None => None,
+    };
+    normalize_managed_repository_root(configured.as_deref())
+}
+
+pub(crate) fn ensure_managed_repository_root() -> Result<PathBuf, DaemonError> {
+    let root = configured_managed_repository_root()?;
+    fs::create_dir_all(&root)
+        .map_err(|error| context_io_error("create managed repository root", error))?;
+    let canonical = fs::canonicalize(&root)
+        .map_err(|error| context_io_error("resolve managed repository root", error))?;
+    if canonical != root {
+        return Err(context_error(
+            "managed repository root must not resolve through a symlink",
+        ));
+    }
+    Ok(canonical)
+}
+
+fn managed_repository_root_overlaps_protected(candidate: &Path) -> bool {
+    const FIXED_PROTECTED_ROOTS: &[&str] = &[
+        "/",
+        "/var/lib/chariox",
+        "/usr/lib/chariox/releases",
+    ];
+    if FIXED_PROTECTED_ROOTS.iter().map(PathBuf::from).any(|root| {
+        root == Path::new("/")
+            && candidate == root
+            || root != Path::new("/")
+                && (candidate == root
+                    || candidate.starts_with(&root)
+                    || root.starts_with(candidate))
+    }) {
+        return true;
+    }
+    let mut protected = Vec::new();
+    for name in [
+        "CHARIOX_HOME",
+        "CHARIOX_MANAGED_PROVIDER_HOME",
+        "CHARIOX_PUBLICATION_CONTROL_STATE_DIR",
+        "CHARIOX_MANAGED_SLICE_SERVICE_ROOT",
+        "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT",
+        "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+    ] {
+        if let Some(value) = env::var_os(name).filter(|value| !value.is_empty()) {
+            let path = PathBuf::from(value);
+            if path.is_absolute() {
+                protected.push(path);
+            }
+        }
+    }
+    protected
+        .into_iter()
+        .any(|root| candidate == root || candidate.starts_with(&root))
+}
+
+fn reject_observable_managed_repository_root_symlink(path: &Path) -> Result<(), DaemonError> {
+    let mut current = PathBuf::from("/");
+    for component in path.components() {
+        if matches!(component, Component::RootDir) {
+            continue;
+        }
+        let Component::Normal(component) = component else {
+            return Err(context_error("managed repository root is invalid"));
+        };
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err(context_error(
+                    "managed repository root must not traverse a symlink or non-directory",
+                ))
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => break,
+            Err(error) => {
+                return Err(context_io_error(
+                    "inspect managed repository root",
+                    error,
+                ))
+            }
+        }
+    }
+    if path.exists() {
+        let canonical = fs::canonicalize(path)
+            .map_err(|error| context_io_error("resolve managed repository root", error))?;
+        if canonical != path {
+            return Err(context_error(
+                "managed repository root must not resolve through a symlink",
+            ));
+        }
+    }
+    Ok(())
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

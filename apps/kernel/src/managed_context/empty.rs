@@ -16,6 +16,10 @@ use crate::managed_context::cloud_completion::{
     complete_managed_context_import, context_manifest_digest,
     validate_managed_context_completion_binding,
 };
+use crate::managed_context::development::{
+    ensure_managed_repository_root, DEFAULT_MANAGED_REPOSITORY_ROOT,
+    MANAGED_REPOSITORY_ROOT_ENV,
+};
 use crate::managed_context::kernel::configured_managed_kernel_context_paths;
 use crate::managed_context::package::ManagedContextPlanBinding;
 use crate::transport::relay_client::RelayClientState;
@@ -25,7 +29,6 @@ const EMPTY_CONTEXT_RECEIPT_MAX_BYTES: u64 = 8 * 1024;
 const MIN_RETRY_DELAY: Duration = Duration::from_secs(1);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
 const RELAY_STATE_POLL_INTERVAL: Duration = Duration::from_millis(250);
-const DEFAULT_USER_WORKSPACE_ROOT: &str = "/home/chariox";
 
 #[derive(Debug, Clone)]
 pub(crate) struct EmptyManagedContextCompletion {
@@ -166,8 +169,11 @@ pub(crate) fn managed_user_empty_context_workspace_path(context_id: &str) -> Pat
     ))
 }
 
-pub(crate) fn managed_user_workspace_root() -> &'static Path {
-    Path::new(DEFAULT_USER_WORKSPACE_ROOT)
+pub(crate) fn managed_user_workspace_root() -> PathBuf {
+    std::env::var_os(MANAGED_REPOSITORY_ROOT_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_MANAGED_REPOSITORY_ROOT))
 }
 
 pub(crate) fn managed_control_workspace_parent(config: &DaemonConfig) -> Option<PathBuf> {
@@ -181,16 +187,26 @@ pub(crate) fn ensure_empty_managed_context_workspace(
     config: &DaemonConfig,
     context_id: &str,
 ) -> Result<PathBuf, DaemonError> {
-    let workspace = empty_managed_context_workspace_path(config, context_id)?;
+    let managed_user_root = if managed_control_workspace_parent(config).is_some() {
+        Some(ensure_managed_repository_root()?)
+    } else {
+        None
+    };
+    let workspace = managed_user_root
+        .as_ref()
+        .map(|root| {
+            root.join(format!(
+                ".chariox-empty-context-{:x}",
+                Sha256::digest(context_id.as_bytes())
+            ))
+        })
+        .unwrap_or(empty_managed_context_workspace_path(config, context_id)?);
     let durable_state_path = config.durable_state_path();
     let state_root = durable_state_path
         .parent()
         .ok_or_else(|| empty_context_error("durable state path has no parent directory"))?;
     ensure_real_private_directory(state_root)?;
-    if managed_control_workspace_parent(config).is_some() {
-        let user_root = managed_user_workspace_root();
-        let canonical_user_root =
-            ensure_existing_real_directory(user_root, "default user workspace root")?;
+    if let Some(canonical_user_root) = managed_user_root {
         ensure_real_private_directory(&workspace)?;
         let canonical_workspace = fs::canonicalize(&workspace)
             .map_err(|error| empty_context_io_error("resolve empty managed workspace", error))?;
@@ -227,18 +243,6 @@ pub(crate) fn ensure_empty_managed_context_workspace(
         ));
     }
     Ok(canonical_workspace)
-}
-
-fn ensure_existing_real_directory(path: &Path, label: &str) -> Result<PathBuf, DaemonError> {
-    let metadata = fs::symlink_metadata(path)
-        .map_err(|error| empty_context_io_error("inspect managed user workspace root", error))?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(empty_context_error(format!(
-            "{label} must be a real directory"
-        )));
-    }
-    fs::canonicalize(path)
-        .map_err(|error| empty_context_io_error("resolve managed user workspace root", error))
 }
 
 fn validate_empty_workspace(workspace: &Path) -> Result<(), DaemonError> {
@@ -575,11 +579,34 @@ mod tests {
         config.publication_control_state_root = Some(root.join("control"));
         let workspace = empty_managed_context_workspace_path(&config, "context-empty")
             .expect("managed empty workspace path");
-        assert!(workspace.starts_with(Path::new(DEFAULT_USER_WORKSPACE_ROOT)));
+        assert!(workspace.starts_with(Path::new(DEFAULT_MANAGED_REPOSITORY_ROOT)));
         assert!(!workspace.starts_with(&root));
         assert!(!workspace
             .to_string_lossy()
             .contains("MANAGED_PROVIDER_HOME"));
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn empty_managed_workspace_materializes_under_the_selected_repository_root() {
+        let _env = crate::env_lock::lock();
+        let root = test_root("custom-managed-empty-root");
+        let custom_root = root.join("selected-repositories");
+        let mut config = test_config(&root, "machine-empty", "kernel-empty", "http://127.0.0.1:9");
+        config.publication_control_state_root = Some(root.join("control"));
+        let previous = std::env::var_os(MANAGED_REPOSITORY_ROOT_ENV);
+        std::env::set_var(MANAGED_REPOSITORY_ROOT_ENV, &custom_root);
+
+        let workspace = ensure_empty_managed_context_workspace(&config, "context-custom")
+            .expect("empty managed workspace should use custom root");
+        assert!(workspace.starts_with(&custom_root));
+        assert!(workspace.is_dir());
+        assert!(!workspace.starts_with(&root.join("control")));
+
+        match previous {
+            Some(value) => std::env::set_var(MANAGED_REPOSITORY_ROOT_ENV, value),
+            None => std::env::remove_var(MANAGED_REPOSITORY_ROOT_ENV),
+        }
         fs::remove_dir_all(root).expect("remove test root");
     }
 

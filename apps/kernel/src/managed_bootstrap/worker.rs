@@ -24,6 +24,10 @@ use super::state::{
     remove_envelope, valid_digest, valid_identifier, valid_secret, validate_cloud_url,
     validate_managed_state_path,
 };
+use crate::managed_context::development::{
+    normalize_managed_repository_root, DEFAULT_MANAGED_REPOSITORY_ROOT,
+    MANAGED_REPOSITORY_ROOT_ENV,
+};
 use super::{jittered, normalized_api_url, persisted_profile, valid_managed_relay_url};
 
 const MIN_RETRY: Duration = Duration::from_secs(1);
@@ -125,6 +129,8 @@ struct WorkerEnvelope {
     token: String,
     expires_at: String,
     runtime_release_digest: String,
+    #[serde(default)]
+    managed_repository_root: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,6 +152,8 @@ struct WorkerReceipt {
     runtime_release_digest: String,
     home_caller: CloudHomeCaller,
     confirmed_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    managed_repository_root: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -200,6 +208,8 @@ struct ExchangeResponse {
     allocation_id: String,
     kernel_id: String,
     runtime_release_digest: String,
+    #[serde(default)]
+    managed_repository_root: Option<String>,
     lease_worker_capacity: u32,
     home_caller: CloudHomeCaller,
     cloud_relay: ManagedCloudRelayProfile,
@@ -220,6 +230,8 @@ struct ConfirmRequest {
 struct ConfirmResponse {
     confirmed: bool,
     observed_state: String,
+    #[serde(default)]
+    managed_repository_root: Option<String>,
 }
 
 trait WorkerCloudClient {
@@ -311,6 +323,7 @@ fn prepare(
     if let (Some(envelope), Some(receipt)) = (&envelope, &receipt) {
         if envelope.allocation_id != receipt.allocation_id
             || envelope.runtime_release_digest != receipt.runtime_release_digest
+            || envelope.managed_repository_root()? != receipt.managed_repository_root()?
         {
             return Err(worker_error("worker envelope conflicts with its receipt"));
         }
@@ -363,10 +376,10 @@ fn prepare(
                     runtime_release_digest: envelope.runtime_release_digest.clone(),
                 },
             )?;
-            validate_exchange(&envelope, &identity, &response)?;
+            let managed_repository_root = validate_exchange(&envelope, &identity, &response)?;
             persist_managed_cloud_relay_profile(persisted_profile(response.cloud_relay))?;
             let receipt = WorkerReceipt {
-                schema_version: 1,
+                schema_version: 2,
                 status: WorkerReceiptStatus::Exchanged,
                 allocation_id: envelope.allocation_id.clone(),
                 machine_id: identity.machine_id,
@@ -375,6 +388,7 @@ fn prepare(
                 runtime_release_digest: envelope.runtime_release_digest.clone(),
                 home_caller: response.home_caller,
                 confirmed_at: None,
+                managed_repository_root: Some(managed_repository_root.display().to_string()),
             };
             receipt.persist(&config.receipt_path)?;
             (receipt, Some(envelope))
@@ -391,7 +405,17 @@ fn validate_exchange(
     envelope: &WorkerEnvelope,
     identity: &ManagedRuntimeIdentity,
     response: &ExchangeResponse,
-) -> Result<(), DaemonError> {
+) -> Result<PathBuf, DaemonError> {
+    let expected_root = envelope.managed_repository_root()?;
+    let response_root = response_managed_repository_root(
+        envelope.schema_version,
+        response.managed_repository_root.as_deref(),
+    )?;
+    if response_root != expected_root {
+        return Err(worker_error(
+            "Cloud worker bootstrap response managed repository root does not match the envelope",
+        ));
+    }
     if response.allocation_id != envelope.allocation_id
         || response.kernel_id != identity.kernel_id
         || response.runtime_release_digest != envelope.runtime_release_digest
@@ -408,7 +432,7 @@ fn validate_exchange(
     {
         return Err(worker_error("Cloud worker bootstrap response is invalid"));
     }
-    Ok(())
+    Ok(expected_root)
 }
 
 fn validate_profile(
@@ -497,6 +521,10 @@ fn spawn_kernel(
         .current_dir(&config.process_home)
         .env("HOME", &config.process_home)
         .env("CHARIOX_HOME", &config.chariox_home)
+        .env(
+            MANAGED_REPOSITORY_ROOT_ENV,
+            receipt.managed_repository_root()?,
+        )
         .env("CHARIOX_KERNEL_HOST", &config.kernel_host)
         .env("CHARIOX_KERNEL_PORT", config.kernel_port.to_string())
         .env("CHARIOX_ACCEPT_REMOTE_LEASES", "1")
@@ -670,15 +698,24 @@ fn confirm_when_relay_ready(
                 machine_credential: credential,
             },
         ) {
-            Ok(ConfirmResponse {
-                confirmed: true,
-                observed_state,
-            }) if observed_state == "ready" => return Ok(()),
-            Ok(_) => crate::logging::warn_with_fields(
-                "disposable_worker_bootstrap.confirm_pending",
-                "Cloud has not confirmed worker readiness",
-                serde_json::json!({ "retry_delay_ms": delay.as_millis() }),
-            ),
+            Ok(response) => {
+                let expected_root = envelope.managed_repository_root()?;
+                let response_root = response_managed_repository_root(
+                    envelope.schema_version,
+                    response.managed_repository_root.as_deref(),
+                )?;
+                if response.confirmed
+                    && response.observed_state == "ready"
+                    && response_root == expected_root
+                {
+                    return Ok(());
+                }
+                crate::logging::warn_with_fields(
+                    "disposable_worker_bootstrap.confirm_pending",
+                    "Cloud has not confirmed worker readiness",
+                    serde_json::json!({ "retry_delay_ms": delay.as_millis() }),
+                );
+            }
             Err(error) => crate::logging::warn_with_fields(
                 "disposable_worker_bootstrap.confirm_pending",
                 "worker relay presence is not ready; retrying confirmation",
@@ -773,10 +810,11 @@ impl WorkerConfig {
 impl WorkerEnvelope {
     fn read(path: &Path) -> Result<Self, DaemonError> {
         let value: Self = read_bounded_json(path, "disposable worker envelope")?;
-        if value.schema_version != 1
+        if !matches!(value.schema_version, 1 | 2)
             || !valid_identifier(&value.allocation_id)
             || !valid_secret(&value.token, "mboot_")
             || !valid_digest(&value.runtime_release_digest)
+            || value.managed_repository_root().is_err()
         {
             return Err(worker_error("disposable worker envelope is invalid"));
         }
@@ -790,22 +828,42 @@ impl WorkerEnvelope {
             .map(|value| value.with_timezone(&Utc))
             .map_err(|_| worker_error("worker bootstrap expiry is invalid"))
     }
+
+    fn managed_repository_root(&self) -> Result<PathBuf, DaemonError> {
+        normalized_root_for_schema(self.schema_version, self.managed_repository_root.as_deref())
+    }
 }
 
 impl WorkerReceipt {
     fn binding_digest(&self) -> Result<String, DaemonError> {
-        let binding = serde_json::json!({
-            "allocationId": self.allocation_id,
-            "homeCaller": self.home_caller,
-            "kernelId": self.kernel_id,
-            "machineId": self.machine_id,
-            "relayPublicKey": self.relay_public_key,
-            "runtimeReleaseDigest": self.runtime_release_digest,
-            "schemaVersion": self.schema_version,
-        });
+        let mut binding = serde_json::Map::from_iter([
+            ("allocationId".to_string(), serde_json::json!(self.allocation_id)),
+            ("homeCaller".to_string(), serde_json::json!(self.home_caller)),
+            ("kernelId".to_string(), serde_json::json!(self.kernel_id)),
+            ("machineId".to_string(), serde_json::json!(self.machine_id)),
+            (
+                "relayPublicKey".to_string(),
+                serde_json::json!(self.relay_public_key),
+            ),
+            (
+                "runtimeReleaseDigest".to_string(),
+                serde_json::json!(self.runtime_release_digest),
+            ),
+            ("schemaVersion".to_string(), serde_json::json!(self.schema_version)),
+        ]);
+        if self.schema_version == 2 {
+            binding.insert(
+                "managedRepositoryRoot".to_string(),
+                serde_json::json!(self.managed_repository_root),
+            );
+        }
         let bytes = serde_json::to_vec(&binding)
             .map_err(|error| worker_error(format!("encode worker binding: {error}")))?;
         Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
+    }
+
+    fn managed_repository_root(&self) -> Result<PathBuf, DaemonError> {
+        normalized_root_for_schema(self.schema_version, self.managed_repository_root.as_deref())
     }
 
     fn effective_release_digest(&self, receipt_path: &Path) -> Result<String, DaemonError> {
@@ -835,7 +893,7 @@ impl WorkerReceipt {
             }
             _ => false,
         };
-        if value.schema_version != 1
+        if !matches!(value.schema_version, 1 | 2)
             || !status_valid
             || !valid_identifier(&value.allocation_id)
             || !valid_identifier(&value.machine_id)
@@ -843,6 +901,7 @@ impl WorkerReceipt {
             || value.relay_public_key.trim().is_empty()
             || !valid_digest(&value.runtime_release_digest)
             || !value.home_caller.valid()
+            || value.managed_repository_root().is_err()
         {
             return Err(worker_error("disposable worker receipt is invalid"));
         }
@@ -868,6 +927,50 @@ impl WorkerReceipt {
         }
         Ok(())
     }
+}
+
+fn normalized_root_for_schema(
+    schema_version: u32,
+    value: Option<&str>,
+) -> Result<PathBuf, DaemonError> {
+    if schema_version == 2 && value.is_none() {
+        return Err(worker_error(
+            "schema-v2 worker bootstrap state must carry managedRepositoryRoot",
+        ));
+    }
+    let root = normalize_managed_repository_root(value)
+        .map_err(|_| worker_error("managed repository root is invalid"))?;
+    if schema_version == 1
+        && value.is_some()
+        && root != Path::new(DEFAULT_MANAGED_REPOSITORY_ROOT)
+    {
+        return Err(worker_error(
+            "legacy worker bootstrap state may only use the default repository root",
+        ));
+    }
+    Ok(root)
+}
+
+fn response_managed_repository_root(
+    envelope_schema_version: u32,
+    value: Option<&str>,
+) -> Result<PathBuf, DaemonError> {
+    if envelope_schema_version == 2 && value.is_none() {
+        return Err(worker_error(
+            "Cloud worker bootstrap response is missing managedRepositoryRoot",
+        ));
+    }
+    let root = normalize_managed_repository_root(value)
+        .map_err(|_| worker_error("Cloud worker bootstrap response has an invalid repository root"))?;
+    if envelope_schema_version == 1
+        && value.is_some()
+        && root != Path::new(DEFAULT_MANAGED_REPOSITORY_ROOT)
+    {
+        return Err(worker_error(
+            "legacy Cloud worker response may only use the default repository root",
+        ));
+    }
+    Ok(root)
 }
 
 fn required_path(
@@ -980,6 +1083,7 @@ mod tests {
             kernel_port: fixture.config.kernel_port,
         };
         fs::create_dir_all(&config.process_home).expect("worker HOME should exist");
+        fs::create_dir_all(&config.chariox_home).expect("worker CHARIOX_HOME should exist");
         let marker = config.chariox_home.join("worker-isolation-env.txt");
         let provider_home = config
             .chariox_home
@@ -987,7 +1091,7 @@ mod tests {
             .expect("worker fixture should have a parent")
             .join("provider-home");
         let capability_root = config.chariox_home.join("managed-context/kernel");
-        let kernel_script = b"#!/bin/sh\nset -eu\nmarker=\"${CHARIOX_WORKER_ISOLATION_PROBE_MARKER:?}\"\nprintf 'home=%s\\n' \"${HOME-<unset>}\" > \"$marker\"\nprintf 'chariox_home=%s\\n' \"${CHARIOX_HOME-<unset>}\" >> \"$marker\"\nprintf 'cwd=%s\\n' \"$(pwd)\" >> \"$marker\"\nprintf 'isolation=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_ISOLATION-<unset>}\" >> \"$marker\"\nprintf 'provider_home=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_HOME-<unset>}\" >> \"$marker\"\nprintf 'capability_root=%s\\n' \"${CHARIOX_CAPABILITY_ISOLATION_ROOT-<unset>}\" >> \"$marker\"\nprintf 'vault=%s\\n' \"${CHARIOX_MANAGED_VAULT_PATH-<unset>}\" >> \"$marker\"\nprintf 'daemon_socket=%s\\n' \"${CHARIOX_DAEMON_SOCKET-<unset>}\" >> \"$marker\"\nprintf 'broker_socket=%s\\n' \"${CHARIOX_SLICE_DOCKER_BROKER_SOCKET-<unset>}\" >> \"$marker\"\nprintf 'slice_root=%s\\n' \"${CHARIOX_SLICE_ROOT-<unset>}\" >> \"$marker\"\nprintf 'relay_token=%s\\n' \"${CHARIOX_RELAY_TOKEN-<unset>}\" >> \"$marker\"\nprintf 'daemon_id=%s\\n' \"${CHARIOX_DAEMON_ID-<unset>}\" >> \"$marker\"\nprintf 'machine_id=%s\\n' \"${CHARIOX_MACHINE_ID-<unset>}\" >> \"$marker\"\nprintf 'bootstrap_path=%s\\n' \"${CHARIOX_MANAGED_BOOTSTRAP_PATH-<unset>}\" >> \"$marker\"\nprintf ordinary > \"$HOME/ordinary-worker-write\"\n";
+        let kernel_script = b"#!/bin/sh\nset -eu\nmarker=\"${CHARIOX_WORKER_ISOLATION_PROBE_MARKER:?}\"\nprintf 'home=%s\\n' \"${HOME-<unset>}\" > \"$marker\"\nprintf 'chariox_home=%s\\n' \"${CHARIOX_HOME-<unset>}\" >> \"$marker\"\nprintf 'repository_root=%s\\n' \"${CHARIOX_MANAGED_REPOSITORY_ROOT-<unset>}\" >> \"$marker\"\nprintf 'cwd=%s\\n' \"$(pwd)\" >> \"$marker\"\nprintf 'isolation=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_ISOLATION-<unset>}\" >> \"$marker\"\nprintf 'provider_home=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_HOME-<unset>}\" >> \"$marker\"\nprintf 'capability_root=%s\\n' \"${CHARIOX_CAPABILITY_ISOLATION_ROOT-<unset>}\" >> \"$marker\"\nprintf 'vault=%s\\n' \"${CHARIOX_MANAGED_VAULT_PATH-<unset>}\" >> \"$marker\"\nprintf 'daemon_socket=%s\\n' \"${CHARIOX_DAEMON_SOCKET-<unset>}\" >> \"$marker\"\nprintf 'broker_socket=%s\\n' \"${CHARIOX_SLICE_DOCKER_BROKER_SOCKET-<unset>}\" >> \"$marker\"\nprintf 'slice_root=%s\\n' \"${CHARIOX_SLICE_ROOT-<unset>}\" >> \"$marker\"\nprintf 'relay_token=%s\\n' \"${CHARIOX_RELAY_TOKEN-<unset>}\" >> \"$marker\"\nprintf 'daemon_id=%s\\n' \"${CHARIOX_DAEMON_ID-<unset>}\" >> \"$marker\"\nprintf 'machine_id=%s\\n' \"${CHARIOX_MACHINE_ID-<unset>}\" >> \"$marker\"\nprintf 'bootstrap_path=%s\\n' \"${CHARIOX_MANAGED_BOOTSTRAP_PATH-<unset>}\" >> \"$marker\"\nprintf ordinary > \"$HOME/ordinary-worker-write\"\n";
         fs::write(&config.kernel_binary, kernel_script).expect("write worker probe kernel");
         fs::set_permissions(&config.kernel_binary, fs::Permissions::from_mode(0o755))
             .expect("make worker probe kernel executable");
@@ -995,6 +1099,7 @@ mod tests {
         let names = [
             "HOME",
             "CHARIOX_WORKER_ISOLATION_PROBE_MARKER",
+            "CHARIOX_MANAGED_REPOSITORY_ROOT",
             "CHARIOX_MANAGED_PROVIDER_ISOLATION",
             "CHARIOX_MANAGED_PROVIDER_HOME",
             "CHARIOX_CAPABILITY_ISOLATION_ROOT",
@@ -1013,6 +1118,7 @@ mod tests {
             .collect::<Vec<_>>();
         env::set_var("HOME", &config.process_home);
         env::set_var("CHARIOX_WORKER_ISOLATION_PROBE_MARKER", &marker);
+        env::set_var("CHARIOX_MANAGED_REPOSITORY_ROOT", "/host/wrong-repository-root");
         env::set_var("CHARIOX_MANAGED_PROVIDER_ISOLATION", "0");
         env::set_var("CHARIOX_MANAGED_PROVIDER_HOME", &provider_home);
         env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", &capability_root);
@@ -1045,6 +1151,7 @@ mod tests {
             runtime_release_digest: response.runtime_release_digest,
             home_caller: response.home_caller,
             confirmed_at: Some("2026-09-16T15:38:00Z".to_string()),
+            managed_repository_root: None,
         };
         let release = VerifiedRelease {
             digest: "sha256:worker-isolation-probe".to_string(),
@@ -1065,6 +1172,7 @@ mod tests {
             "chariox_home={}\n",
             config.chariox_home.display()
         )));
+        assert!(observed.contains("repository_root=/home/chariox\n"));
         assert!(observed.contains(&format!("cwd={}\n", config.process_home.display())));
         assert!(observed.contains("isolation=<unset>"));
         assert!(observed.contains(&format!("provider_home={}\n", provider_home.display())));
@@ -1130,6 +1238,7 @@ mod tests {
                 Ok(ConfirmResponse {
                     confirmed: true,
                     observed_state: "ready".into(),
+                    managed_repository_root: None,
                 })
             }
         }
@@ -1149,6 +1258,7 @@ mod tests {
                 runtime_release_digest: response.runtime_release_digest,
                 home_caller: response.home_caller,
                 confirmed_at: None,
+                managed_repository_root: None,
             };
             persist_managed_cloud_relay_profile(persisted_profile(response.cloud_relay)).unwrap();
             let cloud = Cloud {
@@ -2225,6 +2335,7 @@ mod tests {
             Ok(ConfirmResponse {
                 confirmed: true,
                 observed_state: "ready".to_string(),
+                managed_repository_root: None,
             })
         }
     }
@@ -2543,6 +2654,7 @@ mod tests {
             token: format!("mboot_{}", "a".repeat(40)),
             expires_at: "2026-09-13T12:00:00Z".to_string(),
             runtime_release_digest: format!("sha256:{}", "b".repeat(64)),
+            managed_repository_root: None,
         }
     }
 
@@ -2559,6 +2671,7 @@ mod tests {
             allocation_id: "worker-1".to_string(),
             kernel_id: "worker-kernel".to_string(),
             runtime_release_digest: envelope().runtime_release_digest,
+            managed_repository_root: None,
             lease_worker_capacity: 1,
             home_caller: CloudHomeCaller {
                 account_id: "account-1".to_string(),
@@ -2623,6 +2736,7 @@ mod tests {
             runtime_release_digest: envelope().runtime_release_digest,
             home_caller: response().home_caller,
             confirmed_at: None,
+            managed_repository_root: None,
         };
         receipt.persist(&path).expect("persist worker receipt");
         let restored = WorkerReceipt::read(&path)

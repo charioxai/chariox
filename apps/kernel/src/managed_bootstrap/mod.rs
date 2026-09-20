@@ -5,6 +5,7 @@ mod state;
 mod supervisor;
 pub mod worker;
 
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
@@ -16,6 +17,9 @@ use crate::config::{
     persist_managed_cloud_relay_profile, ManagedRuntimeIdentity, PersistedCloudRelayProfile,
 };
 use crate::error::DaemonError;
+use crate::managed_context::development::{
+    normalize_managed_repository_root, DEFAULT_MANAGED_REPOSITORY_ROOT,
+};
 
 use cloud::{
     BootstrapCloudClient, ConfirmRequest, ExchangeRequest, HttpBootstrapCloudClient,
@@ -166,13 +170,15 @@ fn prepare_managed_kernel(
         load_or_create_managed_runtime_identity(&config.kernel_host, config.kernel_port)?;
     let confirmation = match (receipt, envelope) {
         (Some(receipt), envelope) => {
-            if envelope.as_ref().is_some_and(|value| {
-                value.environment_id != receipt.environment_id
+            if let Some(value) = envelope.as_ref() {
+                if value.environment_id != receipt.environment_id
                     || value.runtime_release_digest != receipt.runtime_release_digest
-            }) {
-                return Err(bootstrap_error(
-                    "managed bootstrap envelope conflicts with its receipt",
-                ));
+                    || value.managed_repository_root()? != receipt.managed_repository_root()?
+                {
+                    return Err(bootstrap_error(
+                        "managed bootstrap envelope conflicts with its receipt",
+                    ));
+                }
             }
             resume_registration(config, envelope.as_ref(), receipt, &identity)?
         }
@@ -216,11 +222,11 @@ fn begin_registration(
             runtime_release_digest: envelope.runtime_release_digest.clone(),
         },
     )?;
-    validate_exchange_response(envelope, identity, &exchanged)?;
+    let managed_repository_root = validate_exchange_response(envelope, identity, &exchanged)?;
     let profile = persisted_profile(exchanged.cloud_relay);
     persist_managed_cloud_relay_profile(profile.clone())?;
     let receipt = BootstrapReceipt {
-        schema_version: 1,
+        schema_version: 2,
         status: BootstrapReceiptStatus::Exchanged,
         environment_id: envelope.environment_id.clone(),
         machine_id: identity.machine_id.clone(),
@@ -228,6 +234,7 @@ fn begin_registration(
         relay_public_key: identity.relay_public_key.clone(),
         runtime_release_digest: envelope.runtime_release_digest.clone(),
         confirmed_at: None,
+        managed_repository_root: Some(managed_repository_root.display().to_string()),
         context_plan: Some(exchanged.context_plan),
     };
     receipt.persist(&config.receipt_path)?;
@@ -306,7 +313,15 @@ fn confirm_registration(
                 .ok_or_else(|| bootstrap_error("managed machine credential is missing"))?,
         },
     )?;
-    if !confirmed.confirmed || confirmed.observed_state != "awaiting_context" {
+    let expected_root = envelope.managed_repository_root()?;
+    let confirmed_root = response_managed_repository_root(
+        envelope.schema_version,
+        confirmed.managed_repository_root.as_deref(),
+    )?;
+    if !confirmed.confirmed
+        || confirmed.observed_state != "awaiting_context"
+        || confirmed_root != expected_root
+    {
         return Err(bootstrap_error(
             "Cloud did not confirm the managed kernel bootstrap",
         ));
@@ -321,7 +336,17 @@ fn validate_exchange_response(
     envelope: &ManagedBootstrapEnvelope,
     identity: &ManagedRuntimeIdentity,
     response: &cloud::ExchangeResponse,
-) -> Result<(), DaemonError> {
+) -> Result<PathBuf, DaemonError> {
+    let expected_root = envelope.managed_repository_root()?;
+    let response_root = response_managed_repository_root(
+        envelope.schema_version,
+        response.managed_repository_root.as_deref(),
+    )?;
+    if response_root != expected_root {
+        return Err(bootstrap_error(
+            "Cloud bootstrap response managed repository root does not match the envelope",
+        ));
+    }
     if response.environment_id != envelope.environment_id
         || response.kernel_id != identity.kernel_id
         || response.runtime_release_digest != envelope.runtime_release_digest
@@ -349,7 +374,29 @@ fn validate_exchange_response(
             "Cloud bootstrap response does not match the local identity",
         ));
     }
-    Ok(())
+    Ok(expected_root)
+}
+
+fn response_managed_repository_root(
+    envelope_schema_version: u32,
+    value: Option<&str>,
+) -> Result<PathBuf, DaemonError> {
+    if envelope_schema_version == 2 && value.is_none() {
+        return Err(bootstrap_error(
+            "Cloud bootstrap response is missing managedRepositoryRoot",
+        ));
+    }
+    let root = normalize_managed_repository_root(value)
+        .map_err(|_| bootstrap_error("Cloud bootstrap response has an invalid repository root"))?;
+    if envelope_schema_version == 1
+        && value.is_some()
+        && root != Path::new(DEFAULT_MANAGED_REPOSITORY_ROOT)
+    {
+        return Err(bootstrap_error(
+            "legacy Cloud bootstrap response may only use the default repository root",
+        ));
+    }
+    Ok(root)
 }
 
 fn validate_receipt_identity(

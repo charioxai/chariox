@@ -4,7 +4,10 @@ import { connect } from "node:net"
 import { constants } from "node:fs"
 import { open } from "node:fs/promises"
 import { basename, join } from "node:path"
-import { allocationWorkerReleaseMatches } from "./allocation-worker-receipt.mjs"
+import {
+  allocationWorkerReleaseMatches,
+  normalizeManagedRepositoryRoot,
+} from "./allocation-worker-receipt.mjs"
 
 const MAX_RECEIPT_BYTES = 96 * 1024
 const MAX_PRESENCE_BYTES = 32 * 1024
@@ -68,12 +71,21 @@ async function matchingPresence(receiptPath, releaseOverridePath, presenceRoot, 
     return false
   } else {
     if (
-      receipt?.schemaVersion !== 1 ||
+      ![1, 2].includes(receipt?.schemaVersion) ||
       receipt.status !== "confirmed" ||
       !validIdentifier(receipt.kernelId) ||
       !validIdentifier(receipt.machineId) ||
       receipt.runtimeReleaseDigest !== releaseDigest
     ) return false
+    try {
+      const normalizedRoot = normalizeManagedRepositoryRoot(receipt.managedRepositoryRoot)
+      if ((receipt.schemaVersion === 2
+        && (!Object.hasOwn(receipt, "managedRepositoryRoot")
+          || receipt.managedRepositoryRoot !== normalizedRoot))
+        || (receipt.schemaVersion === 1
+          && Object.hasOwn(receipt, "managedRepositoryRoot")
+          && receipt.managedRepositoryRoot !== normalizedRoot)) return false
+    } catch { return false }
     kernelId = receipt.kernelId
     machineId = receipt.machineId
   }

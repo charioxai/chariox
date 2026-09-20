@@ -26,6 +26,8 @@ pub(super) struct ExchangeResponse {
     pub(super) environment_id: String,
     pub(super) kernel_id: String,
     pub(super) runtime_release_digest: String,
+    #[serde(default)]
+    pub(super) managed_repository_root: Option<String>,
     pub(super) context_plan: ManagedKernelContextPlan,
     pub(super) cloud_relay: ManagedCloudRelayProfile,
 }
@@ -72,6 +74,8 @@ pub(super) struct ConfirmRequest {
 pub(super) struct ConfirmResponse {
     pub(super) confirmed: bool,
     pub(super) observed_state: String,
+    #[serde(default)]
+    pub(super) managed_repository_root: Option<String>,
 }
 
 pub(super) trait BootstrapCloudClient {

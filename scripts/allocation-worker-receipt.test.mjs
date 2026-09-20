@@ -1,6 +1,10 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { allocationWorkerBindingDigest, allocationWorkerReleaseMatches } from "../deploy/managed-kernel/allocation-worker-receipt.mjs"
+import {
+  allocationWorkerBindingDigest,
+  allocationWorkerReleaseMatches,
+  normalizeManagedRepositoryRoot,
+} from "../deploy/managed-kernel/allocation-worker-receipt.mjs"
 
 const receipt = () => ({
   schemaVersion: 1, status: "confirmed", allocationId: "worker-1",
@@ -31,6 +35,23 @@ test("allocation worker override is bound to the original identity and release",
     changed.homeCaller[key] = "changed"
     assert.throws(() => allocationWorkerReleaseMatches(changed, override, upgraded))
   }
+})
+
+test("schema-v2 allocation worker binding persists and pins the managed repository root", () => {
+  const original = {
+    ...receipt(),
+    schemaVersion: 2,
+    managedRepositoryRoot: "/tmp/chariox-selected-repositories",
+  }
+  const digest = allocationWorkerBindingDigest(original)
+  assert.match(digest, /^sha256:[0-9a-f]{64}$/)
+  const changed = { ...original, managedRepositoryRoot: "/tmp/chariox-other-repositories" }
+  assert.notEqual(allocationWorkerBindingDigest(changed), digest)
+  assert.equal(normalizeManagedRepositoryRoot("/tmp/chariox-selected-repositories/"), original.managedRepositoryRoot)
+  for (const value of ["/", "/var/lib", "/var/lib/chariox", "/usr/lib/chariox/releases/current", "/tmp/../unsafe"]) {
+    assert.throws(() => normalizeManagedRepositoryRoot(value))
+  }
+  assert.throws(() => allocationWorkerBindingDigest({ ...original, managedRepositoryRoot: undefined }))
 })
 
 test("allocation worker rejects unconfirmed and malformed receipts", () => {

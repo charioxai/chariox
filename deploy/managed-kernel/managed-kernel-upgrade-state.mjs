@@ -4,7 +4,11 @@ import { constants } from "node:fs"
 import { lstat, open, readFile, readdir, rename, symlink, unlink, writeFile } from "node:fs/promises"
 import { basename, dirname, resolve } from "node:path"
 import { isDeepStrictEqual } from "node:util"
-import { allocationWorkerBindingDigest } from "./allocation-worker-receipt.mjs"
+import {
+  DEFAULT_MANAGED_REPOSITORY_ROOT,
+  allocationWorkerBindingDigest,
+  normalizeManagedRepositoryRoot,
+} from "./allocation-worker-receipt.mjs"
 
 const MAX_RECEIPT_BYTES = 96 * 1024
 const REQUIRED_RECEIPT_KEYS = [
@@ -17,7 +21,7 @@ const REQUIRED_RECEIPT_KEYS = [
   "schemaVersion",
   "status",
 ]
-const OPTIONAL_RECEIPT_KEYS = ["contextPlan"]
+const OPTIONAL_RECEIPT_KEYS = ["contextPlan", "managedRepositoryRoot"]
 const RELEASE_OVERRIDE_KEYS = ["bindingDigest", "kind", "runtimeReleaseDigest", "schemaVersion"]
 const TRANSITION_POLICY_KEYS = ["protocol", "rollbackTo", "schemaVersion", "upgradeFrom"]
 const TRANSITION_POLICY_PATH = "usr/lib/chariox/slice-build-context/apps/kernel/managed-upgrade-protocol-transitions.json"
@@ -121,7 +125,7 @@ async function readReceipt(path, expectedDigest, releaseOverridePath = null) {
     fail("managed bootstrap receipt contains unsupported fields")
   }
   if (
-    receipt.schemaVersion !== 1 ||
+    ![1, 2].includes(receipt.schemaVersion) ||
     receipt.status !== "confirmed" ||
     typeof receipt.confirmedAt !== "string" ||
     !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(receipt.confirmedAt) ||
@@ -132,6 +136,20 @@ async function readReceipt(path, expectedDigest, releaseOverridePath = null) {
     !validDigest(receipt.runtimeReleaseDigest)
   ) {
     fail("managed bootstrap receipt is not a confirmed registered-kernel receipt")
+  }
+  let normalizedRoot
+  try {
+    normalizedRoot = normalizeManagedRepositoryRoot(receipt.managedRepositoryRoot)
+  } catch {
+    fail("managed bootstrap receipt managed repository root is invalid")
+  }
+  if ((receipt.schemaVersion === 2 && receipt.managedRepositoryRoot !== normalizedRoot)
+    || (receipt.schemaVersion === 1 && receipt.managedRepositoryRoot !== undefined
+      && receipt.managedRepositoryRoot !== DEFAULT_MANAGED_REPOSITORY_ROOT)) {
+    fail("managed bootstrap receipt managed repository root is invalid")
+  }
+  if (receipt.schemaVersion === 2 && !Object.hasOwn(receipt, "managedRepositoryRoot")) {
+    fail("managed bootstrap receipt managed repository root is missing")
   }
   if (expectedDigest && receipt.runtimeReleaseDigest !== expectedDigest) {
     fail("managed bootstrap receipt does not pin the expected release")

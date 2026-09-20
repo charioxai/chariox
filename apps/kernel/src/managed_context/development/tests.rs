@@ -1,6 +1,7 @@
 use super::*;
 use flate2::read::GzDecoder;
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
@@ -1577,6 +1578,114 @@ fn managed_materialization_requires_the_explicit_trusted_control_parent() {
     fs::remove_dir_all(root).expect("remove test root");
 }
 
+#[test]
+fn managed_repository_root_normalizes_custom_paths_and_rejects_protected_or_symlinked_roots() {
+    let _env = crate::env_lock::lock();
+    let root = test_root("repository-root-validation");
+    let custom = root.join("selected-repositories");
+    fs::create_dir_all(&custom).expect("create custom repository root");
+    assert_eq!(
+        normalize_managed_repository_root(None).expect("default repository root"),
+        PathBuf::from(DEFAULT_MANAGED_REPOSITORY_ROOT)
+    );
+    assert_eq!(
+        normalize_managed_repository_root(Some(&format!("{}/", custom.display())))
+            .expect("custom repository root"),
+        custom
+    );
+    for protected in [
+        "/",
+        "/var/lib",
+        "/var/lib/chariox",
+        "/usr/lib/chariox/releases/current",
+    ] {
+        assert!(
+            normalize_managed_repository_root(Some(protected)).is_err(),
+            "protected root should be rejected: {protected}"
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let target = root.join("real");
+        let link = root.join("link");
+        fs::create_dir_all(&target).expect("create symlink target");
+        symlink(&target, &link).expect("create symlink root");
+        assert!(
+            normalize_managed_repository_root(Some(
+                link.join("repositories").to_str().expect("UTF-8 symlink path")
+            ))
+            .is_err()
+        );
+    }
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn managed_publication_uses_custom_root_basename_and_collision_guard() {
+    let _env = crate::env_lock::lock();
+    let root = test_root("custom-repository-root-publication");
+    let source = root.join("source-repository");
+    init_repository(&source, "tracked.txt", "custom root fixture\n");
+    let exported = one_repo_export(&root, &source, "custom-root").expect("export fixture");
+    let control_state = root.join("control-state");
+    let control_parent = control_state.join("managed-context-workspaces");
+    fs::create_dir_all(&control_parent).expect("create trusted control parent");
+    let custom_root = root.join("selected-repositories");
+    let _restore = EnvironmentRestore::capture(&[
+        "CHARIOX_MANAGED_REPOSITORY_ROOT",
+        "CHARIOX_PUBLICATION_CONTROL_STATE_DIR",
+        "CHARIOX_HOME",
+        "CHARIOX_MANAGED_PROVIDER_HOME",
+    ]);
+    std::env::set_var("CHARIOX_MANAGED_REPOSITORY_ROOT", &custom_root);
+    std::env::set_var("CHARIOX_PUBLICATION_CONTROL_STATE_DIR", &control_state);
+    std::env::set_var("CHARIOX_HOME", root.join("chariox-home"));
+    std::env::set_var(
+        "CHARIOX_MANAGED_PROVIDER_HOME",
+        root.join("provider-home"),
+    );
+    let request = DevelopmentContextImportRequest {
+        archive_path: exported.archive_path.clone(),
+        expected_archive_sha256: exported.archive_sha256.clone(),
+        expected_project_id: exported.manifest.project_id.clone(),
+        expected_source_repositories: None,
+        destination_root: control_parent.join("publication-one"),
+    };
+    let publication = import_development_context_with_publication(
+        request.clone(),
+        "publication-one".to_string(),
+    )
+    .expect("custom-root publication should import");
+    assert_eq!(publication.repositories.len(), 1);
+    assert_eq!(publication.repositories[0].target_directory, "source-repository");
+    assert_eq!(
+        publication.repositories[0].destination_path,
+        custom_root.join("source-repository")
+    );
+    assert_eq!(
+        fs::read_to_string(custom_root.join("source-repository/tracked.txt")).unwrap(),
+        "custom root fixture\n"
+    );
+
+    let collision = DevelopmentContextImportRequest {
+        destination_root: control_parent.join("publication-two"),
+        ..request
+    };
+    let error = import_development_context_with_publication(
+        collision,
+        "publication-two".to_string(),
+    )
+    .expect_err("custom-root collision must fail closed");
+    assert!(error.to_string().contains("already exists"));
+    assert_eq!(
+        fs::read_to_string(custom_root.join("source-repository/tracked.txt")).unwrap(),
+        "custom root fixture\n"
+    );
+    assert!(!control_parent.join("publication-two").exists());
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
 #[cfg(unix)]
 #[test]
 fn interrupted_materialization_recovers_the_directory_published_after_intent() {
@@ -1756,6 +1865,30 @@ fn test_root(label: &str) -> PathBuf {
     ));
     fs::create_dir_all(&path).expect("create test root");
     path
+}
+
+struct EnvironmentRestore(Vec<(&'static str, Option<OsString>)>);
+
+impl EnvironmentRestore {
+    fn capture(names: &[&'static str]) -> Self {
+        Self(
+            names
+                .iter()
+                .map(|name| (*name, std::env::var_os(name)))
+                .collect(),
+        )
+    }
+}
+
+impl Drop for EnvironmentRestore {
+    fn drop(&mut self) {
+        for (name, value) in self.0.drain(..) {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
 }
 
 fn assert_no_export_temporaries(root: &Path) {

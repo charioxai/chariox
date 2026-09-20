@@ -28,16 +28,19 @@ struct FakeCloud {
     confirm_calls: Mutex<Vec<ConfirmRequest>>,
     fail_next_confirm: Mutex<bool>,
     confirm_after_child_marker: Mutex<Option<PathBuf>>,
+    confirm_repository_root: Option<String>,
 }
 
 impl FakeCloud {
     fn new(response: ExchangeResponse) -> Self {
+        let confirm_repository_root = response.managed_repository_root.clone();
         Self {
             exchange_response: response,
             exchange_calls: Mutex::new(Vec::new()),
             confirm_calls: Mutex::new(Vec::new()),
             fail_next_confirm: Mutex::new(false),
             confirm_after_child_marker: Mutex::new(None),
+            confirm_repository_root,
         }
     }
 }
@@ -99,6 +102,7 @@ impl BootstrapCloudClient for FakeCloud {
         Ok(ConfirmResponse {
             confirmed: true,
             observed_state: "awaiting_context".to_string(),
+            managed_repository_root: self.confirm_repository_root.clone(),
         })
     }
 }
@@ -204,6 +208,78 @@ fn bootstrap_verifies_release_persists_identity_and_profile_then_resumes_without
         1
     );
     assert_eq!(cloud.confirm_calls.lock().expect("confirm calls").len(), 1);
+
+    restore_env("CHARIOX_HOME", previous_home);
+    fixture.cleanup();
+}
+
+#[test]
+fn schema_v2_bootstrap_persists_and_matches_the_authoritative_repository_root() {
+    let _env = crate::env_lock::lock();
+    let fixture = Fixture::new("repository-root-v2");
+    let previous_home = std::env::var_os("CHARIOX_HOME");
+    std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
+    let repository_root = fixture.root.join("selected-repositories");
+    fs::create_dir_all(&repository_root).expect("custom repository root should exist");
+    let mut envelope: serde_json::Value =
+        serde_json::from_slice(&fs::read(&fixture.config.envelope_path).unwrap()).unwrap();
+    envelope["schemaVersion"] = serde_json::json!(2);
+    envelope["managedRepositoryRoot"] = serde_json::json!(repository_root);
+    fs::write(
+        &fixture.config.envelope_path,
+        serde_json::to_vec(&envelope).unwrap(),
+    )
+    .unwrap();
+    let mut response = fixture.exchange_response();
+    response.managed_repository_root = Some(repository_root.display().to_string());
+    let cloud = FakeCloud::new(response);
+
+    let prepared = prepare_managed_kernel(&fixture.config, &cloud, fixture.now)
+        .expect("schema-v2 bootstrap should exchange");
+    let pending = prepared.confirmation.expect("schema-v2 confirmation should be pending");
+    let receipt = BootstrapReceipt::read(&fixture.config.receipt_path)
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.schema_version, 2);
+    assert_eq!(
+        receipt.managed_repository_root.as_deref(),
+        Some(repository_root.to_str().unwrap())
+    );
+    pending
+        .confirm(&fixture.config, &cloud, fixture.now)
+        .expect("matching confirm root should complete");
+    assert!(!fixture.config.envelope_path.exists());
+
+    restore_env("CHARIOX_HOME", previous_home);
+    fixture.cleanup();
+}
+
+#[test]
+fn schema_v2_bootstrap_rejects_a_mismatched_exchange_repository_root() {
+    let _env = crate::env_lock::lock();
+    let fixture = Fixture::new("repository-root-mismatch");
+    let previous_home = std::env::var_os("CHARIOX_HOME");
+    std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
+    let envelope_root = fixture.root.join("envelope-repositories");
+    let response_root = fixture.root.join("response-repositories");
+    fs::create_dir_all(&envelope_root).unwrap();
+    fs::create_dir_all(&response_root).unwrap();
+    let mut envelope: serde_json::Value =
+        serde_json::from_slice(&fs::read(&fixture.config.envelope_path).unwrap()).unwrap();
+    envelope["schemaVersion"] = serde_json::json!(2);
+    envelope["managedRepositoryRoot"] = serde_json::json!(envelope_root);
+    fs::write(
+        &fixture.config.envelope_path,
+        serde_json::to_vec(&envelope).unwrap(),
+    )
+    .unwrap();
+    let mut response = fixture.exchange_response();
+    response.managed_repository_root = Some(response_root.display().to_string());
+    let cloud = FakeCloud::new(response);
+    let error = prepare_managed_kernel(&fixture.config, &cloud, fixture.now)
+        .expect_err("bootstrap must reject a response root different from the envelope");
+    assert!(error.to_string().contains("repository root"));
+    assert!(!fixture.config.receipt_path.exists());
 
     restore_env("CHARIOX_HOME", previous_home);
     fixture.cleanup();
@@ -842,6 +918,7 @@ impl Fixture {
             environment_id: String::new(),
             kernel_id: String::new(),
             runtime_release_digest: String::new(),
+            managed_repository_root: None,
             context_plan: ManagedKernelContextPlan::empty_for_tests("managed_ctx_bootstrap"),
             cloud_relay: ManagedCloudRelayProfile {
                 api_url: "https://cloud.example.test".to_string(),

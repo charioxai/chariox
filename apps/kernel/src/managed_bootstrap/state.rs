@@ -9,6 +9,9 @@ use url::Url;
 
 use crate::config::write_private_file;
 use crate::error::DaemonError;
+use crate::managed_context::development::{
+    normalize_managed_repository_root, DEFAULT_MANAGED_REPOSITORY_ROOT,
+};
 
 use super::cloud::{DisposableWorkerEnrollmentReceipt, ManagedCloudRelayProfile};
 use super::context_plan::ManagedKernelContextPlan;
@@ -45,6 +48,8 @@ pub(super) struct ManagedBootstrapEnvelope {
     pub(super) token: String,
     pub(super) expires_at: String,
     pub(super) runtime_release_digest: String,
+    #[serde(default)]
+    pub(super) managed_repository_root: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,6 +78,8 @@ pub(super) struct DisposableWorkerBootstrapEnvelope {
     pub(super) expires_at: String,
     pub(super) binding_digest: String,
     pub(super) binding: DisposableWorkerBinding,
+    #[serde(default)]
+    pub(super) managed_repository_root: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,6 +100,8 @@ pub(super) struct BootstrapReceipt {
     pub(super) relay_public_key: String,
     pub(super) runtime_release_digest: String,
     pub(super) confirmed_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) managed_repository_root: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) context_plan: Option<ManagedKernelContextPlan>,
 }
@@ -115,6 +124,8 @@ pub(super) struct DisposableWorkerBootstrapReceipt {
     pub(super) relay_public_key: String,
     pub(super) binding_digest: String,
     pub(super) binding: DisposableWorkerBinding,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) managed_repository_root: Option<String>,
     pub(super) enrollment_receipt: Option<DisposableWorkerEnrollmentReceipt>,
     pub(super) cloud_relay: Option<ManagedCloudRelayProfile>,
 }
@@ -246,11 +257,20 @@ impl ManagedBootstrapEnvelope {
             .map_err(|_| state_error("managed bootstrap expiry is invalid"))
     }
 
+    pub(super) fn managed_repository_root(&self) -> Result<PathBuf, DaemonError> {
+        normalized_root_for_schema(self.schema_version, self.managed_repository_root.as_deref())
+    }
+
     fn validate(&self) -> Result<(), DaemonError> {
-        if self.schema_version != 1
+        if !matches!(self.schema_version, 1 | 2)
             || !valid_identifier(&self.environment_id)
             || !valid_secret(&self.token, "mkboot_")
             || !valid_digest(&self.runtime_release_digest)
+            || normalized_root_for_schema(
+                self.schema_version,
+                self.managed_repository_root.as_deref(),
+            )
+            .is_err()
         {
             return Err(state_error("managed bootstrap envelope is invalid"));
         }
@@ -266,13 +286,22 @@ impl DisposableWorkerBootstrapEnvelope {
             .map_err(|_| state_error("disposable worker bootstrap expiry is invalid"))
     }
 
+    pub(super) fn managed_repository_root(&self) -> Result<PathBuf, DaemonError> {
+        normalized_root_for_schema(self.schema_version, self.managed_repository_root.as_deref())
+    }
+
     fn validate(&self) -> Result<(), DaemonError> {
-        if self.schema_version != 1
+        if !matches!(self.schema_version, 1 | 2)
             || !valid_secret(&self.token, "dwboot_")
             || self.token.len() > "dwboot_".len() + 128
             || !valid_digest(&self.binding_digest)
             || self.binding.validate().is_err()
             || disposable_worker_binding_digest(&self.binding)? != self.binding_digest
+            || normalized_root_for_schema(
+                self.schema_version,
+                self.managed_repository_root.as_deref(),
+            )
+            .is_err()
         {
             return Err(state_error(
                 "disposable worker bootstrap envelope is invalid",
@@ -330,12 +359,17 @@ impl BootstrapReceipt {
             }
             _ => false,
         };
-        if self.schema_version != 1
+        if !matches!(self.schema_version, 1 | 2)
             || !valid_identifier(&self.environment_id)
             || !valid_identifier(&self.machine_id)
             || !valid_identifier(&self.kernel_id)
             || self.relay_public_key.trim().is_empty()
             || !valid_digest(&self.runtime_release_digest)
+            || normalized_root_for_schema(
+                self.schema_version,
+                self.managed_repository_root.as_deref(),
+            )
+            .is_err()
             || self
                 .context_plan
                 .as_ref()
@@ -345,6 +379,10 @@ impl BootstrapReceipt {
             return Err(state_error("managed bootstrap receipt is invalid"));
         }
         Ok(())
+    }
+
+    pub(super) fn managed_repository_root(&self) -> Result<PathBuf, DaemonError> {
+        normalized_root_for_schema(self.schema_version, self.managed_repository_root.as_deref())
     }
 
     pub(super) fn persist(&self, path: &Path) -> Result<(), DaemonError> {
@@ -373,13 +411,18 @@ impl BootstrapReceiptDocument {
 
 impl DisposableWorkerBootstrapReceipt {
     fn validate(&self) -> Result<(), DaemonError> {
-        if self.schema_version != 1
+        if !matches!(self.schema_version, 1 | 2)
             || self.kind != "disposable_worker"
             || validate_cloud_url(&self.cloud_api_url).is_err()
             || self.relay_public_key.trim().is_empty()
             || !valid_digest(&self.binding_digest)
             || self.binding.validate().is_err()
             || disposable_worker_binding_digest(&self.binding)? != self.binding_digest
+            || normalized_root_for_schema(
+                self.schema_version,
+                self.managed_repository_root.as_deref(),
+            )
+            .is_err()
             || match (
                 &self.status,
                 self.enrollment_receipt.as_ref(),
@@ -401,6 +444,28 @@ impl DisposableWorkerBootstrapReceipt {
         }
         Ok(())
     }
+}
+
+fn normalized_root_for_schema(
+    schema_version: u32,
+    value: Option<&str>,
+) -> Result<PathBuf, DaemonError> {
+    if schema_version == 2 && value.is_none() {
+        return Err(state_error(
+            "schema-v2 managed bootstrap state must carry managedRepositoryRoot",
+        ));
+    }
+    let root = normalize_managed_repository_root(value)
+        .map_err(|_| state_error("managed repository root is invalid"))?;
+    if schema_version == 1
+        && value.is_some()
+        && root != Path::new(DEFAULT_MANAGED_REPOSITORY_ROOT)
+    {
+        return Err(state_error(
+            "legacy managed bootstrap state may only use the default repository root",
+        ));
+    }
+    Ok(root)
 }
 
 impl DisposableWorkerReleaseOverride {
@@ -612,5 +677,133 @@ mod tests {
         restore_env("HOME", previous_home);
         restore_env("CHARIOX_HOME", previous_chariox_home);
         restore_env("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT", previous_receipt);
+    }
+
+    #[test]
+    fn schema_v2_managed_and_worker_envelopes_parse_and_legacy_defaults_are_stable() {
+        let root = env::temp_dir().join(format!(
+            "chariox-managed-root-envelope-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let repository_root = root.join("repositories");
+        fs::create_dir_all(&repository_root).expect("create repository root");
+        let managed_path = root.join("managed-envelope.json");
+        let worker_path = root.join("worker-envelope.json");
+        let managed = serde_json::json!({
+            "schemaVersion": 2,
+            "cloudApiUrl": "https://cloud.example.test",
+            "environmentId": "environment-1",
+            "token": format!("mkboot_{}", "a".repeat(40)),
+            "expiresAt": "2026-09-21T00:00:00Z",
+            "runtimeReleaseDigest": format!("sha256:{}", "b".repeat(64)),
+            "managedRepositoryRoot": repository_root.display().to_string(),
+        });
+        fs::write(&managed_path, serde_json::to_vec(&managed).unwrap())
+            .expect("write managed envelope");
+        let parsed = BootstrapEnvelope::read(&managed_path).expect("parse managed envelope");
+        let BootstrapEnvelope::ManagedEnvironment(parsed) = parsed else {
+            panic!("expected managed envelope");
+        };
+        assert_eq!(parsed.schema_version, 2);
+        assert_eq!(parsed.managed_repository_root().unwrap(), repository_root);
+
+        let binding = DisposableWorkerBinding {
+            allocation_id: "allocation-1".to_string(),
+            expected_home_kernel_id: "home-kernel".to_string(),
+            user_id: "user-1".to_string(),
+            realm_id: "realm-1".to_string(),
+            worker_machine_id: "worker-machine".to_string(),
+            worker_kernel_id: "worker-kernel".to_string(),
+            image_digest: format!("sha256:{}", "c".repeat(64)),
+            runtime_release_digest: format!("sha256:{}", "d".repeat(64)),
+            manager_operation_id: "operation-1".to_string(),
+            manager_operation_fence: 1,
+            manager_request_digest: format!("sha256:{}", "e".repeat(64)),
+            sender_key_thumbprint: format!("sha256:{}", "f".repeat(64)),
+        };
+        let worker = serde_json::json!({
+            "schemaVersion": 2,
+            "cloudApiUrl": "https://cloud.example.test",
+            "token": format!("dwboot_{}", "a".repeat(40)),
+            "expiresAt": "2026-09-21T00:00:00Z",
+            "bindingDigest": disposable_worker_binding_digest(&binding).unwrap(),
+            "binding": binding,
+            "managedRepositoryRoot": repository_root.display().to_string(),
+        });
+        fs::write(&worker_path, serde_json::to_vec(&worker).unwrap())
+            .expect("write worker envelope");
+        let parsed = BootstrapEnvelope::read(&worker_path).expect("parse worker envelope");
+        let BootstrapEnvelope::DisposableWorker(parsed) = parsed else {
+            panic!("expected disposable worker envelope");
+        };
+        assert_eq!(parsed.schema_version, 2);
+        assert_eq!(parsed.managed_repository_root().unwrap(), repository_root);
+
+        let legacy_path = root.join("legacy-envelope.json");
+        let mut legacy = managed;
+        legacy["schemaVersion"] = serde_json::json!(1);
+        legacy.as_object_mut().unwrap().remove("managedRepositoryRoot");
+        fs::write(&legacy_path, serde_json::to_vec(&legacy).unwrap())
+            .expect("write legacy envelope");
+        let BootstrapEnvelope::ManagedEnvironment(legacy) =
+            BootstrapEnvelope::read(&legacy_path).expect("parse legacy envelope")
+        else {
+            panic!("expected legacy managed envelope");
+        };
+        assert_eq!(
+            legacy.managed_repository_root().unwrap(),
+            PathBuf::from(DEFAULT_MANAGED_REPOSITORY_ROOT)
+        );
+
+        let missing_root_path = root.join("missing-root-envelope.json");
+        let mut missing_root = serde_json::json!({
+            "schemaVersion": 2,
+            "cloudApiUrl": "https://cloud.example.test",
+            "environmentId": "environment-1",
+            "token": format!("mkboot_{}", "a".repeat(40)),
+            "expiresAt": "2026-09-21T00:00:00Z",
+            "runtimeReleaseDigest": format!("sha256:{}", "b".repeat(64)),
+        });
+        missing_root
+            .as_object_mut()
+            .unwrap()
+            .remove("managedRepositoryRoot");
+        fs::write(&missing_root_path, serde_json::to_vec(&missing_root).unwrap())
+            .expect("write missing-root envelope");
+        assert!(BootstrapEnvelope::read(&missing_root_path).is_err());
+        fs::remove_dir_all(root).expect("remove envelope fixtures");
+    }
+
+    #[test]
+    fn schema_v2_receipt_persists_and_reloads_the_selected_repository_root() {
+        let root = env::temp_dir().join(format!(
+            "chariox-managed-root-receipt-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        fs::create_dir_all(&root).expect("create receipt fixture");
+        let repository_root = root.join("repositories");
+        fs::create_dir_all(&repository_root).expect("create repository root");
+        let receipt = BootstrapReceipt {
+            schema_version: 2,
+            status: BootstrapReceiptStatus::Confirmed,
+            environment_id: "environment-1".to_string(),
+            machine_id: "machine-1".to_string(),
+            kernel_id: "kernel-1".to_string(),
+            relay_public_key: "relay-public-key".to_string(),
+            runtime_release_digest: format!("sha256:{}", "a".repeat(64)),
+            confirmed_at: Some("2026-09-20T00:00:00Z".to_string()),
+            managed_repository_root: Some(repository_root.display().to_string()),
+            context_plan: None,
+        };
+        let path = root.join("receipt.json");
+        receipt.persist(&path).expect("persist receipt");
+        let reloaded = BootstrapReceipt::read(&path)
+            .expect("read receipt")
+            .expect("receipt should exist");
+        assert_eq!(reloaded.schema_version, 2);
+        assert_eq!(reloaded.managed_repository_root().unwrap(), repository_root);
+        fs::remove_dir_all(root).expect("remove receipt fixture");
     }
 }
