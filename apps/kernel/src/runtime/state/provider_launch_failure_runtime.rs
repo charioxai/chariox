@@ -193,6 +193,7 @@ impl KernelRuntimeState {
                             started.run.session_id(),
                             agent_id,
                             started.run.id(),
+                            durable_active_prompt.as_ref().map(|prompt| prompt.id()),
                         )
                         .await
                     {

@@ -62,10 +62,32 @@ impl KernelRuntimeState {
                 agent_id: "provider run has no agent".to_string(),
             })?;
 
+        // A delayed failure from a superseded run must not mutate the resume
+        // state or prompt owned by its replacement. Durable prompt delivery is
+        // authoritative when present; the session pointer covers prompts that
+        // have started but have not reached durable provider dispatch yet.
+        let initial_session = owned.session_store.get_session(session_id)?;
+        let initial_active_prompt_id = owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&initial_session, &agent_id)
+            .map(|prompt| prompt.id().to_string());
+        if initial_active_prompt_id.is_some()
+            && !owned.provider_run_has_active_prompt(session_id, &provider_run)?
+        {
+            self.retire_owned_provider_run(session_id, provider_run_id)
+                .await;
+            return Ok(());
+        }
+
         self.clear_failed_provider_resume_state_from_message(&provider_run, message)?;
 
         if self
-            .settle_leased_workflow_provider_failure(session_id, &agent_id, provider_run_id)
+            .settle_leased_workflow_provider_failure(
+                session_id,
+                &agent_id,
+                provider_run_id,
+                initial_active_prompt_id.as_deref(),
+            )
             .await?
         {
             self.retire_owned_provider_run(session_id, provider_run_id)
@@ -128,20 +150,41 @@ impl KernelRuntimeState {
                     Some(profile_transition),
                 )
                 .await;
+            } else {
+                self.finish_unlaunched_local_provider_failure_transition(
+                    session_id,
+                    &agent_id,
+                    profile_transition,
+                )
+                .await?;
             }
             return Ok(());
         };
+        if !owned.provider_run_has_active_prompt(session_id, &provider_run)? {
+            self.retire_owned_provider_run(session_id, provider_run_id)
+                .await;
+            return Ok(());
+        }
         if active_prompt.is_external() {
             let _ = owned.clear_prompt_activity(provider_run_id);
             let _ = owned.sync_focused_provider_run_if_idle(session_id);
             let _ = owned.session_snapshot(session_id);
             return Ok(());
         }
+        let active_prompt_id = active_prompt.id().to_string();
+        self.retire_owned_provider_run(session_id, provider_run_id)
+            .await;
+        let session = owned.session_store.get_session(session_id)?;
+        let Some(active_prompt) = owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .filter(|prompt| prompt.id() == active_prompt_id)
+        else {
+            return Ok(());
+        };
         if project_failure_output {
             owned.record_provider_failure_output(session_id, provider_run_id, &agent_id, message);
         }
-        self.retire_owned_provider_run(session_id, provider_run_id)
-            .await;
         let _ = self.inject_metaagent_turn_failure_event(
             session_id,
             &agent_id,
@@ -158,10 +201,11 @@ impl KernelRuntimeState {
                 message,
             )?;
         }
-        let completion = owned.fail_local_prompt_without_advance(
+        let completion = owned.fail_local_prompt_without_advance_if_matches(
             session_id,
             &agent_id,
             Some(provider_run_id),
+            &active_prompt_id,
         )?;
         // Settle the failed turn first, then choose its successor provider before
         // preparing any queued work. Otherwise admission retries the exhausted
@@ -346,6 +390,7 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
         provider_run_id: &str,
+        expected_prompt_id: Option<&str>,
     ) -> Result<bool, DaemonError> {
         let leased_context = self
             .with_app_side_effect(|app| {
@@ -359,11 +404,14 @@ impl KernelRuntimeState {
         // The home learns failure through the same correlated, replayable runtime
         // projection as completion. Worker settlement must not wait for the home
         // to be reachable or admit another turn on this failed provider.
-        self.owned.fail_local_prompt_without_advance(
-            session_id,
-            agent_id,
-            Some(provider_run_id),
-        )?;
+        if let Some(expected_prompt_id) = expected_prompt_id {
+            self.owned.fail_local_prompt_without_advance_if_matches(
+                session_id,
+                agent_id,
+                Some(provider_run_id),
+                expected_prompt_id,
+            )?;
+        }
         Ok(true)
     }
 
