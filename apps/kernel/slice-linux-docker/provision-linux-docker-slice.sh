@@ -80,6 +80,9 @@ SLICE_KERNEL_PORT="${CHARIOX_SLICE_KERNEL_PORT:-43119}"
 SLICE_MCP_PORT="${CHARIOX_SLICE_MCP_PORT:-43120}"
 SLICE_RELAY_PORT="${CHARIOX_SLICE_RELAY_PORT:-43130}"
 SLICE_NOVNC_PORT="${CHARIOX_SLICE_NOVNC_PORT:-6080}"
+SLICE_DISPLAY_BACKEND="${CHARIOX_SLICE_DISPLAY_BACKEND:-novnc}"
+SLICE_SELKIES_PORT="${CHARIOX_SLICE_SELKIES_PORT:-$SLICE_NOVNC_PORT}"
+SLICE_SELKIES_HEALTH_TIMEOUT="${CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT:-15}"
 SLICE_RELAY_URL="${CHARIOX_SLICE_RELAY_URL:-}"
 SLICE_RELAY_TOKEN="${CHARIOX_SLICE_RELAY_TOKEN:-slice-local}"
 SLICE_CLOUD_RELAY_CONFIG_JSON="${CHARIOX_SLICE_CLOUD_RELAY_CONFIG_JSON:-}"
@@ -114,6 +117,42 @@ log() {
 fail() {
   printf '[slice-linux] error: %s\n' "$*" >&2
   exit 1
+}
+
+validate_display_port() {
+  local name="$1"
+  local value="$2"
+  case "$value" in
+    ''|*[!0-9]*) fail "$name must be numeric" ;;
+  esac
+  (( value >= 1 && value <= 65535 )) || fail "$name is outside the valid range"
+}
+
+validate_display_settings() {
+  case "$SLICE_DISPLAY_BACKEND" in
+    novnc)
+      validate_display_port CHARIOX_SLICE_NOVNC_PORT "$SLICE_NOVNC_PORT"
+      ;;
+    selkies)
+      validate_display_port CHARIOX_SLICE_SELKIES_PORT "$SLICE_SELKIES_PORT"
+      case "$SLICE_SELKIES_HEALTH_TIMEOUT" in
+        ''|*[!0-9]*) fail "CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT must be numeric" ;;
+      esac
+      (( SLICE_SELKIES_HEALTH_TIMEOUT >= 1 && SLICE_SELKIES_HEALTH_TIMEOUT <= 120 )) \
+        || fail "CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT is outside the bounded range"
+      ;;
+    *)
+      fail "CHARIOX_SLICE_DISPLAY_BACKEND must be novnc or selkies"
+      ;;
+  esac
+}
+
+selected_display_port() {
+  case "$SLICE_DISPLAY_BACKEND" in
+    novnc) printf '%s\n' "$SLICE_NOVNC_PORT" ;;
+    selkies) printf '%s\n' "$SLICE_SELKIES_PORT" ;;
+    *) fail "CHARIOX_SLICE_DISPLAY_BACKEND must be novnc or selkies" ;;
+  esac
 }
 
 if [[ ! "$SLICE_ACCOUNT_OWNER" =~ ^[A-Za-z0-9-]+$ || ! "$SLICE_ACCOUNT_PROFILE" =~ ^[A-Za-z0-9-]+$ ]]; then
@@ -462,6 +501,7 @@ refresh_saved_state_runtime() {
 }
 
 ensure_container() {
+  validate_display_settings
   local created_container=0
   if [[ "$SLICE_RECREATE" == "1" ]] && container_exists; then
     log "recreating container $SLICE_NAME"
@@ -491,6 +531,8 @@ ensure_container() {
     log "creating container $SLICE_NAME"
     run_with_timeout 30 docker volume create "$SLICE_HOME_VOLUME" >/dev/null
     restore_saved_home_volume
+    local display_port
+    display_port="$(selected_display_port)"
     local docker_create_args=(
       --name "$SLICE_NAME"
       --ulimit core=0:0
@@ -500,7 +542,10 @@ ensure_container() {
       -p "127.0.0.1:$SLICE_OPENCODE_PORT_RANGE:$SLICE_OPENCODE_PORT_RANGE"
       -p "127.0.0.1:$SLICE_KERNEL_PORT:$SLICE_KERNEL_PORT"
       -p "127.0.0.1:$SLICE_RELAY_PORT:$SLICE_RELAY_PORT"
-      -p "127.0.0.1:$SLICE_NOVNC_PORT:$SLICE_NOVNC_PORT"
+      -p "127.0.0.1:$display_port:$display_port"
+      -e "CHARIOX_SLICE_DISPLAY_BACKEND=$SLICE_DISPLAY_BACKEND"
+      -e "CHARIOX_SLICE_SELKIES_PORT=$SLICE_SELKIES_PORT"
+      -e "CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT=$SLICE_SELKIES_HEALTH_TIMEOUT"
       -v "$SLICE_HOME_VOLUME:/home/slice"
       -v "$SLICE_WORKSPACE_SOURCE:/workspace:$SLICE_WORKSPACE_MOUNT_MODE"
       --add-host "host.docker.internal:host-gateway"
@@ -602,6 +647,7 @@ ensure_auth_target_container() {
 }
 
 exec_slice_with_timeout() {
+  validate_display_settings
   local seconds="$1"
   shift
   local relay_env_args=()
@@ -656,6 +702,9 @@ exec_slice_with_timeout() {
     -e CHARIOX_SLICE_MCP_PORT="$SLICE_MCP_PORT" \
     -e CHARIOX_SLICE_RELAY_PORT="$SLICE_RELAY_PORT" \
     -e CHARIOX_SLICE_NOVNC_PORT="$SLICE_NOVNC_PORT" \
+    -e CHARIOX_SLICE_DISPLAY_BACKEND="$SLICE_DISPLAY_BACKEND" \
+    -e CHARIOX_SLICE_SELKIES_PORT="$SLICE_SELKIES_PORT" \
+    -e CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT="$SLICE_SELKIES_HEALTH_TIMEOUT" \
     "${relay_env_args[@]}" \
     "${workspace_root_env_args[@]}" \
     -e CHARIOX_SLICE_DAEMON_ALIAS="$SLICE_DAEMON_ALIAS" \
@@ -678,7 +727,17 @@ exec_slice() {
 
 slice_screen_diagnostics() {
   log "slice screen diagnostics"
-  run_with_timeout 30 docker exec -u slice "$SLICE_NAME" bash -lc "
+  log "display backend: $SLICE_DISPLAY_BACKEND"
+  log "display host-loopback port: $(selected_display_port)"
+  if [[ "$SLICE_DISPLAY_BACKEND" == selkies ]]; then
+    log "Selkies health timeout: ${SLICE_SELKIES_HEALTH_TIMEOUT}s"
+  fi
+  run_with_timeout 30 docker exec \
+    -e CHARIOX_SLICE_DISPLAY_BACKEND="$SLICE_DISPLAY_BACKEND" \
+    -e CHARIOX_SLICE_NOVNC_PORT="$SLICE_NOVNC_PORT" \
+    -e CHARIOX_SLICE_SELKIES_PORT="$SLICE_SELKIES_PORT" \
+    -e CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT="$SLICE_SELKIES_HEALTH_TIMEOUT" \
+    -u slice "$SLICE_NAME" bash -lc "
     set +e
     /opt/chariox-slice/slice-screen.sh status
     echo '--- processes'

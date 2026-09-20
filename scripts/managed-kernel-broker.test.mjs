@@ -45,6 +45,50 @@ async function waitFor(check, timeoutMs = 3000) {
   throw new Error("timed out waiting for broker state")
 }
 
+test("managed slice broker validates the selected display backend settings", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-broker-display-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const share = join(root, "share")
+  await mkdir(share)
+  const baseEnvironment = {
+    CHARIOX_SLICE_NAME: "chariox-slice-dev",
+    CHARIOX_SLICE_ID: "slice-dev",
+    CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-dev-home",
+  }
+  const request = (environment) => validate({
+    kind: "provisioner",
+    action: "provision",
+    environment: { ...baseEnvironment, ...environment },
+    files: [],
+  }, share)
+
+  for (const environment of [
+    { CHARIOX_SLICE_DISPLAY_BACKEND: "novnc", CHARIOX_SLICE_NOVNC_PORT: "6080" },
+    {
+      CHARIOX_SLICE_DISPLAY_BACKEND: "selkies",
+      CHARIOX_SLICE_SELKIES_PORT: "6081",
+      CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT: "15",
+    },
+  ]) {
+    const result = request(environment)
+    assert.equal(result.status, 0, result.stderr)
+  }
+
+  for (const [environment, message] of [
+    [{ CHARIOX_SLICE_DISPLAY_BACKEND: "x11" }, "CHARIOX_SLICE_DISPLAY_BACKEND is invalid"],
+    [{ CHARIOX_SLICE_DISPLAY_BACKEND: "selkies", CHARIOX_SLICE_SELKIES_PORT: "0" }, "CHARIOX_SLICE_SELKIES_PORT is invalid"],
+    [{ CHARIOX_SLICE_DISPLAY_BACKEND: "selkies", CHARIOX_SLICE_SELKIES_PORT: "65536" }, "CHARIOX_SLICE_SELKIES_PORT is invalid"],
+    [{ CHARIOX_SLICE_DISPLAY_BACKEND: "selkies", CHARIOX_SLICE_SELKIES_PORT: "bad" }, "CHARIOX_SLICE_SELKIES_PORT is invalid"],
+    [{ CHARIOX_SLICE_DISPLAY_BACKEND: "selkies", CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT: "0" }, "CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT is invalid"],
+    [{ CHARIOX_SLICE_DISPLAY_BACKEND: "selkies", CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT: "121" }, "CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT is invalid"],
+    [{ CHARIOX_SLICE_DISPLAY_BACKEND: "selkies", CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT: "fast" }, "CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT is invalid"],
+  ]) {
+    const result = request(environment)
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, new RegExp(message))
+  }
+})
+
 test("managed slice broker accepts only Chariox resources and shared host paths", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-broker-test-"))
   context.after(() => rm(root, { recursive: true, force: true }))
