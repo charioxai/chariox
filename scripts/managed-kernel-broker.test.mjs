@@ -89,6 +89,69 @@ test("managed slice broker validates the selected display backend settings", asy
   }
 })
 
+test("managed slice broker accepts display settings for every non-provision action only", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-broker-non-provision-display-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const share = join(root, "share")
+  await mkdir(share)
+  const baseEnvironment = {
+    CHARIOX_SLICE_NAME: "chariox-slice-dev",
+    CHARIOX_SLICE_ID: "slice-dev",
+    CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-dev-home",
+  }
+  const displayEnvironment = {
+    CHARIOX_SLICE_DISPLAY_BACKEND: "selkies",
+    CHARIOX_SLICE_SELKIES_PORT: "6081",
+    CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT: "15",
+  }
+  const actionEnvironment = {
+    "import-provider-auth": {
+      CHARIOX_SLICE_AUTH_PROVIDER: "all",
+      CHARIOX_SLICE_ACCOUNT_OWNER: "local-user",
+      CHARIOX_SLICE_ACCOUNT_PROFILE: "default",
+    },
+    "remove-provider-auth": {
+      CHARIOX_SLICE_AUTH_PROVIDER: "all",
+      CHARIOX_SLICE_ACCOUNT_OWNER: "local-user",
+      CHARIOX_SLICE_ACCOUNT_PROFILE: "default",
+    },
+    "start-provider-login": {
+      CHARIOX_SLICE_LOGIN_PROVIDER: "codex",
+      CHARIOX_SLICE_ACCOUNT_OWNER: "local-user",
+      CHARIOX_SLICE_ACCOUNT_PROFILE: "default",
+    },
+  }
+  for (const action of [
+    "stop",
+    "destroy",
+    "import-provider-auth",
+    "remove-provider-auth",
+    "start-provider-login",
+  ]) {
+    const accepted = validate({
+      kind: "provisioner",
+      action,
+      environment: { ...baseEnvironment, ...displayEnvironment, ...actionEnvironment[action] },
+      files: [],
+    }, share)
+    assert.equal(accepted.status, 0, `${action}: ${accepted.stderr}`)
+
+    const unrelated = validate({
+      kind: "provisioner",
+      action,
+      environment: {
+        ...baseEnvironment,
+        ...displayEnvironment,
+        ...actionEnvironment[action],
+        CHARIOX_SLICE_DISPLAY_MODE: "headed",
+      },
+      files: [],
+    }, share)
+    assert.equal(unrelated.status, 1)
+    assert.match(unrelated.stderr, new RegExp(`not allowed for provisioner action ${action}`))
+  }
+})
+
 test("managed slice broker accepts only Chariox resources and shared host paths", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-broker-test-"))
   context.after(() => rm(root, { recursive: true, force: true }))
