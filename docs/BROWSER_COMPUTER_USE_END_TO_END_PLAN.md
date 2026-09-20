@@ -237,6 +237,47 @@ absence of another user report cannot close an item.
   automatic shutdown. The audit must find inconsistencies proactively rather
   than wait for users to report them.
 
+### Locked clarification record for 2026-09-20
+
+This record is a handoff checkpoint. Every resumed turn, delegated Path-1 task,
+progress report, and completion review must reconcile its work against these
+decisions and the `MP-*` ledger above:
+
+- The disposable VM is the Path-1 isolation boundary. Path-1 provider
+  processes must not run under Bubblewrap or inherit an equivalent managed-only
+  systemd sandbox. Bubblewrap may remain only for a different, explicitly
+  documented topology such as an inner slice or legacy shared host.
+- Managed machines run the ordinary kernel build. Chariox installs that build
+  as a signed native release under `/usr/lib/chariox/releases/<digest>` and
+  activates it through `/usr/local/bin/chariox-kernel`. This is the production
+  installation design, not a managed-kernel fork. `pnpm` is not the managed
+  production installer.
+- Release installation and mutable-state transfer are separate operations.
+  User-owned kernel state uses `HOME=/home/chariox` and
+  `CHARIOX_HOME=/home/chariox/.chariox`. No release activation may move, hide,
+  or replace that state.
+- A copied repository defaults to
+  `/home/chariox/<source-repository-basename>`. The source basename is
+  preserved. The user may choose another absolute trusted repository root when
+  creating the machine. That choice is one server-authoritative setting, not a
+  per-session client override.
+- Repository placement does not define the workspace boundary. A managed user
+  may create or select any working directory allowed by normal Unix
+  permissions, including `/home`, `/tmp`, nested paths, and repositories made
+  after enrollment. Protect exact control files without blocking their parents
+  or unrelated siblings.
+- Managed deployment and atomic release activation are allowed to differ from
+  an ordinary installation. Mandatory managed-machine shutdown is the other
+  allowed difference. Preserve every shutdown trigger, including the idle
+  delay measured from the last agent finishing.
+- Resource decisions use current measurements. Keep disk, memory, CPU, process
+  health, and build growth within recoverable bounds, but do not stop a healthy
+  bounded build because of an arbitrary fixed threshold. Fast critical-path
+  progress remains the default.
+- Path 1 and the overall goal remain open until `MP-01` through `MP-11` have
+  reviewed implementation, focused tests, fresh-machine comparison evidence,
+  and verified cleanup.
+
 ### Locked Path-1 decisions
 
 These decisions are requirements. Do not reopen them during implementation or
