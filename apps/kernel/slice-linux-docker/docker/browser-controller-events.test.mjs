@@ -426,3 +426,210 @@ test("rejects invalid limits before accepting unbounded state", () => {
     return error instanceof BrowserEventError && error.code === "browser_event_limit_invalid";
   });
 });
+
+test("deduplicates lifecycle replays before they can restore a destroyed target or document", () => {
+  const journal = new BrowserEventJournal({ maxEvents: 16, maxBytes: 16_384 });
+  const source = context();
+  const created = {
+    method: "Target.targetCreated",
+    eventId: "target-create-1",
+    params: {
+      targetInfo: { targetId: "target-a", type: "page", url: "https://example.test/" },
+    },
+  };
+  const first = journal.recordCdp(created, source);
+  const destroyed = journal.recordCdp({
+    method: "Target.targetDestroyed",
+    eventId: "target-destroy-1",
+    params: { targetId: "target-a" },
+  }, source);
+  assert.equal(first.sequence_id, 1);
+  assert.equal(destroyed.sequence_id, 2);
+  assert.equal(journal.isTargetInvalid("target-a"), true);
+
+  const replayedCreate = journal.recordCdp(created, { ...source, actorId: "replay-actor" });
+  assert.equal(replayedCreate.sequence_id, first.sequence_id);
+  assert.equal(journal.isTargetInvalid("target-a"), true);
+  assert.equal(journal.size, 2);
+
+  assert.equal(journal.recordCdp({
+    method: "Target.targetInfoChanged",
+    eventId: "target-change-old",
+    params: { targetInfo: { targetId: "target-a", type: "page", url: "https://example.test/old" } },
+  }, source), null);
+  assert.equal(journal.recordCdp({
+    method: "Page.frameNavigated",
+    eventId: "navigation-old",
+    sessionId: "session-a",
+    params: { frame: { loaderId: "document-old", url: "https://example.test/old" } },
+  }, source), null);
+  assert.equal(journal.isTargetInvalid("target-a"), true);
+  assert.equal(journal.isDocumentInvalid("document-old"), false);
+  assert.equal(journal.size, 2);
+});
+
+test("rejects evicted tombstones while allowing an explicitly authoritative active generation", () => {
+  const journal = new BrowserEventJournal({
+    maxEvents: 32,
+    maxBytes: 32_768,
+    maxLifecycleEntries: 2,
+  });
+  for (let index = 0; index < 5; index += 1) {
+    assert.equal(
+      journal.invalidateTarget({ targetId: `dead-target-${index}`, browserGeneration: 7 }),
+      true,
+    );
+    assert.equal(
+      journal.invalidateDocument({ documentId: `dead-document-${index}`, browserGeneration: 7 }),
+      true,
+    );
+  }
+
+  assert.ok(journal.invalidTargets.size <= 2);
+  assert.ok(journal.invalidDocuments.size <= 2);
+  assert.equal(journal.record({
+    kind: "target_created",
+    eventId: "replayed-evicted-target",
+    browserGeneration: 7,
+    targetId: "dead-target-0",
+    data: { url: "https://example.test/replayed" },
+  }), null);
+  assert.equal(journal.record({
+    kind: "page_loaded",
+    eventId: "replayed-evicted-document",
+    browserGeneration: 7,
+    targetId: "fresh-target",
+    documentId: "dead-document-0",
+    data: {},
+  }), null);
+
+  const reopened = journal.record({
+    kind: "target_created",
+    eventId: "authoritative-new-target-generation",
+    browserGeneration: 7,
+    targetId: "dead-target-0",
+    data: { url: "https://example.test/new" },
+  }, {
+    browserGeneration: 7,
+    activeTargetGenerationForTarget: (targetId) =>
+      targetId === "dead-target-0" ? 2 : null,
+  });
+  assert.equal(reopened.kind, "target_created");
+});
+
+test("reports a high-water cursor for byte-truncated poll, snapshot, and serialization pages", () => {
+  const journal = new BrowserEventJournal({
+    maxEvents: 32,
+    maxBytes: 1_000_000,
+    maxEventBytes: 4_096,
+    maxSerializedBytes: 300,
+  });
+  for (let index = 0; index < 5; index += 1) {
+    journal.record({
+      kind: "console",
+      eventId: `continuation-${index}`,
+      browserGeneration: 7,
+      data: { type: "log", args: [] },
+    });
+  }
+
+  const polled = journal.poll({ cursor: 0, limit: 32, browserGeneration: 7, maxSerializedBytes: 300 });
+  assert.ok(polled.events.length < journal.size);
+  assert.equal(polled.high_water_cursor, journal.cursor());
+  assert.ok(polled.next_cursor < polled.high_water_cursor);
+  assert.ok(byteLength(JSON.stringify(polled)) <= 300);
+
+  const snapshotted = journal.snapshot({ maxSerializedBytes: 300 });
+  assert.ok(snapshotted.events.length < journal.size);
+  assert.equal(snapshotted.high_water_cursor, journal.cursor());
+  assert.ok(snapshotted.next_cursor < snapshotted.high_water_cursor);
+  assert.ok(byteLength(JSON.stringify(snapshotted)) <= 300);
+
+  let cursor = 0;
+  const sequenceIds = [];
+  for (let pageNumber = 0; pageNumber < 16; pageNumber += 1) {
+    const encoded = journal.serialize({
+      cursor,
+      browserGeneration: 7,
+      limit: 32,
+      maxBytes: 300,
+    });
+    assert.ok(byteLength(encoded) <= 300);
+    const page = JSON.parse(encoded);
+    if (page.high_water_cursor !== undefined) {
+      assert.equal(page.high_water_cursor, journal.cursor());
+      assert.ok(page.next_cursor <= page.high_water_cursor);
+    }
+    if (page.events.length === 0) break;
+    assert.equal(page.events[0].sequence_id, cursor + 1);
+    sequenceIds.push(...page.events.map((event) => event.sequence_id));
+    cursor = page.next_cursor;
+  }
+  assert.deepEqual(sequenceIds, [1, 2, 3, 4, 5]);
+  assert.equal(cursor, journal.cursor());
+});
+
+test("retains only a structural extension projection for page-controlled download filenames", () => {
+  const journal = new BrowserEventJournal({ maxEvents: 8, maxBytes: 16_384 });
+  const event = journal.recordCdp({
+    method: "Browser.downloadWillBegin",
+    eventId: "download-filename-1",
+    params: {
+      guid: "download-a",
+      url: "https://example.test/file",
+      frameId: "frame-a",
+      suggestedFilename: `../../Bearer ${SECRET}.pdf`,
+    },
+  }, context());
+  assert.equal(event.data.suggested_filename, undefined);
+  assert.equal(event.data.suggested_extension, ".pdf");
+  assert.equal(JSON.stringify(event).includes(SECRET), false);
+  assert.equal(JSON.stringify(event).includes("Bearer"), false);
+});
+
+test("rejects explicit malformed generations instead of treating them as absent", () => {
+  const malformed = [0, -1, 1.5, "7", null, undefined, Number.NaN, Number.POSITIVE_INFINITY];
+  for (const value of malformed) {
+    const journal = new BrowserEventJournal({ maxEvents: 8, maxBytes: 16_384 });
+    assert.throws(() => journal.record({
+      kind: "console",
+      eventId: `malformed-${String(value)}`,
+      browserGeneration: value,
+      data: {},
+    }), (error) => error instanceof BrowserEventError && error.code === "browser_event_generation_invalid");
+  }
+
+  const absent = new BrowserEventJournal({ maxEvents: 8, maxBytes: 16_384 });
+  assert.equal(absent.record({ kind: "console", eventId: "absent", data: {} }), null);
+
+  const valid = new BrowserEventJournal({ maxEvents: 8, maxBytes: 16_384 });
+  valid.record({ kind: "console", eventId: "valid", browserGeneration: 7, data: {} });
+  assert.throws(() => valid.poll({ cursor: 0, browserGeneration: "7" }), (error) => {
+    return error instanceof BrowserEventError && error.code === "browser_event_generation_invalid";
+  });
+  assert.throws(() => valid.invalidateTarget({ targetId: "target-a", browserGeneration: 0 }), (error) => {
+    return error instanceof BrowserEventError && error.code === "browser_event_generation_invalid";
+  });
+});
+
+test("rejects 1-3 byte budgets and never returns invalid JSON as a fallback", () => {
+  for (const budget of [1, 2, 3]) {
+    assert.throws(() => boundedSerialize({ payload: SECRET }, budget), (error) => {
+      return error instanceof BrowserEventError && error.code === "browser_event_serialization_invalid";
+    });
+    assert.throws(() => new BrowserEventJournal({ maxSerializedBytes: budget }), (error) => {
+      return error instanceof BrowserEventError && error.code === "browser_event_serialization_invalid";
+    });
+  }
+
+  const journal = new BrowserEventJournal({ maxEvents: 8, maxBytes: 16_384 });
+  for (const budget of [1, 2, 3]) {
+    assert.throws(() => journal.poll({ maxSerializedBytes: budget }), (error) => {
+      return error instanceof BrowserEventError && error.code === "browser_event_serialization_invalid";
+    });
+    assert.throws(() => journal.serialize({ maxBytes: budget }), (error) => {
+      return error instanceof BrowserEventError && error.code === "browser_event_serialization_invalid";
+    });
+  }
+  assert.doesNotThrow(() => JSON.parse(boundedSerialize({ payload: SECRET }, 4)));
+});
