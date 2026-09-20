@@ -202,6 +202,16 @@ export function actionabilityFunction() {
     return false;
   }
 
+  function isShadowHostOnTargetRootChain(target, candidate) {
+    const visitedRoots = new Set();
+    for (let root = target.getRootNode?.(); root?.host; root = root.host.getRootNode?.()) {
+      if (visitedRoots.has(root)) return false;
+      visitedRoots.add(root);
+      if (root.host === candidate) return true;
+    }
+    return false;
+  }
+
   function composedElementFromPoint(root, x, y) {
     let hit = root?.elementFromPoint?.(x, y) || null;
     while (hit?.shadowRoot) {
@@ -242,7 +252,7 @@ export function actionabilityFunction() {
       hit !== this &&
       !this.contains?.(hit) &&
       !composedContains(this, hit) &&
-      !composedContains(hit, this)
+      !isShadowHostOnTargetRootChain(this, hit)
     )
   ) {
     return { state: "obscured" };
@@ -298,12 +308,19 @@ function sameGeometry(left, right) {
     left.height === right.height;
 }
 
-async function click(connection, geometry, budget) {
+async function click(connection, objectId, element, geometry, budget) {
   await sendWithinBudget(connection, "Input.dispatchMouseEvent", {
     type: "mouseMoved",
     x: geometry.x,
     y: geometry.y,
   }, budget);
+  await assertCurrentDocument(connection, element.documentId, budget);
+  const revalidated = await inspectActionability(connection, objectId, budget);
+  const revalidatedGeometry = actionableGeometry(revalidated, { kind: "click" });
+  budget.lastReason = revalidated.state;
+  if (!revalidatedGeometry || !sameGeometry(geometry, revalidatedGeometry)) {
+    return false;
+  }
   let pressed = false;
   try {
     await sendWithinBudget(connection, "Input.dispatchMouseEvent", {
@@ -327,6 +344,7 @@ async function click(connection, geometry, budget) {
       postActionDetails(budget, pressed ? "mouseReleased" : "mousePressed", error),
     );
   }
+  return true;
 }
 
 function fillRequestParams(objectId, text, append) {
@@ -407,13 +425,23 @@ export function fillFunction(text, append) {
     if (!option) return { ok: false };
     this.value = option.value;
   } else if ("value" in this) {
-    const previous = String(this.value || "");
+    const previous = String(this.value ?? "");
     const next = append ? previous + text : text;
     const prototype = Object.getPrototypeOf(this);
     const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
-    if (typeof setter === "function") setter.call(this, next);
-    else this.value = next;
-    if (String(this.value) !== next) return { ok: false };
+    const setValue = (value) => {
+      try {
+        if (typeof setter === "function") setter.call(this, value);
+        else this.value = value;
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    if (!setValue(next) || String(this.value) !== next) {
+      setValue(previous);
+      return { ok: false };
+    }
   } else if (this.isContentEditable) {
     const previous = String(this.textContent || "");
     this.textContent = append ? previous + text : text;
@@ -440,6 +468,7 @@ export async function performBrowserAction({
   element: rawElement,
   action: rawAction,
   timeoutMs,
+  deadline,
   now = Date.now,
   sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
 } = {}) {
@@ -450,8 +479,14 @@ export async function performBrowserAction({
   const action = normalizeAction(rawAction);
   const boundedTimeoutMs = normalizeTimeout(timeoutMs);
   const startedAt = readNow(now);
+  const requestedDeadline = deadline === undefined
+    ? startedAt + boundedTimeoutMs
+    : Number(deadline);
+  if (!Number.isFinite(requestedDeadline)) {
+    fail(ACTION_ERROR_CODES.INVALID_ARGUMENT);
+  }
   const budget = {
-    deadline: startedAt + boundedTimeoutMs,
+    deadline: Math.min(startedAt + boundedTimeoutMs, requestedDeadline),
     lastReason: "not_ready",
     attempts: 0,
     now,
@@ -482,9 +517,12 @@ export async function performBrowserAction({
       if (geometry && sameGeometry(previousGeometry, geometry)) {
         await assertCurrentDocument(connection, element.documentId, budget);
         remainingBudget(budget);
-        if (action.kind === "click") await click(connection, geometry, budget);
-        else await fill(connection, objectId, action, budget);
-        completed = true;
+        if (action.kind === "click") {
+          completed = await click(connection, objectId, element, geometry, budget);
+        } else {
+          await fill(connection, objectId, action, budget);
+          completed = true;
+        }
       }
       previousGeometry = geometry;
     } finally {

@@ -146,6 +146,33 @@ test("requires two equal actionable geometries before mutation", async () => {
   );
 });
 
+test("rechecks the hit target after hover and retries a replaced menu without pressing", async () => {
+  const time = fakeTime();
+  const connection = new FakeConnection({
+    actionability: [READY, READY, { state: "obscured" }, READY, READY],
+  });
+  const result = await performBrowserAction({
+    connection,
+    element: ELEMENT,
+    action: { kind: "click" },
+    ...time,
+  });
+
+  assert.equal(result.attempts, 3);
+  assert.deepEqual(
+    connection.calls
+      .filter((call) => call.method === "Input.dispatchMouseEvent")
+      .map((call) => call.params.type),
+    ["mouseMoved", "mouseMoved", "mousePressed", "mouseReleased"],
+  );
+  assert.equal(
+    connection.calls.filter(
+      (call) => call.method === "Input.dispatchMouseEvent" && call.params.type === "mousePressed",
+    ).length,
+    1,
+  );
+});
+
 test("fills without returning or reporting the supplied text", async () => {
   const time = fakeTime();
   const connection = new FakeConnection({ actionability: [READY, READY] });
@@ -345,6 +372,50 @@ test("reports an indeterminate fill when its mutation response crosses the deadl
   );
 });
 
+test("restores the prior value when a native number setter sanitizes fill text", () => {
+  const previousDocument = globalThis.document;
+  const events = [];
+  const document = { activeElement: null };
+  class NumberInput {
+    constructor() {
+      this.isConnected = true;
+      this.disabled = false;
+      this.readOnly = false;
+      this.tagName = "input";
+      this.type = "number";
+      this._value = "7";
+    }
+
+    get value() {
+      return this._value;
+    }
+
+    set value(value) {
+      this._value = /^-?\d+(?:\.\d+)?$/.test(String(value)) ? String(value) : "";
+    }
+
+    focus() {
+      document.activeElement = this;
+    }
+
+    dispatchEvent(event) {
+      events.push(event.type);
+    }
+  }
+  const control = new NumberInput();
+  globalThis.document = document;
+  try {
+    const result = fillFunction.call(control, "opaque-not-a-number", false);
+    assert.deepEqual(result, { ok: false });
+    assert.equal(control.value, "7");
+    assert.deepEqual(events, []);
+    assert.doesNotMatch(JSON.stringify(result), /opaque-not-a-number/);
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document;
+    else globalThis.document = previousDocument;
+  }
+});
+
 test("follows open shadow roots for hit testing and focus", () => {
   const previousDocument = globalThis.document;
   const previousWindow = globalThis.window;
@@ -405,6 +476,42 @@ test("follows open shadow roots for hit testing and focus", () => {
     else globalThis.window = previousWindow;
     if (previousEvent === undefined) delete globalThis.Event;
     else globalThis.Event = previousEvent;
+  }
+});
+
+test("does not treat an ordinary ancestor hit as actionable for a pointer-events-none target", () => {
+  const previousDocument = globalThis.document;
+  const previousWindow = globalThis.window;
+  const ancestor = { parentElement: null, style: { pointerEvents: "none" } };
+  const document = {
+    activeElement: null,
+    elementFromPoint: () => ancestor,
+  };
+  const control = {
+    isConnected: true,
+    disabled: false,
+    readOnly: false,
+    tagName: "button",
+    parentElement: ancestor,
+    getRootNode: () => document,
+    scrollIntoView() {},
+    getBoundingClientRect: () => ({ left: 10, top: 20, width: 100, height: 20 }),
+    matches: () => false,
+    closest: () => null,
+    getAttribute: () => null,
+    contains: () => false,
+  };
+  globalThis.document = document;
+  globalThis.window = {
+    getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
+  };
+  try {
+    assert.deepEqual(actionabilityFunction.call(control), { state: "obscured" });
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document;
+    else globalThis.document = previousDocument;
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
   }
 });
 
