@@ -2,17 +2,21 @@ const DEFAULT_ACTION_TIMEOUT_MS = 5_000;
 const MAX_ACTION_TIMEOUT_MS = 5_000;
 const MIN_ACTION_TIMEOUT_MS = 100;
 const ACTION_POLL_INTERVAL_MS = 50;
-// Leave room for the Runtime.callFunctionOn envelope inside the 64 KiB CDP frame cap.
+const MAX_CDP_FRAME_BYTES = 64 * 1024;
+// Keep the coarse input guard, then measure the actual Runtime.callFunctionOn message below.
 const MAX_FILL_TEXT_BYTES = 48 * 1024;
 
 export const ACTION_ERROR_CODES = Object.freeze({
   INVALID_ARGUMENT: "ACTION_INVALID",
   TIMEOUT: "ACTION_TIMEOUT",
   FAILED: "ACTION_FAILED",
+  POST_ACTION_UNCERTAIN: "ACTION_POST_ACTION_UNCERTAIN",
   STALE_DOCUMENT: "STALE_DOCUMENT",
   ELEMENT_REFERENCE_INVALIDATED: "ELEMENT_REFERENCE_INVALIDATED",
   FRAME_UNSUPPORTED: "FRAME_UNSUPPORTED",
 });
+
+export const MAX_FILL_REQUEST_BYTES = MAX_CDP_FRAME_BYTES;
 
 export class BrowserActionError extends Error {
   constructor(code, details = {}) {
@@ -118,6 +122,16 @@ function timeoutDetails(budget) {
   };
 }
 
+function postActionDetails(budget, phase, error) {
+  return {
+    outcome: "post_action_uncertain",
+    phase,
+    attempts: budget.attempts,
+    timeout_ms: budget.timeoutMs,
+    cause_code: typeof error?.code === "string" ? error.code : "unknown",
+  };
+}
+
 function remainingBudget(budget) {
   const remaining = Math.ceil(budget.deadline - readNow(budget.now));
   if (remaining <= 0) {
@@ -180,7 +194,40 @@ async function inspectActionability(connection, objectId, budget) {
   return result;
 }
 
-function actionabilityFunction() {
+export function actionabilityFunction() {
+  function composedContains(ancestor, candidate) {
+    for (let current = candidate; current; ) {
+      if (current === ancestor) return true;
+      if (current.parentElement) {
+        current = current.parentElement;
+        continue;
+      }
+      const root = current.getRootNode?.();
+      current = root?.host || null;
+    }
+    return false;
+  }
+
+  function isShadowHostOnTargetRootChain(target, candidate) {
+    const visitedRoots = new Set();
+    for (let root = target.getRootNode?.(); root?.host; root = root.host.getRootNode?.()) {
+      if (visitedRoots.has(root)) return false;
+      visitedRoots.add(root);
+      if (root.host === candidate) return true;
+    }
+    return false;
+  }
+
+  function composedElementFromPoint(root, x, y) {
+    let hit = root?.elementFromPoint?.(x, y) || null;
+    while (hit?.shadowRoot) {
+      const nested = hit.shadowRoot.elementFromPoint?.(x, y) || null;
+      if (!nested || nested === hit) break;
+      hit = nested;
+    }
+    return hit;
+  }
+
   if (!this.isConnected) return { state: "detached" };
   this.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
   const style = window.getComputedStyle(this);
@@ -204,8 +251,16 @@ function actionabilityFunction() {
   }
   const x = rect.left + rect.width / 2;
   const y = rect.top + rect.height / 2;
-  const hit = document.elementFromPoint(x, y);
-  if (!hit || (hit !== this && !this.contains?.(hit))) {
+  const hit = composedElementFromPoint(document, x, y);
+  if (
+    !hit ||
+    (
+      hit !== this &&
+      !this.contains?.(hit) &&
+      !composedContains(this, hit) &&
+      !isShadowHostOnTargetRootChain(this, hit)
+    )
+  ) {
     return { state: "obscured" };
   }
   const tag = String(this.tagName || "").toLowerCase();
@@ -259,36 +314,80 @@ function sameGeometry(left, right) {
     left.height === right.height;
 }
 
-async function click(connection, geometry, budget) {
+async function click(connection, objectId, element, geometry, budget) {
   await sendWithinBudget(connection, "Input.dispatchMouseEvent", {
     type: "mouseMoved",
     x: geometry.x,
     y: geometry.y,
   }, budget);
-  await sendWithinBudget(connection, "Input.dispatchMouseEvent", {
-    type: "mousePressed",
-    x: geometry.x,
-    y: geometry.y,
-    button: "left",
-    clickCount: 1,
-  }, budget);
-  await sendWithinBudget(connection, "Input.dispatchMouseEvent", {
-    type: "mouseReleased",
-    x: geometry.x,
-    y: geometry.y,
-    button: "left",
-    clickCount: 1,
-  }, budget);
+  await assertCurrentDocument(connection, element.documentId, budget);
+  const revalidated = await inspectActionability(connection, objectId, budget);
+  const revalidatedGeometry = actionableGeometry(revalidated, { kind: "click" });
+  budget.lastReason = revalidated.state;
+  if (!revalidatedGeometry || !sameGeometry(geometry, revalidatedGeometry)) {
+    return false;
+  }
+  let pressed = false;
+  try {
+    await sendWithinBudget(connection, "Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: geometry.x,
+      y: geometry.y,
+      button: "left",
+      clickCount: 1,
+    }, budget);
+    pressed = true;
+    await sendWithinBudget(connection, "Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: geometry.x,
+      y: geometry.y,
+      button: "left",
+      clickCount: 1,
+    }, budget);
+  } catch (error) {
+    fail(
+      ACTION_ERROR_CODES.POST_ACTION_UNCERTAIN,
+      postActionDetails(budget, pressed ? "mouseReleased" : "mousePressed", error),
+    );
+  }
+  return true;
+}
+
+function fillRequestParams(objectId, text, append) {
+  return {
+    objectId,
+    functionDeclaration: fillFunction.toString(),
+    arguments: [{ value: text }, { value: append }],
+    returnByValue: true,
+    awaitPromise: false,
+  };
+}
+
+export function fillRequestBytes(objectId, text, append) {
+  return utf8ByteLength(JSON.stringify({
+    // The controller's real id is smaller than this safe integer's decimal form.
+    id: Number.MAX_SAFE_INTEGER,
+    method: "Runtime.callFunctionOn",
+    params: fillRequestParams(objectId, text, append),
+  }));
 }
 
 async function fill(connection, objectId, action, budget) {
-  const response = await sendWithinBudget(connection, "Runtime.callFunctionOn", {
-    objectId,
-    functionDeclaration: fillFunction.toString(),
-    arguments: [{ value: action.text }, { value: action.append }],
-    returnByValue: true,
-    awaitPromise: false,
-  }, budget);
+  const params = fillRequestParams(objectId, action.text, action.append);
+  const encodedBytes = fillRequestBytes(objectId, action.text, action.append);
+  if (encodedBytes > MAX_FILL_REQUEST_BYTES) {
+    fail(ACTION_ERROR_CODES.INVALID_ARGUMENT, {
+      reason: "fill_request_too_large",
+      encoded_bytes: encodedBytes,
+      max_bytes: MAX_FILL_REQUEST_BYTES,
+    });
+  }
+  let response;
+  try {
+    response = await sendWithinBudget(connection, "Runtime.callFunctionOn", params, budget);
+  } catch (error) {
+    fail(ACTION_ERROR_CODES.POST_ACTION_UNCERTAIN, postActionDetails(budget, "fill", error));
+  }
   if (response?.exceptionDetails || response?.result?.value?.ok !== true) {
     fail(ACTION_ERROR_CODES.FAILED);
   }
@@ -322,10 +421,34 @@ function submitFunction() {
   return { ok: true };
 }
 
-function fillFunction(text, append) {
+export function fillFunction(text, append) {
+  function composedContains(ancestor, candidate) {
+    for (let current = candidate; current; ) {
+      if (current === ancestor) return true;
+      if (current.parentElement) {
+        current = current.parentElement;
+        continue;
+      }
+      const root = current.getRootNode?.();
+      current = root?.host || null;
+    }
+    return false;
+  }
+
+  function composedActiveElement(root) {
+    let active = root?.activeElement || null;
+    while (active?.shadowRoot?.activeElement) {
+      const nested = active.shadowRoot.activeElement;
+      if (!nested || nested === active) break;
+      active = nested;
+    }
+    return active;
+  }
+
   if (!this.isConnected || this.disabled || this.readOnly) return { ok: false };
   this.focus();
-  if (document.activeElement !== this && !this.contains?.(document.activeElement)) {
+  const active = composedActiveElement(document);
+  if (active !== this && !this.contains?.(active) && !composedContains(this, active)) {
     return { ok: false };
   }
   const tag = String(this.tagName || "").toLowerCase();
@@ -336,13 +459,23 @@ function fillFunction(text, append) {
     if (!option) return { ok: false };
     this.value = option.value;
   } else if ("value" in this) {
-    const previous = String(this.value || "");
+    const previous = String(this.value ?? "");
     const next = append ? previous + text : text;
     const prototype = Object.getPrototypeOf(this);
     const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
-    if (typeof setter === "function") setter.call(this, next);
-    else this.value = next;
-    if (String(this.value) !== next) return { ok: false };
+    const setValue = (value) => {
+      try {
+        if (typeof setter === "function") setter.call(this, value);
+        else this.value = value;
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    if (!setValue(next) || String(this.value) !== next) {
+      setValue(previous);
+      return { ok: false };
+    }
   } else if (this.isContentEditable) {
     const previous = String(this.textContent || "");
     this.textContent = append ? previous + text : text;
@@ -357,8 +490,10 @@ function fillFunction(text, append) {
 async function releaseObject(connection, objectId, budget) {
   try {
     await sendWithinBudget(connection, "Runtime.releaseObject", { objectId }, budget);
-  } catch {
+    return null;
+  } catch (error) {
     // A click may navigate and invalidate the object before release.
+    return error;
   }
 }
 
@@ -367,6 +502,7 @@ export async function performBrowserAction({
   element: rawElement,
   action: rawAction,
   timeoutMs,
+  deadline,
   now = Date.now,
   sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
 } = {}) {
@@ -377,8 +513,14 @@ export async function performBrowserAction({
   const action = normalizeAction(rawAction);
   const boundedTimeoutMs = normalizeTimeout(timeoutMs);
   const startedAt = readNow(now);
+  const requestedDeadline = deadline === undefined
+    ? startedAt + boundedTimeoutMs
+    : Number(deadline);
+  if (!Number.isFinite(requestedDeadline)) {
+    fail(ACTION_ERROR_CODES.INVALID_ARGUMENT);
+  }
   const budget = {
-    deadline: startedAt + boundedTimeoutMs,
+    deadline: Math.min(startedAt + boundedTimeoutMs, requestedDeadline),
     lastReason: "not_ready",
     attempts: 0,
     now,
@@ -398,6 +540,7 @@ export async function performBrowserAction({
     await assertCurrentDocument(connection, element.documentId, budget);
     const objectId = await resolveBackendNode(connection, element.backendNodeId, budget);
     let completed = false;
+    let cleanupError = null;
     try {
       const result = await inspectActionability(connection, objectId, budget);
       if (result.state === "detached") {
@@ -408,17 +551,29 @@ export async function performBrowserAction({
       if (geometry && sameGeometry(previousGeometry, geometry)) {
         await assertCurrentDocument(connection, element.documentId, budget);
         remainingBudget(budget);
-        if (action.kind === "click") await click(connection, geometry, budget);
-        else if (action.kind === "fill") await fill(connection, objectId, action, budget);
-        else await submit(connection, objectId, budget);
-        completed = true;
+        if (action.kind === "click") {
+          completed = await click(connection, objectId, element, geometry, budget);
+        } else if (action.kind === "fill") {
+          await fill(connection, objectId, action, budget);
+          completed = true;
+        } else {
+          await submit(connection, objectId, budget);
+          completed = true;
+        }
       }
       previousGeometry = geometry;
     } finally {
-      await releaseObject(connection, objectId, budget);
+      cleanupError = await releaseObject(connection, objectId, budget);
     }
     if (completed) {
-      remainingBudget(budget);
+      if (cleanupError) {
+        fail(ACTION_ERROR_CODES.POST_ACTION_UNCERTAIN, postActionDetails(budget, "cleanup", cleanupError));
+      }
+      try {
+        remainingBudget(budget);
+      } catch (error) {
+        fail(ACTION_ERROR_CODES.POST_ACTION_UNCERTAIN, postActionDetails(budget, "post_action_deadline", error));
+      }
       return {
         tab_id: element.tabId,
         document_id: element.documentId,

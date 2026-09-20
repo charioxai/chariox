@@ -1002,6 +1002,74 @@ test("wires bounded page features through controller-owned tabs and connections"
   });
 });
 
+test("propagates post-action uncertainty through the public controller action API", async (t) => {
+  const fixture = makeFixture();
+  const { controller } = fixture;
+  await controller.start("owner-a");
+  const tab = controller.getTabRegistrySnapshot("owner-a", 1).tabs[0];
+  controller.observationStore.resolve = () => ({
+    tab_id: tab.tab_id,
+    document_id: "document-action",
+    frame_id: "frame-main",
+    main_frame_id: "frame-main",
+    snapshot_revision: 1,
+    backend_node_id: 91,
+  });
+  FakeWebSocket.onSend = (socket, message) => {
+    if (
+      message.method === "Input.dispatchMouseEvent" &&
+      message.params.type === "mousePressed"
+    ) {
+      queueMicrotask(() => socket.emit("message", {
+        data: JSON.stringify({
+          id: message.id,
+          error: { code: -32000, message: "synthetic post-action failure" },
+        }),
+      }));
+      return;
+    }
+    let result = {};
+    if (message.method === "Page.getFrameTree") {
+      result = { frameTree: { frame: { id: "frame-main", loaderId: "document-action" } } };
+    } else if (message.method === "DOM.resolveNode") {
+      result = { object: { objectId: "object-action" } };
+    } else if (message.method === "Runtime.callFunctionOn") {
+      result = {
+        result: {
+          value: {
+            state: "ready",
+            x: 42,
+            y: 19,
+            width: 80,
+            height: 24,
+            editable: false,
+          },
+        },
+      };
+    }
+    queueMicrotask(() => socket.respond(message.id, result));
+  };
+
+  await assert.rejects(
+    controller.performElementAction("owner-a", 1, {
+      tab_id: tab.tab_id,
+      target_generation: tab.target_generation,
+      element_ref: "opaque-element",
+      action: { kind: "click" },
+      timeout_ms: 500,
+    }, { action_id: "action-post-uncertain", actor_id: "agent-1" }),
+    (error) => {
+      assert.equal(error.code, ERROR_CODES.ACTION_POST_ACTION_UNCERTAIN);
+      assert.equal(error.message, "browser action outcome is uncertain after a post-action failure");
+      return true;
+    },
+  );
+  assert.equal(ERROR_CODES.ACTION_POST_ACTION_UNCERTAIN, "ACTION_POST_ACTION_UNCERTAIN");
+  t.after(async () => {
+    await controller.shutdown("owner-a", 1);
+  });
+});
+
 test("releases page-feature uploads when a tab detaches and on controller shutdown", async (t) => {
   const targets = [{
     id: "page-1",
@@ -1103,6 +1171,44 @@ test("bounds the operation queue and keeps the probe data-only", async (t) => {
     generation: 1,
     cdp_connected: true,
   });
+  t.after(async () => {
+    await controller.shutdown("owner-a", 1);
+  });
+});
+
+test("expires a 100ms action while it waits behind longer queued work", async (t) => {
+  const fixture = makeFixture();
+  const { controller, clock } = fixture;
+  await controller.start("owner-a");
+  const tab = controller.getTabRegistrySnapshot("owner-a", 1).tabs[0];
+  let releaseBlocker;
+  const blocker = new Promise((resolve) => {
+    releaseBlocker = resolve;
+  });
+  const held = controller._enqueueTabMutation({
+    action_id: "action-deadline-blocker",
+    actor_id: "agent-1",
+    browser_generation: 1,
+    operation: "perform_element_action",
+    tab_id: tab.tab_id,
+    target_generation: tab.target_generation,
+  }, async () => blocker);
+  await flush();
+
+  const queuedAction = controller.performElementAction("owner-a", 1, {
+    tab_id: tab.tab_id,
+    target_generation: tab.target_generation,
+    element_ref: "never-resolved",
+    action: { kind: "click" },
+    timeout_ms: 100,
+  }, { action_id: "action-deadline-queued", actor_id: "agent-1" });
+  clock.advance(101);
+  releaseBlocker();
+  await held;
+  await assert.rejects(
+    queuedAction,
+    (error) => error.code === ERROR_CODES.ACTION_TIMEOUT,
+  );
   t.after(async () => {
     await controller.shutdown("owner-a", 1);
   });

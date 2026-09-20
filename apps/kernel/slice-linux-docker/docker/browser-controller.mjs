@@ -70,6 +70,7 @@ export const ERROR_CODES = Object.freeze({
   PAGE_FEATURE_TIMEOUT: "PAGE_FEATURE_TIMEOUT",
   PAGE_FEATURE_FAILED: "PAGE_FEATURE_FAILED",
   PAGE_FEATURE_PATH_DENIED: "PAGE_FEATURE_PATH_DENIED",
+  ACTION_POST_ACTION_UNCERTAIN: "ACTION_POST_ACTION_UNCERTAIN",
   REQUEST_CANCELLED: "REQUEST_CANCELLED",
   OUTPUT_TOO_LARGE: "OUTPUT_TOO_LARGE",
   INTERNAL_ERROR: "INTERNAL_ERROR",
@@ -109,6 +110,7 @@ const ERROR_MESSAGES = Object.freeze({
   [ERROR_CODES.PAGE_FEATURE_TIMEOUT]: "browser page feature timed out",
   [ERROR_CODES.PAGE_FEATURE_FAILED]: "browser page feature failed",
   [ERROR_CODES.PAGE_FEATURE_PATH_DENIED]: "browser file path is not allowed",
+  [ERROR_CODES.ACTION_POST_ACTION_UNCERTAIN]: "browser action outcome is uncertain after a post-action failure",
   [ERROR_CODES.REQUEST_CANCELLED]: "request was cancelled",
   [ERROR_CODES.OUTPUT_TOO_LARGE]: "response exceeds the byte limit",
   [ERROR_CODES.INTERNAL_ERROR]: "internal controller error",
@@ -137,6 +139,9 @@ const MAX_IDENTIFIER_BYTES = 128;
 const MAX_PENDING_CDP = 32;
 const MAX_SEEN_REQUEST_IDS = 1024;
 const SAFE_OPERATION = "health_probe";
+const DEFAULT_ACTION_TIMEOUT_MS = 5_000;
+const MIN_ACTION_TIMEOUT_MS = 100;
+const MAX_ACTION_TIMEOUT_MS = 5_000;
 
 export class ControllerError extends Error {
   constructor(code, message = ERROR_MESSAGES[code] || ERROR_MESSAGES[ERROR_CODES.INTERNAL_ERROR]) {
@@ -220,6 +225,11 @@ function validateGeneration(value) {
     schemaError();
   }
   return value;
+}
+
+function normalizeActionTimeout(value) {
+  const requested = value ?? DEFAULT_ACTION_TIMEOUT_MS;
+  return Math.max(MIN_ACTION_TIMEOUT_MS, Math.min(requested, MAX_ACTION_TIMEOUT_MS));
 }
 
 function boundedJson(value, limit) {
@@ -900,6 +910,8 @@ export class BrowserController {
       schemaError();
     }
     const generation = this.generation;
+    const actionTimeoutMs = normalizeActionTimeout(request.timeout_ms);
+    const actionDeadline = this._now() + actionTimeoutMs;
     const attribution = this._createTabMutationAttribution(
       mutation,
       "perform_element_action",
@@ -910,6 +922,9 @@ export class BrowserController {
     return this._enqueueTabMutation(attribution, async ({ signal }) => {
       if (signal.aborted) {
         throw new BrowserMutationError(MUTATION_ERROR_CODES.INDETERMINATE);
+      }
+      if (actionDeadline - this._now() <= 0) {
+        throw controllerError(ERROR_CODES.ACTION_TIMEOUT);
       }
       const target = this.tabRegistry.resolveTarget(tabId, {
         generation,
@@ -922,12 +937,16 @@ export class BrowserController {
         throw normalizeError(error);
       }
       const connection = await this._ensureTargetConnection(target);
+      if (actionDeadline - this._now() <= 0) {
+        throw controllerError(ERROR_CODES.ACTION_TIMEOUT);
+      }
       try {
         const result = await performBrowserAction({
           connection,
           element,
           action: request.action,
-          timeoutMs: request.timeout_ms,
+          timeoutMs: actionTimeoutMs,
+          deadline: actionDeadline,
           now: () => this._now(),
           sleep: (milliseconds) => this.timers.sleep(milliseconds),
         });
