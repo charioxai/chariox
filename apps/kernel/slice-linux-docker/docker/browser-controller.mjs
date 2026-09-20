@@ -16,6 +16,11 @@ import {
   OBSERVATION_ERROR_CODES,
   OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES,
 } from "./browser-controller-observations.mjs";
+import {
+  BrowserPageFeatureError,
+  BrowserPageFeatures,
+  PAGE_FEATURE_ERROR_CODES,
+} from "./browser-controller-page-features.mjs";
 
 export const CONTROLLER_STATES = Object.freeze([
   "idle",
@@ -56,6 +61,10 @@ export const ERROR_CODES = Object.freeze({
   ACTION_INVALID: "ACTION_INVALID",
   ACTION_TIMEOUT: "ACTION_TIMEOUT",
   ACTION_FAILED: "ACTION_FAILED",
+  PAGE_FEATURE_INVALID: "PAGE_FEATURE_INVALID",
+  PAGE_FEATURE_TIMEOUT: "PAGE_FEATURE_TIMEOUT",
+  PAGE_FEATURE_FAILED: "PAGE_FEATURE_FAILED",
+  PAGE_FEATURE_PATH_DENIED: "PAGE_FEATURE_PATH_DENIED",
   REQUEST_CANCELLED: "REQUEST_CANCELLED",
   OUTPUT_TOO_LARGE: "OUTPUT_TOO_LARGE",
   INTERNAL_ERROR: "INTERNAL_ERROR",
@@ -91,6 +100,10 @@ const ERROR_MESSAGES = Object.freeze({
   [ERROR_CODES.ACTION_INVALID]: "browser action is invalid",
   [ERROR_CODES.ACTION_TIMEOUT]: "browser action timed out",
   [ERROR_CODES.ACTION_FAILED]: "browser action failed",
+  [ERROR_CODES.PAGE_FEATURE_INVALID]: "browser page feature request is invalid",
+  [ERROR_CODES.PAGE_FEATURE_TIMEOUT]: "browser page feature timed out",
+  [ERROR_CODES.PAGE_FEATURE_FAILED]: "browser page feature failed",
+  [ERROR_CODES.PAGE_FEATURE_PATH_DENIED]: "browser file path is not allowed",
   [ERROR_CODES.REQUEST_CANCELLED]: "request was cancelled",
   [ERROR_CODES.OUTPUT_TOO_LARGE]: "response exceeds the byte limit",
   [ERROR_CODES.INTERNAL_ERROR]: "internal controller error",
@@ -287,6 +300,13 @@ function normalizeError(error, fallback = ERROR_CODES.INTERNAL_ERROR) {
       error.code === OBSERVATION_ERROR_CODES.INVALID_ARGUMENT
         ? ERROR_CODES.SCHEMA_INVALID
         : ERROR_CODES.CDP_PROTOCOL_INVALID,
+    );
+  }
+  if (error instanceof BrowserPageFeatureError) {
+    return controllerError(
+      Object.values(PAGE_FEATURE_ERROR_CODES).includes(error.code)
+        ? error.code
+        : ERROR_CODES.PAGE_FEATURE_FAILED,
     );
   }
   return controllerError(fallback);
@@ -576,6 +596,12 @@ export class BrowserController {
     this._cdp = null;
     this.tabRegistry = options.tabRegistry ?? new BrowserTabRegistry();
     this.observationStore = options.observationStore ?? new BrowserObservationStore();
+    this.pageFeatures = options.pageFeatures ?? new BrowserPageFeatures({
+      uploadRoots: options.uploadRoots ?? [],
+      downloadRoot: options.downloadRoot ?? null,
+      now: () => this._now(),
+      sleep: (milliseconds) => this.timers.sleep(milliseconds),
+    });
     this._targetConnections = new Map();
     this._queue = [];
     this._queueActive = false;
@@ -848,6 +874,175 @@ export class BrowserController {
           now: () => this._now(),
           sleep: (milliseconds) => this.timers.sleep(milliseconds),
         });
+      } catch (error) {
+        throw normalizeError(error);
+      }
+    });
+  }
+
+  async describeElementContext(ownerId, expectedGeneration, request) {
+    this._assertTabRegistryAccess(ownerId, expectedGeneration);
+    assertExactKeys(request, ["tab_id", "target_generation", "element_ref"], [
+      "tab_id",
+      "target_generation",
+      "element_ref",
+    ]);
+    const tabId = validateIdentifier(request.tab_id, "tab_id");
+    const targetGeneration = validateGeneration(request.target_generation);
+    const elementRef = validateIdentifier(request.element_ref, "element_ref");
+    const generation = this.generation;
+    return this._enqueue(generation, async () => {
+      const target = this.tabRegistry.resolveTarget(tabId, {
+        generation,
+        target_generation: targetGeneration,
+      });
+      let element;
+      try {
+        element = this.observationStore.resolve(target, elementRef);
+      } catch (error) {
+        throw normalizeError(error);
+      }
+      const connection = await this._ensureTargetConnection(target);
+      try {
+        return await this.pageFeatures.describeElement({ connection, element });
+      } catch (error) {
+        throw normalizeError(error);
+      }
+    });
+  }
+
+  async handleDialog(ownerId, expectedGeneration, request) {
+    this._assertTabRegistryAccess(ownerId, expectedGeneration);
+    assertExactKeys(request, ["tab_id", "target_generation", "dialog"], [
+      "tab_id",
+      "target_generation",
+      "dialog",
+    ]);
+    const tabId = validateIdentifier(request.tab_id, "tab_id");
+    const targetGeneration = validateGeneration(request.target_generation);
+    if (!isPlainObject(request.dialog)) schemaError();
+    const generation = this.generation;
+    return this._enqueue(generation, async () => {
+      const target = this.tabRegistry.resolveTarget(tabId, {
+        generation,
+        target_generation: targetGeneration,
+      });
+      const connection = await this._ensureTargetConnection(target);
+      try {
+        return await this.pageFeatures.handleDialog({ connection, dialog: request.dialog });
+      } catch (error) {
+        throw normalizeError(error);
+      }
+    });
+  }
+
+  async waitForPopup(ownerId, expectedGeneration, request) {
+    this._assertTabRegistryAccess(ownerId, expectedGeneration);
+    assertExactKeys(request, ["known_tab_ids", "timeout_ms"], ["known_tab_ids"]);
+    if (!Array.isArray(request.known_tab_ids)) schemaError();
+    const knownTabIds = request.known_tab_ids.map((tabId) => validateIdentifier(tabId, "tab_id"));
+    if (
+      request.timeout_ms !== undefined &&
+      (!Number.isSafeInteger(request.timeout_ms) || request.timeout_ms < 1)
+    ) {
+      schemaError();
+    }
+    const generation = this.generation;
+    return this._enqueue(generation, async () => {
+      try {
+        return await this.pageFeatures.waitForPopup({
+          known_tab_ids: knownTabIds,
+          timeout_ms: request.timeout_ms,
+          listTabs: async () => {
+            const targets = await this._discoverTargets(this.cdpCommandTimeoutMs);
+            if (targets === null) throw controllerError(ERROR_CODES.CDP_UNAVAILABLE);
+            if (this.state !== "ready" || this.generation !== generation) {
+              throw controllerError(ERROR_CODES.STALE_GENERATION);
+            }
+            return this._reconcileTabRegistry(generation, targets);
+          },
+        });
+      } catch (error) {
+        throw normalizeError(error);
+      }
+    });
+  }
+
+  async configureDownloads(ownerId, expectedGeneration, request = {}) {
+    this._assertTabRegistryAccess(ownerId, expectedGeneration);
+    assertExactKeys(request, ["browser_context_id"]);
+    const generation = this.generation;
+    const connection = this._cdp;
+    return this._enqueue(generation, async () => {
+      try {
+        return await this.pageFeatures.configureDownloads({
+          connection,
+          browser_context_id: request.browser_context_id,
+        });
+      } catch (error) {
+        throw normalizeError(error);
+      }
+    });
+  }
+
+  async uploadFiles(ownerId, expectedGeneration, request) {
+    this._assertTabRegistryAccess(ownerId, expectedGeneration);
+    assertExactKeys(request, ["tab_id", "target_generation", "element_ref", "paths"], [
+      "tab_id",
+      "target_generation",
+      "element_ref",
+      "paths",
+    ]);
+    const tabId = validateIdentifier(request.tab_id, "tab_id");
+    const targetGeneration = validateGeneration(request.target_generation);
+    const elementRef = validateIdentifier(request.element_ref, "element_ref");
+    if (!Array.isArray(request.paths)) schemaError();
+    const generation = this.generation;
+    return this._enqueue(generation, async () => {
+      const target = this.tabRegistry.resolveTarget(tabId, {
+        generation,
+        target_generation: targetGeneration,
+      });
+      let element;
+      try {
+        element = this.observationStore.resolve(target, elementRef);
+      } catch (error) {
+        throw normalizeError(error);
+      }
+      const connection = await this._ensureTargetConnection(target);
+      try {
+        return await this.pageFeatures.uploadFiles({ connection, element, paths: request.paths });
+      } catch (error) {
+        throw normalizeError(error);
+      }
+    });
+  }
+
+  async grantPermissions(ownerId, expectedGeneration, request) {
+    this._assertTabRegistryAccess(ownerId, expectedGeneration);
+    assertExactKeys(request, ["origin", "permissions", "browser_context_id"], [
+      "origin",
+      "permissions",
+    ]);
+    const generation = this.generation;
+    const connection = this._cdp;
+    return this._enqueue(generation, async () => {
+      try {
+        return await this.pageFeatures.grantPermissions({ connection, ...request });
+      } catch (error) {
+        throw normalizeError(error);
+      }
+    });
+  }
+
+  async resetPermissions(ownerId, expectedGeneration, request = {}) {
+    this._assertTabRegistryAccess(ownerId, expectedGeneration);
+    assertExactKeys(request, ["browser_context_id"]);
+    const generation = this.generation;
+    const connection = this._cdp;
+    return this._enqueue(generation, async () => {
+      try {
+        return await this.pageFeatures.resetPermissions({ connection, ...request });
       } catch (error) {
         throw normalizeError(error);
       }
