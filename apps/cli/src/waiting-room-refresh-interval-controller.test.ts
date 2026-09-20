@@ -1,6 +1,10 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
+import {
+  setActiveProjectEnvironmentSetupProjection,
+  type ProjectEnvironmentSetupProjection,
+} from "./project-environment-setup-projection.js"
 import { createWaitingRoomRefreshIntervalController } from "./waiting-room-refresh-interval-controller.js"
 
 test("waiting room refresh interval delegates tick to inventory refresh", () => {
@@ -9,6 +13,31 @@ test("waiting room refresh interval delegates tick to inventory refresh", () => 
   harness.controller.tick()
 
   assert.deepEqual(harness.calls(), ["refresh"])
+})
+
+test("waiting room refresh interval polls the active project setup without replacing inventory refresh", () => {
+  const calls: string[] = []
+  const projection = {
+    poll: async () => {
+      calls.push("setup")
+      return null
+    },
+  } as ProjectEnvironmentSetupProjection
+  const dispose = setActiveProjectEnvironmentSetupProjection(projection)
+  try {
+    createWaitingRoomRefreshIntervalController<string>({
+      intervalMs: 2_500,
+      scheduleInterval: () => "timer-1",
+      clearInterval: () => {},
+      refreshWaitingRoomData: () => {
+        calls.push("refresh")
+      },
+    }).tick()
+
+    assert.deepEqual(calls, ["refresh", "setup"])
+  } finally {
+    dispose()
+  }
 })
 
 test("waiting room refresh interval starts and stops one interval", () => {
