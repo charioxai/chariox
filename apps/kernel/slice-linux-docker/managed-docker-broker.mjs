@@ -115,6 +115,9 @@ const ALLOWED_ENVIRONMENT = new Set([
   "CHARIOX_SLICE_MCP_PORT",
   "CHARIOX_SLICE_RELAY_PORT",
   "CHARIOX_SLICE_NOVNC_PORT",
+  "CHARIOX_SLICE_DISPLAY_BACKEND",
+  "CHARIOX_SLICE_SELKIES_PORT",
+  "CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT",
   "CHARIOX_SLICE_DISPLAY_MODE",
   "CHARIOX_SLICE_START_DESKTOP",
   "CHARIOX_SLICE_START_PROVIDER_SERVERS",
@@ -418,6 +421,16 @@ function validateProvisioner(action, environment, files) {
   if (environment.CHARIOX_SLICE_WORKSPACE_MOUNT_MODE && !["ro", "rw"].includes(environment.CHARIOX_SLICE_WORKSPACE_MOUNT_MODE)) {
     fail("CHARIOX_SLICE_WORKSPACE_MOUNT_MODE is invalid")
   }
+  if (environment.CHARIOX_SLICE_DISPLAY_BACKEND && !["novnc", "selkies"].includes(environment.CHARIOX_SLICE_DISPLAY_BACKEND)) {
+    fail("CHARIOX_SLICE_DISPLAY_BACKEND is invalid")
+  }
+  if (environment.CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT && (
+    !/^\d+$/.test(environment.CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT) ||
+    Number(environment.CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT) < 1 ||
+    Number(environment.CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT) > 120
+  )) {
+    fail("CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT is invalid")
+  }
   if (environment.CHARIOX_SLICE_DOCKER_MEMORY && !/^[1-9][0-9]{0,6}[mMgG]$/.test(environment.CHARIOX_SLICE_DOCKER_MEMORY)) {
     fail("CHARIOX_SLICE_DOCKER_MEMORY is invalid")
   }
@@ -441,8 +454,10 @@ function validateProvisioner(action, environment, files) {
     "CHARIOX_SLICE_MCP_PORT",
     "CHARIOX_SLICE_RELAY_PORT",
     "CHARIOX_SLICE_NOVNC_PORT",
+    "CHARIOX_SLICE_SELKIES_PORT",
   ]) {
-    if (environment[name] && (!/^[0-9]{1,5}$/.test(environment[name]) || Number(environment[name]) > 65535)) {
+    const minimum = name === "CHARIOX_SLICE_SELKIES_PORT" ? 1 : 0
+    if (environment[name] && (!/^[0-9]{1,5}$/.test(environment[name]) || Number(environment[name]) < minimum || Number(environment[name]) > 65535)) {
       fail(`${name} is invalid`)
     }
   }
