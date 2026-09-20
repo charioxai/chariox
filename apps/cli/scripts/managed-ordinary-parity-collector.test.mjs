@@ -1,9 +1,10 @@
 import assert from "node:assert/strict"
+import { createHash } from "node:crypto"
 import { test } from "node:test"
 
 import {
-  CollectorError,
   createParityCollector,
+  defaultRunCommand,
 } from "./managed-ordinary-parity-collector.mjs"
 import {
   compareManifests,
@@ -15,6 +16,15 @@ const REVIEWED_COMMIT = "d1e925f2b3e318b66160d65cac05973409c99b68"
 const BUILD_ID = "chariox-kernel build-20260920"
 const KERNEL_PROTOCOL = 332
 const RELAY_PROTOCOL = 54
+const SOURCE_TREE = "e".repeat(40)
+const PROBE_BLOB = "f".repeat(40)
+const RELEASE_VERIFIER_BLOB = "1".repeat(40)
+const KERNEL_BYTES = Buffer.from("signed-kernel-fixture-20260920\n")
+const KERNEL_DIGEST = `sha256:${createHash("sha256").update(KERNEL_BYTES).digest("hex")}`
+const RELEASE_DIGEST = `sha256:${"a".repeat(64)}`
+const KERNEL_RELEASE_ROOT = "/release/rootfs"
+const KERNEL_BINARY = `${KERNEL_RELEASE_ROOT}/usr/local/bin/chariox-kernel`
+const KERNEL_RELEASE_PUBLIC_KEY = "/release/trusted-release-public-key"
 
 function memoryFilesystem() {
   const files = new Map()
@@ -23,6 +33,16 @@ function memoryFilesystem() {
     files,
     directories,
     async mkdir(directory) { directories.add(directory) },
+    async readFile(file) {
+      if (!files.has(file)) throw Object.assign(new Error(`missing fixture file ${file}`), { code: "ENOENT" })
+      return files.get(file)
+    },
+    async realpath(file) {
+      if (file !== KERNEL_BINARY && file !== `${KERNEL_RELEASE_ROOT}/usr/local/bin/chariox-kernel`) {
+        throw Object.assign(new Error(`missing fixture path ${file}`), { code: "ENOENT" })
+      }
+      return KERNEL_BINARY
+    },
     async writeFile(file, content) { files.set(file, String(content)) },
   }
 }
@@ -117,24 +137,43 @@ function genericResult(rowId, checkId, topology) {
 
 function makeHarness(topology, overrides = {}) {
   const filesystem = memoryFilesystem()
+  filesystem.files.set(`${KERNEL_RELEASE_ROOT}/usr/lib/chariox/release-manifest.json`, JSON.stringify({
+    schemaVersion: 2,
+    sourceCommit: REVIEWED_COMMIT,
+    sourceTree: SOURCE_TREE,
+    artifacts: [{ name: "chariox-kernel", path: "/usr/local/bin/chariox-kernel", sha256: KERNEL_DIGEST }],
+  }))
+  filesystem.files.set(KERNEL_BINARY, KERNEL_BYTES)
   const calls = []
   const clock = fixedClock()
   const defaultCommand = async (command, args) => {
+    if (command === "git" && args[0] === "rev-parse" && args[1] === `${REVIEWED_COMMIT}^{tree}`) return { code: 0, stdout: SOURCE_TREE + "\n", stderr: "" }
     if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: REVIEWED_COMMIT + "\n", stderr: "" }
     if (command === "git" && args[0] === "diff") return { code: 0, stdout: "", stderr: "" }
     if (command === "git" && args[0] === "status") return { code: 0, stdout: "", stderr: "" }
     if (command === "git" && args[0] === "ls-files") return { code: 0, stdout: "100644 blob abc123\tapps/cli/package.json\n", stderr: "" }
+    if (command === "git" && args[0] === "ls-tree" && args.at(-1) === "apps/cli/scripts/managed-ordinary-parity-probe.mjs") return { code: 0, stdout: `100644 blob ${PROBE_BLOB}\tapps/cli/scripts/managed-ordinary-parity-probe.mjs\n`, stderr: "" }
+    if (command === "git" && args[0] === "hash-object" && args.at(-1) === "apps/cli/scripts/managed-ordinary-parity-probe.mjs") return { code: 0, stdout: `${PROBE_BLOB}\n`, stderr: "" }
+    if (command === "git" && args[0] === "ls-tree" && args.at(-1) === "deploy/managed-kernel/verify-image-release.mjs") return { code: 0, stdout: `100644 blob ${RELEASE_VERIFIER_BLOB}\tdeploy/managed-kernel/verify-image-release.mjs\n`, stderr: "" }
+    if (command === "git" && args[0] === "hash-object" && args.at(-1) === "deploy/managed-kernel/verify-image-release.mjs") return { code: 0, stdout: `${RELEASE_VERIFIER_BLOB}\n`, stderr: "" }
     if (command === "git" && args[0] === "grep") return { code: 0, stdout: "pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 54;\n", stderr: "" }
-    if (command === "chariox-kernel" && args[0] === "--version") return { code: 0, stdout: BUILD_ID + "\n", stderr: "" }
-    if (command === "chariox-kernel" && args[0] === "--print-local-daemon-protocol-version") return { code: 0, stdout: `${KERNEL_PROTOCOL}\n`, stderr: "" }
+    if (command === process.execPath && args[0].endsWith("verify-image-release.mjs")) return { code: 0, stdout: "", stderr: "" }
+    if (command === KERNEL_BINARY && args[0] === "--version") return { code: 0, stdout: BUILD_ID + "\n", stderr: "" }
+    if (command === KERNEL_BINARY && args[0] === "--print-local-daemon-protocol-version") return { code: 0, stdout: `${KERNEL_PROTOCOL}\n`, stderr: "" }
     if (command === "codex" && args[0] === "--version") return { code: 0, stdout: "codex fixture-20260920\n", stderr: "" }
-    if (command === "parity-probe") {
+    if (command === process.execPath && args[0].endsWith("managed-ordinary-parity-probe.mjs")) {
       const rowIndex = args.indexOf("--parity-row")
       const checkIndex = args.indexOf("--parity-check")
       const rowId = rowIndex >= 0 ? args[rowIndex + 1] : "unknown"
       const check = checkIndex >= 0 ? args[checkIndex + 1] : "unknown"
       const result = overrides.results?.[`${rowId}/${check}`] ?? genericResult(rowId, check, topology)
-      return { code: 0, stdout: JSON.stringify({ ok: true, result }), stderr: "" }
+      return { code: 0, stdout: JSON.stringify({ ok: true, result: {
+        probe_identity_verified: true,
+        probe_source_commit: REVIEWED_COMMIT,
+        probe_file: "apps/cli/scripts/managed-ordinary-parity-probe.mjs",
+        probe_file_git_blob: PROBE_BLOB,
+        ...result,
+      } }), stderr: "" }
     }
     throw Object.assign(new Error(`unexpected command ${command}`), { code: "ENOENT" })
   }
@@ -157,8 +196,10 @@ function makeHarness(topology, overrides = {}) {
     relayProtocol: RELAY_PROTOCOL,
     provider: "codex",
     providerCommand: "codex",
-    kernelBinary: "chariox-kernel",
-    probeCommand: "parity-probe",
+    kernelBinary: KERNEL_BINARY,
+    kernelReleaseRoot: KERNEL_RELEASE_ROOT,
+    kernelReleaseDigest: RELEASE_DIGEST,
+    kernelReleasePublicKey: KERNEL_RELEASE_PUBLIC_KEY,
     boundary: "official-provider-turn",
     outputPath: `/evidence/${topology}.json`,
     evidenceDir: `/evidence/${topology}-commands`,
@@ -184,7 +225,7 @@ test("collects a real-command ordinary snapshot and validates all required rows"
     expectedBuildId: BUILD_ID,
     signingKey: SIGNING_KEY,
   }).ok, true)
-  assert.equal(calls.some(([command, args]) => command === "parity-probe" && args.includes("session_agent_launch")), true)
+  assert.equal(calls.some(([command, args]) => command === process.execPath && args[0].endsWith("managed-ordinary-parity-probe.mjs") && args.includes("session_agent_launch")), true)
   assert.ok(filesystem.files.size > 30)
 })
 
@@ -242,6 +283,20 @@ test("stale source identity is rejected even when every later caller value would
   })
 })
 
+test("signed kernel release identity must bind the selected binary to the reviewed commit", async () => {
+  const harness = makeHarness("ordinary")
+  harness.filesystem.files.set(`${KERNEL_RELEASE_ROOT}/usr/lib/chariox/release-manifest.json`, JSON.stringify({
+    schemaVersion: 2,
+    sourceCommit: "a".repeat(40),
+    sourceTree: SOURCE_TREE,
+    artifacts: [{ name: "chariox-kernel", path: "/usr/local/bin/chariox-kernel", sha256: KERNEL_DIGEST }],
+  }))
+  await assert.rejects(() => harness.collector.collect(harness.options), (error) => {
+    assert.equal(error.code, "kernel_release_identity_mismatch")
+    return true
+  })
+})
+
 test("Bubblewrap ancestry is a product-boundary failure", async () => {
   const harness = makeHarness("path1", {
     results: {
@@ -287,10 +342,19 @@ test("forged caller pass values and forged probe status are ignored", async () =
   })
 })
 
+test("caller-supplied probe executables are rejected before collection", async () => {
+  const harness = makeHarness("ordinary")
+  harness.options.probeCommand = "/tmp/fake-probe"
+  await assert.rejects(() => harness.collector.collect(harness.options), (error) => {
+    assert.equal(error.code, "probe_command_unsupported")
+    return true
+  })
+})
+
 test("malformed probe output fails closed", async () => {
   const harness = makeHarness("ordinary", {
     command(command, args) {
-      if (command === "parity-probe" && args.includes("home_access")) {
+      if (command === process.execPath && args[0].endsWith("managed-ordinary-parity-probe.mjs") && args.includes("home_access")) {
         return { code: 0, stdout: "not-json\n", stderr: "" }
       }
     },
@@ -304,7 +368,7 @@ test("malformed probe output fails closed", async () => {
 test("command timeout fails closed", async () => {
   const harness = makeHarness("ordinary", {
     command(command, args) {
-      if (command === "chariox-kernel" && args[0] === "--version") {
+      if (command === KERNEL_BINARY && args[0] === "--version") {
         throw Object.assign(new Error("probe timeout"), { code: "ETIMEDOUT", timedOut: true })
       }
     },
@@ -313,6 +377,29 @@ test("command timeout fails closed", async () => {
     assert.equal(error.code, "command_timeout")
     return true
   })
+})
+
+test("default runner preserves real execFile rejection metadata", async () => {
+  await assert.rejects(
+    () => defaultRunCommand(process.execPath, ["-e", "process.exit(23)"], { timeout: 1_000 }),
+    (error) => {
+      assert.equal(error.code, 23)
+      assert.equal(error.signal, null)
+      assert.equal(error.killed, false)
+      assert.equal(error.timedOut, undefined)
+      return true
+    },
+  )
+  await assert.rejects(
+    () => defaultRunCommand(process.execPath, ["-e", "setTimeout(() => {}, 1_000)"], { timeout: 20 }),
+    (error) => {
+      assert.equal(error.code, null)
+      assert.equal(error.signal, "SIGTERM")
+      assert.equal(error.killed, true)
+      assert.equal(error.timedOut, true)
+      return true
+    },
+  )
 })
 
 test("partial cleanup is rejected instead of becoming an MP-08 pass", async () => {

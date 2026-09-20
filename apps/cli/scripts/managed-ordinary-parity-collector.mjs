@@ -2,9 +2,8 @@
 
 import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
-import { mkdir, writeFile } from "node:fs/promises"
-import { basename, dirname, join, resolve } from "node:path"
-import { promisify } from "node:util"
+import { mkdir, readFile, realpath, writeFile } from "node:fs/promises"
+import { basename, dirname, isAbsolute, join, resolve } from "node:path"
 
 import {
   ALLOWED_CAPTURE_BOUNDARIES,
@@ -15,8 +14,6 @@ import {
   validateManifest,
 } from "./managed-ordinary-parity-matrix.mjs"
 
-const execFileAsync = promisify(execFile)
-
 export const DEFAULT_TIMEOUT_MS = 45_000
 export const OFFICIAL_PROVIDERS = Object.freeze(["claude", "codex", "opencode"])
 export const COLLECTOR_CHECKS = Object.freeze(
@@ -26,7 +23,9 @@ export const COLLECTOR_CHECKS = Object.freeze(
 const REVIEWED_COMMIT = /^[0-9a-f]{40}$/i
 const PROTOCOL_VERSION = /^\d+$/
 const DIGEST = /^sha256:[0-9a-f]{64}$/i
-const NODE_FILESYSTEM = Object.freeze({ mkdir, writeFile })
+const PROBE_RELATIVE_PATH = "apps/cli/scripts/managed-ordinary-parity-probe.mjs"
+const RELEASE_VERIFIER_RELATIVE_PATH = "deploy/managed-kernel/verify-image-release.mjs"
+const NODE_FILESYSTEM = Object.freeze({ mkdir, readFile, realpath, writeFile })
 
 class CollectorError extends Error {
   constructor(code, message, details = {}) {
@@ -108,16 +107,23 @@ function resultPayload(stdout, rowId, checkId) {
 
 function normalizeCommandResult(result, error = null) {
   const raw = result ?? {}
-  const code = Number.isInteger(raw.code) ? raw.code : null
-  const signal = raw.signal ?? null
+  const code = Number.isInteger(raw.code)
+    ? raw.code
+    : Number.isInteger(error?.code)
+      ? error.code
+      : null
+  const signal = raw.signal ?? error?.signal ?? null
+  const killed = raw.killed === true || error?.killed === true
   const timedOut = raw.timedOut === true
     || raw.timed_out === true
     || raw.code === "ETIMEDOUT"
     || error?.code === "ETIMEDOUT"
     || error?.timedOut === true
+    || error?.timed_out === true
   return {
     code,
     signal,
+    killed,
     timedOut,
     stdout: String(raw.stdout ?? error?.stdout ?? ""),
     stderr: String(raw.stderr ?? error?.stderr ?? error?.message ?? ""),
@@ -125,12 +131,35 @@ function normalizeCommandResult(result, error = null) {
 }
 
 export async function defaultRunCommand(command, args = [], options = {}) {
-  const result = await execFileAsync(command, args, {
+  const timeout = options.timeout
+  const childOptions = {
     encoding: "utf8",
     maxBuffer: 4 * 1024 * 1024,
     ...options,
+  }
+  delete childOptions.timeout
+  return new Promise((resolvePromise, rejectPromise) => {
+    let timedOut = false
+    let timer = null
+    const child = execFile(command, args, childOptions, (error, stdout, stderr) => {
+      if (timer) clearTimeout(timer)
+      if (error) {
+        if (timedOut) error.timedOut = true
+        error.stdout = stdout ?? ""
+        error.stderr = stderr ?? ""
+        rejectPromise(error)
+        return
+      }
+      resolvePromise({ code: 0, signal: null, killed: false, timedOut: false, stdout: stdout ?? "", stderr: stderr ?? "" })
+    })
+    if (Number.isFinite(timeout) && timeout > 0) {
+      timer = setTimeout(() => {
+        timedOut = true
+        child.kill(options.killSignal ?? "SIGTERM")
+      }, timeout)
+      timer.unref?.()
+    }
   })
-  return { code: 0, signal: null, stdout: result.stdout ?? "", stderr: result.stderr ?? "" }
 }
 
 function expectedBoolean(result, key, rowId, checkId, expected = true) {
@@ -317,6 +346,57 @@ function parseRelayVersion(text) {
   return parseInteger(match?.[1] ?? text, "relay protocol")
 }
 
+function parseRepoBlob(text, relativePath, label) {
+  const records = String(text).trim().split("\n").filter(Boolean)
+  if (records.length !== 1) throw new CollectorError("repo_identity_invalid", `${label} must resolve to one tracked file`)
+  const match = /^(100644|100755) blob ([0-9a-f]{40})\t(.+)$/.exec(records[0])
+  if (!match || match[3] !== relativePath) {
+    throw new CollectorError("repo_identity_invalid", `${label} is not the expected tracked file`)
+  }
+  return { mode: match[1], gitBlob: match[2] }
+}
+
+function parseReleaseManifest(bytes, expected) {
+  let manifest
+  try {
+    manifest = JSON.parse(Buffer.from(bytes).toString("utf8"))
+  } catch (error) {
+    throw new CollectorError("kernel_release_invalid", "signed kernel release manifest is invalid JSON", { cause: error })
+  }
+  if (!isPlainObject(manifest)
+    || manifest.schemaVersion !== 2
+    || manifest.sourceCommit !== expected.reviewedCommit
+    || manifest.sourceTree !== expected.sourceTree
+    || !Array.isArray(manifest.artifacts)) {
+    throw new CollectorError("kernel_release_identity_mismatch", "signed kernel release is not bound to the reviewed commit")
+  }
+  const artifact = manifest.artifacts.find((entry) => entry?.name === "chariox-kernel")
+  if (!isPlainObject(artifact)
+    || artifact.path !== "/usr/local/bin/chariox-kernel"
+    || !DIGEST.test(artifact.sha256 ?? "")) {
+    throw new CollectorError("kernel_release_kernel_missing", "signed kernel release does not declare chariox-kernel")
+  }
+  return {
+    sourceCommit: manifest.sourceCommit,
+    sourceTree: manifest.sourceTree,
+    kernelDigest: artifact.sha256,
+  }
+}
+
+async function verifyRepoFile(ctx, runText, git, relativePath, step) {
+  const treeStep = await runText(ctx, "MP-01", "source_protocol_identity", `${step}-tree`, git, ["ls-tree", "-r", "--full-tree", ctx.reviewedCommit, "--", relativePath], { cwd: ctx.sourceRoot })
+  const tree = parseRepoBlob(treeStep.text, relativePath, step)
+  const hashStep = await runText(ctx, "MP-01", "source_protocol_identity", `${step}-hash`, git, ["hash-object", "--", relativePath], { cwd: ctx.sourceRoot })
+  if (hashStep.text !== tree.gitBlob) {
+    throw new CollectorError("repo_identity_mismatch", `${step} does not match the reviewed commit`)
+  }
+  return {
+    gitBlob: tree.gitBlob,
+    mode: tree.mode,
+    evidenceRefs: [treeStep.stepResult.evidencePath, hashStep.stepResult.evidencePath],
+  }
+}
+
 function validateOptions(options, processApi) {
   if (processApi.platform !== "linux") throw new CollectorError("unsupported_platform", "parity collection requires Linux")
   if (!ALLOWED_TOPOLOGIES.includes(options.topology)) throw new CollectorError("topology_invalid", "topology must be ordinary or path1")
@@ -326,9 +406,16 @@ function validateOptions(options, processApi) {
   if (!Number.isInteger(options.kernelProtocol) || options.kernelProtocol < 1) throw new CollectorError("kernel_protocol_invalid", "expected kernel protocol is required")
   if (!Number.isInteger(options.relayProtocol) || options.relayProtocol < 1) throw new CollectorError("relay_protocol_invalid", "expected relay protocol is required")
   if (!OFFICIAL_PROVIDERS.includes(options.provider)) throw new CollectorError("provider_invalid", "provider is not an official provider")
-  for (const [key, label] of [["providerCommand", "provider command"], ["kernelBinary", "kernel binary"], ["probeCommand", "probe command"], ["outputPath", "output path"]]) {
+  if (Object.hasOwn(options, "probeCommand") || Object.hasOwn(options, "probeArgs")) {
+    throw new CollectorError("probe_command_unsupported", "the parity probe is repo-owned and cannot be overridden")
+  }
+  for (const [key, label] of [["providerCommand", "provider command"], ["kernelBinary", "kernel binary"], ["kernelReleaseRoot", "kernel release root"], ["kernelReleaseDigest", "kernel release digest"], ["kernelReleasePublicKey", "kernel release public key"], ["outputPath", "output path"]]) {
     if (!nonEmptyString(options[key])) throw new CollectorError("tool_missing", `${label} is required`)
   }
+  for (const [key, label] of [["kernelBinary", "kernel binary"], ["kernelReleaseRoot", "kernel release root"], ["kernelReleasePublicKey", "kernel release public key"]]) {
+    if (!isAbsolute(options[key])) throw new CollectorError("path_invalid", `${label} must be an absolute path`)
+  }
+  if (!DIGEST.test(options.kernelReleaseDigest)) throw new CollectorError("kernel_release_digest_invalid", "kernel release digest must be a sha256 digest")
   if (!options.signingKey || (typeof options.signingKey !== "string" && !Buffer.isBuffer(options.signingKey))) {
     throw new CollectorError("signing_key_missing", "a signing key is required")
   }
@@ -345,8 +432,8 @@ export function createParityCollector({
   clock = () => new Date(),
   processApi = process,
 } = {}) {
-  if (!filesystem || typeof filesystem.mkdir !== "function" || typeof filesystem.writeFile !== "function") {
-    throw new TypeError("filesystem must provide mkdir and writeFile")
+  if (!filesystem || typeof filesystem.mkdir !== "function" || typeof filesystem.readFile !== "function" || typeof filesystem.realpath !== "function" || typeof filesystem.writeFile !== "function") {
+    throw new TypeError("filesystem must provide mkdir, readFile, realpath, and writeFile")
   }
   if (typeof runCommand !== "function") throw new TypeError("runCommand must be a function")
 
@@ -379,6 +466,7 @@ export function createParityCollector({
       cwd: options.cwd ?? ctx.sourceRoot,
       exit_code: normalized.code,
       signal: normalized.signal,
+      killed: normalized.killed,
       timed_out: normalized.timedOut,
       stdout_sha256: `sha256:${sha256(normalized.stdout)}`,
       stderr_sha256: `sha256:${sha256(normalized.stderr)}`,
@@ -414,7 +502,8 @@ export function createParityCollector({
 
   function probeArgs(ctx, rowId, checkId) {
     return [
-      ...ctx.probeArgs,
+      "--source-root", ctx.sourceRoot,
+      "--reviewed-commit", ctx.reviewedCommit,
       "--parity-row", rowId,
       "--parity-check", checkId,
       "--topology", ctx.topology,
@@ -423,12 +512,17 @@ export function createParityCollector({
       "--tmp-path", "/tmp",
       "--nested-path", ctx.nestedPath,
       "--new-directory", ctx.newDirectory,
-      "--source-root", ctx.sourceRoot,
     ]
   }
 
   async function runProbe(ctx, rowId, checkId, normalizer) {
-    const { result, stepResult } = await runJson(ctx, rowId, checkId, "probe", ctx.probeCommand, probeArgs(ctx, rowId, checkId), { cwd: ctx.sourceRoot })
+    const { result, stepResult } = await runJson(ctx, rowId, checkId, "probe", process.execPath, [ctx.probePath, ...probeArgs(ctx, rowId, checkId)], { cwd: ctx.sourceRoot })
+    if (result.probe_identity_verified !== true
+      || result.probe_source_commit !== ctx.reviewedCommit
+      || result.probe_file !== PROBE_RELATIVE_PATH
+      || result.probe_file_git_blob !== ctx.probeGitBlob) {
+      throw new CollectorError("probe_identity_mismatch", `${rowId}/${checkId} did not report the reviewed repo-owned probe`, { rowId, checkId })
+    }
     const normalized = normalizer(result)
     return {
       status: "pass",
@@ -439,19 +533,26 @@ export function createParityCollector({
   }
 
   async function collect(options) {
+    for (const [key, label] of [["kernelBinary", "kernel binary"], ["kernelReleaseRoot", "kernel release root"], ["kernelReleasePublicKey", "kernel release public key"]]) {
+      if (nonEmptyString(options[key]) && !isAbsolute(options[key])) throw new CollectorError("path_invalid", `${label} must be an absolute path`)
+    }
     const normalizedOptions = {
       ...options,
       sourceRoot: resolve(options.sourceRoot ?? (typeof processApi.cwd === "function" ? processApi.cwd() : process.cwd())),
       outputPath: options.outputPath ? resolve(options.outputPath) : "",
       evidenceDir: resolve(options.evidenceDir ?? `${options.outputPath}.evidence`),
+      kernelBinary: options.kernelBinary ? resolve(options.kernelBinary) : "",
+      kernelReleaseRoot: options.kernelReleaseRoot ? resolve(options.kernelReleaseRoot) : "",
+      kernelReleasePublicKey: options.kernelReleasePublicKey ? resolve(options.kernelReleasePublicKey) : "",
       timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      probeArgs: Array.isArray(options.probeArgs) ? options.probeArgs : [],
     }
     validateOptions(normalizedOptions, processApi)
     const ctx = {
       ...normalizedOptions,
       filesystem,
       processApi,
+      probePath: resolve(normalizedOptions.sourceRoot, PROBE_RELATIVE_PATH),
+      releaseVerifierPath: resolve(normalizedOptions.sourceRoot, RELEASE_VERIFIER_RELATIVE_PATH),
       nestedPath: join("/tmp", `chariox-parity-${processApi.pid ?? "collector"}-nested`),
       newDirectory: join("/tmp", `chariox-parity-${processApi.pid ?? "collector"}-created`),
     }
@@ -468,6 +569,41 @@ export function createParityCollector({
     const statusStep = await runText(ctx, "MP-01", "source_protocol_identity", "source-status", git, ["status", "--porcelain=1", "--untracked-files=all"], { allowEmpty: true, cwd: ctx.sourceRoot })
     if (statusStep.text) throw new CollectorError("source_dirty", "source worktree has untracked or modified files")
     const filesStep = await runText(ctx, "MP-01", "source_protocol_identity", "source-files", git, ["ls-files", "-s"], { cwd: ctx.sourceRoot })
+    const probeIdentity = await verifyRepoFile(ctx, runText, git, PROBE_RELATIVE_PATH, "probe")
+    ctx.probeGitBlob = probeIdentity.gitBlob
+    const releaseVerifierIdentity = await verifyRepoFile(ctx, runText, git, RELEASE_VERIFIER_RELATIVE_PATH, "release-verifier")
+    const sourceTreeStep = await runText(ctx, "MP-01", "source_protocol_identity", "source-tree", git, ["rev-parse", `${ctx.reviewedCommit}^{tree}`], { cwd: ctx.sourceRoot })
+    const kernelReleaseStep = await runText(
+      ctx,
+      "MP-01",
+      "source_protocol_identity",
+      "kernel-release-verification",
+      process.execPath,
+      [ctx.releaseVerifierPath, ctx.kernelReleaseRoot, ctx.kernelReleaseDigest, ctx.kernelReleasePublicKey],
+      { allowEmpty: true, cwd: ctx.sourceRoot },
+    )
+    const expectedKernelPath = resolve(ctx.kernelReleaseRoot, "usr/local/bin/chariox-kernel")
+    let selectedKernelRealPath
+    let expectedKernelRealPath
+    try {
+      selectedKernelRealPath = await filesystem.realpath(ctx.kernelBinary)
+      expectedKernelRealPath = await filesystem.realpath(expectedKernelPath)
+    } catch (error) {
+      throw new CollectorError("kernel_release_path_mismatch", "selected kernel binary is not readable from the signed release", { cause: error })
+    }
+    if (selectedKernelRealPath !== expectedKernelRealPath) {
+      throw new CollectorError("kernel_release_path_mismatch", "selected kernel binary is not the signed release artifact")
+    }
+    let releaseBytes
+    try {
+      releaseBytes = await filesystem.readFile(join(ctx.kernelReleaseRoot, "usr/lib/chariox/release-manifest.json"))
+    } catch (error) {
+      throw new CollectorError("kernel_release_unreadable", "signed kernel release identity cannot be read", { cause: error })
+    }
+    const releaseIdentity = parseReleaseManifest(releaseBytes, {
+      reviewedCommit: actualCommit,
+      sourceTree: sourceTreeStep.text,
+    })
     const versionStep = await runText(ctx, "MP-01", "source_protocol_identity", "kernel-version", kernel, ["--version"], { cwd: ctx.sourceRoot })
     if (versionStep.text !== ctx.buildId) throw new CollectorError("build_identity_mismatch", `expected ${ctx.buildId}, observed ${versionStep.text}`)
     const kernelProtocolStep = await runText(ctx, "MP-01", "source_protocol_identity", "kernel-protocol", kernel, ["--print-local-daemon-protocol-version"], { cwd: ctx.sourceRoot })
@@ -496,9 +632,14 @@ export function createParityCollector({
               kernel_protocol: actualKernelProtocol,
               relay_protocol: actualRelayProtocol,
               build_identity_verified: true,
+              kernel_release_verified: true,
+              kernel_release_digest: ctx.kernelReleaseDigest,
+              kernel_artifact_digest: releaseIdentity.kernelDigest,
+              kernel_source_commit: releaseIdentity.sourceCommit,
+              probe_identity_verified: true,
             },
             command: commandText(git, ["rev-parse", "HEAD"]),
-            evidence_refs: [sourceCommitStep.stepResult.evidencePath, cleanStep.stepResult.evidencePath, statusStep.stepResult.evidencePath, filesStep.stepResult.evidencePath, versionStep.stepResult.evidencePath, kernelProtocolStep.stepResult.evidencePath, relayStep.stepResult.evidencePath],
+            evidence_refs: [sourceCommitStep.stepResult.evidencePath, cleanStep.stepResult.evidencePath, statusStep.stepResult.evidencePath, filesStep.stepResult.evidencePath, ...probeIdentity.evidenceRefs, ...releaseVerifierIdentity.evidenceRefs, sourceTreeStep.stepResult.evidencePath, kernelReleaseStep.stepResult.evidencePath, versionStep.stepResult.evidencePath, kernelProtocolStep.stepResult.evidencePath, relayStep.stepResult.evidencePath],
           },
           fresh_worker: freshWorker,
           official_provider_identity: {
@@ -580,11 +721,12 @@ export function createParityCollector({
 }
 
 function parseArgs(argv) {
-  const values = { probeArgs: [] }
+  const values = {}
   const allowed = new Set([
     "topology", "reviewed-commit", "build-id", "kernel-protocol", "relay-protocol", "provider",
-    "provider-command", "kernel-binary", "probe-command", "probe-arg", "boundary", "output",
-    "evidence-dir", "source-root", "relay-protocol-file", "signing-key-env", "timeout-ms", "help",
+    "provider-command", "kernel-binary", "kernel-release-root", "kernel-release-digest",
+    "kernel-release-public-key", "boundary", "output", "evidence-dir", "source-root",
+    "relay-protocol-file", "signing-key-env", "timeout-ms", "help",
   ])
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]
@@ -596,8 +738,7 @@ function parseArgs(argv) {
     const value = argv[index + 1]
     if (!value || value.startsWith("--")) throw new Error(`missing value for ${argument}`)
     index += 1
-    if (key === "probe-arg") values.probeArgs.push(value)
-    else values[key.replaceAll("-", "_")] = value
+    values[key.replaceAll("-", "_")] = value
   }
   return values
 }
@@ -608,7 +749,8 @@ export function usage() {
     "  --topology ordinary|path1 --reviewed-commit <40-hex> --build-id <kernel-version> \\",
     "  --kernel-protocol <n> --relay-protocol <n> --provider codex|claude|opencode \\",
     "  --provider-command <official-provider> --kernel-binary <chariox-kernel> \\",
-    "  --probe-command <official-chariox-probe> --boundary official-provider-turn|remote-command \\",
+    "  --kernel-release-root <verified-rootfs> --kernel-release-digest <sha256:digest> \\",
+    "  --kernel-release-public-key <trusted-public-key> --boundary official-provider-turn|remote-command \\",
     "  --output <manifest.json> --signing-key-env CHARIOX_PARITY_SIGNING_KEY",
   ].join("\n")
 }
@@ -632,7 +774,7 @@ export async function runCli(argv = process.argv.slice(2), {
     console.log(usage())
     return 0
   }
-  const required = ["topology", "reviewed_commit", "build_id", "kernel_protocol", "relay_protocol", "provider", "provider_command", "kernel_binary", "probe_command", "boundary", "output"]
+  const required = ["topology", "reviewed_commit", "build_id", "kernel_protocol", "relay_protocol", "provider", "provider_command", "kernel_binary", "kernel_release_root", "kernel_release_digest", "kernel_release_public_key", "boundary", "output"]
   const missing = required.filter((key) => !nonEmptyString(values[key]))
   if (missing.length) {
     console.error(`missing required arguments: ${missing.join(", ")}`)
@@ -657,8 +799,9 @@ export async function runCli(argv = process.argv.slice(2), {
       provider: values.provider,
       providerCommand: values.provider_command,
       kernelBinary: values.kernel_binary,
-      probeCommand: values.probe_command,
-      probeArgs: values.probeArgs,
+      kernelReleaseRoot: values.kernel_release_root,
+      kernelReleaseDigest: values.kernel_release_digest,
+      kernelReleasePublicKey: values.kernel_release_public_key,
       boundary: values.boundary,
       outputPath: values.output,
       evidenceDir: values.evidence_dir,
