@@ -5,8 +5,10 @@ import test from "node:test"
 import { fileURLToPath } from "node:url"
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..")
+const cliPackagePath = path.join(repoRoot, "apps/cli/package.json")
 const dockerfilePath = path.join(repoRoot, "apps/kernel/slice-linux-docker/docker/Dockerfile")
 const screenPath = path.join(repoRoot, "apps/kernel/slice-linux-docker/docker/slice-screen.sh")
+const cliPackage = JSON.parse(fs.readFileSync(cliPackagePath, "utf8"))
 const dockerfile = fs.readFileSync(dockerfilePath, "utf8")
 const screen = fs.readFileSync(screenPath, "utf8")
 
@@ -21,6 +23,14 @@ function section(source, startMarker, endMarker) {
   assert.notEqual(end, -1, `missing section end: ${endMarker}`)
   return source.slice(start, end)
 }
+
+test("routine CLI test command includes the lifecycle contract", () => {
+  assert.equal(typeof cliPackage.scripts?.test, "string")
+  assert.match(
+    cliPackage.scripts.test,
+    /node --test[^\n]*scripts\/lib\/selkies-slice-runtime-lifecycle\.test\.mjs/,
+  )
+})
 
 test("Selkies is source-pinned with verifiable license and native-wheel metadata", () => {
   for (const needle of [

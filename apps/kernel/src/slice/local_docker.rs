@@ -98,6 +98,80 @@ const MANAGED_SLICE_DOCKER_PROVISIONER: &str =
 const MAX_PROVIDER_CREDENTIAL_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PROVIDER_CREDENTIAL_TOTAL_BYTES: usize = 8 * 1024 * 1024;
 const GITHUB_TOKEN_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_SLICE_DISPLAY_BACKEND: &str = "novnc";
+const DEFAULT_SLICE_SELKIES_HEALTH_TIMEOUT: u16 = 15;
+const MAX_SLICE_SELKIES_HEALTH_TIMEOUT: u16 = 120;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LocalDockerDisplaySettings {
+    backend: &'static str,
+    selkies_port: u16,
+    selkies_health_timeout: u16,
+}
+
+impl LocalDockerDisplaySettings {
+    fn from_environment(novnc_port: u16) -> Result<Self, DaemonError> {
+        let backend = match display_environment_value("CHARIOX_SLICE_DISPLAY_BACKEND")? {
+            Some(value) => match value.as_str() {
+                "novnc" => "novnc",
+                "selkies" => "selkies",
+                _ => {
+                    return Err(local_docker_error(
+                        "CHARIOX_SLICE_DISPLAY_BACKEND is invalid",
+                    ));
+                }
+            },
+            None => DEFAULT_SLICE_DISPLAY_BACKEND,
+        };
+        let selkies_port = bounded_display_setting(
+            "CHARIOX_SLICE_SELKIES_PORT",
+            display_environment_value("CHARIOX_SLICE_SELKIES_PORT")?,
+            novnc_port,
+            1,
+            u16::MAX,
+        )?;
+        let selkies_health_timeout = bounded_display_setting(
+            "CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT",
+            display_environment_value("CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT")?,
+            DEFAULT_SLICE_SELKIES_HEALTH_TIMEOUT,
+            1,
+            MAX_SLICE_SELKIES_HEALTH_TIMEOUT,
+        )?;
+        Ok(Self {
+            backend,
+            selkies_port,
+            selkies_health_timeout,
+        })
+    }
+}
+
+fn display_environment_value(name: &str) -> Result<Option<String>, DaemonError> {
+    match std::env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            Err(local_docker_error(format!("{name} is invalid")))
+        }
+    }
+}
+
+fn bounded_display_setting(
+    name: &str,
+    value: Option<String>,
+    default: u16,
+    minimum: u16,
+    maximum: u16,
+) -> Result<u16, DaemonError> {
+    let Some(value) = value else {
+        return Ok(default);
+    };
+    value
+        .parse::<u32>()
+        .ok()
+        .filter(|value| (minimum as u32..=maximum as u32).contains(value))
+        .and_then(|value| u16::try_from(value).ok())
+        .ok_or_else(|| local_docker_error(format!("{name} is invalid")))
+}
 
 impl LocalDockerSliceOptions {
     pub fn from_config(config: &DaemonConfig) -> Self {
@@ -935,6 +1009,7 @@ fn configure_local_docker_slice_command(
     provision: bool,
 ) -> Result<(), DaemonError> {
     let ports = LocalDockerSlicePorts::for_record(record);
+    let display = LocalDockerDisplaySettings::from_environment(ports.novnc)?;
     command
         .env("CHARIOX_SLICE_ID", &record.id)
         .env("CHARIOX_SLICE_OWNER_KERNEL_ID", &record.owner_kernel_id)
@@ -943,6 +1018,15 @@ fn configure_local_docker_slice_command(
         .env(
             "CHARIOX_SLICE_HOME_VOLUME",
             format!("{}-home", local_docker_container_name(record)),
+        )
+        .env("CHARIOX_SLICE_DISPLAY_BACKEND", display.backend)
+        .env(
+            "CHARIOX_SLICE_SELKIES_PORT",
+            display.selkies_port.to_string(),
+        )
+        .env(
+            "CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT",
+            display.selkies_health_timeout.to_string(),
         );
     if !provision {
         return Ok(());

@@ -310,7 +310,7 @@ restore_saved_home_volume() {
   [[ -f "$SLICE_SAVED_HOME_ARCHIVE" ]] || fail "saved slice home archive not found: $SLICE_SAVED_HOME_ARCHIVE"
   local helper
   helper="${SLICE_NAME}-home-restore-$$"
-  log "restoring saved home archive $SLICE_SAVED_HOME_ARCHIVE into volume $SLICE_HOME_VOLUME"
+  log "restoring saved home archive $SLICE_SAVED_HOME_ARCHIVE into volume $SLICE_HOME_VOLUME on runtime image $SLICE_IMAGE"
   run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1 || true
   run_with_timeout 60 docker create --name "$helper" --user root \
     -v "$SLICE_HOME_VOLUME:/home-dst" \
@@ -321,6 +321,19 @@ restore_saved_home_volume() {
   run_with_timeout 120 docker exec -u root "$helper" \
     bash -lc "set -euo pipefail; find /home-dst -mindepth 1 -maxdepth 1 -exec rm -rf {} +; cd /home-dst; tar --zstd -xf /tmp/home.tar.zst; chown -R slice:slice /home-dst"
   run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1 || true
+}
+
+prepare_home_volume() {
+  local created=0
+  if run_with_timeout 20 docker volume inspect "$SLICE_HOME_VOLUME" >/dev/null 2>&1; then
+    log "preserving existing home volume $SLICE_HOME_VOLUME; saved home archive is only used for an initial restore"
+  else
+    run_with_timeout 30 docker volume create "$SLICE_HOME_VOLUME" >/dev/null
+    created=1
+  fi
+  if (( created == 1 )); then
+    restore_saved_home_volume
+  fi
 }
 
 machine_id_hex() {
@@ -434,6 +447,81 @@ image_runtime_compatible() {
     && "$image_runtime_revision" == "$SLICE_RUNTIME_SOURCE_REVISION" ]]
 }
 
+image_selkies_capable() {
+  local image="$1"
+  local selkies_version
+  local selkies_revision
+  local selkies_source
+  local selkies_license
+  selkies_version="$(docker image inspect -f '{{ index .Config.Labels "io.chariox.selkies-version" }}' "$image" 2>/dev/null || true)"
+  selkies_revision="$(docker image inspect -f '{{ index .Config.Labels "io.chariox.selkies-source-revision" }}' "$image" 2>/dev/null || true)"
+  selkies_source="$(docker image inspect -f '{{ index .Config.Labels "io.chariox.selkies-source" }}' "$image" 2>/dev/null || true)"
+  selkies_license="$(docker image inspect -f '{{ index .Config.Labels "io.chariox.selkies-license" }}' "$image" 2>/dev/null || true)"
+  [[ -n "$selkies_version" && "$selkies_version" != "<no value>" \
+    && "$selkies_revision" =~ ^[a-f0-9]{40}$ \
+    && "$selkies_source" == "https://github.com/selkies-project/selkies/commit/$selkies_revision" \
+    && "$selkies_license" == "MPL-2.0" ]]
+}
+
+saved_state_image_compatible() {
+  local image="$1"
+  docker image inspect "$image" >/dev/null 2>&1 \
+    && image_runtime_compatible "$image" \
+    && image_selkies_capable "$image"
+}
+
+ensure_saved_state_capable_base() {
+  case "$SLICE_BUILD_IMAGE" in
+    auto)
+      if image_runtime_compatible "$SLICE_BASE_IMAGE" \
+        && image_selkies_capable "$SLICE_BASE_IMAGE"; then
+        log "saved state base policy auto: cached runtime is Selkies-capable"
+      else
+        log "saved state base policy auto: building a capable runtime base"
+        build_standard_runtime_image "$SLICE_BASE_IMAGE"
+      fi
+      ;;
+    always)
+      log "saved state base policy always: refreshing a capable runtime base"
+      build_standard_runtime_image "$SLICE_BASE_IMAGE"
+      ;;
+    never)
+      log "saved state base policy never: build is disabled"
+      return 0
+      ;;
+    *)
+      fail "CHARIOX_SLICE_BUILD_IMAGE must be auto, always, or never"
+      ;;
+  esac
+
+  if image_runtime_compatible "$SLICE_BASE_IMAGE" \
+    && image_selkies_capable "$SLICE_BASE_IMAGE"; then
+    log "saved state base labels accepted for $SLICE_BASE_IMAGE"
+    return 0
+  fi
+  fail "saved state migration required: runtime base $SLICE_BASE_IMAGE did not expose authoritative compatible Selkies labels after CHARIOX_SLICE_BUILD_IMAGE=$SLICE_BUILD_IMAGE; no container or home-volume mutation was attempted."
+}
+
+require_saved_state_compatibility() {
+  [[ -n "$SLICE_SAVED_HOME_ARCHIVE" && "$SLICE_DISPLAY_BACKEND" == selkies ]] || return 0
+  [[ -f "$SLICE_SAVED_HOME_ARCHIVE" ]] \
+    || fail "saved state migration required before selecting Selkies: saved home archive is missing at $SLICE_SAVED_HOME_ARCHIVE; no container or home-volume mutation was attempted."
+  log "saved state compatibility gate: validating image labels before mutation"
+
+  if saved_state_image_compatible "$SLICE_IMAGE"; then
+    log "saved state image $SLICE_IMAGE is runtime-compatible and Selkies-capable"
+    return 0
+  fi
+
+  if saved_state_image_compatible "$SLICE_BASE_IMAGE"; then
+    log "saved state migration: restoring $SLICE_SAVED_HOME_ARCHIVE on Selkies-capable runtime image $SLICE_BASE_IMAGE; /home/slice state is preserved"
+    SLICE_IMAGE="$SLICE_BASE_IMAGE"
+    return 0
+  fi
+
+  fail "saved state migration required before selecting Selkies: no runtime-compatible image with authoritative Selkies capability labels is available; no container or home-volume mutation was attempted. Use a current image labeled io.chariox.selkies-version, io.chariox.selkies-source-revision, io.chariox.selkies-source, and io.chariox.selkies-license, then retry, or select CHARIOX_SLICE_DISPLAY_BACKEND=novnc."
+}
+
 build_standard_runtime_image() {
   local image="$1"
   local prebuilt_marker="$REPO_ROOT/apps/kernel/slice-linux-docker/prebuilt/.managed-release"
@@ -475,6 +563,21 @@ build_image() {
     auto|always|never) ;;
     *) fail "CHARIOX_SLICE_BUILD_IMAGE must be auto, always, or never" ;;
   esac
+  if [[ -n "$SLICE_SAVED_HOME_ARCHIVE" && "$SLICE_DISPLAY_BACKEND" == selkies ]]; then
+    [[ -f "$SLICE_SAVED_HOME_ARCHIVE" ]] \
+      || fail "saved state migration required before selecting Selkies: saved home archive is missing at $SLICE_SAVED_HOME_ARCHIVE; no container or home-volume mutation was attempted."
+    case "$SLICE_BUILD_IMAGE" in
+      always)
+        ensure_saved_state_capable_base
+        ;;
+      auto)
+        if ! saved_state_image_compatible "$SLICE_IMAGE"; then
+          ensure_saved_state_capable_base
+        fi
+        ;;
+    esac
+  fi
+  require_saved_state_compatibility
 
   if [[ "$SLICE_BUILD_IMAGE" == "never" ]]; then
     if image_runtime_compatible "$SLICE_IMAGE"; then
@@ -493,6 +596,10 @@ build_image() {
   fi
 
   if [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]]; then
+    if [[ "$SLICE_DISPLAY_BACKEND" == selkies ]]; then
+      log "preserving saved state image $SLICE_IMAGE after Selkies capability preflight"
+      return 0
+    fi
     ensure_runtime_base_image
     if ! docker image inspect "$SLICE_IMAGE" >/dev/null 2>&1; then
       log "saved state image $SLICE_IMAGE is missing; restoring the saved home archive on $SLICE_BASE_IMAGE"
@@ -550,6 +657,7 @@ refresh_saved_state_runtime() {
 }
 
 ensure_container() {
+  require_saved_state_compatibility
   validate_display_settings
   local created_container=0
   if [[ "$SLICE_RECREATE" == "1" ]] && container_exists; then
@@ -581,8 +689,7 @@ ensure_container() {
     log "container $SLICE_NAME already exists"
   else
     log "creating container $SLICE_NAME"
-    run_with_timeout 30 docker volume create "$SLICE_HOME_VOLUME" >/dev/null
-    restore_saved_home_volume
+    prepare_home_volume
     local display_port
     display_port="$(selected_display_port)"
     local docker_create_args=(
@@ -805,7 +912,8 @@ slice_screen_diagnostics() {
       echo \"==== \${log_file}\"
       tail -n 40 \"\${log_file}\" 2>/dev/null \
         | sed -E \
-            -e 's/(([Tt][Oo][Kk][Ee][Nn]|[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll])[[:space:]]*[:=][[:space:]]*)[^[:space:]]+/\1[REDACTED]/g' \
+            -e 's/(([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn])[[:space:]]*[:=][[:space:]]*).*/\1[REDACTED]/g' \
+            -e 's/(([Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll])[[:space:]]*[:=][[:space:]]*)[^[:space:]]+/\1[REDACTED]/g' \
             -e 's/([Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+)[^[:space:]]+/\1[REDACTED]/g' \
         || true
     done
