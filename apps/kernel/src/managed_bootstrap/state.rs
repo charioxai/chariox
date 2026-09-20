@@ -437,11 +437,7 @@ pub(super) fn normalize_managed_repository_root(value: &str) -> Result<String, D
 }
 
 fn overlaps_protected_managed_root(candidate: &str) -> bool {
-    ["/", "/var/lib/chariox", "/usr/lib/chariox"]
-        .iter()
-        .any(|protected| candidate == *protected || candidate.starts_with(&format!("{protected}/")))
-        || candidate == "/home/chariox/.chariox"
-        || candidate.starts_with("/home/chariox/.chariox/")
+    crate::managed_context::empty::managed_path_overlaps_protected_root(Path::new(candidate))
 }
 
 impl BootstrapReceiptDocument {

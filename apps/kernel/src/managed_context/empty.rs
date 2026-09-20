@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -171,6 +172,80 @@ pub(crate) fn managed_user_workspace_root() -> Result<PathBuf, DaemonError> {
     crate::managed_bootstrap::managed_repository_root_from_env()
 }
 
+pub(crate) fn managed_path_overlaps_protected_root(path: &Path) -> bool {
+    path == Path::new("/")
+        || [
+            Path::new("/var/lib/chariox"),
+            Path::new("/usr/lib/chariox"),
+            Path::new("/home/chariox/.chariox"),
+        ]
+        .iter()
+        .any(|protected| path == *protected || path.starts_with(protected))
+}
+
+pub(crate) fn resolve_managed_path_for_creation(
+    path: &Path,
+    label: &str,
+) -> Result<PathBuf, DaemonError> {
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(empty_context_error(format!(
+            "{label} must be an absolute path without parent components"
+        )));
+    }
+
+    let mut missing_components = Vec::<OsString>::new();
+    let mut existing = path;
+    loop {
+        match fs::symlink_metadata(existing) {
+            Ok(metadata) => {
+                let is_final_target = existing == path;
+                if metadata.file_type().is_symlink() && is_final_target {
+                    return Err(empty_context_error(format!(
+                        "{label} must not end in a symlink"
+                    )));
+                }
+                let canonical_existing = fs::canonicalize(existing).map_err(|error| {
+                    empty_context_io_error("resolve managed path for creation", error)
+                })?;
+                if !canonical_existing.is_dir() {
+                    return Err(empty_context_error(format!(
+                        "{label} must resolve through directories"
+                    )));
+                }
+                let mut resolved = canonical_existing;
+                for component in missing_components.iter().rev() {
+                    resolved.push(component);
+                }
+                if managed_path_overlaps_protected_root(&resolved) {
+                    return Err(empty_context_error(format!(
+                        "{label} resolves inside a protected service root"
+                    )));
+                }
+                return Ok(resolved);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let component = existing.file_name().ok_or_else(|| {
+                    empty_context_error(format!("{label} has no resolvable parent"))
+                })?;
+                missing_components.push(component.to_os_string());
+                existing = existing.parent().ok_or_else(|| {
+                    empty_context_error(format!("{label} has no resolvable parent"))
+                })?;
+            }
+            Err(error) => {
+                return Err(empty_context_io_error(
+                    "inspect managed path for creation",
+                    error,
+                ));
+            }
+        }
+    }
+}
+
 pub(crate) fn managed_control_workspace_parent(config: &DaemonConfig) -> Option<PathBuf> {
     config
         .publication_control_state_root
@@ -192,8 +267,10 @@ pub(crate) fn ensure_empty_managed_context_workspace(
         let user_root = managed_user_workspace_root()?;
         let canonical_user_root =
             ensure_existing_real_directory(&user_root, "managed repository root")?;
-        ensure_real_private_directory(&workspace)?;
-        let canonical_workspace = fs::canonicalize(&workspace)
+        let resolved_workspace =
+            resolve_managed_path_for_creation(&workspace, "empty managed workspace")?;
+        ensure_real_private_directory(&resolved_workspace)?;
+        let canonical_workspace = fs::canonicalize(&resolved_workspace)
             .map_err(|error| empty_context_io_error("resolve empty managed workspace", error))?;
         if !canonical_workspace.starts_with(&canonical_user_root)
             || canonical_workspace.starts_with(
@@ -231,14 +308,15 @@ pub(crate) fn ensure_empty_managed_context_workspace(
 }
 
 fn ensure_existing_real_directory(path: &Path, label: &str) -> Result<PathBuf, DaemonError> {
-    let metadata = fs::symlink_metadata(path)
+    let resolved = resolve_managed_path_for_creation(path, label)?;
+    let metadata = fs::symlink_metadata(&resolved)
         .map_err(|error| empty_context_io_error("inspect managed user workspace root", error))?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Err(empty_context_error(format!(
             "{label} must be a real directory"
         )));
     }
-    fs::canonicalize(path)
+    fs::canonicalize(resolved)
         .map_err(|error| empty_context_io_error("resolve managed user workspace root", error))
 }
 

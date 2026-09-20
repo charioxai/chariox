@@ -719,9 +719,11 @@ pub(super) fn managed_materialization_root_for_control(
         return Ok(None);
     }
     let root = crate::managed_bootstrap::managed_repository_root_from_env()?;
-    validate_real_directory(&root, "managed repository root")?;
-    let canonical = fs::canonicalize(&root)
-        .map_err(|error| context_io_error("resolve managed repository root", error))?;
+    let canonical = crate::managed_context::empty::resolve_managed_path_for_creation(
+        &root,
+        "managed repository root",
+    )?;
+    validate_real_directory(&canonical, "managed repository root")?;
     if canonical == control_destination
         || control_destination.starts_with(&canonical)
         || canonical.starts_with(
