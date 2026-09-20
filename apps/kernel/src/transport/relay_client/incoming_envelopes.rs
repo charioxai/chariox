@@ -103,6 +103,17 @@ pub(super) async fn handle_incoming_envelope(
         }
     })?;
     match envelope {
+        RelayEnvelope::DaemonRegistered { relay, .. }
+        | RelayEnvelope::DaemonHeartbeatAcknowledged { relay, .. } => {
+            state
+                .write()
+                .await
+                .acknowledge_relay_runtime(relay, crate::session::unix_epoch_ms())
+                .map_err(|message| DaemonError::LocalTransport {
+                    operation: "validate relay runtime identity",
+                    message: message.to_string(),
+                })?;
+        }
         RelayEnvelope::DaemonRequest {
             relay_request_id,
             caller_identity,

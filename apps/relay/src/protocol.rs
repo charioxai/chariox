@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use crate::auth::{RelaySubjectKind, VerifiedRelayIdentity};
 
 const TEMPORARY_PEER_DAEMON_MARKER: &str = ":peer-tmp:daemon-peer-tmp-";
+pub const RELAY_RUNTIME_EVIDENCE_CAPABILITY: &str = "relay_runtime_evidence_v1";
+pub const RELAY_TRANSPORT_PROTOCOL_VERSION: u32 = 1;
 
 /// Returns the stable kernel daemon id for either a kernel registration or a
 /// production-shaped temporary peer registration. Temporary ids are generated
@@ -69,6 +71,14 @@ pub struct RelayCallerIdentity {
     pub user_id: Option<String>,
     #[serde(default)]
     pub public_key_thumbprint: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayServerIdentity {
+    pub protocol_version: u32,
+    pub package_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_commit: Option<String>,
 }
 
 impl From<VerifiedRelayIdentity> for RelayCallerIdentity {
@@ -243,10 +253,18 @@ pub enum RelayEnvelope {
     DaemonRegister {
         registration: DaemonRegistration,
     },
+    DaemonRegistered {
+        relay: RelayServerIdentity,
+        observed_at_ms: u64,
+    },
     DaemonHeartbeat {
         daemon_id: String,
         #[serde(default)]
         registration: Option<DaemonRegistration>,
+    },
+    DaemonHeartbeatAcknowledged {
+        relay: RelayServerIdentity,
+        observed_at_ms: u64,
     },
     ClientConnect {
         auth_token: String,
@@ -464,6 +482,50 @@ mod tests {
         assert!(json.contains("\"kind\":\"daemon_register\""));
         assert!(json.contains("\"daemon_id\":\"daemon-1\""));
         assert!(json.contains("\"public_key\":\"public-key\""));
+    }
+
+    #[test]
+    fn serializes_runtime_evidence_envelopes_at_protocol_one() {
+        assert_eq!(RELAY_TRANSPORT_PROTOCOL_VERSION, 1);
+        let relay = RelayServerIdentity {
+            protocol_version: RELAY_TRANSPORT_PROTOCOL_VERSION,
+            package_version: "0.1.0".to_string(),
+            build_commit: Some("commit-a".to_string()),
+        };
+        let json = serde_json::to_value([
+            RelayEnvelope::DaemonRegistered {
+                relay: relay.clone(),
+                observed_at_ms: 1_000,
+            },
+            RelayEnvelope::DaemonHeartbeatAcknowledged {
+                relay,
+                observed_at_ms: 1_250,
+            },
+        ])
+        .expect("runtime evidence envelopes should serialize");
+        assert_eq!(
+            json,
+            serde_json::json!([
+                {
+                    "kind": "daemon_registered",
+                    "relay": {
+                        "protocol_version": 1,
+                        "package_version": "0.1.0",
+                        "build_commit": "commit-a"
+                    },
+                    "observed_at_ms": 1_000
+                },
+                {
+                    "kind": "daemon_heartbeat_acknowledged",
+                    "relay": {
+                        "protocol_version": 1,
+                        "package_version": "0.1.0",
+                        "build_commit": "commit-a"
+                    },
+                    "observed_at_ms": 1_250
+                }
+            ])
+        );
     }
 
     #[test]

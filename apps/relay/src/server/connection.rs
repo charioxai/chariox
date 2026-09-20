@@ -11,7 +11,10 @@ use tokio::sync::{mpsc, RwLock};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 use crate::auth::{RelayAction, RelayAuthVerifier};
-use crate::protocol::{RelayConnectionRole, RelayEnvelope, RelayError, RelayMetadataQuery};
+use crate::protocol::{
+    RelayConnectionRole, RelayEnvelope, RelayError, RelayMetadataQuery, RelayServerIdentity,
+    RELAY_RUNTIME_EVIDENCE_CAPABILITY, RELAY_TRANSPORT_PROTOCOL_VERSION,
+};
 use crate::registry::{
     ActiveEventRoute, ActiveSubscription, DaemonKey, DisplayStreamEvent, PeerHandle,
     PendingRequestKind, RelayRegistry, RelaySender,
@@ -31,6 +34,49 @@ const RELAY_CONNECTION_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 const RELAY_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const RELAY_PONG_TIMEOUT: Duration = Duration::from_secs(15);
 const RELAY_WEBSOCKET_CLOSE_TIMEOUT: Duration = Duration::from_millis(250);
+
+fn relay_server_identity() -> RelayServerIdentity {
+    static IDENTITY: OnceLock<RelayServerIdentity> = OnceLock::new();
+    IDENTITY
+        .get_or_init(|| RelayServerIdentity {
+            protocol_version: RELAY_TRANSPORT_PROTOCOL_VERSION,
+            package_version: env!("CARGO_PKG_VERSION").to_string(),
+            build_commit: std::env::var("CHARIOX_BUILD_COMMIT")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+        })
+        .clone()
+}
+
+fn registration_requests_runtime_evidence(
+    registration: &crate::protocol::DaemonRegistration,
+) -> bool {
+    registration
+        .capabilities
+        .iter()
+        .any(|capability| capability == RELAY_RUNTIME_EVIDENCE_CAPABILITY)
+}
+
+fn send_runtime_evidence_ack(
+    outgoing_tx: &RelaySender,
+    heartbeat: bool,
+) -> Result<(), std::io::Error> {
+    let relay = relay_server_identity();
+    let observed_at_ms = current_unix_ms();
+    let envelope = if heartbeat {
+        RelayEnvelope::DaemonHeartbeatAcknowledged {
+            relay,
+            observed_at_ms,
+        }
+    } else {
+        RelayEnvelope::DaemonRegistered {
+            relay,
+            observed_at_ms,
+        }
+    };
+    send_envelope(outgoing_tx, &envelope)
+}
 
 async fn try_forward_display_stream_event(
     registry: &Arc<RwLock<RelayRegistry>>,
@@ -267,12 +313,19 @@ pub(crate) async fn handle_connection(
                                     client_daemon_key: None,
                                 },
                             );
+                            let runtime_evidence =
+                                registration_requests_runtime_evidence(&registration);
                             guard.daemons.insert(daemon_key.clone(), registration);
                             guard.daemon_peers.insert(daemon_key.clone(), peer_addr);
                             routes.set_daemon_sender(daemon_key, outgoing_tx.clone());
                             drop(guard);
                             for sender in replaced_senders {
                                 send_close(&sender, "daemon reconnected".to_string());
+                            }
+                            if runtime_evidence
+                                && send_runtime_evidence_ack(&outgoing_tx, false).is_err()
+                            {
+                                break;
                             }
                         }
                         RelayEnvelope::DaemonHeartbeat {
@@ -285,7 +338,7 @@ pub(crate) async fn handle_connection(
                             if current_daemon_key.daemon_id != daemon_id {
                                 break;
                             }
-                            if let Some(registration) = registration {
+                            let runtime_evidence = if let Some(registration) = registration {
                                 let identity = verify_relay_token(
                                     &auth_verifier,
                                     &registration.auth_token,
@@ -309,6 +362,8 @@ pub(crate) async fn handle_connection(
                                 if registration.daemon_id != daemon_id {
                                     break;
                                 }
+                                let runtime_evidence =
+                                    registration_requests_runtime_evidence(&registration);
                                 let allowed_actions = identity.allowed_actions.clone();
                                 let allowed_targets = identity.allowed_targets.clone();
                                 let mut guard = registry.write().await;
@@ -320,6 +375,19 @@ pub(crate) async fn handle_connection(
                                     peer.daemon_registration = Some(registration.clone());
                                 }
                                 guard.daemons.insert(current_daemon_key, registration);
+                                runtime_evidence
+                            } else {
+                                registry
+                                    .read()
+                                    .await
+                                    .daemons
+                                    .get(&current_daemon_key)
+                                    .is_some_and(registration_requests_runtime_evidence)
+                            };
+                            if runtime_evidence
+                                && send_runtime_evidence_ack(&outgoing_tx, true).is_err()
+                            {
+                                break;
                             }
                         }
                         RelayEnvelope::ClientConnect { auth_token, target } => {
@@ -897,6 +965,14 @@ pub(crate) async fn handle_connection(
                         }
                         RelayEnvelope::Close { .. } => {
                             let _ = outgoing_tx.try_send(Message::Close(None));
+                            break;
+                        }
+                        RelayEnvelope::DaemonRegistered { .. }
+                        | RelayEnvelope::DaemonHeartbeatAcknowledged { .. } => {
+                            send_close(
+                                &outgoing_tx,
+                                "client sent a relay runtime acknowledgement".to_string(),
+                            );
                             break;
                         }
                         RelayEnvelope::ClientConnected { .. }
