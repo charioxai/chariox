@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { spawnSync } from "node:child_process"
 import { readFile } from "node:fs/promises"
 import { test } from "node:test"
 import { fileURLToPath } from "node:url"
@@ -74,6 +75,55 @@ test("exec and diagnostics carry only non-secret display settings", async () => 
   assert.match(diagnostics, /\[REDACTED\]/)
   assert.match(diagnostics, /\[Bb\]\[Ee\]\[Aa\]\[Rr\]\[Ee\]\[Rr\]/)
   assert.doesNotMatch(diagnostics, /SLICE_RELAY_TOKEN|SLICE_CLOUD_RELAY_CONFIG/)
+})
+
+test("failure diagnostics redact complete Authorization values through the execution path", async () => {
+  const source = await readFile(provisionerPath, "utf8")
+  const diagnostics = section(source, "slice_screen_diagnostics() {", "run_required_phase() {")
+  const requiredPhase = section(source, "run_required_phase() {", "copy_provider_auth_file() {")
+  const secret = "chariox-authorization-redaction-sentinel-20260920"
+  const base64Secret = Buffer.from(secret, "utf8").toString("base64")
+  const urlEncodedSecret = encodeURIComponent(secret)
+  const harness = [
+    "set -Eeuo pipefail",
+    "log() { printf '[harness] %s\\n' \"$*\" >&2; }",
+    "selected_display_port() { printf '%s\\n' \"$SLICE_SELKIES_PORT\"; }",
+    "run_with_timeout() { local seconds=\"$1\"; shift; \"$@\"; }",
+    "tail() { printf '%s\\n' \"Authorization: Bearer ${DIAG_SECRET}\" \"authorization: Basic ${DIAG_SECRET}\" \"Authorization: Digest ${DIAG_SECRET}\" \"Authorization: Bearer ${DIAG_BASE64}\" \"Authorization: Basic ${DIAG_URL}\" 'diagnostic-preserved-text'; }",
+    "export -f tail",
+    "docker() {",
+    "  [[ \"$1\" == exec ]] || return 0",
+    "  local script=",
+    "  for script; do :; done",
+    "  bash -c \"$script\"",
+    "}",
+    "SLICE_NAME=sentinel-container",
+    "SLICE_DISPLAY_BACKEND=selkies",
+    "SLICE_NOVNC_PORT=6080",
+    "SLICE_SELKIES_PORT=6081",
+    "SLICE_SELKIES_HEALTH_TIMEOUT=15",
+    diagnostics,
+    requiredPhase,
+    "if run_required_phase desktop false; then phase_status=0; else phase_status=$?; fi",
+    "printf 'PHASE_STATUS=%s\\n' \"$phase_status\"",
+  ].join("\n")
+  const result = spawnSync("bash", ["-c", harness], {
+    env: {
+      ...process.env,
+      DIAG_SECRET: secret,
+      DIAG_BASE64: base64Secret,
+      DIAG_URL: urlEncodedSecret,
+    },
+    encoding: "utf8",
+  })
+  assert.equal(result.status, 0, result.stderr)
+  const output = `${result.stdout}${result.stderr}`
+  assert.match(output, /PHASE_STATUS=1/)
+  assert.match(output, /Authorization: \[REDACTED\]/i)
+  assert.match(output, /diagnostic-preserved-text/)
+  for (const credential of [secret, base64Secret, urlEncodedSecret]) {
+    assert.equal(output.includes(credential), false, `diagnostic leaked credential variant: ${credential}`)
+  }
 })
 
 test("existing-container reprovision covers noVNC-to-Selkies and Selkies-to-noVNC transitions", async () => {
