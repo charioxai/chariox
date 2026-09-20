@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 
 const MAX_IDENTIFIER_BYTES = 128;
 const MAX_OPERATION_BYTES = 64;
@@ -17,6 +17,7 @@ const MUTATION_IDENTITY_FIELDS = Object.freeze([
   "arguments",
   "payload",
 ]);
+const OPAQUE_REQUEST_FINGERPRINT_FIELD = "request_fingerprint";
 
 export const MUTATION_ERROR_CODES = Object.freeze({
   INVALID_ARGUMENT: "MUTATION_INVALID_ARGUMENT",
@@ -67,7 +68,11 @@ function positiveInteger(value) {
 
 function normalizeAttribution(value) {
   if (!isPlainObject(value)) fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
-  const allowed = new Set([...ATTRIBUTION_FIELDS, ...MUTATION_IDENTITY_FIELDS]);
+  const allowed = new Set([
+    ...ATTRIBUTION_FIELDS,
+    ...MUTATION_IDENTITY_FIELDS,
+    OPAQUE_REQUEST_FINGERPRINT_FIELD,
+  ]);
   if (Object.keys(value).some((key) => !allowed.has(key))) {
     fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
   }
@@ -96,6 +101,19 @@ function normalizeAttribution(value) {
 
 function optionalIdentifier(value) {
   return value === undefined || value === null ? null : identifier(value);
+}
+
+function opaqueRequestFingerprint(value) {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    Buffer.byteLength(value, "utf8") > MAX_IDENTIFIER_BYTES ||
+    value.trim() !== value ||
+    /[\u0000-\u001f\u007f]/u.test(value)
+  ) {
+    fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
+  }
+  return value;
 }
 
 function normalizeJsonValue(value, seen = new Set()) {
@@ -127,18 +145,30 @@ function normalizeJsonValue(value, seen = new Set()) {
 
 function normalizeMutationIdentity(rawAttribution, rawIdentity) {
   const inlineIdentity = {};
-  for (const key of MUTATION_IDENTITY_FIELDS) {
+  for (const key of [...MUTATION_IDENTITY_FIELDS, OPAQUE_REQUEST_FINGERPRINT_FIELD]) {
     if (Object.prototype.hasOwnProperty.call(rawAttribution, key)) {
       inlineIdentity[key] = rawAttribution[key];
     }
   }
   if (rawIdentity !== undefined) {
     if (!isPlainObject(rawIdentity)) fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
-    const allowed = new Set(MUTATION_IDENTITY_FIELDS);
+    const allowed = new Set([
+      ...MUTATION_IDENTITY_FIELDS,
+      OPAQUE_REQUEST_FINGERPRINT_FIELD,
+    ]);
     if (Object.keys(rawIdentity).some((key) => !allowed.has(key))) {
       fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
     }
     Object.assign(inlineIdentity, rawIdentity);
+  }
+  const hasCanonicalIdentity = MUTATION_IDENTITY_FIELDS.every((key) =>
+    Object.prototype.hasOwnProperty.call(inlineIdentity, key));
+  const hasOpaqueRequestFingerprint = Object.prototype.hasOwnProperty.call(
+    inlineIdentity,
+    OPAQUE_REQUEST_FINGERPRINT_FIELD,
+  );
+  if (!hasCanonicalIdentity && !hasOpaqueRequestFingerprint) {
+    fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
   }
   return Object.freeze({
     target_id: optionalIdentifier(inlineIdentity.target_id),
@@ -146,10 +176,13 @@ function normalizeMutationIdentity(rawAttribution, rawIdentity) {
     document_id: optionalIdentifier(inlineIdentity.document_id),
     arguments: normalizeJsonValue(inlineIdentity.arguments),
     payload: normalizeJsonValue(inlineIdentity.payload),
+    request_fingerprint: hasOpaqueRequestFingerprint
+      ? opaqueRequestFingerprint(inlineIdentity[OPAQUE_REQUEST_FINGERPRINT_FIELD])
+      : null,
   });
 }
 
-function fingerprint(attribution, identity) {
+function fingerprint(key, attribution, identity) {
   const semanticIdentity = {
     ...attribution,
     target_id: identity.target_id,
@@ -157,8 +190,9 @@ function fingerprint(attribution, identity) {
     document_id: identity.document_id,
     arguments: identity.arguments,
     payload: identity.payload,
+    request_fingerprint: identity.request_fingerprint,
   };
-  const semanticDigest = createHash("sha256")
+  const semanticDigest = createHmac("sha256", key)
     .update(JSON.stringify(semanticIdentity))
     .digest("hex");
   return JSON.stringify({ ...attribution, semantic_digest: semanticDigest });
@@ -173,6 +207,8 @@ function finiteLimit(value, fallback) {
 }
 
 export class BrowserMutationCoordinator {
+  #mutationFingerprintKey = randomBytes(32);
+
   constructor(options = {}) {
     if (!isPlainObject(options)) throw new TypeError("options must be a plain object");
     this.maxTabs = finiteLimit(options.maxTabs, 256);
@@ -194,7 +230,7 @@ export class BrowserMutationCoordinator {
     const attribution = normalizeAttribution(rawAttribution);
     if (typeof run !== "function") fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
     const identity = normalizeMutationIdentity(rawAttribution, rawIdentity);
-    const actionFingerprint = fingerprint(attribution, identity);
+    const actionFingerprint = fingerprint(this.#mutationFingerprintKey, attribution, identity);
     const existing = this.actions.get(attribution.action_id);
     if (existing) {
       if (existing.fingerprint !== actionFingerprint) {

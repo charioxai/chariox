@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -7,6 +8,23 @@ import {
 } from "./browser-controller-mutation-coordinator.mjs";
 
 function attribution(overrides = {}) {
+  return {
+    action_id: "action-1",
+    actor_id: "agent-1",
+    browser_generation: 1,
+    operation: "click",
+    tab_id: "tab-1",
+    target_generation: 1,
+    target_id: "target-1",
+    page_id: "page-1",
+    document_id: "document-1",
+    arguments: { element_ref: "element-1" },
+    payload: { value: "first" },
+    ...overrides,
+  };
+}
+
+function bareAttribution(overrides = {}) {
   return {
     action_id: "action-1",
     actor_id: "agent-1",
@@ -27,6 +45,23 @@ function mutationIdentity(overrides = {}) {
     payload: { value: "first" },
     ...overrides,
   };
+}
+
+function legacyPayloadDigest(rawAttribution, identity) {
+  const semanticIdentity = {
+    action_id: rawAttribution.action_id,
+    actor_id: rawAttribution.actor_id,
+    browser_generation: rawAttribution.browser_generation,
+    operation: rawAttribution.operation,
+    tab_id: rawAttribution.tab_id,
+    target_generation: rawAttribution.target_generation,
+    target_id: identity.target_id,
+    page_id: identity.page_id,
+    document_id: identity.document_id,
+    arguments: identity.arguments,
+    payload: identity.payload,
+  };
+  return createHash("sha256").update(JSON.stringify(semanticIdentity)).digest("hex");
 }
 
 function deferred() {
@@ -99,6 +134,91 @@ test("allows independent tabs to mutate concurrently", async () => {
   first.resolve();
   second.resolve();
   await Promise.all([left, right]);
+});
+
+test("rejects mutation without a canonical identity or opaque request fingerprint", () => {
+  const coordinator = new BrowserMutationCoordinator();
+  assert.throws(
+    () => coordinator.mutate(bareAttribution(), async () => "must-not-run"),
+    (error) => error.code === MUTATION_ERROR_CODES.INVALID_ARGUMENT,
+  );
+  assert.throws(
+    () => coordinator.mutate(
+      bareAttribution({ action_id: "partial-identity" }),
+      async () => "must-not-run",
+      { payload: { value: "partial" } },
+    ),
+    (error) => error.code === MUTATION_ERROR_CODES.INVALID_ARGUMENT,
+  );
+});
+
+test("requires identity for payload-free operations and deduplicates opaque fingerprints", async () => {
+  const coordinator = new BrowserMutationCoordinator();
+  let canonicalCalls = 0;
+  const payloadFreeAttribution = attribution({ action_id: "payload-free" });
+  const payloadFreeIdentity = mutationIdentity({ arguments: null, payload: null });
+  const canonical = coordinator.mutate(
+    payloadFreeAttribution,
+    async () => {
+      canonicalCalls += 1;
+      return "focused";
+    },
+    payloadFreeIdentity,
+  );
+  assert.equal(
+    coordinator.mutate(payloadFreeAttribution, async () => "must-not-run", payloadFreeIdentity),
+    canonical,
+  );
+  assert.equal(await canonical, "focused");
+  assert.equal(canonicalCalls, 1);
+
+  let opaqueCalls = 0;
+  const opaqueAttribution = bareAttribution({
+    action_id: "opaque-payload-free",
+    operation: "focus",
+  });
+  const opaqueIdentity = { request_fingerprint: "focus-target-v1" };
+  const opaque = coordinator.mutate(
+    opaqueAttribution,
+    async () => {
+      opaqueCalls += 1;
+      return "opaque-focused";
+    },
+    opaqueIdentity,
+  );
+  assert.equal(
+    coordinator.mutate(opaqueAttribution, async () => "must-not-run", opaqueIdentity),
+    opaque,
+  );
+  assert.equal(await opaque, "opaque-focused");
+  assert.equal(opaqueCalls, 1);
+});
+
+test("rejects changed target and text under one action ID", async () => {
+  const coordinator = new BrowserMutationCoordinator();
+  let calls = 0;
+  const fillAttribution = bareAttribution({
+    action_id: "fill-once",
+    operation: "fill",
+  });
+  const first = coordinator.mutate(
+    fillAttribution,
+    async () => {
+      calls += 1;
+      return "filled-first-value";
+    },
+    mutationIdentity({ target_id: "target-first", payload: { text: "first" } }),
+  );
+  assert.throws(
+    () => coordinator.mutate(
+      fillAttribution,
+      async () => "must-not-run",
+      mutationIdentity({ target_id: "target-second", payload: { text: "second" } }),
+    ),
+    (error) => error.code === MUTATION_ERROR_CODES.ACTION_ID_CONFLICT,
+  );
+  assert.equal(await first, "filled-first-value");
+  assert.equal(calls, 1);
 });
 
 test("deduplicates pending and completed action IDs without rerunning", async () => {
@@ -243,6 +363,31 @@ test("retains only bounded secret-safe terminal state after completion", async (
   assert.equal(
     coordinator.mutate(thirdAttribution, async () => "must-not-run", mutationIdentity({ payload })),
     retained.promise,
+  );
+});
+
+test("retained fingerprints do not enable a candidate dictionary recovery", async () => {
+  const coordinator = new BrowserMutationCoordinator();
+  const completedAttribution = attribution({
+    action_id: "secret-completed",
+    operation: "fill",
+  });
+  const completedIdentity = mutationIdentity({ payload: { authorization: "1234" } });
+  await coordinator.mutate(completedAttribution, async () => "completed", completedIdentity);
+
+  const retained = coordinator.actions.get(completedAttribution.action_id);
+  const retainedFingerprint = JSON.parse(retained.fingerprint);
+  assert.match(retainedFingerprint.semantic_digest, /^[0-9a-f]{64}$/u);
+  assert.equal(JSON.stringify(retained).includes("1234"), false);
+  const candidates = ["0000", "1234", "2468", "9999"];
+  assert.equal(
+    candidates.some((candidate) => (
+      legacyPayloadDigest(
+        completedAttribution,
+        mutationIdentity({ payload: { authorization: candidate } }),
+      ) === retainedFingerprint.semantic_digest
+    )),
+    false,
   );
 });
 
