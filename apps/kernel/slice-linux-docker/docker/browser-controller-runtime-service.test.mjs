@@ -1,9 +1,11 @@
 import { strict as assert } from "node:assert";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "node:net";
 import { test } from "node:test";
+import { runInNewContext } from "node:vm";
 
 import {
   BrowserRuntimeMcpAdapter,
@@ -59,7 +61,7 @@ function authenticatedRequest(socketPath, authToken, requestId, toolName, argume
 }
 
 test("runtime service owns one semantic endpoint for status and mutation", async () => {
-  const root = await mkdtemp(join(tmpdir(), "chariox-browser-runtime-service-"));
+  const root = await mkdtemp(join(tmpdir(), "cbx-"));
   const socketPath = join(root, "browser-runtime-mcp.sock");
   const authToken = "local-test-token";
   const calls = [];
@@ -179,7 +181,7 @@ test("runtime service owns one semantic endpoint for status and mutation", async
         request_id: "unavailable-1",
         auth_token: authToken,
       }),
-      /ENOENT|ECONNREFUSED/,
+      /ENOENT|ECONNREFUSED|EINVAL/,
     );
     await rm(root, { recursive: true, force: true });
   }
@@ -211,8 +213,9 @@ test("semantic mutation dispatch supplies the controller attribution seam", asyn
     cdpCommandTimeoutMs: 100,
     _cdp: { send: async () => { throw new Error("wrong browser-level target"); } },
     _enqueue: async (_generation, operation) => operation(),
+    refreshTabs: async () => {},
     getTabRegistrySnapshot: () => ({
-      tabs: [{ tab_id: "tab-1", target_generation: 3 }],
+      tabs: [{ tab_id: "tab-1", target_type: "page", target_generation: 3 }],
     }),
     tabRegistry: {
       resolveTarget: (tabId, options) => {
@@ -272,8 +275,13 @@ test("rejects a target rotation between selector discovery and mutation", async 
     cdpCommandTimeoutMs: 100,
     _cdp: {},
     _enqueue: async (_generation, operation) => operation(),
+    refreshTabs: async () => {},
     getTabRegistrySnapshot: () => ({
-      tabs: [{ tab_id: target.tab_id, target_generation: target.target_generation }],
+      tabs: [{
+        tab_id: target.tab_id,
+        target_type: "page",
+        target_generation: target.target_generation,
+      }],
     }),
     tabRegistry: {
       resolveTarget: (tabId, options) => {
@@ -319,4 +327,365 @@ test("rejects a target rotation between selector discovery and mutation", async 
     semantic.fill({ selector: "#email", text: "alice@example.test" }),
     (error) => error.code === "STALE_TARGET_GENERATION",
   );
+});
+
+test("refreshes targets and selects the focused live page deterministically", async () => {
+  let tabs = [
+    { tab_id: "tab-a", target_id: "target-a", target_type: "page", target_generation: 1 },
+    { tab_id: "tab-b", target_id: "target-b", target_type: "page", target_generation: 1 },
+  ];
+  let focusedTab = "tab-b";
+  let refreshes = 0;
+  const connections = new Map();
+  const controller = {
+    state: "ready",
+    generation: 7,
+    cdpCommandTimeoutMs: 100,
+    _cdp: {},
+    _enqueue: async (_generation, operation) => operation(),
+    refreshTabs: async () => { refreshes += 1; },
+    getTabRegistrySnapshot: () => ({ tabs }),
+    tabRegistry: {
+      resolveTarget: (tabId, options) => ({
+        ...tabs.find((tab) => tab.tab_id === tabId),
+        generation: options.generation,
+        websocket_url: `ws://${tabId}`,
+      }),
+    },
+    _ensureTargetConnection: async (target) => {
+      if (!connections.has(target.tab_id)) {
+        connections.set(target.tab_id, {
+          send: async (method, params) => {
+            assert.equal(method, "Runtime.evaluate");
+            if (params.expression === "Boolean(document.hasFocus() || document.visibilityState === 'visible')") {
+              return { result: { value: target.tab_id === focusedTab } };
+            }
+            return {
+              result: {
+                value: {
+                  url: `https://example.test/${target.tab_id}`,
+                  fields: [],
+                  buttons: [],
+                  links: [],
+                },
+              },
+            };
+          },
+        });
+      }
+      return connections.get(target.tab_id);
+    },
+  };
+  const semantic = new BrowserRuntimeSemanticPort(controller, "kernel:slice-1");
+
+  assert.equal((await semantic.status()).url, "https://example.test/tab-b");
+  tabs = [
+    { tab_id: "tab-c", target_id: "target-c", target_type: "page", target_generation: 1 },
+    { tab_id: "tab-a", target_id: "target-a", target_type: "page", target_generation: 1 },
+  ];
+  focusedTab = "tab-c";
+  assert.equal((await semantic.status()).url, "https://example.test/tab-c");
+  tabs = [tabs[1], tabs[0]];
+  focusedTab = null;
+  assert.equal((await semantic.status()).url, "https://example.test/tab-c");
+  tabs = [tabs[0]];
+  assert.equal((await semantic.status()).url, "https://example.test/tab-a");
+  assert.equal(refreshes, 4);
+});
+
+test("find filters the complete visible candidate set before bounding matches", async () => {
+  const elements = Array.from({ length: 40 }, (_, index) => ({
+    id: `field-${index + 1}`,
+    name: "",
+    tagName: "INPUT",
+    nodeType: 1,
+    parentElement: null,
+    disabled: false,
+    readOnly: false,
+    isContentEditable: false,
+    innerText: "",
+    value: index === 32 ? "needle-33" : `value-${index + 1}`,
+    getAttribute(name) {
+      if (name === "type") return "text";
+      return "";
+    },
+    getBoundingClientRect: () => ({ width: 10, height: 10 }),
+    closest: () => null,
+  }));
+  const document = {
+    body: { children: [] },
+    activeElement: null,
+    querySelector: () => null,
+    querySelectorAll(selector) {
+      return selector.startsWith("input, textarea") ? elements : [];
+    },
+  };
+  document.activeElement = document.body;
+  const cdp = {
+    send: async (method, params) => {
+      assert.equal(method, "Runtime.evaluate");
+      return {
+        result: {
+          value: runInNewContext(params.expression, {
+            CSS: { escape: (value) => String(value) },
+            Node: { ELEMENT_NODE: 1 },
+            document,
+            location: { href: "https://example.test", host: "example.test" },
+            window: {
+              getComputedStyle: () => ({ visibility: "visible", display: "block" }),
+            },
+          }),
+        },
+      };
+    },
+  };
+  const tab = {
+    tab_id: "tab-1",
+    target_id: "target-1",
+    target_type: "page",
+    target_generation: 1,
+  };
+  const controller = {
+    state: "ready",
+    generation: 7,
+    cdpCommandTimeoutMs: 100,
+    _cdp: {},
+    _enqueue: async (_generation, operation) => operation(),
+    refreshTabs: async () => {},
+    getTabRegistrySnapshot: () => ({ tabs: [tab] }),
+    tabRegistry: {
+      resolveTarget: () => ({ ...tab, generation: 7, websocket_url: "ws://target-1" }),
+    },
+    _ensureTargetConnection: async () => cdp,
+  };
+  const result = await new BrowserRuntimeSemanticPort(controller, "kernel:slice-1")
+    .find({ query: "needle-33", kind: "field" });
+
+  assert.equal(result.matches.length, 1);
+  assert.equal(result.matches[0].selector, "#field-33");
+  assert.equal(result.truncated, false);
+});
+
+test("submit keeps the coordinated mutation path for a form without a submit control", async () => {
+  const target = {
+    tab_id: "tab-1",
+    target_id: "target-a",
+    target_type: "page",
+    generation: 7,
+    target_generation: 3,
+    websocket_url: "ws://target-a",
+  };
+  const mutations = [];
+  const controller = {
+    state: "ready",
+    generation: 7,
+    cdpCommandTimeoutMs: 100,
+    _cdp: {},
+    _enqueue: async (_generation, operation) => operation(),
+    refreshTabs: async () => {},
+    getTabRegistrySnapshot: () => ({ tabs: [target] }),
+    tabRegistry: { resolveTarget: () => ({ ...target }) },
+    _ensureTargetConnection: async () => ({
+      send: async (method, params) => {
+        if (method === "Runtime.evaluate") return { result: { value: "#email" } };
+        if (method === "DOM.getDocument") return { root: { nodeId: 1 } };
+        if (method === "DOM.querySelector") return { nodeId: 2 };
+        if (method === "DOM.describeNode") return { node: { backendNodeId: 42 } };
+        throw new Error(`unexpected CDP method ${method}: ${JSON.stringify(params)}`);
+      },
+    }),
+    captureTabSnapshot: () => ({
+      accessibility_nodes: [{ element_ref: "element-1" }],
+      dom_nodes: [],
+    }),
+    resolveElementReference: () => ({ backend_node_id: 42 }),
+    performElementAction: async (_ownerId, _generation, request) => { mutations.push(request); },
+    cancelMutation: () => ({ accepted: false, state: "unknown" }),
+  };
+
+  await new BrowserRuntimeSemanticPort(controller, "kernel:slice-1").submit({ selector: "form" });
+
+  assert.equal(mutations.length, 1);
+  assert.deepEqual(mutations[0].action, { kind: "submit" });
+  assert.equal(mutations[0].element_ref, "element-1");
+});
+
+test("an aborted queued request cannot enter the mutation boundary", async () => {
+  let queue = Promise.resolve();
+  let waitStartedResolve;
+  const waitStarted = new Promise((resolve) => { waitStartedResolve = resolve; });
+  const target = {
+    tab_id: "tab-1",
+    target_id: "target-a",
+    target_type: "page",
+    generation: 7,
+    target_generation: 3,
+    websocket_url: "ws://target-a",
+  };
+  let mutationCount = 0;
+  const controller = {
+    state: "ready",
+    generation: 7,
+    cdpCommandTimeoutMs: 100,
+    _cdp: {},
+    _enqueue(_generation, operation) {
+      const current = queue.then(operation);
+      queue = current.catch(() => {});
+      return current;
+    },
+    refreshTabs() { return this._enqueue(7, async () => {}); },
+    getTabRegistrySnapshot: () => ({ tabs: [target] }),
+    tabRegistry: { resolveTarget: () => ({ ...target }) },
+    _ensureTargetConnection: async () => ({
+      send: async (method) => {
+        if (method === "Runtime.evaluate") {
+          waitStartedResolve();
+          return { result: { value: { ok: false } } };
+        }
+        if (method === "DOM.getDocument") return { root: { nodeId: 1 } };
+        if (method === "DOM.querySelector") return { nodeId: 2 };
+        if (method === "DOM.describeNode") return { node: { backendNodeId: 42 } };
+        throw new Error(`unexpected CDP method ${method}`);
+      },
+    }),
+    captureTabSnapshot: () => ({
+      accessibility_nodes: [{ element_ref: "element-1" }],
+      dom_nodes: [],
+    }),
+    resolveElementReference: () => ({ backend_node_id: 42 }),
+    performElementAction: async () => { mutationCount += 1; },
+    cancelMutation: () => ({ accepted: false, state: "unknown" }),
+  };
+  const requestContext = new AsyncLocalStorage();
+  const semantic = new BrowserRuntimeSemanticPort(controller, "kernel:slice-1", requestContext);
+  const authToken = "local-test-token";
+  const service = new BrowserRuntimeMcpService({
+    socketPath: "/unused",
+    authToken,
+    adapter: new BrowserRuntimeMcpAdapter({
+      ...Object.fromEntries([
+        "status", "find", "fill", "click", "submit", "dialog", "text",
+        "waitForText", "waitForSelector", "waitForIdle",
+      ].map((name) => [name, (...args) => semantic[name](...args)])),
+      cancelMutationForRequest: (requestId) => semantic.cancelMutationForRequest(requestId),
+    }),
+    requestContext,
+    requestTimeoutMs: 1_000,
+  });
+  const waitAbort = new AbortController();
+  const fillAbort = new AbortController();
+  const encode = (requestId, toolName, args) => Buffer.from(JSON.stringify({
+    type: "tool_call",
+    request_id: requestId,
+    auth_token: authToken,
+    tool_name: toolName,
+    arguments: args,
+  }));
+  const waiting = service.handleLine(
+    encode("wait-1", "slice_browser_wait_for_text", { text: "ready", timeout_ms: 100 }),
+    waitAbort,
+  );
+  await waitStarted;
+  const filling = service.handleLine(
+    encode("fill-1", "slice_browser_fill", { selector: "#email", text: "late" }),
+    fillAbort,
+  );
+  fillAbort.abort();
+
+  const [waitResult, fillResult] = await Promise.all([waiting, filling]);
+  assert.equal(waitResult.ok, true);
+  assert.equal(fillResult.ok, false);
+  assert.equal(fillResult.error.code, "REQUEST_CANCELLED");
+  assert.equal(mutationCount, 0);
+});
+
+test("closing a runtime connection aborts every queued request", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cbx-"));
+  const socketPath = join(root, "browser-runtime-mcp.sock");
+  const authToken = "local-test-token";
+  let queue = Promise.resolve();
+  let waitStartedResolve;
+  const waitStarted = new Promise((resolve) => { waitStartedResolve = resolve; });
+  const target = {
+    tab_id: "tab-1",
+    target_id: "target-a",
+    target_type: "page",
+    generation: 7,
+    target_generation: 3,
+    websocket_url: "ws://target-a",
+  };
+  let mutationCount = 0;
+  const controller = {
+    state: "ready",
+    generation: 7,
+    cdpCommandTimeoutMs: 100,
+    _cdp: {},
+    _enqueue(_generation, operation) {
+      const current = queue.then(operation);
+      queue = current.catch(() => {});
+      return current;
+    },
+    refreshTabs() { return this._enqueue(7, async () => {}); },
+    getTabRegistrySnapshot: () => ({ tabs: [target] }),
+    tabRegistry: { resolveTarget: () => ({ ...target }) },
+    _ensureTargetConnection: async () => ({
+      send: async (method) => {
+        if (method === "Runtime.evaluate") {
+          waitStartedResolve();
+          return { result: { value: { ok: false } } };
+        }
+        if (method === "DOM.getDocument") return { root: { nodeId: 1 } };
+        if (method === "DOM.querySelector") return { nodeId: 2 };
+        if (method === "DOM.describeNode") return { node: { backendNodeId: 42 } };
+        throw new Error(`unexpected CDP method ${method}`);
+      },
+    }),
+    captureTabSnapshot: () => ({
+      accessibility_nodes: [{ element_ref: "element-1" }],
+      dom_nodes: [],
+    }),
+    resolveElementReference: () => ({ backend_node_id: 42 }),
+    performElementAction: async () => { mutationCount += 1; },
+    cancelMutation: () => ({ accepted: false, state: "unknown" }),
+  };
+  const requestContext = new AsyncLocalStorage();
+  const semantic = new BrowserRuntimeSemanticPort(controller, "kernel:slice-1", requestContext);
+  const service = new BrowserRuntimeMcpService({
+    socketPath,
+    authToken,
+    adapter: new BrowserRuntimeMcpAdapter({
+      ...Object.fromEntries([
+        "status", "find", "fill", "click", "submit", "dialog", "text",
+        "waitForText", "waitForSelector", "waitForIdle",
+      ].map((name) => [name, (...args) => semantic[name](...args)])),
+      cancelMutationForRequest: (requestId) => semantic.cancelMutationForRequest(requestId),
+    }),
+    requestContext,
+    requestTimeoutMs: 1_000,
+  });
+  let socket;
+  try {
+    await service.start();
+    socket = connect(socketPath);
+    await new Promise((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("error", reject);
+    });
+    const encode = (requestId, toolName, args) => JSON.stringify({
+      type: "tool_call",
+      request_id: requestId,
+      auth_token: authToken,
+      tool_name: toolName,
+      arguments: args,
+    });
+    socket.write(`${encode("wait-1", "slice_browser_wait_for_text", { text: "ready", timeout_ms: 100 })}\n${encode("fill-1", "slice_browser_fill", { selector: "#email", text: "late" })}\n`);
+    await waitStarted;
+    socket.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.equal(mutationCount, 0);
+  } finally {
+    socket?.destroy();
+    await service.stop();
+    await rm(root, { recursive: true, force: true });
+  }
 });

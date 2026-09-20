@@ -30,12 +30,14 @@ class FakeConnection {
     actionability = [READY],
     resolveError,
     fillOk = true,
+    submitOk = true,
     afterSend,
   } = {}) {
     this.documentId = documentId;
     this.actionability = [...actionability];
     this.resolveError = resolveError;
     this.fillOk = fillOk;
+    this.submitOk = submitOk;
     this.afterSend = afterSend;
     this.calls = [];
   }
@@ -51,6 +53,8 @@ class FakeConnection {
     } else if (method === "Runtime.callFunctionOn") {
       if (Array.isArray(params.arguments)) {
         result = { result: { value: { ok: this.fillOk } } };
+      } else if (params.functionDeclaration.includes("submitFunction")) {
+        result = { result: { value: { ok: this.submitOk } } };
       } else {
         result = {
           result: {
@@ -162,6 +166,25 @@ test("fills without returning or reporting the supplied text", async () => {
   ]);
 });
 
+test("submits the nearest form without requiring a submit control", async () => {
+  const time = fakeTime();
+  const connection = new FakeConnection({ actionability: [READY, READY] });
+  const result = await performBrowserAction({
+    connection,
+    element: ELEMENT,
+    action: { kind: "submit" },
+    ...time,
+  });
+
+  assert.equal(result.action_kind, "submit");
+  const submitCall = connection.calls.find(
+    (call) => call.method === "Runtime.callFunctionOn" &&
+      call.params.functionDeclaration.includes("submitFunction"),
+  );
+  assert.ok(submitCall);
+  assert.equal(submitCall.params.arguments, undefined);
+});
+
 test("bounds auto-wait and reports only the final actionability reason", async () => {
   const time = fakeTime();
   const connection = new FakeConnection({ actionability: [{ state: "disabled" }] });
@@ -269,6 +292,7 @@ test("rejects malformed actions and oversized fill text without CDP calls", asyn
     { kind: "click", unexpected: true },
     { kind: "fill", text: 42 },
     { kind: "fill", text: "x".repeat(48 * 1024 + 1) },
+    { kind: "submit", unexpected: true },
     { kind: "press", key: "Enter" },
   ];
   for (const action of cases) {

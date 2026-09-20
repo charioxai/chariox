@@ -165,6 +165,19 @@ impl KernelRuntimeState {
                     args.selector.as_deref(),
                     args.field_id.as_deref(),
                 )?;
+                if let Some(target) = target_arguments
+                    .get("selector")
+                    .or_else(|| target_arguments.get("field_id"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    let find_output = run_browser_runtime_mcp_call(
+                        crate::transport::runtime_tools::SLICE_BROWSER_FIND_TOOL,
+                        serde_json::json!({"query": target, "kind": "field"}),
+                    )
+                    .await?;
+                    let find_result = slice_browser_json(&find_output)?;
+                    ensure_browser_fill_target(&find_result, Some(target))?;
+                }
                 let secret = match self
                     .resolve_remote_home_credential_secret(
                         provider_run,
@@ -611,21 +624,21 @@ fn browser_fill_target_arguments(
     field_id: Option<&str>,
 ) -> Result<serde_json::Map<String, serde_json::Value>, DaemonError> {
     if selector.is_some() {
-        let selector = browser_selector(selector, None).ok_or_else(|| DaemonError::LocalTransport {
-            operation: "runtime_tool_paste_secret_to_slice",
-            message: "selector must not be empty".to_string(),
-        })?;
-        ensure_browser_fill_target(status, Some(&selector))?;
+        let selector =
+            browser_selector(selector, None).ok_or_else(|| DaemonError::LocalTransport {
+                operation: "runtime_tool_paste_secret_to_slice",
+                message: "selector must not be empty".to_string(),
+            })?;
         let mut arguments = serde_json::Map::new();
         arguments.insert("selector".to_string(), serde_json::Value::String(selector));
         return Ok(arguments);
     }
     if field_id.is_some() {
-        let field_id = browser_selector(None, field_id).ok_or_else(|| DaemonError::LocalTransport {
-            operation: "runtime_tool_paste_secret_to_slice",
-            message: "field_id must not be empty".to_string(),
-        })?;
-        ensure_browser_fill_target(status, Some(&field_id))?;
+        let field_id =
+            browser_selector(None, field_id).ok_or_else(|| DaemonError::LocalTransport {
+                operation: "runtime_tool_paste_secret_to_slice",
+                message: "field_id must not be empty".to_string(),
+            })?;
         let mut arguments = serde_json::Map::new();
         arguments.insert("field_id".to_string(), serde_json::Value::String(field_id));
         return Ok(arguments);
@@ -660,8 +673,8 @@ mod tests {
     use std::sync::{Arc, Mutex as StdMutex};
 
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    use tokio::sync::Mutex;
     use tokio::net::UnixListener;
+    use tokio::sync::Mutex;
 
     use super::*;
 
@@ -813,8 +826,29 @@ mod tests {
 
         let arguments = browser_fill_target_arguments(&status, None, None)
             .expect("focused field should provide a normal fill target");
-        assert_eq!(arguments.get("selector").and_then(|value| value.as_str()), Some("#password"));
+        assert_eq!(
+            arguments.get("selector").and_then(|value| value.as_str()),
+            Some("#password")
+        );
         assert!(arguments.get("field_id").is_none());
+    }
+
+    #[test]
+    fn explicit_secret_paste_target_is_not_limited_by_the_status_summary() {
+        let status = serde_json::json!({
+            "focusedElement": null,
+            "fields": [],
+            "truncated": {"fields": true}
+        });
+
+        let arguments = browser_fill_target_arguments(&status, Some("#field-33"), None)
+            .expect("explicit targets are validated through the full find path");
+        assert_eq!(
+            arguments
+                .get("selector")
+                .and_then(serde_json::Value::as_str),
+            Some("#field-33")
+        );
     }
 
     #[test]

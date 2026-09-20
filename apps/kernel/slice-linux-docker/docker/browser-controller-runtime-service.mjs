@@ -190,9 +190,12 @@ function domScript() {
       disabled: Boolean(element.disabled),
       readOnly: Boolean(element.readOnly),
     });
-    const fields = Array.from(document.querySelectorAll("input, textarea, select, [contenteditable=true]")).filter(visible).slice(0, 32).map((element) => summarize(element, "field"));
-    const buttons = Array.from(document.querySelectorAll("button, input[type=button], input[type=submit], [role=button]")).filter(visible).slice(0, 32).map((element) => summarize(element, "button"));
-    const links = Array.from(document.querySelectorAll("a[href], [role=link]")).filter(visible).slice(0, 32).map((element) => summarize(element, "link"));
+    const fieldElements = Array.from(document.querySelectorAll("input, textarea, select, [contenteditable=true]")).filter(visible);
+    const buttonElements = Array.from(document.querySelectorAll("button, input[type=button], input[type=submit], [role=button]")).filter(visible);
+    const linkElements = Array.from(document.querySelectorAll("a[href], [role=link]")).filter(visible);
+    const fields = fieldElements.slice(0, 32).map((element) => summarize(element, "field"));
+    const buttons = buttonElements.slice(0, 32).map((element) => summarize(element, "button"));
+    const links = linkElements.slice(0, 32).map((element) => summarize(element, "link"));
     const resolveTarget = (target, kinds = ["field", "button", "link"]) => {
       if (!target) return null;
       try {
@@ -246,6 +249,17 @@ class BrowserRuntimeSemanticPort {
     this.nextActionId = 1;
     this.targetSelectors = new Map();
     this.activeMutations = new Map();
+    this.selectedTabId = null;
+  }
+
+  cancellationSignal() {
+    return this.requestContext?.getStore()?.signal ?? null;
+  }
+
+  throwIfCancelled() {
+    if (this.cancellationSignal()?.aborted) {
+      throw new ControllerError(ERROR_CODES.REQUEST_CANCELLED);
+    }
   }
 
   async ensureReady() {
@@ -261,15 +275,21 @@ class BrowserRuntimeSemanticPort {
   }
 
   async page(operation, selection = null) {
+    this.throwIfCancelled();
     await this.ensureReady();
+    this.throwIfCancelled();
     const selected = selection ?? await this.tab();
     const generation = selected.generation;
     return this.controller._enqueue(generation, async () => {
+      this.throwIfCancelled();
       if (this.controller.state !== "ready" || !this.controller._cdp) {
         throw new ControllerError(ERROR_CODES.CONTROLLER_NOT_READY);
       }
       const { connection } = await this.targetConnection(selected);
-      return operation(connection, this.controller.cdpCommandTimeoutMs);
+      this.throwIfCancelled();
+      const result = await operation(connection, this.controller.cdpCommandTimeoutMs);
+      this.throwIfCancelled();
+      return result;
     });
   }
 
@@ -306,18 +326,33 @@ class BrowserRuntimeSemanticPort {
   }
 
   async withMutation(run) {
+    this.throwIfCancelled();
     const actionId = this.mutationActionId();
     const actorId = this.ownerId;
     const requestId = this.requestId();
     const record = { actionId, actorId };
+    const signal = this.cancellationSignal();
+    const cancel = () => {
+      try {
+        this.controller.cancelMutation({
+          action_id: record.actionId,
+          actor_id: record.actorId,
+        });
+      } catch {
+        // Request cancellation must remain best effort after the caller is gone.
+      }
+    };
     if (requestId) {
       const records = this.activeMutations.get(requestId) ?? new Set();
       records.add(record);
       this.activeMutations.set(requestId, records);
     }
+    signal?.addEventListener("abort", cancel, { once: true });
     try {
+      this.throwIfCancelled();
       return await run({ action_id: actionId, actor_id: actorId });
     } finally {
+      signal?.removeEventListener("abort", cancel);
       if (requestId) {
         const records = this.activeMutations.get(requestId);
         records?.delete(record);
@@ -340,11 +375,35 @@ class BrowserRuntimeSemanticPort {
   }
 
   async tab() {
+    this.throwIfCancelled();
     await this.ensureReady();
+    this.throwIfCancelled();
     const generation = this.controller.generation;
+    await this.controller.refreshTabs(this.ownerId, generation);
+    this.throwIfCancelled();
     const snapshot = this.controller.getTabRegistrySnapshot(this.ownerId, generation);
-    const tab = snapshot.tabs?.[0];
+    const tabs = (snapshot.tabs ?? []).filter((tab) => tab.target_type === "page");
+    let tab = tabs.length === 1 ? tabs[0] : null;
+    for (const candidate of tab ? [] : tabs) {
+      try {
+        const { connection } = await this.targetConnection({ generation, tab: candidate });
+        const result = await connection.send("Runtime.evaluate", {
+          expression: "Boolean(document.hasFocus() || document.visibilityState === 'visible')",
+          awaitPromise: false,
+          returnByValue: true,
+        }, this.controller.cdpCommandTimeoutMs);
+        if (result?.result?.value === true) {
+          tab = candidate;
+          break;
+        }
+      } catch {
+        // A target may close between refresh and focus inspection.
+      }
+      this.throwIfCancelled();
+    }
+    tab ??= tabs.find((candidate) => candidate.tab_id === this.selectedTabId) ?? tabs[0];
     if (!tab) throw new ControllerError(ERROR_CODES.CDP_UNAVAILABLE);
+    this.selectedTabId = tab.tab_id;
     return { generation, tab };
   }
 
@@ -436,12 +495,12 @@ class BrowserRuntimeSemanticPort {
         ? resolveTarget(__charioxArgs.target, ["field", "button", "link"])
         : document.activeElement;
       if (!target) return null;
-      const form = target.closest?.("form");
+      const form = target.matches?.("form") ? target : target.closest?.("form");
       if (!form) return null;
-      const submit = target.matches?.("button, input[type=submit], [role=button]")
-        ? target
-        : form.querySelector("button[type=submit], input[type=submit], button, [role=button]");
-      return submit ? selectorFor(submit) : null;
+      const reference = target.matches?.("form")
+        ? form.querySelector("input, textarea, select, button, [contenteditable=true], [role=button]") || form
+        : target;
+      return selectorFor(reference);
     `, { target: target ?? null }, timeoutMs), selection);
   }
 
@@ -460,6 +519,11 @@ class BrowserRuntimeSemanticPort {
         fields,
         buttons,
         links,
+        truncated: {
+          fields: fieldElements.length > fields.length,
+          buttons: buttonElements.length > buttons.length,
+          links: linkElements.length > links.length,
+        },
       };
     `, {}, timeoutMs)).then((result) => {
       this.rememberTargets(result);
@@ -473,15 +537,21 @@ class BrowserRuntimeSemanticPort {
       const query = String(__charioxArgs.query || "").toLowerCase();
       const kind = __charioxArgs.kind || "any";
       const pool = [
-        ...(kind === "field" || kind === "any" ? fields : []),
-        ...(kind === "button" || kind === "any" ? buttons : []),
-        ...(kind === "link" || kind === "any" ? links : []),
+        ...(kind === "field" || kind === "any" ? fieldElements.map((element) => [element, "field"]) : []),
+        ...(kind === "button" || kind === "any" ? buttonElements.map((element) => [element, "button"]) : []),
+        ...(kind === "link" || kind === "any" ? linkElements.map((element) => [element, "link"]) : []),
       ];
-      const matches = pool.filter((entry) => [
-        entry.selector, entry.id, entry.name, entry.role, entry.label,
-        entry.placeholder, entry.text, entry.type,
-      ].some((value) => String(value || "").toLowerCase().includes(query)));
-      return { query: __charioxArgs.query, kind, matches };
+      const matches = [];
+      let matchedCount = 0;
+      for (const [element, entryKind] of pool) {
+        const entry = summarize(element, entryKind);
+        if (![entry.selector, entry.field_id, entry.id, entry.name, entry.role, entry.label,
+          entry.placeholder, entry.text, entry.type]
+          .some((value) => String(value || "").toLowerCase().includes(query))) continue;
+        matchedCount += 1;
+        if (matches.length < 32) matches.push(entry);
+      }
+      return { query: __charioxArgs.query, kind, matches, truncated: matchedCount > matches.length };
     `, args, timeoutMs)).then((result) => {
       this.rememberTargets({ fields: result?.matches, buttons: result?.matches, links: result?.matches });
       return result;
@@ -518,7 +588,7 @@ class BrowserRuntimeSemanticPort {
     await this.withMutation((mutation) => this.controller.performElementAction(
       this.ownerId,
       target.generation,
-      { ...target.request, action: { kind: "click" } },
+      { ...target.request, action: { kind: "submit" } },
       mutation,
     ));
     return { ok: true, selector: targetFor(args) };
@@ -579,10 +649,12 @@ class BrowserRuntimeSemanticPort {
       const started = Date.now();
       let last = null;
       while (Date.now() - started <= bounded) {
+        this.throwIfCancelled();
         last = await probe(cdp, commandTimeoutMs);
         if (last?.ok) return { ok: true, waited_ms: Date.now() - started, ...last };
         await new Promise((resolve) => setTimeout(resolve, Math.min(50, bounded)));
       }
+      this.throwIfCancelled();
       return { ok: false, error: "timeout", timeout_ms: bounded, waited_ms: Date.now() - started, last };
     });
   }
@@ -679,7 +751,7 @@ export class BrowserRuntimeMcpService {
     return this;
   }
 
-  async handleLine(line) {
+  async handleLine(line, requestAbort = new AbortController()) {
     if (!Buffer.isBuffer(line)) line = Buffer.from(String(line), "utf8");
     if (line.length > MAX_REQUEST_BYTES) return errorResponse("tool_result", null, new Error(RUNTIME_ERROR_CODES.MALFORMED));
     let value;
@@ -696,13 +768,17 @@ export class BrowserRuntimeMcpService {
       return errorResponse("tool_result", id, new Error(RUNTIME_ERROR_CODES.MALFORMED));
     }
     try {
-      const invocation = this.requestContext.run({ requestId: id }, () => (
+      if (requestAbort.signal.aborted) throw new ControllerError(ERROR_CODES.REQUEST_CANCELLED);
+      const invocation = this.requestContext.run({ requestId: id, signal: requestAbort.signal }, () => (
         this.adapter.invoke(value.tool_name, value.arguments)
       ));
       const result = await this.withTimeout(
         invocation,
         this.requestTimeoutMs,
-        () => this.adapter.port.cancelMutationForRequest?.(id),
+        () => {
+          requestAbort.abort();
+          this.adapter.port.cancelMutationForRequest?.(id);
+        },
       );
       return { type: "tool_result", request_id: id, ok: true, tool_name: result.tool_name, result: result.result };
     } catch (error) {
@@ -726,6 +802,10 @@ export class BrowserRuntimeMcpService {
     socket.setNoDelay(true);
     let pending = Buffer.alloc(0);
     let chain = Promise.resolve();
+    const requestAborts = new Set();
+    const cancelRequests = () => {
+      for (const requestAbort of requestAborts) requestAbort.abort();
+    };
     const write = (response) => {
       let encoded;
       try { encoded = boundedJson(response, MAX_RESPONSE_BYTES); } catch { encoded = JSON.stringify(errorResponse("tool_result", null, new Error(RUNTIME_MCP_ERROR_CODES.RESULT_TOO_LARGE))); }
@@ -744,11 +824,22 @@ export class BrowserRuntimeMcpService {
         if (newline < 0) break;
         const line = pending.subarray(0, newline);
         pending = pending.subarray(newline + 1);
-        chain = chain.then(() => this.handleLine(line)).then(write, (error) => write(errorResponse("tool_result", null, error)));
+        const requestAbort = new AbortController();
+        requestAborts.add(requestAbort);
+        chain = chain
+          .then(() => this.handleLine(line, requestAbort))
+          .then(write, (error) => write(errorResponse("tool_result", null, error)))
+          .finally(() => requestAborts.delete(requestAbort));
       }
     });
-    socket.on("close", () => this.connections.delete(socket));
-    socket.on("error", () => this.connections.delete(socket));
+    socket.on("close", () => {
+      cancelRequests();
+      this.connections.delete(socket);
+    });
+    socket.on("error", () => {
+      cancelRequests();
+      this.connections.delete(socket);
+    });
   }
 
   async stop() {

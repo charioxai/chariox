@@ -224,3 +224,62 @@ fn browser_runtime_mcp_timeout_ms(arguments: &Value) -> u64 {
         .unwrap_or(derived_timeout)
         .clamp(100, DEFAULT_CALL_TIMEOUT_MS)
 }
+
+#[cfg(test)]
+mod tests {
+    use tokio::net::UnixListener;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn kernel_deadline_drops_the_controller_connection() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-browser-runtime-deadline-{}-{}",
+            std::process::id(),
+            NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).expect("deadline test root should be created");
+        let socket = root.join("runtime.sock");
+        let listener = UnixListener::bind(&socket).expect("deadline test socket should bind");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener
+                .accept()
+                .await
+                .expect("deadline test connection should arrive");
+            let mut request = Vec::new();
+            loop {
+                let mut byte = [0_u8; 1];
+                let read = stream
+                    .read(&mut byte)
+                    .await
+                    .expect("deadline test request should be readable");
+                assert_ne!(read, 0, "request should arrive before the deadline");
+                if byte[0] == b'\n' {
+                    break;
+                }
+                request.push(byte[0]);
+            }
+            assert!(!request.is_empty());
+
+            let mut byte = [0_u8; 1];
+            let read = timeout(Duration::from_secs(1), stream.read(&mut byte))
+                .await
+                .expect("kernel deadline should close the connection")
+                .expect("deadline connection close should be readable");
+            assert_eq!(read, 0, "dropping the timed-out exchange must send EOF");
+        });
+
+        let exchange = timeout(
+            Duration::from_millis(25),
+            exchange_with_controller(
+                socket.to_str().expect("socket path should be utf-8"),
+                br#"{"type":"tool_call"}"#,
+                "deadline-test",
+            ),
+        )
+        .await;
+        assert!(exchange.is_err(), "the kernel deadline should expire first");
+        server.await.expect("deadline test server should finish");
+        std::fs::remove_dir_all(root).expect("deadline test root should be removed");
+    }
+}
