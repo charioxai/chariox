@@ -277,6 +277,41 @@ replace them with a managed-only approximation:
   exhaustion, corruption, or stability risk. Record that measurement and risk
   whenever resource pressure changes the implementation plan.
 
+### Managed-parity continuity checklist
+
+Use this checklist at every handoff, resumed turn, reviewer pass, deployment,
+and plan-level status report. Its purpose is simple: the parity contract must
+not shrink when the immediate symptom changes.
+
+- Reconcile every `MP-*` item against the current exact commits, open PRs,
+  reviewer result, tests, live evidence, and cleanup record. Report an item as
+  open when any one of those is missing.
+- Treat the disposable Path-1 VM as the isolation boundary. Do not restore
+  Bubblewrap, a managed workspace allowlist, or equivalent inherited systemd
+  restrictions as a shortcut for protecting the host. The provider must have
+  ordinary Linux behavior inside its disposable VM.
+- Keep the signed native content-addressed installation and the ordinary
+  kernel runtime as separate concerns. The root-owned release mechanism is the
+  production deployment method. It must activate the same kernel build and
+  must never create managed-only runtime semantics or mutable state outside
+  `/home/chariox/.chariox`.
+- Verify repository placement and arbitrary accessible working directories as
+  one contract. The default copy target is
+  `/home/chariox/<source-repository-basename>`, the user may choose another
+  absolute trusted repository root at machine creation, and later sessions may
+  use any path allowed by the worker user's Unix permissions.
+- Preserve all managed automatic-shutdown triggers. The last-agent-finished
+  timer is required managed lifecycle behavior and is excluded from runtime
+  parity comparisons only for that reason.
+- Prefer completing bounded critical-path work over enforcing speculative
+  build-size or duration estimates. Stop or clean work when current resource
+  measurements show a real exhaustion, corruption, or host-stability risk,
+  not merely because a prior estimate was exceeded.
+- Do not close the parity milestone from code inspection, unit tests, or a
+  single successful session. Completion requires the executable `MP-10`
+  ordinary-versus-managed matrix on fresh machines, retained evidence, and
+  successful cleanup.
+
 For Path 1, the disposable worker VM is the provider security and filesystem
 isolation boundary. Once the signed kernel has enrolled, provider runs must use
 the same ordinary kernel launch path as a user-managed machine. Path-1 service
