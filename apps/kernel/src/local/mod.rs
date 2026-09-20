@@ -229,6 +229,12 @@ pub use api::{
     ReadRoomEnvironmentScreenshotChunkRequest, RoomEnvironmentScreenshotArtifact,
     RoomEnvironmentScreenshotChunk, RoomEnvironmentSliceBinding,
 };
+pub use api::{
+    GetKernelResourceTelemetryRequest, KernelResourceTelemetryDisk,
+    KernelResourceTelemetryLogs, KernelResourceTelemetryMemory,
+    KernelResourceTelemetryMetadata, KernelResourceTelemetryProcess,
+    KernelResourceTelemetrySnapshot, KERNEL_RESOURCE_TELEMETRY_SCHEMA,
+};
 pub use client::LocalDaemonClient;
 pub use harness::{run_local_harness, LocalHarnessReport};
 pub use ipc::{run_local_ipc_server, send_local_ipc_request, LocalIpcClient};

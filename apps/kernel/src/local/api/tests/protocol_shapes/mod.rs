@@ -18,6 +18,7 @@ mod provider_account_credential;
 mod provider_usage_activity;
 mod publication;
 mod recall_terminal_metaagent;
+mod resource_telemetry;
 mod room_controller;
 mod room_environment;
 mod room_environment_placement;

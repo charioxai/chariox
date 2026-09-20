@@ -69,6 +69,7 @@ pub(crate) mod relay_config_control;
 pub(crate) mod relay_peer_runtime_executor;
 pub(crate) mod remote_machine_registry;
 pub(crate) mod remote_relay_inventory;
+pub(crate) mod resource_telemetry;
 pub(crate) mod response_redaction;
 pub mod router;
 pub(crate) mod runtime_lane_cleanup;

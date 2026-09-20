@@ -1,8 +1,13 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { exportDebugBundleRequest, getDaemonHealthRequest } from "./ipc-kernel-control-requests.js"
-import type { DaemonHealthProjection, DaemonHealthResponse } from "./kernel-types.js"
+import {
+  exportDebugBundleRequest,
+  getDaemonHealthRequest,
+  getKernelResourceTelemetryRequest,
+  kernelResourceTelemetryMinimumProtocolVersion,
+} from "./ipc-kernel-control-requests.js"
+import type { DaemonHealthProjection, DaemonHealthResponse, KernelResourceTelemetryResponse } from "./kernel-types.js"
 
 test("getDaemonHealthRequest has typed workspace live sync health projection", () => {
   assert.deepEqual(getDaemonHealthRequest(), { GetDaemonHealth: null })
@@ -177,4 +182,35 @@ test("exportDebugBundleRequest is session scoped and label-only", () => {
       limit: 500,
     },
   })
+})
+
+test("getKernelResourceTelemetryRequest exposes the complete authoritative guard shape", () => {
+  assert.equal(kernelResourceTelemetryMinimumProtocolVersion, 334)
+  assert.deepEqual(getKernelResourceTelemetryRequest({ kernelRef: "kernel-1", machineRef: "machine-1" }), {
+    GetKernelResourceTelemetry: null,
+  })
+
+  const response = {
+    KernelResourceTelemetry: {
+      snapshot: {
+        schema: "chariox.kernel.resource_telemetry.v1",
+        capturedAt: "2026-09-20T00:00:00.000Z",
+        capturedAtMonotonicMs: 42,
+        telemetry: {
+          scope: "managed-target",
+          authoritative: true,
+          targetId: "machine-1",
+          source: "kernel",
+        },
+        memory: { usedBytes: 4000, totalBytes: 8000, availableBytes: 4000 },
+        disk: { usedBytes: 4000, totalBytes: 16000, availableBytes: 12000 },
+        process: { count: 3, rssBytes: 100 },
+        logs: { bytes: 256 },
+      },
+    },
+  } satisfies KernelResourceTelemetryResponse
+  assert.equal(response.KernelResourceTelemetry.snapshot.memory.usedBytes, 4000)
+  assert.equal(response.KernelResourceTelemetry.snapshot.disk.availableBytes, 12000)
+  assert.equal(response.KernelResourceTelemetry.snapshot.process.rssBytes, 100)
+  assert.equal(response.KernelResourceTelemetry.snapshot.logs.bytes, 256)
 })

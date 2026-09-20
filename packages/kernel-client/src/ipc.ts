@@ -11,6 +11,7 @@ import {
 
 import WebSocket from "ws"
 
+import { getKernelResourceTelemetryRequest } from "./ipc-kernel-control-requests.js"
 import type { KernelEvent } from "./kernel-events.js"
 import type {
   IpcEnvelope,
@@ -23,6 +24,7 @@ import type {
   RelayResponseFrame,
   RelayTarget,
 } from "./kernel-transport-frames.js"
+import type { KernelResourceTelemetryResponse } from "./kernel-types.js"
 import { normalizeWebSocketRequest } from "./kernel-transport-requests.js"
 import {
   buildKernelSubscriptionTransportRequest,
@@ -312,6 +314,13 @@ export class LocalIpcClient {
       return this.sendWebSocket(request)
     }
     return this.sendLocalSocket(request)
+  }
+
+  async getManagedTargetResourceTelemetry(options: {
+    kernelRef?: string | null
+    machineRef?: string | null
+  } = {}): Promise<KernelResourceTelemetryResponse> {
+    return this.send<KernelResourceTelemetryResponse>(getKernelResourceTelemetryRequest(options))
   }
 
   async subscribeToKernelEvents(sessionId: string, attachmentId: string): Promise<void> {

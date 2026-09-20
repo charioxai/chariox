@@ -33,6 +33,7 @@ use crate::runtime::provider_run_control::execute_provider_run_request;
 use crate::runtime::relay_config_control::execute_relay_config_request;
 use crate::runtime::remote_machine_registry::execute_remote_machine_registry_request;
 use crate::runtime::remote_relay_inventory::execute_remote_relay_inventory_request;
+use crate::runtime::resource_telemetry::execute_kernel_resource_telemetry_request;
 use crate::runtime::session_collaboration_executor::execute_session_collaboration_request;
 use crate::runtime::session_read_control::execute_session_read_request;
 use crate::runtime::slice_command_executor::execute_slice_request;
@@ -152,6 +153,9 @@ impl CommandRouter {
             }
             request @ LocalDaemonRequest::GetDaemonHealth(_) => {
                 execute_daemon_health_request(self.daemon_health_projection_input(0), request).await
+            }
+            LocalDaemonRequest::GetKernelResourceTelemetry(_) => {
+                execute_kernel_resource_telemetry_request(self.config_projection.snapshot())
             }
             LocalDaemonRequest::ExportDebugBundle(request) => {
                 execute_export_debug_bundle_request(request)

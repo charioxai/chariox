@@ -19,6 +19,7 @@ use crate::runtime::provider_process_control::provider_processes_visible_to_user
 use crate::runtime::provider_run_control::projected_provider_run_response;
 use crate::runtime::relay_config_control::execute_relay_config_request;
 use crate::runtime::remote_relay_inventory::execute_remote_relay_inventory_request;
+use crate::runtime::resource_telemetry::execute_kernel_resource_telemetry_request;
 use crate::runtime::session_read_control::{
     projected_session_inspection_response, projected_session_read_response,
 };
@@ -419,6 +420,10 @@ impl CommandRouter {
             )? {
                 return Ok(Some(response));
             }
+        }
+        if matches!(request, LocalDaemonRequest::GetKernelResourceTelemetry(_)) {
+            return execute_kernel_resource_telemetry_request(self.config_projection.snapshot())
+                .map(Some);
         }
         if matches!(request, LocalDaemonRequest::GetDaemonHealth(_)) {
             return execute_daemon_health_request(
