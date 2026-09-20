@@ -756,7 +756,9 @@ impl Fixture {
             std::process::id(),
             rand::random::<u64>()
         ));
-        let home = root.join("home");
+        let process_home = root.join("home");
+        let chariox_home = process_home.join(".chariox");
+        fs::create_dir_all(&process_home).expect("create process HOME");
         let kernel_binary = root.join("bin").join("chariox-kernel");
         fs::create_dir_all(kernel_binary.parent().expect("kernel parent"))
             .expect("create kernel parent");
@@ -816,9 +818,10 @@ impl Fixture {
         .expect("write envelope");
         Self {
             config: BootstrapConfig {
-                chariox_home: home.clone(),
+                process_home,
+                chariox_home: chariox_home.clone(),
                 envelope_path,
-                receipt_path: home.join("managed").join("bootstrap-receipt.json"),
+                receipt_path: chariox_home.join("managed").join("bootstrap-receipt.json"),
                 manifest_path,
                 signature_path,
                 public_key_path,
@@ -830,7 +833,7 @@ impl Fixture {
             now,
             release_digest,
             token,
-            kernel_started_marker: home.join("managed").join("kernel-started"),
+            kernel_started_marker: chariox_home.join("managed").join("kernel-started"),
         }
     }
 
