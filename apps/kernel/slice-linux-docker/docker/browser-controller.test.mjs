@@ -367,18 +367,18 @@ test("captures bounded observations through stable tabs and invalidates detached
   const elementRef = snapshot.accessibility_nodes[0].element_ref;
   assert.doesNotMatch(elementRef, /41|page-b|document-b/);
   assert.equal(
-    controller.resolveElementReference("owner-a", 1, {
+    (await controller.resolveElementReference("owner-a", 1, {
       tab_id: tab.tab_id,
       target_generation: tab.target_generation,
       element_ref: elementRef,
-    }).backend_node_id,
+    })).backend_node_id,
     41,
   );
 
   targets.splice(1, 1);
   await controller.refreshTabs("owner-a", 1);
-  assert.throws(
-    () => controller.resolveElementReference("owner-a", 1, {
+  await assert.rejects(
+    controller.resolveElementReference("owner-a", 1, {
       tab_id: tab.tab_id,
       target_generation: tab.target_generation,
       element_ref: elementRef,
@@ -441,6 +441,23 @@ test("allows bounded raw AX and DOM snapshots above ordinary CDP frames and reje
   );
   t.after(async () => {
     await controller.shutdown("owner-a", 1);
+  });
+});
+
+test("rejects oversized binary CDP frames before UTF-8 decoding", async (t) => {
+  const fixture = makeFixture();
+  const { controller, sockets } = fixture;
+  await controller.start("owner-a");
+  const socket = sockets[0];
+  socket.emit("message", {
+    data: new Uint8Array(OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES + 1),
+  });
+  await flush();
+  assert.equal(socket.closed, true);
+  assert.equal(controller.health("owner-a").state, "fatal");
+  assert.equal(controller.health("owner-a").fatal_code, ERROR_CODES.CONTROLLER_CRASHED);
+  t.after(async () => {
+    await controller.shutdownForSignal();
   });
 });
 

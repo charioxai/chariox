@@ -186,7 +186,7 @@ function normalizedSecretKey(value) {
   return String(value ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
-function looksSecretKey(value) {
+function looksSecretKey(value, { queryParameter = false } = {}) {
   const key = normalizedSecretKey(value);
   return (
     key === "authorization" ||
@@ -207,6 +207,7 @@ function looksSecretKey(value) {
     key === "sig" ||
     key === "hmac" ||
     key === "jwt" ||
+    (queryParameter && key === "key") ||
     key.endsWith("token") ||
     key.endsWith("secret") ||
     key.endsWith("credential") ||
@@ -229,10 +230,10 @@ function containsSecretValue(value) {
     return true;
   }
   try {
-    const parsed = new URL(value.startsWith("//") ? `http:${value}` : value);
+    const parsed = new URL(value.startsWith("//") ? `http:${value}` : value, "http://snapshot.invalid");
     if (parsed.username || parsed.password) return true;
     for (const [key] of parsed.searchParams) {
-      if (looksSecretKey(key)) return true;
+      if (looksSecretKey(key, { queryParameter: true })) return true;
     }
   } catch {
     // Non-URL attribute values are covered by the assignment check above.
@@ -245,8 +246,22 @@ function containsSecretValue(value) {
   }
 }
 
-function compactAttributeValue(strings, valueIndex, nodeName, attributeName, limits) {
+function compactAttributeValue(
+  strings,
+  valueIndex,
+  nodeName,
+  attributeName,
+  siblingValues,
+  limits,
+) {
   if (sensitiveAttribute(nodeName, attributeName)) return "[redacted]";
+  if (
+    nodeName.toLowerCase() === "meta" &&
+    attributeName.toLowerCase() === "content" &&
+    looksSecretKey(siblingValues.get("name"))
+  ) {
+    return "[redacted]";
+  }
   const value = snapshotString(strings, valueIndex, limits.maxStringBytes);
   return containsSecretValue(value) ? "[redacted]" : value;
 }
@@ -254,11 +269,28 @@ function compactAttributeValue(strings, valueIndex, nodeName, attributeName, lim
 function compactAttributes(strings, indexes, nodeName, limits) {
   const result = {};
   const values = Array.isArray(indexes) ? indexes : [];
+  const siblingValues = new Map();
+  for (let index = 0; index + 1 < values.length; index += 2) {
+    const name = snapshotString(strings, values[index], limits.maxStringBytes);
+    if (name && !siblingValues.has(name.toLowerCase())) {
+      siblingValues.set(
+        name.toLowerCase(),
+        snapshotString(strings, values[index + 1], limits.maxStringBytes),
+      );
+    }
+  }
   for (let index = 0; index + 1 < values.length; index += 2) {
     if (Object.keys(result).length >= limits.maxAttributes) break;
     const name = snapshotString(strings, values[index], limits.maxStringBytes);
     if (!name) continue;
-    result[name] = compactAttributeValue(strings, values[index + 1], nodeName, name, limits);
+    result[name] = compactAttributeValue(
+      strings,
+      values[index + 1],
+      nodeName,
+      name,
+      siblingValues,
+      limits,
+    );
   }
   return result;
 }
@@ -317,18 +349,38 @@ function elementReference(draft, backendNodeId) {
   return reference;
 }
 
+function pruneReferences(draft, liveBackendIds) {
+  for (const [backendNodeId, reference] of draft.refsByBackendId) {
+    if (!liveBackendIds.has(backendNodeId)) {
+      draft.refsByBackendId.delete(backendNodeId);
+      draft.backendIdByRef.delete(reference);
+    }
+  }
+  for (const [reference, backendNodeId] of draft.backendIdByRef) {
+    if (!liveBackendIds.has(backendNodeId)) {
+      draft.backendIdByRef.delete(reference);
+      draft.refsByBackendId.delete(backendNodeId);
+    }
+  }
+}
+
 function compactAccessibility(raw, draft, limits) {
   const source = Array.isArray(raw?.nodes) ? raw.nodes : [];
   const nodes = source.slice(0, limits.maxNodes);
   const referenceByAxNodeId = new Map();
+  const liveBackendIds = new Set();
   for (const node of nodes) {
     const reference = elementReference(draft, node?.backendDOMNodeId);
-    if (reference && typeof node?.nodeId === "string") {
-      referenceByAxNodeId.set(node.nodeId, reference);
+    if (reference) {
+      liveBackendIds.add(node.backendDOMNodeId);
+      if (typeof node?.nodeId === "string") {
+        referenceByAxNodeId.set(node.nodeId, reference);
+      }
     }
   }
   return {
     truncated: source.length > nodes.length,
+    liveBackendIds,
     nodes: nodes.flatMap((node) => {
       const reference = elementReference(draft, node?.backendDOMNodeId);
       if (!reference) return [];
@@ -362,21 +414,30 @@ function compactDom(raw, draft, limits) {
   const strings = Array.isArray(raw?.strings) ? raw.strings : [];
   const documents = Array.isArray(raw?.documents) ? raw.documents : [];
   const nodes = [];
-  let sourceCount = 0;
+  const sourceCount = documents.reduce((total, document) => {
+    const backendIds = Array.isArray(document?.nodes?.backendNodeId)
+      ? document.nodes.backendNodeId
+      : [];
+    return total + backendIds.length;
+  }, 0);
+  const liveBackendIds = new Set();
   for (let documentIndex = 0; documentIndex < documents.length; documentIndex += 1) {
     const document = documents[documentIndex];
     const data = document?.nodes ?? {};
     const backendIds = Array.isArray(data.backendNodeId) ? data.backendNodeId : [];
-    sourceCount += backendIds.length;
     const layoutBounds = boundsByNodeIndex(document?.layout);
     for (let nodeIndex = 0; nodeIndex < backendIds.length; nodeIndex += 1) {
       if (nodes.length >= limits.maxNodes) break;
       const reference = elementReference(draft, backendIds[nodeIndex]);
       if (!reference) continue;
+      liveBackendIds.add(backendIds[nodeIndex]);
       const parentIndex = arrayValue(data.parentIndex, nodeIndex);
       const parentReference = Number.isSafeInteger(parentIndex)
         ? elementReference(draft, backendIds[parentIndex])
         : null;
+      if (parentReference) {
+        liveBackendIds.add(backendIds[parentIndex]);
+      }
       const nodeType = arrayValue(data.nodeType, nodeIndex);
       const nodeName = snapshotString(strings, arrayValue(data.nodeName, nodeIndex), limits.maxStringBytes);
       const parentName = Number.isSafeInteger(parentIndex)
@@ -406,7 +467,7 @@ function compactDom(raw, draft, limits) {
     }
     if (nodes.length >= limits.maxNodes) break;
   }
-  return { truncated: sourceCount > nodes.length, nodes };
+  return { truncated: sourceCount > nodes.length, liveBackendIds, nodes };
 }
 
 function assertResultBounded(result, maximumBytes) {
@@ -418,6 +479,17 @@ function assertResultBounded(result, maximumBytes) {
 
 function tabStateMatches(state, tab) {
   return state?.generation === tab.generation && state?.targetGeneration === tab.targetGeneration;
+}
+
+function resolvedReference(tab, state, backendNodeId) {
+  return {
+    tab_id: tab.tabId,
+    browser_generation: tab.generation,
+    target_generation: tab.targetGeneration,
+    document_id: state.documentId,
+    snapshot_revision: state.revision,
+    backend_node_id: backendNodeId,
+  };
 }
 
 export class BrowserObservationStore {
@@ -497,6 +569,10 @@ export class BrowserObservationStore {
     draft.revision += 1;
     const accessibility = compactAccessibility(accessibilityRaw, draft, limits);
     const dom = compactDom(domRaw, draft, limits);
+    pruneReferences(
+      draft,
+      new Set([...accessibility.liveBackendIds, ...dom.liveBackendIds]),
+    );
     const result = {
       browser_generation: tab.generation,
       tab_id: tab.tabId,
@@ -512,7 +588,7 @@ export class BrowserObservationStore {
     return result;
   }
 
-  resolve(rawTab, elementRef) {
+  resolve(rawTab, elementRef, options = undefined) {
     const tab = normalizeTab(rawTab);
     requireIdentifier(elementRef);
     const state = this.statesByTabId.get(tab.tabId);
@@ -523,13 +599,25 @@ export class BrowserObservationStore {
     if (!Number.isSafeInteger(backendNodeId)) {
       fail(OBSERVATION_ERROR_CODES.ELEMENT_REFERENCE_INVALIDATED);
     }
-    return {
-      tab_id: tab.tabId,
-      browser_generation: tab.generation,
-      target_generation: tab.targetGeneration,
-      document_id: state.documentId,
-      snapshot_revision: state.revision,
-      backend_node_id: backendNodeId,
-    };
+    const connection = typeof options?.send === "function" ? options : options?.connection;
+    if (connection === undefined) {
+      return resolvedReference(tab, state, backendNodeId);
+    }
+    if (typeof connection?.send !== "function") {
+      fail(OBSERVATION_ERROR_CODES.INVALID_ARGUMENT);
+    }
+    return this._resolveWithLiveIdentity(tab, state, backendNodeId, connection);
+  }
+
+  async _resolveWithLiveIdentity(tab, state, backendNodeId, connection) {
+    const liveIdentities = frameIdentities(await connection.send("Page.getFrameTree", {}));
+    if (!sameFrameIdentities(state.frameIdentities, liveIdentities)) {
+      this.invalidate(tab.tabId);
+      fail(OBSERVATION_ERROR_CODES.STALE_DOCUMENT);
+    }
+    if (this.statesByTabId.get(tab.tabId) !== state || !tabStateMatches(state, tab)) {
+      fail(OBSERVATION_ERROR_CODES.ELEMENT_REFERENCE_INVALIDATED);
+    }
+    return resolvedReference(tab, state, backendNodeId);
   }
 }

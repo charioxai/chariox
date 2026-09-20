@@ -447,17 +447,28 @@ class CdpConnection {
   }
 
   _onMessage(event) {
+    const data = event?.data;
     let encoded;
-    if (typeof event?.data === "string") {
-      encoded = event.data;
-    } else if (event?.data instanceof Uint8Array) {
-      encoded = Buffer.from(event.data).toString("utf8");
+    let encodedBytes;
+    if (typeof data === "string") {
+      encodedBytes = Buffer.byteLength(data, "utf8");
+      if (encodedBytes > OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES) {
+        this._failConnection(ERROR_CODES.CDP_PROTOCOL_INVALID);
+        return;
+      }
+      encoded = data;
+    } else if (data instanceof Uint8Array) {
+      encodedBytes = data.byteLength;
+      if (encodedBytes > OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES) {
+        this._failConnection(ERROR_CODES.CDP_PROTOCOL_INVALID);
+        return;
+      }
+      encoded = Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString("utf8");
     } else {
       this._failConnection(ERROR_CODES.CDP_PROTOCOL_INVALID);
       return;
     }
-    const encodedBytes = Buffer.byteLength(encoded, "utf8");
-    if (encodedBytes > OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES) {
+    if (Buffer.byteLength(encoded, "utf8") > OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES) {
       this._failConnection(ERROR_CODES.CDP_PROTOCOL_INVALID);
       return;
     }
@@ -778,15 +789,19 @@ export class BrowserController {
     const tabId = validateIdentifier(request.tab_id, "tab_id");
     const targetGeneration = validateGeneration(request.target_generation);
     const elementRef = validateIdentifier(request.element_ref, "element_ref");
-    const target = this.tabRegistry.getTab(tabId, {
-      generation: this.generation,
-      target_generation: targetGeneration,
+    const generation = this.generation;
+    return this._enqueue(generation, async () => {
+      const target = this.tabRegistry.resolveTarget(tabId, {
+        generation,
+        target_generation: targetGeneration,
+      });
+      const connection = await this._ensureTargetConnection(target);
+      try {
+        return await this.observationStore.resolve(target, elementRef, { connection });
+      } catch (error) {
+        throw normalizeError(error);
+      }
     });
-    try {
-      return this.observationStore.resolve(target, elementRef);
-    } catch (error) {
-      throw normalizeError(error);
-    }
   }
 
   _assertOptions() {
