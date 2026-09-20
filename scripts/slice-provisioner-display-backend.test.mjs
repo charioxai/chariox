@@ -196,6 +196,86 @@ function runSavedStateProbe(source, mode) {
   )
 }
 
+function runSavedStatePolicyProbe(source, policy, baseState) {
+  const runtimeCompatible = section(source, "image_runtime_compatible() {", "image_selkies_capable() {")
+  const selkiesCapable = section(source, "image_selkies_capable() {", "ensure_saved_state_capable_base() {")
+  const basePreflight = section(source, "ensure_saved_state_capable_base() {", "require_saved_state_compatibility() {")
+  const compatibility = section(source, "require_saved_state_compatibility() {", "build_standard_runtime_image() {")
+  const buildStandard = section(source, "build_standard_runtime_image() {", "ensure_runtime_base_image() {")
+  const buildImage = section(source, "build_image() {", "refresh_saved_state_runtime() {")
+  return spawnSync(
+    "bash",
+    [
+      "-c",
+      [
+        "set -Eeuo pipefail",
+        "log() { printf '[probe] %s\\n' \"$*\" >&2; }",
+        "fail() { printf 'FAIL %s\\n' \"$*\" >&2; return 91; }",
+        "run_with_timeout() { local seconds=\"$1\"; shift; \"$@\"; }",
+        "docker() {",
+        "  printf 'DOCKER_CALL %s\\n' \"$*\" >&2",
+        "  if [[ \"$1\" == build ]]; then",
+        "    printf 'DOCKER_BUILD %s\\n' \"$*\" >&2",
+        "    if [[ \"$PROBE_BUILD_RESULT\" == capable ]]; then PROBE_BASE_STATE=capable; return 0; fi",
+        "    return 42",
+        "  fi",
+        "  if [[ \"$1\" != image || \"$2\" != inspect ]]; then",
+        "    printf 'MUTATION %s\\n' \"$*\" >&2",
+        "    return 0",
+        "  fi",
+        "  local format image capable=0",
+        "  if [[ \"$3\" == -f ]]; then format=\"$4\"; image=\"$5\"; else image=\"$3\"; fi",
+        "  case \"$image\" in",
+        "    legacy-saved) capable=0 ;;",
+        "    base-image)",
+        "      case \"$PROBE_BASE_STATE\" in capable) capable=1 ;; missing) return 1 ;; stale) ;; esac",
+        "      ;;",
+        "    *) return 1 ;;",
+        "  esac",
+        "  [[ \"$3\" == -f ]] || return 0",
+        "  case \"$format\" in",
+        "    *io.chariox.relay-peer-protocol-version*) (( capable )) && printf '9\\n' || printf '8\\n' ;;",
+        "    *io.chariox.runtime-source-revision*) (( capable )) && printf 'runtime-current\\n' || printf 'runtime-stale\\n' ;;",
+        "    *io.chariox.selkies-version*) (( capable )) && printf '0.0.0.dev0\\n' || printf '<no value>\\n' ;;",
+        "    *io.chariox.selkies-source-revision*) (( capable )) && printf '0123456789012345678901234567890123456789\\n' || printf '<no value>\\n' ;;",
+        "    *io.chariox.selkies-source*) (( capable )) && printf 'https://github.com/selkies-project/selkies/commit/0123456789012345678901234567890123456789\\n' || printf '<no value>\\n' ;;",
+        "    *io.chariox.selkies-license*) (( capable )) && printf 'MPL-2.0\\n' || printf '<no value>\\n' ;;",
+        "    *) printf '<no value>\\n' ;;",
+        "  esac",
+        "}",
+        "SLICE_DISPLAY_BACKEND=selkies",
+        "SLICE_SAVED_HOME_ARCHIVE=/etc/hosts",
+        "SLICE_HOME_VOLUME=saved-home",
+        "SLICE_NAME=saved-state-policy-probe",
+        "SLICE_IMAGE=legacy-saved",
+        "SLICE_BASE_IMAGE=base-image",
+        "SLICE_RELAY_PEER_PROTOCOL_VERSION=9",
+        "SLICE_RUNTIME_SOURCE_REVISION=runtime-current",
+        "SLICE_BUILD_IMAGE=\"$PROBE_POLICY\"",
+        "REPO_ROOT=/nonexistent",
+        "SLICE_EXTENSION_DOCKERFILE=",
+        runtimeCompatible,
+        selkiesCapable,
+        basePreflight,
+        compatibility,
+        buildStandard,
+        buildImage,
+        "trap 'status=$?; printf \"STATUS=%s\\nIMAGE=%s\\nBASE_STATE=%s\\n\" \"$status\" \"$SLICE_IMAGE\" \"$PROBE_BASE_STATE\"' EXIT",
+        "build_image",
+      ].join("\n"),
+    ],
+    {
+      env: {
+        ...process.env,
+        PROBE_POLICY: policy,
+        PROBE_BASE_STATE: baseState,
+        PROBE_BUILD_RESULT: "capable",
+      },
+      encoding: "utf8",
+    },
+  )
+}
+
 test("saved state accepts a current image only from authoritative runtime and Selkies labels", async () => {
   const source = await readFile(provisionerPath, "utf8")
   const compatibility = section(source, "require_saved_state_compatibility() {", "build_standard_runtime_image() {")
@@ -245,6 +325,50 @@ test("legacy saved state rejects without a capable base before any mutation and 
     .split("\n")
     .filter((line) => line.startsWith("DOCKER_CALL ") && !line.startsWith("DOCKER_CALL image inspect"))
   assert.deepEqual(nonInspectCalls, [])
+})
+
+test("saved-state auto and always build policies accept missing and stale capable bases before the compatibility gate", async () => {
+  const source = await readFile(provisionerPath, "utf8")
+  const buildImage = section(source, "build_image() {", "refresh_saved_state_runtime() {")
+  assert.ok(
+    buildImage.indexOf("ensure_saved_state_capable_base") < buildImage.indexOf("require_saved_state_compatibility"),
+    "Selkies saved-state base preflight must precede the compatibility gate",
+  )
+
+  for (const policy of ["auto", "always"]) {
+    for (const baseState of ["missing", "stale"]) {
+      const probe = runSavedStatePolicyProbe(source, policy, baseState)
+      const output = `${probe.stdout}${probe.stderr}`
+      assert.equal(probe.status, 0, `${policy}/${baseState}: ${probe.stderr}`)
+      assert.match(output, /STATUS=0/)
+      assert.match(output, /IMAGE=base-image/)
+      assert.match(output, /BASE_STATE=capable/)
+      assert.equal((output.match(/DOCKER_BUILD /g) ?? []).length, 1, `${policy}/${baseState} should build once`)
+      assert.doesNotMatch(output, /MUTATION /)
+
+      const buildIndex = output.indexOf("DOCKER_BUILD ")
+      const labelsAcceptedIndex = output.indexOf("saved state base labels accepted")
+      const gateIndex = output.indexOf("saved state compatibility gate")
+      assert.ok(buildIndex >= 0)
+      assert.ok(labelsAcceptedIndex > buildIndex, `${policy}/${baseState} must re-check labels after build`)
+      assert.ok(gateIndex > labelsAcceptedIndex, `${policy}/${baseState} must gate after label acceptance`)
+    }
+  }
+})
+
+test("saved-state never policy rejects missing and stale bases without building or mutating", async () => {
+  const source = await readFile(provisionerPath, "utf8")
+
+  for (const baseState of ["missing", "stale"]) {
+    const probe = runSavedStatePolicyProbe(source, "never", baseState)
+    const output = `${probe.stdout}${probe.stderr}`
+    assert.equal(probe.status, 91, `never/${baseState}: ${probe.stderr}`)
+    assert.match(output, /STATUS=91/)
+    assert.doesNotMatch(output, /DOCKER_BUILD /)
+    assert.doesNotMatch(output, /MUTATION /)
+    assert.match(output, /saved state compatibility gate: validating image labels before mutation/)
+    assert.match(output, /no container or home-volume mutation was attempted/)
+  }
 })
 
 test("existing-container reprovision covers noVNC-to-Selkies and Selkies-to-noVNC transitions", async () => {
