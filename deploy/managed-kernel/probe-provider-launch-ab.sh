@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Run the already-installed kernel launch path under the same service user and
-# systemd hardening as chariox-managed-bootstrap. This deliberately starts
-# only transient, uniquely named units; it never restarts, stops, or rebinds a
-# live Chariox unit. The existing Node probe and managed-isolation wrapper do
-# the provider launch and namespace checks. This script only supplies an
-# isolated scratch state and collects bounded evidence.
+# Run the already-installed shared-host kernel launch path under the same
+# service user and systemd hardening as chariox-managed-bootstrap. This
+# deliberately starts only transient, uniquely named units; it never restarts,
+# stops, or rebinds a live Chariox unit. Path 1 is one disposable VM per
+# worker, so this managed-isolation probe is not applicable there and exits
+# before checking or requiring Bubblewrap.
 
 usage() {
   cat >&2 <<'EOF'
@@ -19,14 +19,16 @@ new /var/lib/chariox-provider-launch-ab.* directory.
 Environment:
   CHARIOX_PROVIDER_LAUNCH_PROBE_CONTEXT  complete updated probe context root (required)
   CHARIOX_PROVIDER_LAUNCH_PROBE_REAL_PROVIDER  provider executable (codex)
+  CHARIOX_MANAGED_PROVIDER_TOPOLOGY      path1 (default) or shared_host
   CHARIOX_PROVIDER_LAUNCH_PROBE_NATIVE_TUI   1 (default) or 0
   CHARIOX_PROVIDER_LAUNCH_PROBE_TIMEOUT_MS   5000..120000 (default 45000)
   CHARIOX_PROVIDER_LAUNCH_PROBE_KEEP        1 (default) or 0 to remove evidence
 
 The source context is copied verbatim, per case, into the scratch provider home
-with its websocket dependency before the User=chariox unit starts. Managed
-isolation already rebinds that home to /home/chariox, while /var/lib/chariox is
-intentionally inaccessible to the transient units.
+with its websocket dependency before the User=chariox unit starts. In the
+explicit shared_host topology, managed isolation rebinds that home to
+/home/chariox, while /var/lib/chariox is intentionally inaccessible to the
+transient units.
 EOF
 }
 
@@ -34,6 +36,19 @@ if [[ $# -ne 2 ]]; then
   usage
   exit 2
 fi
+
+case "${CHARIOX_MANAGED_PROVIDER_TOPOLOGY:-path1}" in
+  path1)
+    printf '%s\n' 'provider launch A/B probe skipped: Path 1 uses the ordinary VM kernel/provider boundary' >&2
+    exit 0
+    ;;
+  shared_host|legacy_shared_host)
+    ;;
+  *)
+    printf '%s\n' 'CHARIOX_MANAGED_PROVIDER_TOPOLOGY must be path1 or shared_host' >&2
+    exit 2
+    ;;
+esac
 
 [[ "$(id -u)" == "0" ]] || {
   printf '%s\n' 'provider launch A/B probe must run as root (run it directly; it does not invoke sudo)' >&2

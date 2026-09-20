@@ -48,7 +48,7 @@ if setpriv --reuid=232072 --regid=232072 --clear-groups -- cat "$destination/rec
   echo "mapped slice user can read the private publication receipt" >&2
   exit 1
 fi
-if setpriv --reuid=232072 --regid=232072 --clear-groups -- cat /var/lib/chariox/home/.chariox/vault/vault.json >/dev/null 2>&1; then
+if setpriv --reuid=232072 --regid=232072 --clear-groups -- cat /home/chariox/.chariox/vault/vault.json >/dev/null 2>&1; then
   echo "mapped slice user can read the managed Vault" >&2
   exit 1
 fi

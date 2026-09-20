@@ -26,6 +26,12 @@ trusted_public_key=$3
 script_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 provider_versions=$script_root/provider-versions.env
 
+case "${CHARIOX_MANAGED_PROVIDER_TOPOLOGY:-path1}" in
+  path1) managed_provider_topology=path1 ;;
+  shared_host|legacy_shared_host) managed_provider_topology=shared_host ;;
+  *) fail "CHARIOX_MANAGED_PROVIDER_TOPOLOGY must be path1 or shared_host" ;;
+esac
+
 printf '%s\n' "$release_digest" | grep -Eq '^sha256:[0-9a-f]{64}$' \
   || fail "release digest must be a SHA-256 digest"
 if [ ! -f "$provider_versions" ] || [ -L "$provider_versions" ]; then
@@ -58,6 +64,8 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
+# Bubblewrap remains installed for Docker-slice inner defense and explicit
+# shared-host images; Path 1 does not use it as the provider boundary.
 apt-get install -y --no-install-recommends \
   dbus-user-session \
   acl \
@@ -164,7 +172,9 @@ provider_tool_as_chariox() {
   || fail "installed Claude Code version does not match"
 [ "$(provider_tool_as_chariox pnpm --version)" = "11.22.0" ] \
   || fail "installed pnpm version does not match"
-sh "$script_root/verify-provider-runtime-bind.sh"
+if [ "$managed_provider_topology" = shared_host ]; then
+  sh "$script_root/verify-provider-runtime-bind.sh"
+fi
 rm -rf "$provider_probe_home"
 trap - 0 HUP INT TERM
 [ -x /usr/share/docker.io/contrib/dockerd-rootless.sh ] \
@@ -250,8 +260,26 @@ if systemctl is-active --quiet chariox-managed-bootstrap.service; then
   fail "managed bootstrap service started while the image was being built"
 fi
 
-if find /var/lib/chariox -mindepth 1 ! -path /var/lib/chariox/home -print -quit | grep -q .; then
+if find /var/lib/chariox -mindepth 1 -print -quit | grep -q .; then
   fail "managed runtime state entered the image"
+fi
+if [ -L /home/chariox ] || [ ! -d /home/chariox ]; then
+  fail "managed service-account home is missing or linked"
+fi
+if [ "$(stat -c %a /home/chariox)" != 700 ] || [ "$(stat -c %U /home/chariox)" != chariox ]; then
+  fail "managed service-account home permissions are unsafe"
+fi
+if find /home/chariox -mindepth 1 ! -path /home/chariox/.chariox -print -quit | grep -q .; then
+  fail "managed user data entered the image"
+fi
+if [ -L /home/chariox/.chariox ] || [ ! -d /home/chariox/.chariox ]; then
+  fail "managed kernel state directory is missing or linked"
+fi
+if [ "$(stat -c %a /home/chariox/.chariox)" != 700 ] || [ "$(stat -c %U /home/chariox/.chariox)" != chariox ]; then
+  fail "managed kernel state directory permissions are unsafe"
+fi
+if find /home/chariox/.chariox -mindepth 1 -print -quit | grep -q .; then
+  fail "managed kernel state entered the image"
 fi
 if find /var/lib/chariox-docker -mindepth 1 ! -path /var/lib/chariox-docker/home -print -quit | grep -q . \
   || find /var/lib/chariox-docker/home -mindepth 1 -print -quit | grep -q .; then
