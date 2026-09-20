@@ -484,10 +484,12 @@ test("managed Docker authority and publication access remain narrowly separated"
   assert.match(rootlessNamespace, /nsenter --target "\$child_pid" --user --mount --net -- "\$@"/)
   assert.match(rootlessNamespace, /\[ -L "\/proc\/\$child_pid\/ns\/net" \]/)
   const preparation = await readFile(scriptUrl, "utf8")
-  assert.match(preparation, /CHARIOX_MANAGED_PROVIDER_TOPOLOGY:-path1/)
+  assert.match(preparation, /CHARIOX_MANAGED_PROVIDER_TOPOLOGY-\}/)
+  assert.doesNotMatch(preparation, /CHARIOX_MANAGED_PROVIDER_TOPOLOGY:-path1/)
   assert.match(preparation, /if \[ "\$managed_provider_topology" = shared_host \]; then[\s\S]*verify-provider-runtime-bind\.sh/)
   assert.match(preparation, /Bubblewrap remains installed for Docker-slice inner defense/)
-  assert.match(providerLaunchProbe, /CHARIOX_MANAGED_PROVIDER_TOPOLOGY:-path1/)
+  assert.match(providerLaunchProbe, /CHARIOX_MANAGED_PROVIDER_TOPOLOGY-\}/)
+  assert.doesNotMatch(providerLaunchProbe, /CHARIOX_MANAGED_PROVIDER_TOPOLOGY:-path1/)
   assert.match(providerLaunchProbe, /provider launch A\/B probe skipped: Path 1 uses the ordinary VM kernel\/provider boundary/)
   assert.match(providerLaunchProbe, /before checking or requiring Bubblewrap/)
   assert.match(providerLaunchProbe, /shared_host\|legacy_shared_host/)
@@ -511,6 +513,61 @@ test("managed Docker authority and publication access remain narrowly separated"
   assert.match(managedBroker, /spawnSync\("\/usr\/bin\/umount", \[path\]/)
   assert.doesNotMatch(managedBroker, /symlinkSync/)
   assert.doesNotMatch(managedBroker, /CHARIOX_SLICE_CLOUD_RELAY_CONFIG/)
+})
+
+test("managed image validation requires an explicit topology and preserves both paths", async () => {
+  const [preparation, providerLaunchProbe, runbook] = await Promise.all([
+    readFile(scriptUrl, "utf8"),
+    readFile(providerLaunchProbeUrl, "utf8"),
+    readFile(runbookUrl, "utf8"),
+  ])
+
+  assert.match(
+    runbook,
+    /sudo env CHARIOX_MANAGED_PROVIDER_TOPOLOGY=shared_host \\\n+  deploy\/managed-kernel\/prepare-hetzner-image\.sh \\\n+  <release-rootfs>/,
+  )
+  assert.match(runbook, /For a disposable-VM Path-1 image, replace `shared_host` with `path1`\./)
+
+  for (const script of [preparation, providerLaunchProbe]) {
+    assert.match(script, /CHARIOX_MANAGED_PROVIDER_TOPOLOGY-\}/)
+    assert.doesNotMatch(script, /CHARIOX_MANAGED_PROVIDER_TOPOLOGY:-path1/)
+    assert.match(script, /CHARIOX_MANAGED_PROVIDER_TOPOLOGY must be explicitly set to path1 or shared_host/)
+    assert.match(script, /path1/)
+    assert.match(script, /shared_host/)
+  }
+  assert.match(
+    preparation,
+    /if \[ "\$managed_provider_topology" = shared_host \]; then[\s\S]*verify-provider-runtime-bind\.sh/,
+  )
+  assert.match(
+    providerLaunchProbe,
+    /provider launch A\/B probe skipped: Path 1 uses the ordinary VM kernel\/provider boundary/,
+  )
+
+  const probePath = fileURLToPath(providerLaunchProbeUrl)
+  const probeArguments = ["/nonexistent/chariox-rollback-kernel", "/nonexistent/chariox-candidate-kernel"]
+  const runProbe = (topology) => {
+    const env = { ...process.env }
+    if (topology === undefined) delete env.CHARIOX_MANAGED_PROVIDER_TOPOLOGY
+    else env.CHARIOX_MANAGED_PROVIDER_TOPOLOGY = topology
+    return spawnSync(probePath, probeArguments, { encoding: "utf8", env })
+  }
+
+  const missing = runProbe(undefined)
+  assert.equal(missing.status, 2, missing.stderr)
+  assert.match(missing.stderr, /must be explicitly set to path1 or shared_host/)
+
+  const invalid = runProbe("unknown-topology")
+  assert.equal(invalid.status, 2, invalid.stderr)
+  assert.match(invalid.stderr, /must be path1 or shared_host/)
+
+  const path1 = runProbe("path1")
+  assert.equal(path1.status, 0, path1.stderr)
+  assert.match(path1.stderr, /probe skipped: Path 1/)
+
+  const sharedHost = runProbe("shared_host")
+  assert.notEqual(sharedHost.status, 0)
+  assert.doesNotMatch(sharedHost.stderr, /probe skipped: Path 1/)
 })
 
 test("recovered managed development publications verify ACLs without rewriting content", async () => {

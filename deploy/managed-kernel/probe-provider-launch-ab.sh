@@ -19,7 +19,7 @@ new /var/lib/chariox-provider-launch-ab.* directory.
 Environment:
   CHARIOX_PROVIDER_LAUNCH_PROBE_CONTEXT  complete updated probe context root (required)
   CHARIOX_PROVIDER_LAUNCH_PROBE_REAL_PROVIDER  provider executable (codex)
-  CHARIOX_MANAGED_PROVIDER_TOPOLOGY      path1 (default) or shared_host
+  CHARIOX_MANAGED_PROVIDER_TOPOLOGY      required: path1 or shared_host (no default)
   CHARIOX_PROVIDER_LAUNCH_PROBE_NATIVE_TUI   1 (default) or 0
   CHARIOX_PROVIDER_LAUNCH_PROBE_TIMEOUT_MS   5000..120000 (default 45000)
   CHARIOX_PROVIDER_LAUNCH_PROBE_KEEP        1 (default) or 0 to remove evidence
@@ -37,12 +37,16 @@ if [[ $# -ne 2 ]]; then
   exit 2
 fi
 
-case "${CHARIOX_MANAGED_PROVIDER_TOPOLOGY:-path1}" in
+case "${CHARIOX_MANAGED_PROVIDER_TOPOLOGY-}" in
   path1)
     printf '%s\n' 'provider launch A/B probe skipped: Path 1 uses the ordinary VM kernel/provider boundary' >&2
     exit 0
     ;;
   shared_host|legacy_shared_host)
+    ;;
+  '')
+    printf '%s\n' 'CHARIOX_MANAGED_PROVIDER_TOPOLOGY must be explicitly set to path1 or shared_host' >&2
+    exit 2
     ;;
   *)
     printf '%s\n' 'CHARIOX_MANAGED_PROVIDER_TOPOLOGY must be path1 or shared_host' >&2

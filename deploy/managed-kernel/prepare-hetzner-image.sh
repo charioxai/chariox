@@ -26,9 +26,10 @@ trusted_public_key=$3
 script_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 provider_versions=$script_root/provider-versions.env
 
-case "${CHARIOX_MANAGED_PROVIDER_TOPOLOGY:-path1}" in
+case "${CHARIOX_MANAGED_PROVIDER_TOPOLOGY-}" in
   path1) managed_provider_topology=path1 ;;
   shared_host|legacy_shared_host) managed_provider_topology=shared_host ;;
+  '') fail "CHARIOX_MANAGED_PROVIDER_TOPOLOGY must be explicitly set to path1 or shared_host" ;;
   *) fail "CHARIOX_MANAGED_PROVIDER_TOPOLOGY must be path1 or shared_host" ;;
 esac
 

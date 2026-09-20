@@ -96,14 +96,24 @@ managed-remote-kernels-image-builder-v1
 ```
 
 Store it at `/.chariox-managed-image-builder`. Copy the release root filesystem,
-the trusted public key, and `deploy/managed-kernel/` to a task directory. Run:
+the trusted public key, and `deploy/managed-kernel/` to a task directory. The
+image topology is a required caller-provided validation input. The production
+managed image is the shared-host topology, so pass `shared_host` explicitly;
+omitting it or using an unknown value fails closed instead of silently skipping
+the Bubblewrap/provider-bind validation. A disposable Path-1 worker image must
+likewise opt in explicitly with `path1`.
+
+Run the production/shared-host preparation path with:
 
 ```sh
-sudo deploy/managed-kernel/prepare-hetzner-image.sh \
+sudo env CHARIOX_MANAGED_PROVIDER_TOPOLOGY=shared_host \
+  deploy/managed-kernel/prepare-hetzner-image.sh \
   <release-rootfs> \
   <release-digest> \
   <trusted-public-key>
 ```
+
+For a disposable-VM Path-1 image, replace `shared_host` with `path1`.
 
 The preparation script refuses an unmarked host or the wrong OS and
 architecture. It installs Node.js 22, Docker, Git and GitHub tooling, the exact
