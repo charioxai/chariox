@@ -902,7 +902,7 @@ fn directory_identity(path: &Path) -> Result<MaterializationIdentity, DaemonErro
 fn remove_owned_directory(
     path: &Path,
     expected: &MaterializationIdentity,
-    operation: &str,
+    operation: &'static str,
 ) -> Result<(), DaemonError> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
