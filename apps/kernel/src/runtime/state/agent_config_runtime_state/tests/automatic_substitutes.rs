@@ -35,6 +35,160 @@ async fn late_claude_stop_failure_does_not_replace_a_newer_same_profile_run() {
     assert_queued_substitution(false, true, true, true).await;
 }
 
+#[tokio::test]
+async fn late_provider_failure_reserves_idle_agent_during_retirement() {
+    let (runtime, session_id, agent_id, _) =
+        runtime_with_substitutes(&["opencode/deepseek-v4-pro"], true).await;
+    runtime
+        .owned
+        .agent_store
+        .set_agent_runtime_profile_with_account_profile(
+            &agent_id,
+            "claude-headless",
+            Some("claude-opus-4-8".to_string()),
+            Some("high".to_string()),
+            Some("default".to_string()),
+            crate::provider::ProviderResumeState::default(),
+        )
+        .unwrap();
+    let request = crate::provider::LaunchProviderRequest::new(
+        &session_id,
+        "claude",
+        "claude-headless",
+        "default",
+        "claude-opus-4-8",
+    )
+    .with_agent_id(&agent_id)
+    .with_variant(Some("high".to_string()));
+    let mut failed_run = crate::provider::RuntimeProviderRun::new(
+        "late-failure-retirement-run",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "late-failure-retirement".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("late-failure-retirement-runtime".to_string()),
+        },
+    );
+    failed_run.mark_running();
+    let attachment_id = runtime
+        .with_app_side_effect(|app| {
+            app.providers_mut().insert_run_for_test(failed_run.clone());
+            app.sessions_mut()
+                .set_active_provider_run(&session_id, Some(failed_run.id().to_string()))?;
+            Ok::<_, DaemonError>(
+                crate::app::KernelSessionService::new(app)
+                    .attach(crate::attachment::AttachRequest::new(
+                        &session_id,
+                        "late-failure-retirement-test",
+                        crate::attachment::ClientCapabilityLevel::FullTerminal,
+                    ))?
+                    .id()
+                    .to_string(),
+            )
+        })
+        .await
+        .unwrap();
+
+    let barrier = runtime.install_provider_retirement_test_barrier(failed_run.id());
+    let failure_runtime = runtime.clone();
+    let failure_session_id = session_id.clone();
+    let failed_run_id = failed_run.id().to_string();
+    let failure = tokio::spawn(async move {
+        failure_runtime
+            .fail_owned_provider_prompt(
+                &failure_session_id,
+                &failed_run_id,
+                "You've hit your session limit",
+                true,
+            )
+            .await
+    });
+    barrier.wait_until_reached().await;
+
+    let arrival = runtime
+        .with_app_side_effect(|app| {
+            app.prompt_owner_submit_prepared_prompt(
+                &session_id,
+                crate::session::PromptQueueItem::new(
+                    "arriving-during-retirement",
+                    &attachment_id,
+                    &agent_id,
+                    "new work",
+                    crate::session::PromptStatus::Queued,
+                ),
+                false,
+            )
+        })
+        .await
+        .unwrap();
+    if matches!(
+        arrival,
+        crate::session::PromptSubmissionOutcome::Started { .. }
+    ) {
+        let mut replacement = crate::provider::RuntimeProviderRun::new(
+            "same-profile-run-started-during-retirement",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::External,
+                process_label: "same-profile-retirement-race".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("same-profile-retirement-race-runtime".to_string()),
+            },
+        );
+        replacement.mark_running();
+        runtime
+            .with_app_side_effect(|app| {
+                app.providers_mut().insert_run_for_test(replacement.clone());
+                app.sessions_mut()
+                    .set_active_provider_run(&session_id, Some(replacement.id().to_string()))?;
+                Ok::<_, DaemonError>(())
+            })
+            .await
+            .unwrap();
+    }
+    barrier.release();
+    failure
+        .await
+        .expect("failure task should not panic")
+        .expect("late failure should settle");
+
+    assert!(
+        matches!(arrival, crate::session::PromptSubmissionOutcome::Queued { .. }),
+        "prompt admission must remain queued while late-failure cleanup owns the profile transition"
+    );
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    let (active, queued) = runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&session, &agent_id);
+    assert!(active.is_none());
+    assert_eq!(queued.len(), 1);
+    assert_eq!(
+        runtime
+            .owned
+            .agent_store
+            .get_agent(&agent_id)
+            .unwrap()
+            .active_substitute_index(),
+        Some(0)
+    );
+}
+
 async fn assert_queued_substitution(
     workflow_prompt: bool,
     claude_hook: bool,

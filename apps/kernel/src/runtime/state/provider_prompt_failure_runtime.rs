@@ -2,7 +2,50 @@
 
 use super::*;
 
+#[cfg(test)]
+#[derive(Clone)]
+pub(super) struct ProviderRetirementTestBarrier {
+    reached: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+#[cfg(test)]
+impl ProviderRetirementTestBarrier {
+    pub(super) async fn wait_until_reached(&self) {
+        self.reached.notified().await;
+    }
+
+    pub(super) fn release(&self) {
+        self.release.notify_one();
+    }
+}
+
+#[cfg(test)]
+fn provider_retirement_test_barriers(
+) -> &'static std::sync::Mutex<BTreeMap<String, ProviderRetirementTestBarrier>> {
+    static BARRIERS: std::sync::OnceLock<
+        std::sync::Mutex<BTreeMap<String, ProviderRetirementTestBarrier>>,
+    > = std::sync::OnceLock::new();
+    BARRIERS.get_or_init(|| std::sync::Mutex::new(BTreeMap::new()))
+}
+
 impl KernelRuntimeState {
+    #[cfg(test)]
+    pub(super) fn install_provider_retirement_test_barrier(
+        &self,
+        provider_run_id: &str,
+    ) -> ProviderRetirementTestBarrier {
+        let barrier = ProviderRetirementTestBarrier {
+            reached: Arc::new(Notify::new()),
+            release: Arc::new(Notify::new()),
+        };
+        provider_retirement_test_barriers()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(provider_run_id.to_string(), barrier.clone());
+        barrier
+    }
+
     pub(super) async fn fail_owned_provider_prompt(
         &self,
         session_id: &str,
@@ -252,6 +295,15 @@ impl KernelRuntimeState {
     }
 
     pub(super) async fn retire_owned_provider_run(&self, session_id: &str, provider_run_id: &str) {
+        #[cfg(test)]
+        if let Some(barrier) = provider_retirement_test_barriers()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(provider_run_id)
+        {
+            barrier.reached.notify_one();
+            barrier.release.notified().await;
+        }
         let owned = &self.owned;
         if let Ok(outcome) = owned
             .provider_store
