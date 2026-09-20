@@ -4,6 +4,8 @@ import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 
+import { BrowserTabRegistry } from "./browser-tab-registry.mjs";
+
 export const CONTROLLER_STATES = Object.freeze([
   "idle",
   "starting",
@@ -155,6 +157,15 @@ function validateIdentifier(value, field) {
     schemaError();
   }
   return value;
+}
+
+function isValidTabTargetId(value) {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    Buffer.byteLength(value, "utf8") <= MAX_IDENTIFIER_BYTES &&
+    /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)
+  );
 }
 
 function validateGeneration(value) {
@@ -500,6 +511,7 @@ export class BrowserController {
     this._listeners = new Set();
     this._process = null;
     this._cdp = null;
+    this.tabRegistry = options.tabRegistry ?? new BrowserTabRegistry();
     this._queue = [];
     this._queueActive = false;
     this._heartbeatTimer = null;
@@ -563,16 +575,17 @@ export class BrowserController {
     this._process = record;
 
     try {
-      const cdp = await this._connectUntilReady(record);
+      const connected = await this._connectUntilReady(record);
       if (
         this._process?.token !== record.token ||
         record.exited ||
         this.state !== "starting"
       ) {
-        cdp.close();
+        connected.connection.close();
         throw controllerError(ERROR_CODES.CONTROLLER_CRASHED);
       }
-      this._cdp = cdp;
+      this._cdp = connected.connection;
+      this._reconcileTabRegistry(this.generation, connected.targets);
       this.state = "ready";
       this._startHeartbeat();
       this._emit("ready", {
@@ -636,6 +649,48 @@ export class BrowserController {
         cdp_connected: true,
       };
     });
+  }
+
+  async refreshTabs(ownerId, expectedGeneration, options = {}) {
+    this._assertTabRegistryAccess(ownerId, expectedGeneration);
+    if (!isPlainObject(options) || Object.keys(options).some((key) => key !== "reconnect")) {
+      schemaError();
+    }
+    if (options.reconnect !== undefined && typeof options.reconnect !== "boolean") {
+      schemaError();
+    }
+    const generation = this.generation;
+    const cdp = this._cdp;
+    return this._enqueue(generation, async () => {
+      const targets = await this._discoverTargets(this.cdpCommandTimeoutMs);
+      if (targets === null) {
+        throw controllerError(ERROR_CODES.CDP_UNAVAILABLE);
+      }
+      if (
+        this.state !== "ready" ||
+        this.generation !== generation ||
+        this._cdp !== cdp ||
+        cdp.closed
+      ) {
+        throw controllerError(ERROR_CODES.STALE_GENERATION);
+      }
+      return this._reconcileTabRegistry(generation, targets, options);
+    });
+  }
+
+  getTabRegistrySnapshot(ownerId, expectedGeneration) {
+    this._assertTabRegistryAccess(ownerId, expectedGeneration);
+    return this.tabRegistry.snapshot();
+  }
+
+  claimViewport(ownerId, expectedGeneration, request) {
+    this._assertTabRegistryAccess(ownerId, expectedGeneration);
+    return this.tabRegistry.claimViewport(request);
+  }
+
+  resizeViewport(ownerId, expectedGeneration, request) {
+    this._assertTabRegistryAccess(ownerId, expectedGeneration);
+    return this.tabRegistry.resizeViewport(request);
   }
 
   _assertOptions() {
@@ -731,6 +786,14 @@ export class BrowserController {
     }
   }
 
+  _assertTabRegistryAccess(ownerId, expectedGeneration) {
+    this._admitOwner(ownerId);
+    this._requireGeneration(expectedGeneration);
+    if (this.state !== "ready" || !this._cdp || this._cdp.closed) {
+      throw controllerError(ERROR_CODES.CONTROLLER_NOT_READY);
+    }
+  }
+
   async _spawnProcess() {
     if (typeof this.spawnBrowser !== "function") {
       throw controllerError(ERROR_CODES.PROCESS_SPAWN_FAILED);
@@ -799,20 +862,21 @@ export class BrowserController {
       ) {
         throw controllerError(ERROR_CODES.CONTROLLER_CRASHED);
       }
-      let target;
+      let targets;
       try {
-        target = await this._discoverTarget(Math.max(1, deadline - this._now()));
+        targets = await this._discoverTargets(Math.max(1, deadline - this._now()));
       } catch (error) {
         const normalized = normalizeError(error, ERROR_CODES.CDP_PROTOCOL_INVALID);
         if (normalized.code === ERROR_CODES.CDP_PROTOCOL_INVALID) {
           throw normalized;
         }
-        target = null;
+        targets = null;
       }
+      const target = targets?.[0] ?? null;
       if (target) {
         let connection;
         try {
-          const socket = new this.WebSocketImpl(target);
+          const socket = new this.WebSocketImpl(target.webSocketDebuggerUrl);
           connection = new CdpConnection({
             socket,
             timers: this.timers,
@@ -821,7 +885,7 @@ export class BrowserController {
           });
           await connection.open(this.cdpConnectTimeoutMs);
           await connection.send("Browser.getVersion", {}, this.cdpCommandTimeoutMs);
-          return connection;
+          return { connection, targets };
         } catch (error) {
           connection?.close();
           const normalized = normalizeError(error, ERROR_CODES.CDP_CONNECT_FAILED);
@@ -840,6 +904,11 @@ export class BrowserController {
   }
 
   async _discoverTarget(timeoutMs = this.cdpCommandTimeoutMs) {
+    const targets = await this._discoverTargets(timeoutMs);
+    return targets?.[0]?.webSocketDebuggerUrl ?? null;
+  }
+
+  async _discoverTargets(timeoutMs = this.cdpCommandTimeoutMs) {
     const abortController = typeof AbortController === "function" ? new AbortController() : null;
     const abortTimer = abortController
       ? this.timers.setTimeout(() => abortController.abort(), Math.max(1, timeoutMs))
@@ -872,6 +941,7 @@ export class BrowserController {
       if (!Array.isArray(targets)) {
         throw controllerError(ERROR_CODES.CDP_PROTOCOL_INVALID);
       }
+      const validTargets = [];
       for (const target of targets) {
         if (!isPlainObject(target) || target.type !== "page" || typeof target.webSocketDebuggerUrl !== "string") {
           continue;
@@ -887,9 +957,9 @@ export class BrowserController {
         } catch {
           continue;
         }
-        return target.webSocketDebuggerUrl;
+        validTargets.push(target);
       }
-      return null;
+      return validTargets;
     } catch (error) {
       if (error instanceof ControllerError) {
         throw error;
@@ -900,6 +970,20 @@ export class BrowserController {
         this.timers.clearTimeout(abortTimer);
       }
     }
+  }
+
+  _reconcileTabRegistry(generation, targets, options = {}) {
+    const registryTargets = targets.map((target) => {
+      if (!isValidTabTargetId(target.id)) {
+        throw controllerError(ERROR_CODES.CDP_PROTOCOL_INVALID);
+      }
+      return {
+        target_id: target.id,
+        target_type: target.type,
+        websocket_url: target.webSocketDebuggerUrl,
+      };
+    });
+    return this.tabRegistry.reconcile(generation, registryTargets, options);
   }
 
   async _abortStart(record) {
