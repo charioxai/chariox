@@ -419,11 +419,26 @@ export function fillFunction(text, append) {
   }
   const tag = String(this.tagName || "").toLowerCase();
   if (tag === "select") {
-    const option = Array.from(this.options || []).find(
+    const options = Array.from(this.options || []);
+    const optionIndex = options.findIndex(
       (candidate) => candidate.value === text || candidate.text === text,
     );
+    const option = optionIndex < 0 ? null : options[optionIndex];
     if (!option) return { ok: false };
-    this.value = option.value;
+    if (option.value !== text && option.text === text) {
+      this.selectedIndex = optionIndex;
+    } else {
+      // Preserve the existing value-based behavior for true same-value matches.
+      this.value = option.value;
+    }
+    const selectedOptions = Array.from(this.options || []);
+    if (
+      this.selectedIndex !== optionIndex ||
+      selectedOptions[optionIndex] !== option ||
+      option.selected !== true
+    ) {
+      return { ok: false };
+    }
   } else if ("value" in this) {
     const previous = String(this.value ?? "");
     const next = append ? previous + text : text;
@@ -546,10 +561,10 @@ export async function performBrowserAction({
         elapsed_ms: Math.max(0, readNow(now) - startedAt),
       };
     }
-    const remaining = boundedTimeoutMs - Math.max(0, readNow(now) - startedAt);
+    const remaining = budget.deadline - readNow(now);
     if (remaining <= 0) {
       fail(ACTION_ERROR_CODES.TIMEOUT, timeoutDetails(budget));
     }
-    await sleep(Math.max(1, Math.min(ACTION_POLL_INTERVAL_MS, remaining)));
+    await sleep(Math.min(ACTION_POLL_INTERVAL_MS, remaining));
   }
 }

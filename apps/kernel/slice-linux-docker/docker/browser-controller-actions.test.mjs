@@ -76,14 +76,17 @@ class FakeConnection {
 
 function fakeTime() {
   let value = 0;
+  const sleeps = [];
   return {
     now: () => value,
     advance: (milliseconds) => {
       value += milliseconds;
     },
     sleep: async (milliseconds) => {
+      sleeps.push(milliseconds);
       value += milliseconds;
     },
+    sleeps,
   };
 }
 
@@ -295,6 +298,26 @@ test("enforces one wall-clock deadline across CDP calls and cleanup", async () =
   );
 });
 
+test("caps queued-near-expiry polling at the advertised absolute deadline", async () => {
+  const time = fakeTime();
+  time.advance(90);
+  const advertisedDeadline = 100;
+  await assert.rejects(
+    performBrowserAction({
+      connection: new FakeConnection({ actionability: [{ state: "not_visible" }] }),
+      element: ELEMENT,
+      action: { kind: "click" },
+      timeoutMs: 500,
+      deadline: advertisedDeadline,
+      ...time,
+    }),
+    (error) => error.code === ACTION_ERROR_CODES.TIMEOUT,
+  );
+  assert.deepEqual(time.sleeps, [10]);
+  assert.equal(time.now(), advertisedDeadline);
+  assert.ok(time.now() <= advertisedDeadline);
+});
+
 test("does not retry after a pressed/released pair crosses the deadline", async () => {
   const time = fakeTime();
   const connection = new FakeConnection({
@@ -413,6 +436,62 @@ test("restores the prior value when a native number setter sanitizes fill text",
   } finally {
     if (previousDocument === undefined) delete globalThis.document;
     else globalThis.document = previousDocument;
+  }
+});
+
+test("selects the exact visible-text option when duplicate values exist", () => {
+  const previousDocument = globalThis.document;
+  const previousEvent = globalThis.Event;
+  const events = [];
+  const options = [
+    { value: "shared", text: "first", selected: true },
+    { value: "shared", text: "second", selected: false },
+  ];
+  let selectedIndex = 0;
+  const document = { activeElement: null };
+  const control = {
+    isConnected: true,
+    disabled: false,
+    readOnly: false,
+    tagName: "select",
+    options,
+    value: options[0].value,
+    get selectedIndex() {
+      return selectedIndex;
+    },
+    set selectedIndex(index) {
+      selectedIndex = index;
+      options.forEach((option, optionIndex) => {
+        option.selected = optionIndex === index;
+      });
+      this.value = options[index]?.value ?? "";
+    },
+    focus() {
+      document.activeElement = this;
+    },
+    dispatchEvent(event) {
+      events.push(event.type);
+    },
+  };
+  globalThis.document = document;
+  globalThis.Event = class Event {
+    constructor(type, init) {
+      this.type = type;
+      this.init = init;
+    }
+  };
+  try {
+    assert.deepEqual(fillFunction.call(control, "second", false), { ok: true });
+    assert.equal(control.selectedIndex, 1);
+    assert.equal(control.value, "shared");
+    assert.equal(options[0].selected, false);
+    assert.equal(options[1].selected, true);
+    assert.deepEqual(events, ["input", "change"]);
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document;
+    else globalThis.document = previousDocument;
+    if (previousEvent === undefined) delete globalThis.Event;
+    else globalThis.Event = previousEvent;
   }
 });
 
