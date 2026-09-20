@@ -149,7 +149,6 @@ test("binds every element reference to its owning frame", async () => {
         {
           nodeId: "child-button",
           backendDOMNodeId: 21,
-          frameId: "frame-child",
           role: { value: "button" },
         },
       ],
@@ -196,6 +195,46 @@ test("binds every element reference to its owning frame", async () => {
     snapshot_revision: 1,
     backend_node_id: 21,
   });
+});
+
+test("derives shadow ancestry for an ordinary leaf from the DOM snapshot", async () => {
+  const store = new BrowserObservationStore();
+  const snapshot = await store.capture({
+    connection: new FakeConnection({
+      accessibilityResults: [{
+        nodes: [{
+          nodeId: "shadow-input",
+          backendDOMNodeId: 32,
+          role: { value: "textbox" },
+          name: { value: "Shadow input" },
+        }],
+      }],
+      domResults: [{
+        strings: ["HOST", "#document-fragment", "INPUT", "open"],
+        documents: [{
+          frameId: "frame-main",
+          nodes: {
+            backendNodeId: [30, 31, 32],
+            parentIndex: [-1, 0, 1],
+            nodeType: [1, 11, 1],
+            nodeName: [0, 1, 2],
+            nodeValue: [-1, -1, -1],
+            attributes: [[], [], []],
+            shadowRootType: { index: [1], value: [3] },
+          },
+          layout: { nodeIndex: [2], bounds: [[1, 2, 30, 20]] },
+        }],
+      }],
+    }),
+    tab: TAB,
+  });
+  const leaf = snapshot.accessibility_nodes[0];
+  const resolved = store.resolve(TAB, leaf.element_ref);
+
+  assert.equal(resolved.frame_id, "frame-main");
+  assert.equal(resolved.shadow_root_type, "open");
+  assert.equal(Object.prototype.propertyIsEnumerable.call(resolved, "shadow_root_type"), false);
+  assert.doesNotMatch(JSON.stringify(resolved), /shadow_root_type|open/);
 });
 
 test("redacts sensitive accessibility names, descriptions, and values independently", async () => {

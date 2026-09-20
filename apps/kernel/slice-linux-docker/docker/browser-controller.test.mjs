@@ -11,6 +11,8 @@ import {
   redactDiagnostic,
 } from "./browser-controller.mjs";
 import { OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES } from "./browser-controller-observations.mjs";
+import { BrowserPageFeatures } from "./browser-controller-page-features.mjs";
+import { UPLOAD_ARTIFACT_KIND } from "./browser-controller-upload-staging.mjs";
 
 class FakeClock {
   constructor() {
@@ -371,6 +373,7 @@ function makeFixture(options = {}) {
     killGraceMs: 1,
     heartbeatIntervalMs: 1,
     queueLimit: options.queueLimit || 8,
+    pageFeatures: options.pageFeatures,
   });
   return {
     controller,
@@ -720,6 +723,154 @@ test("runs a bounded locator action through an opaque observed element reference
   });
 });
 
+test("wires bounded page features through controller-owned tabs and connections", async (t) => {
+  const targets = [{
+    id: "page-1",
+    type: "page",
+    webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/1",
+  }];
+  const pageFeatures = new BrowserPageFeatures({
+    uploadRoots: ["/safe"],
+    downloadRoot: "/safe/downloads",
+    realpath: async (candidate) => candidate,
+    stat: async (candidate) => ({
+      isDirectory: () => candidate === "/safe" || candidate === "/safe/downloads",
+      isFile: () => candidate === "/safe/report.txt",
+      size: candidate === "/safe/report.txt" ? 1024 : 0,
+      dev: 1,
+      ino: candidate === "/safe" ? 10 : candidate === "/safe/downloads" ? 11 : 20,
+    }),
+    open: async () => ({
+      stat: async () => ({ isFile: () => true, size: 1024, dev: 1, ino: 20 }),
+      read: async (buffer, offset, length) => {
+        buffer.fill(0x41, offset, offset + length);
+        return { bytesRead: length };
+      },
+      close: async () => {},
+    }),
+    uploadArtifactBroker: {
+      separate_uid: true,
+      stage: async ({ expectedSize }) => ({
+        kind: UPLOAD_ARTIFACT_KIND,
+        artifact_id: "controller-upload",
+        path: "/broker-owned/controller-upload",
+        size: expectedSize,
+        immutable: true,
+        sealed: true,
+        separate_uid: true,
+        broker_owned: true,
+        release: async () => {},
+      }),
+    },
+  });
+  const fixture = makeFixture({ targets, pageFeatures });
+  const { controller } = fixture;
+  await controller.start("owner-a");
+  const tab = controller.getTabRegistrySnapshot("owner-a", 1).tabs[0];
+
+  FakeWebSocket.onSend = (socket, message) => {
+    let result = {};
+    if (message.method === "Page.getFrameTree") {
+      result = { frameTree: { frame: { id: "frame-main", loaderId: "document-feature" } } };
+    } else if (message.method === "Accessibility.getFullAXTree") {
+      result = {
+        nodes: [{
+          nodeId: "ax-upload",
+          backendDOMNodeId: 91,
+          frameId: "frame-main",
+          role: { value: "textbox" },
+          name: { value: "Upload" },
+        }],
+      };
+    } else if (message.method === "DOMSnapshot.captureSnapshot") {
+      result = {
+        strings: ["INPUT"],
+        documents: [{
+          frameId: "frame-main",
+          nodes: {
+            backendNodeId: [91],
+            parentIndex: [-1],
+            nodeType: [1],
+            nodeName: [0],
+            nodeValue: [-1],
+            attributes: [[]],
+          },
+          layout: { nodeIndex: [0], bounds: [[1, 2, 30, 20]] },
+        }],
+      };
+    } else if (message.method === "DOM.describeNode") {
+      result = {
+        node: {
+          frameId: "frame-main",
+          shadowRootType: "open",
+          nodeName: "INPUT",
+          localName: "input",
+          nodeValue: "private page value",
+        },
+      };
+    }
+    queueMicrotask(() => socket.respond(message.id, result));
+  };
+
+  const snapshot = await controller.captureTabSnapshot("owner-a", 1, {
+    tab_id: tab.tab_id,
+    target_generation: tab.target_generation,
+  });
+  const elementRef = snapshot.accessibility_nodes[0].element_ref;
+  const elementRequest = {
+    tab_id: tab.tab_id,
+    target_generation: tab.target_generation,
+    element_ref: elementRef,
+  };
+  const description = await controller.describeElementContext("owner-a", 1, elementRequest);
+  assert.equal(description.frame_id, "frame-main");
+  assert.doesNotMatch(JSON.stringify(description), /private page value/);
+  assert.deepEqual(await controller.handleDialog("owner-a", 1, {
+    tab_id: tab.tab_id,
+    target_generation: tab.target_generation,
+    dialog: { action: "accept", prompt_text: "private response" },
+  }), { action: "accept" });
+  assert.deepEqual(await controller.configureDownloads("owner-a", 1), { enabled: true });
+  const upload = await controller.uploadFiles("owner-a", 1, {
+    ...elementRequest,
+    paths: ["/safe/report.txt"],
+  });
+  assert.equal(upload.file_count, 1);
+  assert.doesNotMatch(JSON.stringify(upload), /report\.txt/);
+  assert.deepEqual(await controller.grantPermissions("owner-a", 1, {
+    origin: "https://example.test",
+    permissions: ["notifications"],
+  }), { origin: "https://example.test", permissions: ["notifications"] });
+  assert.deepEqual(await controller.resetPermissions("owner-a", 1), { reset: true });
+
+  targets.push({
+    id: "popup-1",
+    type: "page",
+    webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/popup-1",
+  });
+  const popup = await controller.waitForPopup("owner-a", 1, {
+    known_tab_ids: [tab.tab_id],
+    timeout_ms: 250,
+  });
+  assert.match(popup.tab_id, /^tab-/);
+  assert.notEqual(popup.tab_id, tab.tab_id);
+
+  const methods = FakeWebSocket.instances.flatMap((socket) => socket.sent.map((message) => message.method));
+  for (const method of [
+    "DOM.describeNode",
+    "Page.handleJavaScriptDialog",
+    "Browser.setDownloadBehavior",
+    "DOM.setFileInputFiles",
+    "Browser.grantPermissions",
+    "Browser.resetPermissions",
+  ]) {
+    assert.equal(methods.includes(method), true, method);
+  }
+  t.after(async () => {
+    await controller.shutdown("owner-a", 1);
+  });
+});
+
 test("propagates post-action uncertainty through the public controller action API", async (t) => {
   const fixture = makeFixture();
   const { controller } = fixture;
@@ -785,6 +936,38 @@ test("propagates post-action uncertainty through the public controller action AP
   assert.equal(ERROR_CODES.ACTION_POST_ACTION_UNCERTAIN, "ACTION_POST_ACTION_UNCERTAIN");
   t.after(async () => {
     await controller.shutdown("owner-a", 1);
+  });
+});
+
+test("releases page-feature uploads when a tab detaches and on controller shutdown", async (t) => {
+  const targets = [{
+    id: "page-1",
+    type: "page",
+    webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/1",
+  }];
+  const releasedTabs = [];
+  let shutdowns = 0;
+  const pageFeatures = {
+    async prepare() {},
+    async releaseUploadsForTab(tabId) {
+      releasedTabs.push(tabId);
+    },
+    async shutdown() {
+      shutdowns += 1;
+    },
+  };
+  const fixture = makeFixture({ targets, pageFeatures });
+  const { controller } = fixture;
+  await controller.start("owner-a");
+  const tab = controller.getTabRegistrySnapshot("owner-a", 1).tabs[0];
+  targets.length = 0;
+  const refreshed = await controller.refreshTabs("owner-a", 1);
+  assert.deepEqual(refreshed.detached.map(({ tab_id }) => tab_id), [tab.tab_id]);
+  assert.deepEqual(releasedTabs, [tab.tab_id]);
+  await controller.shutdown("owner-a", 1);
+  assert.equal(shutdowns, 1);
+  t.after(async () => {
+    await controller.shutdownForSignal();
   });
 });
 

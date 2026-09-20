@@ -169,6 +169,38 @@ function snapshotString(strings, index, maxBytes) {
   return boundedString(rawSnapshotString(strings, index), maxBytes);
 }
 
+function rareDataByIndex(rawData) {
+  const indexes = Array.isArray(rawData?.index) ? rawData.index : [];
+  const values = Array.isArray(rawData?.value) ? rawData.value : [];
+  const result = new Map();
+  for (let offset = 0; offset < indexes.length && offset < values.length; offset += 1) {
+    const nodeIndex = indexes[offset];
+    if (Number.isSafeInteger(nodeIndex)) {
+      result.set(nodeIndex, values[offset]);
+    }
+  }
+  return result;
+}
+
+function shadowRootTypeForNode(data, strings, nodeIndex, maxBytes) {
+  const shadowRootTypes = rareDataByIndex(data?.shadowRootType);
+  const parentIndexes = Array.isArray(data?.parentIndex) ? data.parentIndex : [];
+  const seen = new Set();
+  let current = nodeIndex;
+  while (
+    Number.isSafeInteger(current) &&
+    current >= 0 &&
+    current < parentIndexes.length &&
+    !seen.has(current)
+  ) {
+    seen.add(current);
+    const shadowRootType = snapshotString(strings, shadowRootTypes.get(current), maxBytes);
+    if (shadowRootType) return shadowRootType;
+    current = parentIndexes[current];
+  }
+  return null;
+}
+
 function validBackendNodeId(value) {
   return Number.isSafeInteger(value) && value > 0 ? value : null;
 }
@@ -372,6 +404,7 @@ function makeDraft(previous, documentId, mainFrameId, referenceEpoch) {
       backendIdByRef: new Map(previous.backendIdByRef),
       frameIdentities: new Map(previous.frameIdentities ?? []),
       frameIdByRef: new Map(previous.frameIdByRef ?? []),
+      shadowRootTypeByRef: new Map(previous.shadowRootTypeByRef ?? []),
     };
   }
   return {
@@ -383,6 +416,7 @@ function makeDraft(previous, documentId, mainFrameId, referenceEpoch) {
     refsByBackendId: new Map(),
     backendIdByRef: new Map(),
     frameIdByRef: new Map(),
+    shadowRootTypeByRef: new Map(),
   };
 }
 
@@ -391,7 +425,11 @@ function elementReference(draft, backendNodeId, frameId = null) {
   if (validId === null) return null;
   const existing = draft.refsByBackendId.get(validId);
   if (existing) {
-    if (typeof frameId === "string" && frameId.length > 0) {
+    if (
+      typeof frameId === "string" &&
+      frameId.length > 0 &&
+      !draft.frameIdByRef.has(existing)
+    ) {
       draft.frameIdByRef.set(existing, frameId);
     }
     return existing;
@@ -481,6 +519,7 @@ function compactAccessibility(raw, draft, limits) {
 function compactDom(raw, draft, limits) {
   const strings = Array.isArray(raw?.strings) ? raw.strings : [];
   const documents = Array.isArray(raw?.documents) ? raw.documents : [];
+  draft.shadowRootTypeByRef.clear();
   const nodes = [];
   const sourceCount = documents.reduce((total, document) => {
     const backendIds = Array.isArray(document?.nodes?.backendNodeId)
@@ -503,6 +542,14 @@ function compactDom(raw, draft, limits) {
       if (nodes.length >= limits.maxNodes) break;
       const reference = elementReference(draft, backendIds[nodeIndex], frameId);
       if (!reference) continue;
+      const shadowRootType = shadowRootTypeForNode(
+        data,
+        strings,
+        nodeIndex,
+        limits.maxStringBytes,
+      );
+      if (shadowRootType) draft.shadowRootTypeByRef.set(reference, shadowRootType);
+      else draft.shadowRootTypeByRef.delete(reference);
       liveBackendIds.add(backendIds[nodeIndex]);
       const parentIndex = arrayValue(data.parentIndex, nodeIndex);
       const parentReference = Number.isSafeInteger(parentIndex)
@@ -561,8 +608,8 @@ function tabStateMatches(state, tab) {
   return state?.generation === tab.generation && state?.targetGeneration === tab.targetGeneration;
 }
 
-function resolvedReference(tab, state, backendNodeId, frameId) {
-  return {
+function resolvedReference(tab, state, backendNodeId, frameId, shadowRootType) {
+  const resolved = {
     tab_id: tab.tabId,
     browser_generation: tab.generation,
     target_generation: tab.targetGeneration,
@@ -572,6 +619,15 @@ function resolvedReference(tab, state, backendNodeId, frameId) {
     snapshot_revision: state.revision,
     backend_node_id: backendNodeId,
   };
+  if (typeof shadowRootType === "string" && shadowRootType.length > 0) {
+    Object.defineProperty(resolved, "shadow_root_type", {
+      configurable: false,
+      enumerable: false,
+      value: shadowRootType,
+      writable: false,
+    });
+  }
+  return resolved;
 }
 
 export class BrowserObservationStore {
@@ -683,17 +739,25 @@ export class BrowserObservationStore {
     if (!Number.isSafeInteger(backendNodeId)) {
       fail(OBSERVATION_ERROR_CODES.ELEMENT_REFERENCE_INVALIDATED);
     }
+    const shadowRootType = state.shadowRootTypeByRef.get(elementRef);
     const connection = typeof options?.send === "function" ? options : options?.connection;
     if (connection === undefined) {
-      return resolvedReference(tab, state, backendNodeId, frameId);
+      return resolvedReference(tab, state, backendNodeId, frameId, shadowRootType);
     }
     if (typeof connection?.send !== "function") {
       fail(OBSERVATION_ERROR_CODES.INVALID_ARGUMENT);
     }
-    return this._resolveWithLiveIdentity(tab, state, backendNodeId, frameId, connection);
+    return this._resolveWithLiveIdentity(
+      tab,
+      state,
+      backendNodeId,
+      frameId,
+      shadowRootType,
+      connection,
+    );
   }
 
-  async _resolveWithLiveIdentity(tab, state, backendNodeId, frameId, connection) {
+  async _resolveWithLiveIdentity(tab, state, backendNodeId, frameId, shadowRootType, connection) {
     const liveIdentities = frameIdentities(await connection.send("Page.getFrameTree", {}));
     if (!sameFrameIdentities(state.frameIdentities, liveIdentities)) {
       this.invalidate(tab.tabId);
@@ -702,6 +766,6 @@ export class BrowserObservationStore {
     if (this.statesByTabId.get(tab.tabId) !== state || !tabStateMatches(state, tab)) {
       fail(OBSERVATION_ERROR_CODES.ELEMENT_REFERENCE_INVALIDATED);
     }
-    return resolvedReference(tab, state, backendNodeId, frameId);
+    return resolvedReference(tab, state, backendNodeId, frameId, shadowRootType);
   }
 }
