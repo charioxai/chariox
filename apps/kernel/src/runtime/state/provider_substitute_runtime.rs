@@ -168,7 +168,10 @@ impl KernelRuntimeState {
                 profile_transition,
             )?;
         if let Some(dispatch) = dispatch {
-            if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
+            // Dispatch can pump provider output, which may report another
+            // provider failure and return to this recovery path. Box this
+            // edge so the async state machine is not recursively sized.
+            if let Err(error) = Box::pin(self.enqueue_prompt_dispatch(&dispatch)).await {
                 let _ = self.fail_prompt_dispatch(dispatch, error).await;
             }
         }
