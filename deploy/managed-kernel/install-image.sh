@@ -115,76 +115,110 @@ ensure_directory_parent() {
   fi
 }
 
-move_without_overwrite() {
-  source_path=$1
-  destination_path=$2
-  label=$3
-  if ! path_exists "$source_path"; then
-    return 0
-  fi
-  if [ -L "$source_path" ]; then
-    echo "$label source is a symlink" >&2
-    exit 1
-  fi
-  if path_exists "$destination_path"; then
-    echo "$label migration would overwrite an existing destination" >&2
-    exit 1
-  fi
-  destination_parent=${destination_path%/*}
-  [ -n "$destination_parent" ] || destination_parent=/
-  ensure_directory_parent "$destination_parent" "$label destination parent"
-  mv -- "$source_path" "$destination_path"
-}
-
-migrate_legacy_home() {
-  require_real_directory "$state_root" "managed kernel state root"
-  require_real_directory "$legacy_home" "legacy managed kernel home"
-  require_real_directory "$managed_home" "managed service-account home"
-
-  if path_exists "$legacy_home"; then
-    if path_exists "$managed_home"; then
-      echo "legacy managed kernel home and /home/chariox both exist; refusing to overwrite either" >&2
+require_real_ancestor_chain() {
+  ancestor_path=$1
+  ancestor_label=$2
+  case "$ancestor_path" in
+    /*/../*|/*/./*|*/..|*/.)
+      echo "$ancestor_label contains an unsafe ancestor" >&2
+      exit 1
+      ;;
+    /*) ;;
+    *)
+      echo "$ancestor_label must be an absolute path" >&2
+      exit 1
+      ;;
+  esac
+  while :; do
+    if [ -L "$ancestor_path" ] || { [ -e "$ancestor_path" ] && [ ! -d "$ancestor_path" ]; }; then
+      echo "$ancestor_label ancestor is not a real directory: $ancestor_path" >&2
       exit 1
     fi
-    ensure_directory_parent "${managed_home%/*}" "managed service-account home parent"
-    mv -- "$legacy_home" "$managed_home"
-  fi
-
-  if ! path_exists "$managed_home"; then
-    ensure_directory_parent "${managed_home%/*}" "managed service-account home parent"
-    install -d -o root -g root -m 0700 "$managed_home"
-  fi
-  require_real_directory "$managed_home" "managed service-account home"
-  if path_exists "$managed_state"; then
-    require_real_directory "$managed_state" "managed kernel state directory"
-  fi
-
-  for state_directory in managed-context managed-runtime-auth managed disposable-worker kernels; do
-    move_without_overwrite \
-      "$managed_home/$state_directory" \
-      "$managed_state/$state_directory" \
-      "managed kernel $state_directory"
+    [ "$ancestor_path" = / ] && break
+    ancestor_path=${ancestor_path%/*}
+    [ -n "$ancestor_path" ] || ancestor_path=/
   done
-  move_without_overwrite \
-    "$managed_state/managed/bootstrap-receipt.json" \
-    "$state_root/managed/bootstrap-receipt.json" \
-    "managed bootstrap receipt"
-  move_without_overwrite \
-    "$managed_state/managed/release-override.json" \
-    "$state_root/managed/release-override.json" \
-    "managed release override"
-  move_without_overwrite \
-    "$managed_state/disposable-worker/bootstrap-receipt.json" \
-    "$state_root/disposable-worker/bootstrap-receipt.json" \
-    "disposable worker bootstrap receipt"
-  move_without_overwrite \
-    "$managed_state/disposable-worker/release-override.json" \
-    "$state_root/disposable-worker/release-override.json" \
-    "disposable worker release override"
-  move_without_overwrite \
-    "$managed_state/kernels/active" \
-    "$state_root/kernels/active" \
-    "managed kernel presence state"
+}
+
+require_root_private_file() {
+  state_path=$1
+  state_label=$2
+  if [ -L "$state_path" ] || [ ! -f "$state_path" ]; then
+    echo "$state_label is not a regular file" >&2
+    exit 1
+  fi
+  state_owner=$(stat -c %u "$state_path") || {
+    echo "$state_label owner could not be inspected" >&2
+    exit 1
+  }
+  [ "$state_owner" = 0 ] || {
+    echo "$state_label must be root-owned" >&2
+    exit 1
+  }
+  state_mode=$(stat -c %a "$state_path") || {
+    echo "$state_label mode could not be inspected" >&2
+    exit 1
+  }
+  [ "$state_mode" = 600 ] || {
+    echo "$state_label must have mode 0600" >&2
+    exit 1
+  }
+  state_writable=$(find "$state_path" -maxdepth 0 -perm /022 -print -quit) || {
+    echo "$state_label permissions could not be inspected" >&2
+    exit 1
+  }
+  [ -z "$state_writable" ] || {
+    echo "$state_label is writable by group or other" >&2
+    exit 1
+  }
+}
+
+repair_root_control_file() {
+  control_path=$1
+  control_label=$2
+  if ! path_exists "$control_path"; then
+    return 0
+  fi
+  if [ -L "$control_path" ] || [ ! -f "$control_path" ]; then
+    echo "$control_label is not a real regular file" >&2
+    exit 1
+  fi
+  chown root:root -- "$control_path"
+  chmod 0600 -- "$control_path"
+}
+
+repair_root_control_tree() {
+  control_path=$1
+  control_label=$2
+  if ! path_exists "$control_path"; then
+    return 0
+  fi
+  require_real_directory "$control_path" "$control_label"
+  control_symlink=$(find "$control_path" -type l -print -quit) || {
+    echo "$control_label could not be inspected" >&2
+    exit 1
+  }
+  [ -z "$control_symlink" ] || {
+    echo "$control_label contains a symbolic link" >&2
+    exit 1
+  }
+  chown -R root:root -- "$control_path"
+  find "$control_path" -type d -exec chmod 0700 {} + || {
+    echo "$control_label directory modes could not be repaired" >&2
+    exit 1
+  }
+  find "$control_path" -type f -exec chmod 0600 {} + || {
+    echo "$control_label file modes could not be repaired" >&2
+    exit 1
+  }
+}
+
+repair_root_control_state() {
+  repair_root_control_tree "$state_root/managed" "managed control state"
+  repair_root_control_tree "$state_root/disposable-worker" "disposable-worker control state"
+  repair_root_control_tree "$state_root/kernels" "managed kernel presence state"
+  repair_root_control_file "$state_root/managed-bootstrap.json" "managed bootstrap state"
+  repair_root_control_file "$state_root/disposable-worker-bootstrap.json" "disposable-worker bootstrap state"
 }
 
 validate_state_root_entries() {
@@ -199,6 +233,9 @@ validate_state_root_entries() {
       -name managed -o \
       -name disposable-worker -o \
       -name kernels -o \
+      -name home -o \
+      -name home-migration.json -o \
+      -name home-migration-complete -o \
       -name provider-home -o \
       -name release-verification \
     \) -print -quit); then
@@ -211,8 +248,52 @@ validate_state_root_entries() {
   fi
 }
 
-migrate_legacy_home
-validate_state_root_entries
+migrate_legacy_home_transaction() {
+  migration_journal=$state_root/home-migration.json
+  migration_complete=$state_root/home-migration-complete
+  migration_helper=$script_root/managed-kernel-home-migration.mjs
+
+  require_real_ancestor_chain "$state_root" "managed kernel state root"
+  require_real_ancestor_chain "$managed_home" "managed service-account home"
+
+  if path_exists "$migration_complete"; then
+    require_root_private_file "$migration_complete" "managed home migration completion marker"
+    if ! [ -f "$migration_journal" ]; then
+      echo "managed home migration completion marker has no journal" >&2
+      exit 1
+    fi
+    migration_complete_value=$(cat "$migration_complete") || {
+      echo "managed home migration completion marker could not be read" >&2
+      exit 1
+    }
+    migration_complete_lines=$(wc -l < "$migration_complete" | tr -d ' ') || {
+      echo "managed home migration completion marker could not be inspected" >&2
+      exit 1
+    }
+    if [ "$migration_complete_lines" -ne 1 ] || [ "$migration_complete_value" != complete ]; then
+      echo "managed home migration completion marker is invalid" >&2
+      exit 1
+    fi
+  fi
+
+  if path_exists "$migration_journal"; then
+    require_root_private_file "$migration_journal" "managed home migration journal"
+  else
+    node "$migration_helper" plan \
+      "$migration_journal" \
+      "$state_root" "$legacy_home" "$managed_home" "$managed_state" \
+      "$chariox_uid" "$chariox_gid"
+    require_root_private_file "$migration_journal" "managed home migration journal"
+  fi
+
+  node "$migration_helper" apply \
+    "$migration_journal" \
+    "$state_root" "$legacy_home" "$managed_home" "$managed_state" \
+    "$chariox_uid" "$chariox_gid"
+  repair_root_control_state
+  require_root_private_file "$migration_journal" "managed home migration journal"
+  require_root_private_file "$migration_complete" "managed home migration completion marker"
+}
 
 if ! getent group chariox >/dev/null 2>&1; then
   groupadd --system chariox
@@ -239,6 +320,22 @@ if [ "$(id -gn chariox)" != "chariox" ]; then
   echo "existing chariox user has an incompatible primary group" >&2
   exit 1
 fi
+chariox_uid=$(id -u chariox)
+chariox_gid=$(id -g chariox)
+case "$chariox_uid:$chariox_gid" in
+  ''|*[!0-9:]*|0:*|*:0)
+    echo "invalid managed service-account uid or gid" >&2
+    exit 1
+    ;;
+esac
+
+require_real_ancestor_chain "$state_root" "managed kernel state root"
+require_real_ancestor_chain "$managed_home" "managed service-account home"
+install -d -o root -g root -m 0750 "$state_root"
+validate_state_root_entries
+migrate_legacy_home_transaction
+validate_state_root_entries
+
 if ! id chariox-docker >/dev/null 2>&1; then
   useradd --system --gid chariox-docker --home-dir /var/lib/chariox-docker/home --shell /usr/sbin/nologin chariox-docker
 fi
@@ -256,7 +353,6 @@ case "$docker_uid" in
 esac
 usermod --append --groups chariox-slice chariox
 
-install -d -o root -g root -m 0750 "$state_root"
 install -d -o chariox -g chariox -m 0700 "$managed_home" "$managed_state"
 install -d -o chariox-docker -g chariox-docker -m 0700 \
   "$install_root/var/lib/chariox-docker" \
