@@ -296,11 +296,14 @@ impl KernelRuntimeState {
 
     pub(super) async fn retire_owned_provider_run(&self, session_id: &str, provider_run_id: &str) {
         #[cfg(test)]
-        if let Some(barrier) = provider_retirement_test_barriers()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(provider_run_id)
-        {
+        let barrier = {
+            provider_retirement_test_barriers()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(provider_run_id)
+        };
+        #[cfg(test)]
+        if let Some(barrier) = barrier {
             barrier.reached.notify_one();
             barrier.release.notified().await;
         }
