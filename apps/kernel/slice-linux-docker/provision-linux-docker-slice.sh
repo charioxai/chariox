@@ -323,6 +323,19 @@ restore_saved_home_volume() {
   run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1 || true
 }
 
+prepare_home_volume() {
+  local created=0
+  if run_with_timeout 20 docker volume inspect "$SLICE_HOME_VOLUME" >/dev/null 2>&1; then
+    log "preserving existing home volume $SLICE_HOME_VOLUME; saved home archive is only used for an initial restore"
+  else
+    run_with_timeout 30 docker volume create "$SLICE_HOME_VOLUME" >/dev/null
+    created=1
+  fi
+  if (( created == 1 )); then
+    restore_saved_home_volume
+  fi
+}
+
 machine_id_hex() {
   printf '%s' "$SLICE_MACHINE_ID" | sha256sum | awk '{ print substr($1, 1, 32) }'
 }
@@ -450,6 +463,13 @@ image_selkies_capable() {
     && "$selkies_license" == "MPL-2.0" ]]
 }
 
+saved_state_image_compatible() {
+  local image="$1"
+  docker image inspect "$image" >/dev/null 2>&1 \
+    && image_runtime_compatible "$image" \
+    && image_selkies_capable "$image"
+}
+
 ensure_saved_state_capable_base() {
   case "$SLICE_BUILD_IMAGE" in
     auto)
@@ -488,16 +508,12 @@ require_saved_state_compatibility() {
     || fail "saved state migration required before selecting Selkies: saved home archive is missing at $SLICE_SAVED_HOME_ARCHIVE; no container or home-volume mutation was attempted."
   log "saved state compatibility gate: validating image labels before mutation"
 
-  if docker image inspect "$SLICE_IMAGE" >/dev/null 2>&1 \
-    && image_runtime_compatible "$SLICE_IMAGE" \
-    && image_selkies_capable "$SLICE_IMAGE"; then
+  if saved_state_image_compatible "$SLICE_IMAGE"; then
     log "saved state image $SLICE_IMAGE is runtime-compatible and Selkies-capable"
     return 0
   fi
 
-  if docker image inspect "$SLICE_BASE_IMAGE" >/dev/null 2>&1 \
-    && image_runtime_compatible "$SLICE_BASE_IMAGE" \
-    && image_selkies_capable "$SLICE_BASE_IMAGE"; then
+  if saved_state_image_compatible "$SLICE_BASE_IMAGE"; then
     log "saved state migration: restoring $SLICE_SAVED_HOME_ARCHIVE on Selkies-capable runtime image $SLICE_BASE_IMAGE; /home/slice state is preserved"
     SLICE_IMAGE="$SLICE_BASE_IMAGE"
     return 0
@@ -548,7 +564,18 @@ build_image() {
     *) fail "CHARIOX_SLICE_BUILD_IMAGE must be auto, always, or never" ;;
   esac
   if [[ -n "$SLICE_SAVED_HOME_ARCHIVE" && "$SLICE_DISPLAY_BACKEND" == selkies ]]; then
-    ensure_saved_state_capable_base
+    [[ -f "$SLICE_SAVED_HOME_ARCHIVE" ]] \
+      || fail "saved state migration required before selecting Selkies: saved home archive is missing at $SLICE_SAVED_HOME_ARCHIVE; no container or home-volume mutation was attempted."
+    case "$SLICE_BUILD_IMAGE" in
+      always)
+        ensure_saved_state_capable_base
+        ;;
+      auto)
+        if ! saved_state_image_compatible "$SLICE_IMAGE"; then
+          ensure_saved_state_capable_base
+        fi
+        ;;
+    esac
   fi
   require_saved_state_compatibility
 
@@ -662,8 +689,7 @@ ensure_container() {
     log "container $SLICE_NAME already exists"
   else
     log "creating container $SLICE_NAME"
-    run_with_timeout 30 docker volume create "$SLICE_HOME_VOLUME" >/dev/null
-    restore_saved_home_volume
+    prepare_home_volume
     local display_port
     display_port="$(selected_display_port)"
     local docker_create_args=(
