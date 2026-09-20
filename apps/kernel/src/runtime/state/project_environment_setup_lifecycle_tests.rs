@@ -6,6 +6,8 @@
 //! installation acceptance.
 
 #[cfg(unix)]
+use sha2::{Digest, Sha256};
+#[cfg(unix)]
 use std::collections::BTreeMap;
 #[cfg(unix)]
 use std::io::{Read, Write};
@@ -22,8 +24,6 @@ use std::sync::{
 use std::thread;
 #[cfg(unix)]
 use std::time::{Duration, Instant};
-#[cfg(unix)]
-use sha2::{Digest, Sha256};
 
 #[cfg(unix)]
 use chariox_relay::protocol::{DaemonRegistration, RelayEnvelope, RelayError};
@@ -51,8 +51,7 @@ use crate::local::{
     ProjectEnvironmentDefinitionSource, ProjectEnvironmentInput, ProjectEnvironmentInputKind,
     ProjectEnvironmentSetupPhase, ProjectEnvironmentSetupStatus, ProjectEnvironmentSetupStep,
     ProjectEnvironmentSetupStepKind, ProjectEnvironmentValidation,
-    RetryProjectEnvironmentSetupRequest,
-    StartProjectEnvironmentSetupRequest,
+    RetryProjectEnvironmentSetupRequest, StartProjectEnvironmentSetupRequest,
 };
 #[cfg(unix)]
 use crate::provider::{
@@ -61,9 +60,9 @@ use crate::provider::{
 #[cfg(unix)]
 use crate::runtime::router::CommandRouter;
 #[cfg(unix)]
-use crate::transport::relay_client::TestPeerRequestObservation;
-#[cfg(unix)]
 use crate::session::CreateSessionRequest;
+#[cfg(unix)]
+use crate::transport::relay_client::TestPeerRequestObservation;
 #[cfg(unix)]
 use crate::transport::relay_peer::{
     RelayPeerRequest, RelayPeerResponse, RelayProjectEnvironmentSetupStatus,
@@ -83,6 +82,16 @@ const SETUP_TRANSPORT_RECOVERY_RELAY_REQUEST_TIMEOUT_MS: u64 = 500;
 #[tokio::test]
 async fn public_setup_lifecycle_validates_supplied_definition_through_worker_boundary() {
     exercise_public_setup_lifecycle(DefinitionScenario::Supplied).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn public_setup_lifecycle_runs_on_an_ordinary_local_worker_without_cloud_receipt() {
+    exercise_public_setup_lifecycle_at_role(
+        DefinitionScenario::Supplied,
+        KernelRuntimeRole::General,
+    )
+    .await;
 }
 
 #[cfg(unix)]
@@ -130,6 +139,14 @@ enum DefinitionScenario {
 
 #[cfg(unix)]
 async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
+    exercise_public_setup_lifecycle_at_role(scenario, KernelRuntimeRole::RemoteLeaseWorker).await;
+}
+
+#[cfg(unix)]
+async fn exercise_public_setup_lifecycle_at_role(
+    scenario: DefinitionScenario,
+    runtime_role: KernelRuntimeRole,
+) {
     let _environment_lock = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
         "chariox-project-environment-lifecycle-{}-{}",
@@ -227,7 +244,11 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
         receipt: std::env::var_os("CHARIOX_DISPOSABLE_WORKER_RECEIPT"),
     };
     std::env::set_var("CHARIOX_HOME", &home);
-    std::env::set_var("CHARIOX_DISPOSABLE_WORKER_RECEIPT", &receipt);
+    if runtime_role == KernelRuntimeRole::RemoteLeaseWorker {
+        std::env::set_var("CHARIOX_DISPOSABLE_WORKER_RECEIPT", &receipt);
+    } else {
+        std::env::remove_var("CHARIOX_DISPOSABLE_WORKER_RECEIPT");
+    }
 
     let validation_release = workspace.join("validation-release");
     let command =
@@ -345,30 +366,32 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
     config.daemon_id = "worker-kernel".into();
     config.host_machine_id = "worker-machine".into();
     config.relay_public_key = "worker-public-key".into();
-    config.kernel_runtime_role = KernelRuntimeRole::RemoteLeaseWorker;
-    config.accept_remote_leases = true;
-    config.remote_lease_capacity = Some(1);
-    config.lease_worker_home_caller = Some(crate::config::LeaseWorkerHomeCaller {
-        kernel_id: "home-kernel".into(),
-        realm_id: "realm-1".into(),
-        user_id: "user-1".into(),
-        relay_public_key: "home-public-key".into(),
-    });
-    config.cloud_relay = Some(
-        serde_json::from_value(serde_json::json!({
-            "api_url": "https://staging.chariox.com",
-            "email": "owner@example.test",
-            "account_id": "account-1",
-            "user_id": "user-1",
-            "account_slug": "account-1",
-            "realm_id": "realm-1",
-            "relay_url": "wss://relay.example.test",
-            "issuer_id": "issuer-1",
-            "machine_id": "worker-machine",
-            "machine_credential": format!("mcred_{}", "c".repeat(40))
-        }))
-        .unwrap(),
-    );
+    config.kernel_runtime_role = runtime_role;
+    if runtime_role == KernelRuntimeRole::RemoteLeaseWorker {
+        config.accept_remote_leases = true;
+        config.remote_lease_capacity = Some(1);
+        config.lease_worker_home_caller = Some(crate::config::LeaseWorkerHomeCaller {
+            kernel_id: "home-kernel".into(),
+            realm_id: "realm-1".into(),
+            user_id: "user-1".into(),
+            relay_public_key: "home-public-key".into(),
+        });
+        config.cloud_relay = Some(
+            serde_json::from_value(serde_json::json!({
+                "api_url": "https://staging.chariox.com",
+                "email": "owner@example.test",
+                "account_id": "account-1",
+                "user_id": "user-1",
+                "account_slug": "account-1",
+                "realm_id": "realm-1",
+                "relay_url": "wss://relay.example.test",
+                "issuer_id": "issuer-1",
+                "machine_id": "worker-machine",
+                "machine_credential": format!("mcred_{}", "c".repeat(40))
+            }))
+            .unwrap(),
+        );
+    }
     ensure_worker_validation_boundary(&config).expect("fixture is a confirmed worker");
 
     let mut app = crate::DaemonApp::bootstrap(config).unwrap();
@@ -449,9 +472,7 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
                     | DefinitionScenario::SuppliedInputReuse
                     | DefinitionScenario::SuppliedStaleInputs
                     | DefinitionScenario::SuppliedMissingInputs
-                    | DefinitionScenario::SuppliedLegacyUnattested => {
-                        Vec::new()
-                    }
+                    | DefinitionScenario::SuppliedLegacyUnattested => Vec::new(),
                     DefinitionScenario::Generated => vec![command.clone()],
                 },
             }),
@@ -515,42 +536,44 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
             "cancellation coverage requires the worker validation barrier"
         );
         let cancelled = runtime
-        .execute_project_environment_setup_request(
-            LocalDaemonRequest::CancelProjectEnvironmentSetup(
-                CancelProjectEnvironmentSetupRequest {
-                    operation_id: "setup-lifecycle".into(),
-                    session_id: session.id().to_string(),
-                },
-            ),
-            "user-1",
-        )
-        .await
-        .expect("public setup cancellation should settle on the worker");
-    let cancelled_status = response_status(cancelled);
-    assert_eq!(
-        cancelled_status.phase,
-        ProjectEnvironmentSetupPhase::Cancelled
-    );
-    assert!(cancelled_status.retryable);
+            .execute_project_environment_setup_request(
+                LocalDaemonRequest::CancelProjectEnvironmentSetup(
+                    CancelProjectEnvironmentSetupRequest {
+                        operation_id: "setup-lifecycle".into(),
+                        session_id: session.id().to_string(),
+                    },
+                ),
+                "user-1",
+            )
+            .await
+            .expect("public setup cancellation should settle on the worker");
+        let cancelled_status = response_status(cancelled);
+        assert_eq!(
+            cancelled_status.phase,
+            ProjectEnvironmentSetupPhase::Cancelled
+        );
+        assert!(cancelled_status.retryable);
 
         std::fs::write(&validation_release, b"").unwrap();
 
         let retried = runtime
-        .execute_project_environment_setup_request(
-            LocalDaemonRequest::RetryProjectEnvironmentSetup(RetryProjectEnvironmentSetupRequest {
-                operation_id: "setup-lifecycle".into(),
-                session_id: session.id().to_string(),
-            }),
-            "user-1",
-        )
-        .await
-        .expect("public setup retry should be accepted after worker cancellation");
-    let retried_status = response_status(retried);
-    assert_eq!(
-        retried_status.phase,
-        ProjectEnvironmentSetupPhase::Requested
-    );
-    assert_eq!(retried_status.attempt, 2);
+            .execute_project_environment_setup_request(
+                LocalDaemonRequest::RetryProjectEnvironmentSetup(
+                    RetryProjectEnvironmentSetupRequest {
+                        operation_id: "setup-lifecycle".into(),
+                        session_id: session.id().to_string(),
+                    },
+                ),
+                "user-1",
+            )
+            .await
+            .expect("public setup retry should be accepted after worker cancellation");
+        let retried_status = response_status(retried);
+        assert_eq!(
+            retried_status.phase,
+            ProjectEnvironmentSetupPhase::Requested
+        );
+        assert_eq!(retried_status.attempt, 2);
 
         wait_for_ready(&runtime, "setup-lifecycle", &provider_fixture).await
     };
@@ -568,7 +591,7 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
     );
 
     match scenario {
-            DefinitionScenario::Supplied | DefinitionScenario::SuppliedInputReuse => {
+        DefinitionScenario::Supplied | DefinitionScenario::SuppliedInputReuse => {
             assert!(
                 workspace.join("setup-started").exists(),
                 "a reusable definition must be applied by the worker before validation"
@@ -647,7 +670,10 @@ async fn exercise_public_setup_lifecycle(scenario: DefinitionScenario) {
 
         let utility_trace = provider_fixture.diagnostics();
         let materialized_inputs: Vec<(&str, &[u8])> = if input_scenario {
-            vec![(recipe_path, recipe_contents), (lockfile_path, lockfile_contents)]
+            vec![
+                (recipe_path, recipe_contents),
+                (lockfile_path, lockfile_contents),
+            ]
         } else {
             Vec::new()
         };
@@ -1211,7 +1237,8 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     let repair_recipe_contents: &[u8] = br#"{"image":"mcr.microsoft.com/devcontainers/base:ubuntu"}
 "#;
     let repair_lockfile_path = "Cargo.lock";
-    let repair_lockfile_contents: &[u8] = b"version = 3\n\n[[package]]\nname = \"remote-fixture\"\n";
+    let repair_lockfile_contents: &[u8] =
+        b"version = 3\n\n[[package]]\nname = \"remote-fixture\"\n";
     let mut repairable_definition = definition.clone();
     repairable_definition.source = ProjectEnvironmentDefinitionSource::Devcontainer;
     repairable_definition.source_path = Some(repair_recipe_path.to_string());
@@ -1364,18 +1391,16 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     let repair_operation_id = "setup-remote-repairable-definition";
     let repair_started = runtime
         .execute_project_environment_setup_request(
-            LocalDaemonRequest::StartProjectEnvironmentSetup(
-                StartProjectEnvironmentSetupRequest {
-                    operation_id: repair_operation_id.to_string(),
-                    project_id: project_id.clone(),
-                    session_id: session_id.clone(),
-                    agent_id: agent_id.clone(),
-                    target_worker_id: config_worker.host_machine_id.clone(),
-                    target_platform: target_platform.clone(),
-                    definition: Some(repairable_definition.clone()),
-                    validation_commands: Vec::new(),
-                },
-            ),
+            LocalDaemonRequest::StartProjectEnvironmentSetup(StartProjectEnvironmentSetupRequest {
+                operation_id: repair_operation_id.to_string(),
+                project_id: project_id.clone(),
+                session_id: session_id.clone(),
+                agent_id: agent_id.clone(),
+                target_worker_id: config_worker.host_machine_id.clone(),
+                target_platform: target_platform.clone(),
+                definition: Some(repairable_definition.clone()),
+                validation_commands: Vec::new(),
+            }),
             "user-1",
         )
         .await
@@ -1695,12 +1720,10 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     let cancel_during_missing_status_operation_id = "setup-cancel-during-missing-status";
     let started_cancel_during_missing_status = runtime
         .execute_project_environment_setup_request(
-            LocalDaemonRequest::StartProjectEnvironmentSetup(
-                StartProjectEnvironmentSetupRequest {
-                    operation_id: cancel_during_missing_status_operation_id.to_string(),
-                    ..start_request.clone()
-                },
-            ),
+            LocalDaemonRequest::StartProjectEnvironmentSetup(StartProjectEnvironmentSetupRequest {
+                operation_id: cancel_during_missing_status_operation_id.to_string(),
+                ..start_request.clone()
+            }),
             "user-1",
         )
         .await
@@ -1776,11 +1799,11 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
                 }) if operation_id == cancel_during_missing_status_operation_id => {
                     break release;
                 }
-                Some(TestPeerRequestObservation::StartProjectEnvironmentSetup {
-                    operation_id,
-                }) => panic!(
-                    "unexpected worker setup start before cancellation intent: {operation_id}"
-                ),
+                Some(TestPeerRequestObservation::StartProjectEnvironmentSetup { operation_id }) => {
+                    panic!(
+                        "unexpected worker setup start before cancellation intent: {operation_id}"
+                    )
+                }
                 Some(_) => continue,
                 None => panic!("worker request observer closed before public Get was received"),
             }
@@ -1814,11 +1837,11 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
                 }) if operation_id == cancel_during_missing_status_operation_id => {
                     break release;
                 }
-                Some(TestPeerRequestObservation::StartProjectEnvironmentSetup {
-                    operation_id,
-                }) => panic!(
+                Some(TestPeerRequestObservation::StartProjectEnvironmentSetup { operation_id }) => {
+                    panic!(
                     "worker setup was redispatched before cancellation response: {operation_id}"
-                ),
+                )
+                }
                 Some(_) => continue,
                 None => {
                     panic!("worker request observer closed before public Cancel was received")
