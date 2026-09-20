@@ -16,6 +16,10 @@ expected_new_digest=$3
 trusted_public_key=$4
 next_trusted_public_key=${5:-$4}
 install_root=${CHARIOX_MANAGED_UPGRADE_ROOT:-}
+state_root=$install_root/var/lib/chariox
+managed_home=$install_root/home/chariox
+managed_state=$managed_home/.chariox
+legacy_home=$state_root/home
 script_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 service_name=chariox-managed-bootstrap.service
 chariox_root=$install_root/usr/lib/chariox
@@ -23,24 +27,13 @@ releases_root=$chariox_root/releases
 current_link=$chariox_root/current
 slice_build_context_link=$chariox_root/slice-build-context
 signed_slice_build_context_target=current/usr/lib/chariox/slice-build-context
-receipt_path=${CHARIOX_MANAGED_UPGRADE_RECEIPT:-$install_root/var/lib/chariox/home/managed/bootstrap-receipt.json}
-if [ -z "${CHARIOX_MANAGED_UPGRADE_RECEIPT:-}" ]; then
-  worker_receipt_path=$install_root/var/lib/chariox/home/disposable-worker/bootstrap-receipt.json
-  if [ -e "$worker_receipt_path" ] || [ -L "$worker_receipt_path" ]; then
-    if [ -e "$receipt_path" ] || [ -L "$receipt_path" ]; then
-      echo "both managed and allocation worker receipts exist; select the receipt explicitly" >&2
-      exit 1
-    fi
-    receipt_path=$worker_receipt_path
-  fi
-fi
-release_override_path=${CHARIOX_MANAGED_UPGRADE_RELEASE_OVERRIDE:-${receipt_path%/*}/release-override.json}
+receipt_path=${CHARIOX_MANAGED_UPGRADE_RECEIPT:-$install_root/var/lib/chariox/managed/bootstrap-receipt.json}
 transaction_root=$chariox_root/.managed-kernel-upgrade
 terminal_transaction=$chariox_root/.managed-kernel-upgrade.terminal
 health_host=${CHARIOX_MANAGED_UPGRADE_HEALTH_HOST:-127.0.0.1}
 health_port=${CHARIOX_MANAGED_UPGRADE_HEALTH_PORT:-43118}
 health_timeout_ms=${CHARIOX_MANAGED_UPGRADE_HEALTH_TIMEOUT_MS:-120000}
-presence_root=$install_root/var/lib/chariox/home/kernels/active
+presence_root=$install_root/var/lib/chariox/kernels/active
 staging_root=$(mktemp -d "${TMPDIR:-/tmp}/chariox-managed-upgrade.XXXXXX")
 chmod 0700 "$staging_root"
 pending_release=
@@ -56,6 +49,105 @@ cleanup() {
     rm -rf -- "$pending_transaction"
   fi
   rm -rf -- "$staging_root"
+}
+
+path_exists() {
+  [ -e "$1" ] || [ -L "$1" ]
+}
+
+require_real_directory() {
+  directory=$1
+  label=$2
+  if [ -L "$directory" ] || { [ -e "$directory" ] && [ ! -d "$directory" ]; }; then
+    echo "$label is not a real directory" >&2
+    exit 1
+  fi
+}
+
+ensure_directory_parent() {
+  directory=$1
+  label=$2
+  if path_exists "$directory"; then
+    require_real_directory "$directory" "$label"
+  else
+    install -d -o root -g root -m 0755 "$directory"
+  fi
+}
+
+move_without_overwrite() {
+  source_path=$1
+  destination_path=$2
+  label=$3
+  if ! path_exists "$source_path"; then
+    return 0
+  fi
+  if [ -L "$source_path" ]; then
+    echo "$label source is a symlink" >&2
+    exit 1
+  fi
+  if path_exists "$destination_path"; then
+    echo "$label migration would overwrite an existing destination" >&2
+    exit 1
+  fi
+  destination_parent=${destination_path%/*}
+  [ -n "$destination_parent" ] || destination_parent=/
+  ensure_directory_parent "$destination_parent" "$label destination parent"
+  mv -- "$source_path" "$destination_path"
+}
+
+migrate_legacy_home() {
+  require_real_directory "$state_root" "managed kernel state root"
+  require_real_directory "$legacy_home" "legacy managed kernel home"
+  require_real_directory "$managed_home" "managed service-account home"
+
+  if path_exists "$legacy_home"; then
+    if path_exists "$managed_home"; then
+      echo "legacy managed kernel home and /home/chariox both exist; refusing to overwrite either" >&2
+      exit 1
+    fi
+    ensure_directory_parent "${managed_home%/*}" "managed service-account home parent"
+    mv -- "$legacy_home" "$managed_home"
+  fi
+
+  if ! path_exists "$managed_home"; then
+    ensure_directory_parent "${managed_home%/*}" "managed service-account home parent"
+    install -d -o chariox -g chariox -m 0700 "$managed_home"
+  fi
+  require_real_directory "$managed_home" "managed service-account home"
+  chmod 0700 "$managed_home"
+  if path_exists "$managed_state"; then
+    require_real_directory "$managed_state" "managed kernel state directory"
+  else
+    install -d -o chariox -g chariox -m 0700 "$managed_state"
+  fi
+  chmod 0700 "$managed_state"
+
+  for state_directory in managed-context managed-runtime-auth managed disposable-worker kernels; do
+    move_without_overwrite \
+      "$managed_home/$state_directory" \
+      "$managed_state/$state_directory" \
+      "managed kernel $state_directory"
+  done
+  move_without_overwrite \
+    "$managed_state/managed/bootstrap-receipt.json" \
+    "$state_root/managed/bootstrap-receipt.json" \
+    "managed bootstrap receipt"
+  move_without_overwrite \
+    "$managed_state/managed/release-override.json" \
+    "$state_root/managed/release-override.json" \
+    "managed release override"
+  move_without_overwrite \
+    "$managed_state/disposable-worker/bootstrap-receipt.json" \
+    "$state_root/disposable-worker/bootstrap-receipt.json" \
+    "disposable worker bootstrap receipt"
+  move_without_overwrite \
+    "$managed_state/disposable-worker/release-override.json" \
+    "$state_root/disposable-worker/release-override.json" \
+    "disposable worker release override"
+  move_without_overwrite \
+    "$managed_state/kernels/active" \
+    "$state_root/kernels/active" \
+    "managed kernel presence state"
 }
 
 require_regular_file() {
@@ -501,17 +593,27 @@ next_trusted_public_key=$staging_root/next-trusted-public-key
 require_regular_file "$trusted_public_key"
 require_regular_file "$next_trusted_public_key"
 
+upgrade_lock=${CHARIOX_MANAGED_UPGRADE_LOCK:-/run/lock/chariox-managed-image-install.lock}
+exec 9>"$upgrade_lock"
+flock 9
+migrate_legacy_home
+if [ -z "${CHARIOX_MANAGED_UPGRADE_RECEIPT:-}" ]; then
+  worker_receipt_path=$install_root/var/lib/chariox/disposable-worker/bootstrap-receipt.json
+  if [ -e "$worker_receipt_path" ] || [ -L "$worker_receipt_path" ]; then
+    if [ -e "$receipt_path" ] || [ -L "$receipt_path" ]; then
+      echo "both managed and allocation worker receipts exist; select the receipt explicitly" >&2
+      exit 1
+    fi
+    receipt_path=$worker_receipt_path
+  fi
+fi
+release_override_path=${CHARIOX_MANAGED_UPGRADE_RELEASE_OVERRIDE:-${receipt_path%/*}/release-override.json}
 require_root_owned_directory "$chariox_root"
 require_root_owned_ancestor_chain "$chariox_root" "managed kernel upgrade authority"
 require_root_owned_directory "$releases_root"
 require_private_regular_file "$receipt_path" "managed bootstrap receipt"
 require_safe_ancestor_chain "$receipt_path" "managed bootstrap receipt"
-
 service_name=$(node "$script_root/managed-kernel-upgrade-state.mjs" supervisor-service "$receipt_path" "$release_override_path")
-
-upgrade_lock=${CHARIOX_MANAGED_UPGRADE_LOCK:-/run/lock/chariox-managed-image-install.lock}
-exec 9>"$upgrade_lock"
-flock 9
 recover_transaction
 
 if [ ! -L "$current_link" ]; then

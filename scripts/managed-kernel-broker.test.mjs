@@ -315,7 +315,7 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
         "--name",
         "chariox-slice-escape",
         "-v",
-        "/var/lib/chariox/home/.chariox/vault:/vault",
+        "/home/chariox/.chariox/vault:/vault",
         "chariox-slice-linux:test",
       ],
     },

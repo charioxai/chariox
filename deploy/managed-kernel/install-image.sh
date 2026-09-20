@@ -15,6 +15,9 @@ expected_release_digest=$2
 trusted_public_key=$3
 install_root=${CHARIOX_IMAGE_INSTALL_ROOT:-}
 state_root=$install_root/var/lib/chariox
+managed_home=$install_root/home/chariox
+managed_state=$managed_home/.chariox
+legacy_home=$state_root/home
 script_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 staging_root=$(mktemp -d "${TMPDIR:-/tmp}/chariox-image-install.XXXXXX")
 chmod 0700 "$staging_root"
@@ -89,24 +92,127 @@ install_lock=${CHARIOX_IMAGE_INSTALL_LOCK:-/run/lock/chariox-managed-image-insta
 exec 9>"$install_lock"
 flock 9
 
-if [ -L "$state_root" ] || { [ -e "$state_root" ] && [ ! -d "$state_root" ]; }; then
-  echo "managed kernel state root is not a directory" >&2
-  exit 1
-fi
-if [ -L "$state_root/home" ] || { [ -e "$state_root/home" ] && [ ! -d "$state_root/home" ]; }; then
-  echo "managed kernel home is not a directory" >&2
-  exit 1
-fi
-if [ -d "$state_root" ]; then
-  if ! state_entry=$(find "$state_root" -mindepth 1 ! -path "$state_root/home" -print -quit); then
+path_exists() {
+  [ -e "$1" ] || [ -L "$1" ]
+}
+
+require_real_directory() {
+  directory=$1
+  label=$2
+  if [ -L "$directory" ] || { [ -e "$directory" ] && [ ! -d "$directory" ]; }; then
+    echo "$label is not a real directory" >&2
+    exit 1
+  fi
+}
+
+ensure_directory_parent() {
+  directory=$1
+  label=$2
+  if path_exists "$directory"; then
+    require_real_directory "$directory" "$label"
+  else
+    install -d -o root -g root -m 0755 "$directory"
+  fi
+}
+
+move_without_overwrite() {
+  source_path=$1
+  destination_path=$2
+  label=$3
+  if ! path_exists "$source_path"; then
+    return 0
+  fi
+  if [ -L "$source_path" ]; then
+    echo "$label source is a symlink" >&2
+    exit 1
+  fi
+  if path_exists "$destination_path"; then
+    echo "$label migration would overwrite an existing destination" >&2
+    exit 1
+  fi
+  destination_parent=${destination_path%/*}
+  [ -n "$destination_parent" ] || destination_parent=/
+  ensure_directory_parent "$destination_parent" "$label destination parent"
+  mv -- "$source_path" "$destination_path"
+}
+
+migrate_legacy_home() {
+  require_real_directory "$state_root" "managed kernel state root"
+  require_real_directory "$legacy_home" "legacy managed kernel home"
+  require_real_directory "$managed_home" "managed service-account home"
+
+  if path_exists "$legacy_home"; then
+    if path_exists "$managed_home"; then
+      echo "legacy managed kernel home and /home/chariox both exist; refusing to overwrite either" >&2
+      exit 1
+    fi
+    ensure_directory_parent "${managed_home%/*}" "managed service-account home parent"
+    mv -- "$legacy_home" "$managed_home"
+  fi
+
+  if ! path_exists "$managed_home"; then
+    ensure_directory_parent "${managed_home%/*}" "managed service-account home parent"
+    install -d -o root -g root -m 0700 "$managed_home"
+  fi
+  require_real_directory "$managed_home" "managed service-account home"
+  if path_exists "$managed_state"; then
+    require_real_directory "$managed_state" "managed kernel state directory"
+  fi
+
+  for state_directory in managed-context managed-runtime-auth managed disposable-worker kernels; do
+    move_without_overwrite \
+      "$managed_home/$state_directory" \
+      "$managed_state/$state_directory" \
+      "managed kernel $state_directory"
+  done
+  move_without_overwrite \
+    "$managed_state/managed/bootstrap-receipt.json" \
+    "$state_root/managed/bootstrap-receipt.json" \
+    "managed bootstrap receipt"
+  move_without_overwrite \
+    "$managed_state/managed/release-override.json" \
+    "$state_root/managed/release-override.json" \
+    "managed release override"
+  move_without_overwrite \
+    "$managed_state/disposable-worker/bootstrap-receipt.json" \
+    "$state_root/disposable-worker/bootstrap-receipt.json" \
+    "disposable worker bootstrap receipt"
+  move_without_overwrite \
+    "$managed_state/disposable-worker/release-override.json" \
+    "$state_root/disposable-worker/release-override.json" \
+    "disposable worker release override"
+  move_without_overwrite \
+    "$managed_state/kernels/active" \
+    "$state_root/kernels/active" \
+    "managed kernel presence state"
+}
+
+validate_state_root_entries() {
+  if ! path_exists "$state_root"; then
+    return 0
+  fi
+  require_real_directory "$state_root" "managed kernel state root"
+  if ! unknown_state_entry=$(find "$state_root" -mindepth 1 -maxdepth 1 \
+    ! \( \
+      -name managed-bootstrap.json -o \
+      -name disposable-worker-bootstrap.json -o \
+      -name managed -o \
+      -name disposable-worker -o \
+      -name kernels -o \
+      -name provider-home -o \
+      -name release-verification \
+    \) -print -quit); then
     echo "managed kernel state root could not be inspected" >&2
     exit 1
   fi
-  if [ -n "$state_entry" ]; then
-    echo "managed kernel state root is not pristine" >&2
+  if [ -n "$unknown_state_entry" ]; then
+    echo "managed kernel state root contains an unrecognized entry" >&2
     exit 1
   fi
-fi
+}
+
+migrate_legacy_home
+validate_state_root_entries
 
 if ! getent group chariox >/dev/null 2>&1; then
   groupadd --system chariox
@@ -118,9 +224,14 @@ if ! getent group chariox-docker >/dev/null 2>&1; then
   groupadd --system chariox-docker
 fi
 if ! id chariox >/dev/null 2>&1; then
-  useradd --system --gid chariox --home-dir /var/lib/chariox/home --shell /usr/sbin/nologin chariox
+  useradd --system --gid chariox --home-dir /home/chariox --shell /usr/sbin/nologin chariox
 fi
-if [ "$(getent passwd chariox | cut -d: -f6)" != "/var/lib/chariox/home" ]; then
+chariox_home_from_passwd=$(getent passwd chariox | cut -d: -f6)
+if [ "$chariox_home_from_passwd" = "/var/lib/chariox/home" ]; then
+  usermod --home /home/chariox chariox
+  chariox_home_from_passwd=$(getent passwd chariox | cut -d: -f6)
+fi
+if [ "$chariox_home_from_passwd" != "/home/chariox" ]; then
   echo "existing chariox user has an incompatible home directory" >&2
   exit 1
 fi
@@ -145,7 +256,8 @@ case "$docker_uid" in
 esac
 usermod --append --groups chariox-slice chariox
 
-install -d -o chariox -g chariox -m 0700 "$state_root" "$state_root/home"
+install -d -o root -g root -m 0750 "$state_root"
+install -d -o chariox -g chariox -m 0700 "$managed_home" "$managed_state"
 install -d -o chariox-docker -g chariox-docker -m 0700 \
   "$install_root/var/lib/chariox-docker" \
   "$install_root/var/lib/chariox-docker/home"

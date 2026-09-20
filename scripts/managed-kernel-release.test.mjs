@@ -831,13 +831,18 @@ exit 1
 `)
   await writeHarnessCommand(join(bin, "getent"), `#!/bin/sh
 if [ "\${1:-}" = "group" ] && [ -f "$HARNESS_STATE/group-\${2:-}" ]; then echo "\${2}:x:998:"; exit 0; fi
-if [ "\${1:-}" = "passwd" ] && [ "\${2:-}" = "chariox" ] && [ -f "$HARNESS_STATE/user-chariox" ]; then echo 'chariox:x:998:998::/var/lib/chariox/home:/usr/sbin/nologin'; exit 0; fi
+if [ "\${1:-}" = "passwd" ] && [ "\${2:-}" = "chariox" ] && [ -f "$HARNESS_STATE/user-chariox" ]; then
+  home=/home/chariox
+  [ -f "$HARNESS_STATE/user-chariox-home" ] && home=$(cat "$HARNESS_STATE/user-chariox-home")
+  echo "chariox:x:998:998::\${home}:/usr/sbin/nologin"
+  exit 0
+fi
 if [ "\${1:-}" = "passwd" ] && [ "\${2:-}" = "chariox-docker" ] && [ -f "$HARNESS_STATE/user-chariox-docker" ]; then echo 'chariox-docker:x:997:997::/var/lib/chariox-docker/home:/usr/sbin/nologin'; exit 0; fi
 exit 2
 `)
   await writeHarnessCommand(join(bin, "groupadd"), "#!/bin/sh\nfor value in \"$@\"; do name=$value; done\ntouch \"$HARNESS_STATE/group-$name\"\n")
-  await writeHarnessCommand(join(bin, "useradd"), "#!/bin/sh\nfor value in \"$@\"; do name=$value; done\ntouch \"$HARNESS_STATE/user-$name\"\n")
-  await writeHarnessCommand(join(bin, "usermod"), "#!/bin/sh\nexit 0\n")
+  await writeHarnessCommand(join(bin, "useradd"), "#!/bin/sh\nprevious=\nfor value in \"$@\"; do if [ \"$previous\" = --home-dir ]; then printf '%s' \"$value\" > \"$HARNESS_STATE/user-$name-home\"; fi; previous=$value; name=$value; done\ntouch \"$HARNESS_STATE/user-$name\"\n")
+  await writeHarnessCommand(join(bin, "usermod"), "#!/bin/sh\nif [ \"\${1:-}\" = --home ] && [ \"\${3:-}\" = chariox ]; then printf '%s' \"$2\" > \"$HARNESS_STATE/user-chariox-home\"; fi\nexit 0\n")
   await writeHarnessCommand(join(bin, "loginctl"), `#!/bin/sh
 [ "$*" = "enable-linger chariox-docker" ] || exit 1
 [ "\${HARNESS_LOGINCTL_FAIL:-0}" = 0 ] || exit 1
@@ -877,6 +882,11 @@ const args = process.argv.slice(2)
 const filtered = []
 for (let index = 0; index < args.length; index += 1) {
   if (args[index] === "-o" || args[index] === "-g") { index += 1; continue }
+  if (args[index] === "-m" && args[index + 1] === "2710") {
+    filtered.push("-m", "0710")
+    index += 1
+    continue
+  }
   filtered.push(args[index])
 }
 const result = spawnSync("/usr/bin/install", filtered, { stdio: "inherit" })
@@ -1040,12 +1050,72 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
   assert.equal(failedTraversal.status, 1)
   assert.match(failedTraversal.stderr, /managed kernel state root could not be inspected/)
 
-  const seededIdentity = join(harness.installRoot, "var/lib/chariox/home/daemon-machine-identity.json")
+  const seededIdentity = join(harness.installRoot, "var/lib/chariox/daemon-machine-identity.json")
   await writeFile(seededIdentity, "should never enter an image")
   const rejected = spawnSync(installer, args, { encoding: "utf8", env })
   assert.equal(rejected.status, 1)
-  assert.match(rejected.stderr, /managed kernel state root is not pristine/)
+  assert.match(rejected.stderr, /managed kernel state root contains an unrecognized entry/)
   assert.equal(await readFile(seededIdentity, "utf8"), "should never enter an image")
+})
+
+test("managed image installer migrates legacy home state without clobbering canonical state", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-managed-install-migration-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const fixture = await makeFixture(root)
+  const output = join(root, "release")
+  const packaged = runPackager({ ...fixture, output })
+  assert.equal(packaged.status, 0, packaged.stderr)
+  const harness = await createInstallerHarness(root)
+  const legacyHome = join(harness.installRoot, "var/lib/chariox/home")
+  const legacyState = join(legacyHome, ".chariox")
+  await mkdir(join(legacyHome, "repositories/repo-1"), { recursive: true })
+  await mkdir(join(legacyState, "vault"), { recursive: true })
+  await mkdir(join(legacyHome, "managed"), { recursive: true })
+  await mkdir(join(legacyHome, "kernels/active"), { recursive: true })
+  await writeFile(join(legacyHome, "repositories/repo-1/HEAD"), "legacy-repository\n")
+  await writeFile(join(legacyState, "vault/vault.json"), "legacy-vault\n")
+  await writeFile(join(legacyHome, "managed/bootstrap-receipt.json"), "legacy-receipt\n")
+  await writeFile(join(legacyHome, "kernels/active/kernel-1.json"), "legacy-presence\n")
+  const env = {
+    ...process.env,
+    PATH: harness.bin + ":" + process.env.PATH,
+    HARNESS_STATE: harness.state,
+    CHARIOX_IMAGE_INSTALL_ROOT: harness.installRoot,
+    CHARIOX_IMAGE_INSTALL_LOCK: join(harness.state, "install.lock"),
+  }
+  const args = [join(output, "rootfs"), packaged.stdout.trim(), fixture.trustedPublicKey]
+  const migrated = spawnSync(installer, args, { encoding: "utf8", env })
+  assert.equal(migrated.status, 0, migrated.stderr)
+  assert.equal(await lstat(legacyHome).then(() => true, () => false), false)
+  assert.equal(
+    await readFile(join(harness.installRoot, "home/chariox/repositories/repo-1/HEAD"), "utf8"),
+    "legacy-repository\n",
+  )
+  assert.equal(
+    await readFile(join(harness.installRoot, "home/chariox/.chariox/vault/vault.json"), "utf8"),
+    "legacy-vault\n",
+  )
+  assert.equal(
+    await readFile(join(harness.installRoot, "var/lib/chariox/managed/bootstrap-receipt.json"), "utf8"),
+    "legacy-receipt\n",
+  )
+  assert.equal(
+    await readFile(join(harness.installRoot, "var/lib/chariox/kernels/active/kernel-1.json"), "utf8"),
+    "legacy-presence\n",
+  )
+  assert.equal((await stat(join(harness.installRoot, "home/chariox"))).mode & 0o777, 0o700)
+  assert.equal((await stat(join(harness.installRoot, "home/chariox/.chariox"))).mode & 0o777, 0o700)
+
+  await mkdir(legacyHome, { recursive: true })
+  await writeFile(join(legacyHome, "must-remain-untouched"), "collision\n")
+  const collision = spawnSync(installer, args, { encoding: "utf8", env })
+  assert.equal(collision.status, 1)
+  assert.match(collision.stderr, /both exist; refusing to overwrite either/)
+  assert.equal(await readFile(join(legacyHome, "must-remain-untouched"), "utf8"), "collision\n")
+  assert.equal(
+    await readFile(join(harness.installRoot, "home/chariox/repositories/repo-1/HEAD"), "utf8"),
+    "legacy-repository\n",
+  )
 })
 
 test("managed image installer rejects a linked artifact ancestor before host mutation", async (context) => {
@@ -1186,11 +1256,11 @@ test("managed image installer has no runtime start or network path", async () =>
   const contents = await readFile(installer, "utf8")
   assert.match(contents, /if \[ "\$\(id -u\)" -ne 0 \]/)
   assert.match(contents, /node "\$script_root\/verify-image-release\.mjs"/)
-  assert.match(contents, /managed kernel state root is not pristine/)
+  assert.match(contents, /managed kernel state root contains an unrecognized entry/)
   assert.match(contents, /groupadd --system chariox/)
   assert.match(contents, /groupadd --system chariox-docker/)
   assert.match(contents, /groupadd --system chariox-slice/)
-  assert.match(contents, /useradd --system --gid chariox --home-dir \/var\/lib\/chariox\/home/)
+  assert.match(contents, /useradd --system --gid chariox --home-dir \/home\/chariox/)
   assert.match(contents, /useradd --system --gid chariox-docker --home-dir \/var\/lib\/chariox-docker\/home/)
   assert.match(contents, /systemctl daemon-reload/)
   assert.match(contents, /systemctl enable chariox-managed-bootstrap\.service/)
