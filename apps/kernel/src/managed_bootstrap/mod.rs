@@ -32,6 +32,51 @@ use state::{
 const MIN_PREPARE_RETRY_DELAY: Duration = Duration::from_secs(1);
 const MAX_PREPARE_RETRY_DELAY: Duration = Duration::from_secs(60);
 pub(crate) const MANAGED_REPOSITORY_ROOT_ENV: &str = "CHARIOX_MANAGED_REPOSITORY_ROOT";
+pub(crate) const MANAGED_PROVIDER_TOPOLOGY_ENV: &str = "CHARIOX_MANAGED_PROVIDER_TOPOLOGY";
+pub(crate) const PATH1_SHARED_HOST_SELECTOR_ENVS: &[&str] = &[
+    "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+    "CHARIOX_MANAGED_PROVIDER_ISOLATION",
+    "CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE",
+    "CHARIOX_MANAGED_PROVIDER_BWRAP",
+    "CHARIOX_MANAGED_SLICE_SERVICE_ROOT",
+    "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT",
+    "CHARIOX_SLICE_ROOT",
+    "CHARIOX_SLICE_DOCKER_BROKER_SOCKET",
+    "CHARIOX_SLICE_DOCKER_BROKER_FD",
+    "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED",
+];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ManagedProviderTopology {
+    Path1,
+    SharedHost,
+}
+
+impl ManagedProviderTopology {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Path1 => "path1",
+            Self::SharedHost => "shared_host",
+        }
+    }
+}
+
+pub(crate) fn managed_provider_topology() -> Result<ManagedProviderTopology, DaemonError> {
+    match std::env::var(MANAGED_PROVIDER_TOPOLOGY_ENV).as_deref() {
+        Ok("path1") => Ok(ManagedProviderTopology::Path1),
+        Ok("shared_host") => Ok(ManagedProviderTopology::SharedHost),
+        Ok(_) => Err(DaemonError::LocalTransport {
+            operation: "select managed bootstrap topology",
+            message: format!("{MANAGED_PROVIDER_TOPOLOGY_ENV} must be path1 or shared_host"),
+        }),
+        Err(_) => Err(DaemonError::LocalTransport {
+            operation: "select managed bootstrap topology",
+            message: format!(
+                "{MANAGED_PROVIDER_TOPOLOGY_ENV} must be explicitly set to path1 or shared_host"
+            ),
+        }),
+    }
+}
 
 pub(crate) fn managed_repository_root_from_env() -> Result<std::path::PathBuf, DaemonError> {
     let value = match std::env::var(MANAGED_REPOSITORY_ROOT_ENV) {
@@ -74,7 +119,10 @@ struct PendingConfirmation {
 }
 
 pub fn run_from_env() -> Result<(), DaemonError> {
-    supervisor::initialize_managed_docker_broker();
+    let topology = managed_provider_topology()?;
+    if topology == ManagedProviderTopology::SharedHost {
+        supervisor::initialize_managed_docker_broker();
+    }
     let cloud = HttpBootstrapCloudClient::default();
     let mut retry_delay = MIN_PREPARE_RETRY_DELAY;
     loop {
@@ -88,6 +136,7 @@ pub fn run_from_env() -> Result<(), DaemonError> {
                     &prepared.release,
                     prepared.confirmation,
                     &cloud,
+                    topology,
                 )?;
             }
             Err(error) => {

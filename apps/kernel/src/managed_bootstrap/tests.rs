@@ -17,7 +17,7 @@ use super::prepare_managed_kernel;
 use super::release::verify_release;
 use super::state::{BootstrapConfig, BootstrapReceipt, BootstrapReceiptStatus};
 use super::supervisor::run_kernel_once;
-use super::ManagedKernelContextPlan;
+use super::{ManagedKernelContextPlan, ManagedProviderTopology, MANAGED_PROVIDER_TOPOLOGY_ENV};
 use crate::error::DaemonError;
 
 mod disposable_worker;
@@ -142,12 +142,15 @@ fn bootstrap_verifies_release_persists_identity_and_profile_then_resumes_without
         .confirm_after_child_marker
         .lock()
         .expect("confirmation marker") = Some(fixture.kernel_started_marker.clone());
+    let previous_topology = std::env::var_os(MANAGED_PROVIDER_TOPOLOGY_ENV);
+    std::env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "shared_host");
 
     run_kernel_once(
         &fixture.config,
         &prepared.release,
         &mut prepared.confirmation,
         &cloud,
+        ManagedProviderTopology::SharedHost,
     )
     .expect("kernel child should start before relay-ready confirmation");
     assert!(prepared.confirmation.is_none());
@@ -206,6 +209,7 @@ fn bootstrap_verifies_release_persists_identity_and_profile_then_resumes_without
     );
     assert_eq!(cloud.confirm_calls.lock().expect("confirm calls").len(), 1);
 
+    restore_env(MANAGED_PROVIDER_TOPOLOGY_ENV, previous_topology);
     restore_env("CHARIOX_HOME", previous_home);
     fixture.cleanup();
 }

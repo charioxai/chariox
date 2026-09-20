@@ -24,7 +24,11 @@ use super::state::{
     read_bounded_json, remove_envelope, valid_digest, valid_identifier, valid_secret,
     validate_cloud_url, validate_managed_state_path,
 };
-use super::{jittered, normalized_api_url, persisted_profile, valid_managed_relay_url};
+use super::{
+    jittered, managed_provider_topology, normalized_api_url, persisted_profile,
+    valid_managed_relay_url, ManagedProviderTopology, MANAGED_PROVIDER_TOPOLOGY_ENV,
+    PATH1_SHARED_HOST_SELECTOR_ENVS,
+};
 
 const MIN_RETRY: Duration = Duration::from_secs(1);
 const MAX_RETRY: Duration = Duration::from_secs(60);
@@ -272,13 +276,19 @@ struct PreparedWorker {
 }
 
 pub fn run_from_env() -> Result<(), DaemonError> {
+    let topology = managed_provider_topology()?;
+    if topology != ManagedProviderTopology::Path1 {
+        return Err(worker_error(
+            "disposable worker bootstrap requires path1 topology",
+        ));
+    }
     let cloud = HttpBootstrapCloudClient::default();
     let mut delay = MIN_RETRY;
     loop {
         let prepared = WorkerConfig::from_env()
             .and_then(|config| prepare(&config, &cloud, Utc::now()).map(|worker| (config, worker)));
         match prepared {
-            Ok((config, worker)) => supervise(&config, worker, &cloud)?,
+            Ok((config, worker)) => supervise(&config, worker, &cloud, topology)?,
             Err(error) => crate::logging::warn_with_fields(
                 "disposable_worker_bootstrap.prepare_failed",
                 "disposable worker bootstrap failed; retrying",
@@ -453,11 +463,12 @@ fn supervise(
     config: &WorkerConfig,
     mut worker: PreparedWorker,
     cloud: &impl WorkerCloudClient,
+    topology: ManagedProviderTopology,
 ) -> Result<(), DaemonError> {
     let mut delay = MIN_RETRY;
     loop {
         let started = Instant::now();
-        match run_once(config, &mut worker, cloud) {
+        match run_once(config, &mut worker, cloud, topology) {
             Ok(status) => crate::logging::warn_with_fields(
                 "disposable_worker_bootstrap.kernel_exit",
                 "disposable worker kernel exited; restarting",
@@ -481,8 +492,9 @@ fn run_once(
     config: &WorkerConfig,
     worker: &mut PreparedWorker,
     cloud: &impl WorkerCloudClient,
+    topology: ManagedProviderTopology,
 ) -> Result<std::process::ExitStatus, DaemonError> {
-    let mut child = spawn_kernel(config, &worker.release, &worker.receipt)?;
+    let mut child = spawn_kernel(config, &worker.release, &worker.receipt, topology)?;
     if let Some(envelope) = &worker.pending {
         let confirmation = (|| {
             confirm_when_relay_ready(&mut child, &worker.receipt, envelope, cloud)?;
@@ -506,7 +518,13 @@ fn spawn_kernel(
     config: &WorkerConfig,
     release: &VerifiedRelease,
     receipt: &WorkerReceipt,
+    topology: ManagedProviderTopology,
 ) -> Result<Child, DaemonError> {
+    if topology != ManagedProviderTopology::Path1 {
+        return Err(worker_error(
+            "disposable worker kernel requires path1 topology",
+        ));
+    }
     let home_caller = serde_json::to_string(&receipt.home_caller.lease_binding())
         .map_err(|error| worker_error(format!("encode home caller: {error}")))?;
     let mut command = Command::new(&release.kernel_binary);
@@ -525,37 +543,23 @@ fn spawn_kernel(
         .env("CHARIOX_REMOTE_LEASE_CAPACITY", "1")
         .env("CHARIOX_LEASE_WORKER_HOME_CALLER", home_caller)
         .env(ACTIVITY_RECEIPT_ENV, &config.receipt_path)
+        .env(MANAGED_PROVIDER_TOPOLOGY_ENV, topology.as_str())
         .env_remove("CHARIOX_MANAGED_BOOTSTRAP_PATH")
         .env_remove("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT")
-        .env_remove("CHARIOX_MANAGED_PROVIDER_ISOLATION")
         .env_remove("CHARIOX_DAEMON_ID")
         .env_remove("CHARIOX_MACHINE_ID")
         .env_remove("CHARIOX_RELAY_TOKEN")
         .env_remove("CHARIOX_DAEMON_SOCKET")
-        .env_remove("CHARIOX_SLICE_DOCKER_BROKER_SOCKET")
-        .env_remove("CHARIOX_SLICE_DOCKER_BROKER_FD")
-        .env_remove("CHARIOX_SLICE_DOCKER_BROKER_REQUIRED")
-        .env_remove("CHARIOX_MANAGED_SLICE_SERVICE_ROOT")
-        .env_remove("CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT")
-        .env_remove("CHARIOX_SLICE_ROOT")
-        .env_remove("CHARIOX_MANAGED_PROVIDER_BWRAP")
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    for name in PATH1_SHARED_HOST_SELECTOR_ENVS {
+        command.env_remove(name);
+    }
     #[cfg(target_os = "linux")]
     {
         let provider_home = prepare_disposable_worker_provider_home(config)?;
-        let isolation_root = match env::var_os("CHARIOX_CAPABILITY_ISOLATION_ROOT") {
-            Some(value) if value.is_empty() => {
-                return Err(worker_error(
-                    "CHARIOX_CAPABILITY_ISOLATION_ROOT must not be empty",
-                ));
-            }
-            Some(value) => PathBuf::from(value),
-            None => config.chariox_home.join("managed-context").join("kernel"),
-        };
         command
-            .env("CHARIOX_CAPABILITY_ISOLATION_ROOT", isolation_root)
             .env("CHARIOX_MANAGED_PROVIDER_HOME", provider_home)
             .env(
                 "CHARIOX_MANAGED_VAULT_PATH",
@@ -1010,6 +1014,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn disposable_worker_entry_requires_explicit_path1_topology() {
+        let _lock = crate::env_lock::lock();
+        let previous = env::var_os(MANAGED_PROVIDER_TOPOLOGY_ENV);
+
+        env::remove_var(MANAGED_PROVIDER_TOPOLOGY_ENV);
+        assert!(run_from_env()
+            .expect_err("missing topology must fail before worker preparation")
+            .to_string()
+            .contains("explicitly set to path1 or shared_host"));
+        env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "unknown");
+        assert!(run_from_env()
+            .expect_err("unknown topology must fail before worker preparation")
+            .to_string()
+            .contains("must be path1 or shared_host"));
+        env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "shared_host");
+        assert!(run_from_env()
+            .expect_err("disposable worker must reject shared-host topology")
+            .to_string()
+            .contains("requires path1 topology"));
+
+        restore_worker_test_env(MANAGED_PROVIDER_TOPOLOGY_ENV, previous);
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn disposable_worker_spawn_uses_ordinary_kernel_and_scrubs_parent_state() {
@@ -1041,7 +1069,7 @@ mod tests {
             .expect("worker fixture should have a parent")
             .join("provider-home");
         let capability_root = config.chariox_home.join("managed-context/kernel");
-        let kernel_script = b"#!/bin/sh\nset -eu\nmarker=\"${CHARIOX_WORKER_ISOLATION_PROBE_MARKER:?}\"\nprintf 'home=%s\\n' \"${HOME-<unset>}\" > \"$marker\"\nprintf 'chariox_home=%s\\n' \"${CHARIOX_HOME-<unset>}\" >> \"$marker\"\nprintf 'repository_root=%s\\n' \"${CHARIOX_MANAGED_REPOSITORY_ROOT-<unset>}\" >> \"$marker\"\nprintf 'cwd=%s\\n' \"$(pwd)\" >> \"$marker\"\nprintf 'isolation=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_ISOLATION-<unset>}\" >> \"$marker\"\nprintf 'provider_home=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_HOME-<unset>}\" >> \"$marker\"\nprintf 'capability_root=%s\\n' \"${CHARIOX_CAPABILITY_ISOLATION_ROOT-<unset>}\" >> \"$marker\"\nprintf 'vault=%s\\n' \"${CHARIOX_MANAGED_VAULT_PATH-<unset>}\" >> \"$marker\"\nprintf 'daemon_socket=%s\\n' \"${CHARIOX_DAEMON_SOCKET-<unset>}\" >> \"$marker\"\nprintf 'broker_socket=%s\\n' \"${CHARIOX_SLICE_DOCKER_BROKER_SOCKET-<unset>}\" >> \"$marker\"\nprintf 'slice_root=%s\\n' \"${CHARIOX_SLICE_ROOT-<unset>}\" >> \"$marker\"\nprintf 'relay_token=%s\\n' \"${CHARIOX_RELAY_TOKEN-<unset>}\" >> \"$marker\"\nprintf 'daemon_id=%s\\n' \"${CHARIOX_DAEMON_ID-<unset>}\" >> \"$marker\"\nprintf 'machine_id=%s\\n' \"${CHARIOX_MACHINE_ID-<unset>}\" >> \"$marker\"\nprintf 'bootstrap_path=%s\\n' \"${CHARIOX_MANAGED_BOOTSTRAP_PATH-<unset>}\" >> \"$marker\"\nprintf ordinary > \"$HOME/ordinary-worker-write\"\n";
+        let kernel_script = b"#!/bin/sh\nset -eu\nmarker=\"${CHARIOX_WORKER_ISOLATION_PROBE_MARKER:?}\"\nprintf 'home=%s\\n' \"${HOME-<unset>}\" > \"$marker\"\nprintf 'chariox_home=%s\\n' \"${CHARIOX_HOME-<unset>}\" >> \"$marker\"\nprintf 'repository_root=%s\\n' \"${CHARIOX_MANAGED_REPOSITORY_ROOT-<unset>}\" >> \"$marker\"\nprintf 'topology=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_TOPOLOGY-<unset>}\" >> \"$marker\"\nprintf 'cwd=%s\\n' \"$(pwd)\" >> \"$marker\"\nprintf 'isolation=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_ISOLATION-<unset>}\" >> \"$marker\"\nprintf 'provider_home=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_HOME-<unset>}\" >> \"$marker\"\nprintf 'capability_root=%s\\n' \"${CHARIOX_CAPABILITY_ISOLATION_ROOT-<unset>}\" >> \"$marker\"\nprintf 'provider_isolation_active=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE-<unset>}\" >> \"$marker\"\nprintf 'vault=%s\\n' \"${CHARIOX_MANAGED_VAULT_PATH-<unset>}\" >> \"$marker\"\nprintf 'daemon_socket=%s\\n' \"${CHARIOX_DAEMON_SOCKET-<unset>}\" >> \"$marker\"\nprintf 'broker_socket=%s\\n' \"${CHARIOX_SLICE_DOCKER_BROKER_SOCKET-<unset>}\" >> \"$marker\"\nprintf 'slice_root=%s\\n' \"${CHARIOX_SLICE_ROOT-<unset>}\" >> \"$marker\"\nprintf 'relay_token=%s\\n' \"${CHARIOX_RELAY_TOKEN-<unset>}\" >> \"$marker\"\nprintf 'daemon_id=%s\\n' \"${CHARIOX_DAEMON_ID-<unset>}\" >> \"$marker\"\nprintf 'machine_id=%s\\n' \"${CHARIOX_MACHINE_ID-<unset>}\" >> \"$marker\"\nprintf 'bootstrap_path=%s\\n' \"${CHARIOX_MANAGED_BOOTSTRAP_PATH-<unset>}\" >> \"$marker\"\nprintf ordinary > \"$HOME/ordinary-worker-write\"\n";
         let kernel_script = [
             kernel_script.as_slice(),
             b"printf 'provider_bwrap=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_BWRAP-<unset>}\" >> \"$marker\"\nprintf 'slice_service=%s\\n' \"${CHARIOX_MANAGED_SLICE_SERVICE_ROOT-<unset>}\" >> \"$marker\"\nprintf 'slice_publication=%s\\n' \"${CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT-<unset>}\" >> \"$marker\"\n"
@@ -1055,7 +1083,9 @@ mod tests {
         let names = [
             "HOME",
             "CHARIOX_WORKER_ISOLATION_PROBE_MARKER",
+            MANAGED_PROVIDER_TOPOLOGY_ENV,
             "CHARIOX_MANAGED_PROVIDER_ISOLATION",
+            "CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE",
             "CHARIOX_MANAGED_PROVIDER_BWRAP",
             "CHARIOX_MANAGED_PROVIDER_HOME",
             "CHARIOX_CAPABILITY_ISOLATION_ROOT",
@@ -1076,9 +1106,11 @@ mod tests {
             .collect::<Vec<_>>();
         env::set_var("HOME", &config.process_home);
         env::set_var("CHARIOX_WORKER_ISOLATION_PROBE_MARKER", &marker);
+        env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "path1");
         // Model the managed bootstrap parent: Path 1 must strip its marker
         // and shared-host slice controls before starting the worker kernel.
         env::set_var("CHARIOX_MANAGED_PROVIDER_ISOLATION", "1");
+        env::set_var("CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE", "1");
         env::set_var("CHARIOX_MANAGED_PROVIDER_BWRAP", "/usr/bin/bwrap");
         env::set_var("CHARIOX_MANAGED_PROVIDER_HOME", &provider_home);
         env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", &capability_root);
@@ -1122,7 +1154,7 @@ mod tests {
             digest: "sha256:worker-isolation-probe".to_string(),
             kernel_binary: config.kernel_binary.clone(),
         };
-        let mut child = spawn_kernel(&config, &release, &receipt)
+        let mut child = spawn_kernel(&config, &release, &receipt, ManagedProviderTopology::Path1)
             .expect("disposable worker should start the managed kernel");
         let status = child.wait().expect("worker probe kernel should exit");
 
@@ -1135,13 +1167,15 @@ mod tests {
         assert!(observed.contains(&format!("home={}\n", config.process_home.display())));
         assert!(observed.contains(&format!("chariox_home={}\n", config.chariox_home.display())));
         assert!(observed.contains("repository_root=/srv/worker workspaces\n"));
+        assert!(observed.contains("topology=path1\n"));
         assert!(observed.contains(&format!("cwd={}\n", config.process_home.display())));
         assert!(observed.contains("isolation=<unset>"));
+        assert!(observed.contains("capability_root=<unset>"));
+        assert!(observed.contains("provider_isolation_active=<unset>"));
         assert!(observed.contains("provider_bwrap=<unset>"));
         assert!(observed.contains("slice_service=<unset>"));
         assert!(observed.contains("slice_publication=<unset>"));
         assert!(observed.contains(&format!("provider_home={}\n", provider_home.display())));
-        assert!(observed.contains(&format!("capability_root={}\n", capability_root.display())));
         assert!(observed.contains(&format!(
             "vault={}\n",
             config.chariox_home.join("vault/vault.json").display()
@@ -1494,8 +1528,13 @@ mod tests {
         write_private_file(&local_auth_path, b"test-local-auth")
             .expect("write synthetic worker auth fixture");
         env::set_var("CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE", &local_auth_path);
-        run_once(&worker_config, &mut prepared, &worker_cloud)
-            .expect("confirmed worker bootstrap should persist the receipt");
+        run_once(
+            &worker_config,
+            &mut prepared,
+            &worker_cloud,
+            ManagedProviderTopology::Path1,
+        )
+        .expect("confirmed worker bootstrap should persist the receipt");
         assert_eq!(prepared.receipt.status, WorkerReceiptStatus::Confirmed);
         assert!(prepared.pending.is_none());
         assert!(!worker_config.envelope_path.exists());
@@ -2001,8 +2040,13 @@ mod tests {
         write_private_file(&local_auth_path, b"test-local-auth")
             .expect("write synthetic worker auth fixture");
         env::set_var("CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE", &local_auth_path);
-        run_once(&worker_config, &mut prepared, &worker_cloud)
-            .expect("normal worker bootstrap should confirm the receipt");
+        run_once(
+            &worker_config,
+            &mut prepared,
+            &worker_cloud,
+            ManagedProviderTopology::Path1,
+        )
+        .expect("normal worker bootstrap should confirm the receipt");
         assert_eq!(prepared.receipt.status, WorkerReceiptStatus::Confirmed);
         assert!(prepared.pending.is_none());
 

@@ -30,6 +30,7 @@ const sliceDockerfileUrl = new URL("../apps/kernel/slice-linux-docker/docker/Doc
 const sliceToolchainPackageUrl = new URL("../apps/kernel/slice-linux-docker/toolchain/package.json", import.meta.url)
 const sliceToolchainLockUrl = new URL("../apps/kernel/slice-linux-docker/toolchain/package-lock.json", import.meta.url)
 const runbookUrl = new URL("../docs/MANAGED_REMOTE_KERNEL_IMAGE.md", import.meta.url)
+const bootstrapEntrypointUrl = new URL("../apps/kernel/src/bin/chariox-managed-bootstrap.rs", import.meta.url)
 const managedServiceUrl = new URL("../deploy/managed-kernel/chariox-managed-bootstrap.service", import.meta.url)
 const workerServiceUrl = new URL("../deploy/managed-kernel/chariox-disposable-worker-bootstrap.service", import.meta.url)
 const rootlessServiceUrl = new URL("../deploy/managed-kernel/chariox-rootless-docker.service", import.meta.url)
@@ -393,6 +394,7 @@ test("managed slices use builder-attested runtime binaries instead of compiling 
 })
 
 test("managed Docker authority and publication access remain narrowly separated", async () => {
+  const bootstrapEntrypoint = await readFile(bootstrapEntrypointUrl, "utf8")
   const managed = await readFile(managedServiceUrl, "utf8")
   const worker = await readFile(workerServiceUrl, "utf8")
   const providerLaunchProbe = await readFile(providerLaunchProbeUrl, "utf8")
@@ -403,6 +405,11 @@ test("managed Docker authority and publication access remain narrowly separated"
   const managedBroker = await readFile(managedBrokerUrl, "utf8")
   const rootlessNamespace = await readFile(rootlessNamespaceUrl, "utf8")
 
+  assert.match(bootstrapEntrypoint, /args\(\)\.any\(\|arg\| arg == "--disposable-worker"\)/)
+  assert.match(
+    bootstrapEntrypoint,
+    /args\(\)\.any\(\|arg\| arg == "--disposable-worker"\)[\s\S]*worker::run_from_env\(\)/,
+  )
   assert.match(managed, /Wants=network-online\.target chariox-rootless-docker\.service/)
   assert.doesNotMatch(managed, /(?:Wants|After)=.*chariox-slice-broker/)
   assert.match(managed, /ExecStartPre=-\+\/usr\/bin\/systemctl restart chariox-slice-broker\.service/)
