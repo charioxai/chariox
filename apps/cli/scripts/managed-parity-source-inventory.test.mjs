@@ -70,10 +70,20 @@ function fixtureFiles({ hiddenManagedFlag = false, directBwrap = false, inherite
       "  /usr/bin/env CHARIOX_MANAGED_APPARMOR_SELECTOR rix,",
       "}",
     ].join("\n") + "\n",
+    "apps/kernel/slice-linux-docker/docker/managed-provider-seccomp.c": [
+      "// CHARIOX_MANAGED_C_COMMENT_ONLY",
+      "const char *selector = \"CHARIOX_MANAGED_C_SELECTOR\";",
+    ].join("\n") + "\n",
+    "apps/kernel/slice-linux-docker/docker/slice-selkies.py": [
+      "# CHARIOX_MANAGED_PYTHON_COMMENT_ONLY",
+      "selector = os.environ[\"CHARIOX_MANAGED_PYTHON_SELECTOR\"]",
+    ].join("\n") + "\n",
     "apps/kernel/src/managed_context/protected.rs": protectedParent ? "fn protected_parent_filter() { let protected_path = true; }\n" : "fn ordinary_path_filter() {}\n",
     "apps/kernel/src/generated/false.rs": "const GENERATED = CHARIOX_MANAGED_GENERATED_FALSE_POSITIVE;\n",
     "apps/kernel/src/tests/false.rs": "const TEST_ONLY = CHARIOX_PUBLICATION_CONTROL_STATE_DIR_TEST_FALSE_POSITIVE;\n",
-    "apps/kernel/src/error_map.rs": errorMapping ? "let managed = failure; const token = \"secret-value\";\n" : "fn ordinary_error() {}\n",
+    "apps/kernel/src/runtime/selector.test.rs": "const TEST_SUFFIX = CHARIOX_MANAGED_TEST_SUFFIX_FALSE_POSITIVE;\n",
+    "packages/aegs-sdk/src/conformance_attestation.rs": "let selector = std::env::var(\"CHARIOX_MANAGED_ATTESTATION_SELECTOR\");\n",
+    "apps/kernel/src/error_map.rs": errorMapping ? "let managed =\u0085 failure; const token = \"secret-value\";\n" : "fn ordinary_error() {}\n",
     "apps/kernel/src/path.rs": "const ROOT = CHARIOX_MANAGED_REPOSITORY_ROOT; // /home/chariox and /tmp\n",
     "apps/kernel/src/cleanup.rs": "let managed = cleanup;\n",
     "apps/cli/src/client.ts": "const managed = projection;\n",
@@ -178,17 +188,24 @@ test("all supported production formats and managed selector families are invento
       ["deploy/managed-kernel/provider.service", "unit"],
       ["docker/selector-image/Dockerfile", "container"],
       ["apps/kernel/slice-linux-docker/selector.apparmor", "policy"],
+      ["apps/kernel/slice-linux-docker/docker/managed-provider-seccomp.c", "c"],
+      ["apps/kernel/slice-linux-docker/docker/slice-selkies.py", "python"],
+      ["packages/aegs-sdk/src/conformance_attestation.rs", "rust"],
     ]);
     for (const [path, format] of expectedFormats) {
       assert.ok(report.entries.some((entry) => entry.path === path && entry.format === format), `${path} should be ${format}`);
     }
     assert.ok(report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_RUST_SELECTOR"));
+    assert.ok(report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_C_SELECTOR"));
+    assert.ok(report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_PYTHON_SELECTOR"));
+    assert.ok(report.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_ATTESTATION_SELECTOR"));
     assert.ok(report.entries.some((entry) => entry.selector === "CHARIOX_PUBLICATION_CONTROL_STATE_DIR"));
     assert.ok(report.entries.some((entry) => entry.selector === "CHARIOX_DISPOSABLE_WORKER_RECEIPT"));
     assert.equal(report.entries.some((entry) => entry.selector === "CHARIOX_PUBLICATION_CLOUD_API_URL"), false);
     assert.equal(report.entries.some((entry) => entry.selector.includes("COMMENT_ONLY")), false);
     assert.equal(report.entries.some((entry) => entry.path.includes("/generated/")), false);
     assert.equal(report.entries.some((entry) => entry.path.includes("/tests/")), false);
+    assert.equal(report.entries.some((entry) => entry.path.endsWith("selector.test.rs")), false);
     assert.ok(report.source.formats.rust >= 1);
     assert.ok(report.source.formats.javascript >= 1);
     assert.ok(report.source.formats.swift >= 1);
@@ -196,6 +213,20 @@ test("all supported production formats and managed selector families are invento
     assert.ok(report.source.formats.unit >= 1);
     assert.ok(report.source.formats.container >= 1);
     assert.ok(report.source.formats.policy >= 1);
+    assert.ok(report.source.formats.c >= 1);
+    assert.ok(report.source.formats.python >= 1);
+  });
+});
+
+test("redaction preserves lowercase executable selectors while removing controls", () => {
+  withFixture({}, (fixture) => {
+    const report = collect(fixture);
+    assert.ok(report.entries.some((entry) => entry.selector === "bwrap"));
+    assert.ok(report.entries.some((entry) => entry.selector === "protected_path"));
+    const controlSafe = report.entries.find((entry) => entry.category === "managed_only_error_mapping");
+    assert.match(controlSafe?.selector ?? "", /managed = failure/);
+    assert.doesNotMatch(controlSafe?.selector ?? "", /[\u0080-\u009f]/u);
+    assert.equal(report.entries.some((entry) => entry.selector === "" || entry.selector === "_"), false);
   });
 });
 

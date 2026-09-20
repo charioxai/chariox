@@ -85,6 +85,7 @@ export const MP_ROWS = Object.freeze([
 const SCANNABLE_EXTENSIONS = new Set([
   ".apparmor",
   ".awk",
+  ".c",
   ".bash",
   ".cjs",
   ".conf",
@@ -101,6 +102,7 @@ const SCANNABLE_EXTENSIONS = new Set([
   ".path",
   ".policy",
   ".profile",
+  ".py",
   ".rs",
   ".seccomp",
   ".service",
@@ -142,7 +144,7 @@ const IGNORED_PATH_PARTS = [
   /(?:^|\/)(?:test|tests|__tests__)(?:\/|$)/i,
   /(?:^|\/)(?:autogen|codegen|generated|__generated__)(?:\/|$)/i,
   /(?:^|\/)apps\/cli\/scripts(?:\/|$)/i,
-  /(?:^|\/)[^/]*test[^/]*\.[^/]+$/i,
+  /(?:^|\/)(?:[^/]+\.(?:test|spec)|[^/]+_(?:test|spec)|test_[^/]+|tests?)\.[^/]+$/i,
   /(?:^|\/)[^/]*(?:\.generated|\.autogen|\.gen)\.[^/]+$/i,
 ];
 
@@ -162,7 +164,6 @@ const PRODUCTION_PATH_PREFIXES = [
 // or foreign-language implementation files. They are intentionally outside
 // this MP source inventory; a new production suffix is not silently ignored.
 const NON_INVENTORIED_PRODUCTION_EXTENSIONS = new Set([
-  ".c",
   ".chariox",
   ".charioxignore",
   ".css",
@@ -179,7 +180,6 @@ const NON_INVENTORIED_PRODUCTION_EXTENSIONS = new Set([
   ".mdc",
   ".pbxproj",
   ".prisma",
-  ".py",
   ".rst",
   ".svg",
   ".swiftformat",
@@ -356,7 +356,7 @@ function redact(value) {
   return String(value)
     .replace(/sk-[A-Za-z0-9_-]+/g, "sk-<redacted>")
     .replace(/((?:token|secret|password|credential|api[_-]?key)\s*[=:]\s*["']?)[^\s,"']+/gi, "$1<redacted>")
-    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 160);
@@ -413,6 +413,8 @@ function classifyProductionPath(path) {
     throw new Error(`unclassified production file: ${path}`);
   }
   if ([".rs"].includes(extension)) return "rust";
+  if (extension === ".c") return "c";
+  if (extension === ".py") return "python";
   if ([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"].includes(extension)) return "javascript";
   if (extension === ".swift") return "swift";
   if ([".sh", ".bash", ".zsh", ".fish", ".awk"].includes(extension)) return "shell";
@@ -424,8 +426,8 @@ function classifyProductionPath(path) {
 }
 
 function stripComments(text, format) {
-  const slashComments = ["rust", "javascript", "swift"].includes(format);
-  const hashComments = ["shell", "unit", "container", "policy", "config"].includes(format);
+  const slashComments = ["c", "rust", "javascript", "swift"].includes(format);
+  const hashComments = ["python", "shell", "unit", "container", "policy", "config"].includes(format);
   if (!slashComments && !hashComments) return text;
   const output = text.split("");
   let blockComment = false;
