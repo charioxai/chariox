@@ -450,10 +450,43 @@ image_selkies_capable() {
     && "$selkies_license" == "MPL-2.0" ]]
 }
 
+ensure_saved_state_capable_base() {
+  case "$SLICE_BUILD_IMAGE" in
+    auto)
+      if image_runtime_compatible "$SLICE_BASE_IMAGE" \
+        && image_selkies_capable "$SLICE_BASE_IMAGE"; then
+        log "saved state base policy auto: cached runtime is Selkies-capable"
+      else
+        log "saved state base policy auto: building a capable runtime base"
+        build_standard_runtime_image "$SLICE_BASE_IMAGE"
+      fi
+      ;;
+    always)
+      log "saved state base policy always: refreshing a capable runtime base"
+      build_standard_runtime_image "$SLICE_BASE_IMAGE"
+      ;;
+    never)
+      log "saved state base policy never: build is disabled"
+      return 0
+      ;;
+    *)
+      fail "CHARIOX_SLICE_BUILD_IMAGE must be auto, always, or never"
+      ;;
+  esac
+
+  if image_runtime_compatible "$SLICE_BASE_IMAGE" \
+    && image_selkies_capable "$SLICE_BASE_IMAGE"; then
+    log "saved state base labels accepted for $SLICE_BASE_IMAGE"
+    return 0
+  fi
+  fail "saved state migration required: runtime base $SLICE_BASE_IMAGE did not expose authoritative compatible Selkies labels after CHARIOX_SLICE_BUILD_IMAGE=$SLICE_BUILD_IMAGE; no container or home-volume mutation was attempted."
+}
+
 require_saved_state_compatibility() {
   [[ -n "$SLICE_SAVED_HOME_ARCHIVE" && "$SLICE_DISPLAY_BACKEND" == selkies ]] || return 0
   [[ -f "$SLICE_SAVED_HOME_ARCHIVE" ]] \
     || fail "saved state migration required before selecting Selkies: saved home archive is missing at $SLICE_SAVED_HOME_ARCHIVE; no container or home-volume mutation was attempted."
+  log "saved state compatibility gate: validating image labels before mutation"
 
   if docker image inspect "$SLICE_IMAGE" >/dev/null 2>&1 \
     && image_runtime_compatible "$SLICE_IMAGE" \
@@ -514,6 +547,9 @@ build_image() {
     auto|always|never) ;;
     *) fail "CHARIOX_SLICE_BUILD_IMAGE must be auto, always, or never" ;;
   esac
+  if [[ -n "$SLICE_SAVED_HOME_ARCHIVE" && "$SLICE_DISPLAY_BACKEND" == selkies ]]; then
+    ensure_saved_state_capable_base
+  fi
   require_saved_state_compatibility
 
   if [[ "$SLICE_BUILD_IMAGE" == "never" ]]; then
@@ -533,6 +569,10 @@ build_image() {
   fi
 
   if [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]]; then
+    if [[ "$SLICE_DISPLAY_BACKEND" == selkies ]]; then
+      log "preserving saved state image $SLICE_IMAGE after Selkies capability preflight"
+      return 0
+    fi
     ensure_runtime_base_image
     if ! docker image inspect "$SLICE_IMAGE" >/dev/null 2>&1; then
       log "saved state image $SLICE_IMAGE is missing; restoring the saved home archive on $SLICE_BASE_IMAGE"
