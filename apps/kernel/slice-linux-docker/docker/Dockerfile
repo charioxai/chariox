@@ -98,6 +98,14 @@ RUN groupadd --gid 1001 slice \
 COPY --from=rust-builder --chown=slice:slice /opt/chariox-source/target/release/chariox-kernel /opt/chariox-slice/bin/chariox-kernel
 COPY --from=rust-builder --chown=slice:slice /opt/chariox-source/target/release/chariox-relay /opt/chariox-slice/bin/chariox-relay
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-cdp.mjs /opt/chariox-slice/browser-cdp.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller.mjs /opt/chariox-slice/browser-controller.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-actions.mjs /opt/chariox-slice/browser-controller-actions.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-observations.mjs /opt/chariox-slice/browser-controller-observations.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-page-features.mjs /opt/chariox-slice/browser-controller-page-features.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-tab-registry.mjs /opt/chariox-slice/browser-tab-registry.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-mutation-coordinator.mjs /opt/chariox-slice/browser-controller-mutation-coordinator.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-runtime-mcp.mjs /opt/chariox-slice/browser-controller-runtime-mcp.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-runtime-service.mjs /opt/chariox-slice/browser-controller-runtime-service.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/managed-provider-isolation-probe.mjs /opt/chariox-slice/managed-provider-isolation-probe.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/managed-provider-isolation-probe-wrapper.sh /opt/chariox-slice/managed-provider-isolation-probe-wrapper.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/provider-port-bridge.mjs /opt/chariox-slice/provider-port-bridge.mjs
@@ -106,7 +114,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/start-providers.s
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/start-runtime.sh /opt/chariox-slice/start-runtime.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/validate-screen.sh /opt/chariox-slice/validate-screen.sh
 
-RUN chmod +x /opt/chariox-slice/browser-cdp.mjs /opt/chariox-slice/managed-provider-isolation-probe.mjs /opt/chariox-slice/managed-provider-isolation-probe-wrapper.sh /opt/chariox-slice/provider-port-bridge.mjs /opt/chariox-slice/slice-screen.sh /opt/chariox-slice/start-providers.sh /opt/chariox-slice/start-runtime.sh /opt/chariox-slice/validate-screen.sh
+RUN chmod +x /opt/chariox-slice/browser-cdp.mjs /opt/chariox-slice/browser-controller-runtime-service.mjs /opt/chariox-slice/managed-provider-isolation-probe.mjs /opt/chariox-slice/managed-provider-isolation-probe-wrapper.sh /opt/chariox-slice/provider-port-bridge.mjs /opt/chariox-slice/slice-screen.sh /opt/chariox-slice/start-providers.sh /opt/chariox-slice/start-runtime.sh /opt/chariox-slice/validate-screen.sh
 
 ARG CHARIOX_RELAY_PEER_PROTOCOL_VERSION=unknown
 ARG CHARIOX_RUNTIME_SOURCE_REVISION=unknown

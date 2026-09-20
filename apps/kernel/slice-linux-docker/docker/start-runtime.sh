@@ -26,6 +26,10 @@ SLICE_ID="${CHARIOX_SLICE_ID:-}"
 SLICE_OWNER_KERNEL_ID="${CHARIOX_SLICE_OWNER_KERNEL_ID:-}"
 SLICE_OWNER_MACHINE_ID="${CHARIOX_SLICE_OWNER_MACHINE_ID:-}"
 SLICE_OWNER_PUBLIC_KEY="${CHARIOX_SLICE_OWNER_PUBLIC_KEY:-}"
+BROWSER_RUNTIME_MCP_SOCKET="$ROOT/private/browser-runtime-mcp.sock"
+BROWSER_RUNTIME_MCP_AUTH_FILE="$ROOT/private/browser-runtime-mcp.auth"
+BROWSER_RUNTIME_MCP_READY_FILE="/tmp/chariox-slice-browser-runtime-mcp-ready"
+BROWSER_RUNTIME_MCP_LOG="$LOGS/browser-runtime-mcp.log"
 CAPABILITY_ISOLATION_ROOT="${CHARIOX_SLICE_CAPABILITY_ISOLATION_ROOT:-$HOME/.chariox/managed-capabilities}"
 PROVIDER_HOME="${CHARIOX_MANAGED_PROVIDER_HOME:-$HOME/provider-home}"
 PROVIDER_ISOLATION_PROBE="${CHARIOX_MANAGED_PROVIDER_ISOLATION_PROBE:-0}"
@@ -55,6 +59,51 @@ wait_for_screen_session() {
   return 1
 }
 
+stop_browser_runtime_mcp() {
+  local attempt
+  pkill -TERM -f "$ROOT/browser-controller-runtime-service.mjs" >/dev/null 2>&1 || true
+  for attempt in $(seq 1 40); do
+    if ! pgrep -f "$ROOT/browser-controller-runtime-service.mjs" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.1
+  done
+  if pgrep -f "$ROOT/browser-controller-runtime-service.mjs" >/dev/null 2>&1; then
+    pkill -KILL -f "$ROOT/browser-controller-runtime-service.mjs" >/dev/null 2>&1 || true
+  fi
+  rm -f "$BROWSER_RUNTIME_MCP_READY_FILE" "$BROWSER_RUNTIME_MCP_SOCKET" "$BROWSER_RUNTIME_MCP_AUTH_FILE"
+}
+
+start_browser_runtime_mcp() {
+  umask 077
+  rm -f "$BROWSER_RUNTIME_MCP_READY_FILE" "$BROWSER_RUNTIME_MCP_SOCKET"
+  dd if=/dev/urandom bs=48 count=1 status=none | base64 | tr -d '\n' >"$BROWSER_RUNTIME_MCP_AUTH_FILE"
+  chmod 600 "$BROWSER_RUNTIME_MCP_AUTH_FILE"
+  : >"$BROWSER_RUNTIME_MCP_LOG"
+}
+
+wait_for_browser_runtime_mcp() {
+  local attempt
+  for attempt in $(seq 1 40); do
+    if [[ -s "$BROWSER_RUNTIME_MCP_READY_FILE" && -S "$BROWSER_RUNTIME_MCP_SOCKET" ]] \
+      && CHARIOX_BROWSER_RUNTIME_MCP_SOCKET="$BROWSER_RUNTIME_MCP_SOCKET" \
+      CHARIOX_BROWSER_RUNTIME_MCP_AUTH_FILE="$BROWSER_RUNTIME_MCP_AUTH_FILE" \
+      timeout --kill-after=1s 5s node "$ROOT/browser-controller-runtime-service.mjs" health \
+      >/dev/null 2>&1; then
+      return 0
+    fi
+    if ! screen -ls | grep -E '[.]chariox-slice-kernel[[:space:]]' >/dev/null; then
+      printf '[slice-runtime] browser runtime controller exited before becoming ready\n' >&2
+      cat "$BROWSER_RUNTIME_MCP_LOG" >&2 || true
+      return 1
+    fi
+    sleep 0.25
+  done
+  printf '[slice-runtime] browser runtime controller did not become healthy\n' >&2
+  cat "$BROWSER_RUNTIME_MCP_LOG" >&2 || true
+  return 1
+}
+
 if [[ ! -f "$HOME/.chariox/config.toml" ]]; then
   cat >"$HOME/.chariox/config.toml" <<'EOF'
 [state]
@@ -68,6 +117,7 @@ fi
 screen -S chariox-slice-relay -X quit >/dev/null 2>&1 || true
 screen -S chariox-slice-kernel -X quit >/dev/null 2>&1 || true
 screen -S chariox-slice-provider-bridge -X quit >/dev/null 2>&1 || true
+stop_browser_runtime_mcp
 # A restored container can retain the provider bridge briefly after its screen
 # socket has already become stale. Kill only that orphan before rebinding the
 # published provider ranges so the first restart is as reliable as a retry.
@@ -143,6 +193,8 @@ fi
 
 KERNEL_LOCAL_AUTH_TOKEN="$(cat "$KERNEL_LOCAL_AUTH_FILE")"
 
+start_browser_runtime_mcp
+
 screen -dmS chariox-slice-kernel env \
   CHARIOX_KERNEL_PORT="$KERNEL_PORT" \
   CHARIOX_MCP_PORT="$MCP_PORT" \
@@ -161,15 +213,52 @@ screen -dmS chariox-slice-kernel env \
   CHARIOX_MANAGED_PROVIDER_ISOLATION=1 \
   CHARIOX_MANAGED_PROVIDER_HOME="$PROVIDER_HOME" \
   CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE="$KERNEL_LOCAL_AUTH_FILE" \
+  CHARIOX_BROWSER_RUNTIME_MCP_SOCKET="$BROWSER_RUNTIME_MCP_SOCKET" \
+  CHARIOX_BROWSER_RUNTIME_MCP_AUTH_FILE="$BROWSER_RUNTIME_MCP_AUTH_FILE" \
+  CHARIOX_BROWSER_RUNTIME_MCP_READY_FILE="$BROWSER_RUNTIME_MCP_READY_FILE" \
+  CHARIOX_BROWSER_RUNTIME_MCP_ROOT="$ROOT" \
+  CHARIOX_BROWSER_RUNTIME_MCP_LOG="$BROWSER_RUNTIME_MCP_LOG" \
+  CHARIOX_KERNEL_BINARY="$ROOT/bin/chariox-kernel" \
   "${provider_probe_kernel_env[@]}" \
   CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT=1 \
   CHARIOX_OS_NAME="Linux slice" \
   "${kernel_relay_env[@]}" \
   CHARIOX_ACCEPT_REMOTE_LEASES=1 \
-  "$ROOT/bin/chariox-kernel"
+  bash -lc '
+    set -Eeuo pipefail
+    node "$CHARIOX_BROWSER_RUNTIME_MCP_ROOT/browser-controller-runtime-service.mjs" \
+      >>"$CHARIOX_BROWSER_RUNTIME_MCP_LOG" 2>&1 &
+    browser_runtime_pid=$!
+    "$CHARIOX_KERNEL_BINARY" &
+    kernel_pid=$!
+    cleanup() {
+      local status="${1:-0}"
+      trap - EXIT TERM INT HUP
+      kill -TERM "$browser_runtime_pid" "$kernel_pid" >/dev/null 2>&1 || true
+      wait "$browser_runtime_pid" >/dev/null 2>&1 || true
+      wait "$kernel_pid" >/dev/null 2>&1 || true
+      exit "$status"
+    }
+    trap "cleanup 143" TERM INT HUP
+    trap "cleanup \$?" EXIT
+    while kill -0 "$kernel_pid" >/dev/null 2>&1 \
+      && kill -0 "$browser_runtime_pid" >/dev/null 2>&1; do
+      sleep 0.2
+    done
+    if kill -0 "$kernel_pid" >/dev/null 2>&1; then
+      cleanup 1
+    fi
+    kernel_status=0
+    wait "$kernel_pid" || kernel_status=$?
+    cleanup "$kernel_status"
+  '
 
 sleep 1
 wait_for_screen_session chariox-slice-kernel kernel
+if ! wait_for_browser_runtime_mcp; then
+  screen -S chariox-slice-kernel -X quit >/dev/null 2>&1 || true
+  exit 1
+fi
 [[ ! -e "$KERNEL_LOCAL_AUTH_FILE" ]] || { printf '[slice-runtime] kernel did not consume local auth token\n' >&2; exit 1; }
 if [[ "$PROVIDER_ISOLATION_PROBE" == "1" ]]; then
   provider_probe_log="$LOGS/managed-provider-isolation-probe.log"

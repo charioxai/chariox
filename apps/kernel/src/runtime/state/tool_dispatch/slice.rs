@@ -6,6 +6,8 @@ use crate::runtime::state::KernelRuntimeState;
 
 mod slice_browser;
 use slice_browser::*;
+mod browser_runtime_controller;
+use browser_runtime_controller::*;
 
 const DEFAULT_SLICE_SCREEN_COMMAND_TIMEOUT_MS: u64 = 70_000;
 const SLICE_SCREEN_COMMAND_OUTPUT_MAX_BYTES: usize = 256 * 1024;
@@ -30,6 +32,12 @@ impl KernelRuntimeState {
                     operation: "dispatch_slice_runtime_tool_call",
                     message: "provider run is not bound to an agent".to_string(),
                 })?;
+
+        if is_browser_runtime_mcp_tool(tool_name) {
+            return dispatch_browser_runtime_tool_call(&slice_id, agent_id, tool_name, arguments)
+                .await;
+        }
+
         let output = match tool_name {
             crate::transport::runtime_tools::SLICE_SCREEN_STATUS_TOOL => {
                 run_slice_screen_command(vec!["status".to_string()]).await?
@@ -144,8 +152,11 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_paste_secret_to_slice",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                let status_output =
-                    run_slice_screen_command(vec!["browser-status".to_string()]).await?;
+                let status_output = run_browser_runtime_mcp_call(
+                    crate::transport::runtime_tools::SLICE_BROWSER_STATUS_TOOL,
+                    serde_json::json!({}),
+                )
+                .await?;
                 let browser_status = slice_browser_json(&status_output)?;
                 let browser_url = browser_status_url(&browser_status)?;
                 ensure_browser_target_matches_expectations(&browser_status, &args)?;
@@ -181,15 +192,31 @@ impl KernelRuntimeState {
                         )?
                     }
                 };
-                let mut command_args = vec![if args.submit {
-                    "secret-paste-submit-stdin".to_string()
-                } else {
-                    "secret-paste-stdin".to_string()
-                }];
-                if let Some(selector) = selector.clone() {
-                    command_args.push(selector);
+                let mut fill_arguments = serde_json::Map::new();
+                add_browser_target_arguments(
+                    &mut fill_arguments,
+                    args.selector.as_deref(),
+                    args.field_id.as_deref(),
+                );
+                fill_arguments.insert("text".to_string(), serde_json::Value::String(secret));
+                let mut output = run_browser_runtime_mcp_call(
+                    crate::transport::runtime_tools::SLICE_BROWSER_FILL_TOOL,
+                    serde_json::Value::Object(fill_arguments),
+                )
+                .await?;
+                if output.success && args.submit {
+                    let mut submit_arguments = serde_json::Map::new();
+                    add_browser_target_arguments(
+                        &mut submit_arguments,
+                        args.selector.as_deref(),
+                        args.field_id.as_deref(),
+                    );
+                    output = run_browser_runtime_mcp_call(
+                        crate::transport::runtime_tools::SLICE_BROWSER_SUBMIT_TOOL,
+                        serde_json::Value::Object(submit_arguments),
+                    )
+                    .await?;
                 }
-                let output = run_slice_screen_command_with_stdin(command_args, secret).await?;
                 return Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: output.success,
                     payload: secret_paste_payload(
@@ -211,149 +238,6 @@ impl KernelRuntimeState {
                 })?;
                 run_slice_screen_command(vec!["open-url".to_string(), args.url]).await?
             }
-            crate::transport::runtime_tools::SLICE_BROWSER_STATUS_TOOL => {
-                let output = run_slice_screen_command(vec!["browser-status".to_string()]).await?;
-                return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
-            }
-            crate::transport::runtime_tools::SLICE_BROWSER_FIND_TOOL => {
-                let args = serde_json::from_value::<
-                    crate::transport::runtime_tools::SliceBrowserFindArgs,
-                >(arguments)
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "runtime_tool_slice_browser_find",
-                    message: format!("invalid tool arguments: {error}"),
-                })?;
-                let output = run_slice_screen_command(vec![
-                    "browser-find".to_string(),
-                    args.query,
-                    args.kind.unwrap_or_else(|| "any".to_string()),
-                ])
-                .await?;
-                return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
-            }
-            crate::transport::runtime_tools::SLICE_BROWSER_FILL_TOOL => {
-                let args = serde_json::from_value::<
-                    crate::transport::runtime_tools::SliceBrowserFillArgs,
-                >(arguments)
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "runtime_tool_slice_browser_fill",
-                    message: format!("invalid tool arguments: {error}"),
-                })?;
-                let selector = required_browser_selector(
-                    args.selector.as_deref(),
-                    args.field_id.as_deref(),
-                    "runtime_tool_slice_browser_fill",
-                )?;
-                let output =
-                    run_slice_screen_command(vec!["browser-fill".to_string(), selector, args.text])
-                        .await?;
-                return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
-            }
-            crate::transport::runtime_tools::SLICE_BROWSER_CLICK_TOOL => {
-                let args = serde_json::from_value::<
-                    crate::transport::runtime_tools::SliceBrowserClickArgs,
-                >(arguments)
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "runtime_tool_slice_browser_click",
-                    message: format!("invalid tool arguments: {error}"),
-                })?;
-                let selector = required_browser_selector(
-                    args.selector.as_deref(),
-                    args.field_id.as_deref(),
-                    "runtime_tool_slice_browser_click",
-                )?;
-                let output =
-                    run_slice_screen_command(vec!["browser-click".to_string(), selector]).await?;
-                return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
-            }
-            crate::transport::runtime_tools::SLICE_BROWSER_SUBMIT_TOOL => {
-                let args = serde_json::from_value::<
-                    crate::transport::runtime_tools::SliceBrowserSubmitArgs,
-                >(arguments)
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "runtime_tool_slice_browser_submit",
-                    message: format!("invalid tool arguments: {error}"),
-                })?;
-                let mut command_args = vec!["browser-submit".to_string()];
-                if let Some(selector) =
-                    browser_selector(args.selector.as_deref(), args.field_id.as_deref())
-                {
-                    command_args.push(selector);
-                }
-                let output = run_slice_screen_command(command_args).await?;
-                return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
-            }
-            crate::transport::runtime_tools::SLICE_BROWSER_DIALOG_TOOL => {
-                let args = serde_json::from_value::<
-                    crate::transport::runtime_tools::SliceBrowserDialogArgs,
-                >(arguments)
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "runtime_tool_slice_browser_dialog",
-                    message: format!("invalid tool arguments: {error}"),
-                })?;
-                let mut command_args = vec!["browser-dialog".to_string(), args.action];
-                if let Some(prompt_text) = args.prompt_text {
-                    command_args.push(prompt_text);
-                }
-                let output = run_slice_screen_command(command_args).await?;
-                return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
-            }
-            crate::transport::runtime_tools::SLICE_BROWSER_TEXT_TOOL => {
-                let output = run_slice_screen_command(vec!["browser-text".to_string()]).await?;
-                let mut payload = slice_tool_payload(&slice_id, agent_id, &output);
-                payload["text"] = serde_json::Value::String(output.stdout.clone());
-                return Ok(crate::transport::runtime_tools::RuntimeToolResult {
-                    ok: output.success,
-                    payload,
-                });
-            }
-            crate::transport::runtime_tools::SLICE_BROWSER_WAIT_FOR_TEXT_TOOL => {
-                let args = serde_json::from_value::<
-                    crate::transport::runtime_tools::SliceBrowserWaitForTextArgs,
-                >(arguments)
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "runtime_tool_slice_browser_wait_for_text",
-                    message: format!("invalid tool arguments: {error}"),
-                })?;
-                let output = run_slice_screen_command(vec![
-                    "browser-wait-text".to_string(),
-                    args.text,
-                    browser_timeout_arg(args.timeout_ms),
-                ])
-                .await?;
-                return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
-            }
-            crate::transport::runtime_tools::SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL => {
-                let args = serde_json::from_value::<
-                    crate::transport::runtime_tools::SliceBrowserWaitForSelectorArgs,
-                >(arguments)
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "runtime_tool_slice_browser_wait_for_selector",
-                    message: format!("invalid tool arguments: {error}"),
-                })?;
-                let output = run_slice_screen_command(vec![
-                    "browser-wait-selector".to_string(),
-                    args.selector,
-                    browser_timeout_arg(args.timeout_ms),
-                ])
-                .await?;
-                return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
-            }
-            crate::transport::runtime_tools::SLICE_BROWSER_WAIT_FOR_IDLE_TOOL => {
-                let args = serde_json::from_value::<
-                    crate::transport::runtime_tools::SliceBrowserWaitForIdleArgs,
-                >(arguments)
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "runtime_tool_slice_browser_wait_for_idle",
-                    message: format!("invalid tool arguments: {error}"),
-                })?;
-                let output = run_slice_screen_command(vec![
-                    "browser-wait-idle".to_string(),
-                    browser_timeout_arg(args.timeout_ms),
-                ])
-                .await?;
-                return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
-            }
             _ => {
                 return Err(DaemonError::LocalTransport {
                     operation: "dispatch_slice_runtime_tool_call",
@@ -366,6 +250,16 @@ impl KernelRuntimeState {
             payload: slice_tool_payload(&slice_id, agent_id, &output),
         })
     }
+}
+
+async fn dispatch_browser_runtime_tool_call(
+    slice_id: &str,
+    agent_id: &str,
+    tool_name: &str,
+    arguments: serde_json::Value,
+) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+    let output = run_browser_runtime_mcp_call(tool_name, arguments).await?;
+    Ok(slice_browser_tool_result(slice_id, agent_id, output))
 }
 
 #[derive(Debug)]
@@ -382,13 +276,6 @@ async fn run_slice_screen_command(
     args: Vec<String>,
 ) -> Result<SliceScreenCommandOutput, DaemonError> {
     run_slice_screen_command_inner(args, None).await
-}
-
-async fn run_slice_screen_command_with_stdin(
-    args: Vec<String>,
-    stdin: String,
-) -> Result<SliceScreenCommandOutput, DaemonError> {
-    run_slice_screen_command_inner(args, Some(stdin)).await
 }
 
 async fn run_slice_screen_command_inner(
@@ -719,13 +606,78 @@ fn required_string(
         })
 }
 
-fn browser_timeout_arg(timeout_ms: Option<u64>) -> String {
-    timeout_ms.unwrap_or(10_000).clamp(100, 60_000).to_string()
+fn add_browser_target_arguments(
+    arguments: &mut serde_json::Map<String, serde_json::Value>,
+    selector: Option<&str>,
+    field_id: Option<&str>,
+) {
+    if let Some(selector) = selector {
+        arguments.insert(
+            "selector".to_string(),
+            serde_json::Value::String(selector.to_string()),
+        );
+    } else if let Some(field_id) = field_id {
+        arguments.insert(
+            "field_id".to_string(),
+            serde_json::Value::String(field_id.to_string()),
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::UnixListener;
+
     use super::*;
+
+    fn browser_runtime_state_from_app(app: crate::app::DaemonApp) -> KernelRuntimeState {
+        let config_projection = app.config_projection_store();
+        let session_store = app.session_state_store();
+        let agent_store = app.agents().clone();
+        let attachment_store = app.attachments().clone();
+        let provider_store = app.providers().clone();
+        let provider_process_tracking = app.provider_process_tracking_store();
+        let slice_store = app.slices();
+        let session_projection = app.session_state_projection_store();
+        let provider_run_projection = app.provider_run_projection_store();
+        let operational_history_store = app.operational_history_store();
+        let durable_state_store = app.durable_state_store();
+        let prompt_state_owner = app.prompt_state_owner();
+        let active_turns = app.active_turn_store();
+        let prompt_activity = app.prompt_activity_store();
+        let prompt_workspace_claims = app.prompt_workspace_claim_store();
+        let structured_output_records = app.structured_output_record_store();
+        let terminal_stream = app.terminal_stream_store();
+        let workflow_design_events = app.workflow_design_event_store();
+        let metaagent_events = app.metaagent_event_store();
+        let workspace_coordinator = app.workspace_coordinator();
+        KernelRuntimeState::new_with_owned_state(
+            Arc::new(Mutex::new(app)),
+            config_projection,
+            session_store,
+            agent_store,
+            attachment_store,
+            provider_store,
+            provider_process_tracking,
+            slice_store,
+            session_projection,
+            provider_run_projection,
+            operational_history_store,
+            durable_state_store,
+            prompt_state_owner,
+            active_turns,
+            prompt_activity,
+            prompt_workspace_claims,
+            structured_output_records,
+            terminal_stream,
+            workflow_design_events,
+            metaagent_events,
+            workspace_coordinator,
+        )
+    }
 
     #[test]
     fn slice_mouse_args_map_to_screen_script_commands() {
@@ -850,6 +802,213 @@ mod tests {
         assert!(error.to_string().contains("timed out"));
         std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
         std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL_TIMEOUT_MS");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn browser_runtime_dispatch_uses_one_controller_endpoint() {
+        let _guard = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-browser-runtime-dispatch-test-{}",
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let socket = root.join("browser-runtime-mcp.sock");
+        let auth_file = root.join("browser-runtime-mcp.auth");
+        let one_shot_invoked = root.join("one-shot-invoked");
+        let one_shot = root.join("slice-screen-marker.sh");
+        std::fs::write(
+            &one_shot,
+            format!("#!/bin/sh\ntouch {}\n", one_shot_invoked.display()),
+        )
+        .expect("one-shot marker should be written");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&one_shot, std::fs::Permissions::from_mode(0o700))
+                .expect("one-shot marker should be executable");
+        }
+        std::fs::write(&auth_file, "local-test-token\n").expect("auth file should be written");
+        let listener = UnixListener::bind(&socket).expect("controller socket should bind");
+        let seen_tools = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen_tools_task = Arc::clone(&seen_tools);
+        let server = tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.expect("controller should accept");
+                let seen_tools = Arc::clone(&seen_tools_task);
+                tokio::spawn(async move {
+                    let mut reader = BufReader::new(stream);
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).await.is_err() {
+                        return;
+                    }
+                    let request: serde_json::Value = match serde_json::from_str(&line) {
+                        Ok(request) => request,
+                        Err(_) => return,
+                    };
+                    let request_id = request["request_id"].as_str().unwrap_or_default();
+                    let tool_name = request["tool_name"].as_str().unwrap_or_default();
+                    seen_tools
+                        .lock()
+                        .expect("seen tools lock should not be poisoned")
+                        .push(tool_name.to_string());
+                    let arguments = &request["arguments"];
+                    if arguments.get("query").and_then(serde_json::Value::as_str)
+                        == Some("malformed")
+                    {
+                        let _ = reader.get_mut().write_all(b"not-json\n").await;
+                        return;
+                    }
+                    if arguments.get("text").and_then(serde_json::Value::as_str) == Some("timeout")
+                    {
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    }
+                    let result = if tool_name.ends_with("slice_browser_status") {
+                        serde_json::json!({
+                            "url": "https://example.test/login",
+                            "host": "example.test",
+                            "title": "Login",
+                            "focusedElement": {"kind": "field"},
+                            "fields": [{"selector": "#email", "field_id": "field:1"}],
+                            "buttons": [],
+                            "links": []
+                        })
+                    } else {
+                        serde_json::json!({"ok": true, "selector": "#email"})
+                    };
+                    let response = serde_json::json!({
+                        "type": "tool_result",
+                        "request_id": request_id,
+                        "ok": true,
+                        "tool_name": tool_name,
+                        "result": result,
+                    });
+                    let encoded = serde_json::to_vec(&response).expect("response should encode");
+                    let _ = reader.get_mut().write_all(&encoded).await;
+                    let _ = reader.get_mut().write_all(b"\n").await;
+                });
+            }
+        });
+
+        std::env::set_var("CHARIOX_BROWSER_RUNTIME_MCP_SOCKET", &socket);
+        std::env::set_var("CHARIOX_BROWSER_RUNTIME_MCP_AUTH_FILE", &auth_file);
+        std::env::set_var("CHARIOX_BROWSER_RUNTIME_MCP_TIMEOUT_MS", "120");
+        std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL", &one_shot);
+
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.host_machine_id = "slice:slice-1".to_string();
+        let mut app = crate::app::DaemonApp::bootstrap(config).expect("daemon should bootstrap");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "browser-runtime-test-workspace",
+                "browser-runtime-test-worktree",
+            ))
+            .expect("session should be created");
+        let provider_run = app
+            .launch_provider(
+                crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "dev-stub",
+                    "default",
+                    "default",
+                )
+                .with_agent_id(agent.id()),
+            )
+            .expect("provider run should launch");
+        let runtime = browser_runtime_state_from_app(app);
+
+        let status = runtime
+            .dispatch_slice_runtime_tool_call(
+                &provider_run,
+                crate::transport::runtime_tools::SLICE_BROWSER_STATUS_TOOL,
+                serde_json::json!({}),
+            )
+            .await
+            .expect("status dispatch should complete");
+        assert!(status.ok);
+        assert_eq!(
+            status.payload["browser"]["url"],
+            "https://example.test/login"
+        );
+
+        let fill = runtime
+            .dispatch_slice_runtime_tool_call(
+                &provider_run,
+                crate::transport::runtime_tools::SLICE_BROWSER_FILL_TOOL,
+                serde_json::json!({"selector": "#email", "text": "alice@example.test"}),
+            )
+            .await
+            .expect("fill dispatch should complete");
+        assert!(fill.ok);
+        assert_eq!(fill.payload["browser"]["ok"], true);
+
+        let malformed = runtime
+            .dispatch_slice_runtime_tool_call(
+                &provider_run,
+                crate::transport::runtime_tools::SLICE_BROWSER_FIND_TOOL,
+                serde_json::json!({"query": "malformed"}),
+            )
+            .await
+            .expect("malformed response should be represented");
+        assert!(!malformed.ok);
+        assert!(malformed.payload["stderr"]
+            .as_str()
+            .expect("malformed response should have stderr")
+            .contains("malformed"));
+
+        let timed_out = runtime
+            .dispatch_slice_runtime_tool_call(
+                &provider_run,
+                crate::transport::runtime_tools::SLICE_BROWSER_WAIT_FOR_TEXT_TOOL,
+                serde_json::json!({"text": "timeout", "timeout_ms": 100}),
+            )
+            .await
+            .expect("timeout should be represented");
+        assert!(!timed_out.ok);
+        assert!(timed_out.payload["stderr"]
+            .as_str()
+            .expect("timeout should have stderr")
+            .contains("timed out"));
+
+        server.abort();
+        let _ = server.await;
+        let unavailable = runtime
+            .dispatch_slice_runtime_tool_call(
+                &provider_run,
+                crate::transport::runtime_tools::SLICE_BROWSER_STATUS_TOOL,
+                serde_json::json!({}),
+            )
+            .await
+            .expect("unavailable endpoint should be represented");
+        assert!(!unavailable.ok);
+        assert!(unavailable.payload["stderr"]
+            .as_str()
+            .expect("unavailable endpoint should have stderr")
+            .contains("unavailable"));
+
+        let seen_tools = seen_tools
+            .lock()
+            .expect("seen tools lock should not be poisoned")
+            .clone();
+        assert_eq!(
+            seen_tools,
+            vec![
+                crate::transport::runtime_tools::SLICE_BROWSER_STATUS_TOOL,
+                crate::transport::runtime_tools::SLICE_BROWSER_FILL_TOOL,
+                crate::transport::runtime_tools::SLICE_BROWSER_FIND_TOOL,
+                crate::transport::runtime_tools::SLICE_BROWSER_WAIT_FOR_TEXT_TOOL,
+            ]
+        );
+        assert!(
+            !one_shot_invoked.exists(),
+            "slice-screen one-shot path was invoked"
+        );
+
+        std::env::remove_var("CHARIOX_BROWSER_RUNTIME_MCP_SOCKET");
+        std::env::remove_var("CHARIOX_BROWSER_RUNTIME_MCP_AUTH_FILE");
+        std::env::remove_var("CHARIOX_BROWSER_RUNTIME_MCP_TIMEOUT_MS");
+        std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
         let _ = std::fs::remove_dir_all(&root);
     }
 }
