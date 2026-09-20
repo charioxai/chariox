@@ -176,6 +176,76 @@ const RELEASE_RESULT_KEYS = Object.freeze([
   "rollback_verified",
   "release_digest",
 ])
+const GENERIC_RESULT_REQUIREMENTS = Object.freeze({
+  "MP-02/directory_discovery": Object.freeze(["exact_path_accessible"]),
+  "MP-02/exact_path_entry": Object.freeze(["exact_path_accessible", "cwd_matches_requested"]),
+  "MP-02/directory_creation": Object.freeze(["created_and_accessible"]),
+  "MP-02/home_access": Object.freeze(["accessible"]),
+  "MP-02/tmp_access": Object.freeze(["accessible"]),
+  "MP-03/empty_workspace": Object.freeze(["workspace_created", "control_state_separate"]),
+  "MP-03/copied_repository": Object.freeze(["repository_accessible"]),
+  "MP-03/repository_basename": Object.freeze(["source_basename_preserved"]),
+  "MP-03/basename_collision": Object.freeze(["collision_rejected"]),
+  "MP-03/worktree_placement": Object.freeze(["worktree_user_path", "control_root_not_workspace"]),
+  "MP-04/provider_environment": Object.freeze(["home_matches_ordinary", "chariox_home_matches_ordinary", "cwd_matches_requested", "ordinary_user"]),
+  "MP-04/mount_visibility": Object.freeze(["mounts_match_ordinary", "mount_probe_complete"]),
+  "MP-04/privilege_state": Object.freeze(["capabilities_match_ordinary", "umask_matches_ordinary"]),
+  "MP-04/network_reachability": Object.freeze(["network_matches_ordinary", "address_families_recorded"]),
+  "MP-04/package_tool_installation": Object.freeze(["tool_probe_succeeded", "install_probe_succeeded"]),
+  "MP-05/session_agent_launch": Object.freeze(["session_created", "agent_created", "official_command"]),
+  "MP-05/terminal_file_git": Object.freeze(["terminal_ok", "file_ok", "git_ok"]),
+  "MP-05/attachments_permissions_capabilities": Object.freeze(["attachments_ok", "permissions_ok", "capabilities_ok"]),
+  "MP-05/project_setup": Object.freeze(["project_setup_ok"]),
+  "MP-06/reconnect_orphan_recovery": Object.freeze(["reconnect_ok", "orphan_recovered"]),
+  "MP-06/restart_recovery": Object.freeze(["restart_recovered"]),
+  "MP-06/reconnect_history_result_identity": Object.freeze(["history_preserved", "result_identity_preserved"]),
+  "MP-06/queued_prompts": Object.freeze(["queued_prompt_preserved", "queued_prompt_advanced"]),
+  "MP-06/active_turn_state": Object.freeze(["active_turn_state_preserved"]),
+  "MP-07/control_file_protection": Object.freeze(["control_file_denied", "sibling_accessible"]),
+  "MP-07/filesystem_permissions": Object.freeze(["permissions_match_ordinary"]),
+  "MP-07/resource_limits": Object.freeze(["limits_observed"]),
+  "MP-07/structured_errors": Object.freeze(["structured_errors"]),
+  "MP-07/protocol_behavior": Object.freeze(["protocol_behavior_ok"]),
+  "MP-08/cleanup": Object.freeze(["owned_processes_gone", "owned_artifacts_removed", "foreign_processes_untouched", "cleanup_complete"]),
+})
+const SOURCE_IDENTITY_RESULT_KEYS = Object.freeze([
+  "observed",
+  "source_sha_verified",
+  "source_clean",
+  "kernel_protocol",
+  "relay_protocol",
+  "build_identity_verified",
+])
+const FRESH_WORKER_RESULT_KEYS = Object.freeze([
+  "observed",
+  "fresh_worker",
+  "worker_identity_observed",
+])
+const PROVIDER_IDENTITY_RESULT_KEYS = Object.freeze([
+  "observed",
+  "official",
+  "provider_name",
+  "executable_matches",
+  "executable_basename",
+  "provider_version_observed",
+])
+const CAPTURE_BOUNDARY_RESULT_KEYS = Object.freeze([
+  "observed",
+  "boundary_verified",
+  "inside_provider_turn",
+  "independent",
+])
+const PROVIDER_ANCESTRY_RESULT_KEYS = Object.freeze([
+  "observed",
+  "provider_observed",
+  "bwrap_ancestor",
+  "fresh_worker",
+])
+const MANAGED_ISOLATION_RESULT_KEYS = Object.freeze([
+  "observed",
+  "managed_marker_absent",
+  "bwrap_environment_absent",
+])
 const SHUTDOWN_RESULT_KEYS = Object.freeze([
   "exemption",
   "trigger",
@@ -279,6 +349,19 @@ function nonEmptyString(value) {
 
 function scalarProtocol(value) {
   return nonEmptyString(value) || (typeof value === "number" && Number.isFinite(value))
+}
+
+function validBuildId(value) {
+  return typeof value === "string" && value.length >= 8 && value.length <= 256
+}
+
+function requireComparisonIdentity({ expectedReviewedCommit, expectedBuildId } = {}) {
+  if (!REVIEWED_COMMIT.test(expectedReviewedCommit ?? "")) {
+    throw new Error("expected reviewed commit must be a 40-hex SHA")
+  }
+  if (!validBuildId(expectedBuildId)) {
+    throw new Error("expected reviewed build id must contain 8 to 256 characters")
+  }
 }
 
 function sameKeys(actual, expected) {
@@ -430,6 +513,112 @@ function validateProviderSafety(rows, topology, failures) {
   }
 }
 
+function requireExactTrueResult(result, keys, topology, rowId, checkId, failures) {
+  const expectedKeys = ["observed", ...keys]
+  if (!checkResultIsObject(result) || !sameKeys(result, expectedKeys)) {
+    addFailure(failures, "check_result_shape_invalid", topology, rowId, checkId)
+    return
+  }
+  for (const key of expectedKeys) {
+    if (result[key] !== true) {
+      addFailure(failures, "check_result_semantics_invalid", topology, rowId, checkId, key)
+    }
+  }
+}
+
+function validateCheckResult(result, manifest, topology, rowId, checkId, failures) {
+  if (rowId === RELEASE_ROW_ID) {
+    validateReleaseResult(result, topology, rowId, checkId, failures)
+    return
+  }
+  if (rowId === SHUTDOWN_ROW_ID) {
+    validateShutdownResult(result, topology, rowId, checkId, failures)
+    return
+  }
+  if (rowId === "MP-01" && checkId === "source_protocol_identity") {
+    if (!checkResultIsObject(result) || !sameKeys(result, SOURCE_IDENTITY_RESULT_KEYS)) {
+      addFailure(failures, "check_result_shape_invalid", topology, rowId, checkId)
+      return
+    }
+    for (const key of ["observed", "source_sha_verified", "source_clean", "build_identity_verified"]) {
+      if (result[key] !== true) addFailure(failures, "check_result_semantics_invalid", topology, rowId, checkId, key)
+    }
+    if (result.kernel_protocol !== manifest?.identity?.kernel_protocol) {
+      addFailure(failures, "check_result_identity_mismatch", topology, rowId, checkId, "kernel_protocol")
+    }
+    if (result.relay_protocol !== manifest?.identity?.relay_protocol) {
+      addFailure(failures, "check_result_identity_mismatch", topology, rowId, checkId, "relay_protocol")
+    }
+    return
+  }
+  if (rowId === "MP-01" && checkId === "fresh_worker") {
+    requireExactTrueResult(result, FRESH_WORKER_RESULT_KEYS.slice(1), topology, rowId, checkId, failures)
+    return
+  }
+  if (rowId === "MP-01" && checkId === "official_provider_identity") {
+    if (!checkResultIsObject(result) || !sameKeys(result, PROVIDER_IDENTITY_RESULT_KEYS)) {
+      addFailure(failures, "check_result_shape_invalid", topology, rowId, checkId)
+      return
+    }
+    for (const key of ["observed", "official", "executable_matches", "provider_version_observed"]) {
+      if (result[key] !== true) addFailure(failures, "check_result_semantics_invalid", topology, rowId, checkId, key)
+    }
+    if (result.provider_name !== manifest?.provider?.name) {
+      addFailure(failures, "check_result_identity_mismatch", topology, rowId, checkId, "provider_name")
+    }
+    if (result.executable_basename !== manifest?.provider?.executable) {
+      addFailure(failures, "check_result_identity_mismatch", topology, rowId, checkId, "executable_basename")
+    }
+    return
+  }
+  if (rowId === "MP-01" && checkId === "capture_boundary") {
+    requireExactTrueResult(result, CAPTURE_BOUNDARY_RESULT_KEYS.slice(1), topology, rowId, checkId, failures)
+    return
+  }
+  if (rowId === "MP-04" && checkId === "provider_ancestry") {
+    if (!checkResultIsObject(result) || !sameKeys(result, PROVIDER_ANCESTRY_RESULT_KEYS)) {
+      addFailure(failures, "check_result_shape_invalid", topology, rowId, checkId)
+      return
+    }
+    for (const key of ["observed", "provider_observed", "fresh_worker"]) {
+      if (result[key] !== true) addFailure(failures, "check_result_semantics_invalid", topology, rowId, checkId, key)
+    }
+    if (result.bwrap_ancestor !== false) {
+      addFailure(failures, "check_result_semantics_invalid", topology, rowId, checkId, "bwrap_ancestor")
+    }
+    return
+  }
+  if (rowId === "MP-04" && checkId === "managed_isolation_environment") {
+    requireExactTrueResult(result, MANAGED_ISOLATION_RESULT_KEYS.slice(1), topology, rowId, checkId, failures)
+    return
+  }
+  const required = GENERIC_RESULT_REQUIREMENTS[`${rowId}/${checkId}`]
+  if (!required) {
+    addFailure(failures, "check_result_validator_missing", topology, rowId, checkId)
+    return
+  }
+  const extraKeys = []
+  if (rowId === "MP-02" && checkId === "directory_discovery") extraKeys.push("child_enumeration_denied")
+  if (rowId === "MP-04" && checkId === "privilege_state") extraKeys.push("no_new_privs")
+  const expectedKeys = ["observed", ...required, ...extraKeys]
+  if (!checkResultIsObject(result) || !sameKeys(result, expectedKeys)) {
+    addFailure(failures, "check_result_shape_invalid", topology, rowId, checkId)
+    return
+  }
+  if (result.observed !== true) {
+    addFailure(failures, "check_result_semantics_invalid", topology, rowId, checkId, "observed")
+  }
+  for (const key of required) {
+    if (result[key] !== true) addFailure(failures, "check_result_semantics_invalid", topology, rowId, checkId, key)
+  }
+  if (extraKeys.includes("child_enumeration_denied") && typeof result.child_enumeration_denied !== "boolean") {
+    addFailure(failures, "check_result_semantics_invalid", topology, rowId, checkId, "child_enumeration_denied")
+  }
+  if (extraKeys.includes("no_new_privs") && result.no_new_privs !== false) {
+    addFailure(failures, "check_result_semantics_invalid", topology, rowId, checkId, "no_new_privs")
+  }
+}
+
 export function validateManifest(manifest, {
   expectedTopology,
   expectedReviewedCommit,
@@ -504,8 +693,7 @@ export function validateManifest(manifest, {
         || check.evidence_refs.some((reference) => !nonEmptyString(reference))) {
         addFailure(failures, "evidence_reference_missing", topology, definition.id, checkId)
       }
-      if (definition.id === RELEASE_ROW_ID) validateReleaseResult(check.result, topology, definition.id, checkId, failures)
-      if (definition.id === SHUTDOWN_ROW_ID) validateShutdownResult(check.result, topology, definition.id, checkId, failures)
+      validateCheckResult(check.result, manifest, topology, definition.id, checkId, failures)
     }
     for (const checkId of Object.keys(row.checks)) {
       if (!definition.checks.includes(checkId)) addFailure(failures, "extra_check", topology, definition.id, checkId)
@@ -634,6 +822,7 @@ export function compareManifests(ordinary, path1, {
   signingKey,
   allowFixture = false,
 } = {}) {
+  requireComparisonIdentity({ expectedReviewedCommit, expectedBuildId })
   const ordinaryValidation = validateManifest(ordinary, {
     expectedTopology: "ordinary",
     expectedReviewedCommit,
@@ -753,6 +942,7 @@ export function createParityMatrixRunner({
       return JSON.parse(String(raw))
     },
     async compareFiles({ ordinaryPath, path1Path, reportPath, ...options }) {
+      requireComparisonIdentity(options)
       const ordinary = await this.loadManifest(ordinaryPath)
       const path1 = await this.loadManifest(path1Path)
       const report = compareManifests(ordinary, path1, options)
@@ -786,7 +976,7 @@ export function usage() {
   return [
     "node apps/cli/scripts/managed-ordinary-parity-matrix.mjs compare \\",
     "  --ordinary ordinary.json --path1 path1.json --report parity-report.json \\",
-    "  [--reviewed-commit <40-hex>] [--build-id <id>] [--signing-key-env CHARIOX_PARITY_SIGNING_KEY]",
+    "  --reviewed-commit <40-hex> --build-id <id> [--signing-key-env CHARIOX_PARITY_SIGNING_KEY]",
   ].join("\n")
 }
 
@@ -809,8 +999,8 @@ export async function runCli(argv = process.argv.slice(2), {
   const ordinaryPath = options.ordinary
   const path1Path = options.path1
   const reportPath = options.report
-  if (!ordinaryPath || !path1Path || !reportPath) {
-    console.error("--ordinary, --path1, and --report are required")
+  if (!ordinaryPath || !path1Path || !reportPath || !options.reviewed_commit || !options.build_id) {
+    console.error("--ordinary, --path1, --report, --reviewed-commit, and --build-id are required")
     console.error(usage())
     return 2
   }

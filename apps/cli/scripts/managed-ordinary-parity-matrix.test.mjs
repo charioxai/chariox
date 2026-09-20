@@ -18,12 +18,71 @@ const BUILD_ID = "build-kernel-20260920"
 const KERNEL_BUILD_ID = "kernel-build-ordinary-managed-20260920"
 const SOURCE_DIGEST = "sha256:" + "a".repeat(64)
 
+const RESULT_TRUE_FIELDS = Object.freeze({
+  "MP-02/directory_discovery": ["exact_path_accessible"],
+  "MP-02/exact_path_entry": ["exact_path_accessible", "cwd_matches_requested"],
+  "MP-02/directory_creation": ["created_and_accessible"],
+  "MP-02/home_access": ["accessible"],
+  "MP-02/tmp_access": ["accessible"],
+  "MP-03/empty_workspace": ["workspace_created", "control_state_separate"],
+  "MP-03/copied_repository": ["repository_accessible"],
+  "MP-03/repository_basename": ["source_basename_preserved"],
+  "MP-03/basename_collision": ["collision_rejected"],
+  "MP-03/worktree_placement": ["worktree_user_path", "control_root_not_workspace"],
+  "MP-04/provider_environment": ["home_matches_ordinary", "chariox_home_matches_ordinary", "cwd_matches_requested", "ordinary_user"],
+  "MP-04/mount_visibility": ["mounts_match_ordinary", "mount_probe_complete"],
+  "MP-04/privilege_state": ["capabilities_match_ordinary", "umask_matches_ordinary"],
+  "MP-04/network_reachability": ["network_matches_ordinary", "address_families_recorded"],
+  "MP-04/package_tool_installation": ["tool_probe_succeeded", "install_probe_succeeded"],
+  "MP-05/session_agent_launch": ["session_created", "agent_created", "official_command"],
+  "MP-05/terminal_file_git": ["terminal_ok", "file_ok", "git_ok"],
+  "MP-05/attachments_permissions_capabilities": ["attachments_ok", "permissions_ok", "capabilities_ok"],
+  "MP-05/project_setup": ["project_setup_ok"],
+  "MP-06/reconnect_orphan_recovery": ["reconnect_ok", "orphan_recovered"],
+  "MP-06/restart_recovery": ["restart_recovered"],
+  "MP-06/reconnect_history_result_identity": ["history_preserved", "result_identity_preserved"],
+  "MP-06/queued_prompts": ["queued_prompt_preserved", "queued_prompt_advanced"],
+  "MP-06/active_turn_state": ["active_turn_state_preserved"],
+  "MP-07/control_file_protection": ["control_file_denied", "sibling_accessible"],
+  "MP-07/filesystem_permissions": ["permissions_match_ordinary"],
+  "MP-07/resource_limits": ["limits_observed"],
+  "MP-07/structured_errors": ["structured_errors"],
+  "MP-07/protocol_behavior": ["protocol_behavior_ok"],
+  "MP-08/cleanup": ["owned_processes_gone", "owned_artifacts_removed", "foreign_processes_untouched", "cleanup_complete"],
+})
+
 function ordinaryResult(rowId, checkId) {
+  if (rowId === "MP-01" && checkId === "source_protocol_identity") {
+    return {
+      observed: true,
+      source_sha_verified: true,
+      source_clean: true,
+      kernel_protocol: "kernel-protocol-v1",
+      relay_protocol: "relay-protocol-v1",
+      build_identity_verified: true,
+    }
+  }
+  if (rowId === "MP-01" && checkId === "fresh_worker") {
+    return { observed: true, fresh_worker: true, worker_identity_observed: true }
+  }
+  if (rowId === "MP-01" && checkId === "official_provider_identity") {
+    return {
+      observed: true,
+      official: true,
+      provider_name: "codex",
+      executable_matches: true,
+      executable_basename: "codex",
+      provider_version_observed: true,
+    }
+  }
+  if (rowId === "MP-01" && checkId === "capture_boundary") {
+    return { observed: true, boundary_verified: true, inside_provider_turn: true, independent: true }
+  }
   if (rowId === "MP-04" && checkId === "provider_ancestry") {
-    return { provider_observed: true, bwrap_ancestor: false, fresh_worker: true }
+    return { observed: true, provider_observed: true, bwrap_ancestor: false, fresh_worker: true }
   }
   if (rowId === "MP-04" && checkId === "managed_isolation_environment") {
-    return { managed_marker_absent: true, bwrap_environment_absent: true }
+    return { observed: true, managed_marker_absent: true, bwrap_environment_absent: true }
   }
   if (rowId === "MP-09") {
     return {
@@ -47,12 +106,12 @@ function ordinaryResult(rowId, checkId) {
       measured_from_last_agent_finished: trigger === "idle_15m" || trigger === "idle_30m",
     }
   }
-  return {
-    row: rowId,
-    check: checkId,
-    observed: true,
-    value: `${rowId}/${checkId}`,
-  }
+  const fields = RESULT_TRUE_FIELDS[`${rowId}/${checkId}`]
+  assert.ok(fields, `missing fixture result schema for ${rowId}/${checkId}`)
+  const result = Object.fromEntries(["observed", ...fields].map((field) => [field, true]))
+  if (rowId === "MP-02" && checkId === "directory_discovery") result.child_enumeration_denied = false
+  if (rowId === "MP-04" && checkId === "privilege_state") result.no_new_privs = false
+  return result
 }
 
 function path1Result(rowId, checkId) {
@@ -182,7 +241,7 @@ test("hidden extra result differences are reported on their exact matrix check",
   const report = compare(makeManifest("ordinary"), path1)
   assert.equal(report.status, "fail")
   assert.ok(report.failures.some((failure) => (
-    failure.code === "unapproved_difference"
+    failure.code === "check_result_shape_invalid"
       && failure.rowId === "MP-02"
       && failure.checkId === "exact_path_entry"
   )))
@@ -199,14 +258,47 @@ test("a Bubblewrap ancestor is a product-boundary failure even with matching ord
 
 test("cwd mismatch is not an allowed managed difference", () => {
   const path1 = cloneAndResign(makeManifest("path1"), (manifest) => {
-    manifest.rows["MP-02"].checks.exact_path_entry.result.value = "/tmp/wrong-cwd"
+    manifest.rows["MP-02"].checks.exact_path_entry.result.cwd_matches_requested = false
   })
   const report = compare(makeManifest("ordinary"), path1)
   assert.equal(report.status, "fail")
   assert.ok(report.failures.some((failure) => (
-    failure.code === "unapproved_difference"
+    failure.code === "check_result_semantics_invalid"
       && failure.rowId === "MP-02"
       && failure.checkId === "exact_path_entry"
+  )))
+})
+
+test("matching placeholder objects cannot satisfy a typed result", () => {
+  const ordinary = cloneAndResign(makeManifest("ordinary"), (manifest) => {
+    manifest.rows["MP-05"].checks.terminal_file_git.result = { observed: true }
+  })
+  const path1 = cloneAndResign(makeManifest("path1"), (manifest) => {
+    manifest.rows["MP-05"].checks.terminal_file_git.result = { observed: true }
+  })
+  const report = compare(ordinary, path1)
+  assert.equal(report.status, "fail")
+  assert.ok(report.failures.some((failure) => (
+    failure.code === "check_result_shape_invalid"
+      && failure.rowId === "MP-05"
+      && failure.checkId === "terminal_file_git"
+  )))
+})
+
+test("matching false cleanup evidence fails closed", () => {
+  const ordinary = cloneAndResign(makeManifest("ordinary"), (manifest) => {
+    manifest.rows["MP-08"].checks.cleanup.result.cleanup_complete = false
+  })
+  const path1 = cloneAndResign(makeManifest("path1"), (manifest) => {
+    manifest.rows["MP-08"].checks.cleanup.result.cleanup_complete = false
+  })
+  const report = compare(ordinary, path1)
+  assert.equal(report.status, "fail")
+  assert.ok(report.failures.some((failure) => (
+    failure.code === "check_result_semantics_invalid"
+      && failure.rowId === "MP-08"
+      && failure.checkId === "cleanup"
+      && failure.detail === "cleanup_complete"
   )))
 })
 
@@ -260,6 +352,40 @@ test("filesystem and command seams are injectable without touching the host", as
     stderr: "",
   })
   assert.deepEqual(calls, [["fixture-probe", ["--cwd", "/home"]]])
+})
+
+test("comparison identity is mandatory before either manifest is read", async () => {
+  const reads = []
+  const runner = createParityMatrixRunner({
+    filesystem: {
+      async readFile(filePath) {
+        reads.push(filePath)
+        throw new Error("manifest read must not run")
+      },
+      async writeFile() {
+        throw new Error("report write must not run")
+      },
+    },
+  })
+  await assert.rejects(
+    runner.compareFiles({
+      ordinaryPath: "ordinary.json",
+      path1Path: "path1.json",
+      expectedBuildId: BUILD_ID,
+      signingKey: SIGNING_KEY,
+    }),
+    /expected reviewed commit/,
+  )
+  await assert.rejects(
+    runner.compareFiles({
+      ordinaryPath: "ordinary.json",
+      path1Path: "path1.json",
+      expectedReviewedCommit: REVIEWED_COMMIT,
+      signingKey: SIGNING_KEY,
+    }),
+    /expected reviewed build id/,
+  )
+  assert.deepEqual(reads, [])
 })
 
 test("command seam converts a failed probe into bounded evidence", async () => {
