@@ -214,6 +214,12 @@ does not close a box.
 These decisions are requirements. Do not reopen them during implementation or
 replace them with a managed-only approximation:
 
+- The complete managed-versus-ordinary parity exemption list is exactly:
+  managed deployment and atomic release activation, plus the mandatory
+  managed-machine automatic-shutdown lifecycle. Provisioning provenance,
+  machine ownership, or a `managed` flag must not select different kernel,
+  provider, workspace, filesystem, session, reconnect, history, permission,
+  terminal, Git, Project setup, or client behavior after enrollment.
 - Path 1 uses the disposable VM as its isolation boundary. Provider processes
   must not run inside Bubblewrap or inherit an equivalent managed systemd
   filesystem or process sandbox.
@@ -221,6 +227,12 @@ replace them with a managed-only approximation:
   signed, target-native, content-addressed release with atomic activation and
   rollback. This is the production installation design for managed machines,
   not a development shortcut and not a separate managed runtime.
+- A package-manager command such as `pnpm` is not the production installation
+  contract for a managed machine. Binary installation and mutable state
+  materialization are separate transactions: the former activates the signed
+  root-owned release; the latter transfers only kernel-authorized context into
+  the ordinary user-owned `/home/chariox/.chariox` layout. Neither transaction
+  may create a second managed-only state model.
 - Mutable kernel state remains in `/home/chariox/.chariox`. Root-owned release
   directories contain immutable binaries only.
 - Copied repositories default to `/home/chariox/<source-repository-basename>`.
