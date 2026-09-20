@@ -1,0 +1,285 @@
+const MAX_IDENTIFIER_BYTES = 128;
+const MAX_OPERATION_BYTES = 64;
+
+export const MUTATION_ERROR_CODES = Object.freeze({
+  INVALID_ARGUMENT: "MUTATION_INVALID_ARGUMENT",
+  ACTION_ID_CONFLICT: "MUTATION_ACTION_ID_CONFLICT",
+  BROWSER_GENERATION_STALE: "MUTATION_BROWSER_GENERATION_STALE",
+  TAB_GENERATION_STALE: "MUTATION_TAB_GENERATION_STALE",
+  QUEUE_SATURATED: "MUTATION_QUEUE_SATURATED",
+  CANCELLED: "MUTATION_CANCELLED",
+  INDETERMINATE: "MUTATION_INDETERMINATE",
+});
+
+export class BrowserMutationError extends Error {
+  constructor(code) {
+    super(code);
+    this.name = "BrowserMutationError";
+    this.code = code;
+  }
+}
+
+function fail(code) {
+  throw new BrowserMutationError(code);
+}
+
+function isPlainObject(value) {
+  if (value === null || typeof value !== "object") return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function identifier(value) {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    Buffer.byteLength(value, "utf8") > MAX_IDENTIFIER_BYTES ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)
+  ) {
+    fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
+  }
+  return value;
+}
+
+function positiveInteger(value) {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
+  }
+  return value;
+}
+
+function normalizeAttribution(value) {
+  if (!isPlainObject(value)) fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
+  const allowed = new Set([
+    "action_id",
+    "actor_id",
+    "browser_generation",
+    "operation",
+    "tab_id",
+    "target_generation",
+  ]);
+  if (Object.keys(value).some((key) => !allowed.has(key))) {
+    fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
+  }
+  for (const key of allowed) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) {
+      fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
+    }
+  }
+  if (
+    typeof value.operation !== "string" ||
+    value.operation.length === 0 ||
+    Buffer.byteLength(value.operation, "utf8") > MAX_OPERATION_BYTES ||
+    !/^[a-z][a-z0-9_]*$/.test(value.operation)
+  ) {
+    fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
+  }
+  return Object.freeze({
+    action_id: identifier(value.action_id),
+    actor_id: identifier(value.actor_id),
+    browser_generation: positiveInteger(value.browser_generation),
+    operation: value.operation,
+    tab_id: identifier(value.tab_id),
+    target_generation: positiveInteger(value.target_generation),
+  });
+}
+
+function fingerprint(attribution) {
+  return JSON.stringify(attribution);
+}
+
+function finiteLimit(value, fallback) {
+  const result = value ?? fallback;
+  if (!Number.isSafeInteger(result) || result < 1) {
+    throw new TypeError("coordinator limits must be positive integers");
+  }
+  return result;
+}
+
+function terminalPromise(record) {
+  return record.error === undefined
+    ? Promise.resolve(record.result)
+    : Promise.reject(record.error);
+}
+
+export class BrowserMutationCoordinator {
+  constructor(options = {}) {
+    if (!isPlainObject(options)) throw new TypeError("options must be a plain object");
+    this.maxTabs = finiteLimit(options.maxTabs, 256);
+    this.maxQueuedPerTab = finiteLimit(options.maxQueuedPerTab, 16);
+    this.maxCompleted = finiteLimit(options.maxCompleted, 1024);
+    this.browserGeneration = options.browserGeneration === undefined
+      ? null
+      : positiveInteger(options.browserGeneration);
+    this.queues = new Map();
+    this.active = new Map();
+    this.actions = new Map();
+    this.completedOrder = [];
+    this.invalidatedTargetGeneration = new Map();
+  }
+
+  mutate(rawAttribution, run) {
+    const attribution = normalizeAttribution(rawAttribution);
+    if (typeof run !== "function") fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
+    this._admitGeneration(attribution.browser_generation);
+    const invalidatedGeneration = this.invalidatedTargetGeneration.get(attribution.tab_id) ?? 0;
+    if (attribution.target_generation <= invalidatedGeneration) {
+      fail(MUTATION_ERROR_CODES.TAB_GENERATION_STALE);
+    }
+
+    const actionFingerprint = fingerprint(attribution);
+    const existing = this.actions.get(attribution.action_id);
+    if (existing) {
+      if (existing.fingerprint !== actionFingerprint) {
+        fail(MUTATION_ERROR_CODES.ACTION_ID_CONFLICT);
+      }
+      return existing.state === "completed" ? terminalPromise(existing) : existing.promise;
+    }
+
+    let queue = this.queues.get(attribution.tab_id);
+    if (!queue) {
+      const admittedTabs = new Set([...this.queues.keys(), ...this.active.keys()]);
+      if (!admittedTabs.has(attribution.tab_id) && admittedTabs.size >= this.maxTabs) {
+        fail(MUTATION_ERROR_CODES.QUEUE_SATURATED);
+      }
+      queue = [];
+      this.queues.set(attribution.tab_id, queue);
+    }
+    if (queue.length >= this.maxQueuedPerTab) {
+      fail(MUTATION_ERROR_CODES.QUEUE_SATURATED);
+    }
+
+    const abortController = new AbortController();
+    let resolvePromise;
+    let rejectPromise;
+    const promise = new Promise((resolve, reject) => {
+      resolvePromise = resolve;
+      rejectPromise = reject;
+    });
+    const record = {
+      attribution,
+      abortController,
+      fingerprint: actionFingerprint,
+      promise,
+      reject: rejectPromise,
+      resolve: resolvePromise,
+      run,
+      state: "queued",
+    };
+    this.actions.set(attribution.action_id, record);
+    queue.push(record);
+    this._pump(attribution.tab_id);
+    return promise;
+  }
+
+  invalidateTab(tabId, targetGeneration) {
+    const normalizedTabId = identifier(tabId);
+    const normalizedGeneration = positiveInteger(targetGeneration);
+    const previous = this.invalidatedTargetGeneration.get(normalizedTabId) ?? 0;
+    this.invalidatedTargetGeneration.set(normalizedTabId, Math.max(previous, normalizedGeneration));
+    this._cancelQueued(normalizedTabId, MUTATION_ERROR_CODES.CANCELLED);
+    const active = this.active.get(normalizedTabId);
+    if (active && active.attribution.target_generation <= normalizedGeneration) {
+      active.abortController.abort(MUTATION_ERROR_CODES.INDETERMINATE);
+    }
+  }
+
+  advanceBrowserGeneration(nextGeneration) {
+    const normalizedGeneration = positiveInteger(nextGeneration);
+    if (this.browserGeneration !== null && normalizedGeneration <= this.browserGeneration) {
+      fail(MUTATION_ERROR_CODES.BROWSER_GENERATION_STALE);
+    }
+    this.browserGeneration = normalizedGeneration;
+    for (const tabId of [...this.queues.keys()]) {
+      this._cancelQueued(tabId, MUTATION_ERROR_CODES.CANCELLED);
+    }
+    for (const record of this.active.values()) {
+      record.abortController.abort(MUTATION_ERROR_CODES.INDETERMINATE);
+    }
+    this.invalidatedTargetGeneration.clear();
+  }
+
+  snapshot() {
+    const active = [...this.active.values()]
+      .map((record) => record.attribution)
+      .sort((left, right) => left.tab_id.localeCompare(right.tab_id));
+    const queued = [...this.queues.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([tabId, records]) => ({
+        tab_id: tabId,
+        action_ids: records.map((record) => record.attribution.action_id),
+      }));
+    return {
+      browser_generation: this.browserGeneration,
+      active,
+      queued,
+      completed_count: this.completedOrder.length,
+    };
+  }
+
+  _admitGeneration(generation) {
+    if (this.browserGeneration === null) {
+      this.browserGeneration = generation;
+    } else if (generation !== this.browserGeneration) {
+      fail(MUTATION_ERROR_CODES.BROWSER_GENERATION_STALE);
+    }
+  }
+
+  _cancelQueued(tabId, code) {
+    const queue = this.queues.get(tabId) ?? [];
+    this.queues.delete(tabId);
+    for (const record of queue) {
+      const error = new BrowserMutationError(code);
+      record.state = "completed";
+      record.error = error;
+      record.reject(error);
+      this._retainCompleted(record);
+    }
+  }
+
+  _pump(tabId) {
+    if (this.active.has(tabId)) return;
+    const queue = this.queues.get(tabId);
+    const record = queue?.shift();
+    if (!record) {
+      this.queues.delete(tabId);
+      return;
+    }
+    if (queue.length === 0) this.queues.delete(tabId);
+    record.state = "active";
+    this.active.set(tabId, record);
+    Promise.resolve()
+      .then(() => record.run({ signal: record.abortController.signal, attribution: record.attribution }))
+      .then(
+        (result) => this._settle(record, result, undefined),
+        (error) => this._settle(record, undefined, error),
+      );
+  }
+
+  _settle(record, result, error) {
+    const { tab_id: tabId } = record.attribution;
+    const wasAborted = record.abortController.signal.aborted;
+    const terminalError = wasAborted
+      ? new BrowserMutationError(MUTATION_ERROR_CODES.INDETERMINATE)
+      : error;
+    record.state = "completed";
+    if (terminalError === undefined) {
+      record.result = result;
+      record.resolve(result);
+    } else {
+      record.error = terminalError;
+      record.reject(terminalError);
+    }
+    if (this.active.get(tabId) === record) this.active.delete(tabId);
+    this._retainCompleted(record);
+    this._pump(tabId);
+  }
+
+  _retainCompleted(record) {
+    this.completedOrder.push(record.attribution.action_id);
+    while (this.completedOrder.length > this.maxCompleted) {
+      const actionId = this.completedOrder.shift();
+      if (this.actions.get(actionId)?.state === "completed") this.actions.delete(actionId);
+    }
+  }
+}
