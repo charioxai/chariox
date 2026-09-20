@@ -53,6 +53,7 @@ test("factory uses an injected kernel-client seam without importing dist", async
   try {
     const transport = await createManagedBrowserComputerParityTransport({
       evidenceRoot: "/tmp/managed-parity-source-seam",
+      resourceTelemetry: async () => managedTelemetry(),
       kernelClientModules: {
         LocalIpcClient: SourceSeamClient,
         requestApi: {
@@ -71,6 +72,71 @@ test("factory uses an injected kernel-client seam without importing dist", async
     })
     assert.equal(transport.targetId, "machine-1")
     await transport.close()
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+})
+
+test("factory fails before returning a transport when only daemon health is available", async () => {
+  const previous = new Map([
+    ["CHARIOX_MANAGED_PARITY_HOME_KERNEL_URL", process.env.CHARIOX_MANAGED_PARITY_HOME_KERNEL_URL],
+    ["CHARIOX_MANAGED_PARITY_TARGET_KERNEL_REF", process.env.CHARIOX_MANAGED_PARITY_TARGET_KERNEL_REF],
+    ["CHARIOX_MANAGED_PARITY_TARGET_MACHINE_REF", process.env.CHARIOX_MANAGED_PARITY_TARGET_MACHINE_REF],
+    ["CHARIOX_MANAGED_PARITY_CLIENT_ID", process.env.CHARIOX_MANAGED_PARITY_CLIENT_ID],
+    ["CHARIOX_MANAGED_PARITY_SESSION_ID", process.env.CHARIOX_MANAGED_PARITY_SESSION_ID],
+    ["CHARIOX_KERNEL_LOCAL_AUTH_TOKEN", process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN],
+  ])
+  Object.assign(process.env, {
+    CHARIOX_MANAGED_PARITY_HOME_KERNEL_URL: "ws://home.invalid",
+    CHARIOX_MANAGED_PARITY_TARGET_KERNEL_REF: "kernel-1",
+    CHARIOX_MANAGED_PARITY_TARGET_MACHINE_REF: "machine-1",
+    CHARIOX_MANAGED_PARITY_CLIENT_ID: "client-1",
+    CHARIOX_MANAGED_PARITY_SESSION_ID: "session-1",
+    CHARIOX_KERNEL_LOCAL_AUTH_TOKEN: "operator-token",
+  })
+  class DaemonHealthOnlyClient {
+    async send(request) {
+      assert.ok(Object.hasOwn(request, "ResolveKernelClientConnection"))
+      return {
+        KernelClientConnectionResolved: {
+          connection: {
+            relay_url: "ws://worker.invalid",
+            relay_token: "relay-token-kept-in-memory",
+            target_daemon_id: "daemon-1",
+            target_daemon_alias: null,
+          },
+        },
+      }
+    }
+
+    async close() {}
+  }
+  try {
+    await assert.rejects(
+      () => createManagedBrowserComputerParityTransport({
+        evidenceRoot: "/tmp/managed-parity-source-seam",
+        kernelClientModules: {
+          LocalIpcClient: DaemonHealthOnlyClient,
+          requestApi: {
+            ...moduleRequestApi,
+            resolveKernelClientConnectionRequest(options) {
+              return { ResolveKernelClientConnection: options }
+            },
+            getDaemonHealthRequest() { return { GetDaemonHealth: null } },
+            relayStatusRequest() { return { RelayStatus: null } },
+            getRoomEnvironmentStateRequest(sessionId) {
+              return { GetRoomEnvironmentState: { session_id: sessionId } }
+            },
+          },
+          displayApi: { openSelkiesDisplayStream() {} },
+          webSocket: {},
+        },
+      }),
+      /requires a complete kernel-managed resource telemetry path/,
+    )
   } finally {
     for (const [key, value] of previous) {
       if (value === undefined) delete process.env[key]
@@ -125,18 +191,11 @@ test("managed resource telemetry passes with stable target identity and redactio
   assert.equal(result.phase, "before-browser-start")
 })
 
-test("managed resource telemetry can use the released daemon-health public path", async () => {
+test("managed resource telemetry does not promote partial daemon health into an authoritative sample", async () => {
   const transport = createManagedBrowserComputerParityTransportFromPublicClient({
     client: {
-      async send(request) {
-        assert.deepEqual(request, { GetDaemonHealth: null })
-        return {
-          DaemonHealth: {
-            projection: {
-              process: { process_id: 7, current_resident_set_bytes: 128 },
-            },
-          },
-        }
+      async send() {
+        throw new Error("daemon health must not be requested as resource telemetry")
       },
     },
     requestApi: {
@@ -146,14 +205,10 @@ test("managed resource telemetry can use the released daemon-health public path"
     targetKernelRef: "kernel-1",
     targetMachineRef: "machine-1",
   })
-  const result = await transport.collectManagedTargetResourceSnapshot({ phase: "health" })
-  assert.deepEqual(result.telemetry, {
-    scope: "managed-target",
-    authoritative: true,
-    targetId: "machine-1",
-    source: "kernel-daemon-health",
-  })
-  assert.equal(result.process.rssBytes, 128)
+  await assert.rejects(
+    () => transport.collectManagedTargetResourceSnapshot({ phase: "health" }),
+    /no kernel-managed resource telemetry path/,
+  )
 })
 
 test("managed resource telemetry fails closed for a foreign target", async () => {
@@ -171,6 +226,17 @@ test("managed resource telemetry reports unknown data instead of using a host fa
   await assert.rejects(
     () => transport.collectManagedTargetResourceSnapshot({ phase: "after" }),
     /resource telemetry is unknown/,
+  )
+})
+
+test("managed resource telemetry rejects authoritative metadata without the complete guard sample", async () => {
+  const transport = createTelemetryTransport({
+    telemetry: managedTelemetry().telemetry,
+    process: { rssBytes: 128 },
+  })
+  await assert.rejects(
+    () => transport.collectManagedTargetResourceSnapshot({ phase: "during" }),
+    /resource telemetry memory\.totalBytes must be a finite non-negative number/,
   )
 })
 
@@ -277,7 +343,12 @@ test("persistence descriptions preserve exact save/remove/restore argv and recei
   ])
 })
 
-function createCleanupTransport({ deleteRemovesSlice = true } = {}) {
+function createCleanupTransport({
+  deleteRemovesSlice = true,
+  startDelayMs = 0,
+  cleanupInspector = null,
+  timeouts,
+} = {}) {
   let slicePresent = true
   const slice = {
     id: "slice-1",
@@ -293,6 +364,9 @@ function createCleanupTransport({ deleteRemovesSlice = true } = {}) {
   }
   const requestApi = {
     ...moduleRequestApi,
+    attachToSessionRequest(sessionId, clientId) {
+      return { AttachToSession: { session_id: sessionId, client_id: clientId } }
+    },
     createSliceRequest(options) { return { CreateSlice: options } },
     bindRoomEnvironmentSliceRequest(sessionId, sliceId) {
       return { BindRoomEnvironmentSlice: { session_id: sessionId, slice_ref: sliceId } }
@@ -309,6 +383,9 @@ function createCleanupTransport({ deleteRemovesSlice = true } = {}) {
     },
     relayStatusRequest() { return { RelayStatus: null } },
     deleteSliceRequest(sliceId) { return { DeleteSlice: { slice_ref: sliceId } } },
+    detachFromSessionRequest(attachmentId) {
+      return { DetachFromSession: { attachment_id: attachmentId } }
+    },
   }
   const client = {
     async send(request) {
@@ -319,6 +396,9 @@ function createCleanupTransport({ deleteRemovesSlice = true } = {}) {
         return { RoomEnvironmentSlice: { binding: { session_id: "room-1", slice_id: "slice-1", owner_kernel_id: "kernel-1", worker_kernel_ref: "worker-ref-1" } } }
       }
       if (Object.hasOwn(request, "StartSlice") || Object.hasOwn(request, "GetSlice")) {
+        if (Object.hasOwn(request, "StartSlice") && startDelayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, startDelayMs))
+        }
         return Object.hasOwn(request, "StartSlice")
           ? { SliceStarted: { slice } }
           : { Slice: { slice } }
@@ -344,6 +424,12 @@ function createCleanupTransport({ deleteRemovesSlice = true } = {}) {
           profile_ids: ["profile-1"],
         } } }
       }
+      if (Object.hasOwn(request, "AttachToSession")) {
+        return { SessionAttached: { attachment: { id: "attachment-1", session_id: "room-1" } } }
+      }
+      if (Object.hasOwn(request, "DetachFromSession")) {
+        return { SessionDetached: { attachment: { id: "attachment-1", session_id: "room-1" } } }
+      }
       if (Object.hasOwn(request, "DeleteSlice")) {
         if (deleteRemovesSlice) slicePresent = false
         return { SliceDeleted: { slice: { id: "slice-1" } } }
@@ -357,6 +443,28 @@ function createCleanupTransport({ deleteRemovesSlice = true } = {}) {
       requestApi,
       targetKernelRef: "worker-ref-1",
       targetMachineRef: "machine-1",
+      cleanupInspector,
+      timeouts,
+      displayTransport: {
+        async openSelkiesDisplayStream() {
+          let receiveCount = 0
+          return {
+            endpoint: {
+              stream_protocol: "chariox-display-v1",
+              stream_id: "stream-1",
+            },
+            async sendControl() {},
+            async receive() {
+              if (receiveCount++ === 0) {
+                return { kind: "text", data: Uint8Array.from(Buffer.from("VIDEO_STARTED")) }
+              }
+              return { kind: "binary", data: Uint8Array.from([4, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) }
+            },
+            async close() {},
+          }
+        },
+        webSocket: {},
+      },
     }),
     client,
   }
@@ -404,4 +512,100 @@ test("cleanup.inspect fails when the owned slice remains after a delete receipt"
     () => transport.run("cleanup.inspect", {}),
     /owned slice still present/,
   )
+})
+
+test("slice provisioning uses the independent lifecycle timeout", async () => {
+  const { transport } = createCleanupTransport({
+    startDelayMs: 20,
+    timeouts: { sliceLifecycleMs: 5 },
+  })
+  await assert.rejects(
+    () => transport.run("selkies.create", {
+      runId: "run-timeout",
+      kernelOwnedDefault: true,
+      displayBackend: null,
+      binding: {
+        kernelId: "kernel-1",
+        machineId: "machine-1",
+        roomId: "room-1",
+        environmentId: "environment-1",
+      },
+    }),
+    /selkies\.create slice start timed out after 5ms/,
+  )
+  await transport.run("cleanup.perform", {})
+})
+
+test("destroy followed by final cleanup preserves the attachment evidence ledger", async () => {
+  const { transport } = createCleanupTransport()
+  const binding = {
+    kernelId: "kernel-1",
+    machineId: "machine-1",
+    roomId: "room-1",
+    environmentId: "environment-1",
+  }
+  await transport.run("selkies.create", {
+    runId: "run-ledger",
+    kernelOwnedDefault: true,
+    displayBackend: null,
+    binding,
+  })
+  await transport.run("selkies.attach", {
+    runId: "run-ledger",
+    binding,
+    client: "web",
+    displayBackend: "selkies",
+  })
+  await transport.run("selkies.destroy", { sliceId: "slice-1" })
+  await transport.run("cleanup.perform", {})
+  const inspection = await transport.run("cleanup.inspect", {})
+
+  assert.deepEqual(inspection.owned.attachmentIds, ["attachment-1"])
+  assert.deepEqual(inspection.owned.detachedAttachmentIds, ["attachment-1"])
+  assert.equal(inspection.zeroResidue, true)
+})
+
+test("cleanup inspection rejects missing and malformed managed residue metrics", async () => {
+  const base = {
+    zeroResidue: true,
+    managedMachines: 0,
+    rooms: 0,
+    environments: 0,
+    processes: 0,
+    listeners: 0,
+    containers: 0,
+    profiles: 0,
+    activeTargets: 0,
+    temporaryFiles: 0,
+    retainedEvidenceLeakCount: 0,
+    resources: { rssDeltaBytes: 0, diskDeltaBytes: 0 },
+  }
+  for (const [label, mutation] of [
+    ["missing counter", ({ processes: _ignored, ...rest }) => rest],
+    ["negative counter", (value) => ({ ...value, processes: -1 })],
+    ["non-numeric counter", (value) => ({ ...value, processes: "0" })],
+    ["missing resources", ({ resources: _ignored, ...rest }) => rest],
+    ["non-finite delta", (value) => ({ ...value, resources: { ...value.resources, rssDeltaBytes: Infinity } })],
+  ]) {
+    const { transport } = createCleanupTransport({
+      cleanupInspector: async () => mutation(base),
+    })
+    await transport.run("selkies.create", {
+      runId: `run-${label.replaceAll(" ", "-")}`,
+      kernelOwnedDefault: true,
+      displayBackend: null,
+      binding: {
+        kernelId: "kernel-1",
+        machineId: "machine-1",
+        roomId: "room-1",
+        environmentId: "environment-1",
+      },
+    })
+    await transport.run("cleanup.perform", {})
+    await assert.rejects(
+      () => transport.run("cleanup.inspect", {}),
+      /must be a finite non-negative|must contain finite non-negative deltas/,
+      label,
+    )
+  }
 })

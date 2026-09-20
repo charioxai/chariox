@@ -9,6 +9,7 @@ const OPERATOR_SESSION_ENV = "CHARIOX_MANAGED_PARITY_SESSION_ID"
 const DISPLAY_CONNECT_TIMEOUT_MS = 10_000
 const DISPLAY_READY_TIMEOUT_MS = 10_000
 const PUBLIC_REQUEST_TIMEOUT_MS = 15_000
+const SLICE_LIFECYCLE_TIMEOUT_MS = 600_000
 const RESOURCE_TELEMETRY_TIMEOUT_MS = 10_000
 const PERSISTENCE_TIMEOUT_MS = 30_000
 const CLEANUP_INSPECTION_TIMEOUT_MS = 15_000
@@ -109,6 +110,9 @@ export async function createManagedBrowserComputerParityTransport({
       import.meta.url,
     )))("ws")
     const webSocket = webSocketModule.WebSocket ?? webSocketModule.default ?? webSocketModule
+    if (!hasManagedResourceTelemetryPath(workerClient, requestApi, resourceTelemetry)) {
+      throw new Error("managed parity transport requires a complete kernel-managed resource telemetry path")
+    }
     return {
       ...createManagedBrowserComputerParityTransportFromPublicClient({
         client: workerClient,
@@ -202,6 +206,11 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
     resourceTelemetryMs: finiteTimeout(timeouts.resourceTelemetryMs, RESOURCE_TELEMETRY_TIMEOUT_MS),
     persistenceMs: finiteTimeout(timeouts.persistenceMs, PERSISTENCE_TIMEOUT_MS),
     cleanupInspectionMs: finiteTimeout(timeouts.cleanupInspectionMs, CLEANUP_INSPECTION_TIMEOUT_MS),
+    sliceLifecycleMs: finiteTimeout(
+      timeouts.sliceLifecycleMs,
+      SLICE_LIFECYCLE_TIMEOUT_MS,
+      SLICE_LIFECYCLE_TIMEOUT_MS,
+    ),
   }
 
   const transport = {
@@ -257,6 +266,7 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
           ownedResources,
           request,
           signal,
+          sliceLifecycleTimeoutMs: timeoutConfig.sliceLifecycleMs,
         })
       }
       if (step === "selkies.attach") {
@@ -294,10 +304,17 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
           ownedResources,
           request,
           signal,
+          sliceLifecycleTimeoutMs: timeoutConfig.sliceLifecycleMs,
         })
       }
       if (step === "cleanup.perform") {
-        return runCleanup({ displayClient, requestApi, ownedResources, signal })
+        return runCleanup({
+          displayClient,
+          requestApi,
+          ownedResources,
+          signal,
+          sliceLifecycleTimeoutMs: timeoutConfig.sliceLifecycleMs,
+        })
       }
       if (step === "cleanup.inspect") {
         return withDeadline(
@@ -367,6 +384,7 @@ async function collectManagedTargetResourceSnapshot({
   if (expectedIds.size > 0 && !expectedIds.has(String(targetId))) {
     throw new Error("managed parity resource telemetry returned a foreign target identity")
   }
+  requireCompleteManagedResourceTelemetry(candidate)
   const capturedAt = normalizeTimestamp(now)
   const normalized = redactManagedValue({
     ...candidate,
@@ -398,37 +416,47 @@ async function readPublicManagedTelemetry({ client, requestApi, signal, ...input
     "getManagedTargetResourceTelemetryRequest",
     "getManagedResourceTelemetryRequest",
     "getKernelResourceTelemetryRequest",
-    "getDaemonHealthRequest",
   ].find((name) => typeof requestApi?.[name] === "function")
   if (!requestName) {
     throw new Error("managed parity remote transport has no kernel-managed resource telemetry path")
   }
-  const request = requestName === "getDaemonHealthRequest"
-    ? requestApi[requestName]()
-    : requestApi[requestName]({
-      kernelRef: input.targetKernelRef,
-      machineRef: input.targetMachineRef,
-    })
+  const request = requestApi[requestName]({
+    kernelRef: input.targetKernelRef,
+    machineRef: input.targetMachineRef,
+  })
   const response = await sendWithAbortSignal(client, request, signal, "resource telemetry")
-  const telemetry = unwrapManagedTelemetry(response)
-  if (requestName !== "getDaemonHealthRequest") return telemetry
-  if (!telemetry || typeof telemetry !== "object" || Array.isArray(telemetry)) return telemetry
-  return {
-    ...telemetry,
-    process: telemetry.process
-      ? {
-        ...telemetry.process,
-        rssBytes: telemetry.process.rssBytes
-          ?? telemetry.process.current_resident_set_bytes
-          ?? null,
-      }
-      : telemetry.process,
-    telemetry: telemetry.telemetry ?? {
-      scope: "managed-target",
-      authoritative: true,
-      targetId: input.targetMachineRef ?? input.targetKernelRef ?? null,
-      source: "kernel-daemon-health",
-    },
+  return unwrapManagedTelemetry(response)
+}
+
+function hasManagedResourceTelemetryPath(client, requestApi, adapter) {
+  if (adapter && firstAdapterMethod(adapter, [
+    "collect",
+    "collectManagedTargetResourceSnapshot",
+    "read",
+  ])) return true
+  if (firstCallable(client, [
+    "collectManagedTargetResourceSnapshot",
+    "getManagedTargetResourceTelemetry",
+    "getManagedResourceTelemetry",
+  ])) return true
+  return [
+    "getManagedTargetResourceTelemetryRequest",
+    "getManagedResourceTelemetryRequest",
+    "getKernelResourceTelemetryRequest",
+  ].some((name) => typeof requestApi?.[name] === "function")
+}
+
+function requireCompleteManagedResourceTelemetry(value) {
+  for (const [field, label] of [
+    [value?.memory?.totalBytes, "memory.totalBytes"],
+    [value?.memory?.availableBytes, "memory.availableBytes"],
+    [value?.disk?.totalBytes, "disk.totalBytes"],
+    [value?.disk?.availableBytes, "disk.availableBytes"],
+    [value?.process?.count, "process.count"],
+    [value?.process?.rssBytes, "process.rssBytes"],
+    [value?.logs?.bytes, "logs.bytes"],
+  ]) {
+    requireNonNegativeFinite(field, `resource telemetry ${label}`)
   }
 }
 
@@ -682,7 +710,7 @@ async function inspectCleanupResidue({
       }
       : {}),
     owned: stableOwnedIdentity(ownedResources),
-  })
+  }, { requireManagedMetrics: Boolean(managedInspection) })
   if (output.zeroResidue !== true) {
     throw new Error("managed parity cleanup.inspect found owned resource residue")
   }
@@ -791,28 +819,49 @@ function ownedResourcesTrackedAfterCleanup(ownedResources) {
     || ownedResources.attachmentsByClient.size !== 0
 }
 
-function normalizeCleanupInspection(value) {
+function normalizeCleanupInspection(value, { requireManagedMetrics = false } = {}) {
   const output = redactManagedValue({
     schema: value?.schema ?? MANAGED_PARITY_SCHEMA,
     inspected: value?.inspected === true,
     zeroResidue: value?.zeroResidue === true,
     owned: value?.owned ?? null,
     publicInventory: value?.publicInventory ?? null,
-    ownedSliceCount: numericOrZero(value?.ownedSliceCount),
-    ownedAttachmentResidueCount: numericOrZero(value?.ownedAttachmentResidueCount),
-    sessionCount: numericOrZero(value?.sessionCount),
+    ownedSliceCount: requireNonNegativeInteger(value?.ownedSliceCount, "cleanup ownedSliceCount"),
+    ownedAttachmentResidueCount: requireNonNegativeInteger(
+      value?.ownedAttachmentResidueCount,
+      "cleanup ownedAttachmentResidueCount",
+    ),
+    sessionCount: requireNonNegativeInteger(value?.sessionCount, "cleanup sessionCount"),
     memberInspection: value?.memberInspection ?? "unknown",
     unsupportedChecks: Array.isArray(value?.unsupportedChecks) ? value.unsupportedChecks : [],
-    resources: {
-      rssDeltaBytes: numericOrZero(value?.resources?.rssDeltaBytes),
-      diskDeltaBytes: numericOrZero(value?.resources?.diskDeltaBytes),
-    },
+    ...(value?.resources === undefined
+      ? {}
+      : {
+        resources: {
+          rssDeltaBytes: requireNonNegativeFinite(
+            value.resources?.rssDeltaBytes,
+            "cleanup resources.rssDeltaBytes",
+          ),
+          diskDeltaBytes: requireNonNegativeFinite(
+            value.resources?.diskDeltaBytes,
+            "cleanup resources.diskDeltaBytes",
+          ),
+        },
+      }),
   })
-  for (const field of [
+  const managedCountFields = [
     "managedMachines", "rooms", "environments", "processes", "listeners", "containers", "profiles",
     "activeTargets", "temporaryFiles", "retainedEvidenceLeakCount",
-  ]) {
-    if (value?.[field] !== undefined) output[field] = numericOrZero(value[field])
+  ]
+  for (const field of managedCountFields) {
+    if (value?.[field] !== undefined) {
+      output[field] = requireNonNegativeInteger(value[field], `cleanup ${field}`)
+    } else if (requireManagedMetrics) {
+      throw new Error(`managed parity cleanup ${field} must be a finite non-negative integer`)
+    }
+  }
+  if (requireManagedMetrics && value?.resources === undefined) {
+    throw new Error("managed parity cleanup resources must contain finite non-negative deltas")
   }
   return output
 }
@@ -895,12 +944,22 @@ function normalizeTimestamp(value) {
   return new Date().toISOString()
 }
 
-function numericOrZero(value) {
-  return Number.isFinite(value) && value >= 0 ? value : 0
+function requireNonNegativeFinite(value, label) {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`managed parity ${label} must be a finite non-negative number`)
+  }
+  return value
 }
 
-function finiteTimeout(value, fallback) {
-  return Number.isFinite(value) && value > 0 ? Math.min(value, 120_000) : fallback
+function requireNonNegativeInteger(value, label) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`managed parity ${label} must be a finite non-negative integer`)
+  }
+  return value
+}
+
+function finiteTimeout(value, fallback, maximum = 120_000) {
+  return Number.isFinite(value) && value > 0 ? Math.min(value, maximum) : fallback
 }
 
 async function withDeadline(operation, { signal, timeoutMs, step }) {
@@ -944,6 +1003,7 @@ async function runSelkiesCreate({
   ownedResources,
   request,
   signal,
+  sliceLifecycleTimeoutMs,
 }) {
   if (ownedResources.sliceId) {
     throw new Error("managed parity selkies.create already owns a slice; duplicate creation is not allowed")
@@ -969,6 +1029,7 @@ async function runSelkiesCreate({
     }),
     signal,
     "selkies.create",
+    sliceLifecycleTimeoutMs,
   )
   const created = responseVariant(createResponse, "SliceCreated", "selkies.create")?.slice
   const createdSliceId = requireText(created?.id, "SliceCreated.slice.id")
@@ -1006,6 +1067,7 @@ async function runSelkiesCreate({
     requestApi.startSliceRequest(ownedResources.sliceId),
     signal,
     "selkies.create slice start",
+    sliceLifecycleTimeoutMs,
   )
   const started = responseVariant(
     startResponse,
@@ -1083,6 +1145,7 @@ async function runSelkiesDestroy({
   ownedResources,
   request,
   signal,
+  sliceLifecycleTimeoutMs,
 }) {
   const sliceId = resolveOwnedSliceId(request, ownedResources, "selkies.destroy", { requireOwned: true })
   const identity = ownedResources.identity
@@ -1096,6 +1159,7 @@ async function runSelkiesDestroy({
     requireRequestConstructor(requestApi, "deleteSliceRequest")(sliceId),
     signal,
     "selkies.destroy",
+    sliceLifecycleTimeoutMs,
   )
   const deleted = responseVariant(deleteResponse, "SliceDeleted", "selkies.destroy").slice
   validateDeletedSlice(deleted, sliceId, "selkies.destroy")
@@ -1116,7 +1180,13 @@ async function runSelkiesDestroy({
   }
 }
 
-async function runCleanup({ displayClient, requestApi, ownedResources, signal }) {
+async function runCleanup({
+  displayClient,
+  requestApi,
+  ownedResources,
+  signal,
+  sliceLifecycleTimeoutMs,
+}) {
   const sliceId = ownedResources.sliceId
   const attachmentIds = [...ownedResources.attachmentIds]
   if (sliceId) {
@@ -1126,14 +1196,16 @@ async function runCleanup({ displayClient, requestApi, ownedResources, signal })
       requireRequestConstructor(requestApi, "deleteSliceRequest")(sliceId),
       signal,
       "cleanup.perform",
+      sliceLifecycleTimeoutMs,
     )
     const deleted = responseVariant(deleteResponse, "SliceDeleted", "cleanup.perform").slice
     validateDeletedSlice(deleted, sliceId, "cleanup.perform")
   }
+  const previousEvidence = ownedResources.cleanupEvidence
   rememberCleanupEvidence(ownedResources, {
-    sliceId,
-    attachmentIds,
-    identity: ownedResources.identity ?? ownedResources.stableIdentity,
+    sliceId: sliceId ?? previousEvidence?.sliceId,
+    attachmentIds: attachmentIds.length > 0 ? attachmentIds : previousEvidence?.attachmentIds,
+    identity: ownedResources.identity ?? previousEvidence?.identity ?? ownedResources.stableIdentity,
     deleted: true,
     reason: "cleanup",
   })
@@ -1642,12 +1714,18 @@ function assertBinding(value, binding, step) {
   }
 }
 
-async function sendWithAbortSignal(client, request, signal, step) {
+async function sendWithAbortSignal(
+  client,
+  request,
+  signal,
+  step,
+  timeoutMs = PUBLIC_REQUEST_TIMEOUT_MS,
+) {
   return withDeadline(
     () => client.send(request),
     {
       signal,
-      timeoutMs: PUBLIC_REQUEST_TIMEOUT_MS,
+      timeoutMs,
       step,
     },
   ).catch((error) => {
