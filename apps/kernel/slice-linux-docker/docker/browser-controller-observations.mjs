@@ -435,6 +435,12 @@ function compactAccessibility(raw, draft, limits) {
       const role = boundedString(rawRole, limits.maxStringBytes);
       const protectedValue = properties.get("protected") === true || containsSecretValue(rawRole) ||
         containsSecretValue(rawName) || containsSecretValue(rawDescription) || containsSecretValue(rawValue);
+      const name = containsSecretValue(rawName)
+        ? "[redacted]"
+        : boundedString(rawName, limits.maxStringBytes);
+      const description = containsSecretValue(rawDescription)
+        ? "[redacted]"
+        : boundedString(rawDescription, limits.maxStringBytes);
       return [{
         element_ref: reference,
         parent_ref: referenceByAxNodeId.get(node?.parentId) ?? null,
@@ -442,9 +448,9 @@ function compactAccessibility(raw, draft, limits) {
           .map((childId) => referenceByAxNodeId.get(childId))
           .filter(Boolean),
         role,
-        name: boundedString(rawName, limits.maxStringBytes),
-        description: boundedString(rawDescription, limits.maxStringBytes),
-        value: protectedValue && rawValue
+        name,
+        description,
+        value: (protectedValue || containsSecretValue(rawValue)) && rawValue
           ? "[redacted]"
           : boundedString(rawValue, limits.maxStringBytes),
         ignored: node?.ignored === true,

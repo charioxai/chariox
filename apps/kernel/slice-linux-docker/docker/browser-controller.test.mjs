@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { createServer } from "node:net";
 
 import {
   BrowserController,
@@ -161,6 +163,149 @@ async function flush() {
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
+}
+
+function encodeServerFrame(opcode, payload, final = true) {
+  const body = Buffer.isBuffer(payload) ? payload : Buffer.from(payload);
+  const headerLength = body.length < 126 ? 2 : body.length <= 0xffff ? 4 : 10;
+  const header = Buffer.alloc(headerLength);
+  header[0] = (final ? 0x80 : 0) | opcode;
+  if (body.length < 126) {
+    header[1] = body.length;
+  } else if (body.length <= 0xffff) {
+    header[1] = 126;
+    header.writeUInt16BE(body.length, 2);
+  } else {
+    header[1] = 127;
+    header.writeBigUInt64BE(BigInt(body.length), 2);
+  }
+  return Buffer.concat([header, body]);
+}
+
+function clientCloseCode(buffer) {
+  let offset = 0;
+  while (offset + 2 <= buffer.length) {
+    const first = buffer[offset];
+    const second = buffer[offset + 1];
+    const masked = (second & 0x80) !== 0;
+    let length = second & 0x7f;
+    let headerLength = 2;
+    if (length === 126) {
+      if (offset + 4 > buffer.length) return null;
+      length = buffer.readUInt16BE(offset + 2);
+      headerLength = 4;
+    } else if (length === 127) {
+      if (offset + 10 > buffer.length) return null;
+      const wideLength = buffer.readBigUInt64BE(offset + 2);
+      if (wideLength > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+      length = Number(wideLength);
+      headerLength = 10;
+    }
+    const maskLength = masked ? 4 : 0;
+    const frameLength = headerLength + maskLength + length;
+    if (offset + frameLength > buffer.length) return null;
+    if ((first & 0x0f) === 0x8) {
+      const payloadOffset = offset + headerLength + maskLength;
+      if (length < 2) return 1005;
+      if (!masked) return buffer.readUInt16BE(payloadOffset);
+      const maskOffset = offset + headerLength;
+      return ((buffer[payloadOffset] ^ buffer[maskOffset]) << 8) |
+        (buffer[payloadOffset + 1] ^ buffer[maskOffset + 1]);
+    }
+    offset += frameLength;
+  }
+  return null;
+}
+
+async function startFragmentedWebSocketServer() {
+  const server = createServer();
+  let client = null;
+  let handshakeComplete = false;
+  let commandResponded = false;
+  let incoming = Buffer.alloc(0);
+  let resolveCommand;
+  let resolveCloseCode;
+  const commandReceived = new Promise((resolve) => {
+    resolveCommand = resolve;
+  });
+  const closeCode = new Promise((resolve) => {
+    resolveCloseCode = resolve;
+  });
+
+  server.on("connection", (socket) => {
+    client = socket;
+    socket.on("data", (chunk) => {
+      incoming = Buffer.concat([incoming, chunk]);
+      if (!handshakeComplete) {
+        const boundary = incoming.indexOf(Buffer.from("\r\n\r\n"));
+        if (boundary < 0) return;
+        const request = incoming.subarray(0, boundary).toString("latin1");
+        const key = request.match(/^Sec-WebSocket-Key:\s*(.+)$/im)?.[1]?.trim();
+        if (!key) {
+          socket.destroy();
+          return;
+        }
+        const accept = createHash("sha1")
+          .update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+          .digest("base64");
+        socket.write(
+          "HTTP/1.1 101 Switching Protocols\r\n" +
+          "Upgrade: websocket\r\n" +
+          "Connection: Upgrade\r\n" +
+          `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
+        );
+        incoming = incoming.subarray(boundary + 4);
+        handshakeComplete = true;
+      }
+      if (handshakeComplete && !commandResponded && incoming.length > 0) {
+        commandResponded = true;
+        socket.write(encodeServerFrame(0x1, JSON.stringify({ id: 1, result: {} })));
+        resolveCommand();
+      }
+      if (handshakeComplete) {
+        const code = clientCloseCode(incoming);
+        if (code !== null) resolveCloseCode(code);
+      }
+    });
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  return {
+    url: `ws://127.0.0.1:${address.port}`,
+    commandReceived,
+    closeCode,
+    sendOversizedPayload() {
+      assert.ok(client && handshakeComplete && commandResponded);
+      client.write(
+        encodeServerFrame(
+          0x1,
+          Buffer.alloc(OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES - 1, 0x78),
+          false,
+        ),
+      );
+      client.write(encodeServerFrame(0x0, Buffer.from("xx"), true));
+    },
+    async close() {
+      client?.destroy();
+      await new Promise((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
+async function waitFor(predicate, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok(predicate(), "condition did not become true before timeout");
 }
 
 function makeFixture(options = {}) {
@@ -517,6 +662,51 @@ test("caps fragmented WebSocket payloads before message assembly", async (t) => 
   t.after(async () => {
     await controller.shutdownForSignal();
   });
+});
+
+test("production default WebSocket rejects an oversized fragmented payload in the receiver", async (t) => {
+  const server = await startFragmentedWebSocketServer();
+  t.after(async () => {
+    await server.close();
+  });
+  let process;
+  const controller = new BrowserController({
+    controllerId: "controller-production-websocket",
+    fetchImpl: async () => ({
+      ok: true,
+      text: async () => JSON.stringify([{
+        id: "page-1",
+        type: "page",
+        webSocketDebuggerUrl: server.url,
+      }]),
+    }),
+    spawnBrowser: async () => {
+      process = new FakeProcess();
+      return process;
+    },
+    startupTimeoutMs: 2_000,
+    pollIntervalMs: 10,
+    cdpConnectTimeoutMs: 1_000,
+    cdpCommandTimeoutMs: 1_000,
+    shutdownGraceMs: 1,
+    terminateGraceMs: 1,
+    killGraceMs: 1,
+    heartbeatIntervalMs: 10,
+  });
+
+  const started = await controller.start("owner-a");
+  assert.equal(started.state, "ready");
+  await server.commandReceived;
+  server.sendOversizedPayload();
+  const receivedCloseCode = await Promise.race([
+    server.closeCode,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("WebSocket close timed out")), 2_000)),
+  ]);
+  assert.equal(receivedCloseCode, 1009);
+  await waitFor(() => controller.health("owner-a").state === "fatal");
+  assert.equal(controller.health("owner-a").fatal_code, ERROR_CODES.CONTROLLER_CRASHED);
+  assert.deepEqual(process.kills, ["SIGKILL"]);
+  await controller.shutdownForSignal();
 });
 
 test("gracefully closes CDP and Chromium without a forced kill", async (t) => {

@@ -3,6 +3,7 @@ import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
+import NodeWebSocket from "ws";
 
 import { BrowserTabRegistry } from "./browser-tab-registry.mjs";
 import {
@@ -553,7 +554,7 @@ export class BrowserController {
     this.clock = options.clock || defaultClock();
     this.timers = options.timers || defaultTimers();
     this.fetchImpl = options.fetchImpl || globalThis.fetch;
-    this.WebSocketImpl = options.WebSocketImpl || globalThis.WebSocket;
+    this.WebSocketImpl = options.WebSocketImpl || NodeWebSocket;
     this.spawnBrowser = options.spawnBrowser || defaultSpawnBrowser;
     this.signalProcess = options.signalProcess || ((child, signal) => child.kill?.(signal));
     this.executable = options.executable || DEFAULT_EXECUTABLE;

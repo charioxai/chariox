@@ -132,6 +132,68 @@ test("keeps opaque element references stable across snapshots of one document", 
   });
 });
 
+test("redacts sensitive accessibility names, descriptions, and values independently", async () => {
+  const rawAccessibility = accessibility({
+    extra: [
+      {
+        nodeId: "ax-name-secret",
+        backendDOMNodeId: 20,
+        role: { value: "button" },
+        name: { value: "access_token=private-name" },
+        description: { value: "safe description" },
+      },
+      {
+        nodeId: "ax-description-secret",
+        backendDOMNodeId: 21,
+        role: { value: "button" },
+        name: { value: "safe name" },
+        description: { value: "signed-secret=private-description" },
+      },
+      {
+        nodeId: "ax-value-secret",
+        backendDOMNodeId: 22,
+        role: { value: "textbox" },
+        name: { value: "safe field" },
+        description: { value: "safe description" },
+        value: { value: "access_token=private-value" },
+      },
+    ],
+  });
+  const store = new BrowserObservationStore();
+  const snapshot = await store.capture({
+    connection: new FakeConnection({ accessibilityResults: [rawAccessibility] }),
+    tab: TAB,
+  });
+
+  const nameSecret = snapshot.accessibility_nodes.find(({ element_ref }) => element_ref === "element-1-3");
+  const descriptionSecret = snapshot.accessibility_nodes.find(({ element_ref }) => element_ref === "element-1-4");
+  const valueSecret = snapshot.accessibility_nodes.find(({ element_ref }) => element_ref === "element-1-5");
+  assert.deepEqual(
+    {
+      name: nameSecret?.name,
+      description: nameSecret?.description,
+    },
+    { name: "[redacted]", description: "safe description" },
+  );
+  assert.deepEqual(
+    {
+      name: descriptionSecret?.name,
+      description: descriptionSecret?.description,
+    },
+    { name: "safe name", description: "[redacted]" },
+  );
+  assert.deepEqual(
+    {
+      name: valueSecret?.name,
+      description: valueSecret?.description,
+      value: valueSecret?.value,
+    },
+    { name: "safe field", description: "safe description", value: "[redacted]" },
+  );
+  assert.equal(snapshot.accessibility_nodes[1].value, "[redacted]");
+  assert.doesNotMatch(JSON.stringify(snapshot), /private-name|private-description|private-value/);
+});
+
 test("invalidates old references after a committed document navigation", async () => {
   const store = new BrowserObservationStore();
   const first = await store.capture({ connection: new FakeConnection(), tab: TAB });
