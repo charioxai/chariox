@@ -4,8 +4,31 @@ import test from "node:test";
 import {
   BrowserActionError,
   actionabilityFunction,
+  fillFunction,
+  fillRequestBytes,
+  MAX_FILL_REQUEST_BYTES,
   performBrowserAction,
 } from "./browser-controller-actions.mjs";
+
+const ACTION_ERROR_CODES = Object.freeze({
+  TIMEOUT: "browser_action_timeout",
+  POST_ACTION_UNCERTAIN: "browser_action_post_action_uncertain",
+  INVALID_ARGUMENT: "browser_action_invalid",
+});
+
+function fakeTime(start = 0) {
+  let value = start;
+  const sleeps = [];
+  return {
+    now: () => value,
+    advance: (milliseconds) => { value += milliseconds; },
+    sleep: async (milliseconds) => {
+      sleeps.push(milliseconds);
+      value += milliseconds;
+    },
+    sleeps,
+  };
+}
 
 test("click auto-waits for a stable actionable element and uses native input", async () => {
   const connection = new FakeActionConnection([
@@ -454,25 +477,319 @@ test("locator actions reject stale documents and time out with stable codes", as
   );
 });
 
+test("expires a queued action at its advertised absolute deadline", async () => {
+  const time = fakeTime(90);
+  const connection = new FakeActionConnection([{ state: "not_visible" }]);
+
+  await assert.rejects(
+    performBrowserAction({
+      connection,
+      sessionId: "session-a",
+      targetId: "target-a",
+      documentId: "loader-a",
+      nodeRef: "backend:103",
+      action: { kind: "click" },
+      timeoutMs: 500,
+      deadline: 100,
+      ...time,
+    }),
+    (error) => error.code === ACTION_ERROR_CODES.TIMEOUT,
+  );
+  assert.deepEqual(time.sleeps, [10]);
+  assert.equal(time.now(), 100);
+  assert.equal(connection.calls.some((call) => call.method.startsWith("Input.")), false);
+});
+
+test("caps every actionability poll sleep at the remaining deadline", async () => {
+  const time = fakeTime();
+  const connection = new FakeActionConnection([{ state: "disabled" }]);
+
+  await assert.rejects(
+    performBrowserAction({
+      connection,
+      sessionId: "session-a",
+      targetId: "target-a",
+      documentId: "loader-a",
+      nodeRef: "backend:103",
+      action: { kind: "click" },
+      timeoutMs: 125,
+      ...time,
+    }),
+    (error) => error.code === ACTION_ERROR_CODES.TIMEOUT,
+  );
+  assert.deepEqual(time.sleeps, [50, 50, 25]);
+  assert.equal(time.now(), 125);
+});
+
+test("does not retry when release crosses the deadline after a click", async () => {
+  const time = fakeTime();
+  const connection = new FakeActionConnection({
+    actionability: [
+      { state: "ready", x: 50, y: 75, width: 100, height: 30 },
+      { state: "ready", x: 50, y: 75, width: 100, height: 30 },
+    ],
+    afterSend: (method) => {
+      if (
+        method === "Runtime.releaseObject" &&
+        connection.calls.filter((call) => call.method === "Runtime.releaseObject").length === 2
+      ) {
+        time.advance(51);
+      }
+    },
+  });
+
+  await assert.rejects(
+    performBrowserAction({
+      connection,
+      sessionId: "session-a",
+      targetId: "target-a",
+      documentId: "loader-a",
+      nodeRef: "backend:103",
+      action: { kind: "click" },
+      timeoutMs: 100,
+      ...time,
+    }),
+    (error) => {
+      assert.equal(error.code, ACTION_ERROR_CODES.POST_ACTION_UNCERTAIN);
+      assert.equal(error.outcome, "post_action_uncertain");
+      assert.equal(error.phase, "cleanup");
+      return true;
+    },
+  );
+  assert.deepEqual(
+    connection.calls
+      .filter((call) => call.method === "Input.dispatchMouseEvent")
+      .map((call) => call.params.type),
+    ["mouseMoved", "mousePressed", "mouseReleased"],
+  );
+});
+
+test("reports an uncertain fill when its mutation response crosses the deadline", async () => {
+  const time = fakeTime();
+  const connection = new FakeActionConnection({
+    actionability: [
+      { state: "ready", x: 40, y: 20, width: 200, height: 24, editable: true },
+      { state: "ready", x: 40, y: 20, width: 200, height: 24, editable: true },
+    ],
+    afterSend: (method) => {
+      if (method === "Input.insertText") time.advance(51);
+    },
+  });
+
+  await assert.rejects(
+    performBrowserAction({
+      connection,
+      sessionId: "session-a",
+      targetId: "target-a",
+      documentId: "loader-a",
+      nodeRef: "backend:104",
+      action: { kind: "fill", text: "one-shot", append: false },
+      timeoutMs: 100,
+      ...time,
+    }),
+    (error) => {
+      assert.equal(error.code, ACTION_ERROR_CODES.POST_ACTION_UNCERTAIN);
+      assert.equal(error.outcome, "post_action_uncertain");
+      assert.equal(error.phase, "fill");
+      return true;
+    },
+  );
+  assert.equal(
+    connection.calls.filter((call) => call.method === "Input.insertText").length,
+    1,
+  );
+});
+
+test("selects a duplicate-valued option by exact visible index and selected state", () => {
+  const previousDocument = globalThis.document;
+  const previousEvent = globalThis.Event;
+  const options = [
+    { value: "shared", text: "first", selected: true },
+    { value: "shared", text: "second", selected: false },
+  ];
+  let selectedIndex = 0;
+  const document = { activeElement: null };
+  const control = {
+    isConnected: true,
+    disabled: false,
+    readOnly: false,
+    tagName: "select",
+    options,
+    value: options[0].value,
+    get selectedIndex() { return selectedIndex; },
+    set selectedIndex(index) {
+      selectedIndex = index;
+      options.forEach((option, optionIndex) => {
+        option.selected = optionIndex === index;
+      });
+      this.value = options[index]?.value ?? "";
+    },
+    focus() { document.activeElement = this; },
+    dispatchEvent() {},
+  };
+  globalThis.document = document;
+  globalThis.Event = class Event {
+    constructor(type, init) {
+      this.type = type;
+      this.init = init;
+    }
+  };
+  try {
+    assert.deepEqual(fillFunction.call(control, "second", false), { ok: true });
+    assert.equal(control.selectedIndex, 1);
+    assert.equal(control.value, "shared");
+    assert.equal(options[0].selected, false);
+    assert.equal(options[1].selected, true);
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document;
+    else globalThis.document = previousDocument;
+    if (previousEvent === undefined) delete globalThis.Event;
+    else globalThis.Event = previousEvent;
+  }
+});
+
+test("follows an open shadow root for both actionability and fill focus", () => {
+  const previousDocument = globalThis.document;
+  const previousWindow = globalThis.window;
+  const previousEvent = globalThis.Event;
+  const shadowRoot = { activeElement: null, host: null };
+  const host = { shadowRoot, parentElement: null, getRootNode: () => document };
+  shadowRoot.host = host;
+  const document = {
+    activeElement: host,
+    elementFromPoint: () => host,
+  };
+  const control = {
+    isConnected: true,
+    disabled: false,
+    readOnly: false,
+    tagName: "input",
+    type: "text",
+    value: "",
+    parentElement: null,
+    getRootNode: () => shadowRoot,
+    scrollIntoView() {},
+    getBoundingClientRect: () => ({ left: 10, top: 20, width: 100, height: 20 }),
+    matches: () => false,
+    closest: () => null,
+    getAttribute: () => null,
+    contains: () => false,
+    focus() {
+      shadowRoot.activeElement = control;
+      document.activeElement = host;
+    },
+    dispatchEvent() {},
+  };
+  globalThis.document = document;
+  globalThis.window = {
+    getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
+  };
+  globalThis.window.top = globalThis.window;
+  globalThis.Event = class Event {};
+  try {
+    assert.deepEqual(actionabilityFunction.call(control), {
+      state: "ready",
+      x: 60,
+      y: 30,
+      width: 100,
+      height: 20,
+      editable: true,
+    });
+    assert.deepEqual(fillFunction.call(control, "shadow-value", false), { ok: true });
+    assert.equal(control.value, "shadow-value");
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document;
+    else globalThis.document = previousDocument;
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+    if (previousEvent === undefined) delete globalThis.Event;
+    else globalThis.Event = previousEvent;
+  }
+});
+
+test("bounds escape-heavy fill JSON before it reaches the CDP frame", async () => {
+  const escapedUnit = "\\\"";
+  let acceptedText = "";
+  while (fillRequestBytes("object-1", acceptedText + escapedUnit, false) < MAX_FILL_REQUEST_BYTES) {
+    acceptedText += escapedUnit;
+  }
+  const acceptedBytes = fillRequestBytes("object-1", acceptedText, false);
+  const rejectedBytes = fillRequestBytes("object-1", acceptedText + escapedUnit, false);
+  assert.ok(acceptedText.length > 0);
+  assert.ok(acceptedBytes < MAX_FILL_REQUEST_BYTES);
+  assert.ok(rejectedBytes >= MAX_FILL_REQUEST_BYTES);
+
+  const acceptedConnection = new FakeActionConnection({
+    actionability: [
+      { state: "ready", x: 40, y: 20, width: 200, height: 24, editable: true },
+      { state: "ready", x: 40, y: 20, width: 200, height: 24, editable: true },
+    ],
+  });
+  await performBrowserAction({
+    connection: acceptedConnection,
+    sessionId: "session-a",
+    targetId: "target-a",
+    documentId: "loader-a",
+    nodeRef: "backend:104",
+    action: { kind: "fill", text: acceptedText, append: false },
+    ...fakeTime(),
+  });
+  assert.equal(
+    acceptedConnection.calls.filter((call) => call.method === "Input.insertText").length,
+    1,
+  );
+
+  const rejectedConnection = new FakeActionConnection({
+    actionability: [
+      { state: "ready", x: 40, y: 20, width: 200, height: 24, editable: true },
+      { state: "ready", x: 40, y: 20, width: 200, height: 24, editable: true },
+    ],
+  });
+  await assert.rejects(
+    performBrowserAction({
+      connection: rejectedConnection,
+      sessionId: "session-a",
+      targetId: "target-a",
+      documentId: "loader-a",
+      nodeRef: "backend:104",
+      action: { kind: "fill", text: acceptedText + escapedUnit, append: false },
+      ...fakeTime(),
+    }),
+    (error) => error.code === ACTION_ERROR_CODES.INVALID_ARGUMENT,
+  );
+  assert.equal(
+    rejectedConnection.calls.filter((call) => call.method === "Input.insertText").length,
+    0,
+  );
+});
+
 class FakeActionConnection {
-  constructor(actionability) {
-    this.actionability = actionability;
+  constructor(actionabilityOrOptions) {
+    const options = Array.isArray(actionabilityOrOptions)
+      ? { actionability: actionabilityOrOptions }
+      : actionabilityOrOptions;
+    this.actionability = options.actionability;
     this.calls = [];
     this.loaderId = "loader-a";
+    this.afterSend = options.afterSend;
   }
 
   async send(method, params = {}, sessionId) {
     this.calls.push({ method, params, sessionId });
+    const finish = (result) => {
+      this.afterSend?.(method, params, sessionId);
+      return result;
+    };
     if (method === "Page.getFrameTree") {
-      return { frameTree: { frame: { loaderId: this.loaderId } } };
+      return finish({ frameTree: { frame: { loaderId: this.loaderId } } });
     }
     if (method === "DOM.resolveNode") {
       if (this.resolveError) throw this.resolveError;
-      return { object: { objectId: "object-1" } };
+      return finish({ object: { objectId: "object-1" } });
     }
     if (method === "Runtime.callFunctionOn") {
       if (params.functionDeclaration.includes("scrollIntoView")) {
-        return {
+        return finish({
           result: {
             value: {
               ...(this.actionability.length > 1
@@ -480,11 +797,11 @@ class FakeActionConnection {
                 : this.actionability[0]),
             },
           },
-        };
+        });
       }
       if (params.functionDeclaration.includes("expectedDocumentUrl")) {
         const expectedDocumentUrl = params.arguments[2].value;
-        return {
+        return finish({
           result: {
             value: this.documentUrl !== expectedDocumentUrl
               ? { ok: false, reason: "target_url_changed" }
@@ -494,19 +811,20 @@ class FakeActionConnection {
                   ? { ok: false, reason: "target_not_masked" }
                 : { ok: true },
           },
-        };
+        });
       }
-      return { result: { value: { ok: true } } };
+      return finish({ result: { value: { ok: true } } });
     }
     if (method === "Runtime.releaseObject") {
-      return {};
+      return finish({});
     }
     if (method.startsWith("Input.")) {
       if (method === "Input.dispatchMouseEvent" && params.type === this.dialogEventType) {
         this.dialogWaiter?.({ method: "Page.javascriptDialogOpening" });
+        this.afterSend?.(method, params, sessionId);
         return new Promise(() => {});
       }
-      return {};
+      return finish({});
     }
     throw new Error(`unexpected CDP method ${method}`);
   }
