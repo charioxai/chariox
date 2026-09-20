@@ -13,13 +13,22 @@ providers use the ordinary kernel launch path and normal developer-machine
 filesystem behavior. The Path-1 service must not enable
 `CHARIOX_MANAGED_PROVIDER_ISOLATION`, require `/usr/bin/bwrap`, or apply a
 managed-only workspace allowlist merely because Chariox provisioned the VM.
+The provider must not inherit equivalent restrictions from the managed
+supervisor's systemd unit. Controls such as `ProtectSystem`, `ProtectHome`,
+`PrivateTmp`, `NoNewPrivileges`, `RestrictSUIDSGID`, and `ReadWritePaths` must be
+removed, topology-gated, or confined to a separate control-plane process when
+they would change provider behavior from the ordinary worker user. A hardened
+supervisor may not silently turn its child provider into a restricted
+managed-only environment.
 
 Bubblewrap may remain an inner defense for Docker slices or an explicitly
 different legacy/shared-host topology. It is not part of a Path-1 provider run
 and cannot be used as evidence of ordinary-kernel parity. Path-1 acceptance must
 prove no Bubblewrap ancestor or managed-isolation marker, plus successful use
 of arbitrary working directories and filesystem operations permitted to the
-ordinary worker user.
+ordinary worker user. It also compares mount visibility, `/tmp`, writable
+paths, process privilege flags, and permitted package/tool installation with an
+ordinary-kernel control running the same reviewed build.
 
 Root-owned signed releases, bootstrap/control state, broker state, relay and
 Cloud credentials, resource limits, provider-resource deletion, and every

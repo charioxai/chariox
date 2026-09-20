@@ -174,6 +174,17 @@ permissions, including repositories and user-created directories outside the
 initial transferred repository. This is the intended product behavior for a
 disposable developer machine, comparable to other full-machine agent products.
 
+The provider must also not inherit a managed systemd sandbox that recreates the
+same restriction without Bubblewrap. Path-1 units must remove or isolate away
+`ProtectSystem`, `ProtectHome`, `PrivateTmp`, `NoNewPrivileges`,
+`RestrictSUIDSGID`, `ReadWritePaths`, and equivalent controls whenever they
+would make the provider differ from an ordinary kernel launched as the same
+worker user. If the kernel supervisor still needs those controls, it must launch
+providers through a separate ordinary worker scope or service principal rather
+than passing the restrictions to provider descendants. Acceptance compares
+provider mount visibility, `/tmp`, writable paths, process privilege flags, and
+permitted tool/package installation against the ordinary-kernel control.
+
 Bubblewrap may remain only where it protects a genuinely different topology,
 such as an inner Docker-slice boundary or an explicitly documented legacy
 shared-host mode. That code must not be selected merely because the worker was
@@ -213,6 +224,9 @@ must compare result data, errors, persistence, and reconnect behavior:
 - provider process ancestry/environment and arbitrary-path behavior, proving a
   Path-1 worker uses the ordinary launch path with no Bubblewrap or managed
   filesystem allowlist
+- provider mount namespace and inherited process restrictions, proving systemd
+  hardening on the supervisor does not alter the provider's ordinary-user
+  behavior
 
 Directory discovery must return an exact accessible directory even when the
 kernel cannot enumerate its children. A denied child listing may suppress
@@ -777,7 +791,8 @@ The managed-machine drill must prove:
    managed-only cwd or filesystem restriction. Exercise at least the copied
    repository, `/home`, another user-created directory, `/tmp`, package/tool
    installation permitted to the worker user, and a repository created after
-   enrollment.
+   enrollment. Compare mount information and process privilege flags with the
+   ordinary-kernel control so a systemd sandbox cannot masquerade as parity.
 6. Web View displays the environment through the hosted relay.
 7. Local and remote TUI clients attach to the same Room.
 8. A browser task and a non-browser desktop task complete.
