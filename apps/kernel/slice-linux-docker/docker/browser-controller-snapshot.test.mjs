@@ -58,3 +58,62 @@ test("snapshot rejects excessive frame count before reading accessibility trees"
   await assert.rejects(capture(connection, { maxFrames: 1 }), { code: "snapshot_frame_limit" });
   assert.deepEqual(connection.requestedFrames, []);
 });
+
+test("classifies sensitive snapshot fields before truncation", async () => {
+  const frameTree = { frame: { id: "root", loaderId: "page-1" } };
+  const rawDom = {
+    strings: [
+      "DIV",
+      "field-password",
+      "visible-secret",
+      "info",
+      "safe-prefix-token=hidden",
+      "billing-payment",
+      "card-number",
+      "form-private-input",
+      "private-value",
+      "ordinary",
+      "public-value",
+    ],
+    documents: [{
+      documentURL: -1,
+      nodes: {
+        backendNodeId: [23],
+        parentIndex: [-1],
+        nodeType: [1],
+        nodeName: [0],
+        nodeValue: [-1],
+        attributes: [[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]],
+      },
+    }],
+  };
+  const connection = {
+    async send(method) {
+      if (method === "Page.getFrameTree") return { frameTree };
+      if (method === "Accessibility.getFullAXTree") {
+        return { nodes: [{
+          nodeId: "1",
+          backendDOMNodeId: 23,
+          role: { value: "textbox" },
+          name: { value: "safe-prefix-password" },
+          value: { value: "visible-private-value" },
+        }] };
+      }
+      assert.equal(method, "DOMSnapshot.captureSnapshot");
+      return rawDom;
+    },
+  };
+
+  const snapshot = await capture(connection, { maxStringLength: 8 });
+  const attributes = snapshot.dom_nodes[0].attributes;
+  assert.equal(attributes["field-pa"], "[redacted]");
+  assert.equal(attributes.info, "[redacted]");
+  assert.equal(attributes["billing-"], "[redacted]");
+  assert.equal(attributes["form-pri"], "[redacted]");
+  assert.equal(attributes.ordinary, "public-v");
+  assert.equal(snapshot.accessibility_nodes[0].value, "[redacted]");
+  assert.doesNotMatch(
+    JSON.stringify(snapshot),
+    /visible-secret|hidden|card-number|private-value|password|payment|private-input/,
+  );
+});

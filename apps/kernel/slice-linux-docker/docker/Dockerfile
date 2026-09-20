@@ -165,6 +165,7 @@ RUN npm_config_cache=/tmp/chariox-npm-cache npm ci --omit=dev \
   && test "$(node_modules/.bin/pnpm --version)" = "11.22.0" \
   && rm -rf /tmp/chariox-npm-cache /root/.npm
 ENV PATH=/opt/chariox-toolchain/node_modules/.bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV NODE_PATH=/opt/chariox-toolchain/node_modules
 
 RUN groupadd --gid 1001 slice \
   && useradd --uid 1001 --gid 1001 -m -s /bin/bash slice \

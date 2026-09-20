@@ -1,3 +1,5 @@
+import { createRequire } from "node:module";
+
 import {
   BrowserSnapshotError,
 } from "./browser-controller-snapshot.mjs";
@@ -37,7 +39,21 @@ import { acquireBrowserCookieWriterFence } from "./browser-controller-cookie-fen
 
 const DEFAULT_DEBUGGER_ENDPOINT = "http://127.0.0.1:9222";
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
+export const MAX_CDP_FRAME_BYTES = 4 * 1024 * 1024;
 const PERSISTENT_COOKIE_WRITER_TARGET_TYPES = new Set(["worker", "shared_worker"]);
+const require = createRequire(import.meta.url);
+
+function productionWebSocketConstructor() {
+  const module = require("ws");
+  return module.WebSocket ?? module.default ?? module;
+}
+
+export function createCappedWebSocket(
+  url,
+  { WebSocketClass = productionWebSocketConstructor() } = {},
+) {
+  return new WebSocketClass(url, { maxPayload: MAX_CDP_FRAME_BYTES });
+}
 
 export class BrowserControllerError extends Error {
   constructor(code, message) {
@@ -52,7 +68,7 @@ export class BrowserCdpClient {
     debuggerEndpoint = DEFAULT_DEBUGGER_ENDPOINT,
     requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
     fetchImpl = globalThis.fetch,
-    webSocketFactory = (url) => new WebSocket(url),
+    webSocketFactory = createCappedWebSocket,
     connectionFactory,
     downloadDirectory,
     minimumDownloadFreeBytes = DEFAULT_MINIMUM_DOWNLOAD_FREE_BYTES,
@@ -940,9 +956,14 @@ export class BrowserCdpClient {
 }
 
 export class CdpConnection {
-  constructor(socket, requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
+  constructor(
+    socket,
+    requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+    maximumFrameBytes = MAX_CDP_FRAME_BYTES,
+  ) {
     this.socket = socket;
     this.requestTimeoutMs = requestTimeoutMs;
+    this.maximumFrameBytes = maximumFrameBytes;
     this.nextRequestId = 1;
     this.pending = new Map();
     this.eventWaiters = new Map();
@@ -1030,6 +1051,13 @@ export class CdpConnection {
   }
 
   receive(rawMessage) {
+    if (rawFrameByteLength(rawMessage) > this.maximumFrameBytes) {
+      this.failPending("browser_cdp_frame_too_large");
+      if (this.socket.readyState === 0 || this.socket.readyState === 1) {
+        this.socket.close();
+      }
+      return;
+    }
     let message;
     try {
       message = JSON.parse(String(rawMessage));
@@ -1109,6 +1137,13 @@ export class CdpConnection {
     waiters.delete(waiter);
     if (waiters.size === 0) this.eventWaiters.delete(method);
   }
+}
+
+function rawFrameByteLength(value) {
+  if (typeof value === "string") return Buffer.byteLength(value, "utf8");
+  if (value instanceof ArrayBuffer) return value.byteLength;
+  if (ArrayBuffer.isView(value)) return value.byteLength;
+  return Buffer.byteLength(String(value), "utf8");
 }
 
 export function assertPrivateDebuggerUrl(rawUrl, debuggerEndpoint = DEFAULT_DEBUGGER_ENDPOINT) {

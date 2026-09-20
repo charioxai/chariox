@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url"
 const dockerRoot = path.resolve(fileURLToPath(new URL("./docker/", import.meta.url)))
 const controllerEntry = path.join(dockerRoot, "browser-controller.mjs")
 const dockerfilePath = path.join(dockerRoot, "Dockerfile")
+const runtimePath = path.join(dockerRoot, "start-runtime.sh")
+const toolchainPackagePath = fileURLToPath(new URL("./toolchain/package.json", import.meta.url))
 const provisionerPath = fileURLToPath(new URL("./provision-linux-docker-slice.sh", import.meta.url))
 
 test("slice packaging installs every browser controller runtime module", async () => {
@@ -46,6 +48,18 @@ test("slice packaging installs the Computer text finder", async () => {
     provisioner,
     /docker\/slice-text-finder\.py["']?\s+[^\n]*\/opt\/chariox-slice\/slice-text-finder\.py/,
   )
+})
+
+test("slice packaging exposes the bounded WebSocket implementation", async () => {
+  const [dockerfile, runtime, toolchainPackage] = await Promise.all([
+    readFile(dockerfilePath, "utf8"),
+    readFile(runtimePath, "utf8"),
+    readFile(toolchainPackagePath, "utf8").then(JSON.parse),
+  ])
+
+  assert.match(dockerfile, /ENV NODE_PATH=\/opt\/chariox-toolchain\/node_modules/)
+  assert.match(runtime, /NODE_PATH="\/opt\/chariox-toolchain\/node_modules"/)
+  assert.equal(typeof toolchainPackage.dependencies?.ws, "string")
 })
 
 test("slice packaging installs the private browser import destination runtime", async () => {

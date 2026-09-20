@@ -5,6 +5,8 @@ import {
   assertPrivateDebuggerUrl,
   BrowserCdpClient,
   CdpConnection,
+  createCappedWebSocket,
+  MAX_CDP_FRAME_BYTES,
 } from "./browser-controller-cdp.mjs";
 import { handleBrowserControllerRequest } from "./browser-controller.mjs";
 
@@ -885,6 +887,53 @@ test("CDP responses are correlated and command failures stay bounded", async () 
   const timedOut = connection.send("Page.getFrameTree", {}, "session-a");
   await assert.rejects(timedOut, (error) => error.code === "browser_cdp_timeout");
   await connection.close();
+});
+
+test("caps fragmented CDP payloads before message assembly", () => {
+  class FragmentedSocket {
+    constructor(url, options) {
+      this.url = url;
+      this.options = options;
+      this.fragments = [];
+      this.bytes = 0;
+      this.closed = false;
+    }
+
+    receiveFragment(fragment, { final = false } = {}) {
+      if (this.bytes + fragment.byteLength > this.options.maxPayload) {
+        this.closed = true;
+        return false;
+      }
+      this.fragments.push(fragment);
+      this.bytes += fragment.byteLength;
+      return !final || this.bytes <= this.options.maxPayload;
+    }
+  }
+
+  const socket = createCappedWebSocket(
+    "ws://127.0.0.1:9222/devtools/browser/test",
+    { WebSocketClass: FragmentedSocket },
+  );
+  assert.equal(socket.options.maxPayload, MAX_CDP_FRAME_BYTES);
+  assert.equal(
+    socket.receiveFragment(new Uint8Array(MAX_CDP_FRAME_BYTES - 1)),
+    true,
+  );
+  assert.equal(socket.receiveFragment(new Uint8Array(2), { final: true }), false);
+  assert.equal(socket.closed, true);
+  assert.equal(socket.fragments.length, 1);
+});
+
+test("rejects an oversized CDP frame before decoding", async () => {
+  const socket = new FakeSocket();
+  const connection = new CdpConnection(socket, 20, 8);
+  const response = connection.send("Target.getTargets");
+  socket.dispatchEvent(new MessageEvent("message", { data: new Uint8Array(9) }));
+  await assert.rejects(
+    response,
+    (error) => error.code === "browser_cdp_frame_too_large",
+  );
+  assert.equal(socket.readyState, 3);
 });
 
 test("timed-out or disconnected dialog replies terminate and do not leak defaults into a new connection", async (t) => {

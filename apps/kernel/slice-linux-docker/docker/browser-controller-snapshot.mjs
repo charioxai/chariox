@@ -146,11 +146,19 @@ function compactAccessibilityNodes(rawNodes, options) {
         .filter((property) => typeof property?.name === "string")
         .map((property) => [property.name, property?.value?.value]),
     );
-    const role = compactString(node?.role?.value, options.maxStringLength);
+    const rawRole = typeof node?.role?.value === "string" ? node.role.value : "";
+    const rawName = typeof node?.name?.value === "string" ? node.name.value : "";
+    const rawDescription = typeof node?.description?.value === "string"
+      ? node.description.value
+      : "";
+    const rawValue = typeof node?.value?.value === "string" ? node.value.value : "";
+    const role = compactString(rawRole, options.maxStringLength);
     const protectedValue =
       properties.get("protected") === true ||
-      role.toLowerCase().includes("password");
-    const rawValue = compactString(node?.value?.value, options.maxStringLength);
+      containsSecretValue(rawRole) ||
+      containsSecretValue(rawName) ||
+      containsSecretValue(rawDescription) ||
+      containsSecretValue(rawValue);
     return [{
       node_ref: nodeRef,
       parent_ref: referenceByNodeId.get(node?.parentId) ?? null,
@@ -158,12 +166,11 @@ function compactAccessibilityNodes(rawNodes, options) {
         .map((childId) => referenceByNodeId.get(childId))
         .filter(Boolean),
       role,
-      name: compactString(node?.name?.value, options.maxStringLength),
-      description: compactString(
-        node?.description?.value,
-        options.maxStringLength,
-      ),
-      value: protectedValue && rawValue ? "[redacted]" : rawValue,
+      name: compactString(rawName, options.maxStringLength),
+      description: compactString(rawDescription, options.maxStringLength),
+      value: protectedValue && rawValue
+        ? "[redacted]"
+        : compactString(rawValue, options.maxStringLength),
       ignored: node?.ignored === true,
       disabled: properties.get("disabled") === true,
       focused: properties.get("focused") === true,
@@ -206,11 +213,11 @@ function compactDomSnapshot(rawSnapshot, options) {
         ? backendNodeReference(backendNodeIds[parentIndex])
         : null;
       const nodeType = arrayValue(nodes.nodeType, nodeIndex);
-      const nodeName = snapshotString(
+      const rawNodeName = rawSnapshotString(
         strings,
         arrayValue(nodes.nodeName, nodeIndex),
-        options.maxStringLength,
       );
+      const nodeName = compactString(rawNodeName, options.maxStringLength);
       const text =
         nodeType === 3 || nodeType === 4
           ? snapshotString(
@@ -249,7 +256,7 @@ function compactDomSnapshot(rawSnapshot, options) {
         attributes: compactAttributes(
           strings,
           arrayValue(nodes.attributes, nodeIndex),
-          nodeName,
+          rawNodeName,
           options,
         ),
         bounds: layoutBounds.get(nodeIndex) ?? null,
@@ -312,28 +319,42 @@ function boundsByNodeIndex(layout) {
 function compactAttributes(strings, rawAttributes, nodeName, options) {
   const attributes = {};
   const indexes = Array.isArray(rawAttributes) ? rawAttributes : [];
+  const siblingValues = new Map();
+  for (let index = 0; index + 1 < indexes.length; index += 2) {
+    const rawName = rawSnapshotString(strings, indexes[index]);
+    if (rawName && !siblingValues.has(rawName.toLowerCase())) {
+      siblingValues.set(
+        rawName.toLowerCase(),
+        rawSnapshotString(strings, indexes[index + 1]),
+      );
+    }
+  }
   for (
     let index = 0;
     index + 1 < indexes.length &&
     Object.keys(attributes).length < options.maxAttributes;
     index += 2
   ) {
-    const name = snapshotString(
-      strings,
-      indexes[index],
-      options.maxStringLength,
-    );
+    const rawName = rawSnapshotString(strings, indexes[index]);
+    const name = compactString(rawName, options.maxStringLength);
     if (!name) {
       continue;
     }
-    const value = snapshotString(
-      strings,
-      indexes[index + 1],
-      options.maxStringLength,
-    );
-    attributes[name] = shouldRedactAttribute(nodeName, name)
+    const rawValue = rawSnapshotString(strings, indexes[index + 1]);
+    const normalizedName = rawName.toLowerCase();
+    const metaName = String(nodeName).toLowerCase() === "meta" &&
+      normalizedName === "name";
+    const metaContentIsSensitive = String(nodeName).toLowerCase() === "meta" &&
+      normalizedName === "content" &&
+      looksSecretKey(siblingValues.get("name"));
+    const valueIsSensitive = normalizedName === "type"
+      ? containsSecretAssignment(rawValue)
+      : containsSecretValue(rawValue, { allowBareToken: !metaName });
+    attributes[name] = shouldRedactAttribute(nodeName, rawName) ||
+      metaContentIsSensitive ||
+      valueIsSensitive
       ? "[redacted]"
-      : value;
+      : compactString(rawValue, options.maxStringLength);
   }
   return attributes;
 }
@@ -345,6 +366,11 @@ function shouldRedactAttribute(nodeName, attributeName) {
     normalizedAttributeName.includes("password") ||
     normalizedAttributeName.includes("secret") ||
     normalizedAttributeName.includes("token") ||
+    normalizedAttributeName.includes("credential") ||
+    normalizedAttributeName.includes("payment") ||
+    normalizedAttributeName.includes("private") ||
+    normalizedAttributeName.includes("api-key") ||
+    normalizedAttributeName.includes("api_key") ||
     normalizedAttributeName === "authorization" ||
     normalizedAttributeName === "cookie"
   ) {
@@ -354,6 +380,90 @@ function shouldRedactAttribute(nodeName, attributeName) {
     normalizedAttributeName === "value" &&
     ["input", "textarea", "option"].includes(normalizedNodeName)
   );
+}
+
+function normalizedSecretKey(value) {
+  return String(value ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function looksSecretKey(value, { queryParameter = false } = {}) {
+  const key = normalizedSecretKey(value);
+  return (
+    key === "authorization" ||
+    key === "cookie" ||
+    key === "credential" ||
+    key === "password" ||
+    key === "passwd" ||
+    key === "secret" ||
+    key === "payment" ||
+    key === "private" ||
+    key === "privateinput" ||
+    key === "apikey" ||
+    key === "accesskey" ||
+    key === "privatekey" ||
+    key === "bearer" ||
+    key === "auth" ||
+    key === "nonce" ||
+    key === "session" ||
+    key === "sessionid" ||
+    key === "signature" ||
+    key === "sig" ||
+    key === "hmac" ||
+    key === "jwt" ||
+    (queryParameter && key === "key") ||
+    key.endsWith("password") ||
+    key.endsWith("passwd") ||
+    key.endsWith("token") ||
+    key.endsWith("secret") ||
+    key.includes("payment") ||
+    key.endsWith("privateinput") ||
+    key.endsWith("credential") ||
+    key.endsWith("signature")
+  );
+}
+
+function containsSecretAssignment(value) {
+  const assignment = /(?:^|[^A-Za-z0-9])["']?([A-Za-z][A-Za-z0-9_.-]{1,96})["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s&#,;}\]]+)/g;
+  for (const match of String(value ?? "").matchAll(assignment)) {
+    if (looksSecretKey(match[1])) return true;
+  }
+  return false;
+}
+
+function containsSecretValue(value, { allowBareToken = true } = {}) {
+  if (typeof value !== "string" || value.length === 0) return false;
+  const normalized = normalizedSecretKey(value);
+  if (
+    normalized.includes("password") ||
+    (allowBareToken && normalized.includes("token")) ||
+    normalized.includes("secret") ||
+    normalized.includes("payment") ||
+    normalized.includes("privateinput")
+  ) {
+    return true;
+  }
+  if (containsSecretAssignment(value)) return true;
+  if (/(?:^|[^A-Za-z0-9_])(?:[A-Za-z][A-Za-z0-9+.-]*:)?\/\/[^/\s:@]+:[^/\s@]*@/i.test(value)) {
+    return true;
+  }
+  try {
+    const parsed = new URL(
+      value.startsWith("//") ? `http:${value}` : value,
+      "http://snapshot.invalid",
+    );
+    if (parsed.username || parsed.password) return true;
+    for (const [key] of parsed.searchParams) {
+      if (looksSecretKey(key, { queryParameter: true })) return true;
+    }
+  } catch {
+    // Non-URL values are covered by the assignment check above.
+  }
+  try {
+    const decoded = decodeURIComponent(value);
+    return decoded !== value && containsSecretAssignment(decoded);
+  } catch {
+    return false;
+  }
 }
 
 function backendNodeReference(backendNodeId) {
@@ -387,8 +497,12 @@ function compactString(value, maxLength) {
 }
 
 function snapshotString(strings, index, maxLength) {
-  return Number.isSafeInteger(index)
-    ? compactString(strings[index], maxLength)
+  return compactString(rawSnapshotString(strings, index), maxLength);
+}
+
+function rawSnapshotString(strings, index) {
+  return Number.isSafeInteger(index) && typeof strings[index] === "string"
+    ? strings[index]
     : "";
 }
 
