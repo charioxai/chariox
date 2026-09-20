@@ -16,6 +16,28 @@ const MIN_VALID_JSON_BYTES = 4;
 const DEFAULT_MAX_LIFECYCLE_ENTRIES = 8_192;
 const MAX_MAX_LIFECYCLE_ENTRIES = 65_536;
 const REDACTED = "[redacted]";
+const SAFE_NETWORK_METHODS = new Set([
+  "CONNECT",
+  "DELETE",
+  "GET",
+  "HEAD",
+  "OPTIONS",
+  "PATCH",
+  "POST",
+  "PUT",
+  "TRACE",
+]);
+const SAFE_MIME_TOP_LEVELS = new Set([
+  "application",
+  "audio",
+  "font",
+  "image",
+  "message",
+  "model",
+  "multipart",
+  "text",
+  "video",
+]);
 const SAFE_FILENAME_EXTENSIONS = new Set([
   ".bin",
   ".csv",
@@ -147,6 +169,8 @@ export class BrowserEventJournal {
     this.targetDocuments = new Map();
     this.activeTargets = new Map();
     this.activeDocuments = new Map();
+    this.capacityEvictedTargets = new Map();
+    this.capacityEvictedDocuments = new Map();
     this.compactedTargets = new Map();
     this.compactedDocuments = new Map();
     this.trustedTargets = new Set();
@@ -204,8 +228,6 @@ export class BrowserEventJournal {
     const {
       cursor = 0,
       limit = DEFAULT_POLL_LIMIT,
-      actorId,
-      tabId,
       maxSerializedBytes,
     } = options;
     if (!Number.isSafeInteger(cursor) || cursor < 0) {
@@ -237,15 +259,15 @@ export class BrowserEventJournal {
       );
     }
 
-    const wantedActor = normalizeIdentity(actorId);
-    const wantedTab = normalizeIdentity(tabId);
+    const wantedActor = readIdentityFilter(options, "actorId");
+    const wantedTab = readIdentityFilter(options, "tabId");
     const events = [];
     let examinedCursor = cursor;
     for (const event of this.events) {
       if (event.sequence_id <= cursor) continue;
       examinedCursor = event.sequence_id;
-      if (wantedActor !== null && event.actor_id !== wantedActor) continue;
-      if (wantedTab !== null && event.tab_id !== wantedTab) continue;
+      if (wantedActor !== undefined && event.actor_id !== wantedActor) continue;
+      if (wantedTab !== undefined && event.tab_id !== wantedTab) continue;
       events.push(cloneJsonValue(event));
       if (events.length >= limit) break;
     }
@@ -278,6 +300,8 @@ export class BrowserEventJournal {
   }
 
   serialize(options = {}) {
+    readIdentityFilter(options, "actorId");
+    readIdentityFilter(options, "tabId");
     const maxBytes = options.maxBytes ?? this.maxSerializedBytes;
     validateJournalSerializationBudget(maxBytes);
     const hasCursor = Object.prototype.hasOwnProperty.call(options, "cursor");
@@ -301,13 +325,22 @@ export class BrowserEventJournal {
     const input = identityOptions(targetOrOptions, options);
     const targetId = normalizeIdentity(input.targetId ?? input.target_id);
     if (targetId === null || !this._acceptInvalidationGeneration(input)) return false;
-    const targetAuthorityGeneration =
-      readOptionalLifecycleGeneration(input, "target") ??
-      this._lifecycleGeneration("target", targetId);
+    const explicitTargetGeneration = readOptionalLifecycleGeneration(input, "target");
+    const knownTargetGeneration = this._lifecycleGeneration("target", targetId);
+    if (isStaleLifecycleGeneration(explicitTargetGeneration, knownTargetGeneration)) return false;
+    const targetAuthorityGeneration = explicitTargetGeneration ?? knownTargetGeneration;
     const explicitDocumentId = normalizeIdentity(input.documentId ?? input.document_id);
+    const explicitDocumentGeneration = explicitDocumentId
+      ? readOptionalLifecycleGeneration(input, "document")
+      : null;
+    const knownExplicitDocumentGeneration = explicitDocumentId
+      ? this._lifecycleGeneration("document", explicitDocumentId)
+      : null;
+    if (isStaleLifecycleGeneration(explicitDocumentGeneration, knownExplicitDocumentGeneration)) {
+      return false;
+    }
     const documentAuthorityGeneration = explicitDocumentId
-      ? readOptionalLifecycleGeneration(input, "document") ??
-        this._lifecycleGeneration("document", explicitDocumentId)
+      ? explicitDocumentGeneration ?? knownExplicitDocumentGeneration
       : null;
     const knownDocument = this.targetDocuments.get(targetId);
     const knownDocumentGeneration = knownDocument
@@ -316,6 +349,7 @@ export class BrowserEventJournal {
     this.invalidTargets.delete(targetId);
     this.invalidTargets.add(targetId);
     this.trustedTargets.delete(targetId);
+    this.capacityEvictedTargets.delete(targetId);
     this._setAuthorityFence("target", targetId, targetAuthorityGeneration);
     if (knownDocument) this._markInvalidDocument(knownDocument, knownDocumentGeneration);
     if (explicitDocumentId) {
@@ -331,9 +365,10 @@ export class BrowserEventJournal {
     const input = identityOptions(documentOrOptions, options);
     const documentId = normalizeIdentity(input.documentId ?? input.document_id ?? input.id);
     if (documentId === null || !this._acceptInvalidationGeneration(input)) return false;
-    const documentAuthorityGeneration =
-      readOptionalLifecycleGeneration(input, "document") ??
-      this._lifecycleGeneration("document", documentId);
+    const explicitDocumentGeneration = readOptionalLifecycleGeneration(input, "document");
+    const knownDocumentGeneration = this._lifecycleGeneration("document", documentId);
+    if (isStaleLifecycleGeneration(explicitDocumentGeneration, knownDocumentGeneration)) return false;
+    const documentAuthorityGeneration = explicitDocumentGeneration ?? knownDocumentGeneration;
     this._markInvalidDocument(documentId, documentAuthorityGeneration);
     this._trimLifecycleState();
     return true;
@@ -343,6 +378,7 @@ export class BrowserEventJournal {
     const normalized = normalizeIdentity(targetId);
     if (normalized === null) return false;
     const wasInvalid = this.invalidTargets.delete(normalized);
+    this.capacityEvictedTargets.delete(normalized);
     this.compactedTargets.delete(normalized);
     this.targetAuthorityFences.delete(normalized);
     this.trustedTargets.add(normalized);
@@ -356,6 +392,7 @@ export class BrowserEventJournal {
     const normalized = normalizeIdentity(documentId);
     if (normalized === null) return false;
     const wasInvalid = this.invalidDocuments.delete(normalized);
+    this.capacityEvictedDocuments.delete(normalized);
     this.compactedDocuments.delete(normalized);
     this.documentAuthorityFences.delete(normalized);
     this.trustedDocuments.add(normalized);
@@ -396,6 +433,8 @@ export class BrowserEventJournal {
     this.targetDocuments.clear();
     this.activeTargets.clear();
     this.activeDocuments.clear();
+    this.capacityEvictedTargets.clear();
+    this.capacityEvictedDocuments.clear();
     this.compactedTargets.clear();
     this.compactedDocuments.clear();
     this.trustedTargets.clear();
@@ -545,6 +584,9 @@ export class BrowserEventJournal {
   _planLifecycleAdmission(kind, identity, generation, authoritative) {
     const invalid = kind === "target" ? this.invalidTargets : this.invalidDocuments;
     const compacted = kind === "target" ? this.compactedTargets : this.compactedDocuments;
+    const capacityEvicted = kind === "target"
+      ? this.capacityEvictedTargets
+      : this.capacityEvictedDocuments;
     const trusted = kind === "target" ? this.trustedTargets : this.trustedDocuments;
     const active = kind === "target" ? this.activeTargets : this.activeDocuments;
     const fences = kind === "target"
@@ -557,6 +599,7 @@ export class BrowserEventJournal {
       kind,
       identity,
       clearInvalid: false,
+      clearCapacityEvicted: false,
       clearCompacted: false,
       clearFence: false,
     };
@@ -572,6 +615,16 @@ export class BrowserEventJournal {
       admission.clearInvalid = true;
       admission.clearCompacted = true;
       admission.clearFence = true;
+    } else if (
+      capacityEvicted.has(identity) &&
+      !trusted.has(identity) &&
+      !active.has(identity)
+    ) {
+      if (!authoritative) this._lifecycleEvidenceGap(kind);
+      if (!this._passesCapacityEviction(capacityEvicted, identity, generation)) {
+        return null;
+      }
+      admission.clearCapacityEvicted = true;
     } else if (
       compacted.has(identity) &&
       !trusted.has(identity) &&
@@ -614,6 +667,12 @@ export class BrowserEventJournal {
       const invalid = admission.kind === "target" ? this.invalidTargets : this.invalidDocuments;
       invalid.delete(admission.identity);
     }
+    if (admission.clearCapacityEvicted) {
+      const capacityEvicted = admission.kind === "target"
+        ? this.capacityEvictedTargets
+        : this.capacityEvictedDocuments;
+      capacityEvicted.delete(admission.identity);
+    }
     if (admission.clearCompacted) {
       const compacted = admission.kind === "target"
         ? this.compactedTargets
@@ -634,10 +693,15 @@ export class BrowserEventJournal {
       ? this.targetAuthorityFences
       : this.documentAuthorityFences;
     const compacted = kind === "target" ? this.compactedTargets : this.compactedDocuments;
-    for (const value of [active.get(identity), fences.get(identity), compacted.get(identity)]) {
-      if (Number.isSafeInteger(value) && value > 0) return value;
-    }
-    return null;
+    const capacityEvicted = kind === "target"
+      ? this.capacityEvictedTargets
+      : this.capacityEvictedDocuments;
+    return maxLifecycleGeneration(
+      active.get(identity),
+      fences.get(identity),
+      capacityEvicted.get(identity),
+      compacted.get(identity),
+    );
   }
 
   _setAuthorityFence(kind, identity, generation) {
@@ -651,8 +715,6 @@ export class BrowserEventJournal {
       (!Number.isSafeInteger(prior) || generation > prior)
     ) {
       fences.set(identity, generation);
-    } else if (!fences.has(identity)) {
-      fences.set(identity, generation ?? null);
     }
   }
 
@@ -661,6 +723,17 @@ export class BrowserEventJournal {
     const fence = fences.has(identity) ? fences.get(identity) : fallbackFence;
     if (fence !== undefined && fence !== null && generation <= fence) return false;
     return true;
+  }
+
+  _passesCapacityEviction(evicted, identity, generation) {
+    if (!Number.isSafeInteger(generation) || generation <= 0) return false;
+    const knownGeneration = evicted.get(identity);
+    return (
+      knownGeneration === undefined ||
+      knownGeneration === null ||
+      !Number.isSafeInteger(knownGeneration) ||
+      generation >= knownGeneration
+    );
   }
 
   _lifecycleEvidenceGap(kind) {
@@ -672,18 +745,28 @@ export class BrowserEventJournal {
 
   _recordActiveLifecycle(mapped, authority) {
     if (mapped.targetId) {
+      const knownTargetGeneration = this._lifecycleGeneration("target", mapped.targetId);
       this.activeTargets.delete(mapped.targetId);
       this.activeTargets.set(
         mapped.targetId,
-        authority.targetGeneration,
+        maxLifecycleGeneration(
+          knownTargetGeneration,
+          authority.targetGeneration,
+        ),
       );
+      this.capacityEvictedTargets.delete(mapped.targetId);
     }
     if (mapped.documentId) {
+      const knownDocumentGeneration = this._lifecycleGeneration("document", mapped.documentId);
       this.activeDocuments.delete(mapped.documentId);
       this.activeDocuments.set(
         mapped.documentId,
-        authority.documentGeneration,
+        maxLifecycleGeneration(
+          knownDocumentGeneration,
+          authority.documentGeneration,
+        ),
       );
+      this.capacityEvictedDocuments.delete(mapped.documentId);
     }
     if (mapped.targetId && mapped.documentId) {
       this.targetDocuments.delete(mapped.targetId);
@@ -723,6 +806,7 @@ export class BrowserEventJournal {
     this.invalidDocuments.add(documentId);
     this.trustedDocuments.delete(documentId);
     this.activeDocuments.delete(documentId);
+    this.capacityEvictedDocuments.delete(documentId);
     this._setAuthorityFence(
       "document",
       documentId,
@@ -755,7 +839,7 @@ export class BrowserEventJournal {
       const generation = this.activeTargets.get(identity);
       this.activeTargets.delete(identity);
       this.trustedTargets.delete(identity);
-      this._compactLifecycle("target", identity, generation);
+      this._rememberCapacityEviction("target", identity, generation);
     }
     while (this.activeDocuments.size > this.maxLifecycleEntries) {
       const identity = [...this.activeDocuments.keys()]
@@ -764,7 +848,7 @@ export class BrowserEventJournal {
       const generation = this.activeDocuments.get(identity);
       this.activeDocuments.delete(identity);
       this.trustedDocuments.delete(identity);
-      this._compactLifecycle("document", identity, generation);
+      this._rememberCapacityEviction("document", identity, generation);
     }
     while (this.trustedTargets.size > this.maxLifecycleEntries) {
       this.trustedTargets.delete(this.trustedTargets.values().next().value);
@@ -801,13 +885,32 @@ export class BrowserEventJournal {
     const generation = this._lifecycleGeneration("document", documentId);
     this.activeDocuments.delete(documentId);
     this.trustedDocuments.delete(documentId);
-    this._compactLifecycle("document", documentId, generation);
+    this._rememberCapacityEviction("document", documentId, generation);
+  }
+
+  _rememberCapacityEviction(kind, identity, generation) {
+    const evicted = kind === "target"
+      ? this.capacityEvictedTargets
+      : this.capacityEvictedDocuments;
+    const prior = evicted.get(identity);
+    evicted.delete(identity);
+    evicted.set(identity, maxLifecycleGeneration(prior, generation));
+    while (evicted.size > this.maxLifecycleEntries) {
+      evicted.delete(evicted.keys().next().value);
+      if (kind === "target") this.targetLifecycleGap = true;
+      else this.documentLifecycleGap = true;
+    }
   }
 
   _compactLifecycle(kind, identity, fence) {
     const compacted = kind === "target" ? this.compactedTargets : this.compactedDocuments;
+    const capacityEvicted = kind === "target"
+      ? this.capacityEvictedTargets
+      : this.capacityEvictedDocuments;
+    capacityEvicted.delete(identity);
+    const prior = compacted.get(identity);
     compacted.delete(identity);
-    compacted.set(identity, fence ?? null);
+    compacted.set(identity, maxLifecycleGeneration(prior, fence));
     while (compacted.size > this.maxLifecycleEntries) {
       compacted.delete(compacted.keys().next().value);
       if (kind === "target") this.targetLifecycleGap = true;
@@ -955,7 +1058,7 @@ function mapCdpEvent(message, context) {
     case "Network.requestWillBeSent":
       return makeEvent("network_request", {
         request_id: safeIdentity(params.requestId),
-        method: boundedString(params.request?.method, 32),
+        method: safeNetworkMethod(params.request?.method),
         url: sanitizeUrl(params.request?.url),
         resource_type: boundedString(params.type, 64),
       });
@@ -965,7 +1068,7 @@ function mapCdpEvent(message, context) {
         status: boundedStatus(params.response?.status),
         url: sanitizeUrl(params.response?.url),
         resource_type: boundedString(params.type, 64),
-        mime_type: boundedString(params.response?.mimeType, 128),
+        mime_type: safeMimeType(params.response?.mimeType),
       });
     case "Network.loadingFailed":
       return makeEvent("network_failed", {
@@ -1105,7 +1208,7 @@ function mapDirectData(kind, data) {
     case "network_request":
       return {
         request_id: safeIdentity(data.request_id ?? data.requestId),
-        method: boundedString(data.method, 32),
+        method: safeNetworkMethod(data.method),
         url: sanitizeUrl(data.url),
         resource_type: boundedString(data.resource_type ?? data.resourceType, 64),
       };
@@ -1115,7 +1218,7 @@ function mapDirectData(kind, data) {
         status: boundedStatus(data.status),
         url: sanitizeUrl(data.url),
         resource_type: boundedString(data.resource_type ?? data.resourceType, 64),
-        mime_type: boundedString(data.mime_type ?? data.mimeType, 128),
+        mime_type: safeMimeType(data.mime_type ?? data.mimeType),
       };
     case "network_failed":
       return {
@@ -1364,9 +1467,54 @@ function safeIdentity(value) {
   return normalized === null ? null : boundedString(normalized, MAX_ID_BYTES);
 }
 
+function readIdentityFilter(options, key) {
+  if (!Object.prototype.hasOwnProperty.call(options, key)) return undefined;
+  const value = options[key];
+  if (typeof value !== "string" || value.length === 0) {
+    throw new BrowserEventError(
+      "browser_event_identity_invalid",
+      `${key} filter must be a non-empty string when supplied`,
+    );
+  }
+  return boundedString(value, MAX_ID_BYTES);
+}
+
 function normalizeIdentity(value) {
   if (typeof value !== "string" || value.length === 0) return null;
   return boundedString(value, MAX_ID_BYTES);
+}
+
+function safeNetworkMethod(value) {
+  if (typeof value !== "string") return "unknown";
+  const normalized = value.trim().toUpperCase();
+  return SAFE_NETWORK_METHODS.has(normalized) ? normalized : "unknown";
+}
+
+function safeMimeType(value) {
+  if (typeof value !== "string") return "unknown";
+  const normalized = value.trim().toLowerCase();
+  const slash = normalized.indexOf("/");
+  if (slash <= 0) return "unknown";
+  const topLevel = normalized.slice(0, slash);
+  return SAFE_MIME_TOP_LEVELS.has(topLevel) ? topLevel : "unknown";
+}
+
+function maxLifecycleGeneration(...values) {
+  let maximum = null;
+  for (const value of values) {
+    if (Number.isSafeInteger(value) && value > 0 && (maximum === null || value > maximum)) {
+      maximum = value;
+    }
+  }
+  return maximum;
+}
+
+function isStaleLifecycleGeneration(explicit, known) {
+  return (
+    Number.isSafeInteger(explicit) &&
+    Number.isSafeInteger(known) &&
+    explicit < known
+  );
 }
 
 function boundedCount(value) {

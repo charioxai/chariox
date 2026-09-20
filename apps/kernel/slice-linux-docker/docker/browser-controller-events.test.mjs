@@ -128,6 +128,75 @@ test("maps console, network, page, dialog, download, and lifecycle events with a
   assert.equal(JSON.stringify(result).includes("postData"), false);
 });
 
+test("rejects malformed identity filters instead of disclosing cross-actor or cross-tab events", () => {
+  const journal = new BrowserEventJournal({ maxEvents: 16, maxBytes: 16_384 });
+  for (const [eventId, actorId, tabId] of [
+    ["actor-a-event", "actor-a", "tab-a"],
+    ["actor-b-event", "actor-b", "tab-b"],
+  ]) {
+    journal.record({
+      kind: "console",
+      eventId,
+      browserGeneration: 7,
+      actorId,
+      tabId,
+      data: {},
+    });
+  }
+
+  const malformed = [undefined, null, "", 42, {}, []];
+  for (const value of malformed) {
+    assert.throws(() => journal.poll({ cursor: 0, browserGeneration: 7, actorId: value }), (error) =>
+      error instanceof BrowserEventError && error.code === "browser_event_identity_invalid");
+    assert.throws(() => journal.poll({ cursor: 0, browserGeneration: 7, tabId: value }), (error) =>
+      error instanceof BrowserEventError && error.code === "browser_event_identity_invalid");
+    assert.throws(() => journal.serialize({ cursor: 0, browserGeneration: 7, actorId: value }), (error) =>
+      error instanceof BrowserEventError && error.code === "browser_event_identity_invalid");
+  }
+
+  assert.deepEqual(
+    journal.poll({ cursor: 0, browserGeneration: 7, actorId: "actor-a" }).events.map((event) => event.actor_id),
+    ["actor-a"],
+  );
+  assert.deepEqual(
+    journal.poll({ cursor: 0, browserGeneration: 7, tabId: "tab-b" }).events.map((event) => event.tab_id),
+    ["tab-b"],
+  );
+});
+
+test("projects attacker-controlled network method and MIME canaries through fixed categories", () => {
+  const journal = new BrowserEventJournal({ maxEvents: 8, maxBytes: 16_384 });
+  const request = journal.recordCdp({
+    method: "Network.requestWillBeSent",
+    eventId: "network-method-canary",
+    params: {
+      requestId: "request-canary",
+      request: { method: `Bearer ${SECRET}`, url: "https://example.test/" },
+    },
+  }, context());
+  const response = journal.recordCdp({
+    method: "Network.responseReceived",
+    eventId: "network-mime-canary",
+    params: {
+      requestId: "request-canary",
+      response: { status: 200, url: "https://example.test/", mimeType: `application/${SECRET}` },
+    },
+  }, context());
+
+  assert.equal(request.data.method, "unknown");
+  assert.equal(response.data.mime_type, "application");
+  assert.equal(JSON.stringify({ request, response }).includes(SECRET), false);
+
+  const direct = journal.record({
+    kind: "network_response",
+    eventId: "direct-network-canary",
+    browserGeneration: 7,
+    data: { mimeType: `${SECRET}/opaque`, method: SECRET },
+  });
+  assert.equal(direct.data.mime_type, "unknown");
+  assert.equal(JSON.stringify(direct).includes(SECRET), false);
+});
+
 test("redacts URL userinfo/query and header values without retaining sensitive names", () => {
   assert.equal(sanitizeUrl(`https://alice:password@example.test/path?token=${SECRET}#x`), "https://example.test");
   assert.equal(
@@ -469,7 +538,7 @@ test("preserves destroyed-generation fences through lifecycle pruning and serial
   assert.equal(reopened.kind, "target_created");
 });
 
-test("bounds active lifecycle registries while retaining evicted generation fences", () => {
+test("bounds active lifecycle registries while accepting live capacity evictions", () => {
   const journal = new BrowserEventJournal({
     maxEvents: 32,
     maxBytes: 32_768,
@@ -497,14 +566,25 @@ test("bounds active lifecycle registries while retaining evicted generation fenc
   assert.ok(journal.targetDocuments.size <= 2);
   assert.ok(journal.compactedTargets.size <= 2);
   assert.ok(journal.compactedDocuments.size <= 2);
-  const fencedTarget = journal.compactedTargets.keys().next().value;
-  assert.equal(journal.record({
+  const evictedTarget = journal.capacityEvictedTargets.keys().next().value;
+  assert.ok(evictedTarget);
+  assert.equal(journal.compactedTargets.has(evictedTarget), false);
+  assert.throws(() => journal.record({
+    kind: "page_loaded",
+    eventId: "bounded-event-without-authority",
+    browserGeneration: 7,
+    targetId: evictedTarget,
+    data: {},
+  }), (error) => error instanceof BrowserEventError && error.code === "browser_event_lifecycle_gap");
+  const recovered = journal.record({
     kind: "page_loaded",
     eventId: "bounded-stale-event",
     browserGeneration: 7,
-    targetId: fencedTarget,
+    targetId: evictedTarget,
     data: {},
-  }, authoritative), null);
+  }, authoritative);
+  assert.equal(recovered.target_id, evictedTarget);
+  assert.equal(journal.capacityEvictedTargets.has(evictedTarget), false);
 });
 
 test("preserves old document and target generation fences through invalidation", () => {
@@ -555,6 +635,82 @@ test("preserves old document and target generation fences through invalidation",
     documentId: "fenced-document-b",
     data: {},
   }, authoritative), null);
+});
+
+test("keeps target and document generations monotonic across null authority and stale invalidation", () => {
+  const journal = new BrowserEventJournal({ maxEvents: 16, maxBytes: 16_384 });
+  const authoritative = {
+    browserGeneration: 7,
+    activeTargetGenerationForTarget: () => 5,
+    activeDocumentGenerationForDocument: () => 5,
+  };
+  const initial = journal.record({
+    kind: "page_navigated",
+    eventId: "monotonic-initial",
+    browserGeneration: 7,
+    targetId: "monotonic-target",
+    documentId: "monotonic-document",
+    data: { url: "https://example.test/" },
+  }, authoritative);
+  assert.equal(initial.kind, "page_navigated");
+  assert.equal(journal.activeTargets.get("monotonic-target"), 5);
+  assert.equal(journal.activeDocuments.get("monotonic-document"), 5);
+
+  const nullAuthority = journal.record({
+    kind: "page_loaded",
+    eventId: "monotonic-null-authority",
+    browserGeneration: 7,
+    targetId: "monotonic-target",
+    documentId: "monotonic-document",
+    data: {},
+  });
+  assert.equal(nullAuthority.kind, "page_loaded");
+  assert.equal(journal.activeTargets.get("monotonic-target"), 5);
+  assert.equal(journal.activeDocuments.get("monotonic-document"), 5);
+
+  assert.equal(journal.invalidateTarget({
+    targetId: "monotonic-target",
+    targetGeneration: 4,
+    browserGeneration: 7,
+  }), false);
+  assert.equal(journal.invalidateDocument({
+    documentId: "monotonic-document",
+    documentGeneration: 4,
+    browserGeneration: 7,
+  }), false);
+  assert.equal(journal.isTargetInvalid("monotonic-target"), false);
+  assert.equal(journal.isDocumentInvalid("monotonic-document"), false);
+
+  assert.equal(journal.invalidateTarget({
+    targetId: "monotonic-target",
+    targetGeneration: 5,
+    browserGeneration: 7,
+  }), true);
+  assert.equal(journal.targetAuthorityFences.get("monotonic-target"), 5);
+  assert.equal(journal.documentAuthorityFences.get("monotonic-document"), 5);
+  assert.equal(journal.record({
+    kind: "target_created",
+    eventId: "monotonic-stale-reopen",
+    browserGeneration: 7,
+    targetId: "monotonic-target",
+    data: { url: "https://example.test/stale" },
+  }, { ...authoritative, activeTargetGenerationForTarget: () => 5 }), null);
+
+  const reopened = journal.record({
+    kind: "page_navigated",
+    eventId: "monotonic-new-generation",
+    browserGeneration: 7,
+    targetId: "monotonic-target",
+    documentId: "monotonic-document-2",
+    data: { url: "https://example.test/new" },
+  }, {
+    ...authoritative,
+    activeTargetGenerationForTarget: () => 6,
+    activeDocumentGenerationForDocument: () => 6,
+  });
+  assert.equal(reopened.kind, "page_navigated");
+  assert.equal(journal.activeTargets.get("monotonic-target"), 6);
+  assert.equal(journal.activeDocuments.get("monotonic-document-2"), 6);
 });
 
 test("rejects every supplied malformed serialized cursor instead of snapshotting", () => {
