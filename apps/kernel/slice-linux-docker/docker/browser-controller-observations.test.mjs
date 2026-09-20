@@ -198,6 +198,68 @@ test("binds every element reference to its owning frame", async () => {
   });
 });
 
+test("redacts sensitive accessibility names, descriptions, and values independently", async () => {
+  const rawAccessibility = accessibility({
+    extra: [
+      {
+        nodeId: "ax-name-secret",
+        backendDOMNodeId: 20,
+        role: { value: "button" },
+        name: { value: "access_token=private-name" },
+        description: { value: "safe description" },
+      },
+      {
+        nodeId: "ax-description-secret",
+        backendDOMNodeId: 21,
+        role: { value: "button" },
+        name: { value: "safe name" },
+        description: { value: "signed-secret=private-description" },
+      },
+      {
+        nodeId: "ax-value-secret",
+        backendDOMNodeId: 22,
+        role: { value: "textbox" },
+        name: { value: "safe field" },
+        description: { value: "safe description" },
+        value: { value: "access_token=private-value" },
+      },
+    ],
+  });
+  const store = new BrowserObservationStore();
+  const snapshot = await store.capture({
+    connection: new FakeConnection({ accessibilityResults: [rawAccessibility] }),
+    tab: TAB,
+  });
+
+  const nameSecret = snapshot.accessibility_nodes.find(({ element_ref }) => element_ref === "element-1-3");
+  const descriptionSecret = snapshot.accessibility_nodes.find(({ element_ref }) => element_ref === "element-1-4");
+  const valueSecret = snapshot.accessibility_nodes.find(({ element_ref }) => element_ref === "element-1-5");
+  assert.deepEqual(
+    {
+      name: nameSecret?.name,
+      description: nameSecret?.description,
+    },
+    { name: "[redacted]", description: "safe description" },
+  );
+  assert.deepEqual(
+    {
+      name: descriptionSecret?.name,
+      description: descriptionSecret?.description,
+    },
+    { name: "safe name", description: "[redacted]" },
+  );
+  assert.deepEqual(
+    {
+      name: valueSecret?.name,
+      description: valueSecret?.description,
+      value: valueSecret?.value,
+    },
+    { name: "safe field", description: "safe description", value: "[redacted]" },
+  );
+  assert.equal(snapshot.accessibility_nodes[1].value, "[redacted]");
+  assert.doesNotMatch(JSON.stringify(snapshot), /private-name|private-description|private-value/);
+});
+
 test("invalidates old references after a committed document navigation", async () => {
   const store = new BrowserObservationStore();
   const first = await store.capture({ connection: new FakeConnection(), tab: TAB });
@@ -259,6 +321,78 @@ test("invalidates references when a child frame navigates during capture", async
   );
 });
 
+test("revalidates main and child document identities before resolving", async () => {
+  for (const [label, changedFrameTree] of [
+    ["main", frameTree("document-2", "child-1")],
+    ["child", frameTree("document-1", "child-2")],
+  ]) {
+    const store = new BrowserObservationStore();
+    const first = await store.capture({
+      connection: new FakeConnection({
+        frameTrees: [frameTree("document-1", "child-1"), frameTree("document-1", "child-1")],
+      }),
+      tab: TAB,
+    });
+    const reference = first.accessibility_nodes[0].element_ref;
+
+    await assert.rejects(
+      store.resolve(TAB, reference, {
+        connection: new FakeConnection({ frameTrees: [changedFrameTree] }),
+      }),
+      (error) => error.code === OBSERVATION_ERROR_CODES.STALE_DOCUMENT,
+      label,
+    );
+    assert.throws(
+      () => store.resolve(TAB, reference),
+      (error) => error.code === OBSERVATION_ERROR_CODES.ELEMENT_REFERENCE_INVALIDATED,
+    );
+  }
+});
+
+test("bounds same-document references across long-lived SPA churn", async () => {
+  const backends = Array.from({ length: 20 }, (_, index) => 100 + index);
+  const accessibilityResults = backends.map((backendNodeId) => ({
+    nodes: [{
+      nodeId: `ax-${backendNodeId}`,
+      backendDOMNodeId: backendNodeId,
+      role: { value: "button" },
+      name: { value: `Button ${backendNodeId}` },
+    }],
+  }));
+  const domResults = backends.map((backendNodeId) => ({
+    strings: ["BUTTON"],
+    documents: [{
+      nodes: {
+        backendNodeId: [backendNodeId],
+        parentIndex: [-1],
+        nodeType: [1],
+        nodeName: [0],
+        nodeValue: [-1],
+        attributes: [[]],
+      },
+    }],
+  }));
+  const store = new BrowserObservationStore();
+  const connection = new FakeConnection({ accessibilityResults, domResults });
+  let firstReference;
+  let currentReference;
+  for (let index = 0; index < backends.length; index += 1) {
+    const snapshot = await store.capture({ connection, tab: TAB });
+    currentReference = snapshot.accessibility_nodes[0].element_ref;
+    if (index === 0) firstReference = currentReference;
+  }
+
+  assert.notEqual(currentReference, firstReference);
+  assert.deepEqual(store.resolve(TAB, currentReference).backend_node_id, backends.at(-1));
+  assert.throws(
+    () => store.resolve(TAB, firstReference),
+    (error) => error.code === OBSERVATION_ERROR_CODES.ELEMENT_REFERENCE_INVALIDATED,
+  );
+  const state = store.statesByTabId.get(TAB.tab_id);
+  assert.equal(state.refsByBackendId.size, 1);
+  assert.equal(state.backendIdByRef.size, 1);
+});
+
 test("redacts secret-bearing attribute values while preserving public URLs", async () => {
   const strings = [
     "A",
@@ -304,6 +438,135 @@ test("redacts secret-bearing attribute values while preserving public URLs", asy
   assert.equal(attributes.json, "[redacted]");
   assert.equal(attributes.relative, "[redacted]");
   assert.doesNotMatch(JSON.stringify(snapshot), /private|password/);
+});
+
+test("classifies sensitive DOM identifiers and values before truncation", async () => {
+  const rawDom = {
+    strings: [
+      "DIV",
+      "field-password",
+      "visible-secret",
+      "info",
+      "safe-prefix-token=hidden",
+      "billing-payment",
+      "card-number",
+      "form-private-input",
+      "private-value",
+      "ordinary",
+      "public-value",
+    ],
+    documents: [{
+      nodes: {
+        backendNodeId: [23],
+        parentIndex: [-1],
+        nodeType: [1],
+        nodeName: [0],
+        nodeValue: [-1],
+        attributes: [[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]],
+      },
+    }],
+  };
+  const store = new BrowserObservationStore();
+  const snapshot = await store.capture({
+    connection: new FakeConnection({
+      accessibilityResults: [{ nodes: [] }],
+      domResults: [rawDom],
+    }),
+    tab: TAB,
+    limits: { maxStringBytes: 8 },
+  });
+
+  const attributes = snapshot.dom_nodes[0].attributes;
+  assert.equal(attributes["field-pa"], "[redacted]");
+  assert.equal(attributes.info, "[redacted]");
+  assert.equal(attributes["billing-"], "[redacted]");
+  assert.equal(attributes["form-pri"], "[redacted]");
+  assert.equal(attributes.ordinary, "public-v");
+  assert.doesNotMatch(
+    JSON.stringify(snapshot),
+    /visible-secret|hidden|card-number|private-value|password|payment|private-input/,
+  );
+});
+
+test("uses sibling metadata and query context without redacting public structure", async () => {
+  const strings = [
+    "META",
+    "name",
+    "csrf-token",
+    "content",
+    "csrf-value",
+    "data-key",
+    "layout-main",
+    "href",
+    "https://public.example/docs?key=private-query",
+    "relative",
+    "/callback?key=private-relative",
+  ];
+  const rawDom = {
+    strings,
+    documents: [{
+      nodes: {
+        backendNodeId: [22],
+        parentIndex: [-1],
+        nodeType: [1],
+        nodeName: [0],
+        nodeValue: [-1],
+        attributes: [[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]],
+      },
+    }],
+  };
+  const store = new BrowserObservationStore();
+  const snapshot = await store.capture({
+    connection: new FakeConnection({ domResults: [rawDom] }),
+    tab: TAB,
+  });
+  const attributes = snapshot.dom_nodes[0].attributes;
+  assert.equal(attributes.name, "csrf-token");
+  assert.equal(attributes.content, "[redacted]");
+  assert.equal(attributes["data-key"], "layout-main");
+  assert.equal(attributes.href, "[redacted]");
+  assert.equal(attributes.relative, "[redacted]");
+  assert.doesNotMatch(JSON.stringify(snapshot), /csrf-value|private-query|private-relative/);
+});
+
+test("reports omitted later DOM documents at an exact node boundary", async () => {
+  const rawDom = {
+    strings: ["HTML", "IFRAME"],
+    documents: [
+      {
+        nodes: {
+          backendNodeId: [31],
+          parentIndex: [-1],
+          nodeType: [1],
+          nodeName: [0],
+          nodeValue: [-1],
+          attributes: [[]],
+        },
+      },
+      {
+        nodes: {
+          backendNodeId: [32],
+          parentIndex: [-1],
+          nodeType: [1],
+          nodeName: [1],
+          nodeValue: [-1],
+          attributes: [[]],
+        },
+      },
+    ],
+  };
+  const store = new BrowserObservationStore();
+  const snapshot = await store.capture({
+    connection: new FakeConnection({
+      accessibilityResults: [{ nodes: [] }],
+      domResults: [rawDom],
+    }),
+    tab: TAB,
+    limits: { maxNodes: 1 },
+  });
+  assert.equal(snapshot.dom_nodes.length, 1);
+  assert.equal(snapshot.dom_nodes[0].document_index, 0);
+  assert.equal(snapshot.truncated, true);
 });
 
 test("uses the finite raw snapshot budget without changing compact result bounds", async () => {

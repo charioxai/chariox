@@ -159,10 +159,14 @@ function arrayValue(value, index) {
   return Array.isArray(value) ? value[index] : undefined;
 }
 
-function snapshotString(strings, index, maxBytes) {
-  return Number.isSafeInteger(index)
-    ? boundedString(strings[index], maxBytes)
+function rawSnapshotString(strings, index) {
+  return Number.isSafeInteger(index) && typeof strings[index] === "string"
+    ? strings[index]
     : "";
+}
+
+function snapshotString(strings, index, maxBytes) {
+  return boundedString(rawSnapshotString(strings, index), maxBytes);
 }
 
 function validBackendNodeId(value) {
@@ -170,8 +174,8 @@ function validBackendNodeId(value) {
 }
 
 function sensitiveAttribute(nodeName, attributeName) {
-  const node = nodeName.toLowerCase();
-  const attribute = attributeName.toLowerCase();
+  const node = String(nodeName ?? "").toLowerCase();
+  const attribute = String(attributeName ?? "").toLowerCase();
   if (
     attribute === "authorization" ||
     attribute === "cookie" ||
@@ -179,19 +183,24 @@ function sensitiveAttribute(nodeName, attributeName) {
     attribute.includes("secret") ||
     attribute.includes("token") ||
     attribute.includes("credential") ||
+    attribute.includes("payment") ||
+    attribute.includes("private") ||
     attribute.includes("api-key") ||
     attribute.includes("api_key")
   ) {
     return true;
   }
-  return attribute === "value" && ["input", "textarea", "option"].includes(node);
+  return attribute === "value" && (
+    ["input", "textarea", "option"].includes(node) ||
+    normalizedSecretKey(node).includes("privateinput")
+  );
 }
 
 function normalizedSecretKey(value) {
   return String(value ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
-function looksSecretKey(value) {
+function looksSecretKey(value, { queryParameter = false } = {}) {
   const key = normalizedSecretKey(value);
   return (
     key === "authorization" ||
@@ -200,6 +209,9 @@ function looksSecretKey(value) {
     key === "password" ||
     key === "passwd" ||
     key === "secret" ||
+    key === "payment" ||
+    key === "private" ||
+    key === "privateinput" ||
     key === "apikey" ||
     key === "accesskey" ||
     key === "privatekey" ||
@@ -212,8 +224,13 @@ function looksSecretKey(value) {
     key === "sig" ||
     key === "hmac" ||
     key === "jwt" ||
+    (queryParameter && key === "key") ||
+    key.endsWith("password") ||
+    key.endsWith("passwd") ||
     key.endsWith("token") ||
     key.endsWith("secret") ||
+    key.includes("payment") ||
+    key.endsWith("privateinput") ||
     key.endsWith("credential") ||
     key.endsWith("signature")
   );
@@ -227,17 +244,27 @@ function containsSecretAssignment(value) {
   return false;
 }
 
-function containsSecretValue(value) {
+function containsSecretValue(value, { allowBareToken = true } = {}) {
   if (typeof value !== "string" || value.length === 0) return false;
+  const normalized = normalizedSecretKey(value);
+  if (
+    normalized.includes("password") ||
+    (allowBareToken && normalized.includes("token")) ||
+    normalized.includes("secret") ||
+    normalized.includes("payment") ||
+    normalized.includes("privateinput")
+  ) {
+    return true;
+  }
   if (containsSecretAssignment(value)) return true;
   if (/(?:^|[^A-Za-z0-9_])(?:[A-Za-z][A-Za-z0-9+.-]*:)?\/\/[^/\s:@]+:[^/\s@]*@/i.test(value)) {
     return true;
   }
   try {
-    const parsed = new URL(value.startsWith("//") ? `http:${value}` : value);
+    const parsed = new URL(value.startsWith("//") ? `http:${value}` : value, "http://snapshot.invalid");
     if (parsed.username || parsed.password) return true;
     for (const [key] of parsed.searchParams) {
-      if (looksSecretKey(key)) return true;
+      if (looksSecretKey(key, { queryParameter: true })) return true;
     }
   } catch {
     // Non-URL attribute values are covered by the assignment check above.
@@ -250,22 +277,66 @@ function containsSecretValue(value) {
   }
 }
 
-function compactAttributeValue(strings, valueIndex, nodeName, attributeName, limits) {
+function compactAttributeValue(
+  strings,
+  valueIndex,
+  nodeName,
+  attributeName,
+  siblingValues,
+  limits,
+) {
   if (sensitiveAttribute(nodeName, attributeName)) return "[redacted]";
-  const value = snapshotString(strings, valueIndex, limits.maxStringBytes);
-  return containsSecretValue(value) ? "[redacted]" : value;
+  if (
+    String(nodeName ?? "").toLowerCase() === "meta" &&
+    String(attributeName ?? "").toLowerCase() === "content" &&
+    looksSecretKey(siblingValues.get("name"))
+  ) {
+    return "[redacted]";
+  }
+  const rawValue = rawSnapshotString(strings, valueIndex);
+  const isMetaName = String(nodeName ?? "").toLowerCase() === "meta" &&
+    String(attributeName ?? "").toLowerCase() === "name";
+  return containsSecretValue(rawValue, { allowBareToken: !isMetaName })
+    ? "[redacted]"
+    : boundedString(rawValue, limits.maxStringBytes);
 }
 
 function compactAttributes(strings, indexes, nodeName, limits) {
   const result = {};
   const values = Array.isArray(indexes) ? indexes : [];
+  const siblingValues = new Map();
+  for (let index = 0; index + 1 < values.length; index += 2) {
+    const name = rawSnapshotString(strings, values[index]);
+    if (name && !siblingValues.has(name.toLowerCase())) {
+      siblingValues.set(
+        name.toLowerCase(),
+        rawSnapshotString(strings, values[index + 1]),
+      );
+    }
+  }
   for (let index = 0; index + 1 < values.length; index += 2) {
     if (Object.keys(result).length >= limits.maxAttributes) break;
-    const name = snapshotString(strings, values[index], limits.maxStringBytes);
+    const rawName = rawSnapshotString(strings, values[index]);
+    const name = boundedString(rawName, limits.maxStringBytes);
     if (!name) continue;
-    result[name] = compactAttributeValue(strings, values[index + 1], nodeName, name, limits);
+    result[name] = compactAttributeValue(
+      strings,
+      values[index + 1],
+      nodeName,
+      rawName,
+      siblingValues,
+      limits,
+    );
   }
   return result;
+}
+
+function isProtectedInputNode(nodeName) {
+  const normalized = normalizedSecretKey(nodeName);
+  return (
+    ["input", "textarea", "option"].includes(String(nodeName ?? "").toLowerCase()) ||
+    normalized.includes("privateinput")
+  );
 }
 
 function boundsByNodeIndex(layout) {
@@ -334,18 +405,38 @@ function elementReference(draft, backendNodeId, frameId = null) {
   return reference;
 }
 
+function pruneReferences(draft, liveBackendIds) {
+  for (const [backendNodeId, reference] of draft.refsByBackendId) {
+    if (!liveBackendIds.has(backendNodeId)) {
+      draft.refsByBackendId.delete(backendNodeId);
+      draft.backendIdByRef.delete(reference);
+    }
+  }
+  for (const [reference, backendNodeId] of draft.backendIdByRef) {
+    if (!liveBackendIds.has(backendNodeId)) {
+      draft.backendIdByRef.delete(reference);
+      draft.refsByBackendId.delete(backendNodeId);
+    }
+  }
+}
+
 function compactAccessibility(raw, draft, limits) {
   const source = Array.isArray(raw?.nodes) ? raw.nodes : [];
   const nodes = source.slice(0, limits.maxNodes);
   const referenceByAxNodeId = new Map();
+  const liveBackendIds = new Set();
   for (const node of nodes) {
     const reference = elementReference(draft, node?.backendDOMNodeId, node?.frameId);
-    if (reference && typeof node?.nodeId === "string") {
-      referenceByAxNodeId.set(node.nodeId, reference);
+    if (reference) {
+      liveBackendIds.add(node.backendDOMNodeId);
+      if (typeof node?.nodeId === "string") {
+        referenceByAxNodeId.set(node.nodeId, reference);
+      }
     }
   }
   return {
     truncated: source.length > nodes.length,
+    liveBackendIds,
     nodes: nodes.flatMap((node) => {
       const reference = elementReference(draft, node?.backendDOMNodeId, node?.frameId);
       if (!reference) return [];
@@ -354,9 +445,19 @@ function compactAccessibility(raw, draft, limits) {
           .filter((property) => typeof property?.name === "string")
           .map((property) => [property.name, property?.value?.value]),
       );
-      const role = boundedString(node?.role?.value, limits.maxStringBytes);
-      const protectedValue = properties.get("protected") === true || role.toLowerCase().includes("password");
-      const rawValue = boundedString(node?.value?.value, limits.maxStringBytes);
+      const rawRole = typeof node?.role?.value === "string" ? node.role.value : "";
+      const rawName = typeof node?.name?.value === "string" ? node.name.value : "";
+      const rawDescription = typeof node?.description?.value === "string" ? node.description.value : "";
+      const rawValue = typeof node?.value?.value === "string" ? node.value.value : "";
+      const role = boundedString(rawRole, limits.maxStringBytes);
+      const protectedValue = properties.get("protected") === true || containsSecretValue(rawRole) ||
+        containsSecretValue(rawName) || containsSecretValue(rawDescription) || containsSecretValue(rawValue);
+      const name = containsSecretValue(rawName)
+        ? "[redacted]"
+        : boundedString(rawName, limits.maxStringBytes);
+      const description = containsSecretValue(rawDescription)
+        ? "[redacted]"
+        : boundedString(rawDescription, limits.maxStringBytes);
       return [{
         element_ref: reference,
         parent_ref: referenceByAxNodeId.get(node?.parentId) ?? null,
@@ -364,9 +465,11 @@ function compactAccessibility(raw, draft, limits) {
           .map((childId) => referenceByAxNodeId.get(childId))
           .filter(Boolean),
         role,
-        name: boundedString(node?.name?.value, limits.maxStringBytes),
-        description: boundedString(node?.description?.value, limits.maxStringBytes),
-        value: protectedValue && rawValue ? "[redacted]" : rawValue,
+        name,
+        description,
+        value: (protectedValue || containsSecretValue(rawValue)) && rawValue
+          ? "[redacted]"
+          : boundedString(rawValue, limits.maxStringBytes),
         ignored: node?.ignored === true,
         disabled: properties.get("disabled") === true,
         focused: properties.get("focused") === true,
@@ -379,7 +482,13 @@ function compactDom(raw, draft, limits) {
   const strings = Array.isArray(raw?.strings) ? raw.strings : [];
   const documents = Array.isArray(raw?.documents) ? raw.documents : [];
   const nodes = [];
-  let sourceCount = 0;
+  const sourceCount = documents.reduce((total, document) => {
+    const backendIds = Array.isArray(document?.nodes?.backendNodeId)
+      ? document.nodes.backendNodeId
+      : [];
+    return total + backendIds.length;
+  }, 0);
+  const liveBackendIds = new Set();
   for (let documentIndex = 0; documentIndex < documents.length; documentIndex += 1) {
     const document = documents[documentIndex];
     const frameId = typeof document?.frameId === "string" && document.frameId.length > 0
@@ -389,23 +498,31 @@ function compactDom(raw, draft, limits) {
         : null;
     const data = document?.nodes ?? {};
     const backendIds = Array.isArray(data.backendNodeId) ? data.backendNodeId : [];
-    sourceCount += backendIds.length;
     const layoutBounds = boundsByNodeIndex(document?.layout);
     for (let nodeIndex = 0; nodeIndex < backendIds.length; nodeIndex += 1) {
       if (nodes.length >= limits.maxNodes) break;
       const reference = elementReference(draft, backendIds[nodeIndex], frameId);
       if (!reference) continue;
+      liveBackendIds.add(backendIds[nodeIndex]);
       const parentIndex = arrayValue(data.parentIndex, nodeIndex);
       const parentReference = Number.isSafeInteger(parentIndex)
         ? elementReference(draft, backendIds[parentIndex], frameId)
         : null;
+      if (parentReference) {
+        liveBackendIds.add(backendIds[parentIndex]);
+      }
       const nodeType = arrayValue(data.nodeType, nodeIndex);
-      const nodeName = snapshotString(strings, arrayValue(data.nodeName, nodeIndex), limits.maxStringBytes);
-      const parentName = Number.isSafeInteger(parentIndex)
-        ? snapshotString(strings, arrayValue(data.nodeName, parentIndex), limits.maxStringBytes)
+      const rawNodeName = rawSnapshotString(strings, arrayValue(data.nodeName, nodeIndex));
+      const nodeName = boundedString(rawNodeName, limits.maxStringBytes);
+      const rawParentName = Number.isSafeInteger(parentIndex)
+        ? rawSnapshotString(strings, arrayValue(data.nodeName, parentIndex))
         : "";
-      const exposeText = (nodeType === 3 || nodeType === 4) && !["script", "style"].includes(parentName.toLowerCase());
-      const protectedText = ["input", "textarea", "option"].includes(parentName.toLowerCase());
+      const parentName = Number.isSafeInteger(parentIndex)
+        ? boundedString(rawParentName, limits.maxStringBytes)
+        : "";
+      const exposeText = (nodeType === 3 || nodeType === 4) && !["script", "style"].includes(rawParentName.toLowerCase());
+      const protectedText = isProtectedInputNode(rawParentName);
+      const rawText = rawSnapshotString(strings, arrayValue(data.nodeValue, nodeIndex));
       nodes.push({
         element_ref: reference,
         parent_ref: parentReference,
@@ -415,12 +532,14 @@ function compactDom(raw, draft, limits) {
         text: exposeText
           ? protectedText
             ? "[redacted]"
-            : snapshotString(strings, arrayValue(data.nodeValue, nodeIndex), limits.maxStringBytes)
+            : containsSecretValue(rawText)
+              ? "[redacted]"
+              : boundedString(rawText, limits.maxStringBytes)
           : "",
         attributes: compactAttributes(
           strings,
           arrayValue(data.attributes, nodeIndex),
-          nodeName,
+          rawNodeName,
           limits,
         ),
         bounds: layoutBounds.get(nodeIndex) ?? null,
@@ -428,7 +547,7 @@ function compactDom(raw, draft, limits) {
     }
     if (nodes.length >= limits.maxNodes) break;
   }
-  return { truncated: sourceCount > nodes.length, nodes };
+  return { truncated: sourceCount > nodes.length, liveBackendIds, nodes };
 }
 
 function assertResultBounded(result, maximumBytes) {
@@ -440,6 +559,19 @@ function assertResultBounded(result, maximumBytes) {
 
 function tabStateMatches(state, tab) {
   return state?.generation === tab.generation && state?.targetGeneration === tab.targetGeneration;
+}
+
+function resolvedReference(tab, state, backendNodeId, frameId) {
+  return {
+    tab_id: tab.tabId,
+    browser_generation: tab.generation,
+    target_generation: tab.targetGeneration,
+    document_id: state.documentId,
+    frame_id: typeof frameId === "string" ? frameId : null,
+    main_frame_id: state.mainFrameId,
+    snapshot_revision: state.revision,
+    backend_node_id: backendNodeId,
+  };
 }
 
 export class BrowserObservationStore {
@@ -520,6 +652,10 @@ export class BrowserObservationStore {
     draft.revision += 1;
     const accessibility = compactAccessibility(accessibilityRaw, draft, limits);
     const dom = compactDom(domRaw, draft, limits);
+    pruneReferences(
+      draft,
+      new Set([...accessibility.liveBackendIds, ...dom.liveBackendIds]),
+    );
     const result = {
       browser_generation: tab.generation,
       tab_id: tab.tabId,
@@ -535,7 +671,7 @@ export class BrowserObservationStore {
     return result;
   }
 
-  resolve(rawTab, elementRef) {
+  resolve(rawTab, elementRef, options = undefined) {
     const tab = normalizeTab(rawTab);
     requireIdentifier(elementRef);
     const state = this.statesByTabId.get(tab.tabId);
@@ -547,15 +683,25 @@ export class BrowserObservationStore {
     if (!Number.isSafeInteger(backendNodeId)) {
       fail(OBSERVATION_ERROR_CODES.ELEMENT_REFERENCE_INVALIDATED);
     }
-    return {
-      tab_id: tab.tabId,
-      browser_generation: tab.generation,
-      target_generation: tab.targetGeneration,
-      document_id: state.documentId,
-      frame_id: typeof frameId === "string" ? frameId : null,
-      main_frame_id: state.mainFrameId,
-      snapshot_revision: state.revision,
-      backend_node_id: backendNodeId,
-    };
+    const connection = typeof options?.send === "function" ? options : options?.connection;
+    if (connection === undefined) {
+      return resolvedReference(tab, state, backendNodeId, frameId);
+    }
+    if (typeof connection?.send !== "function") {
+      fail(OBSERVATION_ERROR_CODES.INVALID_ARGUMENT);
+    }
+    return this._resolveWithLiveIdentity(tab, state, backendNodeId, frameId, connection);
+  }
+
+  async _resolveWithLiveIdentity(tab, state, backendNodeId, frameId, connection) {
+    const liveIdentities = frameIdentities(await connection.send("Page.getFrameTree", {}));
+    if (!sameFrameIdentities(state.frameIdentities, liveIdentities)) {
+      this.invalidate(tab.tabId);
+      fail(OBSERVATION_ERROR_CODES.STALE_DOCUMENT);
+    }
+    if (this.statesByTabId.get(tab.tabId) !== state || !tabStateMatches(state, tab)) {
+      fail(OBSERVATION_ERROR_CODES.ELEMENT_REFERENCE_INVALIDATED);
+    }
+    return resolvedReference(tab, state, backendNodeId, frameId);
   }
 }
