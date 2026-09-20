@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, readFile, rename, rm, stat as nodeStat, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import {
   BrowserPageFeatureError,
@@ -109,6 +112,35 @@ function fakeFilesystem() {
       size: expectedSize,
     }),
   };
+}
+
+function fakeUploadLeaseFilesystem() {
+  const filesystem = fakeFilesystem();
+  let stageNumber = 0;
+  const staged = new Map();
+  const removedStages = [];
+  const pendingTimers = new Set();
+  filesystem.mkdtemp = async () => `/tmp/chariox-browser-upload-test-${++stageNumber}`;
+  filesystem.remove = async (stageDirectory) => {
+    removedStages.push(stageDirectory);
+    for (const candidate of staged.keys()) {
+      if (candidate.startsWith(`${stageDirectory}/`)) staged.delete(candidate);
+    }
+  };
+  filesystem.setTimeoutFn = (callback, delay) => {
+    const timer = { callback, delay, unref() {} };
+    pendingTimers.add(timer);
+    return timer;
+  };
+  filesystem.clearTimeoutFn = (timer) => pendingTimers.delete(timer);
+  filesystem.stageUpload = async ({ destinationPath, expectedSize }) => {
+    staged.set(destinationPath, Buffer.alloc(expectedSize, 0x41));
+    return { path: destinationPath, size: expectedSize };
+  };
+  filesystem.staged = staged;
+  filesystem.removedStages = removedStages;
+  filesystem.pendingTimers = pendingTimers;
+  return filesystem;
 }
 
 function assertCode(code) {
@@ -264,6 +296,94 @@ test("uploads regular files from allowed roots without returning their paths", a
   });
   assert.notEqual(setFilesCall.params.files[0], "/safe/report.txt");
   assert.match(setFilesCall.params.files[0], /chariox-browser-upload-/);
+});
+
+test("retains staged bytes for page consumption after return and cleans them at lease expiry", async () => {
+  const filesystem = fakeUploadLeaseFilesystem();
+  const connection = new FakeConnection({
+    "Page.getFrameTree": { frameTree: { frame: { loaderId: "document-3" } } },
+  });
+  const features = new BrowserPageFeatures({
+    ...filesystem,
+    uploadRoots: ["/safe"],
+  });
+
+  await features.uploadFiles({ connection, element: ELEMENT, paths: ["/safe/report.txt"] });
+  const stagedPath = connection.calls.find(({ method }) => method === "DOM.setFileInputFiles")
+    .params.files[0];
+  const stagedBytes = filesystem.staged.get(stagedPath);
+  assert.ok(stagedBytes);
+  assert.deepEqual(stagedBytes, Buffer.alloc(1024, 0x41));
+  assert.equal(filesystem.removedStages.length, 0);
+
+  // The page can read and submit the file after the action has returned.
+  const readAndSubmit = (candidate) => {
+    const bytes = filesystem.staged.get(candidate);
+    assert.ok(bytes);
+    return { submitted: true, bytes };
+  };
+  assert.deepEqual(readAndSubmit(stagedPath), { submitted: true, bytes: stagedBytes });
+  const [lease] = filesystem.pendingTimers;
+  assert.equal(lease.delay, 60_000);
+  await lease.callback();
+  assert.equal(filesystem.staged.has(stagedPath), false);
+  assert.equal(filesystem.removedStages.length, 1);
+});
+
+test("copies bytes from an identity-bound descriptor across an adversarial pathname swap", async (t) => {
+  const fixtureRoot = await mkdtemp(path.join(tmpdir(), "chariox-page-upload-swap-"));
+  const uploadRoot = path.join(fixtureRoot, "safe");
+  const secretRoot = path.join(fixtureRoot, "secret");
+  const sourcePath = path.join(uploadRoot, "report.txt");
+  const secretPath = path.join(secretRoot, "report.txt");
+  const sourceBytes = Buffer.from("approved upload bytes");
+  const secretBytes = Buffer.from("attacker bytes");
+  await mkdir(uploadRoot);
+  await mkdir(secretRoot);
+  await writeFile(sourcePath, sourceBytes);
+  await writeFile(secretPath, secretBytes);
+  t.after(() => rm(fixtureRoot, { recursive: true, force: true }));
+
+  let rootStatCalls = 0;
+  let swapped = false;
+  const stat = async (candidate) => {
+    const metadata = await nodeStat(candidate);
+    if (candidate === uploadRoot && ++rootStatCalls === 3 && !swapped) {
+      await rename(sourcePath, `${sourcePath}.original`);
+      await symlink(secretPath, sourcePath);
+      swapped = true;
+    }
+    return metadata;
+  };
+  const pendingTimers = new Set();
+  const connection = new FakeConnection({
+    "Page.getFrameTree": { frameTree: { frame: { loaderId: "document-3" } } },
+  });
+  const features = new BrowserPageFeatures({
+    uploadRoots: [uploadRoot],
+    stat,
+    mkdtemp: async (prefix) => mkdtemp(prefix),
+    setTimeoutFn: (callback, delay) => {
+      const timer = { callback, delay, unref() {} };
+      pendingTimers.add(timer);
+      return timer;
+    },
+    clearTimeoutFn: (timer) => pendingTimers.delete(timer),
+  });
+
+  await features.uploadFiles({
+    connection,
+    element: ELEMENT,
+    paths: [sourcePath],
+  });
+  assert.equal(swapped, true);
+  const stagedPath = connection.calls.find(({ method }) => method === "DOM.setFileInputFiles")
+    .params.files[0];
+  const stagedBytes = await readFile(stagedPath);
+  assert.deepEqual(stagedBytes, sourceBytes);
+  assert.notDeepEqual(stagedBytes, secretBytes);
+  const [lease] = pendingTimers;
+  await lease.callback();
 });
 
 test("keeps configured roots fixed and rejects source swaps or staged growth", async () => {

@@ -21,6 +21,8 @@ const MAX_KNOWN_TABS = 256;
 const MAX_UPLOAD_FILE_BYTES = 64 * 1024 * 1024;
 const MAX_UPLOAD_TOTAL_BYTES = 256 * 1024 * 1024;
 const UPLOAD_COPY_CHUNK_BYTES = 64 * 1024;
+const UPLOAD_STAGE_LEASE_MS = 60_000;
+const MAX_UPLOAD_STAGE_LEASE_MS = 5 * 60_000;
 
 export const CHROMIUM_PERMISSION_TYPES = Object.freeze([
   "ar",
@@ -311,6 +313,7 @@ export class BrowserPageFeatures {
   #downloadRoot;
   #uploadRootsSnapshot;
   #downloadRootSnapshot;
+  #uploadStageLeases = new Set();
 
   constructor({
     uploadRoots = [],
@@ -321,6 +324,9 @@ export class BrowserPageFeatures {
     mkdtemp = nodeMkdtemp,
     remove = nodeRm,
     stageUpload = null,
+    setTimeoutFn = setTimeout,
+    clearTimeoutFn = clearTimeout,
+    uploadStageLeaseMs = UPLOAD_STAGE_LEASE_MS,
     now = Date.now,
     sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   } = {}) {
@@ -332,6 +338,11 @@ export class BrowserPageFeatures {
       typeof mkdtemp !== "function" ||
       typeof remove !== "function" ||
       (stageUpload !== null && typeof stageUpload !== "function") ||
+      typeof setTimeoutFn !== "function" ||
+      typeof clearTimeoutFn !== "function" ||
+      !Number.isSafeInteger(uploadStageLeaseMs) ||
+      uploadStageLeaseMs < 1 ||
+      uploadStageLeaseMs > MAX_UPLOAD_STAGE_LEASE_MS ||
       typeof now !== "function" ||
       typeof sleep !== "function"
     ) {
@@ -345,6 +356,9 @@ export class BrowserPageFeatures {
     this.mkdtemp = mkdtemp;
     this.remove = remove;
     this.stageUpload = stageUpload;
+    this.setTimeout = setTimeoutFn;
+    this.clearTimeout = clearTimeoutFn;
+    this.uploadStageLeaseMs = uploadStageLeaseMs;
     this.now = now;
     this.sleep = sleep;
     this.#uploadRootsSnapshot = this.#captureConfiguredRoots(this.#uploadRoots);
@@ -456,17 +470,29 @@ export class BrowserPageFeatures {
     }
     const inspectedFiles = [];
     let totalBytes = 0;
-    for (const candidate of paths) {
-      const file = await this.#resolveUploadFile(candidate);
-      totalBytes += file.size;
-      if (totalBytes > MAX_UPLOAD_TOTAL_BYTES) {
-        fail(PAGE_FEATURE_ERROR_CODES.PATH_DENIED);
+    try {
+      for (const candidate of paths) {
+        const file = await this.#resolveUploadFile(candidate);
+        inspectedFiles.push(file);
+        totalBytes += file.size;
+        if (totalBytes > MAX_UPLOAD_TOTAL_BYTES) {
+          fail(PAGE_FEATURE_ERROR_CODES.PATH_DENIED);
+        }
       }
-      inspectedFiles.push(file);
+    } catch (error) {
+      await Promise.all(inspectedFiles.map((file) => this.#closeFileHandle(file.handle)));
+      throw error;
     }
 
-    const stageDirectory = await this.#createUploadStageDirectory();
+    let stageDirectory;
+    try {
+      stageDirectory = await this.#createUploadStageDirectory();
+    } catch (error) {
+      await Promise.all(inspectedFiles.map((file) => this.#closeFileHandle(file.handle)));
+      throw error;
+    }
     const files = [];
+    let retained = false;
     try {
       let stagedTotalBytes = 0;
       for (const [index, file] of inspectedFiles.entries()) {
@@ -488,6 +514,8 @@ export class BrowserPageFeatures {
       } catch {
         fail(PAGE_FEATURE_ERROR_CODES.FAILED);
       }
+      this.#retainUploadStageDirectory(stageDirectory);
+      retained = true;
       return {
         tab_id: element.tabId,
         document_id: element.documentId,
@@ -495,7 +523,8 @@ export class BrowserPageFeatures {
         file_count: files.length,
       };
     } finally {
-      await this.#removeUploadStageDirectory(stageDirectory);
+      await Promise.all(inspectedFiles.map((file) => this.#closeFileHandle(file.handle)));
+      if (!retained) await this.#removeUploadStageDirectory(stageDirectory);
     }
   }
 
@@ -634,6 +663,7 @@ export class BrowserPageFeatures {
     const roots = await this.#getUploadRoots();
     if (roots.length === 0) fail(PAGE_FEATURE_ERROR_CODES.PATH_DENIED);
     let resolved;
+    let sourceHandle = null;
     try {
       resolved = normalizePath(await this.realpath(normalized));
       const matchingRoot = roots
@@ -645,13 +675,33 @@ export class BrowserPageFeatures {
       if (!validFileMetadata(metadata, MAX_UPLOAD_FILE_BYTES)) {
         fail(PAGE_FEATURE_ERROR_CODES.PATH_DENIED);
       }
+      if (this.stageUpload === null) {
+        const relativePath = path.relative(matchingRoot.path, resolved);
+        const sourcePath = matchingRoot.handle === null
+          ? resolved
+          : path.join(`/proc/self/fd/${matchingRoot.handle.fd}`, relativePath);
+        sourceHandle = await this.open(
+          sourcePath,
+          fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+        );
+        const openedMetadata = await sourceHandle.stat();
+        if (
+          !validFileMetadata(openedMetadata, MAX_UPLOAD_FILE_BYTES) ||
+          openedMetadata.size !== metadata.size ||
+          !sameFileIdentity(metadata, openedMetadata)
+        ) {
+          fail(PAGE_FEATURE_ERROR_CODES.PATH_DENIED);
+        }
+      }
       return {
         path: resolved,
         size: metadata.size,
         identity: fileIdentity(metadata),
         root: matchingRoot,
+        handle: sourceHandle,
       };
     } catch (error) {
+      await this.#closeFileHandle(sourceHandle);
       if (error instanceof BrowserPageFeatureError) throw error;
       fail(PAGE_FEATURE_ERROR_CODES.PATH_DENIED);
     }
@@ -673,14 +723,28 @@ export class BrowserPageFeatures {
     }
   }
 
+  #retainUploadStageDirectory(stageDirectory) {
+    const lease = { stageDirectory, timer: null, released: false };
+    const release = async () => {
+      if (lease.released) return;
+      lease.released = true;
+      this.#uploadStageLeases.delete(lease);
+      if (lease.timer !== null) this.clearTimeout(lease.timer);
+      await this.#removeUploadStageDirectory(stageDirectory);
+    };
+    lease.timer = this.setTimeout(() => release(), this.uploadStageLeaseMs);
+    lease.timer?.unref?.();
+    this.#uploadStageLeases.add(lease);
+  }
+
   async #stageUploadFile(file, stageDirectory, index, remainingBytes) {
     if (file.size > remainingBytes) fail(PAGE_FEATURE_ERROR_CODES.PATH_DENIED);
     const destinationPath = normalizePath(path.join(stageDirectory, `file-${index}`));
     try {
-      const currentPath = normalizePath(await this.realpath(file.path));
-      if (currentPath !== file.path) fail(PAGE_FEATURE_ERROR_CODES.PATH_DENIED);
       await this.#assertConfiguredRoot(file.root);
       if (this.stageUpload !== null) {
+        const currentPath = normalizePath(await this.realpath(file.path));
+        if (currentPath !== file.path) fail(PAGE_FEATURE_ERROR_CODES.PATH_DENIED);
         const staged = await this.stageUpload({
           sourcePath: file.path,
           destinationPath,
@@ -707,17 +771,19 @@ export class BrowserPageFeatures {
   }
 
   async #copyUploadToStage(file, destinationPath, remainingBytes) {
-    const relativePath = path.relative(file.root.path, file.path);
-    const sourcePath = file.root.handle === null
-      ? file.path
-      : path.join(`/proc/self/fd/${file.root.handle.fd}`, relativePath);
-    let sourceHandle;
+    let sourceHandle = file.handle ?? null;
     let destinationHandle;
     try {
-      sourceHandle = await this.open(
-        sourcePath,
-        fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
-      );
+      if (sourceHandle === null) {
+        const relativePath = path.relative(file.root.path, file.path);
+        const sourcePath = file.root.handle === null
+          ? file.path
+          : path.join(`/proc/self/fd/${file.root.handle.fd}`, relativePath);
+        sourceHandle = await this.open(
+          sourcePath,
+          fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+        );
+      }
       const openedMetadata = await sourceHandle.stat();
       if (
         !validFileMetadata(openedMetadata, remainingBytes) ||
