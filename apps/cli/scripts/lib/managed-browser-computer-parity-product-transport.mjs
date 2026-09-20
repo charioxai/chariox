@@ -578,7 +578,7 @@ function createKernelPersistencePlan(input, requestApi) {
   const requests = {
     save: requireRequestConstructor(requestApi, "saveSliceStateRequest")(
       sliceId,
-      "restart_agents",
+      "shutdown",
       "this_slice",
     ),
     remove: requireRequestConstructor(requestApi, "stopSliceRequest")(sliceId),
@@ -683,8 +683,8 @@ function validatePersistenceTransition({
     throw new Error(`managed parity persistence ${action} changed its authoritative Room or resource identity`)
   }
   const expectedStatuses = {
-    save: { before: "running", after: "running" },
-    remove: { before: "running", after: "stopped" },
+    save: { before: "running", after: "stopped" },
+    remove: { before: "stopped", after: "stopped" },
     restore: { before: "stopped", after: "running" },
   }[action]
   if (before.slice.status !== expectedStatuses.before || after.slice.status !== expectedStatuses.after) {
@@ -713,13 +713,16 @@ function validatePersistenceTransition({
 }
 
 function samePersistenceObservationIdentity(left, right) {
-  return left?.slice?.id === right?.slice?.id
+  if (!(left?.slice?.id === right?.slice?.id
     && left?.slice?.environment_session_id === right?.slice?.environment_session_id
-    && left?.slice?.environment_id === right?.slice?.environment_id
-    && left?.inventory?.session_id === right?.inventory?.session_id
-    && left?.inventory?.environment_id === right?.inventory?.environment_id
-    && left?.inventory?.slice_id === right?.inventory?.slice_id
-    && sameArray(left?.inventory?.profile_ids, right?.inventory?.profile_ids)
+    && left?.slice?.environment_id === right?.slice?.environment_id)) {
+    return false
+  }
+  if (!left?.inventory || !right?.inventory) return true
+  return left.inventory.session_id === right.inventory.session_id
+    && left.inventory.environment_id === right.inventory.environment_id
+    && left.inventory.slice_id === right.inventory.slice_id
+    && sameArray(left.inventory.profile_ids, right.inventory.profile_ids)
 }
 
 async function executeKernelPersistence({
@@ -930,6 +933,21 @@ async function readKernelPersistenceInventory({ client, requestApi, sliceId, roo
   if (!hasText(resolvedRoomId)) throw new Error(`${step} returned no Room identity`)
   if ((slice.environment_session_id ?? slice.session_id) !== resolvedRoomId) {
     throw new Error(`${step} returned a different Room identity`)
+  }
+  if (slice.status === "stopped") {
+    return {
+      slice: redactManagedValue({
+        id: slice.id,
+        status: slice.status,
+        environment_session_id: slice.environment_session_id ?? slice.session_id ?? null,
+        environment_id: slice.environment_id ?? null,
+        saved_state_ref: slice.saved_state_ref ?? null,
+        saved_state_status: slice.saved_state_status ?? null,
+        last_operation: slice.last_operation ?? null,
+        last_operation_status: slice.last_operation_status ?? null,
+      }),
+      inventory: null,
+    }
   }
   const inventoryResponse = await sendWithAbortSignal(
     client,
@@ -2310,8 +2328,8 @@ async function runPersistenceMutations({
       ? (event) => onPersistenceMutation(redactManagedValue(event))
       : undefined,
   })
-  validatePersistenceRequestLedger(requestLedger, plan)
-  return normalizePersistenceEvidence(raw, ownedResources, plan)
+  const capturedLifecycleResults = validatePersistenceRequestLedger(requestLedger, plan)
+  return normalizePersistenceEvidence(raw, ownedResources, plan, capturedLifecycleResults)
 }
 
 function wrapPersistenceExecutionClient(client, requestLedger) {
@@ -2321,24 +2339,54 @@ function wrapPersistenceExecutionClient(client, requestLedger) {
   return {
     ...client,
     async send(request) {
-      requestLedger.push(request)
-      return client.send(request)
+      const response = await client.send(request)
+      requestLedger.push({
+        request: redactManagedValue(request),
+        response: redactManagedValue(response),
+      })
+      return response
     },
+    ...(typeof client.close === "function"
+      ? { close(...args) { return client.close.apply(client, args) } }
+      : {}),
+    ...(typeof client.destroy === "function"
+      ? { destroy(...args) { return client.destroy.apply(client, args) } }
+      : {}),
   }
 }
 
 function validatePersistenceRequestLedger(requestLedger, plan) {
-  const lifecycleRequests = requestLedger.filter((request) => Object.keys(PERSISTENCE_MUTATION_REQUEST_VARIANTS)
-    .some((action) => Object.hasOwn(request ?? {}, PERSISTENCE_MUTATION_REQUEST_VARIANTS[action])))
+  const lifecycleResults = requestLedger.filter((entry) => Object.keys(PERSISTENCE_MUTATION_REQUEST_VARIANTS)
+    .some((action) => Object.hasOwn(entry?.request ?? {}, PERSISTENCE_MUTATION_REQUEST_VARIANTS[action])))
   if (!Array.isArray(plan?.persistenceMutations)
-    || lifecycleRequests.length !== plan.persistenceMutations.length) {
-    throw new Error("managed parity persistence execution must send exactly one planned public lifecycle request per mutation")
+    || lifecycleResults.length !== plan.persistenceMutations.length) {
+    throw new Error("managed parity persistence execution must await exactly one successful planned public lifecycle request per mutation")
   }
-  for (const [index, request] of lifecycleRequests.entries()) {
-    if (!sameJson(request, plan.persistenceMutations[index].request)) {
+  return lifecycleResults.map((entry, index) => {
+    const request = entry.request
+    const planned = plan.persistenceMutations[index]
+    if (!sameJson(request, planned.request)) {
       throw new Error(`managed parity persistence execution request ${index} does not match its immutable plan`)
     }
-  }
+    const responseVariantName = planned.responseVariant
+    const response = entry.response
+    if (!response || typeof response !== "object" || Array.isArray(response)
+      || !Object.hasOwn(response, responseVariantName)
+      || !response[responseVariantName]
+      || typeof response[responseVariantName] !== "object"
+      || Array.isArray(response[responseVariantName])) {
+      throw new Error(
+        `managed parity persistence execution response ${index} must contain the actual ${responseVariantName} variant`,
+      )
+    }
+    return {
+      request,
+      response: {
+        variant: responseVariantName,
+        payload: redactManagedValue(response[responseVariantName]),
+      },
+    }
+  })
 }
 
 function persistenceAdapterInput({
@@ -2436,8 +2484,8 @@ function normalizePersistenceMutationDefinition(mutation, index, ownedResources 
     throw new Error(`managed parity persistence ${action} request payload is not the released public shape`)
   }
   if (action === "save"
-    && (requestPayload.mode !== "restart_agents" || requestPayload.scope !== "this_slice")) {
-    throw new Error("managed parity persistence save request must use restart_agents for this_slice")
+    && (requestPayload.mode !== "shutdown" || requestPayload.scope !== "this_slice")) {
+    throw new Error("managed parity persistence save request must use shutdown for this_slice")
   }
   const requestSliceId = requireText(requestPayload.slice_ref, `${requestVariant}.slice_ref`)
   const ownedSliceId = ownedResources?.sliceId ?? ownedResources?.stableIdentity?.sliceId
@@ -2470,7 +2518,7 @@ function normalizePersistenceMutationDefinition(mutation, index, ownedResources 
   }
 }
 
-function normalizePersistenceEvidence(value, ownedResources, plan) {
+function normalizePersistenceEvidence(value, ownedResources, plan, capturedLifecycleResults) {
   const source = value?.persistenceMutations ?? value?.mutations
   if (!Array.isArray(source) || source.length !== 3) {
     throw new Error("managed parity persistence must expose exact save/remove/restore mutation evidence")
@@ -2478,6 +2526,9 @@ function normalizePersistenceEvidence(value, ownedResources, plan) {
   const plannedMutations = plan?.persistenceMutations
   if (!Array.isArray(plannedMutations) || plannedMutations.length !== 3) {
     throw new Error("managed parity persistence execution requires an immutable mutation plan")
+  }
+  if (!Array.isArray(capturedLifecycleResults) || capturedLifecycleResults.length !== plannedMutations.length) {
+    throw new Error("managed parity persistence evidence requires captured successful lifecycle responses")
   }
   const normalized = []
   let previousAfter = null
@@ -2488,6 +2539,12 @@ function normalizePersistenceEvidence(value, ownedResources, plan) {
       throw new Error(`managed parity persistence ${definition.action} result does not match its plan`)
     }
     const { action, argv, request, requestIdentity, responseVariant } = definition
+    const captured = capturedLifecycleResults[index]
+    if (!captured
+      || !sameJson(captured.request, request)
+      || !sameJson(captured.response, mutation.response)) {
+      throw new Error(`managed parity persistence ${action} evidence is not bound to its captured lifecycle response`)
+    }
     const before = mutation.before ?? mutation.inventory
     if (!before || typeof before !== "object" || Array.isArray(before)) {
       throw new Error(`managed parity persistence ${action} requires an authoritative pre-mutation slice state`)
@@ -2604,7 +2661,13 @@ function validateNormalizedPersistenceObservation(action, observation, phase, ow
     throw new Error(`managed parity persistence ${action} ${phase} evidence lacks authoritative slice identity or status`)
   }
   const inventory = observation.inventory
-  if (!inventory || typeof inventory !== "object" || Array.isArray(inventory)
+  if (!inventory) {
+    if (slice.status !== "stopped") {
+      throw new Error(`managed parity persistence ${action} ${phase} evidence lacks authoritative resource identity`)
+    }
+    return
+  }
+  if (typeof inventory !== "object" || Array.isArray(inventory)
     || inventory.slice_id !== slice.id
     || !hasText(inventory.environment_id)) {
     throw new Error(`managed parity persistence ${action} ${phase} evidence lacks authoritative resource identity`)
@@ -2615,8 +2678,8 @@ function validateNormalizedPersistenceObservation(action, observation, phase, ow
 
 function validateNormalizedPersistenceTransition(action, before, after) {
   const expectedStatuses = {
-    save: { before: "running", after: "running" },
-    remove: { before: "running", after: "stopped" },
+    save: { before: "running", after: "stopped" },
+    remove: { before: "stopped", after: "stopped" },
     restore: { before: "stopped", after: "running" },
   }[action]
   if (before.slice.status !== expectedStatuses.before || after.slice.status !== expectedStatuses.after) {

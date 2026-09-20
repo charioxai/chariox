@@ -384,24 +384,46 @@ function persistenceSlice(status) {
 }
 
 function persistenceObservation(status) {
-  return {
+  const observation = {
     slice: persistenceSlice(status),
-    inventory: {
+  }
+  if (status !== "stopped") {
+    observation.inventory = {
       session_id: "room-1",
       environment_id: "environment-1",
       slice_id: "slice-1",
       browser_ids: ["browser-1"],
       profile_ids: ["profile-1"],
-    },
+    }
   }
+  return observation
 }
 
 function persistenceRequests() {
   return {
-    save: { SaveSliceState: { slice_ref: "slice-1", mode: "restart_agents", scope: "this_slice" } },
+    save: { SaveSliceState: { slice_ref: "slice-1", mode: "shutdown", scope: "this_slice" } },
     remove: { StopSlice: { slice_ref: "slice-1" } },
     restore: { StartSlice: { slice_ref: "slice-1" } },
   }
+}
+
+function persistenceResponseForRequest(request) {
+  const variant = Object.keys(request ?? {})[0]
+  const savedState = {
+    id: "saved-state-1",
+    source_slice_id: "slice-1",
+    home_archive_path: "/tmp/managed-parity-slice-state.tar",
+  }
+  if (variant === "SaveSliceState") {
+    return { SliceStateSaved: { slice: persistenceSlice("stopped"), state: savedState } }
+  }
+  if (variant === "StopSlice") {
+    return { SliceStopped: { slice: persistenceSlice("stopped") } }
+  }
+  if (variant === "StartSlice") {
+    return { SliceStarted: { slice: persistenceSlice("running") } }
+  }
+  throw new Error(`unexpected persistence request: ${JSON.stringify(request)}`)
 }
 
 function persistenceArgv(action, request) {
@@ -427,10 +449,10 @@ function persistenceEvidence() {
     {
       action: "save",
       before: persistenceObservation("running"),
-      after: persistenceObservation("running"),
+      after: persistenceObservation("stopped"),
       response: {
         variant: "SliceStateSaved",
-        payload: { slice: responseSlice("running"), state: savedState },
+        payload: { slice: responseSlice("stopped"), state: savedState },
       },
       receipt: {
         ok: true,
@@ -446,7 +468,7 @@ function persistenceEvidence() {
     },
     {
       action: "remove",
-      before: persistenceObservation("running"),
+      before: persistenceObservation("stopped"),
       after: persistenceObservation("stopped"),
       response: {
         variant: "SliceStopped",
@@ -535,7 +557,7 @@ test("persistence plans remain immutable and execution returns post-mutation rec
   const evidence = persistenceEvidence()
   const plan = persistencePlan()
   const transport = createManagedBrowserComputerParityTransportFromPublicClient({
-    client: { async send() {} },
+    client: { async send(request) { return persistenceResponseForRequest(request) } },
     requestApi: moduleRequestApi,
     persistence: {
       async describe() { return plan },
@@ -568,7 +590,7 @@ test("persistence plans remain immutable and execution returns post-mutation rec
     ["before", "restore"], ["after", "restore"],
   ])
   assert.deepEqual(result.persistenceMutations.map((mutation) => mutation.argv), [
-    ["kernel", "SaveSliceState", "slice-1", "mode=restart_agents", "scope=this_slice"],
+    ["kernel", "SaveSliceState", "slice-1", "mode=shutdown", "scope=this_slice"],
     ["kernel", "StopSlice", "slice-1"],
     ["kernel", "StartSlice", "slice-1"],
   ])
@@ -611,7 +633,35 @@ test("persistence rejects predeclared receipts and callback-only no-op execution
   })
   await assert.rejects(
     () => noOp.run("selkies.persistence", {}),
-    /must send exactly one planned public lifecycle request|requires an authoritative pre-mutation slice state/,
+    /must await exactly one successful planned public lifecycle request|requires an authoritative pre-mutation slice state/,
+  )
+})
+
+test("persistence does not count a caught rejected lifecycle send as executed evidence", async () => {
+  const evidence = persistenceEvidence()
+  const transport = createManagedBrowserComputerParityTransportFromPublicClient({
+    client: { async send(request) {
+      if (Object.hasOwn(request, "StopSlice")) throw new Error("simulated rejected stop")
+      return persistenceResponseForRequest(request)
+    } },
+    requestApi: moduleRequestApi,
+    persistence: {
+      async describe() { return persistencePlan() },
+      async run({ plan, client }) {
+        await client.send(plan.persistenceMutations[0].request)
+        try {
+          await client.send(plan.persistenceMutations[1].request)
+        } catch {
+          // A caught rejection must not become a lifecycle receipt.
+        }
+        await client.send(plan.persistenceMutations[2].request)
+        return evidence
+      },
+    },
+  })
+  await assert.rejects(
+    () => transport.run("selkies.persistence", {}),
+    /must await exactly one successful planned public lifecycle request per mutation/,
   )
 })
 
@@ -643,7 +693,7 @@ test("persistence rejects request/response mismatch and stale saved-state identi
   const cases = [requestMismatch, responseMismatch, staleState]
   for (const invalidEvidence of cases) {
     const transport = createManagedBrowserComputerParityTransportFromPublicClient({
-      client: { async send() {} },
+      client: { async send(request) { return persistenceResponseForRequest(request) } },
       requestApi: moduleRequestApi,
       persistence: {
         async describe() { return persistencePlan() },
@@ -655,7 +705,7 @@ test("persistence rejects request/response mismatch and stale saved-state identi
     })
     await assert.rejects(
       () => transport.run("selkies.persistence", {}),
-      /does not describe|does not match|foreign slice identity|returned a different slice identity|stale saved-state identity/,
+      /does not describe|does not match|not bound to its captured lifecycle response|foreign slice identity|returned a different slice identity|stale saved-state identity/,
     )
   }
 
@@ -679,7 +729,7 @@ test("persistence rejects request/response mismatch and stale saved-state identi
 })
 
 test("production persistence defaults to authoritative slice save, stop, and restore requests", async () => {
-  const { transport, client } = createCleanupTransport()
+  const { transport, client } = createCleanupTransport({ inventoryUnavailableWhenStopped: true })
   const binding = {
     kernelId: "kernel-1",
     machineId: "machine-1",
@@ -706,6 +756,10 @@ test("production persistence defaults to authoritative slice save, stop, and res
   ].some((variant) => Object.hasOwn(request, variant))).map((request) => Object.keys(request)[0]).slice(-4), [
     "SaveSliceState", "StopSlice", "StartSlice", "GetSliceStateStatus",
   ])
+  assert.equal(
+    client.requests.filter((request) => Object.hasOwn(request, "GetRoomEnvironmentResourceInventory")).length > 0,
+    true,
+  )
 })
 
 test("factory ignores runbook Docker expectations and exposes the exact kernel lifecycle plan", async () => {
@@ -765,6 +819,9 @@ test("persistence timeout and partial lifecycle failure do not retry mutations",
     timeoutFixture.requests.filter((request) => Object.hasOwn(request, "StartSlice")).length,
     startsBeforePersistence + 1,
   )
+  assert.equal(timeoutFixture.isClientClosed(), true)
+  assert.equal(timeoutFixture.isCloseReceiverCorrect(), true)
+  assert.equal(timeoutFixture.isDelayedRequestRetired(), true)
 
   const partialFixture = createCleanupTransport({ persistenceFailureAction: "remove" })
   await partialFixture.transport.run("selkies.create", {
@@ -802,6 +859,7 @@ function createCleanupTransport({
   reconnectClient = null,
   reconnectActionSnapshots = null,
   reconnectBrowserSnapshots = null,
+  inventoryUnavailableWhenStopped = false,
   telemetrySamples = null,
   evidenceRoot = "/proc/managed-parity-m0-evidence-never-present",
   parityConfig = null,
@@ -822,6 +880,10 @@ function createCleanupTransport({
   const activeAttachmentIds = new Set()
   const detachAttempts = []
   const requests = []
+  let clientClosed = false
+  let closeReceiverCorrect = false
+  let pendingDelayedRequestReject = null
+  let delayedRequestRetired = false
   const slice = {
     id: "slice-1",
     backend: "ssh_docker",
@@ -897,7 +959,18 @@ function createCleanupTransport({
       }
       if (Object.hasOwn(request, "StartSlice") || Object.hasOwn(request, "GetSlice")) {
         if (Object.hasOwn(request, "StartSlice") && startDelayMs > 0) {
-          await new Promise((resolve) => setTimeout(resolve, startDelayMs))
+          await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+              pendingDelayedRequestReject = null
+              resolve()
+            }, startDelayMs)
+            pendingDelayedRequestReject = (error) => {
+              clearTimeout(timer)
+              pendingDelayedRequestReject = null
+              delayedRequestRetired = true
+              reject(error)
+            }
+          })
         }
         if (Object.hasOwn(request, "StartSlice")) slice.status = "running"
         const observedSlice = persistenceResponseMismatch === "restore"
@@ -916,6 +989,7 @@ function createCleanupTransport({
           source_slice_id: "slice-1",
           home_archive_path: "/tmp/managed-parity-slice-state.tar",
         }
+        if (request.SaveSliceState.mode === "shutdown") slice.status = "stopped"
         const observedState = persistenceResponseMismatch === "save"
           ? { ...savedState, source_slice_id: "foreign-slice" }
           : savedState
@@ -992,6 +1066,9 @@ function createCleanupTransport({
         })) } }
       }
       if (Object.hasOwn(request, "GetRoomEnvironmentResourceInventory")) {
+        if (inventoryUnavailableWhenStopped && slice.status === "stopped") {
+          throw new Error("live worker inventory unavailable while stopped")
+        }
         const browserIds = reconnectMode && Array.isArray(reconnectBrowserSnapshots)
           ? reconnectBrowserSnapshots[Math.min(reconnectInventoryCalls++, reconnectBrowserSnapshots.length - 1)]
           : slicePresent ? ["browser-1"] : (residualBrowserId ? [residualBrowserId] : [])
@@ -1051,6 +1128,16 @@ function createCleanupTransport({
         return { SessionDeleted: { session: { id: "room-1", status: "ended" } } }
       }
       throw new Error(`unexpected cleanup request: ${JSON.stringify(request)}`)
+    },
+    async close() {
+      closeReceiverCorrect = this === client
+      clientClosed = true
+      pendingDelayedRequestReject?.(new Error("delayed request retired by client close"))
+    },
+    async destroy() {
+      closeReceiverCorrect = this === client
+      clientClosed = true
+      pendingDelayedRequestReject?.(new Error("delayed request retired by client destroy"))
     },
   }
   const providerAgentQueue = [...trackedProviderAgents]
@@ -1119,6 +1206,9 @@ function createCleanupTransport({
     client,
     scopedClient,
     isScopedClosed: () => scopedClosed,
+    isClientClosed: () => clientClosed,
+    isCloseReceiverCorrect: () => closeReceiverCorrect,
+    isDelayedRequestRetired: () => delayedRequestRetired,
     detachAttempts,
     requests,
     activeAgentIds,
