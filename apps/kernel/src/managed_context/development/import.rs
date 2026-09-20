@@ -3,7 +3,17 @@ use super::*;
 const PUBLICATION_RECEIPT_SCHEMA_VERSION: u32 = 2;
 const DIRECTORY_RECEIPT_SCHEMA_VERSION: u32 = 3;
 const PUBLICATION_RECEIPT_FILE: &str = ".chariox-managed-import-receipt.json";
+const MATERIALIZATION_TRANSACTION_FILE: &str = ".chariox-materialization-transaction.json";
+const DEFAULT_USER_WORKSPACE_ROOT: &str = "/home/chariox";
 pub(crate) const MAX_PUBLICATION_RECEIPT_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct MaterializationTransaction {
+    materialization_root: PathBuf,
+    target_directories: Vec<String>,
+    #[serde(default)]
+    published_target_directories: Vec<String>,
+}
 
 pub fn import_development_context(
     request: DevelopmentContextImportRequest,
@@ -255,11 +265,49 @@ pub(crate) fn cleanup_development_context_publication(
         .ok_or_else(|| {
             context_error("refusing to remove a development context publication without a receipt")
         })?;
-    if receipt.publication_id != publication_id || receipt.destination_root != canonical_destination
-    {
+    if receipt.publication_id != publication_id {
         return Err(context_error(
             "refusing to remove a different development context publication",
         ));
+    }
+    let request = DevelopmentContextImportRequest {
+        archive_path: PathBuf::new(),
+        expected_archive_sha256: receipt.archive_sha256.clone(),
+        expected_project_id: receipt.project_id.clone(),
+        expected_source_repositories: None,
+        destination_root: canonical_destination.clone(),
+    };
+    validate_publication_receipt(
+        &receipt,
+        &request,
+        publication_id,
+        &canonical_destination,
+        false,
+        false,
+    )?;
+    let materialization_root = publication_materialization_root(&receipt, &canonical_destination)?;
+    if materialization_root != canonical_destination {
+        for repository in &receipt.repositories {
+            let path = &repository.destination_path;
+            match fs::symlink_metadata(path) {
+                Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                    return Err(context_error(
+                        "refusing to remove a non-directory managed repository destination",
+                    ))
+                }
+                Ok(_) => fs::remove_dir_all(path).map_err(|error| {
+                    context_io_error("remove managed repository materialization", error)
+                })?,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(context_io_error(
+                        "inspect managed repository materialization",
+                        error,
+                    ))
+                }
+            }
+        }
+        sync_directory(&materialization_root)?;
     }
     fs::remove_dir_all(&canonical_destination).map_err(|error| {
         context_io_error("remove failed development context publication", error)
@@ -320,24 +368,23 @@ fn import_development_context_with_options(
             "development context destination name is invalid",
         ));
     }
-    if request.destination_root.exists() {
-        return Err(context_error(format!(
-            "development context destination `{}` already exists",
-            request.destination_root.display()
-        )));
-    }
+    ensure_path_absent(&request.destination_root, "development context destination")?;
     fs::create_dir_all(destination_parent).map_err(|error| {
         context_io_error("create development context destination parent", error)
     })?;
     let canonical_parent = fs::canonicalize(destination_parent).map_err(|error| {
         context_io_error("resolve development context destination parent", error)
     })?;
-    let destination_root = canonical_parent.join(destination_name);
-    if destination_root.exists() {
-        return Err(context_error(format!(
-            "development context destination `{}` already exists",
-            destination_root.display()
-        )));
+    let control_destination_root = canonical_parent.join(destination_name);
+    ensure_path_absent(&control_destination_root, "development context destination")?;
+    let materialization_root = if publication_id.is_some() {
+        managed_materialization_root_for_control(&control_destination_root)?
+            .unwrap_or_else(|| control_destination_root.clone())
+    } else {
+        control_destination_root.clone()
+    };
+    if materialization_root != control_destination_root {
+        validate_real_directory(&materialization_root, "default user workspace root")?;
     }
 
     let staging_root = match publication_id.as_deref() {
@@ -346,7 +393,7 @@ fn import_development_context_with_options(
         }
         None => create_unique_private_directory(&canonical_parent, ".tmp-chariox-context-import")?,
     };
-    let cleanup = ImportCleanup::new(staging_root.clone());
+    let mut cleanup = ImportCleanup::new(staging_root.clone());
     let archive_snapshot = staging_root.join("archive.snapshot.tar.gz");
     let (archive_file, archive_size, archive_sha256) =
         snapshot_and_hash_archive(&request.archive_path, &archive_snapshot)?;
@@ -371,6 +418,17 @@ fn import_development_context_with_options(
         request.expected_source_repositories.as_deref(),
         &artifacts_root,
     )?;
+    if materialization_root != control_destination_root {
+        for repository in &manifest.repositories {
+            let destination = materialization_root.join(&repository.target_directory);
+            ensure_path_absent(&destination, "managed repository destination")?;
+        }
+        write_materialization_transaction(
+            &staging_root,
+            &materialization_root,
+            &manifest.repositories,
+        )?;
+    }
     let mut imported = Vec::with_capacity(manifest.repositories.len());
     let mut checkout_bytes = 0_u64;
     let mut materialized_entries = 0_u64;
@@ -393,7 +451,7 @@ fn import_development_context_with_options(
             repository_id: repository.repository_id.clone(),
             role: repository.role,
             target_directory: repository.target_directory.clone(),
-            destination_path: destination_root.join(&repository.target_directory),
+            destination_path: materialization_root.join(&repository.target_directory),
             head_sha: repository.head_sha.clone(),
         });
     }
@@ -411,7 +469,7 @@ fn import_development_context_with_options(
         .ok_or_else(|| context_error("imported context has no primary repository"))?;
     let result = DevelopmentContextImportResult {
         manifest,
-        destination_root: destination_root.clone(),
+        destination_root: control_destination_root.clone(),
         primary_repository_id,
         repositories: imported,
     };
@@ -429,7 +487,7 @@ fn import_development_context_with_options(
             publication_id,
             archive_sha256: request.expected_archive_sha256.to_ascii_lowercase(),
             project_id: request.expected_project_id.clone(),
-            destination_root: destination_root.clone(),
+            destination_root: control_destination_root.clone(),
             primary_repository_id: result.primary_repository_id.clone(),
             source_repository_binding_sha256s: result
                 .manifest
@@ -451,16 +509,174 @@ fn import_development_context_with_options(
     }
     fs::remove_dir_all(&artifacts_root)
         .map_err(|error| context_io_error("remove imported context artifacts", error))?;
-    sync_directory(&project_root)?;
-    publish_directory_no_clobber(&project_root, &destination_root)?;
-    if let Err(error) = sync_directory(&canonical_parent) {
-        let _ = fs::remove_dir_all(&destination_root);
-        let _ = sync_directory(&canonical_parent);
+    let mut published_materializations = Vec::new();
+    if materialization_root != control_destination_root {
+        for repository in &result.manifest.repositories {
+            let source = project_root.join(&repository.target_directory);
+            let destination = materialization_root.join(&repository.target_directory);
+            if let Err(error) = publish_directory_no_clobber(&source, &destination) {
+                rollback_materializations(&published_materializations);
+                return Err(error);
+            }
+            published_materializations.push(destination);
+            if let Err(error) = update_materialization_transaction(
+                &staging_root,
+                &materialization_root,
+                &result.manifest.repositories,
+                &published_materializations,
+            ) {
+                rollback_materializations(&published_materializations);
+                return Err(error);
+            }
+        }
+        if let Err(error) = sync_directory(&materialization_root) {
+            rollback_materializations(&published_materializations);
+            return Err(error);
+        }
+    }
+    if let Err(error) = sync_directory(&project_root) {
+        rollback_materializations(&published_materializations);
         return Err(error);
     }
+    if let Err(error) = publish_directory_no_clobber(&project_root, &control_destination_root) {
+        rollback_materializations(&published_materializations);
+        return Err(error);
+    }
+    if let Err(error) = sync_directory(&canonical_parent) {
+        let _ = fs::remove_dir_all(&control_destination_root);
+        let _ = sync_directory(&canonical_parent);
+        rollback_materializations(&published_materializations);
+        return Err(error);
+    }
+    cleanup.commit();
     drop(cleanup);
 
     Ok((result, publication_receipt))
+}
+
+fn managed_materialization_root_for_control(
+    control_destination: &Path,
+) -> Result<Option<PathBuf>, DaemonError> {
+    if control_destination.parent().and_then(Path::file_name)
+        != Some(std::ffi::OsStr::new("managed-context-workspaces"))
+    {
+        return Ok(None);
+    }
+    let root = PathBuf::from(DEFAULT_USER_WORKSPACE_ROOT);
+    validate_real_directory(&root, "default user workspace root")?;
+    let canonical = fs::canonicalize(&root)
+        .map_err(|error| context_io_error("resolve default user workspace root", error))?;
+    if canonical == control_destination
+        || control_destination.starts_with(&canonical)
+        || canonical.starts_with(
+            control_destination
+                .parent()
+                .ok_or_else(|| context_error("managed context control root has no parent"))?,
+        )
+    {
+        return Err(context_error(
+            "default user workspace root must remain separate from managed context control state",
+        ));
+    }
+    Ok(Some(canonical))
+}
+
+fn validate_real_directory(path: &Path, label: &str) -> Result<(), DaemonError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| context_io_error("inspect managed materialization root", error))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(context_error(format!("{label} must be a real directory")));
+    }
+    Ok(())
+}
+
+fn write_materialization_transaction(
+    staging_root: &Path,
+    materialization_root: &Path,
+    repositories: &[DevelopmentRepositoryManifest],
+) -> Result<(), DaemonError> {
+    let transaction = MaterializationTransaction {
+        materialization_root: materialization_root.to_path_buf(),
+        target_directories: repositories
+            .iter()
+            .map(|repository| repository.target_directory.clone())
+            .collect(),
+        published_target_directories: Vec::new(),
+    };
+    write_materialization_transaction_value(staging_root, &transaction)
+}
+
+fn update_materialization_transaction(
+    staging_root: &Path,
+    materialization_root: &Path,
+    repositories: &[DevelopmentRepositoryManifest],
+    published_paths: &[PathBuf],
+) -> Result<(), DaemonError> {
+    let transaction = MaterializationTransaction {
+        materialization_root: materialization_root.to_path_buf(),
+        target_directories: repositories
+            .iter()
+            .map(|repository| repository.target_directory.clone())
+            .collect(),
+        published_target_directories: published_paths
+            .iter()
+            .map(|path| {
+                path.file_name()
+                    .and_then(OsStr::to_str)
+                    .map(str::to_string)
+                    .ok_or_else(|| context_error("materialized repository path is not valid UTF-8"))
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+    };
+    write_materialization_transaction_value(staging_root, &transaction)
+}
+
+fn write_materialization_transaction_value(
+    staging_root: &Path,
+    transaction: &MaterializationTransaction,
+) -> Result<(), DaemonError> {
+    let bytes = serde_json::to_vec(transaction).map_err(|error| {
+        context_error(format!("serialize materialization transaction: {error}"))
+    })?;
+    crate::config::write_private_file(&staging_root.join(MATERIALIZATION_TRANSACTION_FILE), &bytes)
+        .map_err(|error| context_io_error("persist materialization transaction", error))
+}
+
+fn rollback_materializations(paths: &[PathBuf]) {
+    for path in paths.iter().rev() {
+        let _ = fs::remove_dir_all(path);
+    }
+}
+
+fn publication_materialization_root(
+    receipt: &DevelopmentContextPublicationReceipt,
+    control_destination: &Path,
+) -> Result<PathBuf, DaemonError> {
+    if receipt.destination_root != control_destination {
+        return Err(context_error(
+            "managed context publication control root does not match its receipt",
+        ));
+    }
+    if receipt.repositories.iter().all(|repository| {
+        super::export::validate_repository_basename(&repository.target_directory).is_ok()
+            && repository.destination_path == control_destination.join(&repository.target_directory)
+    }) {
+        return Ok(control_destination.to_path_buf());
+    }
+    let Some(configured) = managed_materialization_root_for_control(control_destination)? else {
+        return Err(context_error(
+            "managed context publication materialization root is unavailable",
+        ));
+    };
+    if receipt.repositories.iter().all(|repository| {
+        super::export::validate_repository_basename(&repository.target_directory).is_ok()
+            && repository.destination_path == configured.join(&repository.target_directory)
+    }) {
+        return Ok(configured);
+    }
+    Err(context_error(
+        "managed context publication materialization root does not match the trusted user workspace root",
+    ))
 }
 
 pub(super) fn snapshot_and_hash_archive(
@@ -640,12 +856,68 @@ fn remove_publication_staging_directory(path: &Path) -> Result<(), DaemonError> 
             "publication import staging must be a real directory",
         ));
     }
+    cleanup_materialization_transaction(path)?;
     fs::remove_dir_all(path)
         .map_err(|error| context_io_error("remove publication import staging", error))?;
     if let Some(parent) = path.parent() {
         sync_directory(parent)?;
     }
     Ok(())
+}
+
+fn cleanup_materialization_transaction(staging_root: &Path) -> Result<(), DaemonError> {
+    let marker = staging_root.join(MATERIALIZATION_TRANSACTION_FILE);
+    let bytes = match fs::read(&marker) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(context_io_error("read materialization transaction", error)),
+    };
+    if bytes.len() > MAX_PUBLICATION_RECEIPT_BYTES {
+        return Err(context_error(
+            "materialization transaction exceeds its size limit",
+        ));
+    }
+    let transaction: MaterializationTransaction = serde_json::from_slice(&bytes)
+        .map_err(|_| context_error("materialization transaction is invalid"))?;
+    validate_real_directory(
+        &transaction.materialization_root,
+        "materialization transaction root",
+    )?;
+    for target in &transaction.published_target_directories {
+        super::export::validate_repository_basename(target)?;
+        let destination = transaction.materialization_root.join(target);
+        match fs::symlink_metadata(&destination) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err(context_error(
+                    "materialization transaction destination is not a real directory",
+                ))
+            }
+            Ok(_) => fs::remove_dir_all(&destination)
+                .map_err(|error| context_io_error("roll back materialized repository", error))?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(context_io_error(
+                    "inspect materialization transaction destination",
+                    error,
+                ))
+            }
+        }
+    }
+    sync_directory(&transaction.materialization_root)
+}
+
+fn ensure_path_absent(path: &Path, label: &str) -> Result<(), DaemonError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Err(context_error(format!(
+            "{label} `{}` already exists",
+            path.display()
+        ))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(context_io_error(
+            "inspect path before managed context materialization",
+            error,
+        )),
+    }
 }
 
 fn read_publication_receipt(
@@ -693,6 +965,7 @@ fn validate_publication_receipt(
     require_original_head: bool,
     require_repository_directories: bool,
 ) -> Result<(), DaemonError> {
+    let materialization_root = publication_materialization_root(receipt, canonical_destination)?;
     if ![
         PUBLICATION_RECEIPT_SCHEMA_VERSION,
         DIRECTORY_RECEIPT_SCHEMA_VERSION,
@@ -732,6 +1005,7 @@ fn validate_publication_receipt(
     let mut primary_ids = Vec::new();
     for repository in &receipt.repositories {
         validate_publication_id(&repository.repository_id)?;
+        super::export::validate_repository_basename(&repository.target_directory)?;
         if repository.workspace_kind.is_git() {
             validate_git_oid(&repository.head_sha)?;
         } else if receipt.schema_version != DIRECTORY_RECEIPT_SCHEMA_VERSION
@@ -741,17 +1015,10 @@ fn validate_publication_receipt(
                 "directory publication receipt contains invalid Git metadata",
             ));
         }
-        let target = Path::new(&repository.target_directory);
-        if repository.target_directory.is_empty()
-            || repository.target_directory.len() > 255
-            || !target
-                .components()
-                .all(|component| matches!(component, Component::Normal(_)))
-            || target.components().count() != 1
-            || !repository_ids.insert(repository.repository_id.clone())
-            || !target_directories.insert(repository.target_directory.clone())
+        if !repository_ids.insert(repository.repository_id.clone())
+            || !target_directories.insert(repository.target_directory.to_lowercase())
             || repository.destination_path
-                != canonical_destination.join(&repository.target_directory)
+                != materialization_root.join(&repository.target_directory)
         {
             return Err(context_error(
                 "development context publication receipt has invalid repository mappings",
@@ -856,16 +1123,27 @@ fn publish_directory_no_clobber(source: &Path, destination: &Path) -> Result<(),
 
 struct ImportCleanup {
     staging_root: PathBuf,
+    committed: bool,
 }
 
 impl ImportCleanup {
     fn new(staging_root: PathBuf) -> Self {
-        Self { staging_root }
+        Self {
+            staging_root,
+            committed: false,
+        }
+    }
+
+    fn commit(&mut self) {
+        self.committed = true;
     }
 }
 
 impl Drop for ImportCleanup {
     fn drop(&mut self) {
+        if !self.committed {
+            let _ = cleanup_materialization_transaction(&self.staging_root);
+        }
         let _ = fs::remove_dir_all(&self.staging_root);
     }
 }

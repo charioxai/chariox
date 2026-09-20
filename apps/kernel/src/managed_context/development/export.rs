@@ -275,14 +275,14 @@ fn export_repository(
                 .is_some_and(|branch| !branch.is_empty())
     });
     let logical_name = repository_logical_name(worktree, origin_url.as_deref());
+    let source_basename = source_repository_basename(worktree)?;
     let repository_id = unique_repository_id(
         origin_url.as_deref(),
         &head_sha,
         &logical_name,
         repository_ids,
     );
-    let target_directory =
-        unique_target_directory(&logical_name, &repository_id, target_directories);
+    let target_directory = unique_target_directory(&source_basename, target_directories)?;
     manifest_budget.consume(
         head_sha
             .len()
@@ -405,6 +405,15 @@ pub(super) fn repository_logical_name(worktree: &Path, origin_url: Option<&str>)
     sanitize_directory_name(candidate)
 }
 
+pub(super) fn source_repository_basename(worktree: &Path) -> Result<String, DaemonError> {
+    let basename = worktree
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| context_error("source repository basename is not valid UTF-8"))?;
+    validate_repository_basename(basename)?;
+    Ok(basename.to_string())
+}
+
 pub(super) fn unique_repository_id(
     origin_url: Option<&str>,
     head_sha: &str,
@@ -432,25 +441,33 @@ pub(super) fn unique_repository_id(
 }
 
 pub(super) fn unique_target_directory(
-    logical_name: &str,
-    repository_id: &str,
+    source_basename: &str,
     occupied: &mut BTreeSet<String>,
-) -> String {
-    let base = sanitize_directory_name(logical_name);
-    if occupied.insert(base.to_ascii_lowercase()) {
-        return base;
+) -> Result<String, DaemonError> {
+    validate_repository_basename(source_basename)?;
+    if !occupied.insert(source_basename.to_lowercase()) {
+        return Err(context_error(format!(
+            "source repository basename `{source_basename}` collides with another selected repository"
+        )));
     }
-    let hashed = format!("{base}-{}", &repository_id[5..13]);
-    if occupied.insert(hashed.to_ascii_lowercase()) {
-        return hashed;
+    Ok(source_basename.to_string())
+}
+
+pub(super) fn validate_repository_basename(value: &str) -> Result<(), DaemonError> {
+    let path = Path::new(value);
+    if value.is_empty()
+        || value.len() > 255
+        || path.components().count() != 1
+        || !path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+        || value.chars().any(|character| character.is_control())
+    {
+        return Err(context_error(
+            "source repository basename is unsafe or invalid",
+        ));
     }
-    for suffix in 2_u32.. {
-        let candidate = format!("{hashed}-{suffix}");
-        if occupied.insert(candidate.to_ascii_lowercase()) {
-            return candidate;
-        }
-    }
-    unreachable!("target directory suffix space is unbounded")
+    Ok(())
 }
 
 fn sanitize_directory_name(value: &str) -> String {

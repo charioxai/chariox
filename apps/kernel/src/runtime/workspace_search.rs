@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::ffi::OsStr;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::error::DaemonError;
@@ -170,6 +171,9 @@ fn append_directory_completion(
         return Ok(());
     }
     if query.ends_with('/') {
+        if expanded.is_dir() {
+            push_unique_path(results, seen, expanded.display().to_string());
+        }
         return append_matching_directory_children(results, seen, &expanded, "", limit);
     }
 
@@ -198,13 +202,66 @@ fn append_matching_directory_children(
     if results.len() >= limit || !parent.is_dir() {
         return Ok(());
     }
-    let entries = std::fs::read_dir(parent).map_err(|error| DaemonError::LocalTransport {
-        operation: "search workspace directories",
-        message: error.to_string(),
-    })?;
+    append_matching_directory_children_from_result(
+        results,
+        seen,
+        normalized_query,
+        limit,
+        read_directory_children(parent),
+    )
+}
+
+fn append_matching_directory_children_from_result(
+    results: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+    normalized_query: &str,
+    limit: usize,
+    entries: io::Result<Vec<io::Result<PathBuf>>>,
+) -> Result<(), DaemonError> {
+    let entries = match entries {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return Ok(()),
+        Err(error) => {
+            return Err(DaemonError::LocalTransport {
+                operation: "search workspace directories",
+                message: error.to_string(),
+            })
+        }
+    };
+    let mut paths = Vec::with_capacity(entries.len());
+    for entry in entries {
+        match entry {
+            Ok(path) => paths.push(path),
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => continue,
+            Err(error) => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "search workspace directories",
+                    message: error.to_string(),
+                })
+            }
+        }
+    }
+    append_matching_directory_paths(results, seen, paths, normalized_query, limit);
+    Ok(())
+}
+
+fn read_directory_children(parent: &Path) -> io::Result<Vec<io::Result<PathBuf>>> {
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(parent)? {
+        entries.push(entry.map(|entry| entry.path()));
+    }
+    Ok(entries)
+}
+
+fn append_matching_directory_paths(
+    results: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+    entries: Vec<PathBuf>,
+    normalized_query: &str,
+    limit: usize,
+) {
     let mut matches = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
+    for path in entries {
         if !path.is_dir() {
             continue;
         }
@@ -228,7 +285,6 @@ fn append_matching_directory_children(
             break;
         }
     }
-    Ok(())
 }
 
 fn directory_match_rank(path: &Path, normalized_query: &str) -> (u8, u8) {
@@ -273,9 +329,10 @@ pub(crate) fn expand_workspace_query_path(query: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::io;
     use std::path::PathBuf;
 
-    use super::search_workspace_directories;
+    use super::{append_matching_directory_children_from_result, search_workspace_directories};
 
     #[test]
     fn directory_completion_keeps_sibling_prefix_matches_for_existing_path() {
@@ -342,6 +399,30 @@ mod tests {
             !results.contains(&root.join("chariox-cloud").display().to_string()),
             "trailing slash should not include siblings: {results:?}",
         );
+    }
+
+    #[test]
+    fn exact_directory_completion_survives_permission_denied_children() {
+        let root = PathBuf::from("/home");
+        let mut results = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        super::push_unique_path(&mut results, &mut seen, root.display().to_string());
+
+        let denied: io::Result<Vec<io::Result<PathBuf>>> = Ok(vec![Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "child directory entry denied",
+        ))]);
+        append_matching_directory_children_from_result(&mut results, &mut seen, "", 12, denied)
+            .expect("permission denied child should be a best-effort completion result");
+        assert_eq!(results, vec!["/home"]);
+
+        let denied: io::Result<Vec<io::Result<PathBuf>>> = Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "directory enumeration denied",
+        ));
+        append_matching_directory_children_from_result(&mut results, &mut seen, "", 12, denied)
+            .expect("permission denied parent should be a best-effort completion result");
+        assert_eq!(results, vec!["/home"]);
     }
 
     #[test]

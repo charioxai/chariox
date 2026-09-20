@@ -691,18 +691,8 @@ fn insert_artifact(
 }
 
 fn validate_target_directory(value: &str) -> Result<(), DaemonError> {
-    if value.is_empty()
-        || value.len() > 255
-        || Path::new(value).components().count() != 1
-        || !Path::new(value)
-            .components()
-            .all(|component| matches!(component, Component::Normal(_)))
-    {
-        return Err(context_error(
-            "development context target directory is invalid",
-        ));
-    }
-    Ok(())
+    super::export::validate_repository_basename(value)
+        .map_err(|_| context_error("development context target directory is unsafe or invalid"))
 }
 
 pub(super) fn validate_git_oid(value: &str) -> Result<(), DaemonError> {

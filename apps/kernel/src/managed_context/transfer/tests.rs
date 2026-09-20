@@ -466,7 +466,7 @@ fn schema_v4_empty_launch_target_gains_a_durable_workspace_on_upgrade() {
         panic!("expected empty launch target")
     };
     assert!(!workspace_path.is_empty());
-    assert!(workspace_path.contains("managed-context-empty-workspaces"));
+    assert!(workspace_path.starts_with("/home/chariox/.chariox-empty-context-"));
     drop(store);
     ManagedContextTransferStore::open(root.clone()).expect("reopen schema-v5 state");
     fs::remove_dir_all(root).expect("remove transfer root");

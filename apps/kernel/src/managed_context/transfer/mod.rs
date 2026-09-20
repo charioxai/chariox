@@ -822,20 +822,14 @@ impl ManagedContextTransferStore {
                     .insert(recovery.plan.context_id.clone(), target);
             }
             if legacy_version == 4 {
-                let state_root = self
-                    .root
-                    .parent()
-                    .ok_or_else(|| transfer_error("managed context transfer root has no parent"))?;
                 for (context_id, target) in &mut state.applied_contexts {
                     if let crate::local::ManagedContextDevelopmentLaunchTarget::Empty {
                         workspace_path,
                     } = &mut target.development
                     {
                         if workspace_path.is_empty() {
-                            *workspace_path = state_root
-                                .join("managed-context-empty-workspaces")
-                                .join(sha256_bytes(context_id.as_bytes()))
-                                .join("workspace")
+                            *workspace_path = crate::managed_context::empty::
+                                managed_user_empty_context_workspace_path(context_id)
                                 .to_string_lossy()
                                 .into_owned();
                         }
@@ -1066,9 +1060,10 @@ fn launch_target_from_receipt(
                 ));
             }
             ManagedContextDevelopmentLaunchTarget::Empty {
-                workspace_path: entry
-                    .destination_root
-                    .join("workspace")
+                workspace_path:
+                    crate::managed_context::empty::managed_user_empty_context_workspace_path(
+                        &entry.plan.context_id,
+                    )
                     .to_string_lossy()
                     .into_owned(),
             }
@@ -1108,7 +1103,20 @@ fn development_launch_target(
     receipt: &crate::managed_context::development::DevelopmentContextPublicationReceipt,
 ) -> Result<crate::local::ManagedContextDevelopmentLaunchTarget, DaemonError> {
     let destination_root = receipt
-        .destination_root
+        .repositories
+        .first()
+        .and_then(|repository| repository.destination_path.parent())
+        .ok_or_else(|| transfer_error("managed context destination has no repository parent"))?;
+    if receipt
+        .repositories
+        .iter()
+        .any(|repository| repository.destination_path.parent() != Some(destination_root))
+    {
+        return Err(transfer_error(
+            "managed context repositories do not share a destination root",
+        ));
+    }
+    let destination_root = destination_root
         .to_str()
         .ok_or_else(|| transfer_error("managed context destination is not UTF-8"))?
         .to_string();
@@ -1146,13 +1154,10 @@ fn recover_launch_target_from_publication(
 ) -> Result<crate::local::ManagedContextLaunchTarget, DaemonError> {
     let development = match &recovery.plan.development {
         crate::managed_context::package::ManagedContextDevelopmentSelection::Empty => {
-            let state_root = transfer_root
-                .parent()
-                .ok_or_else(|| transfer_error("managed context transfer root has no parent"))?;
-            let workspace_path = state_root
-                .join("managed-context-empty-workspaces")
-                .join(sha256_bytes(recovery.plan.context_id.as_bytes()))
-                .join("workspace")
+            let workspace_path =
+                crate::managed_context::empty::managed_user_empty_context_workspace_path(
+                    &recovery.plan.context_id,
+                )
                 .to_string_lossy()
                 .into_owned();
             crate::local::ManagedContextDevelopmentLaunchTarget::Empty { workspace_path }
