@@ -192,7 +192,7 @@ fn spawn_kernel(config: &BootstrapConfig, release: &VerifiedRelease) -> Result<C
         .env("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT", &config.receipt_path)
         .env("CHARIOX_KERNEL_HOST", &config.kernel_host)
         .env("CHARIOX_KERNEL_PORT", config.kernel_port.to_string())
-        .env_remove("CHARIOX_MANAGED_PROVIDER_ISOLATION")
+        .env("CHARIOX_MANAGED_PROVIDER_ISOLATION", "1")
         .env_remove("CHARIOX_DAEMON_ID")
         .env_remove("CHARIOX_MACHINE_ID")
         .env_remove("CHARIOX_RELAY_TOKEN")
@@ -646,7 +646,7 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             "vault={}\n",
             home.join(".chariox/vault/vault.json").display()
         )));
-        assert!(fallback.contains("provider_isolation=<unset>\n"));
+        assert!(fallback.contains("provider_isolation=1\n"));
         assert!(fallback.contains(&format!("service={}\n", service_root.display())));
         assert!(fallback.contains(&format!("publication={}\n", publication_root.display())));
         assert!(fallback.contains("socket=\n"));
