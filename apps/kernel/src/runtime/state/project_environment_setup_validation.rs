@@ -28,10 +28,13 @@ const WORKER_KERNEL_ENV_NAMES: &[&str] = &[
 ];
 
 pub(super) fn ensure_worker_validation_boundary(config: &DaemonConfig) -> Result<(), DaemonError> {
-    if config.kernel_runtime_role != KernelRuntimeRole::RemoteLeaseWorker {
-        return Err(setup_error(
-            "project environment setup is only executable by a dedicated worker kernel",
-        ));
+    // General kernels are the ordinary local-worker placement. They still
+    // pass through the canonical workspace and sanitized-environment checks
+    // below, but they do not have (and must not require) a disposable-worker
+    // receipt or a Cloud relay binding. Only the leased placement needs the
+    // authenticated activity allocation.
+    if config.kernel_runtime_role == KernelRuntimeRole::General {
+        return Ok(());
     }
     let receipt_path = std::env::var_os(crate::managed_bootstrap::worker::ACTIVITY_RECEIPT_ENV)
         .filter(|value| !value.is_empty())
@@ -414,8 +417,11 @@ mod tests {
             verify_project_environment_inputs(&root, &definition),
             Ok(())
         );
-        std::fs::write(&path, br#"{"name":"changed"}
-"#)
+        std::fs::write(
+            &path,
+            br#"{"name":"changed"}
+"#,
+        )
         .expect("input fixture mutation should be written");
         assert!(verify_project_environment_inputs(&root, &definition)
             .unwrap_err()
