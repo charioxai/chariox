@@ -62,6 +62,13 @@ async fn daemon_registration_is_tracked_and_removed_on_disconnect() {
         .expect("register frame should send");
     sleep(Duration::from_millis(50)).await;
 
+    assert!(
+        timeout(Duration::from_millis(100), socket.next())
+            .await
+            .is_err(),
+        "legacy daemons must not receive the opt-in runtime evidence envelope"
+    );
+
     {
         let guard = registry.read().await;
         assert_eq!(guard.daemon_count(), 1);
@@ -76,6 +83,109 @@ async fn daemon_registration_is_tracked_and_removed_on_disconnect() {
         assert_eq!(guard.daemon_count(), 0);
     }
 
+    let _ = shutdown_tx.send(());
+    server_task.await.expect("server task should join");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn opted_in_daemon_receives_authoritative_relay_registration_and_heartbeat_evidence() {
+    let server = RelayServer::new(RelayConfig {
+        host: "127.0.0.1".to_string(),
+        port: 0,
+        shared_token: Some("secret".to_string()),
+    });
+    let listener = server
+        .bind_listener()
+        .await
+        .expect("relay listener should bind");
+    let addr = listener.local_addr().expect("listener should have addr");
+    let server = RelayServer::new(RelayConfig {
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        shared_token: Some("secret".to_string()),
+    });
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let server_task = tokio::spawn(async move {
+        server
+            .run_listener_until(listener, async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("relay server should run");
+    });
+
+    let url = format!("ws://{}:{}", addr.ip(), addr.port());
+    let (mut socket, _) = connect_async_with_retry(&url)
+        .await
+        .expect("daemon should connect to relay");
+    let mut registration = test_registration("daemon-evidence", "machine-1", "Linux", 10);
+    registration
+        .capabilities
+        .push(crate::protocol::RELAY_RUNTIME_EVIDENCE_CAPABILITY.to_string());
+    socket
+        .send(Message::Text(
+            serde_json::to_string(&RelayEnvelope::DaemonRegister {
+                registration: registration.clone(),
+            })
+            .expect("registration should encode")
+            .into(),
+        ))
+        .await
+        .expect("registration should send");
+
+    let registration_ack = timeout(Duration::from_secs(1), socket.next())
+        .await
+        .expect("relay should acknowledge registration")
+        .expect("relay socket should remain open")
+        .expect("registration acknowledgement should be readable");
+    let Message::Text(registration_ack) = registration_ack else {
+        panic!("expected a text registration acknowledgement")
+    };
+    let RelayEnvelope::DaemonRegistered {
+        relay,
+        observed_at_ms,
+    } = serde_json::from_str(&registration_ack)
+        .expect("registration acknowledgement should decode")
+    else {
+        panic!("expected relay registration evidence")
+    };
+    assert_eq!(
+        relay.protocol_version,
+        crate::protocol::RELAY_TRANSPORT_PROTOCOL_VERSION
+    );
+    assert_eq!(relay.package_version, env!("CARGO_PKG_VERSION"));
+    assert!(observed_at_ms > 0);
+
+    socket
+        .send(Message::Text(
+            serde_json::to_string(&RelayEnvelope::DaemonHeartbeat {
+                daemon_id: registration.daemon_id,
+                registration: None,
+            })
+            .expect("heartbeat should encode")
+            .into(),
+        ))
+        .await
+        .expect("heartbeat should send");
+    let heartbeat_ack = timeout(Duration::from_secs(1), socket.next())
+        .await
+        .expect("relay should acknowledge heartbeat")
+        .expect("relay socket should remain open")
+        .expect("heartbeat acknowledgement should be readable");
+    let Message::Text(heartbeat_ack) = heartbeat_ack else {
+        panic!("expected a text heartbeat acknowledgement")
+    };
+    let RelayEnvelope::DaemonHeartbeatAcknowledged {
+        relay: heartbeat_relay,
+        observed_at_ms: heartbeat_observed_at_ms,
+    } = serde_json::from_str(&heartbeat_ack).expect("heartbeat acknowledgement should decode")
+    else {
+        panic!("expected relay heartbeat evidence")
+    };
+    assert_eq!(heartbeat_relay, relay);
+    assert!(heartbeat_observed_at_ms >= observed_at_ms);
+
+    socket.close(None).await.expect("socket should close");
     let _ = shutdown_tx.send(());
     server_task.await.expect("server task should join");
 }

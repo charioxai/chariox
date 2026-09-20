@@ -1,4 +1,6 @@
-use chariox_relay::protocol::{DaemonRegistration, RelayProviderAccountSummary};
+use chariox_relay::protocol::{
+    DaemonRegistration, RelayProviderAccountSummary, RELAY_RUNTIME_EVIDENCE_CAPABILITY,
+};
 use tokio::runtime::{Handle, Runtime, RuntimeFlavor};
 
 use crate::app::DaemonApp;
@@ -50,6 +52,7 @@ impl DaemonApp {
                 "relay_request_proxy".to_string(),
                 "relay_peer_transport".to_string(),
                 "execution_lease_management".to_string(),
+                RELAY_RUNTIME_EVIDENCE_CAPABILITY.to_string(),
             ],
             available_providers,
             provider_accounts,

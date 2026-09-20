@@ -14,6 +14,7 @@ use crate::transport::relay_peer::RelayPeerRequest;
 
 use chariox_relay::protocol::{
     RelayDisplayTunnelRegistration, RelayDisplayTunnelStreamChunk, RelayEnvelope, RelayError,
+    RelayServerIdentity,
 };
 
 use super::peer_client::RelayPeerResponseEnvelope;
@@ -30,6 +31,8 @@ const MANAGED_SLICE_ACTIVATION_CONFIRMATION_MAX_ATTEMPTS: u8 = 3;
 pub struct RelayClientState {
     pub(super) connected: bool,
     pub(super) connected_relay_url: Option<String>,
+    relay_server_identity: Option<RelayServerIdentity>,
+    last_relay_heartbeat_acknowledged_at_ms: Option<u64>,
     pub(super) outgoing_tx: Option<RelayOutgoingSender>,
     pub(super) pending_peer_requests: BTreeMap<String, oneshot::Sender<RelayPeerResponseEnvelope>>,
     pub(super) next_peer_request_id: u64,
@@ -52,7 +55,9 @@ pub struct RelayClientState {
 #[cfg(test)]
 #[derive(Debug)]
 pub(crate) enum TestPeerRequestObservation {
-    StartProjectEnvironmentSetup { operation_id: String },
+    StartProjectEnvironmentSetup {
+        operation_id: String,
+    },
     GetProjectEnvironmentSetupStatus {
         operation_id: String,
         release: oneshot::Sender<()>,
@@ -124,6 +129,30 @@ impl RelayClientState {
 
     pub(crate) fn connected_relay_url(&self) -> Option<String> {
         self.connected_relay_url.clone()
+    }
+
+    pub(crate) fn relay_server_identity(&self) -> Option<RelayServerIdentity> {
+        self.relay_server_identity.clone()
+    }
+
+    pub(crate) fn relay_heartbeat_age_ms(&self, now_ms: u64) -> Option<u64> {
+        self.last_relay_heartbeat_acknowledged_at_ms
+            .map(|acknowledged_at_ms| now_ms.saturating_sub(acknowledged_at_ms))
+    }
+
+    pub(crate) fn acknowledge_relay_runtime(
+        &mut self,
+        relay: RelayServerIdentity,
+        acknowledged_at_ms: u64,
+    ) -> Result<(), &'static str> {
+        if let Some(active) = self.relay_server_identity.as_ref() {
+            if active != &relay {
+                return Err("relay runtime identity changed on the active connection");
+            }
+        }
+        self.relay_server_identity = Some(relay);
+        self.last_relay_heartbeat_acknowledged_at_ms = Some(acknowledged_at_ms);
+        Ok(())
     }
 
     pub(crate) fn peer_public_key(&self, target_ref: &str) -> Option<String> {
@@ -585,6 +614,8 @@ impl Default for RelayClientState {
         Self {
             connected: false,
             connected_relay_url: None,
+            relay_server_identity: None,
+            last_relay_heartbeat_acknowledged_at_ms: None,
             outgoing_tx: None,
             pending_peer_requests: BTreeMap::new(),
             next_peer_request_id: 0,
@@ -612,6 +643,8 @@ pub(super) async fn set_connected(
         let mut guard = state.write().await;
         guard.connected = true;
         guard.connected_relay_url = Some(relay_url);
+        guard.relay_server_identity = None;
+        guard.last_relay_heartbeat_acknowledged_at_ms = None;
         guard.outgoing_tx = Some(outgoing_tx.clone());
         guard.prune_managed_slice_relay_activations(Instant::now());
         guard.prune_expired_display_tunnels(crate::session::unix_epoch_ms());
@@ -721,6 +754,8 @@ pub(super) async fn set_disconnected(state: &Arc<RwLock<RelayClientState>>) {
         let mut guard = state.write().await;
         guard.connected = false;
         guard.connected_relay_url = None;
+        guard.relay_server_identity = None;
+        guard.last_relay_heartbeat_acknowledged_at_ms = None;
         guard.outgoing_tx = None;
         guard.peer_public_keys.clear();
         guard.managed_slice_activation_expectations.clear();
@@ -747,6 +782,53 @@ pub(super) async fn set_disconnected(state: &Arc<RwLock<RelayClientState>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn relay_identity(build_commit: &str) -> RelayServerIdentity {
+        RelayServerIdentity {
+            protocol_version: chariox_relay::protocol::RELAY_TRANSPORT_PROTOCOL_VERSION,
+            package_version: "0.1.0".to_string(),
+            build_commit: Some(build_commit.to_string()),
+        }
+    }
+
+    #[test]
+    fn relay_runtime_acknowledgement_tracks_freshness_and_rejects_identity_changes() {
+        let mut state = RelayClientState::default();
+        state
+            .acknowledge_relay_runtime(relay_identity("commit-a"), 1_000)
+            .expect("first relay acknowledgement should establish identity");
+        assert_eq!(
+            state.relay_server_identity(),
+            Some(relay_identity("commit-a"))
+        );
+        assert_eq!(state.relay_heartbeat_age_ms(1_250), Some(250));
+
+        state
+            .acknowledge_relay_runtime(relay_identity("commit-a"), 1_300)
+            .expect("matching heartbeat acknowledgement should refresh identity");
+        assert_eq!(state.relay_heartbeat_age_ms(1_350), Some(50));
+        assert_eq!(
+            state.acknowledge_relay_runtime(relay_identity("commit-b"), 1_400),
+            Err("relay runtime identity changed on the active connection")
+        );
+        assert_eq!(state.relay_heartbeat_age_ms(1_450), Some(150));
+    }
+
+    #[tokio::test]
+    async fn disconnect_clears_relay_runtime_identity_and_heartbeat_freshness() {
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        state
+            .write()
+            .await
+            .acknowledge_relay_runtime(relay_identity("commit-a"), 1_000)
+            .expect("relay acknowledgement should be accepted");
+
+        set_disconnected(&state).await;
+
+        let guard = state.read().await;
+        assert!(guard.relay_server_identity().is_none());
+        assert!(guard.relay_heartbeat_age_ms(1_500).is_none());
+    }
 
     #[tokio::test]
     async fn disconnect_forgets_cached_peer_keys() {
