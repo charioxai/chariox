@@ -17,7 +17,7 @@ const MANAGED_PARITY_SCHEMA = "chariox.browser_computer_m0_guard.v1"
 // This is the released wire constant at the reviewed PR head. Production
 // construction also binds the value exported by kernel-client; the literal is
 // only the local fail-closed reference used when a test injects that seam.
-export const MANAGED_BROWSER_COMPUTER_PARITY_PROTOCOL = 334
+export const MANAGED_BROWSER_COMPUTER_PARITY_PROTOCOL = 336
 
 /**
  * Load the released public client modules at runtime. Keeping this seam

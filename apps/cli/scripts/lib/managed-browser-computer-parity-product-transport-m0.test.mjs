@@ -297,6 +297,8 @@ function createCompatibilityTransport(protocol) {
           connected: true,
           daemon_id: "kernel-1",
           machine_id: "machine-1",
+          relay_peer_protocol_version: 18,
+          relay_version: "chariox-relay 0.1.0",
         } } }
       }
       if (Object.hasOwn(request, "GetRoomEnvironmentState")) {
@@ -313,17 +315,25 @@ function createCompatibilityTransport(protocol) {
     requestApi,
     targetKernelRef: "kernel-1",
     targetMachineRef: "machine-1",
-    protocolApi: { LOCAL_DAEMON_PROTOCOL_VERSION: 334 },
+    protocolApi: { LOCAL_DAEMON_PROTOCOL_VERSION: 336 },
     parityConfig: { expected: { roomId: "room-1", environmentId: "environment-1" } },
   })
 }
 
+test("compatibility preflight accepts the released kernel protocol before target inspection", async () => {
+  const transport = createCompatibilityTransport(336)
+  const result = await transport.assertCompatibilityPreflight()
+  assert.equal(result.protocol.kernel, 336)
+  assert.equal(result.target.kernelId, "kernel-1")
+  assert.equal(result.environment.environmentId, "environment-1")
+})
+
 test("compatibility preflight rejects stale and too-new kernel protocol constants before target inspection", async () => {
-  for (const protocol of [322, 335]) {
+  for (const protocol of [322, 337]) {
     const transport = createCompatibilityTransport(protocol)
     await assert.rejects(
       () => transport.assertCompatibilityPreflight(),
-      /requires released kernel protocol 334|observed 322|observed 335/,
+      /requires released kernel protocol 336|observed 322|observed 337/,
       `protocol ${protocol}`,
     )
   }
