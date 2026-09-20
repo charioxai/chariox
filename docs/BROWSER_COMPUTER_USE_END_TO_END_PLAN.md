@@ -177,13 +177,14 @@ disposable developer machine, comparable to other full-machine agent products.
 The provider must also not inherit a managed systemd sandbox that recreates the
 same restriction without Bubblewrap. Path-1 units must remove or isolate away
 `ProtectSystem`, `ProtectHome`, `PrivateTmp`, `NoNewPrivileges`,
-`RestrictSUIDSGID`, `ReadWritePaths`, and equivalent controls whenever they
-would make the provider differ from an ordinary kernel launched as the same
-worker user. If the kernel supervisor still needs those controls, it must launch
-providers through a separate ordinary worker scope or service principal rather
-than passing the restrictions to provider descendants. Acceptance compares
-provider mount visibility, `/tmp`, writable paths, process privilege flags, and
-permitted tool/package installation against the ordinary-kernel control.
+`RestrictSUIDSGID`, `RestrictAddressFamilies`, `ReadWritePaths`, `UMask`, and
+equivalent controls whenever they would make the provider differ from an
+ordinary kernel launched as the same worker user. If the kernel supervisor
+still needs those controls, it must launch providers through a separate
+ordinary worker scope or service principal rather than passing the restrictions
+to provider descendants. Acceptance compares provider mount visibility,
+`/tmp`, writable paths, process privilege flags, network access, umask, and
+permitted tool or package installation against the ordinary-kernel control.
 
 Bubblewrap may remain only where it protects a genuinely different topology,
 such as an inner Docker-slice boundary or an explicitly documented legacy
@@ -221,9 +222,9 @@ must compare result data, errors, persistence, and reconnect behavior:
   durable history, queued prompts, and active-turn state
 - filesystem permissions, control-file protection, resource limits, error
   shapes, protocol versions, and cleanup
-- provider process ancestry/environment and arbitrary-path behavior, proving a
-  Path-1 worker uses the ordinary launch path with no Bubblewrap or managed
-  filesystem allowlist
+- provider process ancestry, environment, network, and arbitrary-path behavior,
+  proving that a Path-1 worker uses the ordinary launch path with no Bubblewrap
+  or managed filesystem allowlist
 - provider mount namespace and inherited process restrictions, proving systemd
   hardening on the supervisor does not alter the provider's ordinary-user
   behavior
@@ -248,9 +249,10 @@ ordinary kernel's `~/.chariox` layout. Copied repositories default to:
 The final component must preserve the source repository basename after the
 minimum safety validation needed for one path component. Chariox must fail
 closed on a collision instead of overwriting or silently renaming an existing
-repository. Machine creation may provide a different trusted repository root;
-that value must flow through managed provisioning and kernel bootstrap as one
-authoritative setting. Clients must not infer or invent it. If this setting
+repository. The machine-creation UI and API must let the user select a different
+absolute trusted repository root. The default remains `/home/chariox`. The
+selected value must flow through managed provisioning and kernel bootstrap as
+one authoritative setting. Clients must not infer or invent it. If this setting
 changes a serialized contract, follow the protocol change rule in this plan.
 
 Managed installation may use the reviewed signed-image mechanism instead of a
@@ -265,13 +267,15 @@ This signed native-release layout is the production installation model for
 Chariox-managed machines, not a development shortcut or a managed-kernel fork.
 The image or bootstrap installs a target-native, signature-verified release in
 `/usr/lib/chariox/releases/<digest>` and activates it through the stable
-`/usr/local/bin/chariox-kernel` entry point. Release ownership, atomic
-activation, rollback, and managed deployment receipts may differ from a user
-install performed with a package manager. The running kernel, its protocol,
-provider adapters, user home, and mutable `~/.chariox` state must remain the
-same reviewed product behavior as an ordinary kernel. State transfer must copy
-only the selected kernel-authorized context into that normal state layout; it
-must never place user state inside a release directory.
+`/usr/local/bin/chariox-kernel` entry point. This is a normal production design
+for managed software because it provides verified, atomic activation and
+rollback while separating root-owned binaries from user-owned state. Release
+ownership, atomic activation, rollback, and managed deployment receipts may
+differ from a user install performed with a package manager. The running
+kernel, its protocol, provider adapters, user home, and mutable `~/.chariox`
+state must remain the same reviewed product behavior as an ordinary kernel.
+State transfer copies only the selected kernel-authorized context into that
+normal state layout. It must never place user state inside a release directory.
 
 Protected managed state must be expressed as exact control files or dedicated
 state directories. A control file must never make its shared parent, such as
@@ -391,11 +395,24 @@ inside webpage DOM.
 
 ### Agent delegation
 
-Do not spawn or coordinate Codex sub-agents. Delegate work through Chariox
-agents in the product frontend on Chariox-managed machines. While those agents
-are unavailable, work directly on the remote machine and resume frontend
-delegation once they are available. The goal's restriction on communicating
-with other agents applies only to Codex sub-agents, not Chariox agents.
+Do not spawn or coordinate Codex sub-agents for this program. Delegate
+independent implementation and validation through Chariox agents in the
+product frontend on Chariox-managed machines. Start each delegated prompt with
+the target `@agent-N` alias, assign explicit file ownership, and use an
+independent worktree. Use the product's steer action for current or urgent
+instructions instead of leaving them queued behind a long turn. Work directly
+when the critical path requires it, while keeping independent Chariox-agent
+lanes busy when useful work is available.
+
+### Frontend development loop
+
+Use the persistent local Chariox Cloud development server for frontend
+implementation and browser drills. Local development and staging must build
+the same application code. Authentication configuration may differ, but a
+product behavior or layout must not exist in only one environment. Use staging
+only for deployed acceptance of a reviewed candidate. Keep browser tabs in
+detached or handed-off mode when yielding so the local session and live
+evidence remain available.
 
 ### Isolated PRs and worktrees
 
@@ -478,8 +495,10 @@ The independent reviewer services and state under `~/.chariox-reviewer` are
 shared infrastructure. For this program the implementation owner is explicitly
 responsible for reviewer health: monitor event delivery, provider substitution,
 workflow completion, and exact-head PR comments without weakening reviewer
-independence. Diagnose and repair reviewer defects narrowly, preserve its state,
-and do not restart, stop, prune, or replace healthy reviewer infrastructure.
+independence. Claude Opus 4.8 is the primary reviewer. Codex Sol at xhigh effort
+is the backup. Diagnose and repair reviewer defects narrowly, preserve its
+state, and do not restart, stop, prune, or replace healthy reviewer
+infrastructure.
 Every posted review must identify the provider, model, account role, and effort
 that actually executed that turn; a fallback review must not reuse the primary
 provider's identity block. Treat missing, stale-head, duplicate, falsely
@@ -1385,12 +1404,13 @@ CHA-16 is complete only when:
 - vault-backed public-service work passes leak scans
 - the OpenShip-backed Chariox managed-machine drill passes from provisioning
   through teardown
-- disposable Cloud-VM workers pass the provider-neutral path-1 allocation,
+- disposable Cloud-VM workers pass provider-neutral Path-1 allocation,
   enrollment, no-Bubblewrap ordinary-kernel provider launch, arbitrary
-  accessible cwd/filesystem parity, Codex/Claude/OpenCode, selected context and
-  credential transfer, remote Git, reconnect/recovery, bounded lifetime, cost,
-  mandatory managed shutdown, and residue-free deletion gates before Browser
-  and Computer feature work resumes
+  accessible cwd and filesystem parity, Codex, Claude, and OpenCode execution,
+  selected context and credential transfer, remote Git, reconnect and recovery,
+  automatic Project environment setup, default and user-selected repository
+  roots, bounded lifetime, cost, every mandatory managed shutdown trigger, and
+  residue-free deletion before Browser and Computer feature work resumes
 - Chariox has a verified first-place public result on every relevant maintained
   browser-use and computer-use benchmark, with all inclusions and exclusions
   recorded
