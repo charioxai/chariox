@@ -66,6 +66,7 @@ pub enum LocalDaemonRequest {
     AckMetaagentEvents(AckMetaagentEventsRequest),
     GetTerminalCommandCatalog(GetTerminalCommandCatalogRequest),
     GetDaemonHealth(GetDaemonHealthRequest),
+    GetKernelResourceTelemetry(GetKernelResourceTelemetryRequest),
     ExportDebugBundle(ExportDebugBundleRequest),
     GetProviderRun(GetProviderRunRequest),
     UpdateProviderRunSelection(UpdateProviderRunSelectionRequest),

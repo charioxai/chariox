@@ -456,6 +456,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::GetDaemonHealth(_) => {
             LocalRequestMetadata::new("daemon.health.get", Normal)
         }
+        LocalDaemonRequest::GetKernelResourceTelemetry(_) => {
+            LocalRequestMetadata::new("daemon.resource_telemetry.get", Normal)
+        }
         LocalDaemonRequest::ExportDebugBundle(request) => {
             LocalRequestMetadata::new("daemon.debug_bundle.export", Normal)
                 .session(&request.session_id)
@@ -908,6 +911,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::DeleteSession(_)
         | LocalDaemonRequest::DeleteKernel(_)
         | LocalDaemonRequest::GetDaemonHealth(_)
+        | LocalDaemonRequest::GetKernelResourceTelemetry(_)
         | LocalDaemonRequest::ExportDebugBundle(_)
         | LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
         | LocalDaemonRequest::GetManagedEnvironment(_)

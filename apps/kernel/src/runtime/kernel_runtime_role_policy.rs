@@ -9,7 +9,11 @@ pub(crate) fn ensure_public_request_allowed(
     if config.kernel_runtime_role != KernelRuntimeRole::RemoteLeaseWorker {
         return Ok(());
     }
-    if matches!(request, LocalDaemonRequest::GetDaemonHealth(_)) {
+    if matches!(
+        request,
+        LocalDaemonRequest::GetDaemonHealth(_)
+            | LocalDaemonRequest::GetKernelResourceTelemetry(_)
+    ) {
         return Ok(());
     }
     Err(role_denied(config.kernel_runtime_role, "public.request"))

@@ -70,6 +70,7 @@ pub enum LocalDaemonResponse {
     MetaagentEventsAcked { acked: Vec<serde_json::Value>, },
     TerminalCommandCatalog { catalog: TerminalCommandCatalog, },
     DaemonHealth { projection: DaemonHealthProjection, },
+    KernelResourceTelemetry { snapshot: KernelResourceTelemetrySnapshot, },
     DebugBundleExported {
         bundle_dir: String,
         manifest_path: String,
