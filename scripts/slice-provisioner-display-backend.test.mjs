@@ -115,7 +115,7 @@ function runSavedStateProbe(source, mode) {
         "  esac",
         "}",
         "SLICE_DISPLAY_BACKEND=selkies",
-        "SLICE_SAVED_HOME_ARCHIVE=/dev/null",
+        "SLICE_SAVED_HOME_ARCHIVE=/etc/hosts",
         "SLICE_HOME_VOLUME=saved-home",
         "SLICE_NAME=saved-state-probe",
         "SLICE_IMAGE=\"${PROBE_SAVED_IMAGE}\"",
@@ -147,7 +147,8 @@ function runSavedStateProbe(source, mode) {
   )
 }
 
-function runHomeVolumeProbe(source, volumeState) {
+function runHomeVolumeProbe(source, volumeState, options = {}) {
+  const volumeInspect = section(source, "volume_inspect_reports_not_found() {", "restore_saved_home_volume() {")
   const restore = section(source, "restore_saved_home_volume() {", "prepare_home_volume() {")
   const prepare = section(source, "prepare_home_volume() {", "machine_id_hex() {")
   return spawnSync(
@@ -162,10 +163,22 @@ function runHomeVolumeProbe(source, volumeState) {
         "docker() {",
         "  printf 'DOCKER_CALL %s\\n' \"$*\" >>\"$PROBE_LOG_FILE\"",
         "  case \"$1 $2\" in",
-        "    'volume inspect') [[ \"$PROBE_VOLUME_STATE\" == existing ]] && return 0 || return 1 ;;",
+        "    'volume inspect')",
+        "      if [[ \"$PROBE_VOLUME_STATE\" == existing ]]; then return 0; fi",
+        "      if [[ \"$PROBE_VOLUME_STATE\" == inspect-error ]]; then printf 'Error: permission denied\\n' >&2; return 13; fi",
+        "      printf 'Error: no such volume: saved-home\\n' >&2",
+        "      return 1",
+        "      ;;",
         "    'volume create') PROBE_VOLUME_STATE=existing; PROBE_VOLUME_CONTENT=empty; return 0 ;;",
+        "    'volume rm') PROBE_VOLUME_STATE=missing; PROBE_VOLUME_CONTENT=empty; return 0 ;;",
         "    exec*)",
         "      PROBE_DESTRUCTIVE=1",
+        "      if [[ \"$*\" == *'stat -c'* ]]; then",
+        "        if [[ \"$PROBE_VOLUME_CONTENT\" == archive-state ]]; then return 0; fi",
+        "        return 43",
+        "      fi",
+        "      PROBE_RESTORE_ATTEMPTS=$((PROBE_RESTORE_ATTEMPTS + 1))",
+        "      if [[ \"$PROBE_FAIL_RESTORE_ONCE\" == 1 && \"$PROBE_RESTORE_ATTEMPTS\" == 1 ]]; then return 42; fi",
         "      PROBE_VOLUME_CONTENT=archive-state",
         "      return 0",
         "      ;;",
@@ -177,19 +190,31 @@ function runHomeVolumeProbe(source, volumeState) {
         "SLICE_NAME=saved-state-volume-probe",
         "SLICE_IMAGE=current-base",
         "PROBE_DESTRUCTIVE=0",
+        "PROBE_RESTORE_ATTEMPTS=0",
         "PROBE_VOLUME_CONTENT=post-restore-data",
         "PROBE_LOG_FILE=$(mktemp)",
+        volumeInspect,
         restore,
         prepare,
-        "prepare_home_volume",
-        "printf 'STATUS=0\\nVOLUME_STATE=%s\\nVOLUME_CONTENT=%s\\nDESTRUCTIVE=%s\\n' \"$PROBE_VOLUME_STATE\" \"$PROBE_VOLUME_CONTENT\" \"$PROBE_DESTRUCTIVE\"",
+        "prepare_status=0",
+        "if prepare_home_volume; then prepare_status=0; else prepare_status=$?; fi",
+        "second_status=skipped",
+        "if [[ \"$PROBE_REPEAT_PREPARE\" == 1 ]]; then",
+        "  if prepare_home_volume; then second_status=0; else second_status=$?; fi",
+        "fi",
+        "status=$prepare_status",
+        "if [[ \"$PROBE_REPEAT_PREPARE\" == 1 ]]; then status=$second_status; fi",
+        "printf 'STATUS=%s\\nPREPARE_STATUS=%s\\nSECOND_STATUS=%s\\nVOLUME_STATE=%s\\nVOLUME_CONTENT=%s\\nDESTRUCTIVE=%s\\nRESTORE_ATTEMPTS=%s\\n' \"$status\" \"$prepare_status\" \"$second_status\" \"$PROBE_VOLUME_STATE\" \"$PROBE_VOLUME_CONTENT\" \"$PROBE_DESTRUCTIVE\" \"$PROBE_RESTORE_ATTEMPTS\"",
         "cat \"$PROBE_LOG_FILE\"",
+        "exit \"$status\"",
       ].join("\n"),
     ],
     {
       env: {
         ...process.env,
         PROBE_VOLUME_STATE: volumeState,
+        PROBE_FAIL_RESTORE_ONCE: options.failRestoreOnce ? "1" : "0",
+        PROBE_REPEAT_PREPARE: options.repeatPrepare ? "1" : "0",
       },
       encoding: "utf8",
     },
@@ -384,10 +409,10 @@ test("legacy saved state rebases onto a capable runtime while preserving the hom
   assert.match(output, /STATUS=0/)
   assert.match(output, /IMAGE=current-base/)
   assert.match(output, /RESTORE_STATUS=0/)
-  assert.match(output, /saved state migration: restoring \/dev\/null on Selkies-capable runtime image current-base/)
+  assert.match(output, /saved state migration: restoring \/etc\/hosts on Selkies-capable runtime image current-base/)
   assert.match(output, /home\/slice state is preserved/)
   assert.match(output, /DOCKER_CALL create .* -v saved-home:\/home-dst current-base sleep infinity/)
-  assert.match(output, /DOCKER_CALL cp -L \/dev\/null .*:\/tmp\/home\.tar\.zst/)
+  assert.match(output, /DOCKER_CALL cp -L \/etc\/hosts .*:\/tmp\/home\.tar\.zst/)
 })
 
 test("legacy saved state rejects without a capable base before any mutation and explains migration", async () => {
@@ -444,7 +469,72 @@ test("saved-state initial restore extracts only after creating a new home volume
   assert.match(calls[4], /^DOCKER_CALL start saved-state-volume-probe-home-restore-/)
   assert.match(calls[5], /^DOCKER_CALL cp -L \/etc\/hosts saved-state-volume-probe-home-restore-.*:\/tmp\/home\.tar\.zst$/)
   assert.match(calls[6], /^DOCKER_CALL exec -u root saved-state-volume-probe-home-restore-/)
-  assert.match(calls[7], /^DOCKER_CALL rm -f saved-state-volume-probe-home-restore-/)
+  assert.match(calls[7], /^DOCKER_CALL exec -u root saved-state-volume-probe-home-restore-/)
+  assert.match(calls[7], /stat -c/)
+  assert.match(calls[8], /^DOCKER_CALL rm -f saved-state-volume-probe-home-restore-/)
+})
+
+test("saved-state removes a failed new-volume restore so the next provision retries", async () => {
+  const source = await readFile(provisionerPath, "utf8")
+  const probe = runHomeVolumeProbe(source, "missing", {
+    failRestoreOnce: true,
+    repeatPrepare: true,
+  })
+  const output = `${probe.stdout}${probe.stderr}`
+
+  assert.equal(probe.status, 0, probe.stderr)
+  assert.match(output, /STATUS=0/)
+  assert.match(output, /PREPARE_STATUS=1/)
+  assert.match(output, /SECOND_STATUS=0/)
+  assert.match(output, /VOLUME_STATE=existing/)
+  assert.match(output, /VOLUME_CONTENT=archive-state/)
+  assert.match(output, /RESTORE_ATTEMPTS=2/)
+  const calls = output
+    .split("\n")
+    .filter((line) => line.startsWith("DOCKER_CALL "))
+  assert.equal(calls.filter((line) => line === "DOCKER_CALL volume inspect saved-home").length, 2)
+  assert.equal(calls.filter((line) => line === "DOCKER_CALL volume create saved-home").length, 2)
+  assert.equal(calls.filter((line) => line === "DOCKER_CALL volume rm saved-home").length, 1)
+  assert.equal(calls.filter((line) => line.startsWith("DOCKER_CALL exec ")).length, 3)
+  assert.ok(
+    calls.indexOf("DOCKER_CALL volume rm saved-home") < calls.lastIndexOf("DOCKER_CALL volume inspect saved-home"),
+  )
+})
+
+test("saved-state refuses an ambiguous existing-volume inspect failure", async () => {
+  const source = await readFile(provisionerPath, "utf8")
+  const probe = runHomeVolumeProbe(source, "inspect-error")
+  const output = `${probe.stdout}${probe.stderr}`
+
+  assert.equal(probe.status, 1)
+  assert.match(output, /STATUS=1/)
+  assert.match(output, /refusing to assume it is absent/)
+  assert.match(output, /permission denied/)
+  const calls = output
+    .split("\n")
+    .filter((line) => line.startsWith("DOCKER_CALL "))
+  assert.deepEqual(calls, ["DOCKER_CALL volume inspect saved-home"])
+  assert.doesNotMatch(output, /volume create|volume rm|DOCKER_CALL create|DOCKER_CALL exec/)
+})
+
+test("saved-state restores a new volume only once and never replays over it", async () => {
+  const source = await readFile(provisionerPath, "utf8")
+  const probe = runHomeVolumeProbe(source, "missing", { repeatPrepare: true })
+  const output = `${probe.stdout}${probe.stderr}`
+
+  assert.equal(probe.status, 0, probe.stderr)
+  assert.match(output, /STATUS=0/)
+  assert.match(output, /PREPARE_STATUS=0/)
+  assert.match(output, /SECOND_STATUS=0/)
+  assert.match(output, /VOLUME_CONTENT=archive-state/)
+  assert.match(output, /RESTORE_ATTEMPTS=1/)
+  const calls = output
+    .split("\n")
+    .filter((line) => line.startsWith("DOCKER_CALL "))
+  assert.equal(calls.filter((line) => line === "DOCKER_CALL volume inspect saved-home").length, 2)
+  assert.equal(calls.filter((line) => line === "DOCKER_CALL volume create saved-home").length, 1)
+  assert.equal(calls.filter((line) => line === "DOCKER_CALL volume rm saved-home").length, 0)
+  assert.equal(calls.filter((line) => line.startsWith("DOCKER_CALL exec ")).length, 2)
 })
 
 test("saved-state auto and always build policies accept missing and stale capable bases before the compatibility gate", async () => {

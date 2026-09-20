@@ -305,35 +305,72 @@ container_running() {
   [[ "$state" == "true" ]]
 }
 
+volume_inspect_reports_not_found() {
+  local output="$1"
+  grep -Eiq 'no such volume|volume .* (not found|does not exist)' <<<"$output"
+}
+
 restore_saved_home_volume() {
   [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]] || return 0
-  [[ -f "$SLICE_SAVED_HOME_ARCHIVE" ]] || fail "saved slice home archive not found: $SLICE_SAVED_HOME_ARCHIVE"
-  local helper
+  if [[ ! -f "$SLICE_SAVED_HOME_ARCHIVE" ]]; then
+    log "saved slice home archive not found: $SLICE_SAVED_HOME_ARCHIVE"
+    return 1
+  fi
+  local helper status=0 cleanup_status=0
   helper="${SLICE_NAME}-home-restore-$$"
   log "restoring saved home archive $SLICE_SAVED_HOME_ARCHIVE into volume $SLICE_HOME_VOLUME on runtime image $SLICE_IMAGE"
   run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1 || true
-  run_with_timeout 60 docker create --name "$helper" --user root \
+  if run_with_timeout 60 docker create --name "$helper" --user root \
     -v "$SLICE_HOME_VOLUME:/home-dst" \
     "$SLICE_IMAGE" \
-    sleep infinity >/dev/null
-  run_with_timeout 60 docker start "$helper" >/dev/null
-  run_with_timeout 120 docker cp -L "$SLICE_SAVED_HOME_ARCHIVE" "$helper:/tmp/home.tar.zst"
-  run_with_timeout 120 docker exec -u root "$helper" \
-    bash -lc "set -euo pipefail; find /home-dst -mindepth 1 -maxdepth 1 -exec rm -rf {} +; cd /home-dst; tar --zstd -xf /tmp/home.tar.zst; chown -R slice:slice /home-dst"
-  run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1 || true
+    sleep infinity >/dev/null; then :; else status=$?; fi
+  if (( status == 0 )); then
+    if run_with_timeout 60 docker start "$helper" >/dev/null; then :; else status=$?; fi
+  fi
+  if (( status == 0 )); then
+    if run_with_timeout 120 docker cp -L "$SLICE_SAVED_HOME_ARCHIVE" "$helper:/tmp/home.tar.zst"; then :; else status=$?; fi
+  fi
+  if (( status == 0 )); then
+    if run_with_timeout 120 docker exec -u root "$helper" \
+      bash -lc "set -euo pipefail; find /home-dst -mindepth 1 -maxdepth 1 -exec rm -rf {} +; cd /home-dst; tar --zstd -xf /tmp/home.tar.zst; chown -R slice:slice /home-dst"; then :; else status=$?; fi
+  fi
+  if (( status == 0 )); then
+    if run_with_timeout 60 docker exec -u root "$helper" \
+      bash -lc "set -euo pipefail; test -d /home-dst; test \"\$(stat -c '%U:%G' /home-dst)\" = slice:slice"; then :; else status=$?; fi
+  fi
+  if run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1; then :; else cleanup_status=$?; fi
+  if (( status != 0 )); then return "$status"; fi
+  if (( cleanup_status != 0 )); then return "$cleanup_status"; fi
+  return 0
 }
 
 prepare_home_volume() {
-  local created=0
-  if run_with_timeout 20 docker volume inspect "$SLICE_HOME_VOLUME" >/dev/null 2>&1; then
+  local created=0 inspect_output=""
+  if inspect_output="$(run_with_timeout 20 docker volume inspect "$SLICE_HOME_VOLUME" 2>&1)"; then
     log "preserving existing home volume $SLICE_HOME_VOLUME; saved home archive is only used for an initial restore"
-  else
-    run_with_timeout 30 docker volume create "$SLICE_HOME_VOLUME" >/dev/null
-    created=1
+    return 0
+  fi
+  if ! volume_inspect_reports_not_found "$inspect_output"; then
+    log "could not inspect home volume $SLICE_HOME_VOLUME; refusing to assume it is absent: ${inspect_output:-unknown Docker error}"
+    return 1
+  fi
+  if ! run_with_timeout 30 docker volume create "$SLICE_HOME_VOLUME" >/dev/null; then
+    log "failed to create new home volume $SLICE_HOME_VOLUME"
+    return 1
+  fi
+  created=1
+  if (( created == 1 )) && restore_saved_home_volume; then
+    return 0
   fi
   if (( created == 1 )); then
-    restore_saved_home_volume
+    log "initial saved home restore failed; removing newly-created home volume $SLICE_HOME_VOLUME before retry"
+    if ! run_with_timeout 30 docker volume rm "$SLICE_HOME_VOLUME" >/dev/null; then
+      log "initial saved home restore failed and newly-created home volume $SLICE_HOME_VOLUME could not be removed"
+      return 1
+    fi
   fi
+  log "failed to materialize saved home archive into newly-created volume $SLICE_HOME_VOLUME"
+  return 1
 }
 
 machine_id_hex() {
