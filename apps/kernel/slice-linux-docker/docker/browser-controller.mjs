@@ -1651,6 +1651,20 @@ export class BrowserController {
         onDisconnect: () => {
           if (this._targetConnections.get(target.tab_id) === record) {
             this._targetConnections.delete(target.tab_id);
+            try {
+              const authoritativeTarget = this.tabRegistry.resolveTarget(target.tab_id, {
+                generation: target.generation,
+                target_generation: target.target_generation,
+              });
+              if (
+                authoritativeTarget.target_id === target.target_id &&
+                authoritativeTarget.websocket_url === target.websocket_url
+              ) {
+                this.tabRegistry.detachTarget(target.generation, target.target_id);
+              }
+            } catch {
+              // A refresh or generation transition may already have retired this authority.
+            }
             this.observationStore.invalidate(target.tab_id);
             this.mutationCoordinator.invalidateTab(target.tab_id, target.target_generation);
           }

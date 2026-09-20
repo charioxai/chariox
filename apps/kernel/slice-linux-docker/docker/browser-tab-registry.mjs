@@ -480,6 +480,7 @@ export class BrowserTabRegistry {
     const seenTargetIds = new Set();
     const added = [];
     const updated = [];
+    const detached = [];
     for (const target of uniqueTargets) {
       seenTargetIds.add(target.targetId);
       const current = this._activeByTarget.get(target.targetId);
@@ -487,12 +488,16 @@ export class BrowserTabRegistry {
         added.push(cloneTab(this._allocateTarget(target)));
         continue;
       }
+      if (current.websocketUrl !== target.websocketUrl) {
+        this._detach(current);
+        detached.push(cloneTab(current));
+        added.push(cloneTab(this._allocateTarget(target)));
+        continue;
+      }
       current.targetType = target.targetType;
-      current.websocketUrl = target.websocketUrl;
       updated.push(cloneTab(current));
     }
 
-    const detached = [];
     if (!reconnect) {
       for (const record of [...this._activeByTarget.values()]) {
         if (!seenTargetIds.has(record.targetId)) {

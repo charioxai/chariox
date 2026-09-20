@@ -920,6 +920,12 @@ test("invalidates an active mutation when an authoritative tab endpoint is repla
     dialogRequest(tab),
     mutationAttribution("dialog-endpoint-replacement"),
   );
+  const queued = controller.handleDialog(
+    "owner-a",
+    1,
+    dialogRequest(tab, "dismiss"),
+    mutationAttribution("dialog-endpoint-queued"),
+  );
   await flush();
   assert.equal(pageFeatures.calls.length, 1);
   const oldSockets = fixture.sockets.filter((socket) => socket.url.endsWith("/a"));
@@ -930,15 +936,132 @@ test("invalidates an active mutation when an authoritative tab endpoint is repla
   targets[0].webSocketDebuggerUrl = replacementUrl;
   const reconciliation = await controller.refreshTabs("owner-a", 1);
   const reconciledTab = reconciliation.tabs.find((candidate) => candidate.target_id === "page-a");
-  assert.equal(reconciledTab.tab_id, tab.tab_id);
-  assert.equal(reconciledTab.target_generation, tab.target_generation);
+  assert.deepEqual(reconciliation.detached, [tab]);
+  assert.notEqual(reconciledTab.tab_id, tab.tab_id);
+  assert.equal(reconciledTab.target_generation, tab.target_generation + 1);
   assert.equal(oldSocket.closed, true);
 
+  await assert.rejects(
+    queued,
+    (error) => error.code === MUTATION_ERROR_CODES.CANCELLED,
+  );
   pageFeatures.calls[0].gate.resolve();
   await assert.rejects(
     active,
     (error) => error.code === MUTATION_ERROR_CODES.INDETERMINATE,
   );
+  await assert.rejects(
+    controller.handleDialog(
+      "owner-a",
+      1,
+      dialogRequest(tab),
+      mutationAttribution("dialog-stale-after-endpoint-replacement"),
+    ),
+    (error) => error.code === MUTATION_ERROR_CODES.TAB_GENERATION_STALE,
+  );
+
+  const replacementAction = controller.handleDialog(
+    "owner-a",
+    1,
+    dialogRequest(reconciledTab),
+    mutationAttribution("dialog-replacement-authority"),
+  );
+  await flush();
+  assert.equal(pageFeatures.calls.length, 2);
+  pageFeatures.calls[1].gate.resolve();
+  assert.deepEqual(await replacementAction, { action: "accept" });
+
+  const repeated = await controller.refreshTabs("owner-a", 1);
+  const repeatedTab = repeated.tabs.find((candidate) => candidate.target_id === "page-a");
+  assert.equal(repeatedTab.tab_id, reconciledTab.tab_id);
+  assert.equal(repeatedTab.target_generation, reconciledTab.target_generation);
+  const repeatedAction = controller.handleDialog(
+    "owner-a",
+    1,
+    dialogRequest(repeatedTab, "dismiss"),
+    mutationAttribution("dialog-repeated-refresh"),
+  );
+  await flush();
+  assert.equal(pageFeatures.calls.length, 3);
+  pageFeatures.calls[2].gate.resolve();
+  assert.deepEqual(await repeatedAction, { action: "dismiss" });
+});
+
+test("retires a disconnected tab authority without affecting another tab", async (t) => {
+  const targets = [
+    { id: "page-a", type: "page", webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/a" },
+    { id: "page-b", type: "page", webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/b" },
+  ];
+  const pageFeatures = makeMutationPageFeatures();
+  const fixture = makeFixture({ targets, pageFeatures });
+  const { controller } = fixture;
+  await controller.start("owner-a");
+  t.after(async () => {
+    await controller.shutdown("owner-a", 1);
+  });
+  const initialTabs = controller.getTabRegistrySnapshot("owner-a", 1).tabs;
+  const disconnectedTab = initialTabs.find((tab) => tab.target_id === "page-a");
+  const stableTab = initialTabs.find((tab) => tab.target_id === "page-b");
+  const disconnected = controller.handleDialog(
+    "owner-a",
+    1,
+    dialogRequest(disconnectedTab, "accept"),
+    mutationAttribution("dialog-disconnect-a"),
+  );
+  const stable = controller.handleDialog(
+    "owner-a",
+    1,
+    dialogRequest(stableTab, "dismiss"),
+    mutationAttribution("dialog-disconnect-b"),
+  );
+  await flush();
+  assert.equal(pageFeatures.calls.length, 2);
+  const oldSockets = fixture.sockets.filter((socket) => socket.url.endsWith("/a"));
+  const oldSocket = oldSockets[oldSockets.length - 1];
+  assert.ok(oldSocket);
+  oldSocket.close();
+
+  await assert.rejects(
+    controller.handleDialog(
+      "owner-a",
+      1,
+      dialogRequest(disconnectedTab),
+      mutationAttribution("dialog-stale-after-disconnect"),
+    ),
+    (error) => error.code === MUTATION_ERROR_CODES.TAB_GENERATION_STALE,
+  );
+  pageFeatures.calls.find(({ dialog }) => dialog.action === "accept").gate.resolve();
+  pageFeatures.calls.find(({ dialog }) => dialog.action === "dismiss").gate.resolve();
+  await assert.rejects(
+    disconnected,
+    (error) => error.code === MUTATION_ERROR_CODES.INDETERMINATE,
+  );
+  assert.deepEqual(await stable, { action: "dismiss" });
+
+  const snapshotAfterDisconnect = controller.getTabRegistrySnapshot("owner-a", 1);
+  assert.deepEqual(snapshotAfterDisconnect.tabs.map((tab) => tab.target_id), ["page-b"]);
+  const reconnected = await controller.refreshTabs("owner-a", 1, { reconnect: true });
+  const reconnectedTab = reconnected.tabs.find((tab) => tab.target_id === "page-a");
+  const reconnectedStableTab = reconnected.tabs.find((tab) => tab.target_id === "page-b");
+  assert.notEqual(reconnectedTab.tab_id, disconnectedTab.tab_id);
+  assert.equal(reconnectedTab.target_generation, disconnectedTab.target_generation + 1);
+  assert.equal(reconnectedStableTab.tab_id, stableTab.tab_id);
+  assert.equal(reconnectedStableTab.target_generation, stableTab.target_generation);
+
+  const repeated = await controller.refreshTabs("owner-a", 1, { reconnect: true });
+  const repeatedTab = repeated.tabs.find((tab) => tab.target_id === "page-a");
+  assert.equal(repeatedTab.tab_id, reconnectedTab.tab_id);
+  assert.equal(repeatedTab.target_generation, reconnectedTab.target_generation);
+  const replacementAction = controller.handleDialog(
+    "owner-a",
+    1,
+    dialogRequest(repeatedTab),
+    mutationAttribution("dialog-reconnect-a"),
+  );
+  await flush();
+  assert.equal(pageFeatures.calls.length, 3);
+  pageFeatures.calls[2].gate.resolve();
+  assert.deepEqual(await replacementAction, { action: "accept" });
 });
 
 test("controller restart invalidates old-generation mutations and authority", async (t) => {

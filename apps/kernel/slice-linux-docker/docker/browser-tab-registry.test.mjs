@@ -29,12 +29,28 @@ test("keeps opaque tab IDs stable across target refresh reordering", () => {
   const registry = new BrowserTabRegistry();
   const first = registry.reconcile(1, [target("beta"), target("alpha")]);
   const firstIds = new Map(first.tabs.map((tab) => [tab.target_id, tab.tab_id]));
-  const refreshed = registry.reconcile(1, [target("alpha", "ws://127.0.0.1:9222/new-alpha"), target("beta")]);
+  const refreshed = registry.reconcile(1, [target("alpha"), target("beta")]);
   const refreshedIds = new Map(refreshed.tabs.map((tab) => [tab.target_id, tab.tab_id]));
 
   assert.deepEqual(refreshedIds, firstIds);
   assert.equal(refreshed.tabs[0].target_id, "alpha");
   assert.ok([...refreshedIds.values()].every((tabId) => !tabId.includes("alpha") && !tabId.includes("beta")));
+});
+
+test("rotates tab authority when a target endpoint changes in place", () => {
+  const registry = new BrowserTabRegistry();
+  const original = registry.reconcile(1, [target("page-1")]).tabs[0];
+  const replacementUrl = "ws://127.0.0.1:9222/devtools/page/page-1-replacement";
+
+  const replacement = registry.reconcile(1, [target("page-1", replacementUrl)]);
+
+  assert.deepEqual(replacement.detached, [original]);
+  assert.equal(replacement.added.length, 1);
+  assert.notEqual(replacement.added[0].tab_id, original.tab_id);
+  assert.equal(replacement.added[0].target_generation, original.target_generation + 1);
+  assert.equal(replacement.tabs[0].target_id, original.target_id);
+  assert.equal(errorCode(() => registry.resolveTarget(original.tab_id)), ERROR_CODES.TAB_INVALIDATED);
+  assert.equal(registry.resolveTarget(replacement.added[0].tab_id).websocket_url, replacementUrl);
 });
 
 test("suppresses duplicate CDP targets deterministically", () => {
