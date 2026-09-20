@@ -249,8 +249,6 @@ export function validateSnapshot(snapshot, {
   if (!hasRuntimeCapture(snapshot)) errors.push("capture_not_runtime")
   if (snapshot.capture?.fixture === true && !allowFixture) errors.push("fixture_not_allowed")
   if (!providerIsValid(snapshot.provider)) errors.push("official_provider_identity_invalid")
-  const signature = verifySnapshotSignature(snapshot, signingKey)
-  if (!signature.ok) errors.push(signature.reason)
 
   if (!snapshot.results || typeof snapshot.results !== "object") {
     errors.push("results_missing")
@@ -264,6 +262,8 @@ export function validateSnapshot(snapshot, {
       }
     }
   }
+  const signature = verifySnapshotSignature(snapshot, signingKey)
+  if (!signature.ok) errors.push(signature.reason)
 
   if (snapshot.declared_topology === "path1" && snapshot.results) {
     const ancestry = snapshot.results.provider_ancestry?.comparison
@@ -290,6 +290,7 @@ export function compareSnapshots(ordinary, path1, {
   if (!expectedReviewedCommit) errors.push("expected_reviewed_commit_missing")
   else if (!validCommit(expectedReviewedCommit)) errors.push("expected_reviewed_commit_invalid")
   if (!expectedBuildId) errors.push("expected_reviewed_build_id_missing")
+  if (errors.length > 0) return { ok: false, errors: [errors[0]], comparedFields: 0 }
   const ordinaryValidation = validateSnapshot(ordinary, {
     expectedTopology: "ordinary",
     expectedReviewedCommit,
@@ -306,24 +307,41 @@ export function compareSnapshots(ordinary, path1, {
     allowFixture,
     requirePassed: true,
   })
-  errors.push(...ordinaryValidation.errors.map((error) => "ordinary:" + error))
-  errors.push(...path1Validation.errors.map((error) => "path1:" + error))
-  if (errors.length > 0) return { ok: false, errors: unique(errors), comparedFields: 0 }
+  if (ordinaryValidation.errors.length > 0) {
+    return {
+      ok: false,
+      errors: ["ordinary:" + ordinaryValidation.errors[0]],
+      comparedFields: 0,
+    }
+  }
+  if (path1Validation.errors.length > 0) {
+    return {
+      ok: false,
+      errors: ["path1:" + path1Validation.errors[0]],
+      comparedFields: 0,
+    }
+  }
 
   if (ordinary.signature.key_id !== path1.signature.key_id) {
-    errors.push("signature_key_mismatch")
+    return { ok: false, errors: ["signature_key_mismatch"], comparedFields: 0 }
   }
-  if (ordinary.provider.name !== path1.provider.name) errors.push("provider_name_mismatch")
-  if (ordinary.provider.version !== path1.provider.version) errors.push("provider_version_mismatch")
-  if (ordinary.provider.executable !== path1.provider.executable) errors.push("provider_executable_mismatch")
+  if (ordinary.provider.name !== path1.provider.name) {
+    return { ok: false, errors: ["provider_name_mismatch"], comparedFields: 0 }
+  }
+  if (ordinary.provider.version !== path1.provider.version) {
+    return { ok: false, errors: ["provider_version_mismatch"], comparedFields: 0 }
+  }
+  if (ordinary.provider.executable !== path1.provider.executable) {
+    return { ok: false, errors: ["provider_executable_mismatch"], comparedFields: 0 }
+  }
   let comparedFields = 0
   for (const field of REQUIRED_RESULT_FIELDS) {
     comparedFields += 1
     if (!compareValue(ordinary.results[field].comparison, path1.results[field].comparison)) {
-      errors.push("different_result:" + field)
+      return { ok: false, errors: ["different_result:" + field], comparedFields }
     }
   }
-  return { ok: errors.length === 0, errors: unique(errors), comparedFields }
+  return { ok: true, errors: [], comparedFields }
 }
 
 function fixtureComparison(field) {
