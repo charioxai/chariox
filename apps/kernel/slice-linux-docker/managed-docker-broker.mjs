@@ -96,6 +96,11 @@ const CREDENTIAL_ENVIRONMENT = new Set([
   "CHARIOX_SLICE_CLAUDE_CREDENTIALS",
   "CHARIOX_SLICE_GITHUB_TOKEN_FILE",
 ])
+const DISPLAY_ENVIRONMENT = new Set([
+  "CHARIOX_SLICE_DISPLAY_BACKEND",
+  "CHARIOX_SLICE_SELKIES_PORT",
+  "CHARIOX_SLICE_SELKIES_HEALTH_TIMEOUT",
+])
 const ALLOWED_ENVIRONMENT = new Set([
   "CHARIOX_SLICE_NAME",
   "CHARIOX_SLICE_ID",
@@ -369,6 +374,7 @@ function validateProvisioner(action, environment, files) {
   ])
   const authEnvironment = new Set([
     ...commonEnvironment,
+    ...DISPLAY_ENVIRONMENT,
     "CHARIOX_SLICE_AUTH_PROVIDER",
     "CHARIOX_SLICE_ACCOUNT_OWNER",
     "CHARIOX_SLICE_ACCOUNT_PROFILE",
@@ -378,13 +384,14 @@ function validateProvisioner(action, environment, files) {
     : action === "start-provider-login"
       ? new Set([
         ...commonEnvironment,
+        ...DISPLAY_ENVIRONMENT,
         "CHARIOX_SLICE_LOGIN_PROVIDER",
         "CHARIOX_SLICE_ACCOUNT_OWNER",
         "CHARIOX_SLICE_ACCOUNT_PROFILE",
       ])
       : new Set(["import-provider-auth", "remove-provider-auth"]).has(action)
         ? authEnvironment
-        : commonEnvironment
+        : new Set([...commonEnvironment, ...DISPLAY_ENVIRONMENT])
   for (const name of Object.keys(environment)) {
     if (!actionEnvironment.has(name) && !(action === "provision" && /^CHARIOX_SLICE_DEVELOPMENT_MOUNT_[0-9]+$/.test(name))) {
       fail(`${name} is not allowed for provisioner action ${action}`)
