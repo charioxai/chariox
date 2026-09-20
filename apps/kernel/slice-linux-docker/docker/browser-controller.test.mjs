@@ -79,12 +79,25 @@ class FakeWebSocket extends EventEmitter {
   static instances = [];
   static onSend = null;
 
-  constructor(url) {
+  constructor(url, protocols = [], options) {
     super();
+    if (protocols && typeof protocols === "object" && !Array.isArray(protocols) && options === undefined) {
+      options = protocols;
+      protocols = [];
+    }
+    options = options ?? {};
     this.url = url;
+    this.protocols = protocols;
+    this.options = options;
+    this.maxPayload = Number.isSafeInteger(options?.maxPayload)
+      ? options.maxPayload
+      : Number.MAX_SAFE_INTEGER;
     this.readyState = 0;
     this.sent = [];
     this.closed = false;
+    this.incomingFragments = [];
+    this.incomingBytes = 0;
+    this.receivedMessages = 0;
     this.process = FakeWebSocket.currentProcess;
     FakeWebSocket.instances.push(this);
     queueMicrotask(() => this.open());
@@ -114,6 +127,24 @@ class FakeWebSocket extends EventEmitter {
 
   respond(id, result = {}) {
     this.emit("message", { data: JSON.stringify({ id, result }) });
+  }
+
+  receiveFragment(data, { final = false } = {}) {
+    const fragment = data instanceof Uint8Array ? data : new Uint8Array(data);
+    if (this.incomingBytes + fragment.byteLength > this.maxPayload) {
+      this.close();
+      return false;
+    }
+    this.incomingFragments.push(fragment);
+    this.incomingBytes += fragment.byteLength;
+    if (final) {
+      const payload = Buffer.concat(this.incomingFragments.map((part) => Buffer.from(part)));
+      this.incomingFragments = [];
+      this.incomingBytes = 0;
+      this.receivedMessages += 1;
+      this.emit("message", { data: payload });
+    }
+    return true;
   }
 
   close() {
@@ -456,6 +487,33 @@ test("rejects oversized binary CDP frames before UTF-8 decoding", async (t) => {
   assert.equal(socket.closed, true);
   assert.equal(controller.health("owner-a").state, "fatal");
   assert.equal(controller.health("owner-a").fatal_code, ERROR_CODES.CONTROLLER_CRASHED);
+  t.after(async () => {
+    await controller.shutdownForSignal();
+  });
+});
+
+test("caps fragmented WebSocket payloads before message assembly", async (t) => {
+  const fixture = makeFixture();
+  const { controller, sockets } = fixture;
+  await controller.start("owner-a");
+  const socket = sockets[0];
+  assert.equal(socket.options.maxPayload, OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES);
+
+  assert.equal(
+    socket.receiveFragment(new Uint8Array(OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES - 1)),
+    true,
+  );
+  assert.equal(socket.incomingBytes, OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES - 1);
+  assert.equal(socket.receivedMessages, 0);
+
+  assert.equal(socket.receiveFragment(new Uint8Array(2)), false);
+  await flush();
+  assert.equal(socket.closed, true);
+  assert.equal(socket.incomingBytes, OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES - 1);
+  assert.equal(socket.incomingFragments.length, 1);
+  assert.equal(socket.receivedMessages, 0);
+  assert.equal(controller.health("owner-a").state, "fatal");
+
   t.after(async () => {
     await controller.shutdownForSignal();
   });

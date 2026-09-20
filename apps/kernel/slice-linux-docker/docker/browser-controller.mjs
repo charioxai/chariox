@@ -98,6 +98,12 @@ const MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const MAX_CDP_BODY_BYTES = 64 * 1024;
 const MAX_CDP_FRAME_BYTES = 64 * 1024;
+const CDP_WEBSOCKET_OPTIONS = Object.freeze({
+  // The ws receiver applies maxPayload while consuming continuation frames,
+  // before it assembles and emits a message. Native WebSocket implementations
+  // ignore the extra constructor arguments and retain the application check.
+  maxPayload: OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES,
+});
 const LARGE_CDP_RESPONSE_METHODS = new Set([
   "Accessibility.getFullAXTree",
   "DOMSnapshot.captureSnapshot",
@@ -276,6 +282,19 @@ function isOpenState(socket) {
   return socket?.readyState === 1 || socket?.readyState === socket?.OPEN;
 }
 
+function createCdpWebSocket(WebSocketImpl, url) {
+  try {
+    // ws accepts its connection options as the second argument and enforces
+    // maxPayload while it consumes fragmented frames.
+    return new WebSocketImpl(url, CDP_WEBSOCKET_OPTIONS);
+  } catch {
+    // The WHATWG constructor treats the second argument as protocols. Keep
+    // the same option available to implementations that accept a third
+    // options argument, while its message boundary remains guarded below.
+    return new WebSocketImpl(url, [], CDP_WEBSOCKET_OPTIONS);
+  }
+}
+
 function validateCdpResultMessage(value) {
   if (!isPlainObject(value) || !Number.isSafeInteger(value.id) || value.id < 1) {
     throw controllerError(ERROR_CODES.CDP_PROTOCOL_INVALID);
@@ -448,30 +467,20 @@ class CdpConnection {
 
   _onMessage(event) {
     const data = event?.data;
-    let encoded;
-    let encodedBytes;
-    if (typeof data === "string") {
-      encodedBytes = Buffer.byteLength(data, "utf8");
-      if (encodedBytes > OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES) {
-        this._failConnection(ERROR_CODES.CDP_PROTOCOL_INVALID);
-        return;
-      }
-      encoded = data;
-    } else if (data instanceof Uint8Array) {
-      encodedBytes = data.byteLength;
-      if (encodedBytes > OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES) {
-        this._failConnection(ERROR_CODES.CDP_PROTOCOL_INVALID);
-        return;
-      }
-      encoded = Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString("utf8");
-    } else {
+    const encodedBytes = typeof data === "string"
+      ? Buffer.byteLength(data, "utf8")
+      : data instanceof Uint8Array
+        ? data.byteLength
+        : null;
+    if (encodedBytes === null || encodedBytes > OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES) {
       this._failConnection(ERROR_CODES.CDP_PROTOCOL_INVALID);
       return;
     }
-    if (Buffer.byteLength(encoded, "utf8") > OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES) {
-      this._failConnection(ERROR_CODES.CDP_PROTOCOL_INVALID);
-      return;
-    }
+
+    // Check the raw payload before any binary-to-text conversion or JSON parse.
+    const encoded = typeof data === "string"
+      ? data
+      : Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString("utf8");
     let message;
     try {
       message = JSON.parse(encoded);
@@ -987,7 +996,7 @@ export class BrowserController {
       if (target) {
         let connection;
         try {
-          const socket = new this.WebSocketImpl(target.webSocketDebuggerUrl);
+          const socket = createCdpWebSocket(this.WebSocketImpl, target.webSocketDebuggerUrl);
           connection = new CdpConnection({
             socket,
             timers: this.timers,
@@ -1118,7 +1127,7 @@ export class BrowserController {
     let record;
     try {
       const connection = new CdpConnection({
-        socket: new this.WebSocketImpl(target.websocket_url),
+        socket: createCdpWebSocket(this.WebSocketImpl, target.websocket_url),
         timers: this.timers,
         commandTimeoutMs: this.cdpCommandTimeoutMs,
         onDisconnect: () => {

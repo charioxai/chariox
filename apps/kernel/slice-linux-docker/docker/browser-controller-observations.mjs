@@ -154,10 +154,14 @@ function arrayValue(value, index) {
   return Array.isArray(value) ? value[index] : undefined;
 }
 
-function snapshotString(strings, index, maxBytes) {
-  return Number.isSafeInteger(index)
-    ? boundedString(strings[index], maxBytes)
+function rawSnapshotString(strings, index) {
+  return Number.isSafeInteger(index) && typeof strings[index] === "string"
+    ? strings[index]
     : "";
+}
+
+function snapshotString(strings, index, maxBytes) {
+  return boundedString(rawSnapshotString(strings, index), maxBytes);
 }
 
 function validBackendNodeId(value) {
@@ -165,8 +169,8 @@ function validBackendNodeId(value) {
 }
 
 function sensitiveAttribute(nodeName, attributeName) {
-  const node = nodeName.toLowerCase();
-  const attribute = attributeName.toLowerCase();
+  const node = String(nodeName ?? "").toLowerCase();
+  const attribute = String(attributeName ?? "").toLowerCase();
   if (
     attribute === "authorization" ||
     attribute === "cookie" ||
@@ -174,12 +178,17 @@ function sensitiveAttribute(nodeName, attributeName) {
     attribute.includes("secret") ||
     attribute.includes("token") ||
     attribute.includes("credential") ||
+    attribute.includes("payment") ||
+    attribute.includes("private") ||
     attribute.includes("api-key") ||
     attribute.includes("api_key")
   ) {
     return true;
   }
-  return attribute === "value" && ["input", "textarea", "option"].includes(node);
+  return attribute === "value" && (
+    ["input", "textarea", "option"].includes(node) ||
+    normalizedSecretKey(node).includes("privateinput")
+  );
 }
 
 function normalizedSecretKey(value) {
@@ -195,6 +204,9 @@ function looksSecretKey(value, { queryParameter = false } = {}) {
     key === "password" ||
     key === "passwd" ||
     key === "secret" ||
+    key === "payment" ||
+    key === "private" ||
+    key === "privateinput" ||
     key === "apikey" ||
     key === "accesskey" ||
     key === "privatekey" ||
@@ -208,8 +220,12 @@ function looksSecretKey(value, { queryParameter = false } = {}) {
     key === "hmac" ||
     key === "jwt" ||
     (queryParameter && key === "key") ||
+    key.endsWith("password") ||
+    key.endsWith("passwd") ||
     key.endsWith("token") ||
     key.endsWith("secret") ||
+    key.includes("payment") ||
+    key.endsWith("privateinput") ||
     key.endsWith("credential") ||
     key.endsWith("signature")
   );
@@ -223,8 +239,18 @@ function containsSecretAssignment(value) {
   return false;
 }
 
-function containsSecretValue(value) {
+function containsSecretValue(value, { allowBareToken = true } = {}) {
   if (typeof value !== "string" || value.length === 0) return false;
+  const normalized = normalizedSecretKey(value);
+  if (
+    normalized.includes("password") ||
+    (allowBareToken && normalized.includes("token")) ||
+    normalized.includes("secret") ||
+    normalized.includes("payment") ||
+    normalized.includes("privateinput")
+  ) {
+    return true;
+  }
   if (containsSecretAssignment(value)) return true;
   if (/(?:^|[^A-Za-z0-9_])(?:[A-Za-z][A-Za-z0-9+.-]*:)?\/\/[^/\s:@]+:[^/\s@]*@/i.test(value)) {
     return true;
@@ -256,14 +282,18 @@ function compactAttributeValue(
 ) {
   if (sensitiveAttribute(nodeName, attributeName)) return "[redacted]";
   if (
-    nodeName.toLowerCase() === "meta" &&
-    attributeName.toLowerCase() === "content" &&
+    String(nodeName ?? "").toLowerCase() === "meta" &&
+    String(attributeName ?? "").toLowerCase() === "content" &&
     looksSecretKey(siblingValues.get("name"))
   ) {
     return "[redacted]";
   }
-  const value = snapshotString(strings, valueIndex, limits.maxStringBytes);
-  return containsSecretValue(value) ? "[redacted]" : value;
+  const rawValue = rawSnapshotString(strings, valueIndex);
+  const isMetaName = String(nodeName ?? "").toLowerCase() === "meta" &&
+    String(attributeName ?? "").toLowerCase() === "name";
+  return containsSecretValue(rawValue, { allowBareToken: !isMetaName })
+    ? "[redacted]"
+    : boundedString(rawValue, limits.maxStringBytes);
 }
 
 function compactAttributes(strings, indexes, nodeName, limits) {
@@ -271,28 +301,37 @@ function compactAttributes(strings, indexes, nodeName, limits) {
   const values = Array.isArray(indexes) ? indexes : [];
   const siblingValues = new Map();
   for (let index = 0; index + 1 < values.length; index += 2) {
-    const name = snapshotString(strings, values[index], limits.maxStringBytes);
+    const name = rawSnapshotString(strings, values[index]);
     if (name && !siblingValues.has(name.toLowerCase())) {
       siblingValues.set(
         name.toLowerCase(),
-        snapshotString(strings, values[index + 1], limits.maxStringBytes),
+        rawSnapshotString(strings, values[index + 1]),
       );
     }
   }
   for (let index = 0; index + 1 < values.length; index += 2) {
     if (Object.keys(result).length >= limits.maxAttributes) break;
-    const name = snapshotString(strings, values[index], limits.maxStringBytes);
+    const rawName = rawSnapshotString(strings, values[index]);
+    const name = boundedString(rawName, limits.maxStringBytes);
     if (!name) continue;
     result[name] = compactAttributeValue(
       strings,
       values[index + 1],
       nodeName,
-      name,
+      rawName,
       siblingValues,
       limits,
     );
   }
   return result;
+}
+
+function isProtectedInputNode(nodeName) {
+  const normalized = normalizedSecretKey(nodeName);
+  return (
+    ["input", "textarea", "option"].includes(String(nodeName ?? "").toLowerCase()) ||
+    normalized.includes("privateinput")
+  );
 }
 
 function boundsByNodeIndex(layout) {
@@ -389,9 +428,13 @@ function compactAccessibility(raw, draft, limits) {
           .filter((property) => typeof property?.name === "string")
           .map((property) => [property.name, property?.value?.value]),
       );
-      const role = boundedString(node?.role?.value, limits.maxStringBytes);
-      const protectedValue = properties.get("protected") === true || role.toLowerCase().includes("password");
-      const rawValue = boundedString(node?.value?.value, limits.maxStringBytes);
+      const rawRole = typeof node?.role?.value === "string" ? node.role.value : "";
+      const rawName = typeof node?.name?.value === "string" ? node.name.value : "";
+      const rawDescription = typeof node?.description?.value === "string" ? node.description.value : "";
+      const rawValue = typeof node?.value?.value === "string" ? node.value.value : "";
+      const role = boundedString(rawRole, limits.maxStringBytes);
+      const protectedValue = properties.get("protected") === true || containsSecretValue(rawRole) ||
+        containsSecretValue(rawName) || containsSecretValue(rawDescription) || containsSecretValue(rawValue);
       return [{
         element_ref: reference,
         parent_ref: referenceByAxNodeId.get(node?.parentId) ?? null,
@@ -399,9 +442,11 @@ function compactAccessibility(raw, draft, limits) {
           .map((childId) => referenceByAxNodeId.get(childId))
           .filter(Boolean),
         role,
-        name: boundedString(node?.name?.value, limits.maxStringBytes),
-        description: boundedString(node?.description?.value, limits.maxStringBytes),
-        value: protectedValue && rawValue ? "[redacted]" : rawValue,
+        name: boundedString(rawName, limits.maxStringBytes),
+        description: boundedString(rawDescription, limits.maxStringBytes),
+        value: protectedValue && rawValue
+          ? "[redacted]"
+          : boundedString(rawValue, limits.maxStringBytes),
         ignored: node?.ignored === true,
         disabled: properties.get("disabled") === true,
         focused: properties.get("focused") === true,
@@ -439,12 +484,17 @@ function compactDom(raw, draft, limits) {
         liveBackendIds.add(backendIds[parentIndex]);
       }
       const nodeType = arrayValue(data.nodeType, nodeIndex);
-      const nodeName = snapshotString(strings, arrayValue(data.nodeName, nodeIndex), limits.maxStringBytes);
-      const parentName = Number.isSafeInteger(parentIndex)
-        ? snapshotString(strings, arrayValue(data.nodeName, parentIndex), limits.maxStringBytes)
+      const rawNodeName = rawSnapshotString(strings, arrayValue(data.nodeName, nodeIndex));
+      const nodeName = boundedString(rawNodeName, limits.maxStringBytes);
+      const rawParentName = Number.isSafeInteger(parentIndex)
+        ? rawSnapshotString(strings, arrayValue(data.nodeName, parentIndex))
         : "";
-      const exposeText = (nodeType === 3 || nodeType === 4) && !["script", "style"].includes(parentName.toLowerCase());
-      const protectedText = ["input", "textarea", "option"].includes(parentName.toLowerCase());
+      const parentName = Number.isSafeInteger(parentIndex)
+        ? boundedString(rawParentName, limits.maxStringBytes)
+        : "";
+      const exposeText = (nodeType === 3 || nodeType === 4) && !["script", "style"].includes(rawParentName.toLowerCase());
+      const protectedText = isProtectedInputNode(rawParentName);
+      const rawText = rawSnapshotString(strings, arrayValue(data.nodeValue, nodeIndex));
       nodes.push({
         element_ref: reference,
         parent_ref: parentReference,
@@ -454,12 +504,14 @@ function compactDom(raw, draft, limits) {
         text: exposeText
           ? protectedText
             ? "[redacted]"
-            : snapshotString(strings, arrayValue(data.nodeValue, nodeIndex), limits.maxStringBytes)
+            : containsSecretValue(rawText)
+              ? "[redacted]"
+              : boundedString(rawText, limits.maxStringBytes)
           : "",
         attributes: compactAttributes(
           strings,
           arrayValue(data.attributes, nodeIndex),
-          nodeName,
+          rawNodeName,
           limits,
         ),
         bounds: layoutBounds.get(nodeIndex) ?? null,

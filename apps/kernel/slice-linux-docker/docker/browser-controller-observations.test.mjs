@@ -312,6 +312,54 @@ test("redacts secret-bearing attribute values while preserving public URLs", asy
   assert.doesNotMatch(JSON.stringify(snapshot), /private|password/);
 });
 
+test("classifies sensitive DOM identifiers and values before truncation", async () => {
+  const rawDom = {
+    strings: [
+      "DIV",
+      "field-password",
+      "visible-secret",
+      "info",
+      "safe-prefix-token=hidden",
+      "billing-payment",
+      "card-number",
+      "form-private-input",
+      "private-value",
+      "ordinary",
+      "public-value",
+    ],
+    documents: [{
+      nodes: {
+        backendNodeId: [23],
+        parentIndex: [-1],
+        nodeType: [1],
+        nodeName: [0],
+        nodeValue: [-1],
+        attributes: [[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]],
+      },
+    }],
+  };
+  const store = new BrowserObservationStore();
+  const snapshot = await store.capture({
+    connection: new FakeConnection({
+      accessibilityResults: [{ nodes: [] }],
+      domResults: [rawDom],
+    }),
+    tab: TAB,
+    limits: { maxStringBytes: 8 },
+  });
+
+  const attributes = snapshot.dom_nodes[0].attributes;
+  assert.equal(attributes["field-pa"], "[redacted]");
+  assert.equal(attributes.info, "[redacted]");
+  assert.equal(attributes["billing-"], "[redacted]");
+  assert.equal(attributes["form-pri"], "[redacted]");
+  assert.equal(attributes.ordinary, "public-v");
+  assert.doesNotMatch(
+    JSON.stringify(snapshot),
+    /visible-secret|hidden|card-number|private-value|password|payment|private-input/,
+  );
+});
+
 test("uses sibling metadata and query context without redacting public structure", async () => {
   const strings = [
     "META",
