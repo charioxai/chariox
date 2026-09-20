@@ -1,13 +1,12 @@
 import {
-  mkdtemp as nodeMkdtemp,
   open as nodeOpen,
   realpath as nodeRealpath,
-  rm as nodeRm,
   stat as nodeStat,
 } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
-import { tmpdir as nodeTmpdir } from "node:os";
 import path from "node:path";
+
+import { UploadArtifactLeaseStore } from "./browser-controller-upload-staging.mjs";
 
 const DEFAULT_TIMEOUT_MS = 5_000;
 const MIN_TIMEOUT_MS = 100;
@@ -311,6 +310,9 @@ export class BrowserPageFeatures {
   #downloadRoot;
   #uploadRootsSnapshot;
   #downloadRootSnapshot;
+  #uploadArtifacts;
+  #uploadArtifactBroker;
+  #knownDocuments = new Map();
 
   constructor({
     uploadRoots = [],
@@ -318,10 +320,11 @@ export class BrowserPageFeatures {
     realpath = nodeRealpath,
     stat = nodeStat,
     open = nodeOpen,
-    mkdtemp = nodeMkdtemp,
-    remove = nodeRm,
-    stageUpload = null,
+    uploadArtifactBroker = null,
     now = Date.now,
+    setTimeout = globalThis.setTimeout,
+    clearTimeout = globalThis.clearTimeout,
+    uploadArtifactMaxAgeMs = 60_000,
     sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   } = {}) {
     if (
@@ -329,10 +332,15 @@ export class BrowserPageFeatures {
       typeof realpath !== "function" ||
       typeof stat !== "function" ||
       typeof open !== "function" ||
-      typeof mkdtemp !== "function" ||
-      typeof remove !== "function" ||
-      (stageUpload !== null && typeof stageUpload !== "function") ||
+      (uploadArtifactBroker !== null && (
+        typeof uploadArtifactBroker?.stage !== "function" ||
+        uploadArtifactBroker.separate_uid !== true
+      )) ||
       typeof now !== "function" ||
+      typeof setTimeout !== "function" ||
+      typeof clearTimeout !== "function" ||
+      !Number.isSafeInteger(uploadArtifactMaxAgeMs) ||
+      uploadArtifactMaxAgeMs < 1 ||
       typeof sleep !== "function"
     ) {
       throw new TypeError("invalid browser page feature dependencies");
@@ -342,11 +350,16 @@ export class BrowserPageFeatures {
     this.realpath = realpath;
     this.stat = stat;
     this.open = open;
-    this.mkdtemp = mkdtemp;
-    this.remove = remove;
-    this.stageUpload = stageUpload;
+    this.#uploadArtifactBroker = uploadArtifactBroker;
     this.now = now;
     this.sleep = sleep;
+    this.#uploadArtifacts = new UploadArtifactLeaseStore({
+      broker: uploadArtifactBroker,
+      now,
+      setTimeout,
+      clearTimeout,
+      maxAgeMs: uploadArtifactMaxAgeMs,
+    });
     this.#uploadRootsSnapshot = this.#captureConfiguredRoots(this.#uploadRoots);
     this.#downloadRootSnapshot = this.#downloadRoot === null
       ? Promise.resolve(null)
@@ -356,6 +369,46 @@ export class BrowserPageFeatures {
   async prepare() {
     await this.#getUploadRoots();
     await this.#getDownloadRoot();
+    await this.#uploadArtifacts.expire();
+  }
+
+  async observeDocument({ tab_id: tabId, document_id: documentId } = {}) {
+    requireIdentifier(tabId);
+    requireIdentifier(documentId);
+    if (this.#knownDocuments.get(tabId) !== documentId) {
+      await this.#uploadArtifacts.releaseForOtherDocuments({
+        tab_id: tabId,
+        document_id: documentId,
+      });
+    }
+    this.#knownDocuments.set(tabId, documentId);
+    return this.#uploadArtifacts.snapshot();
+  }
+
+  async releaseUploadsForDocument({ tab_id: tabId, document_id: documentId } = {}) {
+    const snapshot = await this.#uploadArtifacts.releaseForDocument({
+      tab_id: tabId,
+      document_id: documentId,
+    });
+    if (this.#knownDocuments.get(tabId) === documentId) {
+      this.#knownDocuments.delete(tabId);
+    }
+    return snapshot;
+  }
+
+  async releaseUploadsForTab(tabId) {
+    const snapshot = await this.#uploadArtifacts.releaseForTab(tabId);
+    this.#knownDocuments.delete(tabId);
+    return snapshot;
+  }
+
+  async expireUploads() {
+    return this.#uploadArtifacts.expire();
+  }
+
+  async shutdown() {
+    this.#knownDocuments.clear();
+    return this.#uploadArtifacts.shutdown();
   }
 
   async describeElement({ connection, element: rawElement } = {}) {
@@ -465,37 +518,45 @@ export class BrowserPageFeatures {
       inspectedFiles.push(file);
     }
 
-    const stageDirectory = await this.#createUploadStageDirectory();
-    const files = [];
+    const input = {
+      tab_id: element.tabId,
+      document_id: element.documentId,
+      backend_node_id: element.backendNodeId,
+    };
+    const stagedArtifacts = [];
+    let retained = false;
     try {
       let stagedTotalBytes = 0;
       for (const [index, file] of inspectedFiles.entries()) {
         const remainingBytes = MAX_UPLOAD_TOTAL_BYTES - stagedTotalBytes;
-        const staged = await this.#stageUploadFile(file, stageDirectory, index, remainingBytes);
+        const staged = await this.#stageUploadFile(file, input, index, remainingBytes);
         stagedTotalBytes += staged.size;
         if (stagedTotalBytes > MAX_UPLOAD_TOTAL_BYTES) {
           fail(PAGE_FEATURE_ERROR_CODES.PATH_DENIED);
         }
-        files.push(staged.path);
+        stagedArtifacts.push(staged);
       }
 
+      await this.#uploadArtifacts.assertCanReplace(input, stagedArtifacts);
       await this.#assertCurrentDocument(connection, element.documentId);
       try {
         await connection.send("DOM.setFileInputFiles", {
           backendNodeId: element.backendNodeId,
-          files,
+          files: stagedArtifacts.map((artifact) => artifact.path),
         });
       } catch {
         fail(PAGE_FEATURE_ERROR_CODES.FAILED);
       }
+      await this.#uploadArtifacts.replace(input, stagedArtifacts);
+      retained = true;
       return {
         tab_id: element.tabId,
         document_id: element.documentId,
         snapshot_revision: element.snapshotRevision,
-        file_count: files.length,
+        file_count: stagedArtifacts.length,
       };
     } finally {
-      await this.#removeUploadStageDirectory(stageDirectory);
+      if (!retained) await this.#uploadArtifacts.discard(stagedArtifacts);
     }
   }
 
@@ -657,67 +718,44 @@ export class BrowserPageFeatures {
     }
   }
 
-  async #createUploadStageDirectory() {
-    try {
-      return normalizePath(await this.mkdtemp(path.join(nodeTmpdir(), "chariox-browser-upload-")));
-    } catch {
+  async #stageUploadFile(file, input, index, remainingBytes) {
+    if (file.size > remainingBytes) fail(PAGE_FEATURE_ERROR_CODES.PATH_DENIED);
+    if (this.#uploadArtifactBroker === null) {
       fail(PAGE_FEATURE_ERROR_CODES.PATH_DENIED);
     }
-  }
-
-  async #removeUploadStageDirectory(stageDirectory) {
-    try {
-      await this.remove(stageDirectory, { recursive: true, force: true });
-    } catch {
-      // The staged path is never returned to the caller; failed cleanup cannot widen access.
-    }
-  }
-
-  async #stageUploadFile(file, stageDirectory, index, remainingBytes) {
-    if (file.size > remainingBytes) fail(PAGE_FEATURE_ERROR_CODES.PATH_DENIED);
-    const destinationPath = normalizePath(path.join(stageDirectory, `file-${index}`));
     try {
       const currentPath = normalizePath(await this.realpath(file.path));
       if (currentPath !== file.path) fail(PAGE_FEATURE_ERROR_CODES.PATH_DENIED);
       await this.#assertConfiguredRoot(file.root);
-      if (this.stageUpload !== null) {
-        const staged = await this.stageUpload({
-          sourcePath: file.path,
-          destinationPath,
-          expectedSize: file.size,
-          maxBytes: remainingBytes,
-        });
-        const stagedSize = staged?.size === undefined ? file.size : staged.size;
-        if (
-          staged?.path !== undefined && normalizePath(staged.path) !== destinationPath ||
-          !Number.isSafeInteger(stagedSize) ||
-          stagedSize < 0 ||
-          stagedSize > MAX_UPLOAD_FILE_BYTES ||
-          stagedSize > remainingBytes
-        ) {
-          fail(PAGE_FEATURE_ERROR_CODES.PATH_DENIED);
-        }
-        return { path: destinationPath, size: stagedSize };
+      const bytes = await this.#readUploadBytes(file, remainingBytes);
+      const staged = await this.#uploadArtifacts.stage({
+        bytes,
+        expectedSize: file.size,
+        maxBytes: remainingBytes,
+        tab_id: input.tab_id,
+        document_id: input.document_id,
+        backend_node_id: input.backend_node_id,
+        file_index: index,
+      });
+      if (
+        staged.size !== file.size ||
+        staged.size > MAX_UPLOAD_FILE_BYTES ||
+        staged.size > remainingBytes
+      ) {
+        await this.#uploadArtifacts.discard([staged]);
+        fail(PAGE_FEATURE_ERROR_CODES.PATH_DENIED);
       }
-      return await this.#copyUploadToStage(file, destinationPath, remainingBytes);
+      return staged;
     } catch (error) {
       if (error instanceof BrowserPageFeatureError) throw error;
       fail(PAGE_FEATURE_ERROR_CODES.PATH_DENIED);
     }
   }
 
-  async #copyUploadToStage(file, destinationPath, remainingBytes) {
-    const relativePath = path.relative(file.root.path, file.path);
-    const sourcePath = file.root.handle === null
-      ? file.path
-      : path.join(`/proc/self/fd/${file.root.handle.fd}`, relativePath);
+  async #readUploadBytes(file, remainingBytes) {
     let sourceHandle;
-    let destinationHandle;
     try {
-      sourceHandle = await this.open(
-        sourcePath,
-        fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
-      );
+      sourceHandle = await this.#openUploadSource(file);
       const openedMetadata = await sourceHandle.stat();
       if (
         !validFileMetadata(openedMetadata, remainingBytes) ||
@@ -726,43 +764,70 @@ export class BrowserPageFeatures {
       ) {
         fail(PAGE_FEATURE_ERROR_CODES.PATH_DENIED);
       }
-      destinationHandle = await this.open(
-        destinationPath,
-        fsConstants.O_WRONLY |
-          fsConstants.O_CREAT |
-          fsConstants.O_EXCL |
-          fsConstants.O_NOFOLLOW,
-        0o600,
-      );
-      const buffer = Buffer.allocUnsafe(Math.min(UPLOAD_COPY_CHUNK_BYTES, openedMetadata.size || 1));
-      let remaining = openedMetadata.size;
-      while (remaining > 0) {
-        const requested = Math.min(buffer.length, remaining);
-        const result = await sourceHandle.read(buffer, 0, requested);
-        if (!Number.isSafeInteger(result?.bytesRead) || result.bytesRead < 1 || result.bytesRead > requested) {
+      const bytes = Buffer.allocUnsafe(openedMetadata.size);
+      let offset = 0;
+      while (offset < bytes.length) {
+        const requested = Math.min(UPLOAD_COPY_CHUNK_BYTES, bytes.length - offset);
+        const result = await sourceHandle.read(bytes, offset, requested);
+        if (
+          !Number.isSafeInteger(result?.bytesRead) ||
+          result.bytesRead < 1 ||
+          result.bytesRead > requested
+        ) {
           fail(PAGE_FEATURE_ERROR_CODES.PATH_DENIED);
         }
-        const written = await destinationHandle.write(buffer.subarray(0, result.bytesRead));
-        if (written?.bytesWritten !== result.bytesRead) {
-          fail(PAGE_FEATURE_ERROR_CODES.PATH_DENIED);
-        }
-        remaining -= result.bytesRead;
+        offset += result.bytesRead;
       }
-      const finalSourceMetadata = await sourceHandle.stat();
-      const finalDestinationMetadata = await destinationHandle.stat();
+      const finalMetadata = await sourceHandle.stat();
       if (
-        !validFileMetadata(finalSourceMetadata, remainingBytes) ||
-        finalSourceMetadata.size !== openedMetadata.size ||
-        !sameFileIdentity(openedMetadata, finalSourceMetadata) ||
-        !validFileMetadata(finalDestinationMetadata, remainingBytes) ||
-        finalDestinationMetadata.size !== openedMetadata.size
+        !validFileMetadata(finalMetadata, remainingBytes) ||
+        finalMetadata.size !== openedMetadata.size ||
+        !sameFileIdentity(openedMetadata, finalMetadata)
       ) {
         fail(PAGE_FEATURE_ERROR_CODES.PATH_DENIED);
       }
-      return { path: destinationPath, size: finalDestinationMetadata.size };
+      return bytes;
     } finally {
-      await this.#closeFileHandle(destinationHandle);
       await this.#closeFileHandle(sourceHandle);
+    }
+  }
+
+  async #openUploadSource(file) {
+    const relativePath = path.relative(file.root.path, file.path);
+    const components = relativePath.split(path.sep);
+    if (
+      relativePath.length === 0 ||
+      relativePath.startsWith(".." + path.sep) ||
+      relativePath === ".." ||
+      components.some((component) => component === "" || component === "." || component === "..")
+    ) {
+      fail(PAGE_FEATURE_ERROR_CODES.PATH_DENIED);
+    }
+    if (file.root.handle === null || !Number.isSafeInteger(file.root.handle?.fd)) {
+      try {
+        return await this.open(file.path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+      } catch {
+        fail(PAGE_FEATURE_ERROR_CODES.PATH_DENIED);
+      }
+    }
+
+    const transientHandles = [];
+    try {
+      let parent = file.root.handle;
+      for (const component of components.slice(0, -1)) {
+        const next = await this.open(
+          `/proc/self/fd/${parent.fd}/${component}`,
+          fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
+        );
+        transientHandles.push(next);
+        parent = next;
+      }
+      return await this.open(
+        `/proc/self/fd/${parent.fd}/${components.at(-1)}`,
+        fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+      );
+    } finally {
+      await Promise.all(transientHandles.reverse().map((handle) => this.#closeFileHandle(handle)));
     }
   }
 

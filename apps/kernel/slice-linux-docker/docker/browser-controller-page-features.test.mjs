@@ -7,6 +7,7 @@ import {
   CHROMIUM_PERMISSION_TYPES,
   PAGE_FEATURE_ERROR_CODES,
 } from "./browser-controller-page-features.mjs";
+import { UPLOAD_ARTIFACT_KIND } from "./browser-controller-upload-staging.mjs";
 
 const ELEMENT = Object.freeze({
   tab_id: "tab-7",
@@ -83,6 +84,48 @@ function fakeTime() {
   };
 }
 
+function fakeSealedUploadBroker() {
+  let nextId = 1;
+  const artifacts = new Map();
+  const released = [];
+  return {
+    separate_uid: true,
+    released,
+    stage: async ({ bytes, expectedSize }) => {
+      assert.ok(bytes instanceof Uint8Array);
+      assert.equal(bytes.byteLength, expectedSize);
+      const artifactId = `artifact-${nextId++}`;
+      const artifactPath = `/broker-owned/${artifactId}`;
+      artifacts.set(artifactPath, { bytes: Buffer.from(bytes), released: false });
+      return {
+        kind: UPLOAD_ARTIFACT_KIND,
+        artifact_id: artifactId,
+        path: artifactPath,
+        size: expectedSize,
+        immutable: true,
+        sealed: true,
+        separate_uid: true,
+        broker_owned: true,
+        release: async () => {
+          const record = artifacts.get(artifactPath);
+          if (!record || record.released) return;
+          record.released = true;
+          released.push(artifactPath);
+          artifacts.delete(artifactPath);
+        },
+      };
+    },
+    read(artifactPath) {
+      const record = artifacts.get(artifactPath);
+      if (!record || record.released) throw new Error("artifact is unavailable");
+      return Buffer.from(record.bytes);
+    },
+    attemptMutation(artifactPath) {
+      return false;
+    },
+  };
+}
+
 function fakeFilesystem() {
   const resolved = new Map([
     ["/safe", "/safe"],
@@ -104,10 +147,20 @@ function fakeFilesystem() {
       dev: 1,
       ino: candidate === "/safe" ? 10 : candidate === "/safe/downloads" ? 11 : 20,
     }),
-    stageUpload: async ({ destinationPath, expectedSize }) => ({
-      path: destinationPath,
-      size: expectedSize,
+    open: async () => ({
+      stat: async () => ({
+        isFile: () => true,
+        size: 1024,
+        dev: 1,
+        ino: 20,
+      }),
+      read: async (buffer, offset, length) => {
+        buffer.fill(0x41, offset, offset + length);
+        return { bytesRead: length };
+      },
+      close: async () => {},
     }),
+    uploadArtifactBroker: fakeSealedUploadBroker(),
   };
 }
 
@@ -263,7 +316,121 @@ test("uploads regular files from allowed roots without returning their paths", a
     params: { backendNodeId: 91, files: [setFilesCall.params.files[0]] },
   });
   assert.notEqual(setFilesCall.params.files[0], "/safe/report.txt");
-  assert.match(setFilesCall.params.files[0], /chariox-browser-upload-/);
+  assert.match(setFilesCall.params.files[0], /^\/broker-owned\/artifact-/);
+  assert.equal(filesystem.uploadArtifactBroker.read(setFilesCall.params.files[0]).length, 1024);
+});
+
+test("retains bytes after CDP returns and releases on replacement, navigation, tab teardown, and shutdown", async () => {
+  const filesystem = fakeFilesystem();
+  const connection = new FakeConnection({
+    "Page.getFrameTree": { frameTree: { frame: { loaderId: "document-3" } } },
+  });
+  const features = new BrowserPageFeatures({
+    ...filesystem,
+    uploadRoots: ["/safe"],
+  });
+
+  await features.uploadFiles({ connection, element: ELEMENT, paths: ["/safe/report.txt"] });
+  const firstPath = connection.calls
+    .filter(({ method }) => method === "DOM.setFileInputFiles")
+    .at(-1).params.files[0];
+  assert.equal(filesystem.uploadArtifactBroker.read(firstPath).length, 1024);
+  assert.deepEqual(filesystem.uploadArtifactBroker.released, []);
+
+  await features.uploadFiles({ connection, element: ELEMENT, paths: ["/safe/report.txt"] });
+  const secondPath = connection.calls
+    .filter(({ method }) => method === "DOM.setFileInputFiles")
+    .at(-1).params.files[0];
+  assert.notEqual(secondPath, firstPath);
+  assert.deepEqual(filesystem.uploadArtifactBroker.released, [firstPath]);
+  assert.equal(filesystem.uploadArtifactBroker.read(secondPath).length, 1024);
+
+  await features.observeDocument({ tab_id: "tab-7", document_id: "document-4" });
+  assert.deepEqual(filesystem.uploadArtifactBroker.released, [firstPath, secondPath]);
+  const navigationConnection = new FakeConnection({
+    "Page.getFrameTree": { frameTree: { frame: { loaderId: "document-4" } } },
+  });
+  await features.uploadFiles({
+    connection: navigationConnection,
+    element: { ...ELEMENT, document_id: "document-4" },
+    paths: ["/safe/report.txt"],
+  });
+  const thirdPath = navigationConnection.calls
+    .filter(({ method }) => method === "DOM.setFileInputFiles")
+    .at(-1).params.files[0];
+  await features.releaseUploadsForTab("tab-7");
+  assert.equal(filesystem.uploadArtifactBroker.released.includes(thirdPath), true);
+
+  const shutdownConnection = new FakeConnection({
+    "Page.getFrameTree": { frameTree: { frame: { loaderId: "document-4" } } },
+  });
+  await features.uploadFiles({
+    connection: shutdownConnection,
+    element: { ...ELEMENT, document_id: "document-4" },
+    paths: ["/safe/report.txt"],
+  });
+  const shutdownPath = shutdownConnection.calls
+    .filter(({ method }) => method === "DOM.setFileInputFiles")
+    .at(-1).params.files[0];
+  assert.equal(filesystem.uploadArtifactBroker.read(shutdownPath).length, 1024);
+  await features.shutdown();
+  assert.equal(filesystem.uploadArtifactBroker.released.includes(shutdownPath), true);
+});
+
+test("requires a sealed broker artifact and blocks same-UID swaps at CDP and after return", async () => {
+  const filesystem = fakeFilesystem();
+  const connection = new FakeConnection({
+    "Page.getFrameTree": { frameTree: { frame: { loaderId: "document-3" } } },
+    "DOM.setFileInputFiles": ({ files }) => {
+      assert.equal(filesystem.uploadArtifactBroker.attemptMutation(files[0], "unlink"), false);
+      assert.equal(filesystem.uploadArtifactBroker.attemptMutation(files[0], "replace"), false);
+      assert.equal(filesystem.uploadArtifactBroker.read(files[0]).length, 1024);
+    },
+  });
+  const features = new BrowserPageFeatures({ ...filesystem, uploadRoots: ["/safe"] });
+  await features.uploadFiles({ connection, element: ELEMENT, paths: ["/safe/report.txt"] });
+  const artifactPath = connection.calls
+    .filter(({ method }) => method === "DOM.setFileInputFiles")
+    .at(-1).params.files[0];
+  for (const operation of ["unlink", "replace", "grow", "retarget"]) {
+    assert.equal(filesystem.uploadArtifactBroker.attemptMutation(artifactPath, operation), false);
+  }
+  assert.equal(filesystem.uploadArtifactBroker.read(artifactPath).length, 1024);
+
+  const pathnameOnly = new BrowserPageFeatures({
+    ...filesystem,
+    uploadRoots: ["/safe"],
+    uploadArtifactBroker: {
+      separate_uid: true,
+      stage: async ({ expectedSize }) => ({
+        kind: UPLOAD_ARTIFACT_KIND,
+        artifact_id: "mutable",
+        path: "/tmp/mutable-upload",
+        size: expectedSize,
+        immutable: true,
+        broker_owned: true,
+        release: async () => {},
+      }),
+    },
+  });
+  await assert.rejects(
+    pathnameOnly.uploadFiles({ connection: new FakeConnection(), element: ELEMENT, paths: ["/safe/report.txt"] }),
+    assertCode(PAGE_FEATURE_ERROR_CODES.PATH_DENIED),
+  );
+});
+
+test("fails closed before CDP when the separate-UID broker is unavailable", async () => {
+  const connection = new FakeConnection();
+  const features = new BrowserPageFeatures({
+    ...fakeFilesystem(),
+    uploadRoots: ["/safe"],
+    uploadArtifactBroker: null,
+  });
+  await assert.rejects(
+    features.uploadFiles({ connection, element: ELEMENT, paths: ["/safe/report.txt"] }),
+    assertCode(PAGE_FEATURE_ERROR_CODES.PATH_DENIED),
+  );
+  assert.equal(connection.calls.length, 0);
 });
 
 test("keeps configured roots fixed and rejects source swaps or staged growth", async () => {
@@ -279,10 +446,7 @@ test("keeps configured roots fixed and rejects source swaps or staged growth", a
     uploadRoots: ["/safe"],
     realpath: async (candidate) => candidate,
     stat: rootReplacementStat,
-    stageUpload: async ({ destinationPath, expectedSize }) => ({
-      path: destinationPath,
-      size: expectedSize,
-    }),
+    uploadArtifactBroker: fakeSealedUploadBroker(),
   });
   await rootReplacement.prepare();
   const replacementConnection = new FakeConnection({
@@ -315,10 +479,7 @@ test("keeps configured roots fixed and rejects source swaps or staged growth", a
       dev: candidate === "/safe" ? 1 : 1,
       ino: candidate === "/safe" ? 10 : 20,
     }),
-    stageUpload: async ({ destinationPath, expectedSize }) => ({
-      path: destinationPath,
-      size: expectedSize,
-    }),
+    uploadArtifactBroker: fakeSealedUploadBroker(),
   });
   const swapConnection = new FakeConnection({
     "Page.getFrameTree": { frameTree: { frame: { loaderId: "document-3" } } },
@@ -334,6 +495,7 @@ test("keeps configured roots fixed and rejects source swaps or staged growth", a
   assert.equal(swapConnection.calls.length, 0);
 
   const grownStage = new BrowserPageFeatures({
+    ...fakeFilesystem(),
     uploadRoots: ["/safe"],
     realpath: async (candidate) => candidate,
     stat: async (candidate) => ({
@@ -343,10 +505,20 @@ test("keeps configured roots fixed and rejects source swaps or staged growth", a
       dev: candidate === "/safe" ? 1 : 1,
       ino: candidate === "/safe" ? 10 : 20,
     }),
-    stageUpload: async ({ destinationPath }) => ({
-      path: destinationPath,
-      size: 64 * 1024 * 1024 + 1,
-    }),
+    uploadArtifactBroker: {
+      separate_uid: true,
+      stage: async ({ expectedSize }) => ({
+        kind: UPLOAD_ARTIFACT_KIND,
+        artifact_id: "too-large",
+        path: "/broker-owned/too-large",
+        size: Math.max(expectedSize, 64 * 1024 * 1024 + 1),
+        immutable: true,
+        sealed: true,
+        separate_uid: true,
+        broker_owned: true,
+        release: async () => {},
+      }),
+    },
   });
   const growthConnection = new FakeConnection({
     "Page.getFrameTree": { frameTree: { frame: { loaderId: "document-3" } } },

@@ -599,6 +599,7 @@ export class BrowserController {
     this.pageFeatures = options.pageFeatures ?? new BrowserPageFeatures({
       uploadRoots: options.uploadRoots ?? [],
       downloadRoot: options.downloadRoot ?? null,
+      uploadArtifactBroker: options.uploadArtifactBroker ?? null,
       now: () => this._now(),
       sleep: (milliseconds) => this.timers.sleep(milliseconds),
     });
@@ -684,7 +685,7 @@ export class BrowserController {
         throw controllerError(ERROR_CODES.CONTROLLER_CRASHED);
       }
       this._cdp = connected.connection;
-      this._reconcileTabRegistry(this.generation, connected.targets);
+      await this._reconcileTabRegistry(this.generation, connected.targets);
       this.state = "ready";
       this._startHeartbeat();
       this._emit("ready", {
@@ -811,11 +812,18 @@ export class BrowserController {
       });
       const connection = await this._ensureTargetConnection(target);
       try {
-        return await this.observationStore.capture({
+        const snapshot = await this.observationStore.capture({
           connection,
           tab: target,
           limits: request.limits,
         });
+        if (typeof this.pageFeatures.observeDocument === "function") {
+          await this.pageFeatures.observeDocument({
+            tab_id: snapshot.tab_id,
+            document_id: snapshot.document_id,
+          });
+        }
+        return snapshot;
       } catch (error) {
         throw normalizeError(error);
       }
@@ -967,7 +975,7 @@ export class BrowserController {
             if (this.state !== "ready" || this.generation !== generation) {
               throw controllerError(ERROR_CODES.STALE_GENERATION);
             }
-            return this._reconcileTabRegistry(generation, targets);
+            return await this._reconcileTabRegistry(generation, targets);
           },
         });
       } catch (error) {
@@ -1336,7 +1344,8 @@ export class BrowserController {
     }
   }
 
-  _reconcileTabRegistry(generation, targets, options = {}) {
+  async _reconcileTabRegistry(generation, targets, options = {}) {
+    const previousTabs = this.tabRegistry.listTabs();
     const registryTargets = targets.map((target) => {
       if (!isValidTabTargetId(target.id)) {
         throw controllerError(ERROR_CODES.CDP_PROTOCOL_INVALID);
@@ -1350,6 +1359,14 @@ export class BrowserController {
     const result = this.tabRegistry.reconcile(generation, registryTargets, options);
     this.observationStore.reconcile(result.tabs);
     this._reconcileTargetConnections(result.tabs);
+    if (typeof this.pageFeatures.releaseUploadsForTab === "function") {
+      const activeTabIds = new Set(result.tabs.map((tab) => tab.tab_id));
+      for (const tab of previousTabs) {
+        if (!activeTabIds.has(tab.tab_id)) {
+          await this.pageFeatures.releaseUploadsForTab(tab.tab_id);
+        }
+      }
+    }
     return result;
   }
 
@@ -1378,6 +1395,7 @@ export class BrowserController {
           if (this._targetConnections.get(target.tab_id) === record) {
             this._targetConnections.delete(target.tab_id);
             this.observationStore.invalidate(target.tab_id);
+            void Promise.resolve(this.pageFeatures.releaseUploadsForTab?.(target.tab_id)).catch(() => {});
           }
         },
       });
@@ -1422,9 +1440,16 @@ export class BrowserController {
     this.observationStore.clear();
   }
 
+  async _shutdownPageFeatures() {
+    if (typeof this.pageFeatures.shutdown === "function") {
+      await this.pageFeatures.shutdown();
+    }
+  }
+
   async _abortStart(record) {
     this._stopHeartbeat();
     this._closeTargetConnections();
+    await this._shutdownPageFeatures();
     if (this._cdp) {
       this._cdp.close();
       this._cdp = null;
@@ -1443,6 +1468,7 @@ export class BrowserController {
     this.state = "stopping";
     this._stopHeartbeat();
     this._closeTargetConnections();
+    await this._shutdownPageFeatures();
     this._rejectQueued(controllerError(
       reason === "restart" ? ERROR_CODES.STALE_GENERATION : ERROR_CODES.REQUEST_CANCELLED,
     ));
@@ -1533,6 +1559,7 @@ export class BrowserController {
     this._stopHeartbeat();
     this._closeTargetConnections();
     this._rejectQueued(controllerError(code));
+    void Promise.resolve(this.pageFeatures.shutdown?.()).catch(() => {});
     const connection = this._cdp;
     this._cdp = null;
     connection?.close();
