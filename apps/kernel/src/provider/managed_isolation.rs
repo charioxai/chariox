@@ -766,21 +766,30 @@ pub(crate) fn apply_managed_provider_isolation(
         );
         // Ordinary workspaces may contain runtime control paths. Bind them
         // before protection so a home-root repository cannot cover the masks.
-        // Selected children of protected service trees are rebound below,
-        // after their parent mask, as before.
+        // A selected path below the synthetic provider HOME is the exception:
+        // bind it after provider_home has been mounted or that parent mount
+        // would hide the selected workspace. Protection is still applied
+        // after both mounts, so .chariox and other control state stay hidden.
+        let provider_home_workspace_roots = workspace_roots
+            .iter()
+            .filter(|root| managed_workspace_root_overlays_provider_home(root))
+            .cloned()
+            .collect::<Vec<_>>();
         let early_workspace_roots = workspace_roots
             .iter()
             .filter(|root| {
-                !protected_namespace_roots
-                    .iter()
-                    .chain(trusted_read_only_paths.iter())
-                    .chain(runtime_command_roots.iter())
-                    .any(|protected| root.starts_with(protected))
-                    && managed_workspace_root_requires_rebind(
-                        root,
-                        &protected_namespace_roots,
-                        &trusted_read_only_paths,
-                    )
+                !provider_home_workspace_roots.contains(root)
+                    && (root.as_path() == Path::new("/home")
+                        || managed_workspace_root_requires_rebind(
+                            root,
+                            &protected_namespace_roots,
+                            &trusted_read_only_paths,
+                        ))
+                    && !protected_namespace_roots
+                        .iter()
+                        .chain(trusted_read_only_paths.iter())
+                        .chain(runtime_command_roots.iter())
+                        .any(|protected| root.starts_with(protected))
             })
             .collect::<Vec<_>>();
         for root in &early_workspace_roots {
@@ -793,6 +802,9 @@ pub(crate) fn apply_managed_provider_isolation(
             Path::new(SANDBOX_HOME),
             &mut created_directories,
         );
+        for root in &provider_home_workspace_roots {
+            append_bind(&mut args, root, root, &mut created_directories);
+        }
         append_directory(
             &mut args,
             Path::new(SANDBOX_ACCOUNT_ROOT),
@@ -847,11 +859,14 @@ pub(crate) fn apply_managed_provider_isolation(
         }
         for root in &workspace_roots {
             if !early_workspace_roots.contains(&root)
+                && !provider_home_workspace_roots.contains(root)
                 && (managed_workspace_root_requires_rebind(
                     root,
                     &protected_namespace_roots,
                     &trusted_read_only_paths,
-                ) || runtime_command_roots.iter().any(|command| root.starts_with(command)))
+                ) || runtime_command_roots
+                    .iter()
+                    .any(|command| root.starts_with(command)))
             {
                 append_bind(&mut args, root, root, &mut created_directories);
             }
@@ -1451,6 +1466,11 @@ fn managed_workspace_root_requires_rebind_with_private_temp_roots(
         || private_temp_roots
             .iter()
             .any(|path| root != path && root.starts_with(path))
+}
+
+#[cfg(target_os = "linux")]
+fn managed_workspace_root_overlays_provider_home(root: &Path) -> bool {
+    root.starts_with(Path::new(SANDBOX_HOME))
 }
 
 #[cfg(target_os = "linux")]
@@ -2412,6 +2432,61 @@ mod tests {
             &[],
             &[],
         ));
+        assert!(managed_workspace_root_overlays_provider_home(Path::new(
+            "/home/chariox/project"
+        )));
+        assert!(managed_workspace_root_overlays_provider_home(Path::new(
+            "/home/chariox"
+        )));
+        assert!(!managed_workspace_root_overlays_provider_home(Path::new(
+            "/home/other/project"
+        )));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_provider_home_workspace_mount_precedes_state_protection() {
+        let provider_home = Path::new("/var/lib/chariox/provider-home");
+        let workspace = Path::new("/home/chariox/example");
+        let protected_state = Path::new("/home/chariox/.chariox");
+        let mut args = Vec::new();
+        let mut created = BTreeSet::new();
+
+        append_bind(
+            &mut args,
+            provider_home,
+            Path::new(SANDBOX_HOME),
+            &mut created,
+        );
+        append_bind(&mut args, workspace, workspace, &mut created);
+        append_managed_protected_namespace_directories(
+            &mut args,
+            &[protected_state.to_path_buf()],
+            &mut created,
+        );
+
+        let provider_home_bind = args
+            .windows(3)
+            .position(|window| window == ["--bind", provider_home.to_str().unwrap(), SANDBOX_HOME])
+            .expect("provider HOME bind should exist");
+        let workspace_bind = args
+            .windows(3)
+            .position(|window| {
+                window
+                    == [
+                        "--bind",
+                        workspace.to_str().unwrap(),
+                        workspace.to_str().unwrap(),
+                    ]
+            })
+            .expect("selected workspace bind should exist");
+        let protected_state_mask = args
+            .windows(2)
+            .position(|window| window == ["--tmpfs", protected_state.to_str().unwrap()])
+            .expect("protected state mask should exist");
+
+        assert!(provider_home_bind < workspace_bind);
+        assert!(workspace_bind < protected_state_mask);
     }
 
     #[cfg(target_os = "linux")]
