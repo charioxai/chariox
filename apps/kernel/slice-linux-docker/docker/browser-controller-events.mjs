@@ -13,6 +13,8 @@ const MAX_URL_BYTES = 2_048;
 const MAX_FILENAME_BYTES = 255;
 const MAX_SEEN_KEYS = 65_536;
 const MAX_SERIALIZATION_NODES = 4_096;
+const DEFAULT_MAX_LIFECYCLE_ENTRIES = 8_192;
+const MAX_MAX_LIFECYCLE_ENTRIES = 65_536;
 const REDACTED = "[redacted]";
 
 const UTF8_ENCODER = typeof TextEncoder === "function" ? new TextEncoder() : null;
@@ -26,6 +28,8 @@ export const BROWSER_EVENT_LIMITS = Object.freeze({
   maxMaxEventBytes: MAX_MAX_EVENT_BYTES,
   defaultMaxSerializedBytes: DEFAULT_MAX_SERIALIZED_BYTES,
   maxMaxSerializedBytes: MAX_MAX_SERIALIZED_BYTES,
+  defaultMaxLifecycleEntries: DEFAULT_MAX_LIFECYCLE_ENTRIES,
+  maxMaxLifecycleEntries: MAX_MAX_LIFECYCLE_ENTRIES,
   defaultPollLimit: DEFAULT_POLL_LIMIT,
   maxPollLimit: MAX_POLL_LIMIT,
 });
@@ -89,6 +93,10 @@ export class BrowserEventJournal {
       options.maxEventBytes ?? options.eventBytes ?? Math.min(DEFAULT_MAX_EVENT_BYTES, maxBytes);
     const maxSerializedBytes =
       options.maxSerializedBytes ?? options.serializationBytes ?? DEFAULT_MAX_SERIALIZED_BYTES;
+    const maxLifecycleEntries =
+      options.maxLifecycleEntries ??
+      options.lifecycleEntries ??
+      Math.min(MAX_MAX_LIFECYCLE_ENTRIES, Math.max(64, maxEvents * 4));
 
     validateLimit("browser event count", maxEvents, MAX_MAX_EVENTS, "browser_event_capacity_invalid");
     validateLimit("browser event byte budget", maxBytes, MAX_MAX_BYTES, "browser_event_bytes_invalid");
@@ -104,6 +112,12 @@ export class BrowserEventJournal {
       MAX_MAX_SERIALIZED_BYTES,
       "browser_event_serialization_invalid",
     );
+    validateLimit(
+      "browser event lifecycle entries",
+      maxLifecycleEntries,
+      MAX_MAX_LIFECYCLE_ENTRIES,
+      "browser_event_lifecycle_invalid",
+    );
     if (maxEventBytes > maxBytes) {
       throw new BrowserEventError(
         "browser_event_size_invalid",
@@ -116,6 +130,7 @@ export class BrowserEventJournal {
     this.maxBytes = maxBytes;
     this.maxEventBytes = maxEventBytes;
     this.maxSerializedBytes = maxSerializedBytes;
+    this.maxLifecycleEntries = maxLifecycleEntries;
     this.events = [];
     this.bytes = 0;
     this.nextSequenceId = 1;
@@ -168,7 +183,15 @@ export class BrowserEventJournal {
     });
   }
 
-  poll({ cursor = 0, limit = DEFAULT_POLL_LIMIT, browserGeneration, generation, actorId, tabId } = {}) {
+  poll({
+    cursor = 0,
+    limit = DEFAULT_POLL_LIMIT,
+    browserGeneration,
+    generation,
+    actorId,
+    tabId,
+    maxSerializedBytes,
+  } = {}) {
     if (!Number.isSafeInteger(cursor) || cursor < 0) {
       throw new BrowserEventError(
         "browser_event_cursor_invalid",
@@ -176,6 +199,13 @@ export class BrowserEventJournal {
       );
     }
     validateLimit("browser event limit", limit, MAX_POLL_LIMIT, "browser_event_limit_invalid");
+    const serializationBudget = maxSerializedBytes ?? this.maxSerializedBytes;
+    validateLimit(
+      "browser event serialization budget",
+      serializationBudget,
+      MAX_MAX_SERIALIZED_BYTES,
+      "browser_event_serialization_invalid",
+    );
 
     const expectedGeneration = browserGeneration ?? generation ?? this.browserGeneration;
     const currentCursor = this.cursor();
@@ -185,12 +215,15 @@ export class BrowserEventJournal {
       cursor > currentCursor ||
       (this.events.length > 0 && cursor + 1 < oldestEventId)
     ) {
-      return this._boundedBatch({
-        browser_generation: this.browserGeneration,
-        events: [],
-        next_cursor: currentCursor,
-        replay_gap: true,
-      });
+      return this._boundedBatch(
+        {
+          browser_generation: this.browserGeneration,
+          events: [],
+          next_cursor: currentCursor,
+          replay_gap: true,
+        },
+        { cursor, maxSerializedBytes: serializationBudget },
+      );
     }
 
     const wantedActor = normalizeIdentity(actorId);
@@ -202,21 +235,34 @@ export class BrowserEventJournal {
       .slice(0, limit)
       .map(cloneJsonValue);
 
-    return this._boundedBatch({
-      browser_generation: this.browserGeneration,
-      events,
-      next_cursor: events.at(-1)?.sequence_id ?? currentCursor,
-      replay_gap: false,
-    });
+    return this._boundedBatch(
+      {
+        browser_generation: this.browserGeneration,
+        events,
+        next_cursor: events.at(-1)?.sequence_id ?? cursor,
+        replay_gap: false,
+      },
+      { cursor, maxSerializedBytes: serializationBudget },
+    );
   }
 
-  snapshot() {
-    return this._boundedBatch({
-      browser_generation: this.browserGeneration,
-      events: this.events.map(cloneJsonValue),
-      next_cursor: this.cursor(),
-      replay_gap: false,
-    });
+  snapshot({ maxSerializedBytes } = {}) {
+    const serializationBudget = maxSerializedBytes ?? this.maxSerializedBytes;
+    validateLimit(
+      "browser event serialization budget",
+      serializationBudget,
+      MAX_MAX_SERIALIZED_BYTES,
+      "browser_event_serialization_invalid",
+    );
+    return this._boundedBatch(
+      {
+        browser_generation: this.browserGeneration,
+        events: this.events.map(cloneJsonValue),
+        next_cursor: this.cursor(),
+        replay_gap: false,
+      },
+      { maxSerializedBytes: serializationBudget },
+    );
   }
 
   serialize(options = {}) {
@@ -228,9 +274,9 @@ export class BrowserEventJournal {
       "browser_event_serialization_invalid",
     );
     const value = Number.isSafeInteger(options.cursor)
-      ? this.poll(options)
-      : this.snapshot();
-    return boundedSerialize(value, maxBytes);
+      ? this.poll({ ...options, maxSerializedBytes: maxBytes })
+      : this.snapshot({ maxSerializedBytes: maxBytes });
+    return boundedCompleteSerialize(value, maxBytes);
   }
 
   toJSON() {
@@ -241,13 +287,16 @@ export class BrowserEventJournal {
     const input = identityOptions(targetOrOptions, options);
     const targetId = normalizeIdentity(input.targetId ?? input.target_id);
     if (targetId === null || !this._acceptInvalidationGeneration(input)) return false;
-    this.invalidTargets.add(targetId);
     const knownDocument = this.targetDocuments.get(targetId);
-    if (knownDocument) this.invalidDocuments.add(knownDocument);
+    this.invalidTargets.delete(targetId);
+    this.invalidTargets.add(targetId);
+    if (knownDocument) this._markInvalidDocument(knownDocument);
     if (input.documentId ?? input.document_id) {
       const documentId = normalizeIdentity(input.documentId ?? input.document_id);
-      if (documentId) this.invalidDocuments.add(documentId);
+      if (documentId) this._markInvalidDocument(documentId);
     }
+    this.targetDocuments.delete(targetId);
+    this._trimLifecycleState();
     return true;
   }
 
@@ -255,7 +304,11 @@ export class BrowserEventJournal {
     const input = identityOptions(documentOrOptions, options);
     const documentId = normalizeIdentity(input.documentId ?? input.document_id ?? input.id);
     if (documentId === null || !this._acceptInvalidationGeneration(input)) return false;
-    this.invalidDocuments.add(documentId);
+    this._markInvalidDocument(documentId);
+    for (const [targetId, currentDocument] of this.targetDocuments) {
+      if (currentDocument === documentId) this.targetDocuments.delete(targetId);
+    }
+    this._trimLifecycleState();
     return true;
   }
 
@@ -322,7 +375,7 @@ export class BrowserEventJournal {
     if (this._isInvalid(mapped)) return null;
 
     const dedupKey = makeDedupKey(source, mapped, generation);
-    const prior = this.seen.get(dedupKey);
+    const prior = dedupKey === null ? null : this.seen.get(dedupKey);
     if (prior) return cloneJsonValue(prior.event);
 
     const sequenceId = this.nextSequenceId;
@@ -339,7 +392,7 @@ export class BrowserEventJournal {
     };
     const event = fitEvent(baseEvent, this.maxEventBytes);
     if (!event) return null;
-    const eventBytes = utf8ByteLength(stableStringify(event));
+    const eventBytes = utf8ByteLength(completeStableStringify(event));
     if (eventBytes > this.maxBytes) return null;
 
     while (
@@ -347,7 +400,7 @@ export class BrowserEventJournal {
       (this.events.length > 0 && this.bytes + eventBytes > this.maxBytes)
     ) {
       const evicted = this.events.shift();
-      this.bytes -= utf8ByteLength(stableStringify(evicted));
+      this.bytes -= utf8ByteLength(completeStableStringify(evicted));
       this._forgetSeen(evicted);
     }
     if (this.bytes + eventBytes > this.maxBytes) return null;
@@ -355,14 +408,18 @@ export class BrowserEventJournal {
     this.events.push(event);
     this.bytes += eventBytes;
     this.nextSequenceId += 1;
-    this.seen.set(dedupKey, {
-      event,
-      targetId: event.target_id,
-      documentId: event.document_id,
-    });
+    if (dedupKey !== null) {
+      this.seen.set(dedupKey, {
+        event,
+        targetId: event.target_id,
+        documentId: event.document_id,
+      });
+    }
     this._trimSeen();
     if (event.target_id && event.document_id) {
+      this.targetDocuments.delete(event.target_id);
       this.targetDocuments.set(event.target_id, event.document_id);
+      this._trimLifecycleState();
     }
     this._finishLifecycle(mapped);
     return cloneJsonValue(event);
@@ -429,32 +486,59 @@ export class BrowserEventJournal {
     }
   }
 
-  _boundedBatch(batch) {
-    let events = batch.events.map(cloneJsonValue);
-    let result = {
-      browser_generation: batch.browser_generation,
-      events,
-      next_cursor: batch.next_cursor,
-      replay_gap: batch.replay_gap,
-    };
-    while (events.length > 0 && utf8ByteLength(stableStringify(result)) > this.maxSerializedBytes) {
-      events = events.slice(1);
-      result = {
-        browser_generation: batch.browser_generation,
-        events,
-        next_cursor: events.at(-1)?.sequence_id ?? batch.next_cursor,
-        replay_gap: batch.replay_gap || events.length === 0,
-      };
+  _markInvalidDocument(documentId) {
+    this.invalidDocuments.delete(documentId);
+    this.invalidDocuments.add(documentId);
+  }
+
+  _trimLifecycleState() {
+    while (this.invalidTargets.size > this.maxLifecycleEntries) {
+      this.invalidTargets.delete(this.invalidTargets.values().next().value);
     }
-    if (utf8ByteLength(stableStringify(result)) > this.maxSerializedBytes) {
+    while (this.invalidDocuments.size > this.maxLifecycleEntries) {
+      this.invalidDocuments.delete(this.invalidDocuments.values().next().value);
+    }
+    while (this.targetDocuments.size > this.maxLifecycleEntries) {
+      this.targetDocuments.delete(this.targetDocuments.keys().next().value);
+    }
+  }
+
+  _boundedBatch(batch, { cursor = null, maxSerializedBytes = this.maxSerializedBytes } = {}) {
+    const events = batch.events.map(cloneJsonValue);
+    const makeResult = (end) => {
+      const retainedEvents = events.slice(0, end);
+      const nextCursor =
+        retainedEvents.at(-1)?.sequence_id ??
+        (batch.replay_gap === true || batch.head_discarded === true
+          ? batch.next_cursor
+          : Number.isSafeInteger(cursor)
+          ? cursor
+          : events[0]?.sequence_id !== undefined
+            ? Math.max(0, events[0].sequence_id - 1)
+            : batch.next_cursor);
       return {
         browser_generation: batch.browser_generation,
-        events: [],
-        next_cursor: batch.next_cursor,
-        replay_gap: true,
+        events: retainedEvents,
+        next_cursor: nextCursor,
+        replay_gap: batch.replay_gap === true || batch.head_discarded === true,
       };
+    };
+    const fits = (end) =>
+      utf8ByteLength(completeStableStringify(makeResult(end))) <= maxSerializedBytes;
+
+    let low = 0;
+    let high = events.length;
+    let best = 0;
+    while (low <= high) {
+      const middle = Math.floor((low + high) / 2);
+      if (fits(middle)) {
+        best = middle;
+        low = middle + 1;
+      } else {
+        high = middle - 1;
+      }
     }
-    return result;
+    return makeResult(best);
   }
 }
 
@@ -464,8 +548,7 @@ export function sanitizeUrl(value) {
   try {
     const parsed = new URL(value);
     if (parsed.protocol === "http:" || parsed.protocol === "https:") {
-      const pathname = parsed.pathname || "/";
-      return boundedString(`${parsed.protocol}//${parsed.host}${pathname}`, MAX_URL_BYTES);
+      return boundedString(parsed.origin, MAX_URL_BYTES);
     }
     if (parsed.protocol === "about:") {
       return boundedString(value.split(/[?#]/, 1)[0], 128);
@@ -610,13 +693,19 @@ function mapCdpEvent(message, context) {
         attribution,
       );
     }
-    case "Target.targetDestroyed":
-      return makeEvent("target_destroyed", {}, { targetId: safeIdentity(params.targetId), documentId: null });
-    case "Target.targetCrashed":
+    case "Target.targetDestroyed": {
+      const targetId = safeIdentity(params.targetId);
+      const attribution = resolveAttribution(message, context, { targetId, documentId: null });
+      return makeEvent("target_destroyed", {}, attribution);
+    }
+    case "Target.targetCrashed": {
+      const targetId = safeIdentity(params.targetId) ?? base.targetId;
+      const attribution = resolveAttribution(message, context, { targetId });
       return makeEvent("target_crashed", {
         status: boundedString(params.status, 64),
         error_code: boundedErrorCode(params.errorCode),
-      }, { targetId: safeIdentity(params.targetId) ?? base.targetId });
+      }, attribution);
+    }
     case "Inspector.targetCrashed":
       return makeEvent("target_crashed", {
         status: "crashed",
@@ -633,6 +722,7 @@ function mapCdpEvent(message, context) {
     }
     case "Browser.downloadProgress": {
       const targetId = safeCall(context?.targetIdForDownload, params.guid) ?? base.targetId;
+      const attribution = resolveAttribution(message, context, { targetId, documentId: null });
       const reason = safeCall(context?.downloadCancellationReason, params.guid);
       return makeEvent("download_progress", {
         guid: safeIdentity(params.guid),
@@ -640,7 +730,7 @@ function mapCdpEvent(message, context) {
         received_bytes: boundedNumber(params.receivedBytes),
         total_bytes: boundedNumber(params.totalBytes),
         ...(safeDownloadReason(reason) ? { cancellation_reason: safeDownloadReason(reason) } : {}),
-      }, { targetId, documentId: null });
+      }, attribution);
     }
     case "Chariox.browserConnected":
       return makeEvent("browser_connected", {}, { targetId: null, documentId: null });
@@ -809,11 +899,14 @@ function explicitSourceId(message, params) {
     message?.sequenceId,
     message?.sequence_id,
     message?.meta?.eventId,
+    message?.sourceId,
+    message?.source_id,
     params?.eventId,
     params?.event_id,
     params?.sequenceId,
     params?.sequence_id,
-    params?.timestamp,
+    params?.sourceId,
+    params?.source_id,
   ];
   for (const candidate of candidates) {
     if (typeof candidate === "string" && candidate.length > 0) return boundedString(candidate, MAX_ID_BYTES);
@@ -824,6 +917,7 @@ function explicitSourceId(message, params) {
 
 function makeDedupKey(source, mapped, generation) {
   const sourceId = mapped.sourceId;
+  if (sourceId === null) return null;
   const identity = {
     generation,
     actor_id: mapped.actorId,
@@ -834,15 +928,14 @@ function makeDedupKey(source, mapped, generation) {
     source_id: sourceId,
     source_method: source?.method ?? source?.kind ?? source?.type ?? null,
   };
-  if (sourceId === null) identity.data = mapped.data;
-  return stableStringify(identity);
+  return completeStableStringify(identity);
 }
 
 function fitEvent(event, maxBytes) {
   let candidate = event;
-  if (utf8ByteLength(stableStringify(candidate)) <= maxBytes) return candidate;
+  if (utf8ByteLength(completeStableStringify(candidate)) <= maxBytes) return candidate;
   candidate = { ...event, data: {}, data_truncated: true };
-  if (utf8ByteLength(stableStringify(candidate)) <= maxBytes) return candidate;
+  if (utf8ByteLength(completeStableStringify(candidate)) <= maxBytes) return candidate;
   candidate = {
     sequence_id: event.sequence_id,
     event_id: event.event_id,
@@ -851,7 +944,7 @@ function fitEvent(event, maxBytes) {
     data: {},
     truncated: true,
   };
-  return utf8ByteLength(stableStringify(candidate)) <= maxBytes ? candidate : null;
+  return utf8ByteLength(completeStableStringify(candidate)) <= maxBytes ? candidate : null;
 }
 
 function fitValue(value, depth = 0, seen = new Set(), state = { nodes: 0 }) {
@@ -890,7 +983,31 @@ function stableStringify(value) {
 }
 
 function cloneJsonValue(value) {
-  return JSON.parse(stableStringify(value));
+  return JSON.parse(completeStableStringify(value));
+}
+
+function completeStableStringify(value) {
+  return JSON.stringify(completeJsonValue(value));
+}
+
+function completeJsonValue(value) {
+  if (value === null || typeof value === "boolean" || typeof value === "string") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (Array.isArray(value)) return value.map(completeJsonValue);
+  if (value && typeof value === "object") {
+    const result = {};
+    for (const key of Object.keys(value).sort()) result[key] = completeJsonValue(value[key]);
+    return result;
+  }
+  return null;
+}
+
+function boundedCompleteSerialize(value, maxBytes) {
+  const serialized = completeStableStringify(value);
+  if (utf8ByteLength(serialized) <= maxBytes) return serialized;
+  const marker = '{"truncated":true}';
+  if (utf8ByteLength(marker) <= maxBytes) return marker;
+  return maxBytes >= 4 ? "null" : "";
 }
 
 function utf8ByteLength(value) {
