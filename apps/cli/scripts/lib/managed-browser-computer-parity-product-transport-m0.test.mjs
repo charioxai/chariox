@@ -180,6 +180,8 @@ function managedTelemetry(overrides = {}) {
     disk: { totalBytes: 16_000, usedBytes: 4_000, availableBytes: 12_000 },
     process: { count: 1, rssBytes: 100 },
     logs: { bytes: 0 },
+    cpuPercent: 5,
+    cpuSampleWindowMs: 1_000,
     docker: { containers: [] },
     ...overrides,
   }
@@ -267,6 +269,18 @@ test("managed resource telemetry rejects missing used bytes and kernel capture t
     () => createTelemetryTransport(withoutCaptureTime).collectManagedTargetResourceSnapshot({ phase: "during" }),
     /capturedAt must be a kernel-captured timestamp/,
   )
+
+  const withoutCpuPercent = managedTelemetry({ cpuPercent: undefined })
+  await assert.rejects(
+    () => createTelemetryTransport(withoutCpuPercent).collectManagedTargetResourceSnapshot({ phase: "during" }),
+    /resource telemetry cpuPercent must be a finite non-negative number/,
+  )
+
+  const malformedCpuSampleWindow = managedTelemetry({ cpuSampleWindowMs: "1000" })
+  await assert.rejects(
+    () => createTelemetryTransport(malformedCpuSampleWindow).collectManagedTargetResourceSnapshot({ phase: "during" }),
+    /resource telemetry cpuSampleWindowMs must be a finite non-negative number/,
+  )
 })
 
 test("managed resource telemetry has a finite timeout", async () => {
@@ -297,6 +311,9 @@ function createCompatibilityTransport(protocol) {
           connected: true,
           daemon_id: "kernel-1",
           machine_id: "machine-1",
+          heartbeat_age_ms: 1,
+          relay_peer_protocol_version: 335,
+          relay_version: "relay-test",
         } } }
       }
       if (Object.hasOwn(request, "GetRoomEnvironmentState")) {
@@ -313,20 +330,26 @@ function createCompatibilityTransport(protocol) {
     requestApi,
     targetKernelRef: "kernel-1",
     targetMachineRef: "machine-1",
-    protocolApi: { LOCAL_DAEMON_PROTOCOL_VERSION: 334 },
+    protocolApi: { LOCAL_DAEMON_PROTOCOL_VERSION: 335 },
     parityConfig: { expected: { roomId: "room-1", environmentId: "environment-1" } },
   })
 }
 
 test("compatibility preflight rejects stale and too-new kernel protocol constants before target inspection", async () => {
-  for (const protocol of [322, 335]) {
+  for (const protocol of [322, 334]) {
     const transport = createCompatibilityTransport(protocol)
     await assert.rejects(
       () => transport.assertCompatibilityPreflight(),
-      /requires released kernel protocol 334|observed 322|observed 335/,
+      /requires released kernel protocol 335|observed 322|observed 334/,
       `protocol ${protocol}`,
     )
   }
+})
+
+test("compatibility preflight accepts the protocol 335 telemetry expectation", async () => {
+  const transport = createCompatibilityTransport(335)
+  const compatibility = await transport.assertCompatibilityPreflight()
+  assert.equal(compatibility.protocol.kernel, 335)
 })
 
 test("transport dispatches every live M0 operation through an explicit operation boundary", async () => {
@@ -523,12 +546,30 @@ function createCleanupTransport({
   startDelayMs = 0,
   detachAckLossAttachmentId = null,
   residualBrowserId = null,
+  postDeleteEnvironmentResidue = false,
   cleanupInspector = null,
+  operationAdapter = null,
+  trackedProviderAgents = [],
+  initialAgentIds = [],
+  failDestroyAgentId = null,
+  useSeparateScopedClient = false,
+  reconnectClient = null,
+  reconnectActionSnapshots = null,
+  reconnectBrowserSnapshots = null,
+  telemetrySamples = null,
+  evidenceRoot = "/proc/managed-parity-m0-evidence-never-present",
   timeouts,
 } = {}) {
   let slicePresent = true
+  let roomPresent = true
+  let roomEnded = false
   let attachmentSequence = 0
   let ackLossInjected = false
+  let destroyFailureInjected = false
+  let reconnectHistoryCalls = 0
+  let reconnectInventoryCalls = 0
+  let reconnectMode = false
+  const activeAgentIds = new Set(initialAgentIds)
   const activeAttachmentIds = new Set()
   const detachAttempts = []
   const requests = []
@@ -542,6 +583,7 @@ function createCleanupTransport({
     environment_session_id: "room-1",
     session_id: "room-1",
     status: "running",
+    agent_ids: [...activeAgentIds],
     display_endpoint: { slice_id: "slice-1", kind: "selkies" },
   }
   let savedState = null
@@ -566,11 +608,23 @@ function createCleanupTransport({
     getRoomEnvironmentResourceInventoryRequest(sessionId, sliceId) {
       return { GetRoomEnvironmentResourceInventory: { session_id: sessionId, slice_id: sliceId } }
     },
+    getRoomEnvironmentSliceRequest(sessionId) {
+      return { GetRoomEnvironmentSlice: { session_id: sessionId } }
+    },
     getRoomEnvironmentStateRequest(sessionId) {
       return { GetRoomEnvironmentState: { session_id: sessionId } }
     },
     relayStatusRequest() { return { RelayStatus: null } },
     deleteSliceRequest(sliceId) { return { DeleteSlice: { slice_ref: sliceId } } },
+    destroyAgentRequest(sessionId, agentId) {
+      return { DestroyAgent: { session_id: sessionId, agent_id: agentId } }
+    },
+    listAgentsRequest(sessionId) { return { ListAgents: { session_id: sessionId } } },
+    listRoomEnvironmentActionHistoryRequest(sessionId, before, limit) {
+      return { ListRoomEnvironmentActionHistory: { session_id: sessionId, before, limit } }
+    },
+    endSessionRequest(sessionId) { return { EndSession: { session_id: sessionId } } },
+    deleteSessionRequest(sessionId) { return { DeleteSession: { session_ref: sessionId, workspace_id: null } } },
     detachFromSessionRequest(attachmentId) {
       return { DetachFromSession: { attachment_id: attachmentId } }
     },
@@ -613,14 +667,15 @@ function createCleanupTransport({
         return { RelayStatus: { status: { configured: true, connected: true, daemon_id: "kernel-1", machine_id: "machine-1" } } }
       }
       if (Object.hasOwn(request, "GetRoomEnvironmentState")) {
+        const environmentActive = roomPresent && (slicePresent || postDeleteEnvironmentResidue)
         return { RoomEnvironmentState: { environment: {
           session_id: "room-1",
           environment_id: "environment-1",
           runtime_generation: 1,
-          lifecycle: slicePresent ? "ready" : "stopped",
+          lifecycle: environmentActive ? "ready" : "stopped",
           health: ["browser_controller", "browser", "desktop", "streamer"].map((component) => ({
             component,
-            state: slicePresent ? "ready" : "unavailable",
+            state: environmentActive ? "ready" : "unavailable",
             diagnostic_code: null,
           })),
           viewport: { revision: 1 },
@@ -630,20 +685,47 @@ function createCleanupTransport({
           pending_input_takeovers: [],
         } } }
       }
+      if (Object.hasOwn(request, "GetRoomEnvironmentSlice")) {
+        return { RoomEnvironmentSlice: { binding: slicePresent && roomPresent
+          ? { session_id: "room-1", slice_id: "slice-1", owner_kernel_id: "kernel-1", worker_kernel_ref: "worker-ref-1" }
+          : null } }
+      }
       if (Object.hasOwn(request, "ListSessions")) {
-        return { SessionsListed: { sessions: slicePresent ? [{ id: "room-1", attachment_ids: [...activeAttachmentIds] }] : [] } }
+        return { SessionsListed: { sessions: roomPresent
+          ? [{ id: "room-1", status: roomEnded ? "ended" : "active", attachment_ids: [...activeAttachmentIds] }]
+          : [] } }
       }
       if (Object.hasOwn(request, "ListSlices")) {
-        return { SlicesListed: { slices: slicePresent ? [slice] : [] } }
+        return { SlicesListed: { slices: slicePresent ? [{ ...slice, agent_ids: [...activeAgentIds] }] : [] } }
+      }
+      if (Object.hasOwn(request, "ListAgents")) {
+        return { AgentsListed: { agents: [...activeAgentIds].map((id) => ({
+          id,
+          session_id: "room-1",
+          provider: "codex",
+          model: "gpt-test",
+        })) } }
       }
       if (Object.hasOwn(request, "GetRoomEnvironmentResourceInventory")) {
+        const browserIds = reconnectMode && Array.isArray(reconnectBrowserSnapshots)
+          ? reconnectBrowserSnapshots[Math.min(reconnectInventoryCalls++, reconnectBrowserSnapshots.length - 1)]
+          : slicePresent ? ["browser-1"] : (residualBrowserId ? [residualBrowserId] : [])
         return { RoomEnvironmentResourceInventory: { inventory: {
           session_id: "room-1",
           environment_id: "environment-1",
           slice_id: "slice-1",
-          browser_ids: slicePresent ? ["browser-1"] : (residualBrowserId ? [residualBrowserId] : []),
+          browser_ids: browserIds,
           profile_ids: slicePresent ? ["profile-1"] : (residualBrowserId ? ["profile-1"] : []),
         } } }
+      }
+      if (Object.hasOwn(request, "ListRoomEnvironmentActionHistory")) {
+        reconnectMode = true
+        const actionIds = Array.isArray(reconnectActionSnapshots)
+          ? reconnectActionSnapshots[Math.min(reconnectHistoryCalls++, reconnectActionSnapshots.length - 1)]
+          : ["action-1"]
+        return { RoomEnvironmentActionHistoryListed: {
+          page: { actions: actionIds.map((actionId) => ({ action_id: actionId })) },
+        } }
       }
       if (Object.hasOwn(request, "AttachToSession")) {
         const attachmentId = `attachment-${++attachmentSequence}`
@@ -666,17 +748,66 @@ function createCleanupTransport({
         if (deleteRemovesSlice) slicePresent = false
         return { SliceDeleted: { slice: { id: "slice-1" } } }
       }
+      if (Object.hasOwn(request, "DestroyAgent")) {
+        const agentId = request.DestroyAgent.agent_id
+        if (agentId === failDestroyAgentId && !destroyFailureInjected) {
+          destroyFailureInjected = true
+          throw new Error(`simulated agent retirement failure: ${agentId}`)
+        }
+        activeAgentIds.delete(agentId)
+        return { AgentDestroyed: { agent: { id: agentId, session_id: "room-1" } } }
+      }
+      if (Object.hasOwn(request, "EndSession")) {
+        roomEnded = true
+        return { SessionEnded: { session: { id: "room-1", status: "ended" } } }
+      }
+      if (Object.hasOwn(request, "DeleteSession")) {
+        roomPresent = false
+        return { SessionDeleted: { session: { id: "room-1", status: "ended" } } }
+      }
       throw new Error(`unexpected cleanup request: ${JSON.stringify(request)}`)
     },
   }
+  const providerAgentQueue = [...trackedProviderAgents]
+  const providerOperationAdapter = operationAdapter ?? (providerAgentQueue.length > 0
+    ? {
+      "selkies.browser": async () => {
+        const agentId = providerAgentQueue.shift()
+        if (agentId) activeAgentIds.add(agentId)
+        return agentId ? { agentId } : {}
+      },
+      "selkies.computer": async () => {
+        const agentId = providerAgentQueue.shift()
+        if (agentId) activeAgentIds.add(agentId)
+        return agentId ? { agentId } : {}
+      },
+    }
+    : null)
+  let scopedClosed = false
+  const scopedClient = {
+    async send(request) {
+      if (scopedClosed) throw new Error("scoped client disconnected")
+      return client.send(request)
+    },
+    async close() {
+      scopedClosed = true
+    },
+  }
+  const transportClient = useSeparateScopedClient ? scopedClient : client
   return {
     transport: createManagedBrowserComputerParityTransportFromPublicClient({
-      client,
+      client: transportClient,
       requestApi,
       targetKernelRef: "worker-ref-1",
       targetMachineRef: "machine-1",
       cleanupInspector,
+      operationAdapter: providerOperationAdapter,
+      displayClient: client,
+      identityClient: transportClient,
+      reconnectClient,
+      resourceTelemetry: telemetrySamples ?? (() => managedTelemetry()),
       timeouts,
+      evidenceRoot,
       displayTransport: {
         async openSelkiesDisplayStream() {
           let receiveCount = 0
@@ -699,13 +830,16 @@ function createCleanupTransport({
       },
     }),
     client,
+    scopedClient,
+    isScopedClosed: () => scopedClosed,
     detachAttempts,
     requests,
+    activeAgentIds,
   }
 }
 
-test("cleanup.inspect proves the stable owned slice has no public residue", async () => {
-  const { transport } = createCleanupTransport()
+test("cleanup removes the owned Room after slice deletion and proves no public residue", async () => {
+  const { transport, requests } = createCleanupTransport()
   await transport.run("selkies.create", {
     runId: "run-1",
     kernelOwnedDefault: true,
@@ -720,16 +854,156 @@ test("cleanup.inspect proves the stable owned slice has no public residue", asyn
   await transport.run("cleanup.perform", {})
   const inspection = await transport.run("cleanup.inspect", {})
 
+  const cleanupLifecycle = requests
+    .filter((request) => Object.hasOwn(request, "DeleteSlice")
+      || Object.hasOwn(request, "GetRoomEnvironmentSlice")
+      || Object.hasOwn(request, "EndSession")
+      || Object.hasOwn(request, "DeleteSession"))
+    .map((request) => Object.keys(request)[0])
+  assert.deepEqual(cleanupLifecycle, [
+    "DeleteSlice", "GetRoomEnvironmentSlice", "EndSession", "DeleteSession",
+  ])
   assert.equal(inspection.zeroResidue, true)
   assert.equal(inspection.owned.sliceId, "slice-1")
   assert.equal(inspection.owned.deleted, true)
   assert.equal(inspection.ownedSliceCount, 0)
   assert.equal(inspection.ownedAttachmentResidueCount, 0)
+  assert.deepEqual(inspection.resources, { rssDeltaBytes: 0, diskDeltaBytes: 0 })
   assert.deepEqual(inspection.unsupportedChecks, [])
 })
 
-test("cleanup.inspect queries authoritative browser resources and fails closed on residue", async () => {
-  const { transport } = createCleanupTransport({ residualBrowserId: "browser-left-behind" })
+test("cleanup retires Browser and Computer agents before authoritative DeleteSlice", async () => {
+  const { transport, requests, activeAgentIds } = createCleanupTransport({
+    trackedProviderAgents: ["agent-browser", "agent-computer"],
+  })
+  const binding = {
+    kernelId: "kernel-1",
+    machineId: "machine-1",
+    roomId: "room-1",
+    environmentId: "environment-1",
+  }
+  await transport.run("selkies.create", {
+    runId: "run-agents",
+    kernelOwnedDefault: true,
+    displayBackend: null,
+    binding,
+  })
+  await transport.run("selkies.browser", { binding })
+  await transport.run("selkies.computer", { binding })
+  await transport.run("selkies.destroy", { sliceId: "slice-1" })
+
+  const retirementAndDelete = requests
+    .filter((request) => Object.hasOwn(request, "DestroyAgent") || Object.hasOwn(request, "DeleteSlice"))
+    .map((request) => Object.keys(request)[0])
+  assert.deepEqual(retirementAndDelete, ["DestroyAgent", "DestroyAgent", "DeleteSlice"])
+  assert.deepEqual(activeAgentIds, new Set())
+  await transport.run("cleanup.perform", {})
+})
+
+test("cleanup retries partial agent retirement before deleting the slice", async () => {
+  const { transport, requests, activeAgentIds } = createCleanupTransport({
+    trackedProviderAgents: ["agent-browser", "agent-computer"],
+    failDestroyAgentId: "agent-computer",
+  })
+  const binding = {
+    kernelId: "kernel-1",
+    machineId: "machine-1",
+    roomId: "room-1",
+    environmentId: "environment-1",
+  }
+  await transport.run("selkies.create", {
+    runId: "run-agent-retry",
+    kernelOwnedDefault: true,
+    displayBackend: null,
+    binding,
+  })
+  await transport.run("selkies.browser", { binding })
+  await transport.run("selkies.computer", { binding })
+  await assert.rejects(
+    () => transport.run("selkies.destroy", { sliceId: "slice-1" }),
+    /simulated agent retirement failure: agent-computer/,
+  )
+  assert.deepEqual(
+    requests
+      .filter((request) => Object.hasOwn(request, "DestroyAgent"))
+      .map((request) => request.DestroyAgent.agent_id),
+    ["agent-browser", "agent-computer"],
+  )
+  assert.deepEqual(activeAgentIds, new Set(["agent-computer"]))
+
+  await transport.run("selkies.destroy", { sliceId: "slice-1" })
+  assert.deepEqual(
+    requests
+      .filter((request) => Object.hasOwn(request, "DestroyAgent"))
+      .map((request) => request.DestroyAgent.agent_id),
+    ["agent-browser", "agent-computer", "agent-computer"],
+  )
+  assert.equal(requests.filter((request) => Object.hasOwn(request, "DeleteSlice")).length, 1)
+  await transport.run("cleanup.perform", {})
+})
+
+test("selkies.reconnect observes scoped disconnect before reconnect and counts duplicate identities", async () => {
+  let reconnectCalls = 0
+  let replacementClosed = false
+  const replacement = {
+    async send(request) {
+      if (Object.hasOwn(request, "RelayStatus")) {
+        return { RelayStatus: { status: {
+          configured: true,
+          connected: true,
+          daemon_id: "kernel-1",
+          machine_id: "machine-1",
+        } } }
+      }
+      throw new Error(`unexpected replacement request: ${JSON.stringify(request)}`)
+    },
+    async close() {
+      replacementClosed = true
+    },
+  }
+  const fixture = createCleanupTransport({
+    useSeparateScopedClient: true,
+    reconnectActionSnapshots: [["action-1"], ["action-1", "action-1"]],
+    reconnectBrowserSnapshots: [["browser-1"], ["browser-1", "browser-1"]],
+    reconnectClient: async () => {
+      reconnectCalls += 1
+      assert.equal(fixture.isScopedClosed(), true)
+      return replacement
+    },
+  })
+  const binding = {
+    kernelId: "kernel-1",
+    machineId: "machine-1",
+    roomId: "room-1",
+    environmentId: "environment-1",
+  }
+  await fixture.transport.run("selkies.create", {
+    runId: "run-reconnect",
+    kernelOwnedDefault: true,
+    displayBackend: null,
+    binding,
+  })
+  const result = await fixture.transport.run("selkies.reconnect", {
+    binding,
+    fault: "relay_disconnect",
+  })
+
+  assert.equal(reconnectCalls, 1)
+  assert.equal(result.disconnectObserved, true)
+  assert.equal(result.reconnected, true)
+  assert.equal(result.duplicateActions, 1)
+  assert.equal(result.duplicateBrowsers, 1)
+  assert.deepEqual(result.beforeActionIds, ["action-1"])
+  assert.deepEqual(result.afterActionIds, ["action-1", "action-1"])
+  assert.deepEqual(result.beforeBrowserIds, ["browser-1"])
+  assert.deepEqual(result.afterBrowserIds, ["browser-1", "browser-1"])
+  await fixture.transport.run("cleanup.perform", {})
+  await replacement.close()
+  assert.equal(replacementClosed, true)
+})
+
+test("cleanup.inspect fails closed on authoritative post-delete environment residue", async () => {
+  const { transport } = createCleanupTransport({ postDeleteEnvironmentResidue: true })
   await transport.run("selkies.create", {
     runId: "run-residue",
     kernelOwnedDefault: true,
@@ -744,7 +1018,7 @@ test("cleanup.inspect queries authoritative browser resources and fails closed o
   await transport.run("cleanup.perform", {})
   await assert.rejects(
     () => transport.run("cleanup.inspect", {}),
-    /residual browser\/controller\/viewer resources/,
+    /found residual resources from authoritative post-delete inventories/,
   )
 })
 
@@ -761,10 +1035,9 @@ test("cleanup.inspect fails when the owned slice remains after a delete receipt"
       environmentId: "environment-1",
     },
   })
-  await transport.run("cleanup.perform", {})
   await assert.rejects(
-    () => transport.run("cleanup.inspect", {}),
-    /owned slice still present/,
+    () => transport.run("cleanup.perform", {}),
+    /left the owned slice present/,
   )
 })
 
@@ -897,7 +1170,7 @@ test("cleanup inspection rejects missing and malformed managed residue metrics",
     await transport.run("cleanup.perform", {})
     await assert.rejects(
       () => transport.run("cleanup.inspect", {}),
-      /must be a finite non-negative|must contain finite non-negative deltas/,
+      /must be a finite non-negative|must contain finite non-negative deltas|must be a finite number/,
       label,
     )
   }
