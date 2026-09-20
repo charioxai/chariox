@@ -185,7 +185,9 @@ real filesystem access checks used by an ordinary kernel.
 Managed service state and user workspaces must use separate namespaces.
 Chariox may keep bootstrap files, receipts, credentials, logs, and other
 control state under `/var/lib/chariox`, but those paths must not become the
-user-facing repository or workspace root. Copied repositories default to:
+user-facing repository or workspace root. The managed service account uses
+`HOME=/home/chariox` and `CHARIOX_HOME=/home/chariox/.chariox`, matching the
+ordinary kernel's `~/.chariox` layout. Copied repositories default to:
 
 ```text
 /home/chariox/<source-repository-basename>
@@ -198,6 +200,14 @@ repository. Machine creation may provide a different trusted repository root;
 that value must flow through managed provisioning and kernel bootstrap as one
 authoritative setting. Clients must not infer or invent it. If this setting
 changes a serialized contract, follow the protocol change rule in this plan.
+
+Managed installation may use the reviewed signed-image mechanism instead of a
+user package-manager command. Installation and upgrades must publish immutable,
+content-addressed kernel releases independently from mutable kernel state. A
+release activation must not move, rewrite, or hide `~/.chariox`, repositories,
+or other user files. A disposable worker receives only the kernel-authorized
+selected context, credentials, and lease state required by its role; it must
+not gain a second managed-only state model.
 
 Protected managed state must be expressed as exact control files or dedicated
 state directories. A control file must never make its shared parent, such as
