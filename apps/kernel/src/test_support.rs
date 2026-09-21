@@ -4,6 +4,9 @@ use crate::account_profile::{
 };
 use crate::{DaemonApp, DaemonConfig, DaemonError};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TEST_WORKTREE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A real, disposable working directory for provider-launch fixtures.
 ///
@@ -17,8 +20,9 @@ pub(crate) struct TestWorktree {
 impl TestWorktree {
     pub(crate) fn new(label: &str) -> Self {
         let nonce = crate::session::unix_epoch_ms();
+        let sequence = TEST_WORKTREE_COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "chariox-test-worktree-{label}-{}-{nonce}",
+            "chariox-test-worktree-{label}-{}-{nonce}-{sequence}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path).expect("test worktree should exist");

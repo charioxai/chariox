@@ -2,13 +2,11 @@ use super::*;
 
 #[test]
 fn public_session_state_preserves_failed_settlement_termination_after_late_completion() {
+    let worktree = crate::test_support::TestWorktree::new("turn-actions-settlement");
     let harness = LocalRouterTestHarness::new();
     let (session, agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new(
-                "workspace-settlement-termination-preservation",
-                "worktree-settlement-termination-preservation",
-            ),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -799,10 +797,11 @@ fn undo_turn_request_conflict_fails_without_partial_writes_inner() {
 
 #[test]
 fn turn_actions_without_agent_ref_require_focused_agent() {
+    let worktree = crate::test_support::TestWorktree::new("turn-actions-no-focus");
     let harness = LocalRouterTestHarness::new();
     let (session, _agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-no-focus", "worktree-no-focus"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
