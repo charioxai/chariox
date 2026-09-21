@@ -19,7 +19,7 @@ const MANAGED_PARITY_SCHEMA = "chariox.browser_computer_m0_guard.v1"
 // This is the released wire constant at the reviewed PR head. Production
 // construction also binds the value exported by kernel-client; the literal is
 // only the local fail-closed reference used when a test injects that seam.
-export const MANAGED_BROWSER_COMPUTER_PARITY_PROTOCOL = 335
+export const MANAGED_BROWSER_COMPUTER_PARITY_PROTOCOL = 336
 
 /**
  * Load the released public client modules at runtime. Keeping this seam
@@ -1423,16 +1423,39 @@ async function runKernelPreflight({
     freeDiskBytes: requireNonNegativeFinite(telemetry.disk.availableBytes, "preflight freeDiskBytes"),
   }
   const image = parityConfig?.image
-  const source = { ossSha: parityConfig?.ossSha, cloudSha: parityConfig?.cloudSha }
-  if (!image || !hasText(image.digest) || !hasText(image.signature) || !hasText(image.signerFingerprint)) {
+  const release = requireVerifiedManagedReleaseEvidence(telemetry.release)
+  if (!image
+    || !hasText(image.digest)
+    || !hasText(image.signature)
+    || !hasText(image.signerFingerprint)
+    || !hasText(image.sourceTree)
+    || !hasText(image.target)) {
     throw new Error("managed parity preflight requires the reviewed signed image identity")
   }
-  if (!/^[0-9a-f]{40}$/.test(source.ossSha ?? "") || !/^[0-9a-f]{40}$/.test(source.cloudSha ?? "")) {
+  if (!/^[0-9a-f]{40}$/.test(parityConfig?.ossSha ?? "")
+    || !/^[0-9a-f]{40}$/.test(parityConfig?.cloudSha ?? "")) {
     throw new Error("managed parity preflight requires exact source identities")
   }
+  if (release.runtimeReleaseDigest !== image.digest
+    || release.sourceCommit !== parityConfig.ossSha
+    || release.sourceTree !== image.sourceTree
+    || release.target !== image.target) {
+    throw new Error("managed parity preflight installed release does not match the reviewed release identity")
+  }
   return {
-    image: { ...redactManagedValue(image), verified: image.verified !== false },
-    source,
+    image: {
+      ...redactManagedValue(image),
+      digest: release.runtimeReleaseDigest,
+      sourceTree: release.sourceTree,
+      target: release.target,
+      verified: true,
+    },
+    release,
+    source: {
+      ossSha: release.sourceCommit,
+      sourceTree: release.sourceTree,
+      cloudShaExpected: parityConfig.cloudSha,
+    },
     protocol,
     target: compatibility.target,
     capabilities: {
@@ -2136,6 +2159,7 @@ async function collectManagedTargetResourceSnapshot({
   if (expectedIds.size > 0 && !expectedIds.has(String(targetId))) {
     throw new Error("managed parity resource telemetry returned a foreign target identity")
   }
+  const release = requireVerifiedManagedReleaseEvidence(candidate.release)
   requireCompleteManagedResourceTelemetry(candidate)
   const capturedAt = requireManagedTelemetryCapturedAt(candidate.capturedAt)
   const normalized = redactManagedValue({
@@ -2151,8 +2175,34 @@ async function collectManagedTargetResourceSnapshot({
       targetId: String(targetId),
       source: String(telemetry.source),
     },
+    release,
   })
   return normalized
+}
+
+function requireVerifiedManagedReleaseEvidence(release) {
+  if (!release || typeof release !== "object" || Array.isArray(release) || release.status !== "verified") {
+    throw new Error("managed parity resource telemetry requires verified installed release evidence")
+  }
+  if (!/^sha256:[0-9a-f]{64}$/.test(release.runtimeReleaseDigest ?? "")
+    || !/^[0-9a-f]{40}$/.test(release.sourceCommit ?? "")
+    || !/^[0-9a-f]{40}$/.test(release.sourceTree ?? "")
+    || !hasText(release.target)
+    || !hasText(release.activeReleasePath)
+    || !String(release.activeReleasePath).startsWith("/")) {
+    throw new Error("managed parity resource telemetry returned incomplete installed release evidence")
+  }
+  for (const proof of [
+    "manifestSignatureVerified",
+    "manifestDigestVerified",
+    "kernelArtifactVerified",
+    "bootstrapReceiptVerified",
+  ]) {
+    if (release[proof] !== true) {
+      throw new Error(`managed parity resource telemetry release proof ${proof} is not verified`)
+    }
+  }
+  return redactManagedValue({ ...release })
 }
 
 async function readPublicManagedTelemetry({ client, requestApi, signal, ...input }) {

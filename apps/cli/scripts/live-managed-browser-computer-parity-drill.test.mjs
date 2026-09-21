@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { readFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -7,10 +8,16 @@ import {
   combineBrowserComputerAbortSignals,
   runManagedBrowserComputerParityLive,
 } from "./live-managed-browser-computer-parity-drill.mjs"
+import {
+  createManagedBrowserComputerParityTransportFromPublicClient,
+  MANAGED_BROWSER_COMPUTER_PARITY_PROTOCOL,
+} from "./lib/managed-browser-computer-parity-product-transport.mjs"
 
 const OSS_SHA = "1".repeat(40)
 const CLOUD_SHA = "2".repeat(40)
 const IMAGE_DIGEST = `sha256:${"3".repeat(64)}`
+const SOURCE_TREE = "5".repeat(40)
+const RELEASE_TARGET = "x86_64-unknown-linux-gnu"
 const EVIDENCE_ROOT = path.join(os.tmpdir(), "chariox-live-m0-guard-test")
 
 function config() {
@@ -22,6 +29,8 @@ function config() {
       digest: IMAGE_DIGEST,
       signature: Buffer.alloc(64, 7).toString("base64"),
       signerFingerprint: `sha256:${"4".repeat(64)}`,
+      sourceTree: SOURCE_TREE,
+      target: RELEASE_TARGET,
     },
     expected: {
       kernelId: "kernel-managed-1",
@@ -53,10 +62,12 @@ function preflight() {
       digest: IMAGE_DIGEST,
       signature: Buffer.alloc(64, 7).toString("base64"),
       signerFingerprint: `sha256:${"4".repeat(64)}`,
+      sourceTree: SOURCE_TREE,
+      target: RELEASE_TARGET,
       verified: true,
     },
-    source: { ossSha: OSS_SHA, cloudSha: CLOUD_SHA },
-    protocol: { kernel: 334, relay: 18, relayVersion: "chariox-relay 0.1.0" },
+    source: { ossSha: OSS_SHA, sourceTree: SOURCE_TREE, cloudShaExpected: CLOUD_SHA },
+    protocol: { kernel: 336, relay: 18, relayVersion: "chariox-relay 0.1.0" },
     target: {
       kernelId: "kernel-managed-1",
       machineId: "machine-managed-1",
@@ -205,6 +216,90 @@ test("live M0 wrapper validates the released kernel lifecycle plan without Docke
   assert.equal(report.browserComputerGuard.dockerPreconditions.length, 0)
 })
 
+test("live M0 binds released kernel-client source modules before managed telemetry", async () => {
+  const [controlSource, typesSource] = await Promise.all([
+    readFile(new URL("../../../packages/kernel-client/src/ipc-kernel-control-requests.ts", import.meta.url), "utf8"),
+    readFile(new URL("../../../packages/kernel-client/src/kernel-types.ts", import.meta.url), "utf8"),
+  ])
+  const telemetryProtocol = releasedSourceConstant(
+    controlSource,
+    "kernelResourceTelemetryMinimumProtocolVersion",
+  )
+  const daemonProtocol = releasedSourceConstant(typesSource, "LOCAL_DAEMON_PROTOCOL_VERSION")
+  assert.equal(telemetryProtocol, MANAGED_BROWSER_COMPUTER_PARITY_PROTOCOL)
+  assert.equal(daemonProtocol, MANAGED_BROWSER_COMPUTER_PARITY_PROTOCOL)
+  assert.match(controlSource, /return \{ GetKernelResourceTelemetry: null \}/)
+
+  const requestApi = {
+    kernelResourceTelemetryMinimumProtocolVersion: telemetryProtocol,
+    getSliceDisplayEndpointRequest(sliceId, options) {
+      return { GetSliceDisplayEndpoint: { slice_ref: sliceId, ...options } }
+    },
+    getKernelResourceTelemetryRequest() {
+      return { GetKernelResourceTelemetry: null }
+    },
+    relayStatusRequest() { return { RelayStatus: null } },
+    getRoomEnvironmentStateRequest(sessionId) {
+      return { GetRoomEnvironmentState: { session_id: sessionId } }
+    },
+  }
+  const requests = []
+  const client = {
+    async send(request) {
+      requests.push(request)
+      if (Object.hasOwn(request, "RelayStatus")) {
+        return { RelayStatus: { status: {
+          configured: true,
+          connected: true,
+          daemon_id: "kernel-managed-1",
+          machine_id: "machine-managed-1",
+          heartbeat_age_ms: 500,
+          relay_peer_protocol_version: 18,
+          relay_version: "chariox-relay 0.1.0",
+        } } }
+      }
+      if (Object.hasOwn(request, "GetRoomEnvironmentState")) {
+        return { RoomEnvironmentState: { environment: {
+          session_id: request.GetRoomEnvironmentState.session_id,
+          environment_id: "environment-managed-1",
+        } } }
+      }
+      throw new Error(`unexpected source-bound preflight request: ${JSON.stringify(request)}`)
+    },
+  }
+  const released = createManagedBrowserComputerParityTransportFromPublicClient({
+    client,
+    requestApi,
+    targetKernelRef: "kernel-managed-1",
+    targetMachineRef: "machine-managed-1",
+    protocolApi: { LOCAL_DAEMON_PROTOCOL_VERSION: daemonProtocol },
+    parityConfig: { expected: {
+      roomId: "room-managed-1",
+      environmentId: "environment-managed-1",
+    } },
+    resourceTelemetry: async () => sample("before"),
+  })
+
+  await assert.rejects(
+    () => released.collectManagedTargetResourceSnapshot({ phase: "before" }),
+    /requires compatibility preflight first/,
+  )
+  const compatibility = await released.assertCompatibilityPreflight()
+  assert.equal(compatibility.protocol.kernel, MANAGED_BROWSER_COMPUTER_PARITY_PROTOCOL)
+  const telemetry = await released.collectManagedTargetResourceSnapshot({ phase: "before" })
+  assert.equal(telemetry.telemetry.source, "managed-target-test")
+  assert.deepEqual(requests.map((request) => Object.keys(request)[0]), [
+    "RelayStatus",
+    "GetRoomEnvironmentState",
+  ])
+})
+
+function releasedSourceConstant(source, name) {
+  const match = source.match(new RegExp(`export const ${name} = (\\d+)`))
+  assert.ok(match, `released source must export ${name}`)
+  return Number(match[1])
+}
+
 function sample(phase, overrun = false) {
   const values = {
     before: { diskAvailableBytes: 90, memoryAvailableBytes: 90, processCount: 2, logBytes: 0 },
@@ -218,10 +313,33 @@ function sample(phase, overrun = false) {
   }[phase]
   return {
     phase,
-    memory: { totalBytes: 100, availableBytes: values.memoryAvailableBytes },
-    disk: { totalBytes: 100, availableBytes: values.diskAvailableBytes },
-    process: { count: values.processCount },
+    capturedAt: "2026-09-20T00:00:00.000Z",
+    release: {
+      status: "verified",
+      runtimeReleaseDigest: IMAGE_DIGEST,
+      sourceCommit: OSS_SHA,
+      sourceTree: SOURCE_TREE,
+      target: RELEASE_TARGET,
+      activeReleasePath: `/usr/lib/chariox/releases/${IMAGE_DIGEST.slice("sha256:".length)}`,
+      manifestSignatureVerified: true,
+      manifestDigestVerified: true,
+      kernelArtifactVerified: true,
+      bootstrapReceiptVerified: true,
+    },
+    memory: {
+      totalBytes: 100,
+      usedBytes: 100 - values.memoryAvailableBytes,
+      availableBytes: values.memoryAvailableBytes,
+    },
+    disk: {
+      totalBytes: 100,
+      usedBytes: 100 - values.diskAvailableBytes,
+      availableBytes: values.diskAvailableBytes,
+    },
+    process: { count: values.processCount, rssBytes: 10 },
     logs: { bytes: values.logBytes },
+    cpuPercent: 5,
+    cpuSampleWindowMs: 1_000,
     docker: { containers: [], volumes: [], images: [] },
     telemetry: {
       scope: "managed-target",

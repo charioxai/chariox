@@ -52,7 +52,9 @@ contains no credential or secret value:
   "image": {
     "digest": "sha256:<64 lowercase hex>",
     "signature": "<exact base64 Ed25519 release signature>",
-    "signerFingerprint": "sha256:<64 lowercase hex>"
+    "signerFingerprint": "sha256:<64 lowercase hex>",
+    "sourceTree": "<40 lowercase hex Git tree>",
+    "target": "x86_64-unknown-linux-gnu"
   },
   "expected": {
     "kernelId": "<immutable kernel id>",

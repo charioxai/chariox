@@ -185,7 +185,7 @@ test("exportDebugBundleRequest is session scoped and label-only", () => {
 })
 
 test("getKernelResourceTelemetryRequest exposes the complete authoritative guard shape", () => {
-  assert.equal(kernelResourceTelemetryMinimumProtocolVersion, 334)
+  assert.equal(kernelResourceTelemetryMinimumProtocolVersion, 336)
   assert.deepEqual(getKernelResourceTelemetryRequest({ kernelRef: "kernel-1", machineRef: "machine-1" }), {
     GetKernelResourceTelemetry: null,
   })
@@ -193,7 +193,7 @@ test("getKernelResourceTelemetryRequest exposes the complete authoritative guard
   const response = {
     KernelResourceTelemetry: {
       snapshot: {
-        schema: "chariox.kernel.resource_telemetry.v1",
+        schema: "chariox.kernel.resource_telemetry.v3",
         capturedAt: "2026-09-20T00:00:00.000Z",
         capturedAtMonotonicMs: 42,
         telemetry: {
@@ -202,6 +202,20 @@ test("getKernelResourceTelemetryRequest exposes the complete authoritative guard
           targetId: "machine-1",
           source: "kernel",
         },
+        release: {
+          status: "verified",
+          runtimeReleaseDigest: `sha256:${"d".repeat(64)}`,
+          sourceCommit: "a".repeat(40),
+          sourceTree: "b".repeat(40),
+          target: "x86_64-unknown-linux-gnu",
+          activeReleasePath: "/usr/lib/chariox/releases/release-1",
+          manifestSignatureVerified: true,
+          manifestDigestVerified: true,
+          kernelArtifactVerified: true,
+          bootstrapReceiptVerified: true,
+        },
+        cpuPercent: 37,
+        cpuSampleWindowMs: 100,
         memory: { usedBytes: 4000, totalBytes: 8000, availableBytes: 4000 },
         disk: { usedBytes: 4000, totalBytes: 16000, availableBytes: 12000 },
         process: { count: 3, rssBytes: 100 },
@@ -209,8 +223,28 @@ test("getKernelResourceTelemetryRequest exposes the complete authoritative guard
       },
     },
   } satisfies KernelResourceTelemetryResponse
+  assert.equal(response.KernelResourceTelemetry.snapshot.release.status, "verified")
+  assert.equal(response.KernelResourceTelemetry.snapshot.cpuPercent, 37)
+  assert.equal(response.KernelResourceTelemetry.snapshot.cpuSampleWindowMs, 100)
   assert.equal(response.KernelResourceTelemetry.snapshot.memory.usedBytes, 4000)
   assert.equal(response.KernelResourceTelemetry.snapshot.disk.availableBytes, 12000)
   assert.equal(response.KernelResourceTelemetry.snapshot.process.rssBytes, 100)
   assert.equal(response.KernelResourceTelemetry.snapshot.logs.bytes, 256)
+
+  const unavailable = {
+    KernelResourceTelemetry: {
+      snapshot: {
+        ...response.KernelResourceTelemetry.snapshot,
+        telemetry: {
+          scope: "ordinary-host",
+          authoritative: false,
+          targetId: "host-1",
+          source: "kernel",
+        },
+        release: { status: "unavailable", reason: "managed bootstrap receipt unavailable" },
+      },
+    },
+  } satisfies KernelResourceTelemetryResponse
+  assert.equal(unavailable.KernelResourceTelemetry.snapshot.release.status, "unavailable")
+  assert.equal(unavailable.KernelResourceTelemetry.snapshot.telemetry.authoritative, false)
 })

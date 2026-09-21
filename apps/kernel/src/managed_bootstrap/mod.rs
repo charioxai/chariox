@@ -22,7 +22,7 @@ use cloud::{
     ManagedCloudRelayProfile,
 };
 pub use context_plan::ManagedKernelContextPlan;
-use release::{verify_release, VerifiedRelease};
+use release::{verify_release, verify_release_evidence, VerifiedRelease};
 use state::{
     remove_envelope, valid_identifier, valid_secret, BootstrapConfig, BootstrapEnvelope,
     BootstrapReceipt, BootstrapReceiptDocument, BootstrapReceiptStatus, ManagedBootstrapEnvelope,
@@ -37,6 +37,19 @@ pub(crate) struct ConfirmedManagedKernelRegistration {
     pub machine_id: String,
     pub kernel_id: String,
     pub context_plan: Option<ManagedKernelContextPlan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ManagedReleaseEvidence {
+    pub(crate) runtime_release_digest: String,
+    pub(crate) source_commit: String,
+    pub(crate) source_tree: String,
+    pub(crate) target: String,
+    pub(crate) active_release_path: String,
+    pub(crate) manifest_signature_verified: bool,
+    pub(crate) manifest_digest_verified: bool,
+    pub(crate) kernel_artifact_verified: bool,
+    pub(crate) bootstrap_receipt_verified: bool,
 }
 
 #[derive(Debug)]
@@ -115,6 +128,65 @@ pub(crate) fn confirmed_managed_kernel_registration_from_env(
         machine_id: receipt.machine_id,
         kernel_id: receipt.kernel_id,
         context_plan: receipt.context_plan,
+    }))
+}
+
+pub(crate) fn authoritative_managed_release_evidence_from_env(
+) -> Result<Option<ManagedReleaseEvidence>, DaemonError> {
+    let Some(chariox_home) = std::env::var_os("CHARIOX_HOME")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+    else {
+        return Ok(None);
+    };
+    let receipt_path = std::env::var_os("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| chariox_home.join("managed").join("bootstrap-receipt.json"));
+    if !receipt_path.exists() {
+        return Ok(None);
+    }
+    let config = BootstrapConfig::from_env()?;
+    let receipt = match BootstrapReceiptDocument::read(&config.receipt_path)? {
+        Some(BootstrapReceiptDocument::ManagedEnvironment(receipt)) => receipt,
+        Some(BootstrapReceiptDocument::DisposableWorker(_)) => {
+            return Err(bootstrap_error(
+                "managed resource telemetry cannot use a disposable-worker receipt",
+            ));
+        }
+        None => {
+            return Err(bootstrap_error(
+                "managed bootstrap receipt disappeared during release verification",
+            ));
+        }
+    };
+    if receipt.status != BootstrapReceiptStatus::Confirmed {
+        return Err(bootstrap_error(
+            "managed resource telemetry requires a confirmed bootstrap receipt",
+        ));
+    }
+    let verified = verify_release_evidence(
+        &config.manifest_path,
+        &config.signature_path,
+        &config.public_key_path,
+        &receipt.runtime_release_digest,
+        &config.kernel_binary,
+    )?;
+    if verified.digest != receipt.runtime_release_digest {
+        return Err(bootstrap_error(
+            "verified release digest does not match the bootstrap receipt",
+        ));
+    }
+    Ok(Some(ManagedReleaseEvidence {
+        runtime_release_digest: verified.digest,
+        source_commit: verified.source_commit,
+        source_tree: verified.source_tree,
+        target: verified.target,
+        active_release_path: verified.active_release_path.display().to_string(),
+        manifest_signature_verified: verified.manifest_signature_verified,
+        manifest_digest_verified: verified.manifest_digest_verified,
+        kernel_artifact_verified: verified.kernel_artifact_verified,
+        bootstrap_receipt_verified: true,
     }))
 }
 

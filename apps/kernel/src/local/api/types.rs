@@ -28,9 +28,9 @@ mod project_environment_setup;
 mod prompt_control;
 mod prompt_settings;
 mod provider_control;
-mod resource_telemetry;
 mod remote_access;
 mod request;
+mod resource_telemetry;
 mod response;
 mod room_environment;
 mod session_control;
@@ -59,9 +59,9 @@ pub use project_environment_setup::*;
 pub use prompt_control::*;
 pub use prompt_settings::*;
 pub use provider_control::*;
-pub use resource_telemetry::*;
 pub use remote_access::*;
 pub use request::*;
+pub use resource_telemetry::*;
 pub use response::*;
 pub use room_environment::*;
 pub use session_control::*;
@@ -90,4 +90,6 @@ pub use workspace::*;
 /// Version 332 carries the public camelCase managed-context transfer receipt.
 /// Version 333 carries definition-derived executable path entries for worker setup.
 /// Version 334 carries kernel-authoritative managed-target resource telemetry.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 334;
+/// Version 335 adds measured CPU utilization and its sample window to that telemetry.
+/// Version 336 adds kernel-verified installed release identity to resource telemetry.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 336;
