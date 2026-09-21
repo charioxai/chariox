@@ -410,8 +410,19 @@ pub(crate) fn provider_reported_path_on_kernel(
         return None;
     }
     let source = source.canonicalize().ok()?;
-    let resolved = source.join(relative).canonicalize().ok()?;
-    resolved.starts_with(&source).then_some(resolved)
+    let resolved = source.join(relative);
+    let mut existing_ancestor = resolved.as_path();
+    loop {
+        match std::fs::symlink_metadata(existing_ancestor) {
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                existing_ancestor = existing_ancestor.parent()?;
+            }
+            Err(_) => return None,
+        }
+    }
+    let canonical_ancestor = existing_ancestor.canonicalize().ok()?;
+    canonical_ancestor.starts_with(&source).then_some(resolved)
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -2138,6 +2149,22 @@ mod tests {
                     .expect("host path should resolve")
             ),
             "persisted transcript cursors must remain resolvable",
+        );
+        let pending_sandbox_transcript = sandbox_account.join("projects/pending.jsonl");
+        assert_eq!(
+            provider_reported_path_on_kernel(
+                &run,
+                pending_sandbox_transcript
+                    .to_str()
+                    .expect("pending sandbox transcript should be utf8"),
+            ),
+            Some(
+                host_account
+                    .canonicalize()
+                    .expect("host account should resolve")
+                    .join("projects/pending.jsonl"),
+            ),
+            "a Stop hook may report its account-bound transcript before Claude flushes the file",
         );
         assert_eq!(
             provider_reported_path_on_kernel(
