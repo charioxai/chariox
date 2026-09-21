@@ -10,6 +10,7 @@ import { normalizeMountInfo } from "./managed-ordinary-parity-probe.mjs"
 
 const execFileAsync = promisify(execFile)
 const probeSource = fileURLToPath(new URL("./managed-ordinary-parity-probe.mjs", import.meta.url))
+const matrixSource = fileURLToPath(new URL("./managed-ordinary-parity-matrix.mjs", import.meta.url))
 
 async function git(root, args) {
   const result = await execFileAsync("git", args, {
@@ -24,12 +25,14 @@ test("repo-owned probe executes its real command path and binds its file to the 
   const root = await mkdtemp(join(os.tmpdir(), "chariox-managed-ordinary-parity-probe-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const destination = join(root, "apps/cli/scripts/managed-ordinary-parity-probe.mjs")
+  const matrixDestination = join(root, "apps/cli/scripts/managed-ordinary-parity-matrix.mjs")
   await mkdir(dirname(destination), { recursive: true })
   await writeFile(destination, await readFile(probeSource))
+  await writeFile(matrixDestination, await readFile(matrixSource))
   await git(root, ["init", "--quiet"])
   await git(root, ["config", "user.name", "parity-probe-test"])
   await git(root, ["config", "user.email", "parity-probe-test@example.invalid"])
-  await git(root, ["add", "apps/cli/scripts/managed-ordinary-parity-probe.mjs"])
+  await git(root, ["add", "apps/cli/scripts/managed-ordinary-parity-probe.mjs", "apps/cli/scripts/managed-ordinary-parity-matrix.mjs"])
   await git(root, ["commit", "--quiet", "-m", "probe fixture"])
   const reviewedCommit = await git(root, ["rev-parse", "HEAD"])
   const output = await execFileAsync(process.execPath, [
@@ -60,19 +63,21 @@ test("probe fails closed when a required product observation is absent", async (
   const root = await mkdtemp(join(os.tmpdir(), "chariox-managed-ordinary-parity-missing-observation-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const destination = join(root, "apps/cli/scripts/managed-ordinary-parity-probe.mjs")
+  const matrixDestination = join(root, "apps/cli/scripts/managed-ordinary-parity-matrix.mjs")
   await mkdir(dirname(destination), { recursive: true })
   await writeFile(destination, await readFile(probeSource))
+  await writeFile(matrixDestination, await readFile(matrixSource))
   await git(root, ["init", "--quiet"])
   await git(root, ["config", "user.name", "parity-probe-test"])
   await git(root, ["config", "user.email", "parity-probe-test@example.invalid"])
-  await git(root, ["add", "apps/cli/scripts/managed-ordinary-parity-probe.mjs"])
+  await git(root, ["add", "apps/cli/scripts/managed-ordinary-parity-probe.mjs", "apps/cli/scripts/managed-ordinary-parity-matrix.mjs"])
   await git(root, ["commit", "--quiet", "-m", "probe fixture"])
   const reviewedCommit = await git(root, ["rev-parse", "HEAD"])
   const result = await execFileAsync(process.execPath, [
     destination,
     "--source-root", root,
     "--reviewed-commit", reviewedCommit,
-    "--parity-row", "MP-05",
+    "--parity-row", "MP-08",
     "--parity-check", "session_agent_launch",
     "--topology", "ordinary",
     "--json",

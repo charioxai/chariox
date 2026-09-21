@@ -10,6 +10,7 @@ import {
   ALLOWED_TOPOLOGIES,
   MATRIX_SCHEMA,
   ROW_DEFINITIONS,
+  SHUTDOWN_EXPECTATIONS,
   createSignedManifest,
   validateManifest,
 } from "./managed-ordinary-parity-matrix.mjs"
@@ -182,35 +183,39 @@ function requireObserved(result, rowId, checkId) {
 }
 
 const GENERIC_REQUIREMENTS = Object.freeze({
+  "MP-01/mount_visibility": ["mounts_match_ordinary", "mount_probe_complete"],
+  "MP-01/privilege_state": ["capabilities_match_ordinary", "umask_matches_ordinary"],
+  "MP-01/network_reachability": ["network_matches_ordinary", "address_families_recorded"],
+  "MP-01/package_tool_installation": ["tool_probe_succeeded", "install_probe_succeeded"],
   "MP-02/directory_discovery": ["exact_path_accessible"],
   "MP-02/exact_path_entry": ["exact_path_accessible", "cwd_matches_requested"],
   "MP-02/directory_creation": ["created_and_accessible"],
   "MP-02/home_access": ["accessible"],
   "MP-02/tmp_access": ["accessible"],
-  "MP-03/empty_workspace": ["workspace_created", "control_state_separate"],
-  "MP-03/copied_repository": ["repository_accessible"],
-  "MP-03/repository_basename": ["source_basename_preserved"],
-  "MP-03/basename_collision": ["collision_rejected"],
-  "MP-03/worktree_placement": ["worktree_user_path", "control_root_not_workspace"],
+  "MP-03/control_file_protection": ["control_file_denied", "sibling_accessible"],
+  "MP-03/filesystem_permissions": ["permissions_match_ordinary"],
   "MP-04/provider_environment": ["home_matches_ordinary", "chariox_home_matches_ordinary", "cwd_matches_requested", "ordinary_user"],
-  "MP-04/mount_visibility": ["mounts_match_ordinary", "mount_probe_complete"],
-  "MP-04/privilege_state": ["capabilities_match_ordinary", "umask_matches_ordinary"],
-  "MP-04/network_reachability": ["network_matches_ordinary", "address_families_recorded"],
-  "MP-04/package_tool_installation": ["tool_probe_succeeded", "install_probe_succeeded"],
-  "MP-05/session_agent_launch": ["session_created", "agent_created", "official_command"],
-  "MP-05/terminal_file_git": ["terminal_ok", "file_ok", "git_ok"],
-  "MP-05/attachments_permissions_capabilities": ["attachments_ok", "permissions_ok", "capabilities_ok"],
-  "MP-05/project_setup": ["project_setup_ok"],
-  "MP-06/reconnect_orphan_recovery": ["reconnect_ok", "orphan_recovered"],
-  "MP-06/restart_recovery": ["restart_recovered"],
-  "MP-06/reconnect_history_result_identity": ["history_preserved", "result_identity_preserved"],
-  "MP-06/queued_prompts": ["queued_prompt_preserved", "queued_prompt_advanced"],
-  "MP-06/active_turn_state": ["active_turn_state_preserved"],
-  "MP-07/control_file_protection": ["control_file_denied", "sibling_accessible"],
-  "MP-07/filesystem_permissions": ["permissions_match_ordinary"],
-  "MP-07/resource_limits": ["limits_observed"],
-  "MP-07/structured_errors": ["structured_errors"],
-  "MP-07/protocol_behavior": ["protocol_behavior_ok"],
+  "MP-05/empty_workspace": ["workspace_created", "control_state_separate"],
+  "MP-05/copied_repository": ["repository_accessible"],
+  "MP-05/repository_basename": ["source_basename_preserved"],
+  "MP-05/basename_collision": ["collision_rejected"],
+  "MP-05/worktree_placement": ["worktree_user_path", "control_root_not_workspace"],
+  "MP-06/repository_root_default": ["default_root_correct"],
+  "MP-06/repository_root_custom": ["custom_root_persisted"],
+  "MP-06/repository_root_inheritance": ["child_inherits_root"],
+  "MP-06/repository_root_override_rejected": ["client_override_rejected"],
+  "MP-08/session_agent_launch": ["session_created", "agent_created", "official_command"],
+  "MP-08/terminal_file_git": ["terminal_ok", "file_ok", "git_ok"],
+  "MP-08/attachments_permissions_capabilities": ["attachments_ok", "permissions_ok", "capabilities_ok"],
+  "MP-08/project_setup": ["project_setup_ok"],
+  "MP-08/reconnect_orphan_recovery": ["reconnect_ok", "orphan_recovered"],
+  "MP-08/restart_recovery": ["restart_recovered"],
+  "MP-08/reconnect_history_result_identity": ["history_preserved", "result_identity_preserved"],
+  "MP-08/queued_prompts": ["queued_prompt_preserved", "queued_prompt_advanced"],
+  "MP-08/active_turn_state": ["active_turn_state_preserved"],
+  "MP-08/resource_limits": ["limits_observed"],
+  "MP-08/structured_errors": ["structured_errors"],
+  "MP-08/protocol_behavior": ["protocol_behavior_ok"],
   "MP-08/cleanup": ["owned_processes_gone", "owned_artifacts_removed", "foreign_processes_untouched", "cleanup_complete"],
 })
 
@@ -222,7 +227,7 @@ function normalizeGenericResult(result, rowId, checkId) {
   }
   const normalized = { observed: true }
   for (const key of required) normalized[key] = result[key]
-  if (rowId === "MP-04" && checkId === "privilege_state") {
+  if (rowId === "MP-01" && checkId === "privilege_state") {
     expectedBoolean(result, "no_new_privs", rowId, checkId, false)
     normalized.no_new_privs = false
   }
@@ -233,29 +238,29 @@ function normalizeGenericResult(result, rowId, checkId) {
 }
 
 function normalizeProviderAncestry(result) {
-  requireObserved(result, "MP-04", "provider_ancestry")
-  expectedBoolean(result, "provider_observed", "MP-04", "provider_ancestry")
-  expectedBoolean(result, "bwrap_ancestor", "MP-04", "provider_ancestry", false)
-  expectedBoolean(result, "fresh_worker", "MP-04", "provider_ancestry")
-  expectedBoolean(result, "ancestry_complete", "MP-04", "provider_ancestry")
+  requireObserved(result, "MP-01", "provider_ancestry")
+  expectedBoolean(result, "provider_observed", "MP-01", "provider_ancestry")
+  expectedBoolean(result, "bwrap_ancestor", "MP-01", "provider_ancestry", false)
+  expectedBoolean(result, "fresh_worker", "MP-01", "provider_ancestry")
+  expectedBoolean(result, "ancestry_complete", "MP-01", "provider_ancestry")
   return { observed: true, provider_observed: true, bwrap_ancestor: false, fresh_worker: true }
 }
 
 function normalizeManagedIsolation(result) {
-  requireObserved(result, "MP-04", "managed_isolation_environment")
-  expectedBoolean(result, "managed_marker_absent", "MP-04", "managed_isolation_environment")
-  expectedBoolean(result, "bwrap_environment_absent", "MP-04", "managed_isolation_environment")
+  requireObserved(result, "MP-01", "managed_isolation_environment")
+  expectedBoolean(result, "managed_marker_absent", "MP-01", "managed_isolation_environment")
+  expectedBoolean(result, "bwrap_environment_absent", "MP-01", "managed_isolation_environment")
   return { observed: true, managed_marker_absent: true, bwrap_environment_absent: true }
 }
 
 function normalizeReleaseResult(result, topology) {
-  requireObserved(result, "MP-09", "signed_release_activation")
+  requireObserved(result, "MP-07", "signed_release_activation")
   if (topology === "ordinary") {
-    expectedBoolean(result, "ordinary_release_not_applicable", "MP-09", "signed_release_activation")
-    expectedBoolean(result, "signed_release_present", "MP-09", "signed_release_activation", false)
-    expectedBoolean(result, "signature_verified", "MP-09", "signed_release_activation", false)
-    expectedBoolean(result, "atomic_activation", "MP-09", "signed_release_activation", false)
-    expectedBoolean(result, "rollback_verified", "MP-09", "signed_release_activation", false)
+    expectedBoolean(result, "ordinary_release_not_applicable", "MP-07", "signed_release_activation")
+    expectedBoolean(result, "signed_release_present", "MP-07", "signed_release_activation", false)
+    expectedBoolean(result, "signature_verified", "MP-07", "signed_release_activation", false)
+    expectedBoolean(result, "atomic_activation", "MP-07", "signed_release_activation", false)
+    expectedBoolean(result, "rollback_verified", "MP-07", "signed_release_activation", false)
     return {
       exemption: "ordinary-not-applicable",
       observed: "ordinary-not-applicable",
@@ -266,10 +271,10 @@ function normalizeReleaseResult(result, topology) {
       release_digest: "not-applicable",
     }
   }
-  expectedBoolean(result, "signed_release_present", "MP-09", "signed_release_activation")
-  expectedBoolean(result, "signature_verified", "MP-09", "signed_release_activation")
-  expectedBoolean(result, "atomic_activation", "MP-09", "signed_release_activation")
-  expectedBoolean(result, "rollback_verified", "MP-09", "signed_release_activation")
+  expectedBoolean(result, "signed_release_present", "MP-07", "signed_release_activation")
+  expectedBoolean(result, "signature_verified", "MP-07", "signed_release_activation")
+  expectedBoolean(result, "atomic_activation", "MP-07", "signed_release_activation")
+  expectedBoolean(result, "rollback_verified", "MP-07", "signed_release_activation")
   if (!DIGEST.test(result.release_digest ?? "")) {
     throw new CollectorError("probe_assertion_failed", "managed release digest is not a sha256 digest")
   }
@@ -285,40 +290,76 @@ function normalizeReleaseResult(result, topology) {
 }
 
 function normalizeShutdownResult(result, topology, checkId) {
-  requireObserved(result, "MP-10", checkId)
+  requireObserved(result, "MP-09", checkId)
   const trigger = checkId.slice("shutdown_".length)
   if (result.trigger !== trigger) {
     throw new CollectorError("shutdown_trigger_mismatch", `${checkId} reported ${String(result.trigger)}`)
   }
-  expectedBoolean(result, "shutdown_evidence", "MP-10", checkId)
-  expectedBoolean(result, "measured_from_last_agent_finished", "MP-10", checkId, trigger === "idle_15m" || trigger === "idle_30m")
-  expectedBoolean(result, "managed_policy", "MP-10", checkId, topology === "path1")
-  if (!nonEmptyString(result.observed_outcome)) {
-    throw new CollectorError("shutdown_evidence_missing", `${checkId} did not report an observed outcome`)
+  const expectation = SHUTDOWN_EXPECTATIONS[trigger]
+  if (!expectation) throw new CollectorError("shutdown_trigger_unsupported", `${checkId} has no reviewed expectation`)
+  expectedBoolean(result, "observation_complete", "MP-09", checkId)
+  expectedBoolean(result, "managed_policy", "MP-09", checkId, topology === "path1")
+  const ordinary = topology === "ordinary"
+  const expectedOutcome = ordinary ? "ordinary-remained-running" : expectation.outcome
+  if (result.expected_outcome !== expectedOutcome || result.observed_outcome !== expectedOutcome) {
+    throw new CollectorError("shutdown_outcome_mismatch", `${checkId} did not observe ${expectedOutcome}`)
+  }
+  const workerStopped = ordinary ? false : expectation.workerStopped
+  const cleanupConfirmed = ordinary ? false : expectation.cleanupConfirmed
+  const measuredFromLastAgentFinished = ordinary ? false : expectation.measuredFromLastAgentFinished
+  expectedBoolean(result, "worker_stopped", "MP-09", checkId, workerStopped)
+  expectedBoolean(result, "cleanup_confirmed", "MP-09", checkId, cleanupConfirmed)
+  expectedBoolean(result, "measured_from_last_agent_finished", "MP-09", checkId, measuredFromLastAgentFinished)
+  const configuredDelay = result.configured_delay_seconds ?? null
+  const observedDelay = result.observed_delay_seconds ?? null
+  if (ordinary) {
+    if (configuredDelay !== null || observedDelay !== null) {
+      throw new CollectorError("shutdown_delay_invalid", `${checkId} ordinary control must not report a managed delay`)
+    }
+  } else if (expectation.delay === null) {
+    if (configuredDelay !== null || observedDelay !== null) {
+      throw new CollectorError("shutdown_delay_invalid", `${checkId} must report null delays`)
+    }
+  } else {
+    const validConfigured = Number.isInteger(configuredDelay) && configuredDelay >= 0
+      && (expectation.delay === "positive" ? configuredDelay > 0 : configuredDelay === expectation.delay)
+    if (!validConfigured) throw new CollectorError("shutdown_delay_invalid", `${checkId} configured delay is invalid`)
+    if (expectation.observesDelay) {
+      if (!Number.isFinite(observedDelay) || observedDelay < configuredDelay || observedDelay > configuredDelay + 120) {
+        throw new CollectorError("shutdown_delay_invalid", `${checkId} observed delay is outside the reviewed tolerance`)
+      }
+    } else if (observedDelay !== null) {
+      throw new CollectorError("shutdown_delay_invalid", `${checkId} must not report an elapsed delay`)
+    }
   }
   return {
-    exemption: topology === "ordinary" ? "ordinary-no-managed-shutdown" : "managed-auto-shutdown",
+    exemption: ordinary ? "ordinary-no-managed-shutdown" : "managed-auto-shutdown",
     trigger,
-    observed_outcome: result.observed_outcome,
-    managed_policy: topology === "path1",
-    shutdown_evidence: true,
-    measured_from_last_agent_finished: trigger === "idle_15m" || trigger === "idle_30m",
+    expected_outcome: expectedOutcome,
+    observed_outcome: expectedOutcome,
+    managed_policy: !ordinary,
+    observation_complete: true,
+    worker_stopped: workerStopped,
+    cleanup_confirmed: cleanupConfirmed,
+    measured_from_last_agent_finished: measuredFromLastAgentFinished,
+    configured_delay_seconds: configuredDelay,
+    observed_delay_seconds: observedDelay,
   }
 }
 
 function normalizeBoundary(result, expectedBoundary) {
-  requireObserved(result, "MP-01", "capture_boundary")
+  requireObserved(result, "MP-10", "capture_boundary")
   if (result.boundary !== expectedBoundary) {
     throw new CollectorError("capture_boundary_mismatch", `probe reported ${String(result.boundary)}`)
   }
-  expectedBoolean(result, "inside_provider_turn", "MP-01", "capture_boundary")
-  expectedBoolean(result, "independent", "MP-01", "capture_boundary")
+  expectedBoolean(result, "inside_provider_turn", "MP-10", "capture_boundary")
+  expectedBoolean(result, "independent", "MP-10", "capture_boundary")
   return { observed: true, boundary_verified: true, inside_provider_turn: true, independent: true }
 }
 
 function normalizeFreshWorker(result) {
-  requireObserved(result, "MP-01", "fresh_worker")
-  expectedBoolean(result, "fresh_worker", "MP-01", "fresh_worker")
+  requireObserved(result, "MP-10", "fresh_worker")
+  expectedBoolean(result, "fresh_worker", "MP-10", "fresh_worker")
   if (!nonEmptyString(result.worker_id)) {
     throw new CollectorError("fresh_worker_identity_missing", "fresh worker probe did not return a worker identity")
   }
@@ -326,12 +367,12 @@ function normalizeFreshWorker(result) {
 }
 
 function normalizeProviderIdentity(result, provider, executable) {
-  requireObserved(result, "MP-01", "official_provider_identity")
-  expectedBoolean(result, "official", "MP-01", "official_provider_identity")
+  requireObserved(result, "MP-08", "official_provider_identity")
+  expectedBoolean(result, "official", "MP-08", "official_provider_identity")
   if (result.provider_name !== provider) {
     throw new CollectorError("provider_identity_mismatch", `provider probe reported ${String(result.provider_name)}`)
   }
-  expectedBoolean(result, "executable_matches", "MP-01", "official_provider_identity")
+  expectedBoolean(result, "executable_matches", "MP-08", "official_provider_identity")
   return { observed: true, official: true, provider_name: provider, executable_matches: true, executable_basename: executable }
 }
 
@@ -384,9 +425,9 @@ function parseReleaseManifest(bytes, expected) {
 }
 
 async function verifyRepoFile(ctx, runText, git, relativePath, step) {
-  const treeStep = await runText(ctx, "MP-01", "source_protocol_identity", `${step}-tree`, git, ["ls-tree", "-r", "--full-tree", ctx.reviewedCommit, "--", relativePath], { cwd: ctx.sourceRoot })
+  const treeStep = await runText(ctx, "MP-10", "source_protocol_identity", `${step}-tree`, git, ["ls-tree", "-r", "--full-tree", ctx.reviewedCommit, "--", relativePath], { cwd: ctx.sourceRoot })
   const tree = parseRepoBlob(treeStep.text, relativePath, step)
-  const hashStep = await runText(ctx, "MP-01", "source_protocol_identity", `${step}-hash`, git, ["hash-object", "--", relativePath], { cwd: ctx.sourceRoot })
+  const hashStep = await runText(ctx, "MP-10", "source_protocol_identity", `${step}-hash`, git, ["hash-object", "--", relativePath], { cwd: ctx.sourceRoot })
   if (hashStep.text !== tree.gitBlob) {
     throw new CollectorError("repo_identity_mismatch", `${step} does not match the reviewed commit`)
   }
@@ -561,21 +602,21 @@ export function createParityCollector({
 
     const git = ctx.gitCommand ?? "git"
     const kernel = ctx.kernelBinary
-    const sourceCommitStep = await runText(ctx, "MP-01", "source_protocol_identity", "source-commit", git, ["rev-parse", "HEAD"], { cwd: ctx.sourceRoot })
+    const sourceCommitStep = await runText(ctx, "MP-10", "source_protocol_identity", "source-commit", git, ["rev-parse", "HEAD"], { cwd: ctx.sourceRoot })
     const actualCommit = sourceCommitStep.text
     if (actualCommit !== ctx.reviewedCommit) throw new CollectorError("source_identity_mismatch", `expected ${ctx.reviewedCommit}, observed ${actualCommit}`)
-    const cleanStep = await runText(ctx, "MP-01", "source_protocol_identity", "source-clean", git, ["diff", "--quiet", "--exit-code"], { allowEmpty: true, cwd: ctx.sourceRoot })
+    const cleanStep = await runText(ctx, "MP-10", "source_protocol_identity", "source-clean", git, ["diff", "--quiet", "--exit-code"], { allowEmpty: true, cwd: ctx.sourceRoot })
     if (cleanStep.stepResult.code !== 0) throw new CollectorError("source_dirty", "source worktree is not clean")
-    const statusStep = await runText(ctx, "MP-01", "source_protocol_identity", "source-status", git, ["status", "--porcelain=1", "--untracked-files=all"], { allowEmpty: true, cwd: ctx.sourceRoot })
+    const statusStep = await runText(ctx, "MP-10", "source_protocol_identity", "source-status", git, ["status", "--porcelain=1", "--untracked-files=all"], { allowEmpty: true, cwd: ctx.sourceRoot })
     if (statusStep.text) throw new CollectorError("source_dirty", "source worktree has untracked or modified files")
-    const filesStep = await runText(ctx, "MP-01", "source_protocol_identity", "source-files", git, ["ls-files", "-s"], { cwd: ctx.sourceRoot })
+    const filesStep = await runText(ctx, "MP-10", "source_protocol_identity", "source-files", git, ["ls-files", "-s"], { cwd: ctx.sourceRoot })
     const probeIdentity = await verifyRepoFile(ctx, runText, git, PROBE_RELATIVE_PATH, "probe")
     ctx.probeGitBlob = probeIdentity.gitBlob
     const releaseVerifierIdentity = await verifyRepoFile(ctx, runText, git, RELEASE_VERIFIER_RELATIVE_PATH, "release-verifier")
-    const sourceTreeStep = await runText(ctx, "MP-01", "source_protocol_identity", "source-tree", git, ["rev-parse", `${ctx.reviewedCommit}^{tree}`], { cwd: ctx.sourceRoot })
+    const sourceTreeStep = await runText(ctx, "MP-10", "source_protocol_identity", "source-tree", git, ["rev-parse", `${ctx.reviewedCommit}^{tree}`], { cwd: ctx.sourceRoot })
     const kernelReleaseStep = await runText(
       ctx,
-      "MP-01",
+      "MP-10",
       "source_protocol_identity",
       "kernel-release-verification",
       process.execPath,
@@ -604,24 +645,33 @@ export function createParityCollector({
       reviewedCommit: actualCommit,
       sourceTree: sourceTreeStep.text,
     })
-    const versionStep = await runText(ctx, "MP-01", "source_protocol_identity", "kernel-version", kernel, ["--version"], { cwd: ctx.sourceRoot })
+    const versionStep = await runText(ctx, "MP-10", "source_protocol_identity", "kernel-version", kernel, ["--version"], { cwd: ctx.sourceRoot })
     if (versionStep.text !== ctx.buildId) throw new CollectorError("build_identity_mismatch", `expected ${ctx.buildId}, observed ${versionStep.text}`)
-    const kernelProtocolStep = await runText(ctx, "MP-01", "source_protocol_identity", "kernel-protocol", kernel, ["--print-local-daemon-protocol-version"], { cwd: ctx.sourceRoot })
+    const kernelProtocolStep = await runText(ctx, "MP-10", "source_protocol_identity", "kernel-protocol", kernel, ["--print-local-daemon-protocol-version"], { cwd: ctx.sourceRoot })
     const actualKernelProtocol = parseInteger(kernelProtocolStep.text, "kernel protocol")
     if (actualKernelProtocol !== ctx.kernelProtocol) throw new CollectorError("protocol_identity_mismatch", "kernel protocol mismatch")
-    const relayStep = await runText(ctx, "MP-01", "source_protocol_identity", "relay-protocol", git, ["grep", "-h", "-m1", "RELAY_PEER_PROTOCOL_VERSION", "--", ctx.relayProtocolFile ?? "apps/kernel/src/transport/relay_peer.rs"], { cwd: ctx.sourceRoot })
+    const relayStep = await runText(ctx, "MP-10", "source_protocol_identity", "relay-protocol", git, ["grep", "-h", "-m1", "RELAY_PEER_PROTOCOL_VERSION", "--", ctx.relayProtocolFile ?? "apps/kernel/src/transport/relay_peer.rs"], { cwd: ctx.sourceRoot })
     const actualRelayProtocol = parseRelayVersion(relayStep.text)
     if (actualRelayProtocol !== ctx.relayProtocol) throw new CollectorError("protocol_identity_mismatch", "relay protocol mismatch")
 
     const providerCommandName = basename(ctx.providerCommand)
     if (providerCommandName !== ctx.provider) throw new CollectorError("provider_identity_mismatch", `provider command basename must be ${ctx.provider}`)
-    const providerVersionStep = await runText(ctx, "MP-01", "official_provider_identity", "provider-version", ctx.providerCommand, ["--version"], { cwd: ctx.sourceRoot })
-    const providerIdentity = await runProbe(ctx, "MP-01", "official_provider_identity", (result) => normalizeProviderIdentity(result, ctx.provider, providerCommandName))
-    const freshWorker = await runProbe(ctx, "MP-01", "fresh_worker", normalizeFreshWorker)
-    const captureBoundary = await runProbe(ctx, "MP-01", "capture_boundary", (result) => normalizeBoundary(result, ctx.boundary))
+    const providerVersionStep = await runText(ctx, "MP-08", "official_provider_identity", "provider-version", ctx.providerCommand, ["--version"], { cwd: ctx.sourceRoot })
+    const providerIdentity = await runProbe(ctx, "MP-08", "official_provider_identity", (result) => normalizeProviderIdentity(result, ctx.provider, providerCommandName))
+    const freshWorker = await runProbe(ctx, "MP-10", "fresh_worker", normalizeFreshWorker)
+    const captureBoundary = await runProbe(ctx, "MP-10", "capture_boundary", (result) => normalizeBoundary(result, ctx.boundary))
 
     const rows = {
-      "MP-01": {
+      "MP-08": {
+        checks: {
+          official_provider_identity: {
+            ...providerIdentity,
+            result: { ...providerIdentity.result, provider_version_observed: nonEmptyString(providerVersionStep.text) },
+            evidence_refs: [...providerIdentity.evidence_refs, providerVersionStep.stepResult.evidencePath],
+          },
+        },
+      },
+      "MP-10": {
         checks: {
           source_protocol_identity: {
             status: "pass",
@@ -642,23 +692,20 @@ export function createParityCollector({
             evidence_refs: [sourceCommitStep.stepResult.evidencePath, cleanStep.stepResult.evidencePath, statusStep.stepResult.evidencePath, filesStep.stepResult.evidencePath, ...probeIdentity.evidenceRefs, ...releaseVerifierIdentity.evidenceRefs, sourceTreeStep.stepResult.evidencePath, kernelReleaseStep.stepResult.evidencePath, versionStep.stepResult.evidencePath, kernelProtocolStep.stepResult.evidencePath, relayStep.stepResult.evidencePath],
           },
           fresh_worker: freshWorker,
-          official_provider_identity: {
-            ...providerIdentity,
-            result: { ...providerIdentity.result, provider_version_observed: nonEmptyString(providerVersionStep.text) },
-            evidence_refs: [...providerIdentity.evidence_refs, providerVersionStep.stepResult.evidencePath],
-          },
           capture_boundary: captureBoundary,
         },
       },
     }
 
     for (const definition of ROW_DEFINITIONS) {
-      if (definition.id === "MP-01" || definition.id === "MP-09" || definition.id === "MP-10") continue
-      const checks = {}
+      if (definition.id === "MP-07" || definition.id === "MP-09" || definition.id === "MP-10") continue
+      const checks = { ...(rows[definition.id]?.checks ?? {}) }
       for (const checkId of definition.checks) {
-        if (definition.id === "MP-04" && checkId === "provider_ancestry") {
+        if (checkId === "official_provider_identity") {
+          continue
+        } else if (definition.id === "MP-01" && checkId === "provider_ancestry") {
           checks[checkId] = await runProbe(ctx, definition.id, checkId, normalizeProviderAncestry)
-        } else if (definition.id === "MP-04" && checkId === "managed_isolation_environment") {
+        } else if (definition.id === "MP-01" && checkId === "managed_isolation_environment") {
           checks[checkId] = await runProbe(ctx, definition.id, checkId, normalizeManagedIsolation)
         } else {
           checks[checkId] = await runProbe(ctx, definition.id, checkId, (result) => normalizeGenericResult(result, definition.id, checkId))
@@ -667,13 +714,13 @@ export function createParityCollector({
       rows[definition.id] = { checks }
     }
 
-    const release = await runProbe(ctx, "MP-09", "signed_release_activation", (result) => normalizeReleaseResult(result, ctx.topology))
-    rows["MP-09"] = { checks: { signed_release_activation: release } }
+    const release = await runProbe(ctx, "MP-07", "signed_release_activation", (result) => normalizeReleaseResult(result, ctx.topology))
+    rows["MP-07"] = { checks: { signed_release_activation: release } }
     const shutdownChecks = {}
-    for (const checkId of COLLECTOR_CHECKS["MP-10"]) {
-      shutdownChecks[checkId] = await runProbe(ctx, "MP-10", checkId, (result) => normalizeShutdownResult(result, ctx.topology, checkId))
+    for (const checkId of COLLECTOR_CHECKS["MP-09"]) {
+      shutdownChecks[checkId] = await runProbe(ctx, "MP-09", checkId, (result) => normalizeShutdownResult(result, ctx.topology, checkId))
     }
-    rows["MP-10"] = { checks: shutdownChecks }
+    rows["MP-09"] = { checks: shutdownChecks }
 
     const sourceDigest = `sha256:${sha256(filesStep.text)}`
     const manifest = createSignedManifest({

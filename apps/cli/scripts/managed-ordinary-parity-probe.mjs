@@ -20,24 +20,15 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
+import { ROW_DEFINITIONS, SHUTDOWN_EXPECTATIONS } from "./managed-ordinary-parity-matrix.mjs"
+
 const execFileAsync = promisify(execFile)
 const PROBE_RELATIVE_PATH = "apps/cli/scripts/managed-ordinary-parity-probe.mjs"
 const REVIEWED_COMMIT = /^[0-9a-f]{40}$/i
 const DIGEST = /^sha256:[0-9a-f]{64}$/i
 const TOPOLOGIES = new Set(["ordinary", "path1"])
 const OFFICIAL_PROVIDERS = new Set(["claude", "codex", "opencode"])
-const CHECKS = new Map([
-  ["MP-01", new Set(["fresh_worker", "official_provider_identity", "capture_boundary"])],
-  ["MP-02", new Set(["directory_discovery", "exact_path_entry", "directory_creation", "home_access", "tmp_access"])],
-  ["MP-03", new Set(["empty_workspace", "copied_repository", "repository_basename", "basename_collision", "worktree_placement"])],
-  ["MP-04", new Set(["provider_ancestry", "provider_environment", "managed_isolation_environment", "mount_visibility", "privilege_state", "network_reachability", "package_tool_installation"])],
-  ["MP-05", new Set(["session_agent_launch", "terminal_file_git", "attachments_permissions_capabilities", "project_setup"])],
-  ["MP-06", new Set(["reconnect_orphan_recovery", "restart_recovery", "reconnect_history_result_identity", "queued_prompts", "active_turn_state"])],
-  ["MP-07", new Set(["control_file_protection", "filesystem_permissions", "resource_limits", "structured_errors", "protocol_behavior"])],
-  ["MP-08", new Set(["cleanup"])],
-  ["MP-09", new Set(["signed_release_activation"])],
-  ["MP-10", new Set(["shutdown_agents_done", "shutdown_idle_15m", "shutdown_idle_30m", "shutdown_minimum_3h", "shutdown_manual", "shutdown_custom", "shutdown_explicit_lifecycle_reconciliation", "shutdown_deployment_reconciliation"])],
-])
+const CHECKS = new Map(ROW_DEFINITIONS.map(({ id, checks }) => [id, new Set(checks)]))
 
 class ProbeError extends Error {
   constructor(message, details = {}) {
@@ -656,6 +647,25 @@ async function observeProjectSetup(identity) {
   return identityResult(identity, { project_setup_ok: true, project_identity_fingerprint: fingerprint(evidence.project_identity) })
 }
 
+const REPOSITORY_ROOT_REQUIREMENTS = Object.freeze({
+  repository_root_default: "default_root_correct",
+  repository_root_custom: "custom_root_persisted",
+  repository_root_inheritance: "child_inherits_root",
+  repository_root_override_rejected: "client_override_rejected",
+})
+
+async function observeRepositoryRoot(identity, checkId) {
+  const requiredKey = REPOSITORY_ROOT_REQUIREMENTS[checkId]
+  if (!requiredKey) throw new ProbeError(`unsupported repository-root check: ${checkId}`)
+  const evidence = requireObservedEvidence(parseJsonEnv("CHARIOX_PARITY_REPOSITORY_ROOT_EVIDENCE_JSON"), "repository-root evidence")
+  const entry = requireObservedEvidence(evidence[checkId], `repository-root evidence for ${checkId}`)
+  if (entry[requiredKey] !== true) throw new ProbeError(`${checkId} product observation is incomplete`)
+  return identityResult(identity, {
+    [requiredKey]: true,
+    repository_root_evidence_fingerprint: fingerprint(entry.evidence_id ?? `${checkId}:${process.pid}`),
+  })
+}
+
 const LIFECYCLE_REQUIREMENTS = Object.freeze({
   reconnect_orphan_recovery: ["reconnect_ok", "orphan_recovered"],
   restart_recovery: ["restart_recovered"],
@@ -766,26 +776,58 @@ async function observeRelease(identity) {
   })
 }
 
-const SHUTDOWN_CHECKS = new Set([...CHECKS.get("MP-10")])
+const SHUTDOWN_CHECKS = new Set([...CHECKS.get("MP-09")])
 
-async function observeShutdown(identity, checkId) {
+async function observeShutdown(identity, values, checkId) {
   if (!SHUTDOWN_CHECKS.has(checkId)) throw new ProbeError(`unsupported shutdown check: ${checkId}`)
   const evidence = parseJsonEnv("CHARIOX_PARITY_SHUTDOWN_EVIDENCE_JSON")
   const trigger = checkId.slice("shutdown_".length)
   const entry = requireObservedEvidence(evidence[trigger], `shutdown evidence for ${trigger}`)
+  const expectation = SHUTDOWN_EXPECTATIONS[trigger]
+  if (!expectation) throw new ProbeError(`shutdown evidence has no reviewed expectation for ${trigger}`)
   if (entry.trigger && entry.trigger !== trigger) throw new ProbeError(`shutdown evidence trigger mismatch for ${trigger}`)
-  if (typeof entry.observed_outcome !== "string" || entry.observed_outcome.length === 0
-    || typeof entry.managed_policy !== "boolean"
-    || entry.shutdown_evidence !== true
-    || entry.measured_from_last_agent_finished !== (trigger === "idle_15m" || trigger === "idle_30m")) {
+  const ordinary = values.topology === "ordinary"
+  const expectedOutcome = ordinary ? "ordinary-remained-running" : expectation.outcome
+  const expectedManagedPolicy = !ordinary
+  const expectedWorkerStopped = ordinary ? false : expectation.workerStopped
+  const expectedCleanupConfirmed = ordinary ? false : expectation.cleanupConfirmed
+  const expectedMeasuredBoundary = ordinary ? false : expectation.measuredFromLastAgentFinished
+  if (typeof entry.observed_outcome !== "string" || entry.observed_outcome !== expectedOutcome
+    || entry.expected_outcome !== expectedOutcome
+    || entry.managed_policy !== expectedManagedPolicy
+    || entry.observation_complete !== true
+    || entry.worker_stopped !== expectedWorkerStopped
+    || entry.cleanup_confirmed !== expectedCleanupConfirmed
+    || entry.measured_from_last_agent_finished !== expectedMeasuredBoundary) {
     throw new ProbeError(`shutdown evidence is incomplete for ${trigger}`)
+  }
+  const configuredDelay = entry.configured_delay_seconds ?? null
+  const observedDelay = entry.observed_delay_seconds ?? null
+  if (expectation.delay === null || ordinary) {
+    if (configuredDelay !== null || observedDelay !== null) throw new ProbeError(`shutdown delay evidence is invalid for ${trigger}`)
+  } else {
+    const configuredValid = Number.isInteger(configuredDelay) && configuredDelay >= 0
+      && (expectation.delay === "positive" ? configuredDelay > 0 : configuredDelay === expectation.delay)
+    if (!configuredValid) throw new ProbeError(`shutdown configured delay is invalid for ${trigger}`)
+    if (expectation.observesDelay) {
+      if (!Number.isFinite(observedDelay) || observedDelay < configuredDelay || observedDelay > configuredDelay + 120) {
+        throw new ProbeError(`shutdown observed delay is invalid for ${trigger}`)
+      }
+    } else if (observedDelay !== null) {
+      throw new ProbeError(`shutdown observed delay is not expected for ${trigger}`)
+    }
   }
   return identityResult(identity, {
     trigger,
-    observed_outcome: entry.observed_outcome,
-    managed_policy: entry.managed_policy,
-    shutdown_evidence: true,
-    measured_from_last_agent_finished: trigger === "idle_15m" || trigger === "idle_30m",
+    expected_outcome: expectedOutcome,
+    observed_outcome: expectedOutcome,
+    managed_policy: expectedManagedPolicy,
+    observation_complete: true,
+    worker_stopped: expectedWorkerStopped,
+    cleanup_confirmed: expectedCleanupConfirmed,
+    measured_from_last_agent_finished: expectedMeasuredBoundary,
+    configured_delay_seconds: configuredDelay,
+    observed_delay_seconds: observedDelay,
     shutdown_receipt_fingerprint: fingerprint(entry.receipt_id ?? `${trigger}:${process.pid}`),
   })
 }
@@ -793,31 +835,31 @@ async function observeShutdown(identity, checkId) {
 async function observe(values) {
   const identity = await verifyProbeIdentity(values)
   const { parity_row: rowId, parity_check: checkId } = values
-  if (rowId === "MP-01" && checkId === "fresh_worker") return observeFreshWorker(identity)
-  if (rowId === "MP-01" && checkId === "official_provider_identity") return observeProviderIdentity(identity, values)
-  if (rowId === "MP-01" && checkId === "capture_boundary") return observeCaptureBoundary(identity)
+  if (rowId === "MP-10" && checkId === "fresh_worker") return observeFreshWorker(identity)
+  if (rowId === "MP-08" && checkId === "official_provider_identity") return observeProviderIdentity(identity, values)
+  if (rowId === "MP-10" && checkId === "capture_boundary") return observeCaptureBoundary(identity)
   if (rowId === "MP-02") return observeDirectoryCheck(identity, values, checkId)
-  if (rowId === "MP-03") return observeWorkspaceCheck(identity, values, checkId)
-  if (rowId === "MP-04" && checkId === "provider_ancestry") return observeProviderAncestry(identity, values)
+  if (rowId === "MP-03" && checkId === "control_file_protection") return observeControlFileProtection(identity)
+  if (rowId === "MP-03" && checkId === "filesystem_permissions") return observeFilesystemPermissions(identity, values)
+  if (rowId === "MP-01" && checkId === "provider_ancestry") return observeProviderAncestry(identity, values)
   if (rowId === "MP-04" && checkId === "provider_environment") return observeProviderEnvironment(identity, values)
-  if (rowId === "MP-04" && checkId === "managed_isolation_environment") return observeIsolationEnvironment(identity)
-  if (rowId === "MP-04" && checkId === "mount_visibility") return observeMountVisibility(identity, values)
-  if (rowId === "MP-04" && checkId === "privilege_state") return observePrivilegeState(identity)
-  if (rowId === "MP-04" && checkId === "network_reachability") return observeNetwork(identity)
-  if (rowId === "MP-04" && checkId === "package_tool_installation") return observePackageTool(identity)
-  if (rowId === "MP-05" && checkId === "session_agent_launch") return observeSessionAgent(identity)
-  if (rowId === "MP-05" && checkId === "terminal_file_git") return observeTerminalFileGit(identity, values)
-  if (rowId === "MP-05" && checkId === "attachments_permissions_capabilities") return observeAttachments(identity)
-  if (rowId === "MP-05" && checkId === "project_setup") return observeProjectSetup(identity)
-  if (rowId === "MP-06") return observeLifecycle(identity, checkId)
-  if (rowId === "MP-07" && checkId === "control_file_protection") return observeControlFileProtection(identity)
-  if (rowId === "MP-07" && checkId === "filesystem_permissions") return observeFilesystemPermissions(identity, values)
-  if (rowId === "MP-07" && checkId === "resource_limits") return observeResourceLimits(identity)
-  if (rowId === "MP-07" && checkId === "structured_errors") return observeStructuredErrors(identity)
-  if (rowId === "MP-07" && checkId === "protocol_behavior") return observeProtocol(identity)
+  if (rowId === "MP-01" && checkId === "managed_isolation_environment") return observeIsolationEnvironment(identity)
+  if (rowId === "MP-01" && checkId === "mount_visibility") return observeMountVisibility(identity, values)
+  if (rowId === "MP-01" && checkId === "privilege_state") return observePrivilegeState(identity)
+  if (rowId === "MP-01" && checkId === "network_reachability") return observeNetwork(identity)
+  if (rowId === "MP-01" && checkId === "package_tool_installation") return observePackageTool(identity)
+  if (rowId === "MP-05") return observeWorkspaceCheck(identity, values, checkId)
+  if (rowId === "MP-06") return observeRepositoryRoot(identity, checkId)
+  if (rowId === "MP-08" && checkId === "session_agent_launch") return observeSessionAgent(identity)
+  if (rowId === "MP-08" && checkId === "terminal_file_git") return observeTerminalFileGit(identity, values)
+  if (rowId === "MP-08" && checkId === "attachments_permissions_capabilities") return observeAttachments(identity)
+  if (rowId === "MP-08" && checkId === "project_setup") return observeProjectSetup(identity)
+  if (rowId === "MP-08" && checkId === "resource_limits") return observeResourceLimits(identity)
+  if (rowId === "MP-08" && checkId === "structured_errors") return observeStructuredErrors(identity)
+  if (rowId === "MP-08" && checkId === "protocol_behavior") return observeProtocol(identity)
   if (rowId === "MP-08" && checkId === "cleanup") return observeCleanup(identity)
-  if (rowId === "MP-09" && checkId === "signed_release_activation") return observeRelease(identity)
-  if (rowId === "MP-10") return observeShutdown(identity, checkId)
+  if (rowId === "MP-07" && checkId === "signed_release_activation") return observeRelease(identity)
+  if (rowId === "MP-09") return observeShutdown(identity, values, checkId)
   throw new ProbeError(`${rowId}/${checkId} has no product-backed observation`)
 }
 
