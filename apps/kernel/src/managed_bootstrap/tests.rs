@@ -683,14 +683,14 @@ fn managed_systemd_unit_keeps_bootstrap_and_kernel_in_one_hardened_cgroup() {
         "User=chariox",
         "Group=chariox",
         "SupplementaryGroups=chariox-slice",
-        "Environment=CHARIOX_HOME=/var/lib/chariox/home",
-        "Environment=HOME=/var/lib/chariox/home",
-        "Environment=CHARIOX_CAPABILITY_ISOLATION_ROOT=/var/lib/chariox/home/managed-context/kernel",
+        "Environment=CHARIOX_HOME=/home/chariox/.chariox",
+        "Environment=HOME=/home/chariox",
+        "Environment=CHARIOX_CAPABILITY_ISOLATION_ROOT=/home/chariox/.chariox/managed-context/kernel",
         "Environment=CHARIOX_MANAGED_PROVIDER_ISOLATION=1",
         "Environment=CHARIOX_MANAGED_SLICE_SERVICE_ROOT=/var/lib/chariox-slice-share",
         "Environment=CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT=/var/lib/chariox-slice-share/slices",
         "Environment=CHARIOX_SLICE_ROOT=/var/lib/chariox-slice-share/slices",
-        "Environment=CHARIOX_MANAGED_VAULT_PATH=/var/lib/chariox/home/.chariox/vault/vault.json",
+        "Environment=CHARIOX_MANAGED_VAULT_PATH=/home/chariox/.chariox/vault/vault.json",
         "Environment=CHARIOX_SLICE_DOCKER_BROKER_SOCKET=/var/lib/chariox-slice-share/.broker-private/control/control.sock",
         "Environment=PATH=/usr/local/bin:/usr/bin:/bin",
         "After=chariox-rootless-docker.service",
@@ -707,7 +707,7 @@ fn managed_systemd_unit_keeps_bootstrap_and_kernel_in_one_hardened_cgroup() {
         "ProtectKernelTunables=false",
         "StateDirectory=chariox",
         "StateDirectoryMode=0700",
-        "ReadWritePaths=/var/lib/chariox /var/lib/chariox-slice-share",
+        "ReadWritePaths=/home/chariox /var/lib/chariox /var/lib/chariox-slice-share",
         "UMask=0007",
     ] {
         assert!(
@@ -722,24 +722,47 @@ fn managed_systemd_unit_keeps_bootstrap_and_kernel_in_one_hardened_cgroup() {
 }
 
 #[test]
-fn disposable_worker_systemd_unit_propagates_managed_provider_isolation() {
+fn disposable_worker_systemd_unit_runs_path1_without_provider_isolation() {
     let unit = include_str!(
         "../../../../deploy/managed-kernel/chariox-disposable-worker-bootstrap.service"
     );
     for required in [
         "User=chariox",
         "Group=chariox",
-        "Environment=HOME=/var/lib/chariox/home",
-        "Environment=CHARIOX_HOME=/var/lib/chariox/home",
-        "Environment=CHARIOX_CAPABILITY_ISOLATION_ROOT=/var/lib/chariox/home/managed-context/kernel",
-        "Environment=CHARIOX_MANAGED_PROVIDER_ISOLATION=1",
+        "Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1",
+        "Environment=HOME=/home/chariox",
+        "Environment=CHARIOX_HOME=/home/chariox/.chariox",
         "Environment=CHARIOX_MANAGED_PROVIDER_HOME=/var/lib/chariox/provider-home",
-        "Environment=CHARIOX_MANAGED_VAULT_PATH=/var/lib/chariox/home/.chariox/vault/vault.json",
+        "Environment=CHARIOX_MANAGED_VAULT_PATH=/home/chariox/.chariox/vault/vault.json",
         "ExecStart=/usr/local/bin/chariox-managed-bootstrap --disposable-worker",
+        // Managed-machine automatic shutdown triggers stay on the Path-1 unit.
+        "Conflicts=chariox-managed-bootstrap.service",
+        "KillMode=control-group",
     ] {
         assert!(
             unit.contains(required),
             "missing disposable worker contract: {required}"
+        );
+    }
+    // Path 1 executes providers directly in the disposable VM. The VM is the
+    // provider boundary, so this unit must not carry Bubblewrap/provider
+    // isolation or the managed shared-host systemd hardening restrictions.
+    for forbidden in [
+        "CHARIOX_MANAGED_PROVIDER_ISOLATION",
+        "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+        "CHARIOX_MANAGED_PROVIDER_BWRAP",
+        "bwrap",
+        "NoNewPrivileges=",
+        "ProtectSystem=",
+        "ProtectHome=",
+        "RestrictSUIDSGID=",
+        "RestrictAddressFamilies=",
+        "SupplementaryGroups=chariox-slice",
+        "/var/lib/chariox/home",
+    ] {
+        assert!(
+            !unit.contains(forbidden),
+            "Path-1 disposable worker must not carry: {forbidden}"
         );
     }
 }

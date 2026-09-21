@@ -5182,10 +5182,10 @@ printf 'managed account environment probe passed\n'
         assert_eq!(
             managed_launch_working_directory(
                 &request,
-                Path::new("/var/lib/chariox/home/provider-accounts/codex/default"),
-                Path::new("/var/lib/chariox/home/workspaces/repo"),
+                Path::new("/home/chariox/provider-accounts/codex/default"),
+                Path::new("/home/chariox/workspaces/repo"),
             ),
-            PathBuf::from("/var/lib/chariox/home/workspaces/repo"),
+            PathBuf::from("/home/chariox/workspaces/repo"),
         );
     }
 
@@ -5202,10 +5202,10 @@ printf 'managed account environment probe passed\n'
         assert_eq!(
             managed_launch_working_directory(
                 &request,
-                Path::new("/var/lib/chariox/home/provider-accounts/codex/default"),
+                Path::new("/home/chariox/provider-accounts/codex/default"),
                 Path::new(SANDBOX_HOME),
             ),
-            PathBuf::from("/var/lib/chariox/home/provider-accounts/codex/default"),
+            PathBuf::from("/home/chariox/provider-accounts/codex/default"),
         );
     }
 

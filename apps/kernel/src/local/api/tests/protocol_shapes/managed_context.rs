@@ -9,7 +9,7 @@ fn plain_workspace_launch_and_relay_shapes_are_versioned() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 336);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        54
+        55
     );
     let local = crate::local::ManagedContextRepositoryLaunchTarget {
         workspace_kind: DevelopmentWorkspaceKind::Directory,
