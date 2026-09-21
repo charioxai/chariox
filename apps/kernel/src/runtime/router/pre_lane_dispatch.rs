@@ -19,6 +19,7 @@ use crate::runtime::provider_process_control::provider_processes_visible_to_user
 use crate::runtime::provider_run_control::projected_provider_run_response;
 use crate::runtime::relay_config_control::execute_relay_config_request;
 use crate::runtime::remote_relay_inventory::execute_remote_relay_inventory_request;
+use crate::runtime::resource_telemetry::execute_kernel_resource_telemetry_request;
 use crate::runtime::session_read_control::{
     projected_session_inspection_response, projected_session_read_response,
 };
@@ -35,6 +36,20 @@ impl CommandRouter {
         request: &LocalDaemonRequest,
         caller_user_id: &str,
     ) -> Result<Option<LocalDaemonResponse>, DaemonError> {
+        if matches!(
+            request,
+            LocalDaemonRequest::PrepareBrowserImport(_)
+                | LocalDaemonRequest::ApproveBrowserImport(_)
+                | LocalDaemonRequest::ClaimBrowserImportSource(_)
+                | LocalDaemonRequest::AuthorizeBrowserImportSource(_)
+                | LocalDaemonRequest::CancelBrowserImport(_)
+        ) {
+            return self
+                .runtime_state
+                .execute_browser_import_consent(command, request)
+                .await
+                .map(Some);
+        }
         if let Some(response) = projected_session_read_response(
             &self.runtime_state,
             &self.session_projection,
@@ -91,11 +106,13 @@ impl CommandRouter {
             request @ (LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
             | LocalDaemonRequest::GetManagedEnvironment(_)
             | LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(_)
+            | LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(_)
             | LocalDaemonRequest::CreateManagedEnvironment(_)
             | LocalDaemonRequest::RequestManagedEnvironmentLifecycle(_)) => {
                 return execute_managed_environment_control_request(
                     self.config_projection.snapshot(),
                     self.provider_account_profiles.clone(),
+                    self.managed_context_outbound.clone(),
                     caller_user_id,
                     request.clone(),
                 )
@@ -197,6 +214,16 @@ impl CommandRouter {
                 )
                 .await
                 .map(Some);
+            }
+            request @ (LocalDaemonRequest::StartProjectEnvironmentSetup(_)
+            | LocalDaemonRequest::GetProjectEnvironmentSetupStatus(_)
+            | LocalDaemonRequest::CancelProjectEnvironmentSetup(_)
+            | LocalDaemonRequest::RetryProjectEnvironmentSetup(_)) => {
+                return self
+                    .runtime_state
+                    .execute_project_environment_setup_request(request.clone(), caller_user_id)
+                    .await
+                    .map(Some);
             }
             request @ (LocalDaemonRequest::GetProviderCatalog(_)
             | LocalDaemonRequest::GetProviderCommandCatalogs(_)) => {
@@ -393,6 +420,10 @@ impl CommandRouter {
             )? {
                 return Ok(Some(response));
             }
+        }
+        if matches!(request, LocalDaemonRequest::GetKernelResourceTelemetry(_)) {
+            return execute_kernel_resource_telemetry_request(self.config_projection.snapshot())
+                .map(Some);
         }
         if matches!(request, LocalDaemonRequest::GetDaemonHealth(_)) {
             return execute_daemon_health_request(

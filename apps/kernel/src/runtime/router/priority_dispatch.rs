@@ -33,6 +33,7 @@ use crate::runtime::provider_run_control::execute_provider_run_request;
 use crate::runtime::relay_config_control::execute_relay_config_request;
 use crate::runtime::remote_machine_registry::execute_remote_machine_registry_request;
 use crate::runtime::remote_relay_inventory::execute_remote_relay_inventory_request;
+use crate::runtime::resource_telemetry::execute_kernel_resource_telemetry_request;
 use crate::runtime::session_collaboration_executor::execute_session_collaboration_request;
 use crate::runtime::session_read_control::execute_session_read_request;
 use crate::runtime::slice_command_executor::execute_slice_request;
@@ -108,9 +109,28 @@ impl CommandRouter {
             LocalDaemonRequest::LaunchProviderRuns(request) => {
                 execute_provider_batch_launch_command(&self.runtime_state, &command, request).await
             }
+            LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(request) => {
+                let artifact = self
+                    .runtime_state
+                    .capture_room_environment_screenshot(&command.caller, request)
+                    .await?;
+                Ok(LocalDaemonResponse::RoomEnvironmentScreenshotCaptured { artifact })
+            }
+            LocalDaemonRequest::ReadRoomEnvironmentScreenshotChunk(request) => {
+                let chunk = self
+                    .runtime_state
+                    .read_room_environment_screenshot_chunk(&command.caller, request)
+                    .await?;
+                Ok(LocalDaemonResponse::RoomEnvironmentScreenshotChunk { chunk })
+            }
             request @ (LocalDaemonRequest::ListSessions(_)
             | LocalDaemonRequest::ResolveSession(_)
             | LocalDaemonRequest::GetSessionState(_)
+            | LocalDaemonRequest::GetRoomEnvironmentState(_)
+            | LocalDaemonRequest::GetRoomEnvironmentSlice(_)
+            | LocalDaemonRequest::GetRoomEnvironmentResourceInventory(_)
+            | LocalDaemonRequest::GetRoomEnvironmentEvents(_)
+            | LocalDaemonRequest::ListRoomEnvironmentActionHistory(_)
             | LocalDaemonRequest::ListAgents(_)) => {
                 execute_session_read_request(&self.runtime_state, request).await
             }
@@ -133,6 +153,9 @@ impl CommandRouter {
             }
             request @ LocalDaemonRequest::GetDaemonHealth(_) => {
                 execute_daemon_health_request(self.daemon_health_projection_input(0), request).await
+            }
+            LocalDaemonRequest::GetKernelResourceTelemetry(_) => {
+                execute_kernel_resource_telemetry_request(self.config_projection.snapshot())
             }
             LocalDaemonRequest::ExportDebugBundle(request) => {
                 execute_export_debug_bundle_request(request)
@@ -174,13 +197,14 @@ impl CommandRouter {
             | LocalDaemonRequest::SaveSliceState(_)
             | LocalDaemonRequest::GetSliceStateStatus(_)
             | LocalDaemonRequest::ResetSliceState(_)
-            | LocalDaemonRequest::CreateSliceBackup(_)) => {
-                let caller_user_id = command_caller_user_id(&command);
+            | LocalDaemonRequest::CreateSliceBackup(_)
+            | LocalDaemonRequest::RestoreSliceBackup(_)) => {
                 execute_slice_request(
                     &self.runtime_state,
                     &self.config_projection,
                     Some(Arc::clone(&self.relay_state)),
-                    &caller_user_id,
+                    &command.caller,
+                    self.managed_kernel_registration.as_ref(),
                     request,
                 )
                 .await
@@ -293,6 +317,7 @@ impl CommandRouter {
             | LocalDaemonRequest::UnsetUserConfigValue(_)
             | LocalDaemonRequest::SetCredentialSecret(_)
             | LocalDaemonRequest::DeleteCredentialSecret(_)
+            | LocalDaemonRequest::SetProviderAccountCredential(_)
             | LocalDaemonRequest::GetCredentialVaultStatus(_)
             | LocalDaemonRequest::LockCredentialVault(_)
             | LocalDaemonRequest::ManageCredentialVault(_)) => {

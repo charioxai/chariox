@@ -31,9 +31,19 @@ pub(crate) struct SessionStateProjectionStore {
 struct SessionProjectionState {
     session_states: HashMap<String, Arc<RuntimeSession>>,
     session_list: Option<Arc<[Arc<RuntimeSession>]>>,
+    projection_revision: u64,
+    external_working_generation: u64,
+    next_external_observation_generation: u64,
     // Read-model-only provider activity. This must never feed RuntimeSession,
     // PromptStateOwner, prompt admission, or prompt settlement authority.
-    external_observed_active_prompts: HashMap<(String, String, String), PromptQueueItem>,
+    external_observed_activity:
+        HashMap<(String, String, String), ExternalObservedActivityProjection>,
+}
+
+#[derive(Default)]
+struct ExternalObservedActivityProjection {
+    latest_observation_generation: u64,
+    active_prompt: Option<PromptQueueItem>,
 }
 
 impl SessionStateProjectionStore {
@@ -68,14 +78,24 @@ impl SessionStateProjectionStore {
             .clone()
     }
 
-    pub(crate) fn list_shared_with_revision(&self) -> (Option<Arc<[Arc<RuntimeSession>]>>, u64) {
+    pub(crate) fn waiting_room_snapshot(
+        &self,
+    ) -> (
+        Option<Arc<[Arc<RuntimeSession>]>>,
+        BTreeMap<String, BTreeSet<String>>,
+        u64,
+        u64,
+    ) {
         let state = self
             .state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Writers replace the list before publishing the change sequence. Reading both while
-        // holding the list lock prevents pairing an older list with a newer revision.
-        (state.session_list.clone(), self.changes.sequence())
+        (
+            state.session_list.clone(),
+            external_observed_working_agents(&state),
+            state.projection_revision,
+            state.external_working_generation,
+        )
     }
 
     pub(crate) fn has_warmed_list(&self) -> bool {
@@ -104,7 +124,15 @@ impl SessionStateProjectionStore {
             if session_changed {
                 state.session_states.insert(session_id.clone(), session);
             }
-            list_changed || session_changed || external_activity_changed
+            let changed = list_changed || session_changed || external_activity_changed;
+            if changed {
+                state.projection_revision = state.projection_revision.saturating_add(1);
+                if external_activity_changed {
+                    state.external_working_generation =
+                        state.external_working_generation.saturating_add(1);
+                }
+            }
+            changed
         };
         if !changed {
             return;
@@ -125,8 +153,10 @@ impl SessionStateProjectionStore {
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut changed = false;
+            let mut external_activity_changed = false;
             for session in &sessions {
-                changed |= prune_external_observed_activity(&mut state, session.as_ref());
+                external_activity_changed |=
+                    prune_external_observed_activity(&mut state, session.as_ref());
                 if state
                     .session_states
                     .get(session.id())
@@ -148,7 +178,14 @@ impl SessionStateProjectionStore {
                 state.session_list = Some(session_list);
                 changed = true;
             }
-            changed
+            if changed || external_activity_changed {
+                state.projection_revision = state.projection_revision.saturating_add(1);
+            }
+            if external_activity_changed {
+                state.external_working_generation =
+                    state.external_working_generation.saturating_add(1);
+            }
+            changed || external_activity_changed
         };
         if !changed {
             return;
@@ -167,13 +204,15 @@ impl SessionStateProjectionStore {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.session_states.remove(session_id);
             state
-                .external_observed_active_prompts
+                .external_observed_activity
                 .retain(|(projected_session_id, _, _), _| projected_session_id != session_id);
             if let Some(session_list) = state.session_list.take() {
                 let mut session_list = session_list.iter().cloned().collect::<Vec<_>>();
                 session_list.retain(|session| session.id() != session_id);
                 state.session_list = Some(session_list.into());
             }
+            state.projection_revision = state.projection_revision.saturating_add(1);
+            state.external_working_generation = state.external_working_generation.saturating_add(1);
         }
         self.changes.record_change();
         self.session_change_signal(session_id).record_change();
@@ -190,6 +229,49 @@ impl SessionStateProjectionStore {
         external_session_id: &str,
         active_prompt: Option<PromptQueueItem>,
     ) -> bool {
+        let generation = self.begin_external_observation(session_id, agent_id, external_session_id);
+        self.sync_external_observed_active_prompt_generation(
+            session_id,
+            agent_id,
+            external_session_id,
+            generation,
+            active_prompt,
+        )
+    }
+
+    pub(crate) fn begin_external_observation(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        external_session_id: &str,
+    ) -> u64 {
+        let mut state = self
+            .state
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.next_external_observation_generation =
+            state.next_external_observation_generation.saturating_add(1);
+        let generation = state.next_external_observation_generation;
+        state
+            .external_observed_activity
+            .entry((
+                session_id.to_string(),
+                agent_id.to_string(),
+                external_session_id.to_string(),
+            ))
+            .or_default()
+            .latest_observation_generation = generation;
+        generation
+    }
+
+    pub(crate) fn sync_external_observed_active_prompt_generation(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        external_session_id: &str,
+        observation_generation: u64,
+        active_prompt: Option<PromptQueueItem>,
+    ) -> bool {
         let key = (
             session_id.to_string(),
             agent_id.to_string(),
@@ -200,31 +282,30 @@ impl SessionStateProjectionStore {
                 .state
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            match active_prompt {
-                Some(active_prompt)
-                    if state.session_states.get(session_id).is_some_and(|session| {
-                        session.status() != SessionStatus::Ended
-                            && session.agents().iter().any(|agent| agent.id() == agent_id)
-                    }) =>
+            let valid_target = state.session_states.get(session_id).is_some_and(|session| {
+                session.status() != SessionStatus::Ended
+                    && session.agents().iter().any(|agent| agent.id() == agent_id)
+            });
+            let projected_prompt = valid_target.then_some(active_prompt).flatten();
+            let activity_changed = {
+                let entry = state.external_observed_activity.entry(key).or_default();
+                if entry.latest_observation_generation != observation_generation {
+                    false
+                } else if entry.active_prompt.as_ref().map(PromptQueueItem::id)
+                    == projected_prompt.as_ref().map(PromptQueueItem::id)
                 {
-                    if state
-                        .external_observed_active_prompts
-                        .get(&key)
-                        .is_some_and(|current| current.id() == active_prompt.id())
-                    {
-                        false
-                    } else {
-                        state
-                            .external_observed_active_prompts
-                            .insert(key, active_prompt);
-                        true
-                    }
+                    false
+                } else {
+                    entry.active_prompt = projected_prompt;
+                    true
                 }
-                Some(_) | None => state
-                    .external_observed_active_prompts
-                    .remove(&key)
-                    .is_some(),
+            };
+            if activity_changed {
+                state.external_working_generation =
+                    state.external_working_generation.saturating_add(1);
+                state.projection_revision = state.projection_revision.saturating_add(1);
             }
+            activity_changed
         };
         if changed {
             self.changes.record_change();
@@ -244,8 +325,11 @@ impl SessionStateProjectionStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         for (agent_id, agent_activity) in activity {
             let Some((_, prompt)) = state
-                .external_observed_active_prompts
+                .external_observed_activity
                 .iter()
+                .filter_map(|(key, activity)| {
+                    activity.active_prompt.as_ref().map(|prompt| (key, prompt))
+                })
                 .filter(|((projected_session_id, projected_agent_id, _), _)| {
                     projected_session_id == session_id && projected_agent_id == agent_id
                 })
@@ -302,14 +386,7 @@ impl SessionStateProjectionStore {
             .state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut agents = BTreeMap::<String, BTreeSet<String>>::new();
-        for (session_id, agent_id, _) in state.external_observed_active_prompts.keys() {
-            agents
-                .entry(session_id.clone())
-                .or_default()
-                .insert(agent_id.clone());
-        }
-        agents
+        external_observed_working_agents(&state)
     }
 
     pub(crate) fn change_sequence(&self) -> u64 {
@@ -471,18 +548,33 @@ fn prune_external_observed_activity(
     state: &mut SessionProjectionState,
     session: &RuntimeSession,
 ) -> bool {
-    let previous_len = state.external_observed_active_prompts.len();
-    state.external_observed_active_prompts.retain(
-        |(projected_session_id, projected_agent_id, _), _| {
+    let previous_active = external_observed_working_agents(state);
+    state
+        .external_observed_activity
+        .retain(|(projected_session_id, projected_agent_id, _), _| {
             projected_session_id != session.id()
                 || (session.status() != SessionStatus::Ended
                     && session
                         .agents()
                         .iter()
                         .any(|agent| agent.id() == projected_agent_id))
-        },
-    );
-    previous_len != state.external_observed_active_prompts.len()
+        });
+    previous_active != external_observed_working_agents(state)
+}
+
+fn external_observed_working_agents(
+    state: &SessionProjectionState,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut agents = BTreeMap::<String, BTreeSet<String>>::new();
+    for ((session_id, agent_id, _), activity) in &state.external_observed_activity {
+        if activity.active_prompt.is_some() {
+            agents
+                .entry(session_id.clone())
+                .or_default()
+                .insert(agent_id.clone());
+        }
+    }
+    agents
 }
 
 fn upsert_session(
@@ -815,6 +907,62 @@ mod tests {
         .expect("clearing external activity should wake global and scoped waiters");
         assert!(store.change_sequence() > active_global_sequence);
         assert!(store.session_change_sequence("session-1") > active_scoped_sequence);
+    }
+
+    #[test]
+    fn settled_external_observation_rejects_older_delayed_generation() {
+        let store = SessionStateProjectionStore::default();
+        let mut projected_session = session("session-1");
+        projected_session.set_agents(vec![agent("session-1", "agent-1")]);
+        store.update_list(vec![projected_session]);
+        let prompt = PromptQueueItem::external_observed_running(
+            "codex",
+            "provider-session-1",
+            "provider-turn-1",
+            "agent-1",
+            "external prompt",
+        );
+
+        let older = store.begin_external_observation("session-1", "agent-1", "provider-session-1");
+        assert!(store.sync_external_observed_active_prompt_generation(
+            "session-1",
+            "agent-1",
+            "provider-session-1",
+            older,
+            Some(prompt.clone()),
+        ));
+        let (_, working, working_revision, working_generation) = store.waiting_room_snapshot();
+        assert_eq!(
+            working,
+            BTreeMap::from([(
+                "session-1".to_string(),
+                BTreeSet::from(["agent-1".to_string()]),
+            )])
+        );
+
+        let settled =
+            store.begin_external_observation("session-1", "agent-1", "provider-session-1");
+        assert!(store.sync_external_observed_active_prompt_generation(
+            "session-1",
+            "agent-1",
+            "provider-session-1",
+            settled,
+            None,
+        ));
+        assert!(!store.sync_external_observed_active_prompt_generation(
+            "session-1",
+            "agent-1",
+            "provider-session-1",
+            older,
+            Some(prompt),
+        ));
+
+        let (sessions, working, settled_revision, settled_generation) =
+            store.waiting_room_snapshot();
+        assert_eq!(sessions.expect("session list should be atomic").len(), 1);
+        assert!(working.is_empty());
+        assert!(settled_revision > working_revision);
+        assert!(settled_generation > working_generation);
     }
 
     #[test]

@@ -694,6 +694,12 @@ fn outline_turn_lifecycle(
         return SessionHistoryOutlineTurnLifecycle::Open;
     }
     if events.iter().any(|event| {
+        event.metadata.get(crate::history::PROMPT_SETTLEMENT_STATUS_METADATA_KEY)
+            .and_then(serde_json::Value::as_str) == Some("failed")
+    }) {
+        return SessionHistoryOutlineTurnLifecycle::Failed;
+    }
+    if events.iter().any(|event| {
         event
             .metadata
             .get(crate::history::PROMPT_SETTLEMENT_STATUS_METADATA_KEY)

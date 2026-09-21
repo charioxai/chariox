@@ -178,17 +178,30 @@ async fn send_remote_workspace_live_sync_request_with_recovery(
 }
 
 fn remote_workspace_live_sync_relay_error_is_retryable(error: &DaemonError) -> bool {
-    let DaemonError::LocalTransport { operation, message } = error else {
-        return false;
+    let (operation, message, code) = match error {
+        DaemonError::LocalTransport { operation, message } => (*operation, message.as_str(), None),
+        DaemonError::RelayTransport {
+            operation,
+            code,
+            message,
+            retryable: true,
+        } => (*operation, message.as_str(), Some(code.as_str())),
+        _ => return false,
     };
     if matches!(
-        *operation,
+        operation,
         "connect temporary relay peer socket"
             | "write temporary relay register"
             | "write temporary relay peer request"
     ) {
         return true;
     }
+    let structured_transient_code = code.is_some_and(|code| {
+        matches!(
+            code,
+            "target_not_connected" | "target_disconnected"
+        )
+    });
     let message = message.to_ascii_lowercase();
     let transient_message = [
         "timed out",
@@ -206,9 +219,9 @@ fn remote_workspace_live_sync_relay_error_is_retryable(error: &DaemonError) -> b
     ]
     .iter()
     .any(|candidate| message.contains(candidate));
-    transient_message
+    (structured_transient_code || transient_message)
         && matches!(
-            *operation,
+            operation,
             "read temporary relay peer response"
                 | "get_live_kernel"
                 | "relay_metadata_query"
@@ -243,6 +256,28 @@ mod recovery_tests {
         assert!(remote_workspace_live_sync_relay_error_is_retryable(
             &disconnected
         ));
+
+        let structured_disconnected = DaemonError::RelayTransport {
+            operation: "read temporary relay peer response",
+            code: "target_not_connected".to_string(),
+            message: "target daemon is not connected to relay".to_string(),
+            retryable: true,
+        };
+        assert!(remote_workspace_live_sync_relay_error_is_retryable(
+            &structured_disconnected
+        ));
+
+        let structured_home_rejection = DaemonError::RelayTransport {
+            operation: "read temporary relay peer response",
+            code: "transport_error".to_string(),
+            message: "the original workspace live sync invocation ended before publishing a result"
+                .to_string(),
+            retryable: true,
+        };
+        assert!(!remote_workspace_live_sync_relay_error_is_retryable(
+            &structured_home_rejection
+        ));
+
         assert!(!remote_workspace_live_sync_relay_error_is_retryable(
             &rejected
         ));

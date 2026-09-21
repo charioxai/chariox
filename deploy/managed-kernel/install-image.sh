@@ -76,9 +76,14 @@ require_regular_file "$image_root/usr/lib/chariox/build-attestation.json"
 require_regular_file "$image_root/usr/lib/chariox/build-attestation.sig"
 require_regular_file "$image_root/usr/lib/chariox/builder-public-key"
 require_regular_file "$image_root/etc/systemd/system/chariox-managed-bootstrap.service"
+require_regular_file "$image_root/etc/systemd/system/chariox-disposable-worker-bootstrap.service"
 require_regular_file "$image_root/etc/systemd/system/chariox-rootless-docker.service"
 require_regular_file "$image_root/etc/systemd/system/chariox-slice-broker.service"
 require_directory "$image_root/usr/lib/chariox/slice-build-context"
+rootless_context=usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker
+for rootless_file in managed-rootless-service.sh chariox-rootless-engine.service chariox-rootless-user-manager.conf; do
+  require_regular_file "$image_root/$rootless_context/$rootless_file"
+done
 
 install_lock=${CHARIOX_IMAGE_INSTALL_LOCK:-/run/lock/chariox-managed-image-install.lock}
 exec 9>"$install_lock"
@@ -134,6 +139,10 @@ if [ "$(id -gn chariox-docker)" != "chariox-docker" ]; then
   echo "existing chariox-docker user has an incompatible primary group" >&2
   exit 1
 fi
+docker_uid=$(id -u chariox-docker)
+case "$docker_uid" in
+  ''|0|*[!0-9]*) echo "invalid managed Docker uid" >&2; exit 1 ;;
+esac
 usermod --append --groups chariox-slice chariox
 
 install -d -o chariox -g chariox -m 0700 "$state_root" "$state_root/home"
@@ -185,6 +194,8 @@ install -d -o root -g root -m 0755 \
   "$install_root/usr/local/bin" \
   "$install_root/usr/lib/chariox" \
   "$install_root/etc/systemd/system" \
+  "$install_root/etc/systemd/user" \
+  "$install_root/etc/systemd/system/user@$docker_uid.service.d" \
   "$releases_root"
 rm -rf -- "$pending_release"
 if [ -e "$published_release" ] || [ -L "$published_release" ]; then
@@ -212,6 +223,7 @@ if [ ! -e "$published_release" ]; then
   install -o root -g root -m 0644 "$image_root/usr/lib/chariox/build-attestation.sig" "$pending_release/usr/lib/chariox/build-attestation.sig"
   install -o root -g root -m 0644 "$image_root/usr/lib/chariox/builder-public-key" "$pending_release/usr/lib/chariox/builder-public-key"
   install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-managed-bootstrap.service" "$pending_release/etc/systemd/system/chariox-managed-bootstrap.service"
+  install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-disposable-worker-bootstrap.service" "$pending_release/etc/systemd/system/chariox-disposable-worker-bootstrap.service"
   install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-rootless-docker.service" "$pending_release/etc/systemd/system/chariox-rootless-docker.service"
   install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-slice-broker.service" "$pending_release/etc/systemd/system/chariox-slice-broker.service"
   (umask 000; cp -RP "$image_root/usr/lib/chariox/slice-build-context" "$pending_release/usr/lib/chariox/slice-build-context")
@@ -222,6 +234,7 @@ fi
 atomic_symlink "../../../usr/lib/chariox/current/usr/local/bin/chariox-kernel" "$install_root/usr/local/bin/chariox-kernel"
 atomic_symlink "../../../usr/lib/chariox/current/usr/local/bin/chariox-managed-bootstrap" "$install_root/usr/local/bin/chariox-managed-bootstrap"
 atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-managed-bootstrap.service" "$install_root/etc/systemd/system/chariox-managed-bootstrap.service"
+atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-disposable-worker-bootstrap.service" "$install_root/etc/systemd/system/chariox-disposable-worker-bootstrap.service"
 atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-rootless-docker.service" "$install_root/etc/systemd/system/chariox-rootless-docker.service"
 atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-slice-broker.service" "$install_root/etc/systemd/system/chariox-slice-broker.service"
 atomic_symlink "current/usr/lib/chariox/release-manifest.json" "$install_root/usr/lib/chariox/release-manifest.json"
@@ -231,6 +244,8 @@ atomic_symlink "current/usr/lib/chariox/build-attestation.json" "$install_root/u
 atomic_symlink "current/usr/lib/chariox/build-attestation.sig" "$install_root/usr/lib/chariox/build-attestation.sig"
 atomic_symlink "current/usr/lib/chariox/builder-public-key" "$install_root/usr/lib/chariox/builder-public-key"
 atomic_symlink "current/usr/lib/chariox/slice-build-context" "$install_root/usr/lib/chariox/slice-build-context"
+atomic_symlink "../../../usr/lib/chariox/current/$rootless_context/chariox-rootless-engine.service" "$install_root/etc/systemd/user/chariox-rootless-engine.service"
+atomic_symlink "../../../../usr/lib/chariox/current/$rootless_context/chariox-rootless-user-manager.conf" "$install_root/etc/systemd/system/user@$docker_uid.service.d/50-chariox-docker.conf"
 previous_current_target=
 if [ -L "$install_root/usr/lib/chariox/current" ]; then
   previous_current_target=$(readlink "$install_root/usr/lib/chariox/current")
@@ -239,6 +254,7 @@ atomic_symlink "releases/$release_name" "$install_root/usr/lib/chariox/current"
 
 if ! rm -f -- "$install_root/etc/systemd/system/multi-user.target.wants/chariox-slice-broker.service" \
   || ! systemctl daemon-reload \
+  || ! loginctl enable-linger chariox-docker \
   || ! systemctl enable chariox-rootless-docker.service \
   || ! systemctl enable chariox-managed-bootstrap.service; then
   if [ -n "$previous_current_target" ]; then

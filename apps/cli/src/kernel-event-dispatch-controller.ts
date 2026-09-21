@@ -35,7 +35,7 @@ type KernelEventDispatchControllerDeps = {
   drainTerminalOutputRecords: () => void
   applyRuntimeNotices: (notices: RuntimeNoticeRecord[]) => void
   applyAssistantMessageCompleted: (event: AssistantMessageCompletedEvent) => void
-  refreshAssistantMessageHistory: (agentId: string) => void
+  refreshAssistantMessageHistory: (agentId: string) => Promise<boolean>
   applyKernelSessionSnapshot: (
     session: RuntimeSession,
     providerRun: RuntimeProviderRun | null,
@@ -89,6 +89,12 @@ type KernelEventDispatchControllerDeps = {
 export function createKernelEventDispatchController(
   deps: KernelEventDispatchControllerDeps,
 ) {
+  const lastBackfilledTurnByAgent = new Map<string, string>()
+  const backfillInFlightByAgent = new Map<string, {
+    turnId: string
+    result: Promise<boolean>
+  }>()
+
   const applySessionSnapshot = async (event: KernelEventSessionSnapshot) => {
     deps.recordDaemonActivity("kernel_session_snapshot")
     deps.scheduleSharedPromptInputHistoryRefresh()
@@ -119,7 +125,7 @@ export function createKernelEventDispatchController(
         deps.drainTerminalOutputRecords()
         deps.applyAssistantMessageCompleted(event)
         if (typeof event.agent_id === "string") {
-          deps.refreshAssistantMessageHistory(event.agent_id)
+          void deps.refreshAssistantMessageHistory(event.agent_id)
         }
         return
       case "session_snapshot":
@@ -179,6 +185,8 @@ export function createKernelEventDispatchController(
         return
       case "transport_resumed":
         deps.applyTransportResumed()
+        deps.scheduleSharedPromptInputHistoryRefresh()
+        await deps.resyncAttachedKernelState("transport_resumed")
         return
       case "replay_gap":
         deps.recordDaemonActivity("kernel_replay_gap")
@@ -213,6 +221,45 @@ export function createKernelEventDispatchController(
         ? event.agent_activity_revision
         : null,
     )
+    const backfills: Promise<void>[] = []
+    for (const [agentId, activity] of Object.entries(event.agent_activity)) {
+      const completedTurn = isRecord(activity) ? activity.last_completed_turn : null
+      if (!isRecord(completedTurn) || typeof completedTurn.turn_id !== "string") {
+        continue
+      }
+      backfills.push(backfillAssistantMessageHistory(agentId, completedTurn.turn_id))
+    }
+    await Promise.all(backfills)
+  }
+
+  async function backfillAssistantMessageHistory(agentId: string, turnId: string) {
+    if (lastBackfilledTurnByAgent.get(agentId) === turnId) {
+      return
+    }
+    const inFlight = backfillInFlightByAgent.get(agentId)
+    if (inFlight?.turnId === turnId) {
+      if (!await inFlight.result) {
+        await backfillAssistantMessageHistory(agentId, turnId)
+      }
+      return
+    }
+
+    const entry = {
+      turnId,
+      result: Promise.resolve(false),
+    }
+    entry.result = deps.refreshAssistantMessageHistory(agentId).then((refreshed) => {
+      if (refreshed && backfillInFlightByAgent.get(agentId) === entry) {
+        lastBackfilledTurnByAgent.set(agentId, turnId)
+      }
+      return refreshed
+    }).finally(() => {
+      if (backfillInFlightByAgent.get(agentId) === entry) {
+        backfillInFlightByAgent.delete(agentId)
+      }
+    })
+    backfillInFlightByAgent.set(agentId, entry)
+    await entry.result
   }
 
   async function applyProviderRunChanged(event: KernelEventProviderRunChanged) {
@@ -238,6 +285,9 @@ export function createKernelEventDispatchController(
       return
     }
     await deps.applySessionMetadataChanged(event.session_id, event.metadata)
+    if (Object.prototype.hasOwnProperty.call(event.metadata, "focused_agent_id")) {
+      await deps.resyncAttachedKernelState("focused_agent_changed")
+    }
   }
 
   async function applyRuntimeInteractionsChanged(event: KernelEventRuntimeInteractionsChanged) {

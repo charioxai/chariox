@@ -666,6 +666,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     },
     createSlice: (options) => createSlice(deps.client, cliWaitingRoomSliceApiOptions(options)),
     startSlice: (sliceRef) => startSlice(deps.client, sliceRef),
+    deleteSlice: (sliceRef) => deleteSlice(deps.client, sliceRef),
     updateSlices: (slice) => {
       deps.setSlicesState((current: any[] = []) => [
         slice,

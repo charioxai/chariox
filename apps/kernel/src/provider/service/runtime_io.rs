@@ -8,7 +8,9 @@ use crate::provider::{
 use crate::session::PromptAttachment;
 
 use super::super::{
-    claude_runtime::{initialize_claude_runtime, ClaudeRunSelection, ClaudeRuntimeBinding},
+    claude_runtime::{
+        initialize_claude_runtime_with_credentials, ClaudeRunSelection, ClaudeRuntimeBinding,
+    },
     codex_runtime::{initialize_codex_runtime, CodexRuntimeBinding},
     opencode_binding::{initialize_opencode_runtime, OpenCodeRunSelection, OpenCodeRuntimeBinding},
 };
@@ -31,6 +33,53 @@ impl ProviderProcessService {
     pub(crate) fn initialize_runtime_binding(
         run: &RuntimeProviderRun,
     ) -> Result<Option<ProviderRuntimeBinding>, DaemonError> {
+        Self::initialize_runtime_binding_with_credentials(
+            run,
+            &crate::provider::ProviderCredentialEnvironment::default(),
+        )
+    }
+
+    pub(crate) fn initialize_runtime_binding_with_credentials(
+        run: &RuntimeProviderRun,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
+    ) -> Result<Option<ProviderRuntimeBinding>, DaemonError> {
+        #[cfg(test)]
+        if crate::provider::take_provider_lifecycle_failure_for_test(
+            run.id(),
+            crate::provider::ProviderLifecycleFailureStage::Bind,
+        ) {
+            return Err(DaemonError::ProviderProtocol {
+                provider_run_id: run.id().to_string(),
+                operation: "injected_provider_restart_binding",
+                message: "injected provider restart binding failure".to_string(),
+            });
+        }
+        #[cfg(test)]
+        if crate::provider::record_provider_credential_delivery_for_test(
+            run.id(),
+            "runtime_binding",
+            credentials,
+        ) {
+            return Ok(None);
+        }
+        // Cold prompt launches can reach this synchronous provider handshake
+        // from an async worker. The provider calls back into this kernel's MCP
+        // server during initialization, so yield the worker while waiting.
+        // Calls already on a blocking thread or outside Tokio stay synchronous.
+        let initialize = || Self::initialize_runtime_binding_sync(run, credentials);
+        if tokio::runtime::Handle::try_current().is_ok_and(|handle| {
+            handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread
+        }) {
+            tokio::task::block_in_place(initialize)
+        } else {
+            initialize()
+        }
+    }
+
+    fn initialize_runtime_binding_sync(
+        run: &RuntimeProviderRun,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
+    ) -> Result<Option<ProviderRuntimeBinding>, DaemonError> {
         if run.adapter_key() == "dev-stub" && run.provider() == "runtime-init-fail" {
             return Err(DaemonError::ProviderProtocol {
                 provider_run_id: run.id().to_string(),
@@ -47,7 +96,7 @@ impl ProviderProcessService {
             && run.client_interface().is_chariox()
             && !crate::provider::provider_run_uses_claude_native_bridge(run)
         {
-            return initialize_claude_runtime(run)
+            return initialize_claude_runtime_with_credentials(run, credentials)
                 .map(ProviderRuntimeBinding::Claude)
                 .map(Some);
         }
@@ -104,6 +153,11 @@ impl ProviderProcessService {
     pub(crate) fn structured_prompt_io_in_flight(&self, provider_run_id: &str) -> bool {
         self.run_actor_mailbox
             .structured_prompt_io_in_flight(provider_run_id)
+    }
+
+    pub(crate) fn structured_runtime_state_bound(&self, provider_run_id: &str) -> bool {
+        self.run_actor_mailbox
+            .structured_runtime_state_bound(provider_run_id)
     }
 
     #[doc(hidden)]
@@ -222,6 +276,7 @@ impl ProviderProcessService {
         visible_user_prompt: &str,
         hidden_system_context: &str,
         timeout: std::time::Duration,
+        policy: super::super::ProviderUtilityExecutionPolicy,
     ) -> Result<String, DaemonError> {
         if !self.run_uses_structured_prompt_io(run) {
             return Err(DaemonError::LocalTransport {
@@ -240,7 +295,7 @@ impl ProviderProcessService {
             PromptAssemblyMode::UtilityTurn,
         )?;
         self.run_actor_mailbox
-            .run_utility(run.id().to_string(), run.clone(), envelope, timeout)
+            .run_utility(run.id().to_string(), run.clone(), envelope, timeout, policy)
     }
 
     pub(crate) fn enqueue_structured_prompt_abort(

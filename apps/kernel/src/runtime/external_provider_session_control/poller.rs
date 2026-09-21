@@ -523,15 +523,16 @@ async fn attached_external_observer_targets_for_runtime(
     responsive_targets_only: bool,
 ) -> Vec<AttachedExternalObserverTarget> {
     if let Some(runtime_state) = runtime_state {
-        let (inputs, session_store) = runtime_state
+        return runtime_state
             .with_app_side_effect(|app| {
-                (
-                    ExternalObserverRuntimeInputs::capture(app, responsive_targets_only),
-                    app.session_state_store(),
-                )
+                let inputs = ExternalObserverRuntimeInputs::capture(app, responsive_targets_only);
+                let session_store = app.session_state_store();
+                let mut targets =
+                    attached_external_observer_targets_from_inputs(&inputs, &session_store);
+                reserve_external_observation_generations(app, &mut targets);
+                targets
             })
             .await;
-        return attached_external_observer_targets_from_inputs(&inputs, &session_store);
     }
     let app = app
         .try_lock()

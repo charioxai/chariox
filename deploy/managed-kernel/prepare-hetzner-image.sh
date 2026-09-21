@@ -59,6 +59,7 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends \
+  dbus-user-session \
   acl \
   bash \
   bubblewrap \
@@ -212,9 +213,23 @@ slice_base_image=node:22.17.1-bookworm@sha256:37ff334612f77d8f999c10af8797727b73
 runuser -u chariox-docker -- env \
   DOCKER_HOST=unix:///run/chariox-docker/docker.sock \
   docker pull "$slice_base_image" >/dev/null
+# Exercise BuildKit's client-side registry-auth resolution through the real
+# broker entrypoint. A Docker pull alone only tests daemon-side resolution.
+broker_namespace=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/enter-rootless-docker-namespace.sh
+{
+  printf '%s\n' '# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32'
+  printf 'FROM %s\n' "$slice_base_image"
+} |
+runuser -u chariox-docker -- env \
+  DOCKER_BUILDKIT=1 \
+  DOCKER_HOST=unix:///run/chariox-docker/docker.sock \
+  "$broker_namespace" docker build --pull --tag chariox-broker-network-check:local - >/dev/null
 runuser -u chariox-docker -- env \
   DOCKER_HOST=unix:///run/chariox-docker/docker.sock \
   docker image inspect "$slice_base_image" >/dev/null
+runuser -u chariox-docker -- env \
+  DOCKER_HOST=unix:///run/chariox-docker/docker.sock \
+  docker image rm chariox-broker-network-check:local >/dev/null
 runuser -u chariox-docker -- env \
   DOCKER_HOST=unix:///run/chariox-docker/docker.sock \
   docker image rm "$slice_base_image" >/dev/null
@@ -256,6 +271,25 @@ if find /var/lib/chariox-slice-share -mindepth 1 \
 fi
 
 apt-get clean
+managed_sshd_config=/etc/ssh/sshd_config.d/00-chariox-managed.conf
+install -d -o root -g root -m 0755 /etc/ssh/sshd_config.d
+managed_sshd_tmp=$(mktemp)
+{
+  printf '%s\n' 'PasswordAuthentication no'
+  printf '%s\n' 'KbdInteractiveAuthentication no'
+  printf '%s\n' 'PermitRootLogin prohibit-password'
+} >"$managed_sshd_tmp"
+install -o root -g root -m 0644 "$managed_sshd_tmp" "$managed_sshd_config"
+rm -f "$managed_sshd_tmp"
+passwd --lock root
+chage -d "$(date -u +%Y-%m-%d)" -M 99999 -I -1 -E -1 root
+sshd_effective=$(sshd -T)
+printf '%s\n' "$sshd_effective" | grep -Fxq 'passwordauthentication no' \
+  || fail "managed image must disable SSH password authentication"
+printf '%s\n' "$sshd_effective" | grep -Fxq 'kbdinteractiveauthentication no' \
+  || fail "managed image must disable interactive SSH authentication"
+printf '%s\n' "$sshd_effective" | grep -Fxq 'permitrootlogin prohibit-password' \
+  || fail "managed image must restrict root SSH to public keys"
 rm -rf /var/lib/apt/lists/* /tmp/chariox-managed-release /root/.cache /root/.npm /root/.ssh
 find /var/log -type f -exec sh -c ': > "$1"' _ {} \;
 cloud-init clean --logs --machine-id --seed

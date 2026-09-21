@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -26,6 +27,8 @@ pub(super) struct PersistedDaemonConfig {
     pub(super) machines: Vec<PersistedMachineRegistration>,
     #[serde(default)]
     pub(super) clients: Vec<PersistedClientPairing>,
+    #[serde(default)]
+    pub(super) relay_peer_public_keys: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

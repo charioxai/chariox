@@ -101,7 +101,12 @@ fn validate_import_manifest(
     expected_project_id: &str,
     expected_source_repositories: Option<&[DevelopmentSourceRepositoryBinding]>,
 ) -> Result<BTreeMap<String, ArtifactExpectation>, DaemonError> {
-    if manifest.schema_version != DEVELOPMENT_CONTEXT_SCHEMA_VERSION {
+    if ![
+        DEVELOPMENT_CONTEXT_SCHEMA_VERSION,
+        DIRECTORY_CONTEXT_SCHEMA_VERSION,
+    ]
+    .contains(&manifest.schema_version)
+    {
         return Err(context_error(format!(
             "unsupported development context schema version {}",
             manifest.schema_version
@@ -178,7 +183,29 @@ fn validate_import_manifest(
                 "development context target directories must be unique",
             ));
         }
-        validate_git_oid(&repository.head_sha)?;
+        if repository.workspace_kind.is_git() {
+            validate_git_oid(&repository.head_sha)?;
+            if !repository.directories.is_empty() {
+                return Err(context_error(
+                    "Git workspace cannot declare directory-only entries",
+                ));
+            }
+        } else {
+            if manifest.schema_version != DIRECTORY_CONTEXT_SCHEMA_VERSION
+                || !repository.head_sha.is_empty()
+                || repository.branch.is_some()
+                || repository.upstream.is_some()
+                || repository.origin_url.is_some()
+                || !repository.bundle_path.is_empty()
+                || !repository.bundle_sha256.is_empty()
+                || repository.bundle_size_bytes != 0
+            {
+                return Err(context_error(
+                    "directory workspace contains Git metadata or uses an unsupported schema",
+                ));
+            }
+            validate_directory_paths(repository)?;
+        }
         for value in [
             repository.logical_name.as_str(),
             repository.branch.as_deref().unwrap_or_default(),
@@ -227,25 +254,31 @@ fn validate_import_manifest(
                 .saturating_add(repository.origin_url.as_ref().map_or(0, String::len))
                 .saturating_add(2048),
         )?;
-        let expected_bundle = format!(
-            "repositories/{}/repository.bundle",
-            repository.repository_id
-        );
-        if repository.bundle_path != expected_bundle
-            || repository.bundle_size_bytes > MAX_BUNDLE_BYTES_PER_REPOSITORY
-        {
-            return Err(context_error(
-                "development context Git bundle metadata is invalid",
-            ));
+        if repository.workspace_kind.is_git() {
+            let expected_bundle = format!(
+                "repositories/{}/repository.bundle",
+                repository.repository_id
+            );
+            if repository.bundle_path != expected_bundle
+                || repository.bundle_size_bytes > MAX_BUNDLE_BYTES_PER_REPOSITORY
+            {
+                return Err(context_error(
+                    "development context Git bundle metadata is invalid",
+                ));
+            }
+            validate_sha256(&repository.bundle_sha256)?;
+            insert_artifact(
+                &mut artifacts,
+                &repository.bundle_path,
+                &repository.bundle_sha256,
+                repository.bundle_size_bytes,
+            )?;
+            total_artifact_bytes =
+                total_artifact_bytes.saturating_add(repository.bundle_size_bytes);
         }
-        validate_sha256(&repository.bundle_sha256)?;
-        insert_artifact(
-            &mut artifacts,
-            &repository.bundle_path,
-            &repository.bundle_sha256,
-            repository.bundle_size_bytes,
-        )?;
-        total_artifact_bytes = total_artifact_bytes.saturating_add(repository.bundle_size_bytes);
+        for directory in &repository.directories {
+            budget.consume(directory.len() + 256)?;
+        }
         if repository.overlay.len() > MAX_OVERLAY_FILES_PER_REPOSITORY {
             return Err(context_error(
                 "development context overlay has too many paths",
@@ -324,6 +357,50 @@ fn validate_import_manifest(
         }
     }
     Ok(artifacts)
+}
+
+fn validate_directory_paths(repository: &DevelopmentRepositoryManifest) -> Result<(), DaemonError> {
+    if repository
+        .directories
+        .len()
+        .saturating_add(repository.overlay.len())
+        > MAX_OVERLAY_FILES_PER_REPOSITORY
+    {
+        return Err(context_error("directory workspace has too many paths"));
+    }
+    let mut directories = BTreeSet::new();
+    for path in &repository.directories {
+        validate_relative_path(path)?;
+        if overlay::context_force_excluded_path(path) || !directories.insert(path.as_str()) {
+            return Err(context_error(
+                "directory workspace contains an excluded or duplicate directory",
+            ));
+        }
+    }
+    for path in repository
+        .directories
+        .iter()
+        .chain(repository.overlay.iter().map(|entry| &entry.path))
+    {
+        if let Some((parent, _)) = path.rsplit_once('/') {
+            if !directories.contains(parent) {
+                return Err(context_error(
+                    "directory workspace has an undeclared parent",
+                ));
+            }
+        }
+    }
+    for entry in &repository.overlay {
+        if !matches!(entry.index, DevelopmentFileState::Absent)
+            || !matches!(entry.worktree, DevelopmentFileState::File { .. })
+            || directories.contains(entry.path.as_str())
+        {
+            return Err(context_error(
+                "directory workspace contains invalid file state",
+            ));
+        }
+    }
+    Ok(())
 }
 
 struct StrictTarReader<R> {

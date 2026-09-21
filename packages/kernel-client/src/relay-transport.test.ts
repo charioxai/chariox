@@ -37,6 +37,31 @@ test("relay requests preserve the request id as the kernel command id", () => {
   )
 })
 
+test("relay requests do not double-envelope an already normalized command", () => {
+  const daemon = createRelayKeypair()
+  const request = {
+    ImportSliceProviderAuth: {
+      slice_ref: "workspace-slice-5pwn7",
+      provider: "codex",
+      account_profile: "default",
+    },
+  }
+  const normalized = normalizeRelayRequest(
+    "relay-request-1",
+    { command_id: "web-command-1", request },
+    { daemon_id: "home-kernel", daemon_alias: null },
+    daemon.publicKeyBase64,
+  )
+
+  assert.deepEqual(
+    JSON.parse(decryptRelayPayload(daemon.privateKey, normalized.frame.encrypted_request)),
+    {
+      command_id: "web-command-1",
+      request,
+    },
+  )
+})
+
 test("buildRelaySubscribeFrame projects scoped relay subscriptions", () => {
   const frame = buildRelaySubscribeFrame({
     requestId: "request-1",

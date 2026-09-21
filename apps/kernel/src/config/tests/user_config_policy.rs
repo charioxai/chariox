@@ -102,6 +102,10 @@ fn user_config_defaults_to_versioned_slice_image() {
         DEFAULT_LINUX_SLICE_DOCKER_IMAGE,
         "chariox-slice-linux:local"
     );
+    assert_eq!(
+        config.slices.linux.memory_mb,
+        Some(DEFAULT_LOCAL_DOCKER_SLICE_MEMORY_MB)
+    );
 }
 
 #[test]
@@ -135,6 +139,25 @@ backend = "process_memory"
         config.credential_vault.backend,
         CredentialVaultBackend::ProcessMemory
     );
+}
+
+#[test]
+fn user_config_rejects_root_level_credential_vault_path() {
+    let mut config = CharioxUserConfig::default();
+    config.credential_vault.path = "/managed-vault.json".to_string();
+
+    let error = config
+        .validate()
+        .expect_err("root-level Vault paths must protect their derived companion files");
+    assert!(error
+        .to_string()
+        .contains("direct child of filesystem root"));
+
+    config.credential_vault.path = "/tmp/../managed-vault.json".to_string();
+    let error = config
+        .validate()
+        .expect_err("root-equivalent Vault paths must not bypass the root check");
+    assert!(error.to_string().contains("parent-directory components"));
 }
 
 #[test]

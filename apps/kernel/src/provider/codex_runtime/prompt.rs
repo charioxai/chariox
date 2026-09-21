@@ -26,6 +26,11 @@ pub fn submit_codex_prompt(
     envelope: &PromptEnvelope,
 ) -> Result<(), DaemonError> {
     let client = codex_client_for_run(run, state.endpoint(), None)?;
+    let client = if state.read_only_discovery_permissions() || run.read_only_discovery() {
+        client.with_read_only_discovery_permissions()
+    } else {
+        client
+    };
     let cwd = run
         .working_directory()
         .map(|path| path.to_string_lossy().to_string());
@@ -95,7 +100,9 @@ pub fn submit_codex_prompt(
         &response,
         envelope.steering,
     );
-    state.last_authoritative_backfill_at = None;
+    if active_steering_turn_id.is_none() {
+        state.authoritative_backfill_gate.reset();
+    }
     crate::logging::debug_with_fields(
         "daemon.provider.codex",
         "codex turn start response trace",
@@ -182,6 +189,10 @@ fn ensure_codex_thread_ready(
                 developer_instructions,
             )
         } else if let Some(thread_id) = state.pending_thread_id().map(str::to_string) {
+            // No new turn has been submitted yet. Resume may replay old item
+            // deltas and uncorrelated legacy abort/error events; they must not
+            // enter the buffer later drained for the newly admitted prompt.
+            // turn/start and turn/steer retain their own interleaved events.
             client.thread_resume(
                 &mut state.socket,
                 &mut state.next_request_id,
@@ -192,6 +203,7 @@ fn ensure_codex_thread_ready(
                 run.execution_mode(),
                 run.permission_level(),
                 developer_instructions,
+                &mut Vec::new(),
             )
         } else {
             client.thread_start(
@@ -246,7 +258,15 @@ mod prompt_tests {
         CodexTurnTracker,
     };
     use crate::error::DaemonError;
+    use crate::prompt_assembly::{PromptEnvelope, PromptManifest};
+    use crate::provider::{
+        AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
+    };
     use serde_json::json;
+    use std::collections::BTreeMap;
+    use std::net::TcpListener;
+    use std::thread;
+    use tokio_tungstenite::tungstenite::{accept, connect, Message};
 
     #[test]
     fn active_steering_preserves_the_existing_codex_thread() {
@@ -319,6 +339,274 @@ mod prompt_tests {
             &json!({"data": [{"id": "turn-other", "status": "completed"}]}),
             "turn-target"
         ));
+    }
+
+    #[test]
+    fn resumed_prompt_drains_large_response_and_preserves_admission_notification() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind Codex websocket fixture");
+        let address = listener
+            .local_addr()
+            .expect("resolve Codex websocket fixture");
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept Codex websocket client");
+            let mut socket = accept(stream).expect("upgrade Codex websocket fixture");
+
+            let resume_request = read_json_request(&mut socket, "thread/resume");
+            // Keep the response large enough to exercise tungstenite frame growth and the
+            // kernel's read loop before the next turn can be admitted.
+            let large_history = "resume-history".repeat(220_000);
+            socket
+                .send(Message::Text(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": resume_request["id"],
+                        "result": {
+                            "thread": {"id": "thread-reused"},
+                            "model": "gpt-5.5",
+                            "history": large_history
+                        }
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("send large resume response");
+
+            let turn_request = read_json_request(&mut socket, "turn/start");
+            socket
+                .send(Message::Text(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "method": "thread/tokenUsage/updated",
+                        "params": {
+                            "threadId": "thread-reused",
+                            "turnId": "turn-after-resume",
+                            "tokenUsage": {
+                                "total": {"totalTokens": 42},
+                                "last": {"totalTokens": 7},
+                                "modelContextWindow": 100
+                            }
+                        }
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("send interleaved current-turn notification");
+            socket
+                .send(Message::Text(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": turn_request["id"],
+                        "result": {"turn": {"id": "turn-after-resume"}}
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("send turn admission response");
+        });
+
+        let endpoint = format!("ws://{address}");
+        let (socket, _) = connect(&endpoint).expect("connect Codex websocket client");
+        let request = LaunchProviderRequest::new(
+            "session-resume-submit",
+            "codex",
+            "codex",
+            "default",
+            "default",
+        )
+        .with_agent_id("agent-resume-submit");
+        let launch_result = ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "codex-test".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        };
+        let run = RuntimeProviderRun::new("provider-run-resume-submit", &request, launch_result);
+        let mut state = super::super::state::CodexRuntimeState::pending(
+            endpoint,
+            Some("thread-reused".to_string()),
+            socket,
+            1,
+        );
+
+        super::super::prompt::submit_codex_prompt(
+            &run,
+            &mut state,
+            &PromptEnvelope::new(
+                "continue after the failed prompt",
+                "",
+                Vec::new(),
+                PromptManifest::current(),
+            ),
+        )
+        .expect("resumed prompt should admit the next turn");
+
+        assert_eq!(state.thread_id(), "thread-reused");
+        assert_eq!(state.active_turn_id.as_deref(), Some("turn-after-resume"));
+        assert!(state.buffered_notifications.iter().any(|notification| {
+            matches!(
+                notification,
+                CodexNotification::TokenUsageUpdated {
+                    thread_id,
+                    turn_id,
+                    ..
+                } if thread_id == "thread-reused" && turn_id == "turn-after-resume"
+            )
+        }));
+
+        drop(state);
+        server.join().expect("join Codex websocket fixture");
+    }
+
+    #[test]
+    fn resumed_prompt_does_not_apply_previous_turn_events_to_new_turn() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind Codex websocket fixture");
+        let address = listener.local_addr().expect("resolve fixture address");
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept Codex websocket client");
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .expect("bound fixture reads");
+            let mut socket = accept(stream).expect("upgrade Codex websocket fixture");
+            let resume = read_json_request(&mut socket, "thread/resume");
+            for notification in [
+                json!({"method": "item/agentMessage/delta", "params": {
+                    "itemId": "old-item", "delta": "previous turn output"
+                }}),
+                json!({"method": "codex/event/turn_aborted", "params": {
+                    "msg": {"reason": "previous turn interrupted"}
+                }}),
+                json!({"method": "error", "params": {
+                    "error": {"message": "previous turn failed"}
+                }}),
+            ] {
+                socket
+                    .send(Message::Text(notification.to_string().into()))
+                    .expect("send old resume-phase notification");
+            }
+            socket
+                .send(Message::Text(
+                    json!({
+                        "id": resume["id"],
+                        "result": {"thread": {"id": "thread-reused"}, "model": "gpt-5.5"}
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("acknowledge resume");
+            let start = read_json_request(&mut socket, "turn/start");
+            // New-turn output may precede the admission response and must survive.
+            socket
+                .send(Message::Text(
+                    json!({
+                        "method": "item/agentMessage/delta",
+                        "params": {"itemId": "new-item", "delta": "current turn output"}
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("send current turn notification");
+            socket
+                .send(Message::Text(
+                    json!({
+                        "id": start["id"], "result": {"turn": {"id": "turn-new"}}
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("acknowledge current turn");
+            // Serve the runtime's authoritative recovery check, if requested.
+            // Keep the socket open until the client has observed its poll result.
+            while let Ok(Message::Text(text)) = socket.read() {
+                let request: serde_json::Value = serde_json::from_str(&text).unwrap();
+                assert_eq!(request["method"], "thread/turns/list");
+                socket
+                    .send(Message::Text(
+                        json!({
+                            "id": request["id"],
+                            "result": {"data": [{"id": "turn-new", "status": "inProgress"}]}
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .expect("return current authoritative turn");
+            }
+        });
+        let endpoint = format!("ws://{address}");
+        let (socket, _) = connect(&endpoint).expect("connect Codex websocket client");
+        let request = LaunchProviderRequest::new(
+            "session-resume-phase",
+            "codex",
+            "codex",
+            "default",
+            "default",
+        )
+        .with_agent_id("agent-resume-phase");
+        let run = RuntimeProviderRun::new(
+            "provider-run-resume-phase",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "codex-test".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        let mut state = super::super::state::CodexRuntimeState::pending(
+            endpoint,
+            Some("thread-reused".to_string()),
+            socket,
+            1,
+        );
+        super::submit_codex_prompt(
+            &run,
+            &mut state,
+            &PromptEnvelope::new("continue", "", Vec::new(), PromptManifest::current()),
+        )
+        .expect("admit new prompt");
+        let result = super::super::drain::drain_codex_events(&run, &mut state, None);
+        drop(state);
+        server.join().expect("join Codex websocket fixture");
+        let result = result.expect("poll current turn");
+        assert!(
+            !result.prompt_completed,
+            "old resume events settled the new turn: {result:?}"
+        );
+        assert_eq!(result.terminal_failure, None);
+        assert!(result.completions.is_empty());
+        assert!(result.notices.is_empty());
+        assert_eq!(
+            result
+                .chunks
+                .iter()
+                .flat_map(|chunk| chunk.bytes.iter().copied())
+                .collect::<Vec<_>>(),
+            b"current turn output",
+            "only current-turn output may be projected after resume"
+        );
+    }
+
+    fn read_json_request(
+        socket: &mut tokio_tungstenite::tungstenite::WebSocket<std::net::TcpStream>,
+        expected_method: &str,
+    ) -> serde_json::Value {
+        let message = socket.read().expect("read Codex request");
+        let Message::Text(text) = message else {
+            panic!("expected text Codex request");
+        };
+        let request: serde_json::Value =
+            serde_json::from_str(&text).expect("parse Codex request payload");
+        assert_eq!(request["method"], expected_method);
+        request
     }
 }
 

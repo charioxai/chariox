@@ -1,0 +1,3312 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use wait_timeout::ChildExt;
+
+use crate::config::{DaemonConfig, KernelRuntimeRole};
+use crate::durable_state::DurableKernelStateStore;
+use crate::error::DaemonError;
+use crate::local::{
+    AgentUtilityInput, AgentUtilityKind, AgentUtilityOutput, CancelProjectEnvironmentSetupRequest,
+    GetProjectEnvironmentSetupStatusRequest, LocalDaemonRequest, LocalDaemonResponse,
+    ProjectEnvironmentCommandResult, ProjectEnvironmentDefinition, ProjectEnvironmentSetupPhase,
+    ProjectEnvironmentSetupStatus, ProjectEnvironmentSetupUtilityInput,
+    ProjectEnvironmentValidation, RetryProjectEnvironmentSetupRequest, RunAgentUtilityRequest,
+    StartProjectEnvironmentSetupRequest,
+};
+use crate::provider::{ProviderProcessService, RuntimeProviderRun};
+use crate::runtime::agent_utility_executor::{
+    assert_agent_utility_can_run,
+    run_agent_utility_on_provider_run_for_project_environment_repair,
+};
+use crate::runtime::project_environment_setup_utility::project_environment_setup_utility_missing_input_message;
+use crate::runtime::projection::DaemonConfigProjectionStore;
+use crate::runtime::state::KernelRuntimeState;
+use crate::transport::relay_peer::{
+    RelayPeerRequest, RelayPeerResponse, RelayProjectEnvironmentSetupStatus,
+};
+
+use super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_retry_transport;
+
+struct WorkerExecutionContext {
+    worker_id: String,
+    platform: String,
+    workspace_root: PathBuf,
+    environment: BTreeMap<String, String>,
+}
+
+enum ReusedDefinitionSetupOutcome {
+    ContinueToRepair,
+    Ready(ProjectEnvironmentDefinition),
+    Cancelled,
+    Failed {
+        code: &'static str,
+        message: &'static str,
+    },
+}
+
+fn validation_passed_for_execution(
+    execution: &SetupExecution,
+    definition: &ProjectEnvironmentDefinition,
+    validation: &ProjectEnvironmentValidation,
+) -> bool {
+    validation.worker_id == execution.target_worker_id
+        && validation.platform == execution.target_platform
+        && validation.commands.len() == definition.validation_commands.len()
+        && validation.passed()
+        && validation
+            .commands
+            .iter()
+            .zip(definition.validation_commands.iter())
+            .all(|(result, command)| result.command_digest == command_digest(command))
+}
+
+#[path = "project_environment_setup_dispatch.rs"]
+mod project_environment_setup_dispatch;
+#[path = "project_environment_setup_policy.rs"]
+mod project_environment_setup_policy;
+#[path = "project_environment_setup_storage.rs"]
+mod project_environment_setup_storage;
+#[path = "project_environment_setup_validation.rs"]
+mod project_environment_setup_validation;
+use project_environment_setup_dispatch::*;
+use project_environment_setup_policy::*;
+pub(super) use project_environment_setup_storage::ProjectEnvironmentSetupStore;
+use project_environment_setup_storage::{
+    RemoteSetupRecoveryDecision, RemoteSetupRecoveryReservationGuard, SetupEntry, SetupExecution,
+};
+use project_environment_setup_validation::*;
+
+fn remote_setup_recovery_should_dispatch(
+    decision: RemoteSetupRecoveryDecision,
+) -> Result<bool, DaemonError> {
+    match decision {
+        RemoteSetupRecoveryDecision::Dispatch => Ok(true),
+        RemoteSetupRecoveryDecision::Cancelled | RemoteSetupRecoveryDecision::Acknowledged => {
+            Ok(false)
+        }
+        RemoteSetupRecoveryDecision::InFlight => Err(remote_setup_recovery_transport_error(
+            "the same-attempt replay is already in flight",
+        )),
+        RemoteSetupRecoveryDecision::Unknown => Err(remote_setup_recovery_transport_error(
+            "the same-attempt replay result is unresolved",
+        )),
+        RemoteSetupRecoveryDecision::Stale => Err(remote_setup_recovery_transport_error(
+            "the setup attempt or worker binding changed while status was being observed",
+        )),
+    }
+}
+
+impl KernelRuntimeState {
+    pub(crate) async fn execute_project_environment_setup_request(
+        &self,
+        request: LocalDaemonRequest,
+        caller_user_id: &str,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        match request {
+            LocalDaemonRequest::StartProjectEnvironmentSetup(request) => {
+                let execution = self.prepare_setup_execution(request, caller_user_id)?;
+                let (status, should_spawn) = self
+                    .owned
+                    .project_environment_setups
+                    .begin(execution.clone())?;
+                if should_spawn {
+                    if execution.remote_leased_agent_id.is_some() {
+                        self.spawn_remote_project_environment_setup(execution, status.attempt);
+                    } else {
+                        self.spawn_project_environment_setup(execution, status.attempt);
+                    }
+                }
+                Ok(LocalDaemonResponse::ProjectEnvironmentSetupStarted { status })
+            }
+            LocalDaemonRequest::GetProjectEnvironmentSetupStatus(request) => {
+                let (execution, status, cancel_requested) =
+                    self.owned
+                        .project_environment_setups
+                        .get_entry_with_cancellation(&request.operation_id, caller_user_id)?;
+                if execution.remote_leased_agent_id.is_some() {
+                    let observation_generation = self
+                        .owned
+                        .project_environment_setups
+                        .begin_remote_observation();
+                    let binding_id = execution
+                        .remote_leased_agent_id
+                        .as_deref()
+                        .expect("remote setup observations require a leased-agent binding");
+                    let observation_deadline = Instant::now()
+                        + remote_setup_observation_budget(&self.owned.config_projection.snapshot());
+                    let setup = get_remote_setup_status_with_deadline(
+                        self,
+                        &execution,
+                        observation_deadline,
+                    )
+                    .await;
+                    let status = match setup {
+                        Ok(setup)
+                            if !cancel_requested
+                                && matches!(
+                                    status.phase,
+                                    ProjectEnvironmentSetupPhase::Requested
+                                        | ProjectEnvironmentSetupPhase::Preparing
+                                        | ProjectEnvironmentSetupPhase::Validating
+                                )
+                                && is_replayable_stale_remote_setup_status(
+                                    &status,
+                                    &setup.status,
+                                ) =>
+                        {
+                            // A retained worker may still report a retryable
+                            // terminal record from the previous attempt after
+                            // home accepted Retry. Reuse the authenticated
+                            // public retry request; do not accept that stale
+                            // record as the current attempt.
+                            let recovery_decision =
+                                self.owned.project_environment_setups.begin_remote_recovery(
+                                    &execution.operation_id,
+                                    status.attempt,
+                                    binding_id,
+                                    observation_generation,
+                                );
+                            if !remote_setup_recovery_should_dispatch(recovery_decision)? {
+                                let (_, current_status, _) = self
+                                    .owned
+                                    .project_environment_setups
+                                    .get_entry_with_cancellation(
+                                        &execution.operation_id,
+                                        caller_user_id,
+                                    )?;
+                                return Ok(LocalDaemonResponse::ProjectEnvironmentSetupStatus {
+                                    status: current_status,
+                                });
+                            }
+                            if let Some(current_status) = self.recovery_dispatch_status_if_lost(
+                                &execution.operation_id,
+                                status.attempt,
+                                binding_id,
+                                observation_generation,
+                                caller_user_id,
+                            )? {
+                                return Ok(LocalDaemonResponse::ProjectEnvironmentSetupStatus {
+                                    status: current_status,
+                                });
+                            }
+                            let mut recovery_reservation = RemoteSetupRecoveryReservationGuard::new(
+                                &self.owned.project_environment_setups,
+                                &execution.operation_id,
+                                status.attempt,
+                                binding_id,
+                                observation_generation,
+                            );
+                            match retry_remote_setup_with_deadline(
+                                self,
+                                &execution,
+                                observation_deadline,
+                            )
+                            .await
+                            {
+                                Ok(setup) => {
+                                    match self
+                                        .reconcile_remote_project_environment_setup_with_observation(
+                                            &execution,
+                                            setup,
+                                            Some(observation_generation),
+                                        ) {
+                                        Ok(status) => {
+                                            recovery_reservation.disarm();
+                                            status
+                                        }
+                                        Err(error) => return Err(error),
+                                    }
+                                }
+                                Err(error)
+                                    if remote_prompt_error_should_retry_transport(&error) =>
+                                {
+                                    return Err(error);
+                                }
+                                Err(error) => {
+                                    recovery_reservation.clear_if_matches();
+                                    self.settle_remote_setup_recovery_rejection(
+                                        &execution,
+                                        status.attempt,
+                                        &error,
+                                    );
+                                    return Err(error);
+                                }
+                            }
+                        }
+                        Ok(setup) => self
+                            .reconcile_remote_project_environment_setup_with_observation(
+                                &execution,
+                                setup,
+                                Some(observation_generation),
+                            )?,
+                        Err(error)
+                            if is_stale_remote_setup_binding_error(&error)
+                                && !cancel_requested
+                                && matches!(
+                                    status.phase,
+                                    ProjectEnvironmentSetupPhase::Requested
+                                        | ProjectEnvironmentSetupPhase::Preparing
+                                        | ProjectEnvironmentSetupPhase::Validating
+                                ) =>
+                        {
+                            // A worker restart clears its ephemeral lease
+                            // authorization. Refresh the home binding through
+                            // the normal lease provisioning path, rebind the
+                            // retained worker operation through the
+                            // authenticated Retry request, and reconcile only
+                            // the current home attempt.
+                            let recovery_decision =
+                                self.owned.project_environment_setups.begin_remote_recovery(
+                                    &execution.operation_id,
+                                    status.attempt,
+                                    binding_id,
+                                    observation_generation,
+                                );
+                            if !remote_setup_recovery_should_dispatch(recovery_decision)? {
+                                let (_, current_status, _) = self
+                                    .owned
+                                    .project_environment_setups
+                                    .get_entry_with_cancellation(
+                                        &execution.operation_id,
+                                        caller_user_id,
+                                    )?;
+                                return Ok(LocalDaemonResponse::ProjectEnvironmentSetupStatus {
+                                    status: current_status,
+                                });
+                            }
+                            if let Some(current_status) = self.recovery_dispatch_status_if_lost(
+                                &execution.operation_id,
+                                status.attempt,
+                                binding_id,
+                                observation_generation,
+                                caller_user_id,
+                            )? {
+                                return Ok(LocalDaemonResponse::ProjectEnvironmentSetupStatus {
+                                    status: current_status,
+                                });
+                            }
+                            self.await_remote_setup_binding_recovery(
+                                execution.clone(),
+                                status.attempt,
+                                observation_generation,
+                                observation_deadline,
+                            )
+                            .await?
+                        }
+                        Err(error)
+                            if is_missing_remote_setup_operation(&error)
+                                && matches!(
+                                    status.phase,
+                                    ProjectEnvironmentSetupPhase::Requested
+                                        | ProjectEnvironmentSetupPhase::Preparing
+                                        | ProjectEnvironmentSetupPhase::Validating
+                                ) =>
+                        {
+                            if cancel_requested {
+                                return Ok(LocalDaemonResponse::ProjectEnvironmentSetupStatus {
+                                    status,
+                                });
+                            }
+                            let redispatch_gate = self
+                                .owned
+                                .project_environment_setups
+                                .ordering_gate(&execution.operation_id);
+                            let _redispatch_guard = redispatch_gate.lock().await;
+                            let (_, _, cancel_requested) = self
+                                .owned
+                                .project_environment_setups
+                                .get_entry_with_cancellation(
+                                    &execution.operation_id,
+                                    caller_user_id,
+                                )?;
+                            if cancel_requested {
+                                return Err(error);
+                            }
+                            match self.owned.project_environment_setups.begin_remote_recovery(
+                                &execution.operation_id,
+                                status.attempt,
+                                binding_id,
+                                observation_generation,
+                            ) {
+                                RemoteSetupRecoveryDecision::Cancelled => {
+                                    return Ok(
+                                        LocalDaemonResponse::ProjectEnvironmentSetupStatus {
+                                            status,
+                                        },
+                                    );
+                                }
+                                RemoteSetupRecoveryDecision::InFlight => {
+                                    return Err(remote_setup_recovery_transport_error(
+                                        "the same-attempt replay is already in flight",
+                                    ));
+                                }
+                                RemoteSetupRecoveryDecision::Unknown => {
+                                    return Err(remote_setup_recovery_transport_error(
+                                        "the same-attempt replay result is unresolved",
+                                    ));
+                                }
+                                RemoteSetupRecoveryDecision::Acknowledged => {
+                                    return Ok(
+                                        LocalDaemonResponse::ProjectEnvironmentSetupStatus {
+                                            status,
+                                        },
+                                    );
+                                }
+                                RemoteSetupRecoveryDecision::Stale => {
+                                    return Err(remote_setup_recovery_transport_error(
+                                        "the setup attempt changed while status was being observed",
+                                    ));
+                                }
+                                RemoteSetupRecoveryDecision::Dispatch => {}
+                            }
+                            // This lock-protected fence linearizes recovery
+                            // dispatch against Cancel/Retry. It is not a
+                            // second unsynchronized snapshot of cancellation.
+                            if !self
+                                .owned
+                                .project_environment_setups
+                                .remote_recovery_dispatch_allowed(
+                                    &execution.operation_id,
+                                    status.attempt,
+                                    binding_id,
+                                    observation_generation,
+                                )
+                            {
+                                let (_, current_status, current_cancel_requested) = self
+                                    .owned
+                                    .project_environment_setups
+                                    .get_entry_with_cancellation(
+                                        &execution.operation_id,
+                                        caller_user_id,
+                                    )?;
+                                if current_cancel_requested
+                                    || matches!(
+                                        current_status.phase,
+                                        ProjectEnvironmentSetupPhase::Ready
+                                            | ProjectEnvironmentSetupPhase::Failed
+                                            | ProjectEnvironmentSetupPhase::Cancelled
+                                    )
+                                {
+                                    return Ok(
+                                        LocalDaemonResponse::ProjectEnvironmentSetupStatus {
+                                            status: current_status,
+                                        },
+                                    );
+                                }
+                                return Err(remote_setup_recovery_transport_error(
+                                    "the setup attempt changed before replay dispatch",
+                                ));
+                            }
+                            let mut recovery_reservation = RemoteSetupRecoveryReservationGuard::new(
+                                &self.owned.project_environment_setups,
+                                &execution.operation_id,
+                                status.attempt,
+                                binding_id,
+                                observation_generation,
+                            );
+                            match start_remote_setup_with_deadline(
+                                self,
+                                &execution,
+                                status.attempt,
+                                observation_deadline,
+                            )
+                            .await
+                            {
+                                Ok(setup) => {
+                                    match self
+                                        .reconcile_remote_project_environment_setup_with_observation(
+                                            &execution,
+                                            setup,
+                                            Some(observation_generation),
+                                        ) {
+                                        Ok(status) => {
+                                            recovery_reservation.disarm();
+                                            status
+                                        }
+                                        Err(error) => {
+                                            return Err(error);
+                                        }
+                                    }
+                                }
+                                Err(error)
+                                    if remote_prompt_error_should_retry_transport(&error) =>
+                                {
+                                    return Err(error);
+                                }
+                                Err(error) => {
+                                    recovery_reservation.clear_if_matches();
+                                    if let DaemonError::RelayTransport {
+                                        code,
+                                        retryable: false,
+                                        ..
+                                    } = &error
+                                    {
+                                        self.owned
+                                            .project_environment_setups
+                                            .mark_failed_non_retryable(
+                                            &execution.operation_id,
+                                            status.attempt,
+                                            code,
+                                            "the remote worker rejected project environment setup",
+                                        );
+                                    } else {
+                                        self.owned.project_environment_setups.mark_failed(
+                                            &execution.operation_id,
+                                            status.attempt,
+                                            "worker_dispatch_failed",
+                                            "the remote worker could not be reached for environment setup",
+                                        );
+                                    }
+                                    return Err(error);
+                                }
+                            }
+                        }
+                        Err(error) if remote_prompt_error_should_retry_transport(&error) => {
+                            // A relay disconnect is transport uncertainty, not
+                            // a worker-authoritative terminal result. Return
+                            // the structured diagnostic while preserving the
+                            // current operation and attempt for a later Get.
+                            return Err(error);
+                        }
+                        Err(error) => {
+                            if let DaemonError::RelayTransport {
+                                code,
+                                retryable: false,
+                                ..
+                            } = &error
+                            {
+                                self.owned
+                                    .project_environment_setups
+                                    .mark_failed_non_retryable(
+                                        &execution.operation_id,
+                                        status.attempt,
+                                        code,
+                                        "the remote worker rejected setup status",
+                                    );
+                            } else {
+                                self.owned.project_environment_setups.mark_failed(
+                                    &execution.operation_id,
+                                    status.attempt,
+                                    "worker_status_unavailable",
+                                    "the remote worker status could not be confirmed",
+                                );
+                            }
+                            return Err(error);
+                        }
+                    };
+                    return Ok(LocalDaemonResponse::ProjectEnvironmentSetupStatus { status });
+                }
+                Ok(LocalDaemonResponse::ProjectEnvironmentSetupStatus { status })
+            }
+            LocalDaemonRequest::CancelProjectEnvironmentSetup(request) => {
+                let (execution, _) = self
+                    .owned
+                    .project_environment_setups
+                    .get_entry(&request.operation_id, caller_user_id)?;
+                if execution.remote_leased_agent_id.is_some() {
+                    self.owned
+                        .project_environment_setups
+                        .request_cancel_ordered(
+                            &request.operation_id,
+                            &request.session_id,
+                            caller_user_id,
+                            true,
+                        )
+                        .await?;
+                    let status = match cancel_remote_setup(self, &execution).await {
+                        Ok(setup) => {
+                            self.reconcile_remote_project_environment_setup(&execution, setup)?
+                        }
+                        Err(error) if is_missing_remote_setup_operation(&error) => self
+                            .owned
+                            .project_environment_setups
+                            .settle_cancel_without_worker(
+                                &request.operation_id,
+                                &request.session_id,
+                                caller_user_id,
+                            )
+                            .await?,
+                        Err(error) => return Err(error),
+                    };
+                    return Ok(LocalDaemonResponse::ProjectEnvironmentSetupCancelled { status });
+                }
+                self.owned.project_environment_setups.request_cancel(
+                    &request.operation_id,
+                    &request.session_id,
+                    caller_user_id,
+                    false,
+                )?;
+                let status = self
+                    .owned
+                    .project_environment_setups
+                    .wait_for_cancellation(&request.operation_id, caller_user_id)
+                    .await?;
+                Ok(LocalDaemonResponse::ProjectEnvironmentSetupCancelled { status })
+            }
+            LocalDaemonRequest::RetryProjectEnvironmentSetup(request) => {
+                let (execution, attempt, status) = self.owned.project_environment_setups.retry(
+                    &request.operation_id,
+                    &request.session_id,
+                    caller_user_id,
+                )?;
+                if execution.remote_leased_agent_id.is_some() {
+                    self.spawn_remote_project_environment_setup_retry(execution, attempt);
+                } else {
+                    self.spawn_project_environment_setup(execution, attempt);
+                }
+                Ok(LocalDaemonResponse::ProjectEnvironmentSetupRetried { status })
+            }
+            _ => Err(setup_error("unsupported project environment setup request")),
+        }
+    }
+
+    fn recovery_dispatch_status_if_lost(
+        &self,
+        operation_id: &str,
+        attempt: u32,
+        binding_id: &str,
+        observation_generation: u64,
+        caller_user_id: &str,
+    ) -> Result<Option<ProjectEnvironmentSetupStatus>, DaemonError> {
+        if self
+            .owned
+            .project_environment_setups
+            .remote_recovery_dispatch_allowed(
+                operation_id,
+                attempt,
+                binding_id,
+                observation_generation,
+            )
+        {
+            return Ok(None);
+        }
+        let (_, current_status, current_cancel_requested) =
+            self.owned
+                .project_environment_setups
+                .get_entry_with_cancellation(operation_id, caller_user_id)?;
+        if current_cancel_requested
+            || matches!(
+                current_status.phase,
+                ProjectEnvironmentSetupPhase::Ready
+                    | ProjectEnvironmentSetupPhase::Failed
+                    | ProjectEnvironmentSetupPhase::Cancelled
+            )
+        {
+            return Ok(Some(current_status));
+        }
+        Err(remote_setup_recovery_transport_error(
+            "the setup attempt or worker binding changed before recovery dispatch",
+        ))
+    }
+
+    async fn await_remote_setup_binding_recovery(
+        &self,
+        execution: SetupExecution,
+        attempt: u32,
+        observation_generation: u64,
+        observation_deadline: Instant,
+    ) -> Result<ProjectEnvironmentSetupStatus, DaemonError> {
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let state = self.clone();
+        tokio::spawn(async move {
+            let store = state.owned.project_environment_setups.clone();
+            let Some(stale_binding_id) = execution.remote_leased_agent_id.clone() else {
+                let _ = result_tx.send(Err(setup_error(
+                    "binding recovery requires a stale leased-agent binding",
+                )));
+                return;
+            };
+            let mut recovery_reservation = RemoteSetupRecoveryReservationGuard::new(
+                &store,
+                &execution.operation_id,
+                attempt,
+                &stale_binding_id,
+                observation_generation,
+            );
+            let result = match refresh_remote_setup_binding(
+                &state,
+                &execution,
+                attempt,
+                observation_generation,
+            )
+            .await
+            {
+                Ok(rebound_execution) => match rebound_execution.remote_leased_agent_id.clone() {
+                    Some(rebound_binding_id) => {
+                        recovery_reservation.rebind(&rebound_binding_id);
+                        match state.recovery_dispatch_status_if_lost(
+                            &execution.operation_id,
+                            attempt,
+                            &rebound_binding_id,
+                            observation_generation,
+                            &execution.owner_user_id,
+                        ) {
+                            Ok(Some(status)) => {
+                                recovery_reservation.clear_if_matches();
+                                Ok(status)
+                            }
+                            Ok(None) => {
+                                match retry_remote_setup_with_deadline(
+                                        &state,
+                                        &rebound_execution,
+                                        observation_deadline,
+                                    )
+                                    .await
+                                    {
+                                        Ok(setup) => match state
+                                            .reconcile_remote_project_environment_setup_with_observation(
+                                                &rebound_execution,
+                                                setup,
+                                                Some(observation_generation),
+                                            ) {
+                                            Ok(status) => {
+                                                recovery_reservation.disarm();
+                                                Ok(status)
+                                            }
+                                            Err(error) => Err(error),
+                                        },
+                                        Err(error) => Err(error),
+                                    }
+                            }
+                            Err(error) => Err(error),
+                        }
+                    }
+                    None => Err(setup_error(
+                        "refreshed remote setup lost its leased-agent binding",
+                    )),
+                },
+                Err(error) => Err(error),
+            };
+            let result = match result {
+                Err(error) if remote_setup_recovery_permanent_rejection_code(&error).is_some() => {
+                    recovery_reservation.clear_if_matches();
+                    state.settle_remote_setup_recovery_rejection(&execution, attempt, &error);
+                    Err(error)
+                }
+                result => result,
+            };
+            let _ = result_tx.send(result);
+        });
+
+        let wait = observation_timeout(observation_deadline)?;
+        match tokio::time::timeout(wait, result_rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(remote_setup_recovery_transport_error(
+                "the binding refresh recovery task ended before it reported a result",
+            )),
+            Err(_) => Err(remote_setup_recovery_transport_error(
+                "the binding refresh recovery continues after the observation deadline",
+            )),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn start_leased_project_environment_setup(
+        &self,
+        target: crate::app::LeasedProjectEnvironmentSetupTarget,
+        leased_agent_id: String,
+        operation_id: String,
+        attempt: u32,
+        project_id: String,
+        workspace_id: String,
+        target_worker_id: String,
+        target_platform: String,
+        definition: Option<ProjectEnvironmentDefinition>,
+        validation_commands: Vec<String>,
+    ) -> Result<RelayProjectEnvironmentSetupStatus, DaemonError> {
+        validate_operation_id(&operation_id)?;
+        validate_commands(&validation_commands)?;
+        let config = self.owned.config_projection.snapshot();
+        if config.kernel_runtime_role != KernelRuntimeRole::RemoteLeaseWorker {
+            return Err(setup_error(
+                "project environment setup is only executable by a lease worker",
+            ));
+        }
+        if target_worker_id != config.host_machine_id {
+            return Err(setup_error(
+                "requested worker does not match this kernel's worker identity",
+            ));
+        }
+        if target_platform.trim().is_empty() || target_platform != actual_worker_platform() {
+            return Err(setup_error("requested platform does not match this worker"));
+        }
+        if !workspace_id.is_empty() && workspace_id != target.workspace_id {
+            return Err(setup_error(
+                "requested workspace does not match the leased worker worktree",
+            ));
+        }
+        let definition =
+            validate_setup_definition(definition, &target_platform, &validation_commands)?;
+        ensure_worker_validation_boundary(&config)?;
+        let execution = SetupExecution {
+            owner_user_id: target.owner_user_id.clone(),
+            operation_id,
+            project_id,
+            session_id: target.home_session_id.clone(),
+            agent_id: target.home_agent_id.clone(),
+            execution_session_id: target.backing_session_id,
+            execution_agent_id: target.backing_agent_id,
+            workspace_id: target.workspace_id,
+            target_worker_id,
+            target_platform,
+            definition,
+            validation_commands,
+            persist_project_definition: false,
+            remote_leased_agent_id: Some(leased_agent_id),
+        };
+        let (status, should_spawn) = self
+            .owned
+            .project_environment_setups
+            .begin_at_attempt(execution.clone(), attempt)?;
+        if should_spawn {
+            self.spawn_project_environment_setup(execution.clone(), status.attempt);
+        }
+        let (_, definition) = self.owned.project_environment_setups.remote_status(
+            &execution.operation_id,
+            execution
+                .remote_leased_agent_id
+                .as_deref()
+                .unwrap_or_default(),
+        )?;
+        Ok(RelayProjectEnvironmentSetupStatus { status, definition })
+    }
+
+    pub(crate) async fn get_leased_project_environment_setup_status(
+        &self,
+        target: crate::app::LeasedProjectEnvironmentSetupTarget,
+        leased_agent_id: &str,
+        operation_id: &str,
+    ) -> Result<RelayProjectEnvironmentSetupStatus, DaemonError> {
+        let (status, definition) = self
+            .owned
+            .project_environment_setups
+            .remote_status(operation_id, leased_agent_id)?;
+        let config = self.owned.config_projection.snapshot();
+        ensure_worker_setup_status_target(&target, &status, &config)?;
+        Ok(RelayProjectEnvironmentSetupStatus { status, definition })
+    }
+
+    pub(crate) async fn cancel_leased_project_environment_setup(
+        &self,
+        target: crate::app::LeasedProjectEnvironmentSetupTarget,
+        leased_agent_id: &str,
+        operation_id: &str,
+    ) -> Result<RelayProjectEnvironmentSetupStatus, DaemonError> {
+        let (current_status, definition) = self
+            .owned
+            .project_environment_setups
+            .remote_status(operation_id, leased_agent_id)?;
+        let config = self.owned.config_projection.snapshot();
+        ensure_worker_setup_status_target(&target, &current_status, &config)?;
+        self.owned.project_environment_setups.cancel(
+            operation_id,
+            &target.home_session_id,
+            &target.owner_user_id,
+        )?;
+        let status = self
+            .owned
+            .project_environment_setups
+            .wait_for_cancellation(operation_id, &target.owner_user_id)
+            .await?;
+        ensure_worker_setup_status_target(&target, &status, &config)?;
+        Ok(RelayProjectEnvironmentSetupStatus { status, definition })
+    }
+
+    pub(crate) async fn retry_leased_project_environment_setup(
+        &self,
+        target: crate::app::LeasedProjectEnvironmentSetupTarget,
+        leased_agent_id: &str,
+        operation_id: &str,
+    ) -> Result<RelayProjectEnvironmentSetupStatus, DaemonError> {
+        let config = self.owned.config_projection.snapshot();
+        let target_platform = actual_worker_platform();
+        let (current_status, definition) = self
+            .owned
+            .project_environment_setups
+            .rebind_remote_worker_target(
+                operation_id,
+                leased_agent_id,
+                &target,
+                &config.host_machine_id,
+                &target_platform,
+            )?;
+        ensure_worker_setup_status_target(&target, &current_status, &config)?;
+        let (execution, attempt, status) = self.owned.project_environment_setups.retry(
+            operation_id,
+            &target.home_session_id,
+            &target.owner_user_id,
+        )?;
+        ensure_worker_setup_status_target(&target, &status, &config)?;
+        self.spawn_project_environment_setup(execution, attempt);
+        Ok(RelayProjectEnvironmentSetupStatus { status, definition })
+    }
+
+    fn spawn_remote_project_environment_setup(&self, execution: SetupExecution, attempt: u32) {
+        self.spawn_remote_project_environment_setup_request(execution, attempt, false);
+    }
+
+    fn spawn_remote_project_environment_setup_retry(
+        &self,
+        execution: SetupExecution,
+        attempt: u32,
+    ) {
+        self.spawn_remote_project_environment_setup_request(execution, attempt, true);
+    }
+
+    fn spawn_remote_project_environment_setup_request(
+        &self,
+        execution: SetupExecution,
+        attempt: u32,
+        retry: bool,
+    ) {
+        let runtime_state = self.clone();
+        tokio::spawn(async move {
+            let result = if retry {
+                retry_remote_setup(&runtime_state, &execution).await
+            } else {
+                start_remote_setup(&runtime_state, &execution, attempt).await
+            };
+            match result {
+                Ok(setup) => {
+                    if let Err(error) =
+                        runtime_state.reconcile_remote_project_environment_setup(&execution, setup)
+                    {
+                        runtime_state.owned.project_environment_setups.mark_failed(
+                            &execution.operation_id,
+                            attempt,
+                            "worker_status_invalid",
+                            "the remote worker returned an invalid setup status",
+                        );
+                        crate::logging::warn_with_fields(
+                            "project.environment_setup",
+                            "remote setup status was rejected",
+                            serde_json::json!({
+                                "operation_id": execution.operation_id,
+                                "error": error.to_string(),
+                            }),
+                        );
+                    }
+                }
+                Err(error) => {
+                    if remote_prompt_error_should_retry_transport(&error) {
+                        // The worker may still be executing after this
+                        // transport observation. Leave the active operation
+                        // untouched so a later status query can reconcile
+                        // the worker-authoritative result.
+                    } else if let DaemonError::RelayTransport {
+                        code,
+                        retryable: false,
+                        ..
+                    } = &error
+                    {
+                        runtime_state
+                            .owned
+                            .project_environment_setups
+                            .mark_failed_non_retryable(
+                                &execution.operation_id,
+                                attempt,
+                                code,
+                                "the remote worker rejected project environment setup",
+                            );
+                    } else {
+                        runtime_state.owned.project_environment_setups.mark_failed(
+                            &execution.operation_id,
+                            attempt,
+                            "worker_dispatch_failed",
+                            "the remote worker could not be reached for environment setup",
+                        );
+                    }
+                    crate::logging::warn_with_fields(
+                        "project.environment_setup",
+                        "remote setup dispatch failed",
+                        serde_json::json!({
+                            "operation_id": execution.operation_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+            }
+        });
+    }
+
+    fn reconcile_remote_project_environment_setup(
+        &self,
+        execution: &SetupExecution,
+        setup: RelayProjectEnvironmentSetupStatus,
+    ) -> Result<ProjectEnvironmentSetupStatus, DaemonError> {
+        self.reconcile_remote_project_environment_setup_with_observation(execution, setup, None)
+    }
+
+    fn reconcile_remote_project_environment_setup_with_observation(
+        &self,
+        execution: &SetupExecution,
+        setup: RelayProjectEnvironmentSetupStatus,
+        observation_generation: Option<u64>,
+    ) -> Result<ProjectEnvironmentSetupStatus, DaemonError> {
+        let (_, current_status) = self
+            .owned
+            .project_environment_setups
+            .get_entry(&execution.operation_id, &execution.owner_user_id)?;
+        validate_remote_setup_status(
+            execution,
+            current_status.attempt,
+            &setup.status,
+            setup.definition.as_ref(),
+        )?;
+        validate_remote_setup_transition(current_status.phase, setup.status.phase)?;
+        if setup.status.phase == ProjectEnvironmentSetupPhase::Ready {
+            let definition = setup.definition.clone().ok_or_else(|| {
+                setup_error("worker cannot report setup ready without a definition")
+            })?;
+            self.update_project_environment_definition(
+                &execution.project_id,
+                definition,
+                &execution.owner_user_id,
+            )?;
+        }
+        self.owned.project_environment_setups.reconcile_remote(
+            &execution.operation_id,
+            execution,
+            setup.status,
+            setup.definition,
+            observation_generation,
+        )
+    }
+
+    fn settle_remote_setup_recovery_rejection(
+        &self,
+        execution: &SetupExecution,
+        attempt: u32,
+        error: &DaemonError,
+    ) {
+        Self::settle_remote_setup_recovery_rejection_in_store(
+            &self.owned.project_environment_setups,
+            execution,
+            attempt,
+            error,
+        );
+    }
+
+    fn settle_remote_setup_recovery_rejection_in_store(
+        store: &ProjectEnvironmentSetupStore,
+        execution: &SetupExecution,
+        attempt: u32,
+        error: &DaemonError,
+    ) {
+        let Some(code) = remote_setup_recovery_permanent_rejection_code(error) else {
+            return;
+        };
+        store.mark_failed_non_retryable(
+            &execution.operation_id,
+            attempt,
+            code,
+            "the remote worker rejected project environment setup after binding recovery",
+        );
+    }
+
+    fn prepare_setup_execution(
+        &self,
+        request: StartProjectEnvironmentSetupRequest,
+        caller_user_id: &str,
+    ) -> Result<SetupExecution, DaemonError> {
+        validate_operation_id(&request.operation_id)?;
+        let config = self.owned.config_projection.snapshot();
+        if request.target_platform.trim().is_empty() {
+            return Err(setup_error("target platform must not be empty"));
+        }
+        validate_commands(&request.validation_commands)?;
+        let session = self.owned.session_store.get_session(&request.session_id)?;
+        let project = self.owned.session_store.get_project(&request.project_id)?;
+        if project.owner_user_id() != caller_user_id {
+            return Err(setup_error("caller does not own the selected project"));
+        }
+        if session.project_id() != request.project_id {
+            return Err(setup_error(
+                "session is not attached to the selected project",
+            ));
+        }
+        let agent = self
+            .owned
+            .agent_store
+            .get_session_agents(&request.session_id)
+            .into_iter()
+            .find(|agent| agent.id() == request.agent_id)
+            .ok_or_else(|| setup_error("agent does not belong to the selected session"))?;
+        let remote_execution = agent.remote_execution().cloned();
+        let is_remote_worker_dispatch = match config.kernel_runtime_role {
+            KernelRuntimeRole::RemoteLeaseWorker => {
+                if request.target_worker_id != config.host_machine_id {
+                    return Err(setup_error(
+                        "requested worker does not match this kernel's worker identity",
+                    ));
+                }
+                if request.target_platform != actual_worker_platform() {
+                    return Err(setup_error("requested platform does not match this worker"));
+                }
+                if remote_execution.is_some() {
+                    return Err(setup_error(
+                        "a lease worker cannot execute setup for another remote worker",
+                    ));
+                }
+                false
+            }
+            KernelRuntimeRole::General => {
+                let Some(remote_execution) = remote_execution.as_ref() else {
+                    return Err(setup_error(
+                        "project environment setup requires a dedicated worker or remote-backed agent",
+                    ));
+                };
+                if request.target_worker_id != remote_execution.worker_machine_id {
+                    return Err(setup_error(
+                        "requested worker does not match the remote agent binding",
+                    ));
+                }
+                if remote_execution.worker_kernel_id.trim().is_empty()
+                    || remote_execution.worker_machine_id.trim().is_empty()
+                    || remote_execution.leased_agent_id.trim().is_empty()
+                    || !remote_execution.relay_peer_protocol_compatible()
+                {
+                    return Err(setup_error(
+                        "remote agent binding is incomplete or uses an obsolete relay protocol",
+                    ));
+                }
+                true
+            }
+        };
+        let definition = request
+            .definition
+            .or_else(|| project.environment_definition().cloned());
+        let definition = validate_setup_definition(
+            definition,
+            &request.target_platform,
+            &request.validation_commands,
+        )?;
+        // A home worktree path is not a worker worktree path. The worker
+        // derives its canonical backing worktree from the authenticated lease
+        // and rejects any non-empty path that does not match it.
+        let workspace_id = if is_remote_worker_dispatch {
+            String::new()
+        } else {
+            agent
+                .worktree_id()
+                .unwrap_or_else(|| session.worktree_id())
+                .to_string()
+        };
+        Ok(SetupExecution {
+            owner_user_id: caller_user_id.to_string(),
+            operation_id: request.operation_id,
+            project_id: request.project_id,
+            session_id: request.session_id.clone(),
+            agent_id: request.agent_id.clone(),
+            execution_session_id: request.session_id,
+            execution_agent_id: request.agent_id,
+            workspace_id,
+            target_worker_id: request.target_worker_id,
+            target_platform: request.target_platform,
+            definition,
+            validation_commands: request.validation_commands,
+            persist_project_definition: true,
+            remote_leased_agent_id: is_remote_worker_dispatch.then(|| {
+                remote_execution
+                    .expect("remote dispatch binding was checked")
+                    .leased_agent_id
+                    .clone()
+            }),
+        })
+    }
+
+    fn spawn_project_environment_setup(&self, execution: SetupExecution, attempt: u32) {
+        let Some(guard) = self
+            .owned
+            .project_environment_setups
+            .begin_execution(&execution.operation_id, attempt)
+        else {
+            return;
+        };
+        let runtime_state = self.clone();
+        tokio::spawn(async move {
+            let _guard = guard;
+            runtime_state
+                .run_project_environment_setup(execution, attempt)
+                .await;
+        });
+    }
+
+    async fn run_project_environment_setup(&self, execution: SetupExecution, attempt: u32) {
+        let store = &self.owned.project_environment_setups;
+        if store.is_cancelled(&execution.operation_id, attempt) {
+            return;
+        }
+        if ensure_worker_validation_boundary(&self.owned.config_projection.snapshot()).is_err() {
+            store.mark_failed(
+                &execution.operation_id,
+                attempt,
+                "worker_boundary_unavailable",
+                "project environment setup requires a confirmed disposable worker boundary",
+            );
+            return;
+        }
+        if !store.update(&execution.operation_id, attempt, |entry| {
+            entry.status.phase = ProjectEnvironmentSetupPhase::Preparing;
+            entry.status.progress_percent = 10;
+            entry.status.message = Some(if execution.definition.as_ref().is_some_and(|definition| {
+                !definition.is_unattested_file_backed()
+            }) {
+                "kernel is reusing the stored project environment definition".to_string()
+            } else {
+                "utility agent is preparing the target environment".to_string()
+            });
+        }) {
+            return;
+        }
+        if store.is_cancelled(&execution.operation_id, attempt) {
+            return;
+        }
+        let (_agent, provider_run) = match assert_agent_utility_can_run(
+            self,
+            &execution.execution_session_id,
+            &execution.execution_agent_id,
+            &AgentUtilityKind::ProjectEnvironmentSetup,
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                store.mark_failed(
+                    &execution.operation_id,
+                    attempt,
+                    "worker_provider_context_unavailable",
+                    "the prepared worker provider context is unavailable",
+                );
+                return;
+            }
+        };
+        if provider_run.owner_user_id() != execution.owner_user_id.as_str() {
+            store.mark_failed(
+                &execution.operation_id,
+                attempt,
+                "worker_provider_context_unauthorized",
+                "the prepared worker provider context belongs to a different user",
+            );
+            return;
+        }
+        // Keep the ordinary run snapshot for the whole setup attempt. The
+        // discovery rebind intentionally changes the stored run to a
+        // read-only/no-MCP context, so a later restoration failure must not
+        // roll back to that temporary discovery snapshot.
+        let ordinary_provider_run = provider_run.clone();
+        let provider_run = match self
+            .prepare_provider_run_for_project_environment(&execution, &provider_run)
+            .await
+        {
+            Ok(provider_run) => provider_run,
+            Err(_) => {
+                store.mark_failed(
+                    &execution.operation_id,
+                    attempt,
+                    "provider_environment_bind_failed",
+                    "kernel could not bind a restartable prepared environment to the provider discovery process",
+                );
+                return;
+            }
+        };
+
+        let reusable_definition = execution
+            .definition
+            .as_ref()
+            .filter(|definition| !definition.is_unattested_file_backed());
+        if let Some(definition) = reusable_definition {
+            match self
+                .run_reused_definition_setup(&execution, attempt, definition, &provider_run)
+                .await
+            {
+                ReusedDefinitionSetupOutcome::Ready(definition) => {
+                    if self
+                        .restore_provider_run_after_project_environment_discovery(
+                            &execution,
+                            &provider_run,
+                            &ordinary_provider_run,
+                            Some(&definition),
+                        )
+                        .await
+                        .is_err()
+                    {
+                        store.mark_failed(
+                            &execution.operation_id,
+                            attempt,
+                            "provider_environment_bind_failed",
+                            "kernel could not bind the prepared environment to the provider run",
+                        );
+                        return;
+                    }
+                    if execution.persist_project_definition
+                        && self
+                            .update_project_environment_definition(
+                                &execution.project_id,
+                                definition,
+                                &execution.owner_user_id,
+                            )
+                            .is_err()
+                    {
+                        store.mark_failed(
+                            &execution.operation_id,
+                            attempt,
+                            "definition_persist_failed",
+                            "kernel could not persist the target environment definition",
+                        );
+                        return;
+                    }
+                    let _ = store.update(&execution.operation_id, attempt, |entry| {
+                        entry.status.phase = ProjectEnvironmentSetupPhase::Ready;
+                        entry.status.progress_percent = 100;
+                        entry.status.retryable = false;
+                        entry.status.message = Some(
+                            "project environment is ready on the validated worker".to_string(),
+                        );
+                    });
+                    return;
+                }
+                ReusedDefinitionSetupOutcome::ContinueToRepair => {
+                    if store.is_cancelled(&execution.operation_id, attempt) {
+                        let _ = self
+                            .restore_previous_ordinary_provider_run(
+                                &provider_run,
+                                &ordinary_provider_run,
+                            )
+                            .await;
+                        return;
+                    }
+                    let _ = store.update(&execution.operation_id, attempt, |entry| {
+                        entry.status.message = Some(
+                            "reused definition setup failed; utility agent is repairing the target"
+                                .to_string(),
+                        );
+                    });
+                }
+                ReusedDefinitionSetupOutcome::Cancelled => {
+                    let _ = self
+                        .restore_previous_ordinary_provider_run(
+                            &provider_run,
+                            &ordinary_provider_run,
+                        )
+                        .await;
+                    return;
+                }
+                ReusedDefinitionSetupOutcome::Failed { code, message } => {
+                    let _ = self
+                        .restore_previous_ordinary_provider_run(
+                            &provider_run,
+                            &ordinary_provider_run,
+                        )
+                        .await;
+                    store.mark_failed(&execution.operation_id, attempt, code, message);
+                    return;
+                }
+            }
+            let _ = store.update(&execution.operation_id, attempt, |entry| {
+                entry.status.phase = ProjectEnvironmentSetupPhase::Preparing;
+                entry.status.progress_percent = 10;
+                entry.status.validation = None;
+                entry.status.message =
+                    Some("utility agent is repairing the target environment".to_string());
+            });
+        }
+
+        let utility_request = RunAgentUtilityRequest {
+            session_id: execution.execution_session_id.clone(),
+            agent_id: execution.execution_agent_id.clone(),
+            kind: AgentUtilityKind::ProjectEnvironmentSetup,
+            input: AgentUtilityInput::ProjectEnvironmentSetup(
+                ProjectEnvironmentSetupUtilityInput {
+                    project_id: execution.project_id.clone(),
+                    workspace_id: execution.workspace_id.clone(),
+                    target_worker_id: execution.target_worker_id.clone(),
+                    target_platform: execution.target_platform.clone(),
+                    definition: execution.definition.clone(),
+                    validation_commands: execution.validation_commands.clone(),
+                },
+            ),
+        };
+        let archive_config = self
+            .owned
+            .config_projection
+            .snapshot()
+            .user_config
+            .history
+            .archive;
+        let utility_result = run_agent_utility_on_provider_run_for_project_environment_repair(
+            self,
+            archive_config,
+            utility_request,
+            provider_run.clone(),
+        )
+        .await;
+        if store.is_cancelled(&execution.operation_id, attempt) {
+            let _ = self
+                .restore_previous_ordinary_provider_run(
+                    &provider_run,
+                    &ordinary_provider_run,
+                )
+                .await;
+            return;
+        }
+        let definition = match utility_result {
+            Ok(result) => match result.output {
+                AgentUtilityOutput::ProjectEnvironmentSetup { definition } => definition,
+                _ => {
+                    let _ = self
+                        .restore_previous_ordinary_provider_run(
+                            &provider_run,
+                            &ordinary_provider_run,
+                        )
+                        .await;
+                    store.mark_failed(
+                        &execution.operation_id,
+                        attempt,
+                        "utility_output_invalid",
+                        "utility agent returned an unexpected setup result",
+                    );
+                    return;
+                }
+            },
+            Err(error) => {
+                let _ = self
+                    .restore_previous_ordinary_provider_run(
+                        &provider_run,
+                        &ordinary_provider_run,
+                    )
+                    .await;
+                if let Some(message) =
+                    project_environment_setup_utility_missing_input_message(&error)
+                {
+                    store.mark_failed(
+                        &execution.operation_id,
+                        attempt,
+                        "utility_missing_user_input",
+                        message,
+                    );
+                } else {
+                    store.mark_failed(
+                        &execution.operation_id,
+                        attempt,
+                        "utility_failed",
+                        "utility agent could not prepare the target environment",
+                    );
+                }
+                return;
+            }
+        };
+        if definition.target_platform != execution.target_platform
+            || definition.validation_commands.is_empty()
+            || execution
+                .validation_commands
+                .iter()
+                .any(|command| !definition.validation_commands.contains(command))
+        {
+            let _ = self
+                .restore_previous_ordinary_provider_run(
+                    &provider_run,
+                    &ordinary_provider_run,
+                )
+                .await;
+            store.mark_failed(
+                &execution.operation_id,
+                attempt,
+                "definition_invalid",
+                "utility agent returned an incomplete or mismatched environment definition",
+            );
+            return;
+        }
+        let definition = match self.resolve_project_environment_definition_inputs_on_worker(
+            &execution,
+            &definition,
+            &provider_run,
+        ) {
+            Ok(definition) => definition,
+            Err(_) => {
+                let _ = self
+                    .restore_previous_ordinary_provider_run(
+                        &provider_run,
+                        &ordinary_provider_run,
+                    )
+                    .await;
+                store.mark_failed(
+                    &execution.operation_id,
+                    attempt,
+                    "worker_input_attestation_failed",
+                    "kernel could not compute the exact project input attestations on the target worker",
+                );
+                return;
+            }
+        };
+        // Keep the provider on its previous ordinary environment while the
+        // kernel applies and validates the utility proposal. Only a proposal
+        // that passes those checks may project its HOME/PATH into the provider
+        // run; failures and cancellation therefore retain the old child and
+        // bindings.
+        let provider_run = match self
+            .restore_previous_ordinary_provider_run(&provider_run, &ordinary_provider_run)
+            .await
+        {
+            Ok(provider_run) => provider_run,
+            Err(_) => {
+                store.mark_failed(
+                    &execution.operation_id,
+                    attempt,
+                    "provider_environment_bind_failed",
+                    "kernel could not restore the ordinary provider environment after discovery",
+                );
+                return;
+            }
+        };
+        if !store.update(&execution.operation_id, attempt, |entry| {
+            entry.execution.definition = Some(definition.clone());
+            entry.status.definition_digest = Some(definition.digest());
+            entry.status.phase = ProjectEnvironmentSetupPhase::Validating;
+            entry.status.progress_percent = 55;
+            entry.status.message =
+                Some("target definition recorded; running kernel validation".to_string());
+        }) {
+            return;
+        }
+        match self.definition_inputs_match_on_worker(&execution, &definition, &provider_run) {
+            Ok(true) => {}
+            Ok(false) => {
+                store.mark_failed(
+                    &execution.operation_id,
+                    attempt,
+                    "worker_input_attestation_failed",
+                    "utility repair did not restore the attested project inputs",
+                );
+                return;
+            }
+            Err(_) => {
+                store.mark_failed(
+                    &execution.operation_id,
+                    attempt,
+                    "worker_input_attestation_unavailable",
+                    "kernel could not verify project inputs on the target worker",
+                );
+                return;
+            }
+        }
+        let _ = store.update(&execution.operation_id, attempt, |entry| {
+            entry.status.progress_percent = 65;
+            entry.status.message = Some(
+                "target inputs attested; applying repeatable setup steps".to_string(),
+            );
+        });
+        match self
+            .apply_definition_on_worker(&execution, attempt, &definition, &provider_run)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) | Err(_) => {
+                store.mark_failed(
+                    &execution.operation_id,
+                    attempt,
+                    "worker_setup_failed",
+                    "kernel could not apply the repaired setup definition",
+                );
+                return;
+            }
+        }
+        let validation = match self
+            .validate_definition_on_worker(&execution, attempt, &definition, &provider_run)
+            .await
+        {
+            Ok(validation) => validation,
+            Err(_) => {
+                store.mark_failed(
+                    &execution.operation_id,
+                    attempt,
+                    "worker_validation_unavailable",
+                    "kernel could not execute target validation commands",
+                );
+                return;
+            }
+        };
+        if store.is_cancelled(&execution.operation_id, attempt) {
+            return;
+        }
+        let inputs_match = match self.definition_inputs_match_on_worker(
+            &execution,
+            &definition,
+            &provider_run,
+        ) {
+            Ok(matches) => matches,
+            Err(_) => {
+                store.mark_failed(
+                    &execution.operation_id,
+                    attempt,
+                    "worker_input_attestation_unavailable",
+                    "kernel could not verify project inputs on the target worker",
+                );
+                return;
+            }
+        };
+        let validation_passed =
+            inputs_match && validation_passed_for_execution(&execution, &definition, &validation);
+        let _ = store.update(&execution.operation_id, attempt, |entry| {
+            entry.status.validation = Some(validation.clone());
+            entry.status.progress_percent = 85;
+            entry.status.message = Some(if validation_passed {
+                "target commands passed kernel validation".to_string()
+            } else {
+                "target validation reported one or more failures".to_string()
+            });
+        });
+        if !validation_passed {
+            store.mark_failed(
+                &execution.operation_id,
+                attempt,
+                "validation_failed",
+                "one or more target validation commands failed",
+            );
+            return;
+        }
+        let provider_run = match self
+            .restore_provider_run_after_project_environment_discovery(
+                &execution,
+                &provider_run,
+                &ordinary_provider_run,
+                Some(&definition),
+            )
+            .await
+        {
+            Ok(provider_run) => provider_run,
+            Err(_) => {
+                store.mark_failed(
+                    &execution.operation_id,
+                    attempt,
+                    "provider_environment_bind_failed",
+                    "kernel could not bind the validated environment to the provider run",
+                );
+                return;
+            }
+        };
+        if execution.persist_project_definition
+            && self
+                .update_project_environment_definition(
+                    &execution.project_id,
+                    definition.clone(),
+                    &execution.owner_user_id,
+                )
+                .is_err()
+        {
+            let _ = self
+                .restore_previous_ordinary_provider_run(&provider_run, &ordinary_provider_run)
+                .await;
+            store.mark_failed(
+                &execution.operation_id,
+                attempt,
+                "definition_persist_failed",
+                "kernel could not persist the target environment definition",
+            );
+            return;
+        }
+        let _ = store.update(&execution.operation_id, attempt, |entry| {
+            entry.status.phase = ProjectEnvironmentSetupPhase::Ready;
+            entry.status.progress_percent = 100;
+            entry.status.retryable = false;
+            entry.status.message =
+                Some("project environment is ready on the validated worker".to_string());
+        });
+    }
+
+    async fn run_reused_definition_setup(
+        &self,
+        execution: &SetupExecution,
+        attempt: u32,
+        definition: &ProjectEnvironmentDefinition,
+        provider_run: &RuntimeProviderRun,
+    ) -> ReusedDefinitionSetupOutcome {
+        match self
+            .apply_definition_on_worker(execution, attempt, definition, provider_run)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => return ReusedDefinitionSetupOutcome::ContinueToRepair,
+            Err(_) => {
+                return ReusedDefinitionSetupOutcome::Failed {
+                    code: "worker_setup_unavailable",
+                    message: "kernel could not execute the stored setup definition",
+                }
+            }
+        }
+
+        let _ = self
+            .owned
+            .project_environment_setups
+            .update(&execution.operation_id, attempt, |entry| {
+                entry.status.phase = ProjectEnvironmentSetupPhase::Validating;
+                entry.status.progress_percent = 45;
+                entry.status.message = Some(
+                    "kernel is validating the reused definition in the target worker".to_string(),
+                );
+            });
+        let validation = match self
+            .validate_definition_on_worker(execution, attempt, definition, provider_run)
+            .await
+        {
+            Ok(validation) => validation,
+            Err(_) => {
+                return ReusedDefinitionSetupOutcome::Failed {
+                    code: "worker_validation_unavailable",
+                    message: "kernel could not execute target validation commands",
+                }
+            }
+        };
+        if self
+            .owned
+            .project_environment_setups
+            .is_cancelled(&execution.operation_id, attempt)
+        {
+            return ReusedDefinitionSetupOutcome::Cancelled;
+        }
+        let inputs_match = match self.definition_inputs_match_on_worker(
+            execution,
+            definition,
+            provider_run,
+        ) {
+            Ok(matches) => matches,
+            Err(_) => {
+                return ReusedDefinitionSetupOutcome::Failed {
+                    code: "worker_input_attestation_unavailable",
+                    message: "kernel could not verify project inputs on the target worker",
+                }
+            }
+        };
+        let validation_passed =
+            validation_passed_for_execution(execution, definition, &validation) && inputs_match;
+        let _ = self
+            .owned
+            .project_environment_setups
+            .update(&execution.operation_id, attempt, |entry| {
+                entry.status.validation = Some(validation);
+                entry.status.progress_percent = 85;
+                entry.status.message = Some(if validation_passed {
+                    "reused definition passed kernel validation".to_string()
+                } else {
+                    "reused definition failed validation; utility agent is repairing the target"
+                        .to_string()
+                });
+            });
+        if self
+            .owned
+            .project_environment_setups
+            .is_cancelled(&execution.operation_id, attempt)
+        {
+            return ReusedDefinitionSetupOutcome::Cancelled;
+        }
+        if validation_passed {
+            ReusedDefinitionSetupOutcome::Ready(definition.clone())
+        } else {
+            ReusedDefinitionSetupOutcome::ContinueToRepair
+        }
+    }
+
+    async fn prepare_provider_run_for_project_environment(
+        &self,
+        execution: &SetupExecution,
+        provider_run: &RuntimeProviderRun,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.rebind_provider_run_for_project_environment(
+            execution,
+            provider_run,
+            None,
+            true,
+            None,
+        )
+        .await
+    }
+
+    async fn restore_provider_run_after_project_environment_discovery(
+        &self,
+        execution: &SetupExecution,
+        provider_run: &RuntimeProviderRun,
+        ordinary_provider_run: &RuntimeProviderRun,
+        definition: Option<&ProjectEnvironmentDefinition>,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.rebind_provider_run_for_project_environment(
+            execution,
+            provider_run,
+            definition,
+            false,
+            Some(ordinary_provider_run),
+        )
+        .await
+    }
+
+    async fn restore_previous_ordinary_provider_run(
+        &self,
+        provider_run: &RuntimeProviderRun,
+        ordinary_provider_run: &RuntimeProviderRun,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let current_run = self.owned.provider_store.get_run(provider_run.id())?;
+        let restartable_server = matches!(provider_run.adapter_key(), "codex" | "opencode");
+        if !restartable_server {
+            let restored = self
+                .owned
+                .provider_store
+                .restore_run_snapshot_after_restart_failure(ordinary_provider_run.clone())?;
+            self.owned.provider_run_projection.update(restored.clone());
+            return Ok(restored);
+        }
+        if self
+            .owned
+            .provider_store
+            .structured_prompt_io_in_flight(provider_run.id())
+        {
+            return Err(setup_error(
+                "cannot restore a provider while structured provider I/O is in flight",
+            ));
+        }
+        let credentials = self
+            .resolve_provider_account_credentials_for_run_with_vault(
+                &current_run,
+                "restore project environment provider",
+            )
+            .await?;
+        self.recover_provider_run_after_restart_failure(
+            ordinary_provider_run,
+            &current_run,
+            &credentials,
+        )
+        .await
+    }
+
+    async fn rebind_provider_run_for_project_environment(
+        &self,
+        execution: &SetupExecution,
+        provider_run: &RuntimeProviderRun,
+        definition: Option<&ProjectEnvironmentDefinition>,
+        read_only_discovery: bool,
+        restart_failure_snapshot: Option<&RuntimeProviderRun>,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let context = self.prepare_worker_execution_context_with_definition(
+            execution,
+            provider_run,
+            definition,
+        )?;
+        let original_run = self.owned.provider_store.get_run(provider_run.id())?;
+        let restart_failure_snapshot = restart_failure_snapshot.unwrap_or(&original_run);
+        let home = context
+            .environment
+            .get("HOME")
+            .cloned()
+            .ok_or_else(|| setup_error("prepared worker environment has no HOME"))?;
+        let path = context
+            .environment
+            .get("PATH")
+            .cloned()
+            .ok_or_else(|| setup_error("prepared worker environment has no PATH"))?;
+        let restartable_server = matches!(provider_run.adapter_key(), "codex" | "opencode");
+        if restartable_server
+            && provider_run.endpoint_mode() != crate::provider::AgentEndpointMode::Managed
+        {
+            return Err(setup_error(
+                "read-only provider discovery requires a managed Codex or OpenCode server that can be restarted with the prepared environment",
+            ));
+        }
+        if restartable_server
+            && self
+                .owned
+                .provider_store
+                .structured_prompt_io_in_flight(provider_run.id())
+        {
+            return Err(setup_error(
+                "cannot restart a provider discovery server while structured provider I/O is in flight",
+            ));
+        }
+
+        let needs_restart = original_run.read_only_discovery() != read_only_discovery
+            || !original_run.preparation_environment_matches(&home, &path)
+            || (restartable_server
+                && !self
+                    .owned
+                    .provider_store
+                    .structured_runtime_state_bound(provider_run.id()));
+        let credentials = if restartable_server && needs_restart {
+            Some(
+                self.resolve_provider_account_credentials_for_run_with_vault(
+                    provider_run,
+                    "prepare project environment provider",
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let updated = if needs_restart {
+            self.owned
+                .provider_store
+                .update_run_preparation_environment(provider_run.id(), home, path)?
+        } else {
+            original_run.clone()
+        };
+        let updated = if updated.read_only_discovery() != read_only_discovery {
+            self.owned
+                .provider_store
+                .update_run_read_only_discovery(updated.id(), read_only_discovery)?
+        } else {
+            updated
+        };
+        self.owned.provider_run_projection.update(updated.clone());
+        if !restartable_server || !needs_restart {
+            return Ok(updated);
+        }
+
+        let credentials = credentials.ok_or_else(|| {
+            setup_error("restartable provider credentials were not prepared")
+        })?;
+        self.owned.provider_store.clear_runtime(updated.id());
+        let run_for_spawn = updated.clone();
+        let spawn_credentials = credentials.clone();
+        let spawn_result = self
+            .with_app_side_effect(move |app| {
+                let _ = crate::app::ProviderProcessTracker::new(app)
+                    .remove_run(run_for_spawn.id())?;
+                crate::app::ProviderLaunchProcessRuntime::new(app)
+                    .spawn_for_launch_with_credentials(&run_for_spawn, &spawn_credentials)
+            })
+            .await;
+        if let Err(error) = spawn_result {
+            if let Err(recovery_error) = self
+                .recover_provider_run_after_restart_failure(
+                    restart_failure_snapshot,
+                    &updated,
+                    &credentials,
+                )
+                .await
+            {
+                crate::logging::error_with_fields(
+                    "daemon.provider",
+                    "provider restart rollback failed after spawn failure",
+                    serde_json::json!({
+                        "provider_run_id": updated.id(),
+                        "error": recovery_error.to_string(),
+                    }),
+                );
+            }
+            return Err(error);
+        }
+
+        let run_for_binding = updated.clone();
+        let binding_credentials = credentials.clone();
+        let binding = match tokio::task::spawn_blocking(move || {
+            ProviderProcessService::initialize_runtime_binding_with_credentials(
+                &run_for_binding,
+                &binding_credentials,
+            )
+        })
+        .await
+        {
+            Ok(Ok(binding)) => binding,
+            Ok(Err(error)) => {
+                if let Err(recovery_error) = self
+                    .recover_provider_run_after_restart_failure(
+                        restart_failure_snapshot,
+                        &updated,
+                        &credentials,
+                    )
+                    .await
+                {
+                    crate::logging::error_with_fields(
+                        "daemon.provider",
+                        "provider restart rollback failed after binding failure",
+                        serde_json::json!({
+                            "provider_run_id": updated.id(),
+                            "error": recovery_error.to_string(),
+                        }),
+                    );
+                }
+                return Err(error);
+            }
+            Err(error) => {
+                let setup_error = setup_error(&format!(
+                    "provider restart binding task failed: {error}"
+                ));
+                if let Err(recovery_error) = self
+                    .recover_provider_run_after_restart_failure(
+                        restart_failure_snapshot,
+                        &updated,
+                        &credentials,
+                    )
+                    .await
+                {
+                    crate::logging::error_with_fields(
+                        "daemon.provider",
+                        "provider restart rollback failed after binding task failure",
+                        serde_json::json!({
+                            "provider_run_id": updated.id(),
+                            "error": recovery_error.to_string(),
+                        }),
+                    );
+                }
+                return Err(setup_error);
+            }
+        };
+        if let Some(binding) = binding {
+            if let Err(error) = self
+                .owned
+                .provider_store
+                .apply_runtime_binding(updated.id(), binding)
+            {
+                if let Err(recovery_error) = self
+                    .recover_provider_run_after_restart_failure(
+                        restart_failure_snapshot,
+                        &updated,
+                        &credentials,
+                    )
+                    .await
+                {
+                    crate::logging::error_with_fields(
+                        "daemon.provider",
+                        "provider restart rollback failed after runtime binding apply failure",
+                        serde_json::json!({
+                            "provider_run_id": updated.id(),
+                            "error": recovery_error.to_string(),
+                        }),
+                    );
+                }
+                return Err(error);
+            }
+        }
+        let rebound = self.owned.provider_store.get_run(updated.id())?;
+        self.owned.provider_run_projection.update(rebound.clone());
+        Ok(rebound)
+    }
+
+    async fn cleanup_restarted_provider_run(&self, provider_run_id: &str) {
+        self.owned.provider_store.clear_runtime(provider_run_id);
+        let cleanup_run_id = provider_run_id.to_string();
+        let _ = self
+            .with_app_side_effect(move |app| {
+                crate::app::ProviderProcessTracker::new(app).remove_run(&cleanup_run_id)
+            })
+            .await;
+    }
+
+    async fn recover_provider_run_after_restart_failure(
+        &self,
+        original_run: &RuntimeProviderRun,
+        failed_run: &RuntimeProviderRun,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.cleanup_restarted_provider_run(failed_run.id()).await;
+        let result = self
+            .relaunch_provider_run_after_restart_failure(original_run, credentials)
+            .await;
+        if result.is_err() {
+            self.terminate_provider_run_after_restart_recovery_failure(original_run)
+                .await;
+        }
+        result
+    }
+
+    async fn relaunch_provider_run_after_restart_failure(
+        &self,
+        original_run: &RuntimeProviderRun,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let restored = self
+            .owned
+            .provider_store
+            .restore_run_snapshot_after_restart_failure(original_run.clone())?;
+        self.owned.provider_run_projection.update(restored.clone());
+
+        let run_for_spawn = restored.clone();
+        let spawn_credentials = credentials.clone();
+        self.with_app_side_effect(move |app| {
+            let _ = crate::app::ProviderProcessTracker::new(app)
+                .remove_run(run_for_spawn.id())?;
+            crate::app::ProviderLaunchProcessRuntime::new(app)
+                .spawn_for_launch_with_credentials(&run_for_spawn, &spawn_credentials)
+        })
+        .await?;
+
+        let run_for_binding = restored.clone();
+        let binding_credentials = credentials.clone();
+        let binding = tokio::task::spawn_blocking(move || {
+            ProviderProcessService::initialize_runtime_binding_with_credentials(
+                &run_for_binding,
+                &binding_credentials,
+            )
+        })
+        .await
+        .map_err(|error| setup_error(&format!("provider rollback binding task failed: {error}")))??;
+        if let Some(binding) = binding {
+            self.owned
+                .provider_store
+                .apply_runtime_binding(restored.id(), binding)?;
+        }
+        let rebound = self.owned.provider_store.get_run(restored.id())?;
+        self.owned.provider_run_projection.update(rebound.clone());
+        Ok(rebound)
+    }
+
+    async fn terminate_provider_run_after_restart_recovery_failure(
+        &self,
+        provider_run: &RuntimeProviderRun,
+    ) {
+        self.cleanup_restarted_provider_run(provider_run.id()).await;
+        let Ok(outcome) = self
+            .owned
+            .provider_store
+            .mark_run_ended_provider_only(provider_run.session_id(), provider_run.id())
+        else {
+            return;
+        };
+        let ended = outcome.into_run();
+        let session_id = ended.session_id().to_string();
+        let provider_run_id = ended.id().to_string();
+        self.owned.provider_run_projection.update(ended);
+        let _ = self
+            .with_app_side_effect(move |app| {
+                crate::app::clear_active_provider_run_session_pointer(
+                    app,
+                    &session_id,
+                    &provider_run_id,
+                )
+            })
+            .await;
+    }
+
+    fn resolve_project_environment_definition_inputs_on_worker(
+        &self,
+        execution: &SetupExecution,
+        definition: &ProjectEnvironmentDefinition,
+        provider_run: &RuntimeProviderRun,
+    ) -> Result<ProjectEnvironmentDefinition, DaemonError> {
+        let context = self.prepare_worker_execution_context(execution, provider_run)?;
+        resolve_project_environment_input_attestations(&context.workspace_root, definition)
+            .map_err(|message| setup_error(&message))
+    }
+
+    fn prepare_worker_execution_context(
+        &self,
+        execution: &SetupExecution,
+        provider_run: &RuntimeProviderRun,
+    ) -> Result<WorkerExecutionContext, DaemonError> {
+        self.prepare_worker_execution_context_with_definition(execution, provider_run, None)
+    }
+
+    fn prepare_worker_execution_context_with_definition(
+        &self,
+        execution: &SetupExecution,
+        provider_run: &RuntimeProviderRun,
+        definition: Option<&ProjectEnvironmentDefinition>,
+    ) -> Result<WorkerExecutionContext, DaemonError> {
+        // Both recipe application and validation are worker-kernel operations.
+        // Keep the confirmed receipt, provider binding, canonical worktree, and
+        // sanitized environment checks shared so a reuse path cannot weaken the
+        // home-kernel boundary.
+        let config = self.owned.config_projection.snapshot();
+        ensure_worker_validation_boundary(&config)?;
+        let worker_id = config.host_machine_id;
+        let platform = actual_worker_platform();
+        if worker_id != execution.target_worker_id || platform != execution.target_platform {
+            return Err(setup_error(
+                "worker identity or platform changed during setup",
+            ));
+        }
+        if provider_run.session_id() != execution.execution_session_id.as_str()
+            || provider_run.agent_instance_id() != Some(execution.execution_agent_id.as_str())
+            || provider_run.owner_user_id() != execution.owner_user_id.as_str()
+            || provider_run.state() != crate::provider::ProviderRunState::Running
+        {
+            return Err(setup_error(
+                "prepared provider context does not match the setup target",
+            ));
+        }
+        let current_provider_run = self.owned.provider_store.get_run(provider_run.id())?;
+        if current_provider_run.session_id() != provider_run.session_id()
+            || current_provider_run.agent_instance_id() != provider_run.agent_instance_id()
+            || current_provider_run.owner_user_id() != provider_run.owner_user_id()
+            || current_provider_run.state() != crate::provider::ProviderRunState::Running
+            || current_provider_run.pty_env() != provider_run.pty_env()
+            || current_provider_run.pty_env_remove() != provider_run.pty_env_remove()
+            || current_provider_run.read_only_discovery() != provider_run.read_only_discovery()
+            || current_provider_run.working_directory() != provider_run.working_directory()
+        {
+            return Err(setup_error(
+                "prepared provider context changed before worker setup",
+            ));
+        }
+        let workspace_root = canonical_worker_workspace(
+            &execution.workspace_id,
+            std::env::var_os("CHARIOX_HOME").as_deref(),
+        )?;
+        let provider_working_directory = provider_run
+            .working_directory()
+            .cloned()
+            .ok_or_else(|| setup_error("prepared provider context has no working directory"))?;
+        let provider_working_directory = canonical_worker_workspace(
+            &provider_working_directory,
+            std::env::var_os("CHARIOX_HOME").as_deref(),
+        )?;
+        if provider_working_directory != workspace_root {
+            return Err(setup_error(
+                "prepared provider context uses a different worker worktree",
+            ));
+        }
+        let preparation_home =
+            WorkerPreparationHome::for_project_worker(
+                &workspace_root,
+                &execution.project_id,
+                &worker_id,
+            )?;
+        let environment = worker_validation_environment_with_home_and_definition(
+            provider_run,
+            Some(preparation_home.path()),
+            Some(&workspace_root),
+            definition,
+        );
+        Ok(WorkerExecutionContext {
+            worker_id,
+            platform,
+            workspace_root,
+            environment,
+        })
+    }
+
+    fn definition_inputs_match_on_worker(
+        &self,
+        execution: &SetupExecution,
+        definition: &ProjectEnvironmentDefinition,
+        provider_run: &RuntimeProviderRun,
+    ) -> Result<bool, DaemonError> {
+        let context = self.prepare_worker_execution_context_with_definition(
+            execution,
+            provider_run,
+            Some(definition),
+        )?;
+        Ok(verify_project_environment_inputs(&context.workspace_root, definition).is_ok())
+    }
+
+    async fn apply_definition_on_worker(
+        &self,
+        execution: &SetupExecution,
+        attempt: u32,
+        definition: &ProjectEnvironmentDefinition,
+        provider_run: &RuntimeProviderRun,
+    ) -> Result<bool, DaemonError> {
+        let context = self.prepare_worker_execution_context_with_definition(
+            execution,
+            provider_run,
+            Some(definition),
+        )?;
+        if verify_project_environment_inputs(&context.workspace_root, definition).is_err() {
+            return Ok(false);
+        }
+        let commands = definition
+            .setup_steps
+            .iter()
+            .map(|step| step.command.clone())
+            .collect::<Vec<_>>();
+        let WorkerExecutionContext {
+            workspace_root: context_workspace_root,
+            environment,
+            ..
+        } = context;
+        let workspace_root = context_workspace_root.clone();
+        let operation_id = execution.operation_id.clone();
+        let cancellation = self.owned.project_environment_setups.clone();
+        let guard = cancellation
+            .begin_execution(&operation_id, attempt)
+            .ok_or_else(|| setup_error("setup attempt is no longer executing"))?;
+        let applied = tokio::task::spawn_blocking(move || {
+            // The blocking commands own this guard even if their async waiter exits.
+            let _guard = guard;
+            run_worker_setup_steps(
+                &commands,
+                &context_workspace_root,
+                &environment,
+                || cancellation.is_cancelled(&operation_id, attempt),
+            )
+        })
+        .await
+        .map_err(|error| setup_error(&format!("worker setup task failed: {error}")))?
+        .map_err(|error| setup_error(&error))?;
+        if !applied {
+            return Ok(false);
+        }
+        if verify_project_environment_inputs(&workspace_root, definition).is_err() {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    async fn validate_definition_on_worker(
+        &self,
+        execution: &SetupExecution,
+        attempt: u32,
+        definition: &ProjectEnvironmentDefinition,
+        provider_run: &RuntimeProviderRun,
+    ) -> Result<ProjectEnvironmentValidation, DaemonError> {
+        let context = self.prepare_worker_execution_context_with_definition(
+            execution,
+            provider_run,
+            Some(definition),
+        )?;
+        let worker_id = context.worker_id;
+        let platform = context.platform;
+        let commands = definition.validation_commands.clone();
+        let operation_id = execution.operation_id.clone();
+        let workspace_root = context.workspace_root;
+        let environment = context.environment;
+        let cancellation = self.owned.project_environment_setups.clone();
+        let guard = cancellation
+            .begin_execution(&operation_id, attempt)
+            .ok_or_else(|| setup_error("setup attempt is no longer executing"))?;
+        let validation = tokio::task::spawn_blocking(move || {
+            // The blocking command owns this guard even if its async waiter exits.
+            let _guard = guard;
+            let started = Instant::now();
+            let overall_deadline = started + VALIDATION_TOTAL_TIMEOUT;
+            let mut results = Vec::with_capacity(commands.len());
+            for command in commands {
+                if cancellation.is_cancelled(&operation_id, attempt)
+                    || overall_deadline
+                        .saturating_duration_since(Instant::now())
+                        .is_zero()
+                {
+                    break;
+                }
+                let result = run_worker_validation_command(
+                    &command,
+                    &workspace_root,
+                    &environment,
+                    || cancellation.is_cancelled(&operation_id, attempt),
+                    Some(overall_deadline),
+                );
+                match result {
+                    Ok((exit_code, stdout_bytes, stderr_bytes)) => {
+                        results.push(ProjectEnvironmentCommandResult {
+                            command_digest: command_digest(&command),
+                            exit_code,
+                            stdout_bytes,
+                            stderr_bytes,
+                        });
+                    }
+                    Err(_) => {
+                        results.push(ProjectEnvironmentCommandResult {
+                            command_digest: command_digest(&command),
+                            exit_code: -1,
+                            stdout_bytes: 0,
+                            stderr_bytes: 0,
+                        });
+                        break;
+                    }
+                }
+            }
+            ProjectEnvironmentValidation {
+                worker_id,
+                platform,
+                commands: results,
+            }
+        })
+        .await
+        .map_err(|error| setup_error(&format!("worker validation task failed: {error}")))?;
+        Ok(validation)
+    }
+}
+
+#[cfg(test)]
+#[path = "project_environment_setup_cancellation_tests.rs"]
+mod cancellation_tests;
+
+#[cfg(test)]
+#[path = "project_environment_setup_lifecycle_tests.rs"]
+mod lifecycle_tests;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::local::{
+        ProjectEnvironmentDefinitionOrigin, ProjectEnvironmentDefinitionSource,
+        ProjectEnvironmentInput, ProjectEnvironmentInputKind, ProjectEnvironmentSetupStep,
+        ProjectEnvironmentSetupStepKind,
+    };
+    use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
+
+    pub(super) fn execution() -> SetupExecution {
+        SetupExecution {
+            owner_user_id: "user-1".to_string(),
+            operation_id: "setup-1".to_string(),
+            project_id: "project-1".to_string(),
+            session_id: "session-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            execution_session_id: "session-1".to_string(),
+            execution_agent_id: "agent-1".to_string(),
+            workspace_id: "/tmp/project".to_string(),
+            target_worker_id: "machine-1".to_string(),
+            target_platform: "linux-x86_64".to_string(),
+            definition: Some(ProjectEnvironmentDefinition {
+                schema_version: 1,
+                origin: ProjectEnvironmentDefinitionOrigin::UserAuthored,
+                source: ProjectEnvironmentDefinitionSource::Commands,
+                target_platform: "linux-x86_64".to_string(),
+                source_path: None,
+                inputs: Vec::new(),
+                path_entries: Vec::new(),
+                setup_steps: vec![ProjectEnvironmentSetupStep {
+                    kind: ProjectEnvironmentSetupStepKind::Compiler,
+                    command: "rustup toolchain install stable".to_string(),
+                }],
+                validation_commands: vec!["cargo check --workspace --locked".to_string()],
+            }),
+            validation_commands: Vec::new(),
+            persist_project_definition: true,
+            remote_leased_agent_id: None,
+        }
+    }
+
+    #[test]
+    fn setup_store_is_idempotent_and_rejects_fingerprint_reuse() {
+        let store = ProjectEnvironmentSetupStore::default();
+        let (first, should_spawn) = store.begin(execution()).expect("setup should start");
+        assert!(should_spawn);
+        assert_eq!(first.phase, ProjectEnvironmentSetupPhase::Requested);
+
+        let (replayed, should_spawn) = store.begin(execution()).expect("replay should be safe");
+        assert!(!should_spawn);
+        assert_eq!(replayed, first);
+
+        let mut changed = execution();
+        changed.agent_id = "agent-2".to_string();
+        let error = store
+            .begin(changed)
+            .expect_err("same id with changed input must fail");
+        assert!(error.to_string().contains("different setup request"));
+    }
+
+    #[test]
+    fn reusable_definition_must_match_the_requested_worker_platform() {
+        let error = validate_setup_definition(
+            execution().definition,
+            "linux-aarch64",
+            &[],
+        )
+        .expect_err("a recipe for another worker platform must be rejected");
+        assert!(error
+            .to_string()
+            .contains("environment definition targets a different platform"));
+    }
+
+    fn protocol_330_definition_with_uppercase_input_digest() -> ProjectEnvironmentDefinition {
+        let mut definition = execution().definition.expect("test definition");
+        definition.source = ProjectEnvironmentDefinitionSource::Devcontainer;
+        definition.source_path = Some(".devcontainer/devcontainer.json".to_string());
+        definition.inputs = vec![ProjectEnvironmentInput {
+            kind: ProjectEnvironmentInputKind::Recipe,
+            path: ".devcontainer/devcontainer.json".to_string(),
+            sha256: format!("sha256:{}", "A".repeat(64)),
+        }];
+        definition
+    }
+
+    #[test]
+    fn protocol_330_uppercase_input_digest_is_admitted_by_home_and_leased_paths() {
+        let definition = protocol_330_definition_with_uppercase_input_digest();
+        let home_admitted = canonicalize_incoming_setup_definition(definition.clone())
+            .expect("home admission should normalize an equivalent legacy digest");
+        let admitted = validate_setup_definition(Some(definition), "linux-x86_64", &[])
+            .expect("leased admission should normalize an equivalent legacy digest")
+            .expect("definition should remain present");
+        assert_eq!(home_admitted, admitted);
+        assert_eq!(admitted.inputs[0].sha256, format!("sha256:{}", "a".repeat(64)));
+        assert_eq!(admitted.validate(), Ok(()));
+        assert!(!serde_json::to_string(&admitted)
+            .expect("definition should serialize")
+            .contains('A'));
+    }
+
+    #[test]
+    fn malformed_input_digest_remains_rejected_by_home_and_leased_paths() {
+        let mut definition = protocol_330_definition_with_uppercase_input_digest();
+        definition.inputs[0].sha256 = format!("sha256:{}", "G".repeat(64));
+        assert!(canonicalize_incoming_setup_definition(definition.clone()).is_err());
+        assert!(validate_setup_definition(Some(definition), "linux-x86_64", &[]).is_err());
+    }
+
+    #[test]
+    fn worker_setup_recovery_preserves_attempt_and_rejects_stale_replay() {
+        let store = ProjectEnvironmentSetupStore::default();
+        let (started, should_spawn) = store
+            .begin_at_attempt(execution(), 2)
+            .expect("worker recovery should start at the home attempt");
+        assert!(should_spawn);
+        assert_eq!(started.attempt, 2);
+
+        let (replayed, should_spawn) = store
+            .begin_at_attempt(execution(), 2)
+            .expect("same worker recovery request should be idempotent");
+        assert!(!should_spawn);
+        assert_eq!(replayed, started);
+
+        let stale = store
+            .begin_at_attempt(execution(), 1)
+            .expect_err("stale worker recovery must not reopen attempt 1");
+        assert!(stale
+            .to_string()
+            .contains("attempt does not match the existing worker operation"));
+
+        let zero = store
+            .begin_at_attempt(execution(), 0)
+            .expect_err("worker recovery must reject an invalid attempt");
+        assert!(zero.to_string().contains("attempt must be positive"));
+    }
+
+    #[test]
+    fn stale_remote_setup_recovery_is_narrow_and_rejects_stale_ready() {
+        let stale_binding = DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "unauthorized".to_string(),
+            message: "authenticated home kernel does not own the leased resource".to_string(),
+            retryable: false,
+        };
+        assert!(is_stale_remote_setup_binding_error(&stale_binding));
+
+        let business_unauthorized = DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "unauthorized".to_string(),
+            message: "provider rejected the business request".to_string(),
+            retryable: false,
+        };
+        assert!(!is_stale_remote_setup_binding_error(&business_unauthorized));
+        let retryable_ownership_error = DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "unauthorized".to_string(),
+            message: "authenticated home kernel does not own the leased resource".to_string(),
+            retryable: true,
+        };
+        assert!(!is_stale_remote_setup_binding_error(
+            &retryable_ownership_error
+        ));
+
+        let mut current = ProjectEnvironmentSetupStatus {
+            operation_id: "setup-1".to_string(),
+            project_id: "project-1".to_string(),
+            session_id: "session-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            worker_id: "machine-1".to_string(),
+            platform: "linux-x86_64".to_string(),
+            phase: ProjectEnvironmentSetupPhase::Requested,
+            attempt: 2,
+            progress_percent: 0,
+            definition_digest: None,
+            validation: None,
+            message: None,
+            failure_code: None,
+            failure_message: None,
+            retryable: true,
+            created_at_ms: 1,
+            updated_at_ms: 2,
+        };
+        let mut stale = current.clone();
+        stale.attempt = 1;
+        stale.phase = ProjectEnvironmentSetupPhase::Cancelled;
+        stale.retryable = true;
+        assert!(is_replayable_stale_remote_setup_status(&current, &stale));
+
+        stale.phase = ProjectEnvironmentSetupPhase::Ready;
+        stale.retryable = false;
+        assert!(!is_replayable_stale_remote_setup_status(&current, &stale));
+        let expected = execution();
+        let stale_ready = validate_remote_setup_status(&expected, 2, &stale, None)
+            .expect_err("stale Ready must fail the unchanged identity/attempt validator");
+        assert!(stale_ready.to_string().contains("identity or attempt"));
+
+        current.agent_id = "different-agent".to_string();
+        assert!(!is_replayable_stale_remote_setup_status(&current, &stale));
+    }
+
+    #[test]
+    fn permanent_worker_rejection_settles_recovery_but_transport_uncertainty_does_not() {
+        let store = ProjectEnvironmentSetupStore::default();
+        let mut execution = execution();
+        execution.remote_leased_agent_id = Some("leased-agent-old".to_string());
+        store
+            .begin(execution.clone())
+            .expect("remote setup should start");
+        let rejection = DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: crate::transport::relay_peer::PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE.to_string(),
+            message: "worker rejected setup".to_string(),
+            retryable: false,
+        };
+        let code = remote_setup_recovery_permanent_rejection_code(&rejection)
+            .expect("worker rejection should be classified as terminal");
+        KernelRuntimeState::settle_remote_setup_recovery_rejection_in_store(
+            &store, &execution, 1, &rejection,
+        );
+        let (_, failed) = store
+            .get_entry(&execution.operation_id, &execution.owner_user_id)
+            .expect("settled setup should remain inspectable");
+        assert_eq!(failed.phase, ProjectEnvironmentSetupPhase::Failed);
+        assert_eq!(failed.failure_code.as_deref(), Some(code));
+        assert!(!failed.retryable);
+
+        let metadata_failure = DaemonError::RelayTransport {
+            operation: "read relay metadata response",
+            code: crate::transport::relay_peer::PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE.to_string(),
+            message: "metadata request failed".to_string(),
+            retryable: false,
+        };
+        let uncertain_store = ProjectEnvironmentSetupStore::default();
+        uncertain_store
+            .begin(execution.clone())
+            .expect("uncertain setup should start");
+        KernelRuntimeState::settle_remote_setup_recovery_rejection_in_store(
+            &uncertain_store,
+            &execution,
+            1,
+            &metadata_failure,
+        );
+        let (_, still_active) = uncertain_store
+            .get_entry(&execution.operation_id, &execution.owner_user_id)
+            .expect("uncertain setup should remain inspectable");
+        assert_eq!(still_active.phase, ProjectEnvironmentSetupPhase::Requested);
+        assert!(still_active.retryable);
+        assert_eq!(
+            remote_setup_recovery_permanent_rejection_code(&metadata_failure),
+            None,
+            "metadata failure is transport uncertainty, not worker authority"
+        );
+        let ownership_failure = DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "unauthorized".to_string(),
+            message: "authenticated home kernel does not own the leased resource".to_string(),
+            retryable: false,
+        };
+        assert_eq!(
+            remote_setup_recovery_permanent_rejection_code(&ownership_failure),
+            None,
+            "stale binding must remain eligible for binding recovery"
+        );
+        let business_unauthorized = DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "unauthorized".to_string(),
+            message: "provider rejected the business request".to_string(),
+            retryable: false,
+        };
+        assert_eq!(
+            remote_setup_recovery_permanent_rejection_code(&business_unauthorized),
+            None,
+            "business authorization failure is not worker setup authority"
+        );
+    }
+
+    #[test]
+    fn remote_setup_binding_rebind_is_compare_and_swap_and_updates_worker_target() {
+        let store = ProjectEnvironmentSetupStore::default();
+        let mut execution = execution();
+        execution.remote_leased_agent_id = Some("leased-agent-old".to_string());
+        store.begin(execution).expect("remote setup should start");
+
+        let changed = store
+            .rebind_remote_leased_agent(
+                "setup-1",
+                1,
+                "leased-agent-other",
+                "leased-agent-new".to_string(),
+                0,
+            )
+            .expect_err("home binding refresh must not overwrite a changed binding");
+        assert!(changed.to_string().contains("binding changed"));
+
+        store
+            .cancel("setup-1", "session-1", "user-1")
+            .expect("worker setup cancellation should be recorded");
+        let target = crate::app::LeasedProjectEnvironmentSetupTarget {
+            owner_user_id: "user-1".to_string(),
+            home_session_id: "session-1".to_string(),
+            home_agent_id: "agent-1".to_string(),
+            backing_session_id: "worker-session-2".to_string(),
+            backing_agent_id: "worker-agent-2".to_string(),
+            workspace_id: "/worker/project".to_string(),
+        };
+        let (worker_status, _) = store
+            .rebind_remote_worker_target(
+                "setup-1",
+                "leased-agent-new",
+                &target,
+                "machine-1",
+                "linux-x86_64",
+            )
+            .expect("retryable worker state should accept the authenticated fresh binding");
+        assert_eq!(worker_status.phase, ProjectEnvironmentSetupPhase::Cancelled);
+        let (restarted_execution, attempt, restarted_status) = store
+            .retry("setup-1", "session-1", "user-1")
+            .expect("rebound worker setup should retry");
+        assert_eq!(attempt, 2);
+        assert_eq!(
+            restarted_status.phase,
+            ProjectEnvironmentSetupPhase::Requested
+        );
+        assert_eq!(
+            restarted_execution.remote_leased_agent_id.as_deref(),
+            Some("leased-agent-new")
+        );
+        assert_eq!(restarted_execution.execution_session_id, "worker-session-2");
+        assert_eq!(restarted_execution.execution_agent_id, "worker-agent-2");
+        assert_eq!(restarted_execution.workspace_id, "/worker/project");
+    }
+
+    #[test]
+    fn remote_recovery_reopens_only_after_a_fresh_bound_observation() {
+        let store = ProjectEnvironmentSetupStore::default();
+        let mut execution = execution();
+        execution.remote_leased_agent_id = Some("leased-agent-1".to_string());
+        store.begin(execution).expect("remote setup should start");
+
+        let first_observation = store.begin_remote_observation();
+        let overlapping_observation = store.begin_remote_observation();
+        assert_eq!(
+            store.begin_remote_recovery("setup-1", 1, "leased-agent-1", first_observation,),
+            RemoteSetupRecoveryDecision::Dispatch
+        );
+        store.mark_remote_recovery_observed(
+            "setup-1",
+            1,
+            "leased-agent-1",
+            Some(first_observation),
+        );
+        assert_eq!(
+            store.begin_remote_recovery("setup-1", 1, "leased-agent-1", overlapping_observation,),
+            RemoteSetupRecoveryDecision::Acknowledged,
+            "an overlapping not-found must not clear an acknowledged replay"
+        );
+
+        let fresh_observation = store.begin_remote_observation();
+        assert_eq!(
+            store.begin_remote_recovery("setup-1", 1, "leased-agent-1", fresh_observation,),
+            RemoteSetupRecoveryDecision::Dispatch,
+            "a fresh same-binding not-found may reopen recovery"
+        );
+        store.mark_remote_recovery_unknown("setup-1", 1, "leased-agent-1", first_observation);
+        assert_eq!(
+            store.begin_remote_recovery("setup-1", 1, "leased-agent-1", fresh_observation,),
+            RemoteSetupRecoveryDecision::InFlight,
+            "a stale response must not alter the fresh recovery reservation"
+        );
+        assert_eq!(
+            store.begin_remote_recovery("setup-1", 1, "leased-agent-2", fresh_observation,),
+            RemoteSetupRecoveryDecision::Stale,
+            "an observation from an old binding must be fenced"
+        );
+    }
+
+    #[test]
+    fn unscoped_start_cannot_acknowledge_a_recovery_reservation() {
+        let store = ProjectEnvironmentSetupStore::default();
+        let mut execution = execution();
+        execution.remote_leased_agent_id = Some("leased-agent-1".to_string());
+        store.begin(execution).expect("remote setup should start");
+
+        let observation_generation = store.begin_remote_observation();
+        assert_eq!(
+            store.begin_remote_recovery("setup-1", 1, "leased-agent-1", observation_generation,),
+            RemoteSetupRecoveryDecision::Dispatch
+        );
+        store.mark_remote_recovery_observed("setup-1", 1, "leased-agent-1", None);
+
+        let next_observation_generation = store.begin_remote_observation();
+        assert_eq!(
+            store.begin_remote_recovery(
+                "setup-1",
+                1,
+                "leased-agent-1",
+                next_observation_generation,
+            ),
+            RemoteSetupRecoveryDecision::InFlight,
+            "an unscoped Start response must not acknowledge a newer Get reservation"
+        );
+    }
+
+    #[test]
+    fn dropped_recovery_observation_becomes_unknown_for_the_same_fence() {
+        let store = ProjectEnvironmentSetupStore::default();
+        let mut execution = execution();
+        execution.remote_leased_agent_id = Some("leased-agent-1".to_string());
+        store.begin(execution).expect("remote setup should start");
+
+        let observation_generation = store.begin_remote_observation();
+        assert_eq!(
+            store.begin_remote_recovery("setup-1", 1, "leased-agent-1", observation_generation,),
+            RemoteSetupRecoveryDecision::Dispatch
+        );
+        {
+            let _reservation = RemoteSetupRecoveryReservationGuard::new(
+                &store,
+                "setup-1",
+                1,
+                "leased-agent-1",
+                observation_generation,
+            );
+        }
+
+        let next_observation_generation = store.begin_remote_observation();
+        assert_eq!(
+            store.begin_remote_recovery(
+                "setup-1",
+                1,
+                "leased-agent-1",
+                next_observation_generation,
+            ),
+            RemoteSetupRecoveryDecision::Unknown,
+            "cancelling replay observation must fence duplicate dispatch until explicit recovery"
+        );
+    }
+
+    #[test]
+    fn dropped_recovery_observation_after_binding_refresh_fences_the_new_binding() {
+        let store = ProjectEnvironmentSetupStore::default();
+        let mut execution = execution();
+        execution.remote_leased_agent_id = Some("leased-agent-old".to_string());
+        store.begin(execution).expect("remote setup should start");
+
+        let observation_generation = store.begin_remote_observation();
+        assert_eq!(
+            store.begin_remote_recovery("setup-1", 1, "leased-agent-old", observation_generation,),
+            RemoteSetupRecoveryDecision::Dispatch
+        );
+        let mut reservation = RemoteSetupRecoveryReservationGuard::new(
+            &store,
+            "setup-1",
+            1,
+            "leased-agent-old",
+            observation_generation,
+        );
+        store
+            .rebind_remote_leased_agent(
+                "setup-1",
+                1,
+                "leased-agent-old",
+                "leased-agent-new".to_string(),
+                observation_generation,
+            )
+            .expect("the active recovery should rebind to the fresh lease");
+        reservation.rebind("leased-agent-new");
+        drop(reservation);
+
+        let next_observation_generation = store.begin_remote_observation();
+        assert_eq!(
+            store.begin_remote_recovery(
+                "setup-1",
+                1,
+                "leased-agent-old",
+                next_observation_generation,
+            ),
+            RemoteSetupRecoveryDecision::Stale,
+            "the old lease must never regain the dropped recovery reservation"
+        );
+        assert_eq!(
+            store.begin_remote_recovery(
+                "setup-1",
+                1,
+                "leased-agent-new",
+                next_observation_generation,
+            ),
+            RemoteSetupRecoveryDecision::Unknown,
+            "a dropped refresh observer must fence duplicate dispatch on the fresh lease"
+        );
+    }
+
+    #[test]
+    fn late_recovery_rejection_cannot_clear_a_newer_reservation() {
+        let store = ProjectEnvironmentSetupStore::default();
+        let mut execution = execution();
+        execution.remote_leased_agent_id = Some("leased-agent-old".to_string());
+        store.begin(execution).expect("remote setup should start");
+
+        let old_observation_generation = store.begin_remote_observation();
+        assert_eq!(
+            store.begin_remote_recovery(
+                "setup-1",
+                1,
+                "leased-agent-old",
+                old_observation_generation,
+            ),
+            RemoteSetupRecoveryDecision::Dispatch
+        );
+
+        // Model the old recovery continuation returning a permanent rejection
+        // after a newer public Retry has already taken ownership of the entry.
+        store.mark_failed(
+            "setup-1",
+            1,
+            "worker_failed",
+            "the retained worker rejected attempt one",
+        );
+        let (_, new_attempt, _) = store
+            .retry("setup-1", "session-1", "user-1")
+            .expect("the newer public Retry should advance the operation");
+        assert_eq!(new_attempt, 2);
+        store
+            .rebind_remote_leased_agent(
+                "setup-1",
+                new_attempt,
+                "leased-agent-old",
+                "leased-agent-new".to_string(),
+                old_observation_generation,
+            )
+            .expect("the newer attempt should use the fresh lease");
+        let new_observation_generation = store.begin_remote_observation();
+        assert_eq!(
+            store.begin_remote_recovery(
+                "setup-1",
+                new_attempt,
+                "leased-agent-new",
+                new_observation_generation,
+            ),
+            RemoteSetupRecoveryDecision::Dispatch
+        );
+
+        // This is the old continuation's identity-scoped cleanup. It must
+        // not erase the newer attempt-two reservation.
+        assert!(!store.clear_remote_recovery_if_matches(
+            "setup-1",
+            1,
+            "leased-agent-old",
+            old_observation_generation,
+        ));
+        let later_observation_generation = store.begin_remote_observation();
+        assert_eq!(
+            store.begin_remote_recovery(
+                "setup-1",
+                new_attempt,
+                "leased-agent-new",
+                later_observation_generation,
+            ),
+            RemoteSetupRecoveryDecision::InFlight,
+            "a late old rejection must not release the newer recovery reservation"
+        );
+    }
+
+    #[test]
+    fn late_recovery_rebind_cannot_mutate_a_newer_observation_reservation() {
+        let store = ProjectEnvironmentSetupStore::default();
+        let mut execution = execution();
+        execution.remote_leased_agent_id = Some("leased-agent-old".to_string());
+        store.begin(execution).expect("remote setup should start");
+
+        let old_observation_generation = store.begin_remote_observation();
+        assert_eq!(
+            store.begin_remote_recovery(
+                "setup-1",
+                1,
+                "leased-agent-old",
+                old_observation_generation,
+            ),
+            RemoteSetupRecoveryDecision::Dispatch
+        );
+        assert!(store.clear_remote_recovery_if_matches(
+            "setup-1",
+            1,
+            "leased-agent-old",
+            old_observation_generation,
+        ));
+
+        let new_observation_generation = store.begin_remote_observation();
+        assert_eq!(
+            store.begin_remote_recovery(
+                "setup-1",
+                1,
+                "leased-agent-old",
+                new_observation_generation,
+            ),
+            RemoteSetupRecoveryDecision::Dispatch
+        );
+
+        // The old refresh continuation arrives after the newer observation
+        // has reserved the same attempt. Its binding update must be fenced by
+        // the old generation as well as attempt and binding.
+        store
+            .rebind_remote_leased_agent(
+                "setup-1",
+                1,
+                "leased-agent-old",
+                "leased-agent-new".to_string(),
+                old_observation_generation,
+            )
+            .expect("the old refresh still updates the home binding CAS");
+        assert!(
+            !store.remote_recovery_dispatch_allowed(
+                "setup-1",
+                1,
+                "leased-agent-new",
+                new_observation_generation,
+            ),
+            "an old refresh must not make a newer reservation dispatchable under its replacement binding"
+        );
+    }
+
+    #[test]
+    fn non_retryable_worker_rejection_does_not_suggest_reconnect() {
+        let store = ProjectEnvironmentSetupStore::default();
+        store.begin(execution()).expect("setup should start");
+        store.mark_failed_non_retryable(
+            "setup-1",
+            1,
+            "worker_rejected",
+            "the worker rejected the setup request",
+        );
+
+        let error = store
+            .retry("setup-1", "session-1", "user-1")
+            .expect_err("a non-retryable worker rejection must remain terminal");
+        let message = error.to_string();
+        assert!(message.contains("rejected by the worker"), "{message}");
+        assert!(message.contains("not retryable"), "{message}");
+        assert!(!message.contains("reconnect"), "{message}");
+    }
+
+    #[test]
+    fn cancellation_is_terminal_until_explicit_retry() {
+        let store = ProjectEnvironmentSetupStore::default();
+        store.begin(execution()).expect("setup should start");
+        let cancelled = store
+            .cancel("setup-1", "session-1", "user-1")
+            .expect("cancel should be accepted");
+        assert_eq!(cancelled.phase, ProjectEnvironmentSetupPhase::Cancelled);
+        assert!(store.is_cancelled("setup-1", 1));
+
+        let (_execution, attempt, retried) = store
+            .retry("setup-1", "session-1", "user-1")
+            .expect("cancelled setup should retry");
+        assert_eq!(attempt, 2);
+        assert_eq!(retried.phase, ProjectEnvironmentSetupPhase::Requested);
+        assert!(!store.is_cancelled("setup-1", 2));
+    }
+
+    #[test]
+    fn late_failure_cannot_reopen_cancelled_setup() {
+        let store = ProjectEnvironmentSetupStore::default();
+        store.begin(execution()).expect("setup should start");
+        store
+            .cancel("setup-1", "session-1", "user-1")
+            .expect("cancel should be accepted");
+
+        store.mark_failed(
+            "setup-1",
+            1,
+            "worker_validation_unavailable",
+            "late worker failure",
+        );
+
+        let status = store
+            .get("setup-1", "user-1")
+            .expect("cancelled setup should remain observable");
+        assert_eq!(status.phase, ProjectEnvironmentSetupPhase::Cancelled);
+        assert_eq!(status.failure_code, None);
+    }
+
+    #[test]
+    fn validation_requires_nonempty_measured_results() {
+        let validation = ProjectEnvironmentValidation {
+            worker_id: "machine-1".to_string(),
+            platform: "linux-x86_64".to_string(),
+            commands: Vec::new(),
+        };
+        assert!(!validation.passed());
+    }
+
+    #[test]
+    fn home_kernel_cannot_enter_the_worker_validation_boundary() {
+        let error = ensure_worker_validation_boundary(&DaemonConfig::for_tests())
+            .expect_err("general home kernels must not execute project setup commands");
+        assert!(error.to_string().contains("dedicated worker kernel"));
+    }
+
+    #[test]
+    fn worker_validation_environment_removes_kernel_and_credential_bindings() {
+        let mut provider_env = BTreeMap::new();
+        provider_env.insert("PATH".to_string(), "/worker/toolchain/bin".to_string());
+        provider_env.insert(
+            "CHARIOX_HOME".to_string(),
+            "/worker/kernel-home".to_string(),
+        );
+        provider_env.insert(
+            "CHARIOX_MANAGED_VAULT_PATH".to_string(),
+            "/worker/kernel-home/vault.json".to_string(),
+        );
+        provider_env.insert(
+            "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE".to_string(),
+            "/worker/kernel-home/auth-token".to_string(),
+        );
+        provider_env.insert("OPENAI_API_KEY".to_string(), "must-not-cross".to_string());
+        provider_env.insert("SSH_PRIVATE_KEY".to_string(), "must-not-cross".to_string());
+        provider_env.insert(
+            "SSH_AUTH_SOCK".to_string(),
+            "/run/user/1000/ssh-agent.sock".to_string(),
+        );
+        provider_env.insert(
+            "GIT_SSH_COMMAND".to_string(),
+            "ssh -o StrictHostKeyChecking=no".to_string(),
+        );
+        provider_env.insert(
+            "SSH_ASKPASS".to_string(),
+            "/tmp/unselected-askpass".to_string(),
+        );
+        let request =
+            LaunchProviderRequest::new("session-1", "codex", "codex", "default", "default");
+        let run = RuntimeProviderRun::new(
+            "provider-run-1",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "worker-provider".to_string(),
+                pty_target: None,
+                pty_program: Some("/bin/sh".to_string()),
+                pty_args: Vec::new(),
+                pty_env: provider_env,
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+
+        let environment = worker_validation_environment(&run);
+        assert_eq!(
+            environment.get("PATH").map(String::as_str),
+            Some("/worker/toolchain/bin")
+        );
+        for name in [
+            "CHARIOX_HOME",
+            "CHARIOX_MANAGED_VAULT_PATH",
+            "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE",
+            "OPENAI_API_KEY",
+            "SSH_PRIVATE_KEY",
+            "SSH_AUTH_SOCK",
+            "GIT_SSH_COMMAND",
+            "SSH_ASKPASS",
+        ] {
+            assert!(
+                !environment.contains_key(name),
+                "{name} must not reach validation"
+            );
+        }
+        assert!(
+            !environment.contains_key("SSH_AUTH_SOCK"),
+            "automatically supplied SSH agent authority must not reach opaque commands"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opaque_commands_write_only_isolated_home_without_automatic_ssh_authority() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-project-environment-credential-boundary-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let automatic_home = root.join("automatic-home");
+        let isolated_home = root.join("isolated-home");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(automatic_home.join(".ssh"))
+            .expect("automatic credential home should exist");
+        std::fs::create_dir_all(&workspace).expect("worker workspace should exist");
+        std::fs::write(
+            automatic_home.join(".ssh/known_hosts"),
+            "selected-host.example ssh-ed25519 AAAA-selected\n",
+        )
+        .expect("selected host verification should exist");
+
+        let mut provider_env = BTreeMap::new();
+        provider_env.insert("PATH".to_string(), "/usr/bin:/bin".to_string());
+        provider_env.insert("HOME".to_string(), automatic_home.display().to_string());
+        provider_env.insert(
+            "SSH_AUTH_SOCK".to_string(),
+            "/run/user/1000/selected-agent.sock".to_string(),
+        );
+        provider_env.insert(
+            "SSH_CONFIG".to_string(),
+            automatic_home.join(".ssh/config").display().to_string(),
+        );
+        provider_env.insert(
+            "SSH_KNOWN_HOSTS".to_string(),
+            automatic_home
+                .join(".ssh/known_hosts")
+                .display()
+                .to_string(),
+        );
+        provider_env.insert(
+            "XDG_CONFIG_HOME".to_string(),
+            automatic_home.join(".config").display().to_string(),
+        );
+        provider_env.insert(
+            "CODEX_HOME".to_string(),
+            automatic_home.join(".codex").display().to_string(),
+        );
+        let request =
+            LaunchProviderRequest::new("session-1", "codex", "codex", "default", "default");
+        let run = RuntimeProviderRun::new(
+            "provider-run-credential-boundary",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "worker-provider".to_string(),
+                pty_target: None,
+                pty_program: Some("/bin/sh".to_string()),
+                pty_args: Vec::new(),
+                pty_env: provider_env,
+                pty_env_remove: Vec::new(),
+                working_directory: Some(workspace.clone()),
+                structured_endpoint: None,
+            },
+        );
+        let environment = worker_validation_environment_with_home(&run, Some(&isolated_home));
+        let command = format!(
+            "set -eu; test -z \"${{SSH_AUTH_SOCK:-}}\"; test \"$HOME\" = '{}'; mkdir -p \"$HOME/.ssh\"; printf '%s\\n' bypass > \"$HOME/.ssh/known_hosts\"; test \"$(cat \"$HOME/.ssh/known_hosts\")\" = bypass",
+            isolated_home.display()
+        );
+        let (exit_code, _, _) = run_worker_validation_command(
+            &command,
+            &workspace,
+            &environment,
+            || false,
+            None,
+        )
+        .expect("opaque project command should execute with ordinary shell semantics");
+        assert_eq!(exit_code, 0);
+        assert_eq!(
+            std::fs::read_to_string(automatic_home.join(".ssh/known_hosts"))
+                .expect("automatic host verification should remain readable"),
+            "selected-host.example ssh-ed25519 AAAA-selected\n",
+            "an opaque command writing its inherited HOME must not rewrite Chariox-provided host verification"
+        );
+        assert!(
+            !environment.contains_key("SSH_AUTH_SOCK"),
+            "the automatically provided agent must not be available to opaque commands"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validation_commands_cannot_use_protected_home_bindings_or_kernel_controls() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-project-environment-protected-home-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let protected_home = root.join("kernel-home");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(protected_home.join("vault")).expect("protected home exists");
+        std::fs::create_dir_all(&workspace).expect("worker workspace exists");
+        std::fs::write(protected_home.join("vault/secret.json"), "must-not-be-read")
+            .expect("protected vault exists");
+
+        let mut provider_env = BTreeMap::new();
+        provider_env.insert("PATH".to_string(), "/usr/bin:/bin".to_string());
+        provider_env.insert(
+            "CHARIOX_HOME".to_string(),
+            protected_home.display().to_string(),
+        );
+        provider_env.insert(
+            "CHARIOX_MANAGED_VAULT_PATH".to_string(),
+            protected_home
+                .join("vault/secret.json")
+                .display()
+                .to_string(),
+        );
+        provider_env.insert(
+            "CHARIOX_MANAGED_KERNEL_BINARY".to_string(),
+            "/usr/local/bin/chariox-kernel".to_string(),
+        );
+        let request =
+            LaunchProviderRequest::new("session-1", "codex", "codex", "default", "default");
+        let run = RuntimeProviderRun::new(
+            "provider-run-protected-home",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "worker-provider".to_string(),
+                pty_target: None,
+                pty_program: Some("/bin/sh".to_string()),
+                pty_args: Vec::new(),
+                pty_env: provider_env,
+                pty_env_remove: Vec::new(),
+                working_directory: Some(workspace.clone()),
+                structured_endpoint: None,
+            },
+        );
+        let environment = worker_validation_environment(&run);
+        // The confirmed disposable-worker VM supplies filesystem separation
+        // from the home kernel. This fixture covers the complementary local
+        // contract: validation receives no path/control binding that points at
+        // the protected home or a kernel replacement target.
+        let command = r#"
+            test -z "${CHARIOX_HOME-}" &&
+            test -z "${CHARIOX_MANAGED_VAULT_PATH-}" &&
+            test -z "${CHARIOX_MANAGED_KERNEL_BINARY-}" &&
+            test ! -r "${CHARIOX_HOME:-/no-worker-home}/vault/secret.json" &&
+            test ! -w "${CHARIOX_MANAGED_KERNEL_BINARY:-/no-worker-kernel}"
+        "#;
+        let (exit_code, _, _) =
+            run_worker_validation_command(command, &workspace, &environment, || false, None)
+                .expect("worker validation shell should execute");
+        assert_eq!(
+            exit_code, 0,
+            "validation must not inherit protected home/vault or kernel replacement controls"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn worker_worktree_cannot_overlap_kernel_home() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-project-environment-boundary-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let kernel_home = root.join("kernel-home");
+        let worktree = kernel_home.join("workspace");
+        std::fs::create_dir_all(&worktree).expect("worker worktree should exist");
+        let error = canonical_worker_workspace(&worktree, Some(kernel_home.as_os_str()))
+            .expect_err("kernel-owned home must not be a project worktree");
+        assert!(error.to_string().contains("overlaps kernel-owned home"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worker_local_tool_resolves_through_the_prepared_provider_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "chariox-project-environment-tool-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).expect("worker tool directory should exist");
+        let tool = bin.join("worker-local-tool");
+        std::fs::write(&tool, "#!/bin/sh\nexit 0\n").expect("worker tool should exist");
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755))
+            .expect("worker tool should be executable");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("worker workspace should exist");
+        let environment = BTreeMap::from([(String::from("PATH"), bin.display().to_string())]);
+        let (exit_code, _, _) = run_worker_validation_command(
+            "command -v worker-local-tool",
+            &workspace,
+            &environment,
+            || false,
+            None,
+        )
+        .expect("worker validation shell should execute");
+        assert_eq!(exit_code, 0, "installed worker-local tool must resolve");
+        let _ = std::fs::remove_dir_all(root);
+    }
+}

@@ -14,22 +14,24 @@ const builder = join(repositoryRoot, "scripts/build-managed-kernel-release.mjs")
 const installer = join(repositoryRoot, "deploy/managed-kernel/install-image.sh")
 const verifier = join(repositoryRoot, "deploy/managed-kernel/verify-image-release.mjs")
 const service = join(repositoryRoot, "deploy/managed-kernel/chariox-managed-bootstrap.service")
+const workerService = join(repositoryRoot, "deploy/managed-kernel/chariox-disposable-worker-bootstrap.service")
 const rootlessDockerService = join(repositoryRoot, "deploy/managed-kernel/chariox-rootless-docker.service")
 const sliceBrokerService = join(repositoryRoot, "deploy/managed-kernel/chariox-slice-broker.service")
 const sourceDateEpoch = "946684800"
 
-test("managed prebuilt slice runtime creates its release directory", async () => {
+test("managed prebuilt slice runtime materializes its runtime output directory", async () => {
   const dockerfile = await readFile(
     join(repositoryRoot, "apps/kernel/slice-linux-docker/docker/Dockerfile"),
     "utf8",
   )
-  const start = dockerfile.indexOf('RUN if [ "$CHARIOX_PREBUILT_RUNTIME" = "1" ]')
+  const start = dockerfile.indexOf("RUN mkdir -p /opt/chariox-runtime-bin")
   const end = dockerfile.indexOf("\n\nFROM ", start)
   assert.notEqual(start, -1, "prebuilt runtime branch is missing")
   assert.notEqual(end, -1, "prebuilt runtime branch has no stage boundary")
 
   const fixture = await mkdtemp(join(tmpdir(), "chariox-prebuilt-slice-"))
   const prebuilt = join(fixture, "prebuilt")
+  const runtimeBin = join(fixture, "runtime-bin")
   try {
     await mkdir(prebuilt, { recursive: true })
     for (const name of ["chariox-kernel", "chariox-relay"]) {
@@ -41,14 +43,15 @@ test("managed prebuilt slice runtime creates its release directory", async () =>
       .slice(start + "RUN ".length, end)
       .replaceAll("\\\n", " ")
       .replaceAll("/opt/chariox-prebuilt", prebuilt)
+      .replaceAll("/opt/chariox-runtime-bin", runtimeBin)
     const result = spawnSync("/bin/sh", ["-c", command], {
       cwd: fixture,
       encoding: "utf8",
       env: { ...process.env, CHARIOX_PREBUILT_RUNTIME: "1" },
     })
     assert.equal(result.status, 0, result.stderr)
-    assert.equal(await readFile(join(fixture, "target/release/chariox-kernel"), "utf8"), "chariox-kernel\n")
-    assert.equal(await readFile(join(fixture, "target/release/chariox-relay"), "utf8"), "chariox-relay\n")
+    assert.equal(await readFile(join(runtimeBin, "chariox-kernel"), "utf8"), "chariox-kernel\n")
+    assert.equal(await readFile(join(runtimeBin, "chariox-relay"), "utf8"), "chariox-relay\n")
   } finally {
     await rm(fixture, { recursive: true, force: true })
   }
@@ -189,12 +192,21 @@ async function makeFixture(root, variant = "") {
       await readFile(join(repositoryRoot, "apps/kernel/slice-linux-docker/managed-docker-broker.mjs")),
     ],
     ["apps/kernel/slice-linux-docker/enter-rootless-docker-namespace.sh", "#!/bin/sh\nexec \"$@\"\n"],
+    ...await Promise.all(["managed-rootless-service.sh", "chariox-rootless-engine.service", "chariox-rootless-user-manager.conf"].map(async (name) => {
+      const path = `apps/kernel/slice-linux-docker/${name}`
+      return [path, await readFile(join(repositoryRoot, path))]
+    })),
     ["apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh", "#!/bin/sh\nSLICE_BUILD_IMAGE=fixture\n"],
     ["apps/kernel/slice-linux-docker/managed-publication-access.sh", "#!/bin/sh\nexit 0\n"],
+    [
+      "apps/kernel/slice-linux-docker/managed-publication-acl.awk",
+      await readFile(join(repositoryRoot, "apps/kernel/slice-linux-docker/managed-publication-acl.awk")),
+    ],
     ["apps/kernel/slice-linux-docker/toolchain/package-lock.json", "{\"lockfileVersion\":3}\n"],
     ["apps/kernel/src/transport/relay_peer.rs", "pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 1;\n"],
     ["apps/relay/Cargo.toml", "[package]\nname = \"relay-fixture\"\n"],
     ["deploy/managed-kernel/chariox-managed-bootstrap.service", await readFile(service)],
+    ["deploy/managed-kernel/chariox-disposable-worker-bootstrap.service", await readFile(workerService)],
     ["deploy/managed-kernel/chariox-rootless-docker.service", await readFile(rootlessDockerService)],
     ["deploy/managed-kernel/chariox-slice-broker.service", await readFile(sliceBrokerService)],
     ["examples/workflow-code/example.md", "workflow fixture\n"],
@@ -206,7 +218,7 @@ async function makeFixture(root, variant = "") {
     const destination = join(sourceRepository, path)
     await mkdir(join(destination, ".."), { recursive: true })
     await writeFile(destination, contents, {
-      mode: path.endsWith("enter-rootless-docker-namespace.sh") || path.endsWith("provision-linux-docker-slice.sh") || path.endsWith("managed-publication-access.sh") ? 0o755 : 0o644,
+      mode: path.endsWith(".sh") ? 0o755 : 0o644,
     })
   }
   const git = (args) => spawnSync("git", args, {
@@ -271,6 +283,7 @@ async function makeFixture(root, variant = "") {
     sourceCommit,
     sourceTree,
     serviceBytes: sourceFiles.get("deploy/managed-kernel/chariox-managed-bootstrap.service"),
+    workerServiceBytes: sourceFiles.get("deploy/managed-kernel/chariox-disposable-worker-bootstrap.service"),
     rootlessDockerServiceBytes: sourceFiles.get("deploy/managed-kernel/chariox-rootless-docker.service"),
     sliceBrokerServiceBytes: sourceFiles.get("deploy/managed-kernel/chariox-slice-broker.service"),
   }
@@ -303,6 +316,7 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
   const packagedPaths = snapshot.filter((entry) => entry.type === "file").map((entry) => entry.path)
   for (const requiredPath of [
     "etc/systemd/system/chariox-managed-bootstrap.service",
+    "etc/systemd/system/chariox-disposable-worker-bootstrap.service",
     "etc/systemd/system/chariox-rootless-docker.service",
     "etc/systemd/system/chariox-slice-broker.service",
     "usr/lib/chariox/release-manifest.json",
@@ -312,8 +326,12 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
     "usr/lib/chariox/build-attestation.sig",
     "usr/lib/chariox/builder-public-key",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/enter-rootless-docker-namespace.sh",
+    "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-rootless-service.sh",
+    "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/chariox-rootless-engine.service",
+    "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/chariox-rootless-user-manager.conf",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-publication-access.sh",
+    "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-publication-acl.awk",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/prebuilt/.managed-release",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/prebuilt/chariox-kernel",
@@ -343,6 +361,11 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
         name: "chariox-managed-bootstrap.service",
         path: "/etc/systemd/system/chariox-managed-bootstrap.service",
         sha256: digest(fixture.serviceBytes),
+      },
+      {
+        name: "chariox-disposable-worker-bootstrap.service",
+        path: "/etc/systemd/system/chariox-disposable-worker-bootstrap.service",
+        sha256: digest(fixture.workerServiceBytes),
       },
       {
         name: "chariox-rootless-docker.service",
@@ -388,6 +411,10 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
     await readFile(join(releaseRoot, "etc/systemd/system/chariox-managed-bootstrap.service")),
     fixture.serviceBytes,
   )
+  assert.deepEqual(
+    await readFile(join(releaseRoot, "etc/systemd/system/chariox-disposable-worker-bootstrap.service")),
+    fixture.workerServiceBytes,
+  )
   assert.match(
     await readFile(
       join(releaseRoot, "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh"),
@@ -424,6 +451,7 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
     0o755,
   )
   assert.equal(snapshot.find((entry) => entry.path.endsWith("/prebuilt/chariox-kernel")).mode, 0o755)
+  assert.equal(snapshot.find((entry) => entry.path.endsWith("/managed-rootless-service.sh")).mode, 0o755)
   assert.equal(snapshot.find((entry) => entry.path.endsWith("/prebuilt/chariox-relay")).mode, 0o755)
   assert.equal(
     snapshot
@@ -431,6 +459,7 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
         entry.type === "file" &&
         !entry.path.startsWith("usr/local/bin/") &&
         !entry.path.endsWith("/enter-rootless-docker-namespace.sh") &&
+        !entry.path.endsWith("/managed-rootless-service.sh") &&
         !entry.path.endsWith("/provision-linux-docker-slice.sh") &&
         !entry.path.endsWith("/managed-publication-access.sh") &&
         !entry.path.endsWith("/prebuilt/chariox-kernel") &&
@@ -787,7 +816,10 @@ async function createInstallerHarness(root) {
   await mkdir(bin, { recursive: true })
   await mkdir(state, { recursive: true })
   await writeHarnessCommand(join(bin, "id"), `#!/bin/sh
-if [ "\${1:-}" = "-u" ]; then echo 0; exit 0; fi
+if [ "\${1:-}" = "-u" ]; then
+  if [ "\${2:-}" = chariox-docker ]; then echo 997; else echo 0; fi
+  exit 0
+fi
 if [ "\${1:-}" = "-gn" ]; then
   [ "\${2:-}" = "chariox" ] && [ -f "$HARNESS_STATE/user-chariox" ] && echo chariox && exit 0
   [ "\${2:-}" = "chariox-docker" ] && [ -f "$HARNESS_STATE/user-chariox-docker" ] && echo chariox-docker && exit 0
@@ -806,6 +838,11 @@ exit 2
   await writeHarnessCommand(join(bin, "groupadd"), "#!/bin/sh\nfor value in \"$@\"; do name=$value; done\ntouch \"$HARNESS_STATE/group-$name\"\n")
   await writeHarnessCommand(join(bin, "useradd"), "#!/bin/sh\nfor value in \"$@\"; do name=$value; done\ntouch \"$HARNESS_STATE/user-$name\"\n")
   await writeHarnessCommand(join(bin, "usermod"), "#!/bin/sh\nexit 0\n")
+  await writeHarnessCommand(join(bin, "loginctl"), `#!/bin/sh
+[ "$*" = "enable-linger chariox-docker" ] || exit 1
+[ "\${HARNESS_LOGINCTL_FAIL:-0}" = 0 ] || exit 1
+printf '%s\\n' "$*" >> "$HARNESS_STATE/loginctl"
+`)
   await writeHarnessCommand(join(bin, "setfacl"), "#!/bin/sh\nexit 0\n")
   await writeHarnessCommand(join(bin, "systemctl"), `#!/bin/sh
 printf '%s\\n' "$*" >> "$HARNESS_STATE/systemctl"
@@ -889,6 +926,14 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
     env: { ...env, HARNESS_MUTATE_SOURCE: sourceKernel },
   })
   assert.equal(first.status, 0, first.stderr)
+  const contextPath = "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker"
+  for (const [link, source] of [
+    ["etc/systemd/user/chariox-rootless-engine.service", "chariox-rootless-engine.service"],
+    ["etc/systemd/system/user@997.service.d/50-chariox-docker.conf", "chariox-rootless-user-manager.conf"],
+  ]) {
+    assert.deepEqual(await readFile(join(harness.installRoot, link)), await readFile(join(args[0], contextPath, source)))
+  }
+  assert.equal(await readFile(join(harness.state, "loginctl"), "utf8"), "enable-linger chariox-docker\n")
   const deterministicRelease = join(
     harness.installRoot,
     "usr/lib/chariox/releases",
@@ -958,6 +1003,9 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
     await readFile(join(harness.installRoot, "etc/systemd/system/chariox-managed-bootstrap.service"), "utf8"),
     fixture.serviceBytes.toString("utf8"),
   )
+  const installedWorkerService = join(harness.installRoot, "etc/systemd/system/chariox-disposable-worker-bootstrap.service")
+  assert.equal((await lstat(installedWorkerService)).isSymbolicLink(), true)
+  assert.equal(await readFile(installedWorkerService, "utf8"), fixture.workerServiceBytes.toString("utf8"))
   const installedBrokerService = join(harness.installRoot, "etc/systemd/system/chariox-slice-broker.service")
   assert.equal((await lstat(installedBrokerService)).isSymbolicLink(), true)
   assert.equal(await readFile(installedBrokerService, "utf8"), fixture.sliceBrokerServiceBytes.toString("utf8"))
@@ -1064,6 +1112,14 @@ test("managed image installer atomically pivots current to a different release",
   const first = installRelease(firstOutput, firstPackage, firstFixture)
   assert.equal(first.status, 0, first.stderr)
   const current = join(harness.installRoot, "usr/lib/chariox/current")
+  assert.equal(await readlink(current), `releases/${firstPackage.stdout.trim().slice(7)}`)
+
+  const failedLinger = installRelease(secondOutput, secondPackage, secondFixture, {
+    ...env,
+    HARNESS_LOGINCTL_FAIL: "1",
+  })
+  assert.equal(failedLinger.status, 1)
+  assert.match(failedLinger.stderr, /restored previous current release/)
   assert.equal(await readlink(current), `releases/${firstPackage.stdout.trim().slice(7)}`)
 
   const failedSecond = installRelease(secondOutput, secondPackage, secondFixture, {
