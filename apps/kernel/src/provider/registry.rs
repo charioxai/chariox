@@ -16,13 +16,17 @@ use dev_stub_adapter::{
 fn preflight_provider_working_directory(
     request: &LaunchProviderRequest,
 ) -> Result<(), DaemonError> {
-    if let Some(working_directory) = request.working_directory.as_deref() {
-        crate::git_worktree_placement::preflight_working_directory(
-            working_directory,
-            "provider launch",
-            false,
-            &[],
-        )?;
+    if !(crate::provider::managed_provider_isolation_required()
+        && request.uses_workspace_live_sync())
+    {
+        if let Some(working_directory) = request.working_directory.as_deref() {
+            crate::git_worktree_placement::preflight_working_directory(
+                working_directory,
+                "provider launch",
+                false,
+                &[],
+            )?;
+        }
     }
     Ok(())
 }
@@ -404,6 +408,94 @@ mod tests {
         assert!(error
             .to_string()
             .contains("protected Chariox service state"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn official_opencode_adapter_reaches_filtered_managed_child_reexposure() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let _guard = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-registry-managed-child-{}",
+            std::process::id()
+        ));
+        let service_root = root.join("service-state");
+        let publication_root = service_root.join("publication");
+        let selected = publication_root.join("selected-repository");
+        let working_directory = selected.join("nested");
+        let provider_home = root.join("provider-home");
+        let executable = root.join("opencode");
+        let bubblewrap = root.join("bwrap");
+        fs::create_dir_all(&working_directory).expect("selected child should exist");
+        fs::create_dir_all(&provider_home).expect("provider home should exist");
+        fs::write(&executable, "#!/bin/sh\n").expect("fixture executable should exist");
+        fs::write(&bubblewrap, "managed bubblewrap fixture\n")
+            .expect("bubblewrap fixture should exist");
+        fs::set_permissions(&bubblewrap, fs::Permissions::from_mode(0o755))
+            .expect("bubblewrap fixture should be executable");
+        if fs::metadata(&bubblewrap)
+            .expect("bubblewrap fixture metadata should exist")
+            .uid()
+            != 0
+        {
+            let _ = fs::remove_dir_all(root);
+            eprintln!("skipped managed child adapter test: fixture bubblewrap is not root-owned");
+            return;
+        }
+
+        let names = [
+            "CHARIOX_MANAGED_PROVIDER_ISOLATION",
+            "CHARIOX_MANAGED_PROVIDER_BWRAP",
+            "CHARIOX_MANAGED_PROVIDER_HOME",
+            "CHARIOX_MANAGED_SLICE_SERVICE_ROOT",
+            "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT",
+            "CHARIOX_OPENCODE_BIN",
+            "CHARIOX_OPENCODE_PORT",
+        ];
+        let previous = names
+            .iter()
+            .map(|name| (*name, std::env::var_os(name)))
+            .collect::<Vec<_>>();
+        std::env::set_var("CHARIOX_MANAGED_PROVIDER_ISOLATION", "1");
+        std::env::set_var("CHARIOX_MANAGED_PROVIDER_BWRAP", &bubblewrap);
+        std::env::set_var("CHARIOX_MANAGED_PROVIDER_HOME", &provider_home);
+        std::env::set_var("CHARIOX_MANAGED_SLICE_SERVICE_ROOT", &service_root);
+        std::env::set_var("CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT", &publication_root);
+        std::env::set_var("CHARIOX_OPENCODE_BIN", &executable);
+        std::env::set_var("CHARIOX_OPENCODE_PORT", "43112");
+
+        let request = LaunchProviderRequest::new(
+            "session-managed-child",
+            "opencode",
+            "opencode",
+            "default",
+            "anthropic/claude-sonnet-4",
+        )
+        .with_working_directory(working_directory.clone())
+        .with_workspace_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked)
+        .with_workspace_live_sync_roots(vec![selected.clone()]);
+        let launch = ProviderRegistry::new()
+            .resolve("opencode")
+            .expect("opencode adapter should exist")
+            .connect(&request)
+            .expect("managed child should reach the filtered re-exposure check");
+
+        for (name, value) in previous {
+            restore_env(name, value);
+        }
+        let _ = fs::remove_dir_all(root);
+
+        let bubblewrap_text = bubblewrap.display().to_string();
+        assert_eq!(
+            launch.pty_program.as_deref(),
+            Some(bubblewrap_text.as_str())
+        );
+        assert_eq!(launch.working_directory, Some(working_directory));
+        let selected_text = selected.display().to_string();
+        assert!(launch.pty_args.windows(3).any(|window| {
+            window == ["--bind", selected_text.as_str(), selected_text.as_str()]
+        }));
     }
 
     fn restore_env(name: &str, value: Option<std::ffi::OsString>) {
