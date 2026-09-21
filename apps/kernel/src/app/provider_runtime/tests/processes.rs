@@ -6,16 +6,15 @@ use crate::config::{
     UserCredentialUse,
 };
 use crate::provider::{LaunchProviderRequest, ProviderRunState};
-use crate::session::{
-    CreateSessionRequest, PromptOrigin, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
-};
+use crate::session::{PromptOrigin, PromptQueueItem, PromptStatus, PromptSubmissionOutcome};
 
 #[test]
 fn provider_processes_list_and_teardown_safe_idle_managed_runs() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("process-list-teardown");
     let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session create should succeed");
     let run = app
         .launch_provider(LaunchProviderRequest::new(
@@ -148,8 +147,9 @@ fn removing_claude_native_process_cleans_hook_files() {
 fn provider_process_gc_reaps_idle_managed_run() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("process-gc-reap");
     let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session create should succeed");
     let run = app
         .launch_provider(LaunchProviderRequest::new(
@@ -195,8 +195,9 @@ fn provider_process_gc_reaps_idle_managed_run() {
 fn provider_process_gc_keeps_attached_managed_run() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("process-gc-attached");
     let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session create should succeed");
     let _attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(
@@ -243,8 +244,9 @@ fn provider_process_gc_keeps_attached_managed_run() {
 fn provider_processes_do_not_teardown_with_per_agent_active_prompt() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("process-active-prompt");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session create should succeed");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(
@@ -301,8 +303,9 @@ fn provider_processes_do_not_teardown_with_per_agent_active_prompt() {
 fn provider_processes_ignore_stale_session_prompt_mirror_when_owner_is_idle() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("process-stale-mirror");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session create should succeed");
     let run = app
         .launch_provider(
@@ -372,8 +375,9 @@ fn provider_processes_ignore_stale_session_prompt_mirror_when_owner_is_idle() {
 fn detaching_attachment_with_queued_prompts_preserves_queue() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("process-queued-detach");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session create should succeed");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(
@@ -433,8 +437,9 @@ fn detaching_attachment_with_queued_prompts_preserves_queue() {
 fn queued_prompt_promotes_with_original_source_after_replacement_attaches() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("process-queued-promotion");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session create should succeed");
     let original_attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(
@@ -564,8 +569,9 @@ fn queued_prompt_promotes_with_original_source_after_replacement_attaches() {
 fn detaching_last_attachment_keeps_background_active_prompt_run_running() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("process-background-prompt");
     let (session, focused_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session create should succeed");
     let background_agent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("background"))
@@ -659,8 +665,9 @@ fn detaching_last_attachment_keeps_background_active_prompt_run_running() {
 fn focus_change_ignores_stale_processing_without_active_prompt() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("process-focus-change");
     let (session, first_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session create should succeed");
     let second_agent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("second"))
@@ -714,8 +721,9 @@ fn focus_change_ignores_stale_processing_without_active_prompt() {
 fn provider_process_projection_invalidates_after_app_prompt_owner_change() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("process-projection-invalidation");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session create should succeed");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(
@@ -752,10 +760,11 @@ fn provider_process_projection_invalidates_after_app_prompt_owner_change() {
 fn provider_launch_runtime_profile_survives_kernel_restart() {
     let config = DaemonConfig::for_tests();
     let (agent_id, run_model) = {
+        let worktree = crate::test_support::TestWorktree::new("process-profile-restart");
         let mut app =
             DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .create_session(worktree.session_request())
             .expect("session create should succeed");
         let run = app
             .launch_provider(
@@ -809,8 +818,9 @@ fn provider_launch_scrubs_configured_credential_env_names() {
     registry.install_from_file(&source).unwrap();
     let config = DaemonConfig::for_tests();
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("process-credential-env");
     let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session create should succeed");
 
     let run = app
@@ -837,8 +847,9 @@ fn provider_launch_scrubs_configured_credential_env_names() {
 fn provider_processes_do_not_teardown_when_session_is_attached() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("process-session-attached");
     let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session create should succeed");
     let _attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(
@@ -897,8 +908,9 @@ fn provider_processes_do_not_teardown_when_session_is_attached() {
 fn ending_session_clears_tracked_provider_processes() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("process-ending-session");
     let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session create should succeed");
     let run = app
         .launch_provider(LaunchProviderRequest::new(
