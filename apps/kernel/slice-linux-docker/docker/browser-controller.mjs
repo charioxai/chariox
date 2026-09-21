@@ -988,6 +988,16 @@ export class BrowserController {
       } catch (error) {
         throw normalizeError(error);
       }
+    }, {
+      target_id: null,
+      page_id: null,
+      document_id: null,
+      arguments: {
+        element_ref: elementRef,
+        action: request.action,
+        timeout_ms: request.timeout_ms ?? null,
+      },
+      payload: null,
     });
   }
 
@@ -1058,6 +1068,12 @@ export class BrowserController {
       } catch (error) {
         throw normalizeError(error);
       }
+    }, {
+      target_id: null,
+      page_id: null,
+      document_id: null,
+      arguments: { dialog: request.dialog },
+      payload: null,
     });
   }
 
@@ -1154,6 +1170,12 @@ export class BrowserController {
       } catch (error) {
         throw normalizeError(error);
       }
+    }, {
+      target_id: null,
+      page_id: null,
+      document_id: null,
+      arguments: { element_ref: elementRef },
+      payload: { paths: request.paths },
     });
   }
 
@@ -1312,13 +1334,13 @@ export class BrowserController {
     };
   }
 
-  _enqueueTabMutation(attribution, run) {
+  _enqueueTabMutation(attribution, run, identity) {
     return this.mutationCoordinator.mutate(attribution, async (context) => {
       if (context.signal.aborted) {
         throw new BrowserMutationError(MUTATION_ERROR_CODES.INDETERMINATE);
       }
       return run(context);
-    });
+    }, identity);
   }
 
   _invalidateAllMutations() {

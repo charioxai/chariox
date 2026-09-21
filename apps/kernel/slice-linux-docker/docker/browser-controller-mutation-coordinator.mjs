@@ -1,5 +1,23 @@
+import { createHmac, randomBytes } from "node:crypto";
+
 const MAX_IDENTIFIER_BYTES = 128;
 const MAX_OPERATION_BYTES = 64;
+const ATTRIBUTION_FIELDS = Object.freeze([
+  "action_id",
+  "actor_id",
+  "browser_generation",
+  "operation",
+  "tab_id",
+  "target_generation",
+]);
+const MUTATION_IDENTITY_FIELDS = Object.freeze([
+  "target_id",
+  "page_id",
+  "document_id",
+  "arguments",
+  "payload",
+]);
+const OPAQUE_REQUEST_FINGERPRINT_FIELD = "request_fingerprint";
 
 export const MUTATION_ERROR_CODES = Object.freeze({
   INVALID_ARGUMENT: "MUTATION_INVALID_ARGUMENT",
@@ -51,17 +69,14 @@ function positiveInteger(value) {
 function normalizeAttribution(value) {
   if (!isPlainObject(value)) fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
   const allowed = new Set([
-    "action_id",
-    "actor_id",
-    "browser_generation",
-    "operation",
-    "tab_id",
-    "target_generation",
+    ...ATTRIBUTION_FIELDS,
+    ...MUTATION_IDENTITY_FIELDS,
+    OPAQUE_REQUEST_FINGERPRINT_FIELD,
   ]);
   if (Object.keys(value).some((key) => !allowed.has(key))) {
     fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
   }
-  for (const key of allowed) {
+  for (const key of ATTRIBUTION_FIELDS) {
     if (!Object.prototype.hasOwnProperty.call(value, key)) {
       fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
     }
@@ -84,8 +99,103 @@ function normalizeAttribution(value) {
   });
 }
 
-function fingerprint(attribution) {
-  return JSON.stringify(attribution);
+function optionalIdentifier(value) {
+  return value === undefined || value === null ? null : identifier(value);
+}
+
+function opaqueRequestFingerprint(value) {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    Buffer.byteLength(value, "utf8") > MAX_IDENTIFIER_BYTES ||
+    value.trim() !== value ||
+    /[\u0000-\u001f\u007f]/u.test(value)
+  ) {
+    fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
+  }
+  return value;
+}
+
+function normalizeJsonValue(value, seen = new Set()) {
+  if (value === undefined || value === null) return null;
+  if (typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
+    return Object.is(value, -0) ? 0 : value;
+  }
+  if (!Array.isArray(value) && !isPlainObject(value)) {
+    fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
+  }
+  if (seen.has(value)) fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
+  seen.add(value);
+  let normalized;
+  if (Array.isArray(value)) {
+    normalized = value.map((entry) => normalizeJsonValue(entry, seen));
+  } else {
+    normalized = Object.create(null);
+    for (const key of Object.keys(value).sort()) {
+      if (value[key] !== undefined) {
+        normalized[key] = normalizeJsonValue(value[key], seen);
+      }
+    }
+  }
+  seen.delete(value);
+  return normalized;
+}
+
+function normalizeMutationIdentity(rawAttribution, rawIdentity) {
+  const inlineIdentity = {};
+  for (const key of [...MUTATION_IDENTITY_FIELDS, OPAQUE_REQUEST_FINGERPRINT_FIELD]) {
+    if (Object.prototype.hasOwnProperty.call(rawAttribution, key)) {
+      inlineIdentity[key] = rawAttribution[key];
+    }
+  }
+  if (rawIdentity !== undefined) {
+    if (!isPlainObject(rawIdentity)) fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
+    const allowed = new Set([
+      ...MUTATION_IDENTITY_FIELDS,
+      OPAQUE_REQUEST_FINGERPRINT_FIELD,
+    ]);
+    if (Object.keys(rawIdentity).some((key) => !allowed.has(key))) {
+      fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
+    }
+    Object.assign(inlineIdentity, rawIdentity);
+  }
+  const hasCanonicalIdentity = MUTATION_IDENTITY_FIELDS.every((key) =>
+    Object.prototype.hasOwnProperty.call(inlineIdentity, key));
+  const hasOpaqueRequestFingerprint = Object.prototype.hasOwnProperty.call(
+    inlineIdentity,
+    OPAQUE_REQUEST_FINGERPRINT_FIELD,
+  );
+  if (!hasCanonicalIdentity && !hasOpaqueRequestFingerprint) {
+    fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
+  }
+  return Object.freeze({
+    target_id: optionalIdentifier(inlineIdentity.target_id),
+    page_id: optionalIdentifier(inlineIdentity.page_id),
+    document_id: optionalIdentifier(inlineIdentity.document_id),
+    arguments: normalizeJsonValue(inlineIdentity.arguments),
+    payload: normalizeJsonValue(inlineIdentity.payload),
+    request_fingerprint: hasOpaqueRequestFingerprint
+      ? opaqueRequestFingerprint(inlineIdentity[OPAQUE_REQUEST_FINGERPRINT_FIELD])
+      : null,
+  });
+}
+
+function fingerprint(key, attribution, identity) {
+  const semanticIdentity = {
+    ...attribution,
+    target_id: identity.target_id,
+    page_id: identity.page_id,
+    document_id: identity.document_id,
+    arguments: identity.arguments,
+    payload: identity.payload,
+    request_fingerprint: identity.request_fingerprint,
+  };
+  const semanticDigest = createHmac("sha256", key)
+    .update(JSON.stringify(semanticIdentity))
+    .digest("hex");
+  return JSON.stringify({ ...attribution, semantic_digest: semanticDigest });
 }
 
 function finiteLimit(value, fallback) {
@@ -97,6 +207,8 @@ function finiteLimit(value, fallback) {
 }
 
 export class BrowserMutationCoordinator {
+  #mutationFingerprintKey = randomBytes(32);
+
   constructor(options = {}) {
     if (!isPlainObject(options)) throw new TypeError("options must be a plain object");
     this.maxTabs = finiteLimit(options.maxTabs, 256);
@@ -114,9 +226,19 @@ export class BrowserMutationCoordinator {
     this.invalidationOverflowed = false;
   }
 
-  mutate(rawAttribution, run) {
+  mutate(rawAttribution, run, rawIdentity) {
     const attribution = normalizeAttribution(rawAttribution);
     if (typeof run !== "function") fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
+    const identity = normalizeMutationIdentity(rawAttribution, rawIdentity);
+    const actionFingerprint = fingerprint(this.#mutationFingerprintKey, attribution, identity);
+    const existing = this.actions.get(attribution.action_id);
+    if (existing) {
+      if (existing.fingerprint !== actionFingerprint) {
+        fail(MUTATION_ERROR_CODES.ACTION_ID_CONFLICT);
+      }
+      return existing.promise;
+    }
+
     if (this.invalidationOverflowed) {
       fail(MUTATION_ERROR_CODES.QUEUE_SATURATED);
     }
@@ -124,15 +246,6 @@ export class BrowserMutationCoordinator {
     const invalidatedGeneration = this.invalidatedTargetGeneration.get(attribution.tab_id) ?? 0;
     if (attribution.target_generation <= invalidatedGeneration) {
       fail(MUTATION_ERROR_CODES.TAB_GENERATION_STALE);
-    }
-
-    const actionFingerprint = fingerprint(attribution);
-    const existing = this.actions.get(attribution.action_id);
-    if (existing) {
-      if (existing.fingerprint !== actionFingerprint) {
-        fail(MUTATION_ERROR_CODES.ACTION_ID_CONFLICT);
-      }
-      return existing.promise;
     }
 
     let queue = this.queues.get(attribution.tab_id);
@@ -156,6 +269,7 @@ export class BrowserMutationCoordinator {
       rejectPromise = reject;
     });
     const record = {
+      actionId: attribution.action_id,
       attribution,
       abortController,
       fingerprint: actionFingerprint,
@@ -183,7 +297,11 @@ export class BrowserMutationCoordinator {
       // exhausted, reject every mutation until a new browser generation begins.
       this.invalidationOverflowed = true;
     }
-    this._cancelQueued(normalizedTabId, MUTATION_ERROR_CODES.CANCELLED, normalizedGeneration);
+    this._cancelQueued(
+      normalizedTabId,
+      MUTATION_ERROR_CODES.CANCELLED,
+      (record) => record.attribution.target_generation <= normalizedGeneration,
+    );
     this._pump(normalizedTabId);
     const active = this.active.get(normalizedTabId);
     if (active && active.attribution.target_generation <= normalizedGeneration) {
@@ -279,11 +397,11 @@ export class BrowserMutationCoordinator {
     }
   }
 
-  _cancelQueued(tabId, code, maxTargetGeneration = Number.POSITIVE_INFINITY) {
+  _cancelQueued(tabId, code, shouldCancel = () => true) {
     const queue = this.queues.get(tabId) ?? [];
     const retained = [];
     for (const record of queue) {
-      if (record.attribution.target_generation > maxTargetGeneration) {
+      if (!shouldCancel(record)) {
         retained.push(record);
         continue;
       }
@@ -299,7 +417,8 @@ export class BrowserMutationCoordinator {
     record.outcome = "rejected";
     record.error = error;
     record.reject(error);
-    this._retainCompleted(record);
+    this._retainCompleted(record, record.actionId);
+    this._releaseExecution(record);
   }
 
   _pump(tabId) {
@@ -336,28 +455,34 @@ export class BrowserMutationCoordinator {
     record.state = "completed";
     record.outcome = terminalOutcome;
     if (terminalOutcome === "fulfilled") {
-      record.result = terminalValue;
       record.resolve(terminalValue);
     } else {
-      record.error = terminalValue;
       record.reject(terminalValue);
     }
     if (this.active.get(tabId) === record) this.active.delete(tabId);
-    this._retainCompleted(record);
+    this._retainCompleted(record, record.actionId);
+    this._releaseExecution(record);
     this._pump(tabId);
   }
 
-  _retainCompleted(record) {
-    const actionId = record.attribution.action_id;
-    this.actions.set(actionId, {
-      fingerprint: record.fingerprint,
-      outcome: record.outcome,
-      promise: record.promise,
-    });
+  _releaseExecution(record) {
+    delete record.actionId;
+    delete record.attribution;
+    delete record.run;
+    delete record.resolve;
+    delete record.reject;
+    delete record.abortController;
+    delete record.state;
+    delete record.error;
+    delete record.result;
+    Object.freeze(record);
+  }
+
+  _retainCompleted(record, actionId) {
     this.completedOrder.push(actionId);
     while (this.completedOrder.length > this.maxCompleted) {
-      const actionId = this.completedOrder.shift();
-      if (this.actions.get(actionId)?.outcome !== undefined) this.actions.delete(actionId);
+      const evictedActionId = this.completedOrder.shift();
+      if (this.actions.get(evictedActionId)?.outcome !== null) this.actions.delete(evictedActionId);
     }
   }
 }

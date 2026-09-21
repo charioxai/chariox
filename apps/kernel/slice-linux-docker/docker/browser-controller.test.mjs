@@ -1457,7 +1457,13 @@ test("expires a 100ms action while it waits behind longer queued work", async (t
     operation: "perform_element_action",
     tab_id: tab.tab_id,
     target_generation: tab.target_generation,
-  }, async () => blocker);
+  }, async () => blocker, {
+    target_id: null,
+    page_id: null,
+    document_id: null,
+    arguments: { purpose: "deadline-blocker" },
+    payload: null,
+  });
   await flush();
 
   const queuedAction = controller.performElementAction("owner-a", 1, {
