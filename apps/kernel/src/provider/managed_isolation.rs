@@ -35,6 +35,13 @@ const MANAGED_PROTECTED_FILE_ENV_NAMES: &[&str] = &[
     "CHARIOX_DAEMON_SOCKET",
 ];
 #[cfg(target_os = "linux")]
+const MANAGED_EXACT_PROTECTED_FILE_ENV_NAMES: &[&str] = &[
+    "CHARIOX_MANAGED_BOOTSTRAP_PATH",
+    "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
+    "CHARIOX_DISPOSABLE_WORKER_BOOTSTRAP_PATH",
+    "CHARIOX_DISPOSABLE_WORKER_RECEIPT",
+];
+#[cfg(target_os = "linux")]
 const MANAGED_RUNTIME_USER_STARTUP_FILE_NAMES: &[&str] = &[
     ".bash_profile",
     ".bash_login",
@@ -585,6 +592,9 @@ fn managed_protected_namespace_directories(extra: &[PathBuf]) -> Result<Vec<Path
             return Err(isolation_error(format!("{name} must not be empty")));
         }
         let path = validate_control_file_path(&PathBuf::from(raw), name)?;
+        if MANAGED_EXACT_PROTECTED_FILE_ENV_NAMES.contains(name) {
+            continue;
+        }
         if let Some(parent) = path.parent().map(Path::to_path_buf) {
             paths.push(parent.clone());
             if *name == "CHARIOX_SLICE_DOCKER_BROKER_SOCKET"
@@ -625,7 +635,9 @@ fn managed_protected_namespace_files() -> Result<Vec<PathBuf>, DaemonError> {
             return Err(isolation_error(format!("{name} must not be empty")));
         }
         let path = validate_control_file_path(&PathBuf::from(raw), name)?;
-        if path.parent() == Some(Path::new("/")) {
+        if path.parent() == Some(Path::new("/"))
+            || MANAGED_EXACT_PROTECTED_FILE_ENV_NAMES.contains(name)
+        {
             files.push(path);
         }
     }
@@ -833,6 +845,34 @@ fn append_managed_protected_namespace_files(
 }
 
 #[cfg(target_os = "linux")]
+fn append_managed_protected_namespace_file_parent_anchors(
+    args: &mut Vec<String>,
+    files: &[PathBuf],
+    protected_directories: &[PathBuf],
+    created: &mut BTreeSet<PathBuf>,
+) {
+    let mut parents = files
+        .iter()
+        .filter_map(|file| file.parent())
+        .filter(|parent| *parent != Path::new("/"))
+        .filter(|parent| {
+            !protected_directories
+                .iter()
+                .any(|protected| parent.starts_with(protected))
+        })
+        .map(Path::to_path_buf)
+        .collect::<Vec<_>>();
+    parents.sort();
+    parents.dedup();
+    for parent in parents {
+        // Keep a writable shared parent stable without hiding unrelated user
+        // workspaces below it. Exact control-file masks are applied after all
+        // protected child directories have been hidden.
+        append_bind(args, &parent, &parent, created);
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn append_managed_trusted_read_only_paths(
     args: &mut Vec<String>,
     paths: &[PathBuf],
@@ -848,6 +888,21 @@ pub(crate) fn apply_managed_provider_isolation(
     request: &LaunchProviderRequest,
 ) -> Result<ProviderLaunchResult, DaemonError> {
     if !managed_provider_isolation_required() {
+        let mut environment_remove = managed_provider_control_env_remove();
+        environment_remove.extend(launch.pty_env.keys().filter_map(|name| {
+            (name.starts_with("GIT_CONFIG_KEY_") || name.starts_with("GIT_CONFIG_VALUE_"))
+                .then_some(name.clone())
+        }));
+        environment_remove.sort();
+        environment_remove.dedup();
+        for name in environment_remove {
+            launch.pty_env.remove(&name);
+            if !launch.pty_env_remove.iter().any(|value| value == &name) {
+                launch.pty_env_remove.push(name);
+            }
+        }
+        launch.pty_env_remove.sort();
+        launch.pty_env_remove.dedup();
         return Ok(launch);
     }
 
@@ -910,21 +965,30 @@ pub(crate) fn apply_managed_provider_isolation(
         );
         // Ordinary workspaces may contain runtime control paths. Bind them
         // before protection so a home-root repository cannot cover the masks.
-        // Selected children of protected service trees are rebound below,
-        // after their parent mask, as before.
+        // A selected path below the synthetic provider HOME is the exception:
+        // bind it after provider_home has been mounted or that parent mount
+        // would hide the selected workspace. Protection is still applied
+        // after both mounts, so .chariox and other control state stay hidden.
+        let provider_home_workspace_roots = workspace_roots
+            .iter()
+            .filter(|root| managed_workspace_root_overlays_provider_home(root))
+            .cloned()
+            .collect::<Vec<_>>();
         let early_workspace_roots = workspace_roots
             .iter()
             .filter(|root| {
-                !protected_namespace_roots
-                    .iter()
-                    .chain(trusted_read_only_paths.iter())
-                    .chain(runtime_command_roots.iter())
-                    .any(|protected| root.starts_with(protected))
-                    && managed_workspace_root_requires_rebind(
-                        root,
-                        &protected_namespace_roots,
-                        &trusted_read_only_paths,
-                    )
+                !provider_home_workspace_roots.contains(root)
+                    && (root.as_path() == Path::new("/home")
+                        || managed_workspace_root_requires_rebind(
+                            root,
+                            &protected_namespace_roots,
+                            &trusted_read_only_paths,
+                        ))
+                    && !protected_namespace_roots
+                        .iter()
+                        .chain(trusted_read_only_paths.iter())
+                        .chain(runtime_command_roots.iter())
+                        .any(|protected| root.starts_with(protected))
             })
             .collect::<Vec<_>>();
         for root in &early_workspace_roots {
@@ -937,6 +1001,9 @@ pub(crate) fn apply_managed_provider_isolation(
             Path::new(SANDBOX_HOME),
             &mut created_directories,
         );
+        for root in &provider_home_workspace_roots {
+            append_bind(&mut args, root, root, &mut created_directories);
+        }
         append_directory(
             &mut args,
             Path::new(SANDBOX_ACCOUNT_ROOT),
@@ -948,6 +1015,12 @@ pub(crate) fn apply_managed_provider_isolation(
         let mut protected_directories = protected_namespace_roots.clone();
         protected_directories.push(provider_home.clone());
         protected_directories.extend(account_bindings.iter().map(|(source, _)| source.clone()));
+        append_managed_protected_namespace_file_parent_anchors(
+            &mut args,
+            &protected_namespace_files,
+            &protected_directories,
+            &mut created_directories,
+        );
         append_managed_protected_namespace_directories(
             &mut args,
             &protected_directories,
@@ -985,6 +1058,7 @@ pub(crate) fn apply_managed_provider_isolation(
         }
         for root in &workspace_roots {
             if !early_workspace_roots.contains(&root)
+                && !provider_home_workspace_roots.contains(root)
                 && (managed_workspace_root_requires_rebind(
                     root,
                     &protected_namespace_roots,
@@ -1604,6 +1678,11 @@ fn managed_workspace_root_requires_rebind_with_private_temp_roots(
         || private_temp_roots
             .iter()
             .any(|path| root != path && root.starts_with(path))
+}
+
+#[cfg(target_os = "linux")]
+fn managed_workspace_root_overlays_provider_home(root: &Path) -> bool {
+    root.starts_with(Path::new(SANDBOX_HOME))
 }
 
 #[cfg(target_os = "linux")]
@@ -2292,6 +2371,127 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn managed_bootstrap_control_does_not_protect_the_shared_user_home() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-managed-shared-home-parity-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let home = root.join("home");
+        let provider_home = root.join("provider-home");
+        let bootstrap = root.join("managed-bootstrap.json");
+        std::fs::create_dir_all(home.join("state")).expect("managed state directory should exist");
+        std::fs::create_dir_all(home.join(".chariox"))
+            .expect("managed Chariox state directory should exist");
+        std::fs::create_dir_all(&provider_home).expect("provider home should exist");
+        std::fs::write(&bootstrap, "protected\n").expect("bootstrap control should exist");
+
+        let _env = crate::env_lock::lock();
+        let names = [
+            "HOME",
+            "CHARIOX_HOME",
+            "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+            "CHARIOX_MANAGED_PROVIDER_HOME",
+            "CHARIOX_SLICE_ROOT",
+            MANAGED_SLICE_SERVICE_ROOT_ENV,
+            MANAGED_SLICE_PUBLICATION_ROOT_ENV,
+        ];
+        let mut previous = names
+            .iter()
+            .map(|name| (*name, std::env::var_os(name)))
+            .collect::<Vec<_>>();
+        previous.extend(
+            MANAGED_PROTECTED_FILE_ENV_NAMES
+                .iter()
+                .map(|name| (*name, std::env::var_os(name))),
+        );
+        for name in names {
+            std::env::remove_var(name);
+        }
+        for name in MANAGED_PROTECTED_FILE_ENV_NAMES {
+            std::env::remove_var(name);
+        }
+        std::env::set_var("HOME", &home);
+        std::env::set_var("CHARIOX_HOME", &home);
+        std::env::set_var("CHARIOX_MANAGED_PROVIDER_HOME", &provider_home);
+        std::env::set_var("CHARIOX_MANAGED_BOOTSTRAP_PATH", &bootstrap);
+
+        let request = LaunchProviderRequest::new(
+            "managed-shared-home-session",
+            "codex",
+            "codex",
+            "default",
+            "gpt-5.6-luna",
+        )
+        .with_working_directory(home.clone());
+        let roots = managed_workspace_roots(&request).expect("workspace roots should resolve");
+        let working_directory = managed_working_directory(&request, &roots)
+            .expect("the shared user home should remain a valid workspace");
+        let protected = managed_protected_namespace_directories(&[])
+            .expect("managed protected roots should resolve");
+        let files = managed_protected_namespace_files().expect("protected files should resolve");
+        let mut protected_with_provider_home = protected.clone();
+        protected_with_provider_home.push(provider_home.clone());
+        let (mut args, mut created) = managed_namespace_args(None, Path::exists, None);
+        append_managed_protected_namespace_file_parent_anchors(
+            &mut args,
+            &files,
+            &protected_with_provider_home,
+            &mut created,
+        );
+        append_managed_protected_namespace_directories(
+            &mut args,
+            &protected_with_provider_home,
+            &mut created,
+        );
+        append_managed_protected_namespace_files(&mut args, &files, &mut created);
+
+        for (name, value) in previous {
+            restore_env(name, value);
+        }
+
+        let root = root
+            .canonicalize()
+            .expect("fixture root should canonicalize");
+        let home = home
+            .canonicalize()
+            .expect("fixture home should canonicalize");
+        let bootstrap = bootstrap
+            .canonicalize()
+            .expect("bootstrap control should canonicalize");
+        assert_eq!(working_directory, home.clone());
+        assert!(!protected.iter().any(|path| home.starts_with(path)));
+        assert!(protected.contains(&home.join("state")));
+        assert_eq!(files, vec![bootstrap.clone()]);
+        assert!(args.windows(3).any(|window| {
+            window
+                == [
+                    "--bind",
+                    root.to_str().expect("fixture root should be utf8"),
+                    root.to_str().expect("fixture root should be utf8"),
+                ]
+        }));
+        assert!(args.windows(3).any(|window| {
+            window
+                == [
+                    "--ro-bind",
+                    "/dev/null",
+                    bootstrap.to_str().expect("bootstrap should be utf8"),
+                ]
+        }));
+        assert!(!args.windows(2).any(|window| {
+            window
+                == [
+                    "--tmpfs",
+                    root.to_str().expect("fixture root should be utf8"),
+                ]
+        }));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn managed_namespace_rebinds_current_runtime_after_trusted_paths_and_run_mask() {
         let root = std::env::temp_dir().join(format!(
             "chariox-managed-trusted-runtime-order-{}-{}",
@@ -2461,11 +2661,66 @@ mod tests {
             &[],
             &[],
         ));
+        assert!(managed_workspace_root_overlays_provider_home(Path::new(
+            "/home/chariox/project"
+        )));
+        assert!(managed_workspace_root_overlays_provider_home(Path::new(
+            "/home/chariox"
+        )));
+        assert!(!managed_workspace_root_overlays_provider_home(Path::new(
+            "/home/other/project"
+        )));
     }
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn managed_collector_rebinds_selected_home_workspace_in_launch_args() {
+    fn managed_provider_home_workspace_mount_precedes_state_protection() {
+        let provider_home = Path::new("/var/lib/chariox/provider-home");
+        let workspace = Path::new("/home/chariox/example");
+        let protected_state = Path::new("/home/chariox/.chariox");
+        let mut args = Vec::new();
+        let mut created = BTreeSet::new();
+
+        append_bind(
+            &mut args,
+            provider_home,
+            Path::new(SANDBOX_HOME),
+            &mut created,
+        );
+        append_bind(&mut args, workspace, workspace, &mut created);
+        append_managed_protected_namespace_directories(
+            &mut args,
+            &[protected_state.to_path_buf()],
+            &mut created,
+        );
+
+        let provider_home_bind = args
+            .windows(3)
+            .position(|window| window == ["--bind", provider_home.to_str().unwrap(), SANDBOX_HOME])
+            .expect("provider HOME bind should exist");
+        let workspace_bind = args
+            .windows(3)
+            .position(|window| {
+                window
+                    == [
+                        "--bind",
+                        workspace.to_str().unwrap(),
+                        workspace.to_str().unwrap(),
+                    ]
+            })
+            .expect("selected workspace bind should exist");
+        let protected_state_mask = args
+            .windows(2)
+            .position(|window| window == ["--tmpfs", protected_state.to_str().unwrap()])
+            .expect("protected state mask should exist");
+
+        assert!(provider_home_bind < workspace_bind);
+        assert!(workspace_bind < protected_state_mask);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_collector_rebinds_selected_provider_home_workspace_in_launch_args() {
         use std::os::unix::fs::PermissionsExt;
 
         let _env = crate::env_lock::lock();
@@ -2489,7 +2744,7 @@ mod tests {
         std::fs::set_permissions(&bwrap_copy, std::fs::Permissions::from_mode(0o755))
             .expect("private bwrap copy should be executable");
 
-        let home_root = PathBuf::from("/home").join(format!(
+        let home_root = PathBuf::from(SANDBOX_HOME).join(format!(
             "chariox-managed-home-workspace-collector-{}-{}",
             std::process::id(),
             crate::session::unix_epoch_ms()
@@ -2661,6 +2916,17 @@ mod tests {
             .windows(2)
             .position(|window| window == ["--tmpfs", "/home"])
             .expect("managed launch should mask the host home parent");
+        let provider_home_bind = prepared_args
+            .windows(3)
+            .position(|window| {
+                window
+                    == [
+                        "--bind",
+                        provider_home.to_str().expect("provider home should be utf8"),
+                        SANDBOX_HOME,
+                    ]
+            })
+            .expect("managed launch should install the synthetic provider HOME");
         let selected_bind = prepared_args
             .windows(3)
             .position(|window| window == ["--bind", selected_text.as_str(), selected_text.as_str()])
@@ -2668,6 +2934,10 @@ mod tests {
         assert!(
             home_mask < selected_bind,
             "selected home workspace must be rebound after the synthetic home mask"
+        );
+        assert!(
+            provider_home_bind < selected_bind,
+            "selected provider-HOME child must be rebound after the synthetic provider HOME"
         );
         assert!(!prepared_args.windows(3).any(|window| {
             window
@@ -4806,7 +5076,21 @@ printf 'managed account environment probe passed\n'
             pty_target: None,
             pty_program: Some("/bin/sh".to_string()),
             pty_args: vec!["-c".to_string(), "printf ordinary".to_string()],
-            pty_env: BTreeMap::from([(String::from("ORDINARY_FS"), String::from("1"))]),
+            pty_env: BTreeMap::from([
+                (String::from("ORDINARY_FS"), String::from("1")),
+                (
+                    String::from("CODEX_HOME"),
+                    String::from("/home/chariox/.codex"),
+                ),
+                (
+                    String::from("CHARIOX_RELAY_TOKEN"),
+                    String::from("relay-secret"),
+                ),
+                (
+                    String::from("GIT_CONFIG_KEY_0"),
+                    String::from("credential.helper"),
+                ),
+            ]),
             pty_env_remove: Vec::new(),
             working_directory: Some(PathBuf::from("/tmp")),
             structured_endpoint: None,
@@ -4825,6 +5109,25 @@ printf 'managed account environment probe passed\n'
         assert_eq!(prepared.pty_program.as_deref(), Some("/bin/sh"));
         assert_eq!(prepared.pty_args, ["-c", "printf ordinary"]);
         assert_eq!(prepared.working_directory, Some(PathBuf::from("/tmp")));
+        assert_eq!(
+            prepared.pty_env.get("ORDINARY_FS").map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            prepared.pty_env.get("CODEX_HOME").map(String::as_str),
+            Some("/home/chariox/.codex")
+        );
+        for name in ["CHARIOX_RELAY_TOKEN", "GIT_CONFIG_KEY_0"] {
+            assert!(!prepared.pty_env.contains_key(name));
+            assert!(prepared
+                .pty_env_remove
+                .iter()
+                .any(|removed| removed == name));
+        }
+        assert!(!prepared
+            .pty_env_remove
+            .iter()
+            .any(|removed| removed == "CODEX_HOME"));
         assert!(!prepared
             .pty_args
             .windows(3)

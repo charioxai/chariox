@@ -1,5 +1,33 @@
 use super::*;
 
+fn serialize_bounded_progress_percent<S>(
+    progress_percent: &u8,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    if *progress_percent > 100 {
+        return Err(serde::ser::Error::custom(
+            "project environment setup progress must be between 0 and 100",
+        ));
+    }
+    progress_percent.serialize(serializer)
+}
+
+fn deserialize_bounded_progress_percent<'de, D>(deserializer: D) -> Result<u8, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let progress_percent = u8::deserialize(deserializer)?;
+    if progress_percent > 100 {
+        return Err(serde::de::Error::custom(
+            "project environment setup progress must be between 0 and 100",
+        ));
+    }
+    Ok(progress_percent)
+}
+
 pub use crate::session::{
     ProjectEnvironmentDefinition, ProjectEnvironmentDefinitionOrigin,
     ProjectEnvironmentDefinitionSource, ProjectEnvironmentInput, ProjectEnvironmentInputKind,
@@ -61,6 +89,10 @@ pub struct ProjectEnvironmentSetupStatus {
     pub platform: String,
     pub phase: ProjectEnvironmentSetupPhase,
     pub attempt: u32,
+    #[serde(
+        serialize_with = "serialize_bounded_progress_percent",
+        deserialize_with = "deserialize_bounded_progress_percent"
+    )]
     pub progress_percent: u8,
     pub definition_digest: Option<String>,
     pub validation: Option<ProjectEnvironmentValidation>,

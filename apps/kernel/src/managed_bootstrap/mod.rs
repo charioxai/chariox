@@ -24,8 +24,9 @@ use cloud::{
 pub use context_plan::ManagedKernelContextPlan;
 use release::{verify_release, verify_release_evidence, VerifiedRelease};
 use state::{
-    remove_envelope, valid_identifier, valid_secret, BootstrapConfig, BootstrapEnvelope,
-    BootstrapReceipt, BootstrapReceiptDocument, BootstrapReceiptStatus, ManagedBootstrapEnvelope,
+    default_managed_bootstrap_receipt_path, remove_envelope, valid_identifier, valid_secret,
+    BootstrapConfig, BootstrapEnvelope, BootstrapReceipt, BootstrapReceiptDocument,
+    BootstrapReceiptStatus, ManagedBootstrapEnvelope,
 };
 
 const MIN_PREPARE_RETRY_DELAY: Duration = Duration::from_secs(1);
@@ -100,7 +101,7 @@ pub fn run_from_env() -> Result<(), DaemonError> {
 
 pub(crate) fn confirmed_managed_kernel_registration_from_env(
 ) -> Result<Option<ConfirmedManagedKernelRegistration>, DaemonError> {
-    let Some(chariox_home) = std::env::var_os("CHARIOX_HOME")
+    let Some(_) = std::env::var_os("CHARIOX_HOME")
         .filter(|value| !value.is_empty())
         .map(std::path::PathBuf::from)
     else {
@@ -109,7 +110,7 @@ pub(crate) fn confirmed_managed_kernel_registration_from_env(
     let receipt_path = std::env::var_os("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT")
         .filter(|value| !value.is_empty())
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| chariox_home.join("managed").join("bootstrap-receipt.json"));
+        .unwrap_or_else(default_managed_bootstrap_receipt_path);
     if !receipt_path.exists() {
         return Ok(None);
     }

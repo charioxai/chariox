@@ -227,6 +227,34 @@ pub(super) fn validate_remote_setup_transition(
             "terminal setup status cannot be replaced without an explicit retry",
         ));
     }
+    let active_phase_rank = |phase| match phase {
+        ProjectEnvironmentSetupPhase::Requested => Some(0_u8),
+        ProjectEnvironmentSetupPhase::Preparing => Some(1_u8),
+        ProjectEnvironmentSetupPhase::Validating => Some(2_u8),
+        ProjectEnvironmentSetupPhase::Ready
+        | ProjectEnvironmentSetupPhase::Failed
+        | ProjectEnvironmentSetupPhase::Cancelled => None,
+    };
+    if let (Some(current_rank), Some(next_rank)) =
+        (active_phase_rank(current), active_phase_rank(next))
+    {
+        if next_rank < current_rank {
+            return Err(setup_error(
+                "active setup status cannot move to an earlier phase",
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn validate_setup_status_progress(
+    status: &ProjectEnvironmentSetupStatus,
+) -> Result<(), DaemonError> {
+    if status.progress_percent > 100 {
+        return Err(setup_error(
+            "project environment setup progress must be between 0 and 100",
+        ));
+    }
     Ok(())
 }
 
@@ -236,6 +264,7 @@ pub(super) fn validate_remote_setup_status(
     status: &ProjectEnvironmentSetupStatus,
     definition: Option<&ProjectEnvironmentDefinition>,
 ) -> Result<(), DaemonError> {
+    validate_setup_status_progress(status)?;
     if status.operation_id != expected.operation_id
         || status.project_id != expected.project_id
         || status.session_id != expected.session_id

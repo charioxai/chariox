@@ -5,6 +5,37 @@ snapshot from the exact OSS revision before adding its numeric ID and release
 digest to a Cloud provider profile. OpenShip deploys Cloud and the private
 manager; it does not provision managed machines or build their images.
 
+## Path-1 execution boundary
+
+Path 1 allocates one disposable Cloud VM per isolated worker. That VM is the
+provider security and filesystem boundary. After the signed kernel enrolls,
+providers use the ordinary kernel launch path and normal developer-machine
+filesystem behavior. The Path-1 service must not enable
+`CHARIOX_MANAGED_PROVIDER_ISOLATION`, require `/usr/bin/bwrap`, or apply a
+managed-only workspace allowlist merely because Chariox provisioned the VM.
+The provider must not inherit equivalent restrictions from the managed
+supervisor's systemd unit. Controls such as `ProtectSystem`, `ProtectHome`,
+`PrivateTmp`, `NoNewPrivileges`, `RestrictSUIDSGID`, and `ReadWritePaths` must be
+removed, topology-gated, or confined to a separate control-plane process when
+they would change provider behavior from the ordinary worker user. A hardened
+supervisor may not silently turn its child provider into a restricted
+managed-only environment.
+
+Bubblewrap may remain an inner defense for Docker slices or an explicitly
+different legacy/shared-host topology. It is not part of a Path-1 provider run
+and cannot be used as evidence of ordinary-kernel parity. Path-1 acceptance must
+prove no Bubblewrap ancestor or managed-isolation marker, plus successful use
+of arbitrary working directories and filesystem operations permitted to the
+ordinary worker user. It also compares mount visibility, `/tmp`, writable
+paths, process privilege flags, and permitted package/tool installation with an
+ordinary-kernel control running the same reviewed build.
+
+Root-owned signed releases, bootstrap/control state, broker state, relay and
+Cloud credentials, resource limits, provider-resource deletion, and every
+automatic-shutdown trigger remain mandatory. They must be protected through
+service ownership, dedicated roots, bounded credentials, and process
+environment hygiene without forking ordinary provider filesystem semantics.
+
 ## Release inputs
 
 Use the OpenShip builder to build `chariox-kernel`, `chariox-managed-bootstrap`,
@@ -65,14 +96,24 @@ managed-remote-kernels-image-builder-v1
 ```
 
 Store it at `/.chariox-managed-image-builder`. Copy the release root filesystem,
-the trusted public key, and `deploy/managed-kernel/` to a task directory. Run:
+the trusted public key, and `deploy/managed-kernel/` to a task directory. The
+image topology is a required caller-provided validation input. The production
+managed image is the shared-host topology, so pass `shared_host` explicitly;
+omitting it or using an unknown value fails closed instead of silently skipping
+the Bubblewrap/provider-bind validation. A disposable Path-1 worker image must
+likewise opt in explicitly with `path1`.
+
+Run the production/shared-host preparation path with:
 
 ```sh
-sudo deploy/managed-kernel/prepare-hetzner-image.sh \
+sudo env CHARIOX_MANAGED_PROVIDER_TOPOLOGY=shared_host \
+  deploy/managed-kernel/prepare-hetzner-image.sh \
   <release-rootfs> \
   <release-digest> \
   <trusted-public-key>
 ```
+
+For a disposable-VM Path-1 image, replace `shared_host` with `path1`.
 
 The preparation script refuses an unmarked host or the wrong OS and
 architecture. It installs Node.js 22, Docker, Git and GitHub tooling, the exact
@@ -126,23 +167,18 @@ mountpoint. A broker restart reuses a matching mount, while a rootless-daemon
 restart recreates it in the new namespace only after the durable source record
 still matches. Destroying the slice unmounts and removes its handles.
 
-Every provider process on a managed host is launched through the root-owned
-`/usr/bin/bwrap` boundary. Its namespace masks the kernel home, broker and
-Docker control paths, runtime logs, and unrelated host filesystems; it binds
-only the selected provider profile, explicit runtime files, and canonical
-repository roots. Managed startup fails closed when the wrapper or an approved
-mount is missing. Kernel loopback transport uses a one-time local token outside
-provider-visible mounts, and provider children receive neither that token nor
-Cloud, relay, bootstrap, or broker credentials.
+Provider processes on a disposable Path-1 managed VM are launched through the
+ordinary kernel provider path. Normal Unix ownership and permissions determine
+their filesystem access, including access to user-created directories and
+repositories that were not part of initial context transfer. Kernel loopback,
+Cloud, relay, bootstrap, and broker credentials must not be inherited by the
+provider process.
 
-For image acceptance, set `CHARIOX_MANAGED_PROVIDER_ISOLATION_PROBE=1` for one
-bootstrap. Startup then authenticates to the real local kernel with its one-time
-token, creates a real session, and launches Codex through the production
-bubblewrap wrapper. The wrapper proves write access to only the selected account
-and repository, denies kernel state, slice-share and broker paths, host `/proc`,
-and an unselected repository, and verifies that cross-mount hardlinks fail. The
-kernel is stopped if any assertion fails. The probe token is removed from the
-environment after the one-shot check and is never written as persistent state.
+Image acceptance launches a real provider through that ordinary path. It proves
+broad developer-machine behavior, selected provider-account operation, absence
+of control credentials, no `CHARIOX_MANAGED_PROVIDER_ISOLATION` marker, and no
+Bubblewrap ancestor. A Bubblewrap isolation probe belongs only to a separately
+selected slice or legacy/shared-host topology and must not gate Path-1 startup.
 
 Broker-backed slice containers run in the dedicated rootless Docker daemon and
 relax the outer seccomp, AppArmor, and system-path masks only so bubblewrap can

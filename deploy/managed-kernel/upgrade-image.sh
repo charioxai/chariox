@@ -16,6 +16,10 @@ expected_new_digest=$3
 trusted_public_key=$4
 next_trusted_public_key=${5:-$4}
 install_root=${CHARIOX_MANAGED_UPGRADE_ROOT:-}
+state_root=$install_root/var/lib/chariox
+managed_home=$install_root/home/chariox
+managed_state=$managed_home/.chariox
+legacy_home=$state_root/home
 script_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 service_name=chariox-managed-bootstrap.service
 chariox_root=$install_root/usr/lib/chariox
@@ -23,30 +27,27 @@ releases_root=$chariox_root/releases
 current_link=$chariox_root/current
 slice_build_context_link=$chariox_root/slice-build-context
 signed_slice_build_context_target=current/usr/lib/chariox/slice-build-context
-receipt_path=${CHARIOX_MANAGED_UPGRADE_RECEIPT:-$install_root/var/lib/chariox/home/managed/bootstrap-receipt.json}
-if [ -z "${CHARIOX_MANAGED_UPGRADE_RECEIPT:-}" ]; then
-  worker_receipt_path=$install_root/var/lib/chariox/home/disposable-worker/bootstrap-receipt.json
-  if [ -e "$worker_receipt_path" ] || [ -L "$worker_receipt_path" ]; then
-    if [ -e "$receipt_path" ] || [ -L "$receipt_path" ]; then
-      echo "both managed and allocation worker receipts exist; select the receipt explicitly" >&2
-      exit 1
-    fi
-    receipt_path=$worker_receipt_path
-  fi
+default_managed_receipt=$install_root/var/lib/chariox/managed/bootstrap-receipt.json
+default_worker_receipt=$install_root/var/lib/chariox/disposable-worker/bootstrap-receipt.json
+receipt_path=${CHARIOX_MANAGED_UPGRADE_RECEIPT:-$default_managed_receipt}
+receipt_path_explicit=0
+if [ -n "${CHARIOX_MANAGED_UPGRADE_RECEIPT:-}" ]; then
+  receipt_path_explicit=1
 fi
-release_override_path=${CHARIOX_MANAGED_UPGRADE_RELEASE_OVERRIDE:-${receipt_path%/*}/release-override.json}
 transaction_root=$chariox_root/.managed-kernel-upgrade
 terminal_transaction=$chariox_root/.managed-kernel-upgrade.terminal
 health_host=${CHARIOX_MANAGED_UPGRADE_HEALTH_HOST:-127.0.0.1}
 health_port=${CHARIOX_MANAGED_UPGRADE_HEALTH_PORT:-43118}
 health_timeout_ms=${CHARIOX_MANAGED_UPGRADE_HEALTH_TIMEOUT_MS:-120000}
-presence_root=$install_root/var/lib/chariox/home/kernels/active
+presence_root=$install_root/var/lib/chariox/kernels/active
 staging_root=$(mktemp -d "${TMPDIR:-/tmp}/chariox-managed-upgrade.XXXXXX")
 chmod 0700 "$staging_root"
 pending_release=
 pending_transaction=
 transaction_active=0
 rolling_back=0
+chariox_uid=$(id -u chariox)
+chariox_gid=$(id -g chariox)
 
 cleanup() {
   if [ -n "$pending_release" ] && [ -d "$pending_release" ]; then
@@ -56,6 +57,40 @@ cleanup() {
     rm -rf -- "$pending_transaction"
   fi
   rm -rf -- "$staging_root"
+}
+
+path_exists() {
+  [ -e "$1" ] || [ -L "$1" ]
+}
+
+select_receipt_path() {
+  if [ "$receipt_path_explicit" -eq 1 ]; then
+    receipt_path=$CHARIOX_MANAGED_UPGRADE_RECEIPT
+  else
+    selected_receipt=
+    for candidate in \
+      "$default_managed_receipt" \
+      "$default_worker_receipt" \
+      "$legacy_home/managed/bootstrap-receipt.json" \
+      "$legacy_home/disposable-worker/bootstrap-receipt.json" \
+      "$legacy_home/.chariox/managed/bootstrap-receipt.json" \
+      "$legacy_home/.chariox/disposable-worker/bootstrap-receipt.json" \
+      "$managed_home/managed/bootstrap-receipt.json" \
+      "$managed_home/disposable-worker/bootstrap-receipt.json" \
+      "$managed_home/.chariox/managed/bootstrap-receipt.json" \
+      "$managed_home/.chariox/disposable-worker/bootstrap-receipt.json"
+    do
+      if path_exists "$candidate"; then
+        if [ -n "$selected_receipt" ]; then
+          echo "both managed and allocation worker receipts exist; select the receipt explicitly" >&2
+          exit 1
+        fi
+        selected_receipt=$candidate
+      fi
+    done
+    receipt_path=${selected_receipt:-$default_managed_receipt}
+  fi
+  release_override_path=${CHARIOX_MANAGED_UPGRADE_RELEASE_OVERRIDE:-${receipt_path%/*}/release-override.json}
 }
 
 require_regular_file() {
@@ -245,6 +280,37 @@ write_phase() {
   node "$script_root/managed-kernel-upgrade-state.mjs" atomic-text "$1" "$transaction_root/phase"
 }
 
+plan_home_migration() {
+  node "$script_root/managed-kernel-home-migration.mjs" plan \
+    "$pending_transaction/home-migration.json" \
+    "$state_root" "$legacy_home" "$managed_home" "$managed_state" \
+    "$chariox_uid" "$chariox_gid"
+}
+
+resume_home_migration() {
+  if [ ! -f "$transaction_root/home-migration.json" ]; then
+    if path_exists "$legacy_home"; then
+      echo "managed kernel upgrade transaction is missing its required home migration journal" >&2
+      return 1
+    fi
+    return 0
+  fi
+  node "$script_root/managed-kernel-home-migration.mjs" apply \
+    "$transaction_root/home-migration.json" \
+    "$state_root" "$legacy_home" "$managed_home" "$managed_state" \
+    "$chariox_uid" "$chariox_gid" || return 1
+  previous_service_name=$service_name
+  select_receipt_path
+  require_private_regular_file "$receipt_path" "managed bootstrap receipt"
+  require_safe_ancestor_chain "$receipt_path" "managed bootstrap receipt"
+  service_name=$(node "$script_root/managed-kernel-upgrade-state.mjs" \
+    supervisor-service "$receipt_path" "$release_override_path") || return 1
+  if [ "$service_name" != "$previous_service_name" ]; then
+    echo "managed kernel service identity changed during home migration" >&2
+    return 1
+  fi
+}
+
 verify_slice_build_context_facade() {
   expected_target=$1
   if [ ! -L "$slice_build_context_link" ] \
@@ -349,6 +415,7 @@ rollback_transaction() {
     echo "managed kernel rollback could not stop the kernel service" >&2
     return 1
   fi
+  resume_home_migration || return 1
   atomic_receipt "$transaction_root/previous-receipt.json" || return 1
   previous_override_present=$(read_single_line "$transaction_root/previous-release-override-present") || return 1
   case "$previous_override_present" in
@@ -501,18 +568,21 @@ next_trusted_public_key=$staging_root/next-trusted-public-key
 require_regular_file "$trusted_public_key"
 require_regular_file "$next_trusted_public_key"
 
+upgrade_lock=${CHARIOX_MANAGED_UPGRADE_LOCK:-/run/lock/chariox-managed-image-install.lock}
+exec 9>"$upgrade_lock"
+flock 9
+select_receipt_path
 require_root_owned_directory "$chariox_root"
 require_root_owned_ancestor_chain "$chariox_root" "managed kernel upgrade authority"
 require_root_owned_directory "$releases_root"
 require_private_regular_file "$receipt_path" "managed bootstrap receipt"
 require_safe_ancestor_chain "$receipt_path" "managed bootstrap receipt"
-
 service_name=$(node "$script_root/managed-kernel-upgrade-state.mjs" supervisor-service "$receipt_path" "$release_override_path")
-
-upgrade_lock=${CHARIOX_MANAGED_UPGRADE_LOCK:-/run/lock/chariox-managed-image-install.lock}
-exec 9>"$upgrade_lock"
-flock 9
 recover_transaction
+select_receipt_path
+require_private_regular_file "$receipt_path" "managed bootstrap receipt"
+require_safe_ancestor_chain "$receipt_path" "managed bootstrap receipt"
+service_name=$(node "$script_root/managed-kernel-upgrade-state.mjs" supervisor-service "$receipt_path" "$release_override_path")
 
 if [ ! -L "$current_link" ]; then
   echo "registered managed kernel current release link is missing" >&2
@@ -608,6 +678,7 @@ printf '%s\n' "$expected_new_digest" > "$pending_transaction/target-digest"
 printf '%s\n' "$target_protocol" > "$pending_transaction/target-protocol"
 printf '%s\n' "$signed_slice_build_context_target" > "$pending_transaction/target-slice-build-context"
 printf '%s\n' prepared > "$pending_transaction/phase"
+plan_home_migration
 chmod 0600 "$pending_transaction"/*
 node "$script_root/managed-kernel-upgrade-state.mjs" sync-tree "$pending_transaction"
 node "$script_root/managed-kernel-upgrade-state.mjs" publish-transaction \
@@ -624,6 +695,14 @@ if ! systemctl stop "$service_name"; then
   exit 1
 fi
 write_phase stopped
+if ! resume_home_migration; then
+  if rollback_transaction; then
+    echo "managed kernel home migration failed; restored previous managed kernel release" >&2
+  else
+    echo "managed kernel home migration failed; rollback remains pending" >&2
+  fi
+  exit 1
+fi
 if ! atomic_receipt "$transaction_root/target-receipt.json"; then
   activation_failed=1
 elif [ -f "$transaction_root/target-release-override.json" ]; then

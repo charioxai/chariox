@@ -645,24 +645,85 @@ fn bounds_bundle_writes_and_handles_unicode_ignore_patterns() {
 }
 
 #[test]
-fn bounds_origin_derived_target_directories_with_a_stable_suffix() {
+fn preserves_source_repository_basename_as_the_target_directory() {
     let root = test_root("bounded-target-directory");
     let repository = root.join("repository");
     init_repository(&repository, "tracked.txt", "base\n");
-    let long_name = "a".repeat(400);
+    let long_name = "remote-name";
     let origin = format!("https://example.com/org/{long_name}.git");
     git(&repository, &["remote", "add", "origin", &origin]);
 
-    let first = one_repo_export(&root, &repository, "long-target-first")
-        .expect("long origin should export with a bounded target");
-    let target = &first.manifest.repositories[0].target_directory;
-    assert!(target.len() <= MAX_TARGET_DIRECTORY_BASE_BYTES);
-    assert!(target.starts_with(&"a".repeat(100)));
-    let repeated = one_repo_export(&root, &repository, "long-target-repeated")
-        .expect("repeated long origin should keep the same target");
-    assert_eq!(repeated.manifest.repositories[0].target_directory, *target);
+    let first = one_repo_export(&root, &repository, "source-basename-first")
+        .expect("source basename should be the target");
+    assert_eq!(
+        first.manifest.repositories[0].target_directory,
+        "repository"
+    );
+    assert_eq!(first.manifest.repositories[0].logical_name, long_name);
 
     fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn ordinary_source_repository_basename_collision_keeps_compatible_disambiguation() {
+    let root = test_root("target-directory-collision");
+    let first = root.join("first").join("same-name");
+    let second = root.join("second").join("same-name");
+    init_repository(&first, "first.txt", "first\n");
+    init_repository(&second, "second.txt", "second\n");
+    let exported = export_development_context(DevelopmentContextExportRequest {
+        project_id: "collision-project".to_string(),
+        repositories: vec![
+            DevelopmentRepositorySelection {
+                workspace_id: "first".to_string(),
+                worktree_id: None,
+                worktree_path: first,
+                role: DevelopmentRepositoryRole::Primary,
+            },
+            DevelopmentRepositorySelection {
+                workspace_id: "second".to_string(),
+                worktree_id: None,
+                worktree_path: second,
+                role: DevelopmentRepositoryRole::Supporting,
+            },
+        ],
+        archive_path: root.join("collision.tar.gz"),
+    })
+    .expect("ordinary duplicate basenames remain exportable");
+    let targets = exported
+        .manifest
+        .repositories
+        .iter()
+        .map(|repository| repository.target_directory.as_str())
+        .collect::<BTreeSet<_>>();
+    assert!(targets.contains("same-name"));
+    assert_eq!(targets.len(), 2);
+    assert!(targets
+        .iter()
+        .any(|target| target.starts_with("same-name-")));
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn managed_destination_names_reserve_provider_control_entries() {
+    for reserved in [
+        ".chariox",
+        ".provider-account",
+        "managed-context-workspaces",
+        "managed-context",
+        "provider-home",
+        ".chariox-empty-context-context-id",
+    ] {
+        assert!(
+            export::validate_managed_repository_basename(reserved).is_err(),
+            "managed destination `{reserved}` must be reserved"
+        );
+    }
+    assert!(export::validate_repository_basename(".chariox").is_ok());
+    let mut occupied = BTreeSet::new();
+    export::unique_managed_target_directory("same-name", &mut occupied)
+        .expect("first managed basename");
+    assert!(export::unique_managed_target_directory("SAME-NAME", &mut occupied).is_err());
 }
 
 #[test]
@@ -1497,6 +1558,68 @@ fn failed_transfer_cleanup_removes_only_its_receipted_publication() {
     cleanup_development_context_publication(&destination_root, "ctx_failed_publication")
         .expect("remove exact failed publication");
     assert!(!destination_root.exists());
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn managed_materialization_requires_the_explicit_trusted_control_parent() {
+    let root = test_root("managed-root-seam");
+    let trusted_parent = root.join("trusted/managed-context-workspaces");
+    let untrusted_parent = root.join("untrusted/managed-context-workspaces");
+    fs::create_dir_all(&trusted_parent).expect("create trusted control parent");
+    fs::create_dir_all(&untrusted_parent).expect("create untrusted control parent");
+    let control = untrusted_parent.join("publication");
+    assert_eq!(
+        super::import::managed_materialization_root_for_control(&control, Some(&trusted_parent),)
+            .expect("validate trusted control parent"),
+        None
+    );
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[cfg(unix)]
+#[test]
+fn interrupted_materialization_recovers_the_directory_published_after_intent() {
+    let root = test_root("materialization-crash-after-rename");
+    let staging = root.join("staging");
+    let source = root.join("source");
+    let destination = root.join("workspace");
+    fs::create_dir_all(&staging).expect("create staging");
+    fs::create_dir_all(&source).expect("create source");
+    fs::write(source.join("canary.txt"), "owned\n").expect("write source canary");
+    super::import::test_recover_pending_materialization_after_rename(
+        &staging,
+        &source,
+        &destination,
+    )
+    .expect("recover crash after rename");
+    assert!(!destination.exists());
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[cfg(unix)]
+#[test]
+fn materialization_cleanup_rejects_an_adversarial_replacement() {
+    let root = test_root("materialization-replacement");
+    let staging = root.join("staging");
+    let source = root.join("source");
+    let destination = root.join("workspace");
+    let replacement = root.join("replacement");
+    fs::create_dir_all(&staging).expect("create staging");
+    fs::create_dir_all(&source).expect("create source");
+    fs::write(source.join("owned.txt"), "owned\n").expect("write source");
+    fs::create_dir_all(&replacement).expect("create replacement");
+    fs::write(replacement.join("attacker-canary.txt"), "retain\n")
+        .expect("write replacement canary");
+    let error = super::import::test_reject_replaced_materialization(
+        &staging,
+        &source,
+        &destination,
+        &replacement,
+    )
+    .expect_err("replacement identity must be rejected");
+    assert!(error.to_string().contains("identity changed"));
+    assert!(destination.join("attacker-canary.txt").exists());
     fs::remove_dir_all(root).expect("remove test root");
 }
 

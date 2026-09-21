@@ -3,6 +3,7 @@ import { createHash, generateKeyPairSync, sign } from "node:crypto"
 import { spawnSync } from "node:child_process"
 import {
   chmod,
+  chown,
   cp,
   lstat,
   mkdir,
@@ -99,6 +100,32 @@ async function put(path, contents, mode = 0o644) {
   await mkdir(dirname(path), { recursive: true, mode: 0o755 })
   await writeFile(path, contents, { mode })
   await chmod(path, mode)
+}
+
+async function createRootPrivateDirectory(path) {
+  await mkdir(path, { recursive: true, mode: 0o700 })
+  await chown(path, 0, 0)
+  await chmod(path, 0o700)
+}
+
+function namespaceMapsId(contents, id) {
+  return contents.trim().split("\n").some((line) => {
+    const [inside, , length] = line.trim().split(/\s+/).map(Number)
+    return Number.isSafeInteger(inside) && Number.isSafeInteger(length)
+      && id >= inside && id < inside + length
+  })
+}
+
+async function effectiveCharioxIdentity() {
+  const uid = Number(spawnSync("id", ["-u", "chariox"], { encoding: "utf8" }).stdout.trim())
+  const gid = Number(spawnSync("id", ["-g", "chariox"], { encoding: "utf8" }).stdout.trim())
+  if (process.platform !== "linux") return { uid, gid }
+  const [uidMap, gidMap] = await Promise.all([
+    readFile("/proc/self/uid_map", "utf8").catch(() => ""),
+    readFile("/proc/self/gid_map", "utf8").catch(() => ""),
+  ])
+  if (namespaceMapsId(uidMap, uid) && namespaceMapsId(gidMap, gid)) return { uid, gid }
+  return { uid: 0, gid: 0 }
 }
 
 async function makeRelease(root, label, protocol, privateKey, publicKey, transitionPolicy = null, includeWorkerService = false) {
@@ -202,8 +229,8 @@ async function makeHarness(context, {
   await symlink(`releases/${current.digest.slice("sha256:".length)}`, join(installRoot, "usr/lib/chariox/current"))
   await symlink("current/usr/lib/chariox/slice-build-context", join(installRoot, "usr/lib/chariox/slice-build-context"))
   const receiptPath = join(installRoot, receiptKind === "allocation_worker"
-    ? "var/lib/chariox/home/disposable-worker/bootstrap-receipt.json"
-    : "var/lib/chariox/home/managed/bootstrap-receipt.json")
+    ? "var/lib/chariox/disposable-worker/bootstrap-receipt.json"
+    : "var/lib/chariox/managed/bootstrap-receipt.json")
   const binding = {
     allocationId: "allocation-1",
     expectedHomeKernelId: "home-kernel-1",
@@ -269,23 +296,42 @@ async function makeHarness(context, {
   if (receiptKind === "allocation_worker") bindingDigest = allocationWorkerBindingDigest(receipt)
   await put(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, 0o640)
   const persistent = {
-    credential: join(installRoot, "var/lib/chariox/home/.chariox/vault/vault.json"),
+    credential: join(installRoot, "home/chariox/.chariox/vault/vault.json"),
     provider: join(installRoot, "var/lib/chariox/provider-home/provider-state.json"),
-    repository: join(installRoot, "var/lib/chariox/home/repositories/repo-1/HEAD"),
-    workspace: join(installRoot, "var/lib/chariox/home/workspaces/workspace-1/state"),
-    session: join(installRoot, "var/lib/chariox/home/sessions/session-1.json"),
+    repository: join(installRoot, "home/chariox/repositories/repo-1/HEAD"),
+    workspace: join(installRoot, "home/chariox/workspaces/workspace-1/state"),
+    session: join(installRoot, "home/chariox/sessions/session-1.json"),
   }
   for (const [name, path] of Object.entries(persistent)) await put(path, `${name}-sentinel\n`, 0o600)
 
   const state = join(root, "harness-state")
   const bin = join(root, "bin")
+  const charioxIdentity = await effectiveCharioxIdentity()
   await mkdir(state)
   await mkdir(bin)
+  await put(join(bin, "id"), `#!/bin/sh
+set -eu
+if [ "\${1:-}" = "-u" ] && [ "\${2:-}" = "chariox" ]; then
+  printf '%s\n' "${charioxIdentity.uid}"
+  exit 0
+fi
+if [ "\${1:-}" = "-g" ] && [ "\${2:-}" = "chariox" ]; then
+  printf '%s\n' "${charioxIdentity.gid}"
+  exit 0
+fi
+exec /usr/bin/id "$@"
+`, 0o755)
   await put(join(bin, "systemctl"), `#!/bin/sh
 set -eu
 printf '%s\n' "$*" >> "$HARNESS_STATE/systemctl.log"
-presence="$CHARIOX_MANAGED_UPGRADE_ROOT/var/lib/chariox/home/kernels/active/kernel-1.json"
+presence="$CHARIOX_MANAGED_UPGRADE_ROOT/var/lib/chariox/kernels/active/kernel-1.json"
 if [ "$1" = "stop" ]; then
+  if [ -f "$HARNESS_STATE/write-legacy-home-on-stop" ]; then
+    legacy_home="$CHARIOX_MANAGED_UPGRADE_ROOT/var/lib/chariox/home"
+    mkdir -p "$legacy_home"
+    printf 'late-service-write\n' > "$legacy_home/late-service-write"
+    rm -f -- "$HARNESS_STATE/write-legacy-home-on-stop"
+  fi
   rm -f -- "$presence"
 fi
 if [ "$1" = "start" ]; then
@@ -313,7 +359,7 @@ if [ "$1" = "start" ]; then
     fi
     if [ -f "$HARNESS_STATE/wrong-release-once" ]; then
       rm -f -- "$HARNESS_STATE/wrong-release-once"
-      receipt="$CHARIOX_MANAGED_UPGRADE_ROOT/var/lib/chariox/home/managed/bootstrap-receipt.json"
+      receipt="$CHARIOX_MANAGED_UPGRADE_ROOT/var/lib/chariox/managed/bootstrap-receipt.json"
       sed 's/sha256:[a-f0-9]\\{64\\}/sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff/' \
         "$receipt" > "$receipt.wrong-release"
       chmod 0640 "$receipt.wrong-release"
@@ -321,7 +367,7 @@ if [ "$1" = "start" ]; then
     fi
     if [ -f "$HARNESS_STATE/wrong-environment-once" ]; then
       rm -f -- "$HARNESS_STATE/wrong-environment-once"
-      receipt="$CHARIOX_MANAGED_UPGRADE_ROOT/var/lib/chariox/home/managed/bootstrap-receipt.json"
+      receipt="$CHARIOX_MANAGED_UPGRADE_ROOT/var/lib/chariox/managed/bootstrap-receipt.json"
       sed 's/"environmentId": "environment-1"/"environmentId": "environment-wrong"/' \
         "$receipt" > "$receipt.wrong-environment"
       chmod 0640 "$receipt.wrong-environment"
@@ -344,6 +390,23 @@ if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   && [ "\${2:-}" = "validate-receipt-match" ] \
   && [ -f "$HARNESS_STATE/fail-final-receipt-validation" ]; then
   rm -f -- "$HARNESS_STATE/fail-final-receipt-validation"
+  exit 1
+fi
+if [ "\${1##*/}" = "managed-kernel-home-migration.mjs" ] \
+  && [ "\${2:-}" = "apply" ] \
+  && [ -f "$HARNESS_STATE/crash-after-home-root-rename" ]; then
+  /bin/mv -- "\${5}" "\${6}"
+  rm -f -- "$HARNESS_STATE/crash-after-home-root-rename"
+  kill -KILL "$PPID"
+  exit 1
+fi
+if [ "\${1##*/}" = "managed-kernel-home-migration.mjs" ] \
+  && [ "\${2:-}" = "apply" ] \
+  && [ -f "$HARNESS_STATE/crash-before-home-completion-marker" ]; then
+  "${process.execPath}" "$@"
+  rm -f -- "\${3%/*}/home-migration-complete" \
+    "$HARNESS_STATE/crash-before-home-completion-marker"
+  kill -KILL "$PPID"
   exit 1
 fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
@@ -427,7 +490,7 @@ exec /usr/bin/stat "$@"
   const run = (extraEnv = {}, args = [target.rootfs, current.digest, target.digest, trustedKey]) =>
     spawnSync(upgrade, args, { encoding: "utf8", env: { ...env, ...extraEnv } })
   return {
-    root, installRoot, receiptPath, receipt, bindingDigest, persistent,
+    root, installRoot, receiptPath, receipt, bindingDigest, persistent, charioxIdentity,
     current, target, trustedKey, state, run,
   }
 }
@@ -476,6 +539,157 @@ test("managed kernel upgrade atomically advances the release and receipt without
     `start ${serviceName}`,
     `is-active --quiet ${serviceName}`,
   ])
+})
+
+test("managed kernel upgrade migrates legacy home state and rejects a home collision", async (context) => {
+  const harness = await makeHarness(context)
+  const canonicalHome = join(harness.installRoot, "home/chariox")
+  const legacyHome = join(harness.installRoot, "var/lib/chariox/home")
+  const legacyReceipt = join(legacyHome, "managed/bootstrap-receipt.json")
+  await rename(canonicalHome, legacyHome)
+  await createRootPrivateDirectory(dirname(legacyReceipt))
+  await rename(harness.receiptPath, legacyReceipt)
+
+  const migrated = harness.run()
+  assert.equal(migrated.status, 0, migrated.stderr)
+  assert.equal(await lstat(legacyHome).then(() => true, () => false), false)
+  assert.equal(
+    await readFile(join(harness.installRoot, "home/chariox/repositories/repo-1/HEAD"), "utf8"),
+    "repository-sentinel\n",
+  )
+  assert.equal(
+    await readFile(join(harness.installRoot, "home/chariox/.chariox/vault/vault.json"), "utf8"),
+    "credential-sentinel\n",
+  )
+  assert.equal(
+    JSON.parse(await readFile(harness.receiptPath, "utf8")).runtimeReleaseDigest,
+    harness.target.digest,
+  )
+  assert.equal((await stat(join(harness.installRoot, "home/chariox"))).mode & 0o777, 0o700)
+  assert.equal((await stat(join(harness.installRoot, "home/chariox/.chariox"))).mode & 0o777, 0o700)
+  const { uid: charioxUid, gid: charioxGid } = harness.charioxIdentity
+  assert.equal((await stat(join(harness.installRoot, "home/chariox"))).uid, charioxUid)
+  assert.equal((await stat(join(harness.installRoot, "home/chariox"))).gid, charioxGid)
+  assert.equal((await stat(join(harness.installRoot, "home/chariox/.chariox"))).uid, charioxUid)
+  assert.equal((await stat(join(harness.installRoot, "home/chariox/.chariox"))).gid, charioxGid)
+
+  const collisionHarness = await makeHarness(context)
+  const collisionLegacy = join(collisionHarness.installRoot, "var/lib/chariox/home")
+  await createRootPrivateDirectory(collisionLegacy)
+  await writeFile(join(collisionLegacy, "must-remain-untouched"), "collision\n")
+  const collision = collisionHarness.run()
+  assert.equal(collision.status, 1)
+  assert.match(collision.stderr, /both exist; refusing to overwrite either/)
+  assert.equal(
+    await readFile(join(collisionLegacy, "must-remain-untouched"), "utf8"),
+    "collision\n",
+  )
+  assert.equal(
+    await lstat(join(collisionHarness.state, "systemctl.log")).then(() => true, () => false),
+    false,
+  )
+})
+
+test("managed kernel upgrade stops the live service before migrating legacy home", async (context) => {
+  const harness = await makeHarness(context)
+  const canonicalHome = join(harness.installRoot, "home/chariox")
+  const legacyHome = join(harness.installRoot, "var/lib/chariox/home")
+  const legacyReceipt = join(legacyHome, "managed/bootstrap-receipt.json")
+  await rename(canonicalHome, legacyHome)
+  await createRootPrivateDirectory(dirname(legacyReceipt))
+  await rename(harness.receiptPath, legacyReceipt)
+  await put(join(harness.state, "write-legacy-home-on-stop"), "write\n")
+
+  const result = harness.run()
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(
+    await lstat(legacyHome).then(() => true, () => false),
+    false,
+    "the stopped service must not recreate a legacy state tree after migration",
+  )
+  assert.equal(
+    await readFile(join(canonicalHome, "late-service-write"), "utf8"),
+    "late-service-write\n",
+    "the migration must retain the service's final write",
+  )
+  assert.deepEqual((await readFile(join(harness.state, "systemctl.log"), "utf8")).trim().split("\n"), [
+    `stop ${serviceName}`,
+    "daemon-reload",
+    `start ${serviceName}`,
+    `is-active --quiet ${serviceName}`,
+  ])
+})
+
+test("managed kernel upgrade resumes its identity-backed home migration after crash windows", async (context) => {
+  const crashWindows = ["crash-after-home-root-rename", "crash-before-home-completion-marker"]
+  const observedCrashWindows = []
+  for (const marker of crashWindows) {
+    const harness = await makeHarness(context)
+    const canonicalHome = join(harness.installRoot, "home/chariox")
+    const legacyHome = join(harness.installRoot, "var/lib/chariox/home")
+    const legacyReceipt = join(legacyHome, "managed/bootstrap-receipt.json")
+    await rename(canonicalHome, legacyHome)
+    await createRootPrivateDirectory(dirname(legacyReceipt))
+    await rename(harness.receiptPath, legacyReceipt)
+    await put(join(harness.state, marker), "crash\n")
+
+    const interrupted = harness.run()
+    assert.equal(interrupted.signal, "SIGKILL", `${marker}: ${interrupted.stderr}`)
+    observedCrashWindows.push(marker)
+    const recovered = harness.run()
+    assert.equal(recovered.status, 0, `${marker}: ${recovered.stderr}`)
+    assert.equal(await lstat(legacyHome).then(() => true, () => false), false)
+    assert.equal(
+      await readFile(join(canonicalHome, "repositories/repo-1/HEAD"), "utf8"),
+      "repository-sentinel\n",
+    )
+    assert.equal(
+      JSON.parse(await readFile(harness.receiptPath, "utf8")).runtimeReleaseDigest,
+      harness.target.digest,
+    )
+  }
+  assert.deepEqual(observedCrashWindows, crashWindows, "both injected home-migration crash windows must be observed")
+})
+
+test("managed kernel upgrade validates the signed candidate before planning legacy migration", async (context) => {
+  const harness = await makeHarness(context)
+  const canonicalHome = join(harness.installRoot, "home/chariox")
+  const legacyHome = join(harness.installRoot, "var/lib/chariox/home")
+  const legacyReceipt = join(legacyHome, "managed/bootstrap-receipt.json")
+  await rename(canonicalHome, legacyHome)
+  await createRootPrivateDirectory(dirname(legacyReceipt))
+  await rename(harness.receiptPath, legacyReceipt)
+  await put(
+    join(harness.target.rootfs, "etc/systemd/system/chariox-disposable-worker-bootstrap.service"),
+    "[Service]\nExecStart=/unexpected\n",
+  )
+
+  const result = harness.run()
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /chariox-disposable-worker-bootstrap.service is corrupted/)
+  assert.equal(await lstat(legacyHome).then(() => true, () => false), true)
+  assert.equal(await lstat(canonicalHome).then(() => true, () => false), false)
+  assert.equal(await lstat(join(harness.state, "systemctl.log")).then(() => true, () => false), false)
+})
+
+test("managed kernel upgrade rejects a symlinked legacy state entry before stopping the service", async (context) => {
+  const harness = await makeHarness(context)
+  const canonicalHome = join(harness.installRoot, "home/chariox")
+  const legacyHome = join(harness.installRoot, "var/lib/chariox/home")
+  const legacyReceipt = join(legacyHome, "managed/bootstrap-receipt.json")
+  const outside = join(harness.root, "outside-managed-context")
+  await rename(canonicalHome, legacyHome)
+  await createRootPrivateDirectory(dirname(legacyReceipt))
+  await rename(harness.receiptPath, legacyReceipt)
+  await mkdir(outside)
+  await writeFile(join(outside, "must-remain"), "outside\n")
+  await symlink(outside, join(legacyHome, "managed-context"))
+
+  const result = harness.run()
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /managed kernel managed-context is not a real directory/)
+  assert.equal(await readFile(join(outside, "must-remain"), "utf8"), "outside\n")
+  assert.equal(await lstat(join(harness.state, "systemctl.log")).then(() => true, () => false), false)
 })
 
 test("managed upgrade rejects a corrupted declared worker service before stopping the kernel", async (context) => {
@@ -585,10 +799,9 @@ test("allocation worker upgrade preserves the receipt written by the active boot
     confirmedAt: "2026-09-11T00:00:00Z",
   }
   const receiptBytes = `${JSON.stringify(receipt, null, 2)}\n`
-  await put(harness.receiptPath, receiptBytes, 0o640)
-  const activeReceiptPath = join(harness.installRoot, "var/lib/chariox/home/disposable-worker/bootstrap-receipt.json")
-  await mkdir(dirname(activeReceiptPath), { recursive: true })
-  await rename(harness.receiptPath, activeReceiptPath)
+  const activeReceiptPath = harness.receiptPath
+  await chmod(dirname(activeReceiptPath), 0o700)
+  await put(activeReceiptPath, receiptBytes, 0o640)
   const before = await persistentSnapshot(harness.persistent)
   const result = harness.run()
   assert.equal(result.status, 0, result.stderr)
@@ -731,7 +944,7 @@ test("managed kernel health rejects an unrelated listener without a fresh matchi
 
 test("managed kernel health uses the installed home presence directory for upgrade and rollback", async (context) => {
   const harness = await makeHarness(context)
-  const presenceRoot = join(harness.installRoot, "var/lib/chariox/home/kernels/active")
+  const presenceRoot = join(harness.installRoot, "var/lib/chariox/kernels/active")
   await put(join(harness.state, "skip-presence-once"), "skip\n")
   const result = harness.run()
   assert.equal(result.status, 1)
@@ -1244,8 +1457,13 @@ test("managed kernel upgrade remains a dedicated offline release operation", asy
 
   const publishRelease = contents.indexOf('mv "$pending_release" "$published_release"')
   const publishTransaction = contents.indexOf('publish-transaction \\', publishRelease)
-  const stopService = contents.indexOf('if ! systemctl stop "$service_name"', publishTransaction)
+  const stopService = contents.indexOf('systemctl stop "$service_name"', publishTransaction)
   assert.ok(publishRelease >= 0 && publishTransaction > publishRelease && stopService > publishTransaction)
+  const verifyCandidate = contents.indexOf('verify-image-release.mjs" "$image_root"', 0)
+  const planMigration = contents.indexOf('\nplan_home_migration\n', verifyCandidate)
+  const applyMigration = contents.indexOf('resume_home_migration', stopService)
+  assert.ok(verifyCandidate >= 0 && planMigration > verifyCandidate)
+  assert.ok(planMigration < publishTransaction && applyMigration > stopService)
   assert.match(contents.slice(0, publishRelease), /sync-tree[^\n]*\$pending_release/)
   assert.match(contents.slice(publishRelease, publishTransaction), /sync-directory[^\n]*\$releases_root/)
   assert.match(contents.slice(publishRelease, publishTransaction), /sync-tree[^\n]*\$pending_transaction/)

@@ -5,11 +5,18 @@ import type {
   WaitingRoomTerminal,
   WaitingRoomTerminalType,
 } from "./waiting-room-types.js"
+import {
+  activeProjectEnvironmentSetupStatus,
+  safeProjectEnvironmentSetupFailureDetails,
+  safeProjectEnvironmentSetupOperationId,
+} from "./project-environment-setup-projection.js"
+import type { ProjectEnvironmentSetupStatus } from "@chariox/kernel-client/kernel-types"
 
 export function waitingRoomTerminalRows(
   state: Pick<WaitingRoomState, "focus" | "terminalIndex">,
   remote: Pick<WaitingRoomRemoteState, "terminals">,
   titleWidth: number,
+  projectEnvironmentSetup: ProjectEnvironmentSetupStatus | null = activeProjectEnvironmentSetupStatus(),
 ): WaitingRoomRow[] {
   const terminals = waitingRoomTerminals(remote)
   const typeWidth = Math.max(
@@ -40,6 +47,8 @@ export function waitingRoomTerminalRows(
     },
   ]
 
+  rows.push(...waitingRoomProjectEnvironmentSetupRows(projectEnvironmentSetup, titleWidth))
+
   for (const [index, terminal] of terminals.entries()) {
     rows.push({
       id: `terminal:${terminal.terminal_id}`,
@@ -65,6 +74,53 @@ export function waitingRoomTerminalRows(
     scrollbar: "",
   })
 
+  return rows
+}
+
+export function waitingRoomProjectEnvironmentSetupRows(
+  status: ProjectEnvironmentSetupStatus | null | undefined,
+  titleWidth: number,
+): WaitingRoomRow[] {
+  if (!status) {
+    return []
+  }
+  const operationId = safeProjectEnvironmentSetupOperationId(status.operation_id)
+  const progress = `${status.progress_percent}%`
+  const failure = safeProjectEnvironmentSetupFailureDetails(status)
+  const rows: WaitingRoomRow[] = [
+    {
+      id: "project-environment-setup-header",
+      title: "Project environment",
+      value: status.phase,
+      titleWidth,
+      indent: 0,
+      focused: false,
+      selectable: false,
+      scrollbar: "",
+    },
+    {
+      id: `project-environment-setup:${operationId}`,
+      title: "Setup",
+      value: `${operationId} · ${progress}`,
+      titleWidth,
+      indent: 1,
+      focused: false,
+      selectable: false,
+      scrollbar: "",
+    },
+  ]
+  if (failure) {
+    rows.push({
+      id: "project-environment-setup-failure",
+      title: "Failure",
+      value: failure,
+      titleWidth,
+      indent: 1,
+      focused: false,
+      selectable: false,
+      scrollbar: "",
+    })
+  }
   return rows
 }
 

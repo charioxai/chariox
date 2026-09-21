@@ -22,8 +22,7 @@ use crate::local::{
 };
 use crate::provider::{ProviderProcessService, RuntimeProviderRun};
 use crate::runtime::agent_utility_executor::{
-    assert_agent_utility_can_run,
-    run_agent_utility_on_provider_run_for_project_environment_repair,
+    assert_agent_utility_can_run, run_agent_utility_on_provider_run_for_project_environment_repair,
 };
 use crate::runtime::project_environment_setup_utility::project_environment_setup_utility_missing_input_message;
 use crate::runtime::projection::DaemonConfigProjectionStore;
@@ -65,6 +64,22 @@ fn validation_passed_for_execution(
             .iter()
             .zip(definition.validation_commands.iter())
             .all(|(result, command)| result.command_digest == command_digest(command))
+}
+
+fn validate_local_worker_target(
+    config: &DaemonConfig,
+    target_worker_id: &str,
+    target_platform: &str,
+) -> Result<(), DaemonError> {
+    if target_worker_id != config.host_machine_id {
+        return Err(setup_error(
+            "requested worker does not match this kernel's worker identity",
+        ));
+    }
+    if target_platform != actual_worker_platform() {
+        return Err(setup_error("requested platform does not match this worker"));
+    }
+    Ok(())
 }
 
 #[path = "project_environment_setup_dispatch.rs"]
@@ -524,15 +539,16 @@ impl KernelRuntimeState {
                         Ok(setup) => {
                             self.reconcile_remote_project_environment_setup(&execution, setup)?
                         }
-                        Err(error) if is_missing_remote_setup_operation(&error) => self
-                            .owned
-                            .project_environment_setups
-                            .settle_cancel_without_worker(
-                                &request.operation_id,
-                                &request.session_id,
-                                caller_user_id,
-                            )
-                            .await?,
+                        Err(error) if is_missing_remote_setup_operation(&error) => {
+                            self.owned
+                                .project_environment_setups
+                                .settle_cancel_without_worker(
+                                    &request.operation_id,
+                                    &request.session_id,
+                                    caller_user_id,
+                                )
+                                .await?
+                        }
                         Err(error) => return Err(error),
                     };
                     return Ok(LocalDaemonResponse::ProjectEnvironmentSetupCancelled { status });
@@ -1042,14 +1058,11 @@ impl KernelRuntimeState {
         let remote_execution = agent.remote_execution().cloned();
         let is_remote_worker_dispatch = match config.kernel_runtime_role {
             KernelRuntimeRole::RemoteLeaseWorker => {
-                if request.target_worker_id != config.host_machine_id {
-                    return Err(setup_error(
-                        "requested worker does not match this kernel's worker identity",
-                    ));
-                }
-                if request.target_platform != actual_worker_platform() {
-                    return Err(setup_error("requested platform does not match this worker"));
-                }
+                validate_local_worker_target(
+                    &config,
+                    &request.target_worker_id,
+                    &request.target_platform,
+                )?;
                 if remote_execution.is_some() {
                     return Err(setup_error(
                         "a lease worker cannot execute setup for another remote worker",
@@ -1058,26 +1071,30 @@ impl KernelRuntimeState {
                 false
             }
             KernelRuntimeRole::General => {
-                let Some(remote_execution) = remote_execution.as_ref() else {
-                    return Err(setup_error(
-                        "project environment setup requires a dedicated worker or remote-backed agent",
-                    ));
-                };
-                if request.target_worker_id != remote_execution.worker_machine_id {
-                    return Err(setup_error(
-                        "requested worker does not match the remote agent binding",
-                    ));
+                if let Some(remote_execution) = remote_execution.as_ref() {
+                    if request.target_worker_id != remote_execution.worker_machine_id {
+                        return Err(setup_error(
+                            "requested worker does not match the remote agent binding",
+                        ));
+                    }
+                    if remote_execution.worker_kernel_id.trim().is_empty()
+                        || remote_execution.worker_machine_id.trim().is_empty()
+                        || remote_execution.leased_agent_id.trim().is_empty()
+                        || !remote_execution.relay_peer_protocol_compatible()
+                    {
+                        return Err(setup_error(
+                            "remote agent binding is incomplete or uses an obsolete relay protocol",
+                        ));
+                    }
+                    true
+                } else {
+                    validate_local_worker_target(
+                        &config,
+                        &request.target_worker_id,
+                        &request.target_platform,
+                    )?;
+                    false
                 }
-                if remote_execution.worker_kernel_id.trim().is_empty()
-                    || remote_execution.worker_machine_id.trim().is_empty()
-                    || remote_execution.leased_agent_id.trim().is_empty()
-                    || !remote_execution.relay_peer_protocol_compatible()
-                {
-                    return Err(setup_error(
-                        "remote agent binding is incomplete or uses an obsolete relay protocol",
-                    ));
-                }
-                true
             }
         };
         let definition = request
@@ -1149,20 +1166,24 @@ impl KernelRuntimeState {
                 &execution.operation_id,
                 attempt,
                 "worker_boundary_unavailable",
-                "project environment setup requires a confirmed disposable worker boundary",
+                "project environment setup requires a valid worker boundary",
             );
             return;
         }
         if !store.update(&execution.operation_id, attempt, |entry| {
             entry.status.phase = ProjectEnvironmentSetupPhase::Preparing;
-            entry.status.progress_percent = 10;
-            entry.status.message = Some(if execution.definition.as_ref().is_some_and(|definition| {
-                !definition.is_unattested_file_backed()
-            }) {
-                "kernel is reusing the stored project environment definition".to_string()
-            } else {
-                "utility agent is preparing the target environment".to_string()
-            });
+            entry.status.progress_percent = entry.status.progress_percent.max(10);
+            entry.status.message = Some(
+                if execution
+                    .definition
+                    .as_ref()
+                    .is_some_and(|definition| !definition.is_unattested_file_backed())
+                {
+                    "kernel is reusing the stored project environment definition".to_string()
+                } else {
+                    "utility agent is preparing the target environment".to_string()
+                },
+            );
         }) {
             return;
         }
@@ -1311,8 +1332,13 @@ impl KernelRuntimeState {
                 }
             }
             let _ = store.update(&execution.operation_id, attempt, |entry| {
-                entry.status.phase = ProjectEnvironmentSetupPhase::Preparing;
-                entry.status.progress_percent = 10;
+                // A reused definition may already have reached Validating.
+                // Utility repair must not move the observable operation back
+                // to an earlier active phase or regress its progress.
+                if entry.status.phase != ProjectEnvironmentSetupPhase::Validating {
+                    entry.status.phase = ProjectEnvironmentSetupPhase::Preparing;
+                }
+                entry.status.progress_percent = entry.status.progress_percent.max(10);
                 entry.status.validation = None;
                 entry.status.message =
                     Some("utility agent is repairing the target environment".to_string());
@@ -1470,7 +1496,7 @@ impl KernelRuntimeState {
             entry.execution.definition = Some(definition.clone());
             entry.status.definition_digest = Some(definition.digest());
             entry.status.phase = ProjectEnvironmentSetupPhase::Validating;
-            entry.status.progress_percent = 55;
+            entry.status.progress_percent = entry.status.progress_percent.max(55);
             entry.status.message =
                 Some("target definition recorded; running kernel validation".to_string());
         }) {
@@ -1498,10 +1524,9 @@ impl KernelRuntimeState {
             }
         }
         let _ = store.update(&execution.operation_id, attempt, |entry| {
-            entry.status.progress_percent = 65;
-            entry.status.message = Some(
-                "target inputs attested; applying repeatable setup steps".to_string(),
-            );
+            entry.status.progress_percent = entry.status.progress_percent.max(65);
+            entry.status.message =
+                Some("target inputs attested; applying repeatable setup steps".to_string());
         });
         match self
             .apply_definition_on_worker(&execution, attempt, &definition, &provider_run)
@@ -1536,27 +1561,24 @@ impl KernelRuntimeState {
         if store.is_cancelled(&execution.operation_id, attempt) {
             return;
         }
-        let inputs_match = match self.definition_inputs_match_on_worker(
-            &execution,
-            &definition,
-            &provider_run,
-        ) {
-            Ok(matches) => matches,
-            Err(_) => {
-                store.mark_failed(
-                    &execution.operation_id,
-                    attempt,
-                    "worker_input_attestation_unavailable",
-                    "kernel could not verify project inputs on the target worker",
-                );
-                return;
-            }
-        };
+        let inputs_match =
+            match self.definition_inputs_match_on_worker(&execution, &definition, &provider_run) {
+                Ok(matches) => matches,
+                Err(_) => {
+                    store.mark_failed(
+                        &execution.operation_id,
+                        attempt,
+                        "worker_input_attestation_unavailable",
+                        "kernel could not verify project inputs on the target worker",
+                    );
+                    return;
+                }
+            };
         let validation_passed =
             inputs_match && validation_passed_for_execution(&execution, &definition, &validation);
         let _ = store.update(&execution.operation_id, attempt, |entry| {
             entry.status.validation = Some(validation.clone());
-            entry.status.progress_percent = 85;
+            entry.status.progress_percent = entry.status.progress_percent.max(85);
             entry.status.message = Some(if validation_passed {
                 "target commands passed kernel validation".to_string()
             } else {
@@ -1614,7 +1636,7 @@ impl KernelRuntimeState {
         }
         let _ = store.update(&execution.operation_id, attempt, |entry| {
             entry.status.phase = ProjectEnvironmentSetupPhase::Ready;
-            entry.status.progress_percent = 100;
+            entry.status.progress_percent = entry.status.progress_percent.max(100);
             entry.status.retryable = false;
             entry.status.message =
                 Some("project environment is ready on the validated worker".to_string());
@@ -2390,13 +2412,25 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_local_worker_does_not_require_a_disposable_receipt_or_cloud_lease() {
+        let config = DaemonConfig::for_tests();
+        assert_eq!(config.kernel_runtime_role, KernelRuntimeRole::General);
+        assert!(config.cloud_relay.is_none());
+        ensure_worker_validation_boundary(&config)
+            .expect("the ordinary local worker must not require a Cloud boundary");
+        validate_local_worker_target(&config, &config.host_machine_id, &actual_worker_platform())
+            .expect("the local worker must accept its own target identity");
+
+        let error =
+            validate_local_worker_target(&config, "another-machine", &actual_worker_platform())
+                .expect_err("a local worker must reject a different target identity");
+        assert!(error.to_string().contains("worker identity"));
+    }
+
+    #[test]
     fn reusable_definition_must_match_the_requested_worker_platform() {
-        let error = validate_setup_definition(
-            execution().definition,
-            "linux-aarch64",
-            &[],
-        )
-        .expect_err("a recipe for another worker platform must be rejected");
+        let error = validate_setup_definition(execution().definition, "linux-aarch64", &[])
+            .expect_err("a recipe for another worker platform must be rejected");
         assert!(error
             .to_string()
             .contains("environment definition targets a different platform"));
@@ -2423,7 +2457,10 @@ mod tests {
             .expect("leased admission should normalize an equivalent legacy digest")
             .expect("definition should remain present");
         assert_eq!(home_admitted, admitted);
-        assert_eq!(admitted.inputs[0].sha256, format!("sha256:{}", "a".repeat(64)));
+        assert_eq!(
+            admitted.inputs[0].sha256,
+            format!("sha256:{}", "a".repeat(64))
+        );
         assert_eq!(admitted.validate(), Ok(()));
         assert!(!serde_json::to_string(&admitted)
             .expect("definition should serialize")
@@ -3022,10 +3059,136 @@ mod tests {
     }
 
     #[test]
-    fn home_kernel_cannot_enter_the_worker_validation_boundary() {
-        let error = ensure_worker_validation_boundary(&DaemonConfig::for_tests())
-            .expect_err("general home kernels must not execute project setup commands");
-        assert!(error.to_string().contains("dedicated worker kernel"));
+    fn active_setup_phase_transitions_cannot_move_backwards() {
+        assert!(validate_remote_setup_transition(
+            ProjectEnvironmentSetupPhase::Requested,
+            ProjectEnvironmentSetupPhase::Preparing,
+        )
+        .is_ok());
+        assert!(validate_remote_setup_transition(
+            ProjectEnvironmentSetupPhase::Preparing,
+            ProjectEnvironmentSetupPhase::Validating,
+        )
+        .is_ok());
+        for (current, next) in [
+            (
+                ProjectEnvironmentSetupPhase::Preparing,
+                ProjectEnvironmentSetupPhase::Requested,
+            ),
+            (
+                ProjectEnvironmentSetupPhase::Validating,
+                ProjectEnvironmentSetupPhase::Preparing,
+            ),
+            (
+                ProjectEnvironmentSetupPhase::Validating,
+                ProjectEnvironmentSetupPhase::Requested,
+            ),
+        ] {
+            let error = validate_remote_setup_transition(current, next)
+                .expect_err("an active setup phase must not move backwards");
+            assert!(error.to_string().contains("earlier phase"));
+        }
+        assert!(validate_remote_setup_transition(
+            ProjectEnvironmentSetupPhase::Validating,
+            ProjectEnvironmentSetupPhase::Ready,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn setup_progress_overflow_is_rejected_at_internal_and_serialized_boundaries() {
+        let status_value = serde_json::json!({
+            "operation_id": "setup-1",
+            "project_id": "project-1",
+            "session_id": "session-1",
+            "agent_id": "agent-1",
+            "worker_id": "machine-1",
+            "platform": "linux-x86_64",
+            "phase": "requested",
+            "attempt": 1,
+            "progress_percent": 101,
+            "definition_digest": null,
+            "validation": null,
+            "message": null,
+            "failure_code": null,
+            "failure_message": null,
+            "retryable": true,
+            "created_at_ms": 1,
+            "updated_at_ms": 2
+        });
+        let error = serde_json::from_value::<ProjectEnvironmentSetupStatus>(status_value)
+            .expect_err("serialized setup progress must reject values above 100");
+        assert!(error.to_string().contains("between 0 and 100"));
+
+        let mut status =
+            serde_json::from_value::<ProjectEnvironmentSetupStatus>(serde_json::json!({
+                "operation_id": "setup-1",
+                "project_id": "project-1",
+                "session_id": "session-1",
+                "agent_id": "agent-1",
+                "worker_id": "machine-1",
+                "platform": "linux-x86_64",
+                "phase": "requested",
+                "attempt": 1,
+                "progress_percent": 100,
+                "definition_digest": null,
+                "validation": null,
+                "message": null,
+                "failure_code": null,
+                "failure_message": null,
+                "retryable": true,
+                "created_at_ms": 1,
+                "updated_at_ms": 2
+            }))
+            .expect("a bounded setup status should deserialize");
+        status.progress_percent = 101;
+        let error = validate_setup_status_progress(&status)
+            .expect_err("internal setup progress must reject values above 100");
+        assert!(error.to_string().contains("between 0 and 100"));
+        assert!(serde_json::to_value(status).is_err());
+    }
+
+    #[test]
+    fn connected_worker_without_passing_validation_cannot_report_ready() {
+        let expected = execution();
+        let definition = expected.definition.as_ref().expect("test definition");
+        let command = &definition.validation_commands[0];
+        let status = ProjectEnvironmentSetupStatus {
+            operation_id: expected.operation_id.clone(),
+            project_id: expected.project_id.clone(),
+            session_id: expected.session_id.clone(),
+            agent_id: expected.agent_id.clone(),
+            worker_id: expected.target_worker_id.clone(),
+            platform: expected.target_platform.clone(),
+            phase: ProjectEnvironmentSetupPhase::Ready,
+            attempt: 1,
+            progress_percent: 100,
+            definition_digest: Some(definition.digest()),
+            validation: Some(ProjectEnvironmentValidation {
+                worker_id: expected.target_worker_id.clone(),
+                platform: expected.target_platform.clone(),
+                commands: vec![ProjectEnvironmentCommandResult {
+                    command_digest: command_digest(command),
+                    exit_code: 1,
+                    stdout_bytes: 0,
+                    stderr_bytes: 1,
+                }],
+            }),
+            message: Some("worker reports ready".to_string()),
+            failure_code: None,
+            failure_message: None,
+            retryable: false,
+            created_at_ms: 1,
+            updated_at_ms: 2,
+        };
+        assert!(!validation_passed_for_execution(
+            &expected,
+            definition,
+            status.validation.as_ref().expect("validation result"),
+        ));
+        let error = validate_remote_setup_status(&expected, 1, &status, Some(definition))
+            .expect_err("a connected worker without passing validation must not become Ready");
+        assert!(error.to_string().contains("measured target validation"));
     }
 
     #[test]

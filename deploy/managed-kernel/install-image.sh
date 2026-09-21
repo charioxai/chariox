@@ -15,6 +15,9 @@ expected_release_digest=$2
 trusted_public_key=$3
 install_root=${CHARIOX_IMAGE_INSTALL_ROOT:-}
 state_root=$install_root/var/lib/chariox
+managed_home=$install_root/home/chariox
+managed_state=$managed_home/.chariox
+legacy_home=$state_root/home
 script_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 staging_root=$(mktemp -d "${TMPDIR:-/tmp}/chariox-image-install.XXXXXX")
 chmod 0700 "$staging_root"
@@ -89,24 +92,208 @@ install_lock=${CHARIOX_IMAGE_INSTALL_LOCK:-/run/lock/chariox-managed-image-insta
 exec 9>"$install_lock"
 flock 9
 
-if [ -L "$state_root" ] || { [ -e "$state_root" ] && [ ! -d "$state_root" ]; }; then
-  echo "managed kernel state root is not a directory" >&2
-  exit 1
-fi
-if [ -L "$state_root/home" ] || { [ -e "$state_root/home" ] && [ ! -d "$state_root/home" ]; }; then
-  echo "managed kernel home is not a directory" >&2
-  exit 1
-fi
-if [ -d "$state_root" ]; then
-  if ! state_entry=$(find "$state_root" -mindepth 1 ! -path "$state_root/home" -print -quit); then
+path_exists() {
+  [ -e "$1" ] || [ -L "$1" ]
+}
+
+require_real_directory() {
+  directory=$1
+  label=$2
+  if [ -L "$directory" ] || { [ -e "$directory" ] && [ ! -d "$directory" ]; }; then
+    echo "$label is not a real directory" >&2
+    exit 1
+  fi
+}
+
+ensure_directory_parent() {
+  directory=$1
+  label=$2
+  if path_exists "$directory"; then
+    require_real_directory "$directory" "$label"
+  else
+    install -d -o root -g root -m 0755 "$directory"
+  fi
+}
+
+require_real_ancestor_chain() {
+  ancestor_path=$1
+  ancestor_label=$2
+  case "$ancestor_path" in
+    /*/../*|/*/./*|*/..|*/.)
+      echo "$ancestor_label contains an unsafe ancestor" >&2
+      exit 1
+      ;;
+    /*) ;;
+    *)
+      echo "$ancestor_label must be an absolute path" >&2
+      exit 1
+      ;;
+  esac
+  while :; do
+    if [ -L "$ancestor_path" ] || { [ -e "$ancestor_path" ] && [ ! -d "$ancestor_path" ]; }; then
+      echo "$ancestor_label ancestor is not a real directory: $ancestor_path" >&2
+      exit 1
+    fi
+    [ "$ancestor_path" = / ] && break
+    ancestor_path=${ancestor_path%/*}
+    [ -n "$ancestor_path" ] || ancestor_path=/
+  done
+}
+
+require_root_private_file() {
+  state_path=$1
+  state_label=$2
+  if [ -L "$state_path" ] || [ ! -f "$state_path" ]; then
+    echo "$state_label is not a regular file" >&2
+    exit 1
+  fi
+  state_owner=$(stat -c %u "$state_path") || {
+    echo "$state_label owner could not be inspected" >&2
+    exit 1
+  }
+  [ "$state_owner" = 0 ] || {
+    echo "$state_label must be root-owned" >&2
+    exit 1
+  }
+  state_mode=$(stat -c %a "$state_path") || {
+    echo "$state_label mode could not be inspected" >&2
+    exit 1
+  }
+  [ "$state_mode" = 600 ] || {
+    echo "$state_label must have mode 0600" >&2
+    exit 1
+  }
+  state_writable=$(find "$state_path" -maxdepth 0 -perm /022 -print -quit) || {
+    echo "$state_label permissions could not be inspected" >&2
+    exit 1
+  }
+  [ -z "$state_writable" ] || {
+    echo "$state_label is writable by group or other" >&2
+    exit 1
+  }
+}
+
+repair_root_control_file() {
+  control_path=$1
+  control_label=$2
+  if ! path_exists "$control_path"; then
+    return 0
+  fi
+  if [ -L "$control_path" ] || [ ! -f "$control_path" ]; then
+    echo "$control_label is not a real regular file" >&2
+    exit 1
+  fi
+  chown root:root -- "$control_path"
+  chmod 0600 -- "$control_path"
+}
+
+repair_root_control_tree() {
+  control_path=$1
+  control_label=$2
+  if ! path_exists "$control_path"; then
+    return 0
+  fi
+  require_real_directory "$control_path" "$control_label"
+  control_symlink=$(find "$control_path" -type l -print -quit) || {
+    echo "$control_label could not be inspected" >&2
+    exit 1
+  }
+  [ -z "$control_symlink" ] || {
+    echo "$control_label contains a symbolic link" >&2
+    exit 1
+  }
+  chown -R root:root -- "$control_path"
+  find "$control_path" -type d -exec chmod 0700 {} + || {
+    echo "$control_label directory modes could not be repaired" >&2
+    exit 1
+  }
+  find "$control_path" -type f -exec chmod 0600 {} + || {
+    echo "$control_label file modes could not be repaired" >&2
+    exit 1
+  }
+}
+
+repair_root_control_state() {
+  repair_root_control_tree "$state_root/managed" "managed control state"
+  repair_root_control_tree "$state_root/disposable-worker" "disposable-worker control state"
+  repair_root_control_tree "$state_root/kernels" "managed kernel presence state"
+  repair_root_control_file "$state_root/managed-bootstrap.json" "managed bootstrap state"
+  repair_root_control_file "$state_root/disposable-worker-bootstrap.json" "disposable-worker bootstrap state"
+}
+
+validate_state_root_entries() {
+  if ! path_exists "$state_root"; then
+    return 0
+  fi
+  require_real_directory "$state_root" "managed kernel state root"
+  if ! unknown_state_entry=$(find "$state_root" -mindepth 1 -maxdepth 1 \
+    ! \( \
+      -name managed-bootstrap.json -o \
+      -name disposable-worker-bootstrap.json -o \
+      -name managed -o \
+      -name disposable-worker -o \
+      -name kernels -o \
+      -name home -o \
+      -name home-migration.json -o \
+      -name home-migration-complete -o \
+      -name provider-home -o \
+      -name release-verification \
+    \) -print -quit); then
     echo "managed kernel state root could not be inspected" >&2
     exit 1
   fi
-  if [ -n "$state_entry" ]; then
-    echo "managed kernel state root is not pristine" >&2
+  if [ -n "$unknown_state_entry" ]; then
+    echo "managed kernel state root contains an unrecognized entry" >&2
     exit 1
   fi
-fi
+}
+
+migrate_legacy_home_transaction() {
+  migration_journal=$state_root/home-migration.json
+  migration_complete=$state_root/home-migration-complete
+  migration_helper=$script_root/managed-kernel-home-migration.mjs
+
+  require_real_ancestor_chain "$state_root" "managed kernel state root"
+  require_real_ancestor_chain "$managed_home" "managed service-account home"
+
+  if path_exists "$migration_complete"; then
+    require_root_private_file "$migration_complete" "managed home migration completion marker"
+    if ! [ -f "$migration_journal" ]; then
+      echo "managed home migration completion marker has no journal" >&2
+      exit 1
+    fi
+    migration_complete_value=$(cat "$migration_complete") || {
+      echo "managed home migration completion marker could not be read" >&2
+      exit 1
+    }
+    migration_complete_lines=$(wc -l < "$migration_complete" | tr -d ' ') || {
+      echo "managed home migration completion marker could not be inspected" >&2
+      exit 1
+    }
+    if [ "$migration_complete_lines" -ne 1 ] || [ "$migration_complete_value" != complete ]; then
+      echo "managed home migration completion marker is invalid" >&2
+      exit 1
+    fi
+  fi
+
+  if path_exists "$migration_journal"; then
+    require_root_private_file "$migration_journal" "managed home migration journal"
+  else
+    node "$migration_helper" plan \
+      "$migration_journal" \
+      "$state_root" "$legacy_home" "$managed_home" "$managed_state" \
+      "$chariox_uid" "$chariox_gid"
+    require_root_private_file "$migration_journal" "managed home migration journal"
+  fi
+
+  node "$migration_helper" apply \
+    "$migration_journal" \
+    "$state_root" "$legacy_home" "$managed_home" "$managed_state" \
+    "$chariox_uid" "$chariox_gid"
+  repair_root_control_state
+  require_root_private_file "$migration_journal" "managed home migration journal"
+  require_root_private_file "$migration_complete" "managed home migration completion marker"
+}
 
 if ! getent group chariox >/dev/null 2>&1; then
   groupadd --system chariox
@@ -118,9 +305,14 @@ if ! getent group chariox-docker >/dev/null 2>&1; then
   groupadd --system chariox-docker
 fi
 if ! id chariox >/dev/null 2>&1; then
-  useradd --system --gid chariox --home-dir /var/lib/chariox/home --shell /usr/sbin/nologin chariox
+  useradd --system --gid chariox --home-dir /home/chariox --shell /usr/sbin/nologin chariox
 fi
-if [ "$(getent passwd chariox | cut -d: -f6)" != "/var/lib/chariox/home" ]; then
+chariox_home_from_passwd=$(getent passwd chariox | cut -d: -f6)
+if [ "$chariox_home_from_passwd" = "/var/lib/chariox/home" ]; then
+  usermod --home /home/chariox chariox
+  chariox_home_from_passwd=$(getent passwd chariox | cut -d: -f6)
+fi
+if [ "$chariox_home_from_passwd" != "/home/chariox" ]; then
   echo "existing chariox user has an incompatible home directory" >&2
   exit 1
 fi
@@ -128,6 +320,22 @@ if [ "$(id -gn chariox)" != "chariox" ]; then
   echo "existing chariox user has an incompatible primary group" >&2
   exit 1
 fi
+chariox_uid=$(id -u chariox)
+chariox_gid=$(id -g chariox)
+case "$chariox_uid:$chariox_gid" in
+  ''|*[!0-9:]*|0:*|*:0)
+    echo "invalid managed service-account uid or gid" >&2
+    exit 1
+    ;;
+esac
+
+require_real_ancestor_chain "$state_root" "managed kernel state root"
+require_real_ancestor_chain "$managed_home" "managed service-account home"
+install -d -o root -g root -m 0750 "$state_root"
+validate_state_root_entries
+migrate_legacy_home_transaction
+validate_state_root_entries
+
 if ! id chariox-docker >/dev/null 2>&1; then
   useradd --system --gid chariox-docker --home-dir /var/lib/chariox-docker/home --shell /usr/sbin/nologin chariox-docker
 fi
@@ -145,7 +353,7 @@ case "$docker_uid" in
 esac
 usermod --append --groups chariox-slice chariox
 
-install -d -o chariox -g chariox -m 0700 "$state_root" "$state_root/home"
+install -d -o chariox -g chariox -m 0700 "$managed_home" "$managed_state"
 install -d -o chariox-docker -g chariox-docker -m 0700 \
   "$install_root/var/lib/chariox-docker" \
   "$install_root/var/lib/chariox-docker/home"
