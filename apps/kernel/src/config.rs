@@ -294,15 +294,6 @@ impl DaemonConfig {
         let index = TEST_SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
         let mut config = Self::new("daemon-test", "machine-test", "tester");
         config.kernel_websocket_write_delay_ms = 0;
-        // Keep the orphan-provider scan scoped to this test process. Production
-        // kernels use their configured MCP port as the ownership marker, so a
-        // fixed test port could make a shared-host Codex app-server look like
-        // an orphan owned by the test kernel.
-        let test_mcp_port_offset = (u64::from(std::process::id())
-            .wrapping_mul(997)
-            .wrapping_add(index)
-            % 10_000) as u16;
-        config.runtime_mcp_port = 45_000 + test_mcp_port_offset;
         config.local_socket_path = std::env::temp_dir().join("chariox-tests").join(format!(
             "daemon-test-{}-{}.sock",
             std::process::id(),

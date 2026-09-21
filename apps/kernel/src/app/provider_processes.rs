@@ -550,6 +550,7 @@ fn owned_orphan_provider_process_ids_from_ps_output(
         .map(|process| process.process_group_id)
         .filter(|process_group_id| *process_group_id > 0)
         .collect::<BTreeSet<_>>();
+    let current_process_ancestors = process_ancestor_ids(current_pid, &processes);
 
     processes
         .values()
@@ -557,6 +558,7 @@ fn owned_orphan_provider_process_ids_from_ps_output(
             if process.pid == current_pid
                 || tracked_pids.contains(&process.pid)
                 || tracked_process_group_ids.contains(&process.process_group_id)
+                || current_process_ancestors.contains(&process.pid)
                 || has_protected_process_ancestor(process, &processes, tracked_pids, current_pid)
                 || process.age_secs < min_age_secs
                 || !process.command.contains("codex app-server")
@@ -568,6 +570,24 @@ fn owned_orphan_provider_process_ids_from_ps_output(
             Some(process.pid)
         })
         .collect()
+}
+
+fn process_ancestor_ids(
+    current_pid: u32,
+    processes: &BTreeMap<u32, ProviderProcessSnapshot>,
+) -> BTreeSet<u32> {
+    let mut ancestors = BTreeSet::new();
+    let mut parent_pid = processes
+        .get(&current_pid)
+        .map(|process| process.parent_pid)
+        .unwrap_or_default();
+    while parent_pid > 0 && ancestors.insert(parent_pid) {
+        let Some(parent) = processes.get(&parent_pid) else {
+            break;
+        };
+        parent_pid = parent.parent_pid;
+    }
+    ancestors
 }
 
 fn has_protected_process_ancestor(
@@ -704,6 +724,28 @@ mod tests {
         );
 
         assert_eq!(orphan_ids, vec![400]);
+    }
+
+    #[test]
+    fn orphan_scan_preserves_processes_ancestors_of_the_current_kernel() {
+        let ps_output = format!(
+            "600 1 600 45 /usr/bin/node\n\
+             601 600 601 44 /opt/codex {}\n\
+             999 601 999 1 test-kernel\n\
+             700 1 700 43 /opt/codex {}\n",
+            codex_command(50001),
+            codex_command(50002),
+        );
+
+        let orphan_ids = owned_orphan_provider_process_ids_from_ps_output(
+            &ps_output,
+            999,
+            &BTreeSet::new(),
+            30_000,
+            MCP_URL,
+        );
+
+        assert_eq!(orphan_ids, vec![700]);
     }
 
     #[test]
