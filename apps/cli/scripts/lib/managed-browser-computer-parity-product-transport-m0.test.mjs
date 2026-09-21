@@ -762,6 +762,48 @@ test("production persistence defaults to authoritative slice save, stop, and res
   )
 })
 
+test("production persistence routes home-owned lifecycle and inventory through the display client", async () => {
+  const { transport, client, workerRequests } = createCleanupTransport({
+    inventoryUnavailableWhenStopped: true,
+    rejectWorkerLifecycleRequests: true,
+    useSeparateScopedClient: true,
+  })
+  const binding = {
+    kernelId: "kernel-1",
+    machineId: "machine-1",
+    roomId: "room-1",
+    environmentId: "environment-1",
+  }
+  await transport.run("selkies.create", {
+    runId: "run-display-client-persistence",
+    kernelOwnedDefault: true,
+    displayBackend: null,
+    binding,
+  })
+  const result = await transport.run("selkies.persistence", { binding })
+  assert.equal(result.saved, true)
+  const homeOwnedVariants = [
+    "GetSlice",
+    "SaveSliceState",
+    "StopSlice",
+    "StartSlice",
+    "GetSliceStateStatus",
+    "GetRoomEnvironmentResourceInventory",
+  ]
+  assert.deepEqual(
+    workerRequests.filter((request) => homeOwnedVariants.some((variant) => Object.hasOwn(request, variant))),
+    [],
+  )
+  const displayVariants = client.requests
+    .filter((request) => homeOwnedVariants.some((variant) => Object.hasOwn(request, variant)))
+    .map((request) => Object.keys(request)[0])
+  for (const variant of homeOwnedVariants) assert.equal(displayVariants.includes(variant), true, variant)
+  assert.equal(displayVariants.filter((variant) => variant === "SaveSliceState").length, 1)
+  assert.equal(displayVariants.filter((variant) => variant === "StopSlice").length, 1)
+  assert.equal(displayVariants.filter((variant) => variant === "StartSlice").length >= 1, true)
+  assert.equal(displayVariants.filter((variant) => variant === "GetSliceStateStatus").length, 1)
+})
+
 test("factory ignores runbook Docker expectations and exposes the exact kernel lifecycle plan", async () => {
   const runbookConfig = {
     expected: { roomId: "room-1", environmentId: "environment-1" },
@@ -860,6 +902,7 @@ function createCleanupTransport({
   reconnectActionSnapshots = null,
   reconnectBrowserSnapshots = null,
   inventoryUnavailableWhenStopped = false,
+  rejectWorkerLifecycleRequests = false,
   telemetrySamples = null,
   evidenceRoot = "/proc/managed-parity-m0-evidence-never-present",
   parityConfig = null,
@@ -880,6 +923,7 @@ function createCleanupTransport({
   const activeAttachmentIds = new Set()
   const detachAttempts = []
   const requests = []
+  const workerRequests = []
   let clientClosed = false
   let closeReceiverCorrect = false
   let pendingDelayedRequestReject = null
@@ -1159,6 +1203,17 @@ function createCleanupTransport({
   const scopedClient = {
     async send(request) {
       if (scopedClosed) throw new Error("scoped client disconnected")
+      workerRequests.push(request)
+      if (rejectWorkerLifecycleRequests && [
+        "GetSlice",
+        "SaveSliceState",
+        "StopSlice",
+        "StartSlice",
+        "GetSliceStateStatus",
+        "GetRoomEnvironmentResourceInventory",
+      ].some((variant) => Object.hasOwn(request, variant))) {
+        throw new Error("worker must not receive home-owned lifecycle request")
+      }
       return client.send(request)
     },
     async close() {
@@ -1211,6 +1266,7 @@ function createCleanupTransport({
     isDelayedRequestRetired: () => delayedRequestRetired,
     detachAttempts,
     requests,
+    workerRequests,
     activeAgentIds,
   }
 }

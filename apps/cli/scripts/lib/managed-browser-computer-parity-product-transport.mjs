@@ -241,11 +241,9 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
   const telemetryAdapter = resourceTelemetry ?? managedResourceTelemetry ?? resourceTelemetryAdapter
   const persistenceAdapter = persistence
     ?? persistenceTransport
-    ?? (firstCallable(identityClient, ["describePersistenceMutations", "runPersistenceMutations"])
-      ? identityClient
+    ?? (firstCallable(displayClient, ["describePersistenceMutations", "runPersistenceMutations"])
+      ? displayClient
       : createKernelPersistenceAdapter({
-        clientRef: activeClientRef,
-        identityClientRef: activeIdentityClientRef,
         client: displayClient,
         identityClient: displayClient,
         requestApi,
@@ -340,8 +338,8 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
     async describePersistenceMutations(request, { signal } = {}) {
       return withDeadline(
         (deadlineSignal) => describePersistenceMutations({
-          client: activeClientRef.current,
-          identityClient: activeIdentityClientRef.current,
+          client: displayClient,
+          identityClient: displayClient,
           requestApi,
           targetKernelRef,
           targetMachineRef,
@@ -461,8 +459,8 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
       if (step === "selkies.persistence") {
         return withDeadline(
           (deadlineSignal) => runPersistenceMutations({
-            client: activeClientRef.current,
-            identityClient: activeIdentityClientRef.current,
+            client: displayClient,
+            identityClient: displayClient,
             requestApi,
             targetKernelRef,
             targetMachineRef,
@@ -523,13 +521,7 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
   return transport
 }
 
-function createKernelPersistenceAdapter({
-  client,
-  identityClient,
-  clientRef = null,
-  identityClientRef = null,
-  requestApi,
-}) {
+function createKernelPersistenceAdapter({ client, identityClient, requestApi }) {
   if (typeof requestApi?.saveSliceStateRequest !== "function"
     || typeof requestApi?.stopSliceRequest !== "function"
     || typeof requestApi?.startSliceRequest !== "function"
@@ -545,8 +537,12 @@ function createKernelPersistenceAdapter({
     async run(input) {
       return executeKernelPersistence({
         ...input,
-        client: input.client ?? clientRef?.current ?? client,
-        identityClient: input.identityClient ?? identityClientRef?.current ?? identityClient,
+        // runPersistenceMutations supplies display-client wrappers so the
+        // request ledger captures the exact awaited public lifecycle replies.
+        // Those wrappers are already selected from the home/display client;
+        // never fall back to the target-worker client here.
+        client: input?.client ?? client,
+        identityClient: input?.identityClient ?? identityClient,
         requestApi,
       })
     },
