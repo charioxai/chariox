@@ -78,11 +78,12 @@ pub(crate) fn ensure_codex_account_endpoint(
     for name in crate::account_profile::provider_auth_env_vars("codex") {
         command.env_remove(name);
     }
-    let mut child = crate::process_spawn::spawn_command(command)
-        .map_err(|error| DaemonError::LocalTransport {
+    let mut child = crate::process_spawn::spawn_command(command).map_err(|error| {
+        DaemonError::LocalTransport {
             operation: "ensure_codex_account_endpoint",
             message: format!("failed to start profile-specific Codex app-server: {error}"),
-        })?;
+        }
+    })?;
     let deadline = Instant::now() + CODEX_ENDPOINT_STARTUP_TIMEOUT;
     loop {
         if codex_endpoint_is_healthy(&endpoint) {

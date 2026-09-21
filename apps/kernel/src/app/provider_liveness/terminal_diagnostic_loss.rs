@@ -76,7 +76,10 @@ fn app_resize_liveness_reconciliation_preserves_pty_terminal_diagnostic() {
     {
         crate::session::PromptSubmissionOutcome::Started { prompt } => prompt.id().to_string(),
         crate::session::PromptSubmissionOutcome::Queued { prompt } => {
-            panic!("diagnostic prompt should start, got queued prompt {}", prompt.id())
+            panic!(
+                "diagnostic prompt should start, got queued prompt {}",
+                prompt.id()
+            )
         }
     };
     let active_prompt_id = app

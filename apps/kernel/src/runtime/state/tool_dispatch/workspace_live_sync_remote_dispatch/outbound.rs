@@ -196,12 +196,8 @@ fn remote_workspace_live_sync_relay_error_is_retryable(error: &DaemonError) -> b
     ) {
         return true;
     }
-    let structured_transient_code = code.is_some_and(|code| {
-        matches!(
-            code,
-            "target_not_connected" | "target_disconnected"
-        )
-    });
+    let structured_transient_code =
+        code.is_some_and(|code| matches!(code, "target_not_connected" | "target_disconnected"));
     let message = message.to_ascii_lowercase();
     let transient_message = [
         "timed out",

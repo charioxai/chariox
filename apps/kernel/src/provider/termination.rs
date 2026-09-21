@@ -189,9 +189,7 @@ pub(crate) fn provider_launch_failure_diagnostic(
         detail.push_str(pty_tail);
     }
     let detail = sanitize_provider_diagnostic(&detail);
-    format!(
-        "Provider launch `{provider_run_id}` failed before it became ready: {detail}"
-    )
+    format!("Provider launch `{provider_run_id}` failed before it became ready: {detail}")
 }
 
 fn sanitize_signal_name(signal_name: &str) -> Option<&str> {

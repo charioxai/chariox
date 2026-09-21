@@ -1108,7 +1108,9 @@ fn validate_resource_identities(identities: &[String], kind: &str) -> Result<(),
     let mut unique = BTreeSet::new();
     for identity in identities {
         if identity.trim().is_empty() {
-            return Err(format!("browser controller returned an empty {kind} identity"));
+            return Err(format!(
+                "browser controller returned an empty {kind} identity"
+            ));
         }
         if !unique.insert(identity) {
             return Err(format!(
@@ -2020,10 +2022,9 @@ mod tests {
 
     use super::{
         BrowserControllerBrowserSnapshot, BrowserControllerProcessBackend,
-        BrowserControllerProcessHealth,
-        BrowserControllerProcessState, BrowserControllerProcessStdioBackend,
-        BrowserControllerProcessStore, BrowserControllerProcessSupervisor,
-        CONTROLLER_RESTARTED_BEFORE_OPERATION,
+        BrowserControllerProcessHealth, BrowserControllerProcessState,
+        BrowserControllerProcessStdioBackend, BrowserControllerProcessStore,
+        BrowserControllerProcessSupervisor, CONTROLLER_RESTARTED_BEFORE_OPERATION,
     };
     use crate::runtime::browser_controller_action::{BrowserDialogAction, BrowserLocatorAction};
     use crate::session::CanonicalViewport;
@@ -2479,8 +2480,8 @@ mod tests {
                 vec!["profile-sha256-41", "profile-sha256-42"],
             ),
         ] {
-            let snapshot: BrowserControllerBrowserSnapshot = serde_json::from_value(
-                serde_json::json!({
+            let snapshot: BrowserControllerBrowserSnapshot =
+                serde_json::from_value(serde_json::json!({
                     "browser_generation": 1,
                     "event_cursor": 1,
                     "tabs": [],
@@ -2496,9 +2497,8 @@ mod tests {
                         "desktop_pixel_width": 1280,
                         "desktop_pixel_height": 720,
                     },
-                }),
-            )
-            .expect("resource inventory response shape parses");
+                }))
+                .expect("resource inventory response shape parses");
             assert!(snapshot.validate(&viewport).is_err());
         }
     }

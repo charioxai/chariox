@@ -77,13 +77,10 @@ pub(crate) enum ProviderLifecycleFailureStage {
 
 #[cfg(test)]
 fn provider_lifecycle_failure_injections(
-) -> &'static std::sync::Mutex<
-    std::collections::BTreeSet<(String, ProviderLifecycleFailureStage)>,
-> {
+) -> &'static std::sync::Mutex<std::collections::BTreeSet<(String, ProviderLifecycleFailureStage)>>
+{
     static INJECTIONS: std::sync::OnceLock<
-        std::sync::Mutex<
-            std::collections::BTreeSet<(String, ProviderLifecycleFailureStage)>,
-        >,
+        std::sync::Mutex<std::collections::BTreeSet<(String, ProviderLifecycleFailureStage)>>,
     > = std::sync::OnceLock::new();
     INJECTIONS.get_or_init(Default::default)
 }
@@ -96,10 +93,7 @@ pub(crate) struct ProviderLifecycleFailureInjection {
 
 #[cfg(test)]
 impl ProviderLifecycleFailureInjection {
-    pub(crate) fn install(
-        provider_run_id: &str,
-        stage: ProviderLifecycleFailureStage,
-    ) -> Self {
+    pub(crate) fn install(provider_run_id: &str, stage: ProviderLifecycleFailureStage) -> Self {
         provider_lifecycle_failure_injections()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

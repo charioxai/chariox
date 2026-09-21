@@ -88,9 +88,9 @@ use subscriptions::{
 };
 
 pub use connection_state::RelayClientState;
+pub(crate) use connection_state::RelayDisplayTunnelClientEvent;
 #[cfg(test)]
 pub(crate) use connection_state::TestPeerRequestObservation;
-pub(crate) use connection_state::RelayDisplayTunnelClientEvent;
 pub(crate) use connection_state::{RelayDisplayTunnelTarget, RelayDisplayTunnelTargetKind};
 #[cfg(test)]
 pub use connector::{

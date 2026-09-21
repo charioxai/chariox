@@ -1649,12 +1649,9 @@ pub(crate) async fn send_authenticated_peer_request_for_test(
 ) -> Result<RelayPeerResponse, RelayError> {
     let plaintext = serde_json::to_vec(&request)
         .map_err(|error| relay_error("test_peer_request_failed", &error.to_string(), false))?;
-    let encrypted_request = relay_crypto::encrypt_payload_for_peer(
-        source_private_key,
-        target_public_key,
-        &plaintext,
-    )
-    .map_err(|error| relay_error("test_peer_request_failed", &error.to_string(), false))?;
+    let encrypted_request =
+        relay_crypto::encrypt_payload_for_peer(source_private_key, target_public_key, &plaintext)
+            .map_err(|error| relay_error("test_peer_request_failed", &error.to_string(), false))?;
     let outcome = handle_daemon_peer_request(
         router,
         state,
@@ -1674,11 +1671,9 @@ pub(crate) async fn send_authenticated_peer_request_for_test(
             false,
         )
     })?;
-    let decrypted = relay_crypto::decrypt_payload_for_private_key(
-        source_private_key,
-        &encrypted_response,
-    )
-    .map_err(|error| relay_error("test_peer_request_failed", &error.to_string(), false))?;
+    let decrypted =
+        relay_crypto::decrypt_payload_for_private_key(source_private_key, &encrypted_response)
+            .map_err(|error| relay_error("test_peer_request_failed", &error.to_string(), false))?;
     serde_json::from_slice(&decrypted.plaintext)
         .map_err(|error| relay_error("test_peer_request_failed", &error.to_string(), false))
 }

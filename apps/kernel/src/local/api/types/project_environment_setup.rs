@@ -31,8 +31,8 @@ where
 pub use crate::session::{
     ProjectEnvironmentDefinition, ProjectEnvironmentDefinitionOrigin,
     ProjectEnvironmentDefinitionSource, ProjectEnvironmentInput, ProjectEnvironmentInputKind,
-    ProjectEnvironmentPathBase, ProjectEnvironmentPathEntry,
-    ProjectEnvironmentSetupStep, ProjectEnvironmentSetupStepKind,
+    ProjectEnvironmentPathBase, ProjectEnvironmentPathEntry, ProjectEnvironmentSetupStep,
+    ProjectEnvironmentSetupStepKind,
 };
 
 pub use crate::session::PROJECT_ENVIRONMENT_DEFINITION_SCHEMA_VERSION;

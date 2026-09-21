@@ -11,8 +11,7 @@ pub(crate) fn ensure_public_request_allowed(
     }
     if matches!(
         request,
-        LocalDaemonRequest::GetDaemonHealth(_)
-            | LocalDaemonRequest::GetKernelResourceTelemetry(_)
+        LocalDaemonRequest::GetDaemonHealth(_) | LocalDaemonRequest::GetKernelResourceTelemetry(_)
     ) {
         return Ok(());
     }

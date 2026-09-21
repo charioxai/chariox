@@ -10,9 +10,7 @@ use crate::error::DaemonError;
 use crate::prompt_assembly::PromptEnvelope;
 use crate::terminal::TerminalOutputKind;
 
-use super::claude::{
-    claude_args_with_execution_config, materialize_runtime_claude_mcp_config,
-};
+use super::claude::{claude_args_with_execution_config, materialize_runtime_claude_mcp_config};
 use super::managed_isolation::expose_runtime_directory_in_managed_namespace;
 use super::{
     AgentExecutionMode, AgentPermissionLevel, ProviderPromptSignalBatch, RuntimeProviderRun,
@@ -735,15 +733,10 @@ set -eu
 } >> "$CLAUDE_TEST_TRACE"
 cat >/dev/null
 "#;
-        let request = LaunchProviderRequest::new(
-            "session-1",
-            "claude",
-            "claude",
-            "default",
-            "sonnet",
-        )
-        .with_execution_mode(AgentExecutionMode::Build)
-        .with_permission_level(AgentPermissionLevel::Yolo);
+        let request =
+            LaunchProviderRequest::new("session-1", "claude", "claude", "default", "sonnet")
+                .with_execution_mode(AgentExecutionMode::Build)
+                .with_permission_level(AgentPermissionLevel::Yolo);
         let run = RuntimeProviderRun::new(
             "provider-run-plan-restart",
             &request,
@@ -769,7 +762,8 @@ cat >/dev/null
             },
         );
 
-        let mut binding = initialize_claude_runtime(&run).expect("fixture Claude child should start");
+        let mut binding =
+            initialize_claude_runtime(&run).expect("fixture Claude child should start");
         let _ = wait_for_trace_lines(&trace, 1);
 
         let mut plan_run = run.clone();

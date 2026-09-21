@@ -242,9 +242,7 @@ pub(super) fn worker_validation_environment_with_home_and_definition(
             .get("PATH")
             .map(String::as_str)
             .unwrap_or_default();
-        let base_path = provider_run
-            .preparation_base_path()
-            .unwrap_or(current_path);
+        let base_path = provider_run.preparation_base_path().unwrap_or(current_path);
         environment.insert(
             "PATH".to_string(),
             worker_preparation_path(preparation_home, workspace_root, base_path, definition),
@@ -785,8 +783,7 @@ mod tests {
 
         let old_tool = old_bin.join("project-tool");
         let fresh_tool = fresh_bin.join("project-tool");
-        std::fs::write(&old_tool, b"#!/bin/sh\nprintf '%s' old\n")
-            .expect("old tool should exist");
+        std::fs::write(&old_tool, b"#!/bin/sh\nprintf '%s' old\n").expect("old tool should exist");
         std::fs::set_permissions(&old_tool, std::fs::Permissions::from_mode(0o755))
             .expect("old tool should be executable");
         std::fs::write(&fresh_tool, b"#!/bin/sh\nprintf '%s' fresh\n")
@@ -879,8 +876,8 @@ mod tests {
         let fresh_path = fresh_environment
             .get("PATH")
             .expect("fresh definition environment should have PATH");
-        let fresh_entries = std::env::split_paths(std::ffi::OsStr::new(fresh_path))
-            .collect::<Vec<_>>();
+        let fresh_entries =
+            std::env::split_paths(std::ffi::OsStr::new(fresh_path)).collect::<Vec<_>>();
         assert!(
             !fresh_entries.contains(&old_bin),
             "a removed definition path must not survive a provider rebind: {fresh_entries:?}"

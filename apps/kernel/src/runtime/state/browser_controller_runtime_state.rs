@@ -1,6 +1,6 @@
 use crate::error::DaemonError;
-use crate::runtime::browser_controller_event::{RoomBrowserEvent, RoomBrowserEventBatch};
 use crate::local::RoomEnvironmentResourceInventory;
+use crate::runtime::browser_controller_event::{RoomBrowserEvent, RoomBrowserEventBatch};
 use crate::runtime::browser_controller_process::{
     BrowserControllerProcessSnapshot, BrowserControllerProcessState,
 };
@@ -273,7 +273,9 @@ impl KernelRuntimeState {
         }
         let environment = self
             .room_environment_snapshot(session_id)
-            .map_err(|error| environment_runtime_error("environment.resource_inventory.get", error))?;
+            .map_err(|error| {
+                environment_runtime_error("environment.resource_inventory.get", error)
+            })?;
         let RoomBrowserControllerResult::Reconciled {
             reconciliation: Some(reconciliation),
         } = self

@@ -300,7 +300,8 @@ impl ProviderProcessService {
                 operation: "restore provider after restart failure",
             });
         }
-        self.runs.insert(snapshot.id().to_string(), snapshot.clone());
+        self.runs
+            .insert(snapshot.id().to_string(), snapshot.clone());
         Ok(snapshot)
     }
 

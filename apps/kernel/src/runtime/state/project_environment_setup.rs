@@ -1376,10 +1376,7 @@ impl KernelRuntimeState {
         .await;
         if store.is_cancelled(&execution.operation_id, attempt) {
             let _ = self
-                .restore_previous_ordinary_provider_run(
-                    &provider_run,
-                    &ordinary_provider_run,
-                )
+                .restore_previous_ordinary_provider_run(&provider_run, &ordinary_provider_run)
                 .await;
             return;
         }
@@ -1404,10 +1401,7 @@ impl KernelRuntimeState {
             },
             Err(error) => {
                 let _ = self
-                    .restore_previous_ordinary_provider_run(
-                        &provider_run,
-                        &ordinary_provider_run,
-                    )
+                    .restore_previous_ordinary_provider_run(&provider_run, &ordinary_provider_run)
                     .await;
                 if let Some(message) =
                     project_environment_setup_utility_missing_input_message(&error)
@@ -1437,10 +1431,7 @@ impl KernelRuntimeState {
                 .any(|command| !definition.validation_commands.contains(command))
         {
             let _ = self
-                .restore_previous_ordinary_provider_run(
-                    &provider_run,
-                    &ordinary_provider_run,
-                )
+                .restore_previous_ordinary_provider_run(&provider_run, &ordinary_provider_run)
                 .await;
             store.mark_failed(
                 &execution.operation_id,
@@ -1458,10 +1449,7 @@ impl KernelRuntimeState {
             Ok(definition) => definition,
             Err(_) => {
                 let _ = self
-                    .restore_previous_ordinary_provider_run(
-                        &provider_run,
-                        &ordinary_provider_run,
-                    )
+                    .restore_previous_ordinary_provider_run(&provider_run, &ordinary_provider_run)
                     .await;
                 store.mark_failed(
                     &execution.operation_id,
@@ -1664,16 +1652,17 @@ impl KernelRuntimeState {
             }
         }
 
-        let _ = self
-            .owned
-            .project_environment_setups
-            .update(&execution.operation_id, attempt, |entry| {
+        let _ = self.owned.project_environment_setups.update(
+            &execution.operation_id,
+            attempt,
+            |entry| {
                 entry.status.phase = ProjectEnvironmentSetupPhase::Validating;
                 entry.status.progress_percent = 45;
                 entry.status.message = Some(
                     "kernel is validating the reused definition in the target worker".to_string(),
                 );
-            });
+            },
+        );
         let validation = match self
             .validate_definition_on_worker(execution, attempt, definition, provider_run)
             .await
@@ -1693,25 +1682,22 @@ impl KernelRuntimeState {
         {
             return ReusedDefinitionSetupOutcome::Cancelled;
         }
-        let inputs_match = match self.definition_inputs_match_on_worker(
-            execution,
-            definition,
-            provider_run,
-        ) {
-            Ok(matches) => matches,
-            Err(_) => {
-                return ReusedDefinitionSetupOutcome::Failed {
-                    code: "worker_input_attestation_unavailable",
-                    message: "kernel could not verify project inputs on the target worker",
+        let inputs_match =
+            match self.definition_inputs_match_on_worker(execution, definition, provider_run) {
+                Ok(matches) => matches,
+                Err(_) => {
+                    return ReusedDefinitionSetupOutcome::Failed {
+                        code: "worker_input_attestation_unavailable",
+                        message: "kernel could not verify project inputs on the target worker",
+                    }
                 }
-            }
-        };
+            };
         let validation_passed =
             validation_passed_for_execution(execution, definition, &validation) && inputs_match;
-        let _ = self
-            .owned
-            .project_environment_setups
-            .update(&execution.operation_id, attempt, |entry| {
+        let _ = self.owned.project_environment_setups.update(
+            &execution.operation_id,
+            attempt,
+            |entry| {
                 entry.status.validation = Some(validation);
                 entry.status.progress_percent = 85;
                 entry.status.message = Some(if validation_passed {
@@ -1720,7 +1706,8 @@ impl KernelRuntimeState {
                     "reused definition failed validation; utility agent is repairing the target"
                         .to_string()
                 });
-            });
+            },
+        );
         if self
             .owned
             .project_environment_setups
@@ -1740,14 +1727,8 @@ impl KernelRuntimeState {
         execution: &SetupExecution,
         provider_run: &RuntimeProviderRun,
     ) -> Result<RuntimeProviderRun, DaemonError> {
-        self.rebind_provider_run_for_project_environment(
-            execution,
-            provider_run,
-            None,
-            true,
-            None,
-        )
-        .await
+        self.rebind_provider_run_for_project_environment(execution, provider_run, None, true, None)
+            .await
     }
 
     async fn restore_provider_run_after_project_environment_discovery(
@@ -1886,16 +1867,15 @@ impl KernelRuntimeState {
             return Ok(updated);
         }
 
-        let credentials = credentials.ok_or_else(|| {
-            setup_error("restartable provider credentials were not prepared")
-        })?;
+        let credentials = credentials
+            .ok_or_else(|| setup_error("restartable provider credentials were not prepared"))?;
         self.owned.provider_store.clear_runtime(updated.id());
         let run_for_spawn = updated.clone();
         let spawn_credentials = credentials.clone();
         let spawn_result = self
             .with_app_side_effect(move |app| {
-                let _ = crate::app::ProviderProcessTracker::new(app)
-                    .remove_run(run_for_spawn.id())?;
+                let _ =
+                    crate::app::ProviderProcessTracker::new(app).remove_run(run_for_spawn.id())?;
                 crate::app::ProviderLaunchProcessRuntime::new(app)
                     .spawn_for_launch_with_credentials(&run_for_spawn, &spawn_credentials)
             })
@@ -1953,9 +1933,8 @@ impl KernelRuntimeState {
                 return Err(error);
             }
             Err(error) => {
-                let setup_error = setup_error(&format!(
-                    "provider restart binding task failed: {error}"
-                ));
+                let setup_error =
+                    setup_error(&format!("provider restart binding task failed: {error}"));
                 if let Err(recovery_error) = self
                     .recover_provider_run_after_restart_failure(
                         restart_failure_snapshot,
@@ -2048,8 +2027,7 @@ impl KernelRuntimeState {
         let run_for_spawn = restored.clone();
         let spawn_credentials = credentials.clone();
         self.with_app_side_effect(move |app| {
-            let _ = crate::app::ProviderProcessTracker::new(app)
-                .remove_run(run_for_spawn.id())?;
+            let _ = crate::app::ProviderProcessTracker::new(app).remove_run(run_for_spawn.id())?;
             crate::app::ProviderLaunchProcessRuntime::new(app)
                 .spawn_for_launch_with_credentials(&run_for_spawn, &spawn_credentials)
         })
@@ -2064,7 +2042,9 @@ impl KernelRuntimeState {
             )
         })
         .await
-        .map_err(|error| setup_error(&format!("provider rollback binding task failed: {error}")))??;
+        .map_err(|error| {
+            setup_error(&format!("provider rollback binding task failed: {error}"))
+        })??;
         if let Some(binding) = binding {
             self.owned
                 .provider_store
@@ -2180,12 +2160,11 @@ impl KernelRuntimeState {
                 "prepared provider context uses a different worker worktree",
             ));
         }
-        let preparation_home =
-            WorkerPreparationHome::for_project_worker(
-                &workspace_root,
-                &execution.project_id,
-                &worker_id,
-            )?;
+        let preparation_home = WorkerPreparationHome::for_project_worker(
+            &workspace_root,
+            &execution.project_id,
+            &worker_id,
+        )?;
         let environment = worker_validation_environment_with_home_and_definition(
             provider_run,
             Some(preparation_home.path()),
@@ -2248,12 +2227,9 @@ impl KernelRuntimeState {
         let applied = tokio::task::spawn_blocking(move || {
             // The blocking commands own this guard even if their async waiter exits.
             let _guard = guard;
-            run_worker_setup_steps(
-                &commands,
-                &context_workspace_root,
-                &environment,
-                || cancellation.is_cancelled(&operation_id, attempt),
-            )
+            run_worker_setup_steps(&commands, &context_workspace_root, &environment, || {
+                cancellation.is_cancelled(&operation_id, attempt)
+            })
         })
         .await
         .map_err(|error| setup_error(&format!("worker setup task failed: {error}")))?
@@ -3333,14 +3309,9 @@ mod tests {
             "set -eu; test -z \"${{SSH_AUTH_SOCK:-}}\"; test \"$HOME\" = '{}'; mkdir -p \"$HOME/.ssh\"; printf '%s\\n' bypass > \"$HOME/.ssh/known_hosts\"; test \"$(cat \"$HOME/.ssh/known_hosts\")\" = bypass",
             isolated_home.display()
         );
-        let (exit_code, _, _) = run_worker_validation_command(
-            &command,
-            &workspace,
-            &environment,
-            || false,
-            None,
-        )
-        .expect("opaque project command should execute with ordinary shell semantics");
+        let (exit_code, _, _) =
+            run_worker_validation_command(&command, &workspace, &environment, || false, None)
+                .expect("opaque project command should execute with ordinary shell semantics");
         assert_eq!(exit_code, 0);
         assert_eq!(
             std::fs::read_to_string(automatic_home.join(".ssh/known_hosts"))

@@ -1038,8 +1038,7 @@ impl ProjectEnvironmentSetupStore {
         }
         entry.status.phase = ProjectEnvironmentSetupPhase::Cancelled;
         entry.status.message = Some(
-            "setup cancellation completed because the worker had no matching operation"
-                .to_string(),
+            "setup cancellation completed because the worker had no matching operation".to_string(),
         );
         entry.status.failure_code = None;
         entry.status.failure_message = None;

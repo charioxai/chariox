@@ -2945,7 +2945,9 @@ mod tests {
                 window
                     == [
                         "--bind",
-                        provider_home.to_str().expect("provider home should be utf8"),
+                        provider_home
+                            .to_str()
+                            .expect("provider home should be utf8"),
                         SANDBOX_HOME,
                     ]
             })
@@ -4244,14 +4246,9 @@ mod tests {
     #[test]
     fn managed_account_paths_are_restored_only_inside_namespace() {
         let _env = crate::env_lock::lock();
-        let nonce = format!(
-            "{}-{}",
-            std::process::id(),
-            crate::session::unix_epoch_ms()
-        );
-        let scratch = std::env::temp_dir().join(format!(
-            "chariox-managed-account-env-regression-{nonce}"
-        ));
+        let nonce = format!("{}-{}", std::process::id(), crate::session::unix_epoch_ms());
+        let scratch =
+            std::env::temp_dir().join(format!("chariox-managed-account-env-regression-{nonce}"));
         let provider_home = scratch.join("provider-home");
         let outer_home = scratch.join("outer-home");
         let workspace = scratch.join("workspace");
@@ -4391,10 +4388,7 @@ printf 'managed account environment probe passed\n'
                 "{name} must be absent from the outer launch environment"
             );
             assert!(
-                launch
-                    .pty_env_remove
-                    .iter()
-                    .any(|removed| removed == *name),
+                launch.pty_env_remove.iter().any(|removed| removed == *name),
                 "{name} must be removed from the outer command environment"
             );
         }
@@ -4416,7 +4410,7 @@ printf 'managed account environment probe passed\n'
                     (window[0] == "--setenv"
                         && window[1] == *name
                         && window[2] == destination.as_str())
-                        .then_some(index)
+                    .then_some(index)
                 })
                 .collect::<Vec<_>>();
             assert_eq!(

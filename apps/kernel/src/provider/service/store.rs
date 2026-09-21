@@ -207,8 +207,7 @@ impl ProviderProcessServiceStore {
         run_id: &str,
         enabled: bool,
     ) -> Result<RuntimeProviderRun, DaemonError> {
-        self.write()
-            .update_run_read_only_discovery(run_id, enabled)
+        self.write().update_run_read_only_discovery(run_id, enabled)
     }
 
     pub(crate) fn restore_run_snapshot_after_restart_failure(

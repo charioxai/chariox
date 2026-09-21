@@ -52,7 +52,9 @@ pub struct RelayClientState {
 #[cfg(test)]
 #[derive(Debug)]
 pub(crate) enum TestPeerRequestObservation {
-    StartProjectEnvironmentSetup { operation_id: String },
+    StartProjectEnvironmentSetup {
+        operation_id: String,
+    },
     GetProjectEnvironmentSetupStatus {
         operation_id: String,
         release: oneshot::Sender<()>,

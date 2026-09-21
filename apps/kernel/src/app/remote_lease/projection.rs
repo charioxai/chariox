@@ -1065,7 +1065,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         self.app
                             .prompt_owner_complete_active_prompt_only(session_id, agent_id)?
                     };
-                    crate::transport::flow_control::clear_prompt_activity(self.app, provider_run_id);
+                    crate::transport::flow_control::clear_prompt_activity(
+                        self.app,
+                        provider_run_id,
+                    );
                     let _ = crate::app::KernelSessionReadService::new(self.app)
                         .session_snapshot(session_id);
                     outcome.completions.push(PromptCompletion {

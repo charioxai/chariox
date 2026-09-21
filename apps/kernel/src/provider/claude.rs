@@ -20,8 +20,8 @@ mod usage_probe;
 
 pub use catalog::claude_provider_catalog;
 use catalog::CLAUDE_HEADLESS_PROVIDER_ID;
-use launch_args::claude_launch_args;
 pub(crate) use launch_args::claude_args_with_execution_config;
+use launch_args::claude_launch_args;
 #[cfg(test)]
 pub(crate) use mcp_config::CLAUDE_MCP_CONFIG_PLACEHOLDER;
 pub(crate) use mcp_config::{materialize_runtime_claude_mcp_config, ClaudeMcpConfigFile};

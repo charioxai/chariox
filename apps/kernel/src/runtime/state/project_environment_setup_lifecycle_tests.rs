@@ -51,8 +51,7 @@ use crate::local::{
     ProjectEnvironmentDefinitionSource, ProjectEnvironmentInput, ProjectEnvironmentInputKind,
     ProjectEnvironmentPathBase, ProjectEnvironmentPathEntry, ProjectEnvironmentSetupPhase,
     ProjectEnvironmentSetupStatus, ProjectEnvironmentSetupStep, ProjectEnvironmentSetupStepKind,
-    ProjectEnvironmentValidation,
-    RetryProjectEnvironmentSetupRequest,
+    ProjectEnvironmentValidation, RetryProjectEnvironmentSetupRequest,
     StartProjectEnvironmentSetupRequest,
 };
 #[cfg(unix)]
@@ -137,8 +136,7 @@ async fn public_setup_cancellation_restores_ordinary_provider_without_retry() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn pr364_generated_validation_failure_restores_previous_provider_snapshot() {
-    exercise_public_setup_lifecycle_with_candidate_failure(CandidateFailureMode::Validation)
-        .await;
+    exercise_public_setup_lifecycle_with_candidate_failure(CandidateFailureMode::Validation).await;
 }
 
 #[cfg(target_os = "linux")]
@@ -728,7 +726,9 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
             Some("selected-ssh")
         );
         assert_eq!(
-            provider_environment.get("SSH_AUTH_SOCK").map(String::as_str),
+            provider_environment
+                .get("SSH_AUTH_SOCK")
+                .map(String::as_str),
             Some("selected-agent")
         );
         drop(provider_fixture);
@@ -738,8 +738,7 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
         let failure_deadline = Instant::now() + Duration::from_secs(10);
         let failed_status = loop {
             let status = response_status(
-                get_setup_status(&runtime, "setup-lifecycle", "user-1", "failure polling")
-                    .await,
+                get_setup_status(&runtime, "setup-lifecycle", "user-1", "failure polling").await,
             );
             if status.phase == ProjectEnvironmentSetupPhase::Failed {
                 break status;
@@ -761,7 +760,10 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
         );
         let (provider_run, _provider_pid, provider_environment) =
             wait_for_ordinary_provider_child(&runtime, "utility-provider-run").await;
-        assert_eq!(provider_run.state(), crate::provider::ProviderRunState::Running);
+        assert_eq!(
+            provider_run.state(),
+            crate::provider::ProviderRunState::Running
+        );
         assert!(!provider_run.read_only_discovery());
         assert_eq!(
             provider_environment.get("HOME"),
@@ -772,11 +774,15 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
             provider_run.pty_env().get("PATH")
         );
         assert_eq!(
-            provider_environment.get("GIT_SSH_COMMAND").map(String::as_str),
+            provider_environment
+                .get("GIT_SSH_COMMAND")
+                .map(String::as_str),
             Some("selected-ssh")
         );
         assert_eq!(
-            provider_environment.get("SSH_AUTH_SOCK").map(String::as_str),
+            provider_environment
+                .get("SSH_AUTH_SOCK")
+                .map(String::as_str),
             Some("selected-agent")
         );
         drop(provider_fixture);
@@ -901,7 +907,9 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
             Some("selected-ssh")
         );
         assert_eq!(
-            provider_environment.get("SSH_AUTH_SOCK").map(String::as_str),
+            provider_environment
+                .get("SSH_AUTH_SOCK")
+                .map(String::as_str),
             Some("selected-agent")
         );
         match failure {
@@ -985,7 +993,10 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
         if !retry_after_cancel {
             let (provider_run, _provider_pid, provider_environment) =
                 wait_for_ordinary_provider_child(&runtime, "utility-provider-run").await;
-            assert_eq!(provider_run.state(), crate::provider::ProviderRunState::Running);
+            assert_eq!(
+                provider_run.state(),
+                crate::provider::ProviderRunState::Running
+            );
             assert!(!provider_run.read_only_discovery());
             assert_eq!(
                 provider_environment.get("HOME"),
@@ -1003,11 +1014,15 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
                 "cancellation without retry must retain a bound provider runtime"
             );
             assert_eq!(
-                provider_environment.get("GIT_SSH_COMMAND").map(String::as_str),
+                provider_environment
+                    .get("GIT_SSH_COMMAND")
+                    .map(String::as_str),
                 Some("selected-ssh")
             );
             assert_eq!(
-                provider_environment.get("SSH_AUTH_SOCK").map(String::as_str),
+                provider_environment
+                    .get("SSH_AUTH_SOCK")
+                    .map(String::as_str),
                 Some("selected-agent")
             );
             drop(provider_fixture);
@@ -4402,11 +4417,7 @@ async fn pr364_opencode_discovery_rejects_source_mcp_and_restores_ordinary_confi
         receipt: std::env::var_os("CHARIOX_DISPOSABLE_WORKER_RECEIPT"),
     };
     std::env::set_var("CHARIOX_HOME", &home);
-    if runtime_role == KernelRuntimeRole::RemoteLeaseWorker {
-        std::env::set_var("CHARIOX_DISPOSABLE_WORKER_RECEIPT", &receipt);
-    } else {
-        std::env::remove_var("CHARIOX_DISPOSABLE_WORKER_RECEIPT");
-    }
+    std::env::set_var("CHARIOX_DISPOSABLE_WORKER_RECEIPT", &receipt);
 
     let validation_command =
         "touch validation-started; while [ ! -f validation-release ]; do sleep 0.01; done; command -v sh"

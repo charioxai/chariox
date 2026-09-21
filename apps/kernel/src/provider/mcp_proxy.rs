@@ -1,9 +1,9 @@
 #![allow(dead_code)]
 
-mod stdio;
-mod streamable_http;
 #[cfg(all(test, target_os = "linux"))]
 mod sandbox_lifetime_tests;
+mod stdio;
+mod streamable_http;
 
 use std::collections::BTreeMap;
 #[cfg(test)]

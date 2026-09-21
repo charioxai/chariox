@@ -198,9 +198,7 @@ fn cache_pty_process_exit(process: &mut PtyProcess, status: portable_pty::ExitSt
 }
 
 fn append_pty_diagnostic_tail(tail: &Mutex<VecDeque<u8>>, bytes: &[u8]) {
-    let mut tail = tail
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut tail = tail.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     for byte in bytes {
         if tail.len() == PTY_DIAGNOSTIC_TAIL_LIMIT {
             tail.pop_front();
@@ -386,12 +384,12 @@ impl PtyManager {
             command.cwd(working_directory);
         }
 
-        let mut child =
-            crate::process_spawn::spawn_pty(pair.slave, command)
-                .map_err(|error| DaemonError::PtySpawn {
-                    provider_run_id: request.provider_run_id.clone(),
-                    message: error.to_string(),
-                })?;
+        let mut child = crate::process_spawn::spawn_pty(pair.slave, command).map_err(|error| {
+            DaemonError::PtySpawn {
+                provider_run_id: request.provider_run_id.clone(),
+                message: error.to_string(),
+            }
+        })?;
 
         let mut reader = pair
             .master
@@ -1172,25 +1170,51 @@ mod tests {
         const RUN: &str = "provider-launch-thread-lifetime";
         let caller = thread::spawn(|| {
             let mut manager = PtyManager::new();
-            manager.spawn(PtySpawnRequest {
-                process_key: RUN.into(),
-                provider_run_id: RUN.into(),
-                program: "/usr/bin/bwrap".into(),
-                args: ["--die-with-parent", "--new-session", "--unshare-user",
-                    "--unshare-pid", "--uid", "0", "--gid", "0", "--ro-bind",
-                    "/", "/", "--", "/bin/sh", "-c", "printf 'ready\\n'; exec sleep 30"]
-                    .into_iter().map(str::to_string).collect(),
-                env: Default::default(),
-                env_remove: Vec::new(),
-                working_directory: None,
-                cols: 80,
-                rows: 24,
-            }).expect("real sandbox should launch");
+            manager
+                .spawn(PtySpawnRequest {
+                    process_key: RUN.into(),
+                    provider_run_id: RUN.into(),
+                    program: "/usr/bin/bwrap".into(),
+                    args: [
+                        "--die-with-parent",
+                        "--new-session",
+                        "--unshare-user",
+                        "--unshare-pid",
+                        "--uid",
+                        "0",
+                        "--gid",
+                        "0",
+                        "--ro-bind",
+                        "/",
+                        "/",
+                        "--",
+                        "/bin/sh",
+                        "-c",
+                        "printf 'ready\\n'; exec sleep 30",
+                    ]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+                    env: Default::default(),
+                    env_remove: Vec::new(),
+                    working_directory: None,
+                    cols: 80,
+                    rows: 24,
+                })
+                .expect("real sandbox should launch");
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
             let mut output = Vec::new();
             while std::time::Instant::now() < deadline {
-                output.extend(manager.drain_output(RUN).unwrap().into_iter().flat_map(|c| c.bytes));
-                if String::from_utf8_lossy(&output).contains("ready") { break; }
+                output.extend(
+                    manager
+                        .drain_output(RUN)
+                        .unwrap()
+                        .into_iter()
+                        .flat_map(|c| c.bytes),
+                );
+                if String::from_utf8_lossy(&output).contains("ready") {
+                    break;
+                }
                 thread::sleep(Duration::from_millis(10));
             }
             (manager, output)
@@ -1199,9 +1223,18 @@ mod tests {
         let (mut manager, output) = caller.join().expect("launching caller should return");
         thread::sleep(Duration::from_secs(2));
         let state = manager.poll_process_state(RUN).unwrap();
-        manager.remove_process(RUN).expect("sandbox must be cleaned up before assertions");
-        assert!(String::from_utf8_lossy(&output).contains("ready"), "sandbox never became ready: {output:?}");
-        assert_eq!(state, PtyProcessState::Running, "retiring a caller must not terminate its provider");
+        manager
+            .remove_process(RUN)
+            .expect("sandbox must be cleaned up before assertions");
+        assert!(
+            String::from_utf8_lossy(&output).contains("ready"),
+            "sandbox never became ready: {output:?}"
+        );
+        assert_eq!(
+            state,
+            PtyProcessState::Running,
+            "retiring a caller must not terminate its provider"
+        );
         assert!(!manager.has_process(RUN));
     }
 

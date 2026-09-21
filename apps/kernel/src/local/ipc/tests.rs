@@ -12,8 +12,8 @@ use crate::attachment::ClientCapabilityLevel;
 use crate::config::PersistedCloudRelayProfile;
 use crate::local::api::{
     AddWorkflowEdgeRequest, AddWorkflowNodeRequest, CancelWorkflowRunRequest,
-    CreateWorkflowEndpointRequest, CreateWorkflowRequest, GetWorkflowRunRequest,
-    GetKernelResourceTelemetryRequest, InvokeWorkflowEndpointRequest, ListWorkflowRunsRequest,
+    CreateWorkflowEndpointRequest, CreateWorkflowRequest, GetKernelResourceTelemetryRequest,
+    GetWorkflowRunRequest, InvokeWorkflowEndpointRequest, ListWorkflowRunsRequest,
 };
 use crate::local::{
     AttachToSessionRequest, CompletePromptRequest, LaunchProviderRunRequest,
@@ -189,71 +189,67 @@ fn local_ipc_round_trip_exercises_session_and_terminal_flow() {
 
 #[test]
 fn local_ipc_resource_telemetry_round_trip_returns_complete_kernel_snapshot() {
-    run_local_ipc_async_test(
-        "local-ipc-resource-telemetry-round-trip",
-        2,
-        || async {
-            std::fs::create_dir_all(crate::logging::default_log_root())
-                .expect("kernel log root should be available");
-            let config = DaemonConfig::for_tests();
-            let socket_path = config.local_socket_path.clone();
-            let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-            let app = Arc::new(TokioMutex::new(
-                DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed"),
-            ));
-            let server_app = Arc::clone(&app);
-            let server = tokio::spawn(async move {
-                super::run_local_ipc_server_with_shared_app(server_app, async {
-                    let _ = shutdown_rx.await;
-                })
-                .await
-            });
+    run_local_ipc_async_test("local-ipc-resource-telemetry-round-trip", 2, || async {
+        std::fs::create_dir_all(crate::logging::default_log_root())
+            .expect("kernel log root should be available");
+        let config = DaemonConfig::for_tests();
+        let socket_path = config.local_socket_path.clone();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let app = Arc::new(TokioMutex::new(
+            DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed"),
+        ));
+        let server_app = Arc::clone(&app);
+        let server = tokio::spawn(async move {
+            super::run_local_ipc_server_with_shared_app(server_app, async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+        });
 
-            wait_for_socket(&socket_path).await;
-            let client = LocalIpcClient::new(socket_path.clone());
-            let response = client
-                .send(&LocalDaemonRequest::GetKernelResourceTelemetry(
-                    GetKernelResourceTelemetryRequest,
-                ))
-                .expect("kernel resource telemetry should round-trip over local IPC");
-            let LocalDaemonResponse::KernelResourceTelemetry { snapshot } = response else {
-                panic!("unexpected resource telemetry response");
-            };
+        wait_for_socket(&socket_path).await;
+        let client = LocalIpcClient::new(socket_path.clone());
+        let response = client
+            .send(&LocalDaemonRequest::GetKernelResourceTelemetry(
+                GetKernelResourceTelemetryRequest,
+            ))
+            .expect("kernel resource telemetry should round-trip over local IPC");
+        let LocalDaemonResponse::KernelResourceTelemetry { snapshot } = response else {
+            panic!("unexpected resource telemetry response");
+        };
 
-            assert_eq!(snapshot.telemetry.scope, "ordinary-host");
-            assert!(!snapshot.telemetry.authoritative);
-            assert_eq!(snapshot.telemetry.source, "kernel");
-            assert!(matches!(
-                snapshot.release,
-                crate::local::KernelResourceTelemetryRelease::Unavailable { .. }
-            ));
-            assert!(!snapshot.captured_at.is_empty());
-            assert!(snapshot.cpu_percent <= 100);
-            assert!(snapshot.cpu_sample_window_ms > 0);
-            assert!(snapshot.memory.used_bytes <= snapshot.memory.total_bytes);
-            assert!(snapshot.memory.available_bytes <= snapshot.memory.total_bytes);
-            assert!(snapshot.disk.used_bytes <= snapshot.disk.total_bytes);
-            assert!(snapshot.disk.available_bytes <= snapshot.disk.total_bytes);
-            assert!(snapshot.process.count > 0);
-            assert!(snapshot.process.rss_bytes > 0);
-            assert!(snapshot.logs.bytes <= snapshot.disk.total_bytes);
-            let second = client
-                .send(&LocalDaemonRequest::GetKernelResourceTelemetry(
-                    GetKernelResourceTelemetryRequest,
-                ))
-                .expect("second kernel resource telemetry request should succeed");
-            let LocalDaemonResponse::KernelResourceTelemetry { snapshot: second } = second else {
-                panic!("unexpected second resource telemetry response");
-            };
-            assert!(second.captured_at_monotonic_ms >= snapshot.captured_at_monotonic_ms);
+        assert_eq!(snapshot.telemetry.scope, "ordinary-host");
+        assert!(!snapshot.telemetry.authoritative);
+        assert_eq!(snapshot.telemetry.source, "kernel");
+        assert!(matches!(
+            snapshot.release,
+            crate::local::KernelResourceTelemetryRelease::Unavailable { .. }
+        ));
+        assert!(!snapshot.captured_at.is_empty());
+        assert!(snapshot.cpu_percent <= 100);
+        assert!(snapshot.cpu_sample_window_ms > 0);
+        assert!(snapshot.memory.used_bytes <= snapshot.memory.total_bytes);
+        assert!(snapshot.memory.available_bytes <= snapshot.memory.total_bytes);
+        assert!(snapshot.disk.used_bytes <= snapshot.disk.total_bytes);
+        assert!(snapshot.disk.available_bytes <= snapshot.disk.total_bytes);
+        assert!(snapshot.process.count > 0);
+        assert!(snapshot.process.rss_bytes > 0);
+        assert!(snapshot.logs.bytes <= snapshot.disk.total_bytes);
+        let second = client
+            .send(&LocalDaemonRequest::GetKernelResourceTelemetry(
+                GetKernelResourceTelemetryRequest,
+            ))
+            .expect("second kernel resource telemetry request should succeed");
+        let LocalDaemonResponse::KernelResourceTelemetry { snapshot: second } = second else {
+            panic!("unexpected second resource telemetry response");
+        };
+        assert!(second.captured_at_monotonic_ms >= snapshot.captured_at_monotonic_ms);
 
-            let _ = shutdown_tx.send(());
-            server
-                .await
-                .expect("server task should join")
-                .expect("server should stop cleanly");
-        },
-    );
+        let _ = shutdown_tx.send(());
+        server
+            .await
+            .expect("server task should join")
+            .expect("server should stop cleanly");
+    });
 }
 
 #[test]

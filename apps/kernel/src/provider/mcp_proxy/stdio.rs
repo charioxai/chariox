@@ -186,11 +186,12 @@ impl StdioMcpProcess {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        let mut child = crate::process_spawn::spawn_command(command_builder)
-            .map_err(|error| DaemonError::LocalTransport {
+        let mut child = crate::process_spawn::spawn_command(command_builder).map_err(|error| {
+            DaemonError::LocalTransport {
                 operation: "mcp.proxy.stdio.spawn",
                 message: format!("failed to spawn stdio MCP `{}`: {error}", backing.name),
-            })?;
+            }
+        })?;
         let stdin = child
             .stdin
             .take()

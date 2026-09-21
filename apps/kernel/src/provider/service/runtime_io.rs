@@ -294,8 +294,13 @@ impl ProviderProcessService {
             Vec::new(),
             PromptAssemblyMode::UtilityTurn,
         )?;
-        self.run_actor_mailbox
-            .run_utility(run.id().to_string(), run.clone(), envelope, timeout, policy)
+        self.run_actor_mailbox.run_utility(
+            run.id().to_string(),
+            run.clone(),
+            envelope,
+            timeout,
+            policy,
+        )
     }
 
     pub(crate) fn enqueue_structured_prompt_abort(

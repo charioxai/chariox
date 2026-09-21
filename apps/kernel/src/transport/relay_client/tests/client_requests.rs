@@ -386,13 +386,22 @@ async fn authenticated_public_client_preserves_worker_relay_retryability_async()
         .await
         .expect("worker connector should join");
     for _ in 0..200 {
-        if registry.read().await.daemon(&config_worker.daemon_id).is_none() {
+        if registry
+            .read()
+            .await
+            .daemon(&config_worker.daemon_id)
+            .is_none()
+        {
             break;
         }
         sleep(Duration::from_millis(25)).await;
     }
     assert!(
-        registry.read().await.daemon(&config_worker.daemon_id).is_none(),
+        registry
+            .read()
+            .await
+            .daemon(&config_worker.daemon_id)
+            .is_none(),
         "worker should be absent before the transient transport control"
     );
 

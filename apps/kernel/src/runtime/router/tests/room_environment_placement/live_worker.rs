@@ -181,9 +181,8 @@ impl LiveWorker {
             "desktop-worker".to_string()
         });
         worker_state.config.host_machine_id = "slice:slice-1".to_string();
-        let home_persistence_environment = isolate_home_persistence.then(|| {
-            HomePersistenceEnvironment::set("CHARIOX_HOME", home_state.root.as_os_str())
-        });
+        let home_persistence_environment = isolate_home_persistence
+            .then(|| HomePersistenceEnvironment::set("CHARIOX_HOME", home_state.root.as_os_str()));
         let (home, rooms) = home_state.router();
         let home = Arc::new(home);
         if browser_controller {

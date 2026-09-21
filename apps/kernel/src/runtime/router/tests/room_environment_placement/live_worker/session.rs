@@ -66,11 +66,7 @@ async fn standard_worker_does_not_infer_project_transfer() {
     let source_repository_id = source_repository.display().to_string();
     let supporting_directory_id = supporting_directory.display().to_string();
     let target_worktree_id = target_worktree.display().to_string();
-    let persisted_pairing_path = fixture
-        .home_state
-        .root
-        .join("daemon")
-        .join("config.json");
+    let persisted_pairing_path = fixture.home_state.root.join("daemon").join("config.json");
 
     init_test_repository(&source_repository, "selected.txt", "selected source\n");
     std::fs::create_dir_all(&supporting_directory).expect("selected directory should exist");
@@ -171,9 +167,7 @@ async fn standard_worker_does_not_infer_project_transfer() {
     .await
     .expect_err("ordinary worker must reject an absent destination");
     assert!(
-        error
-            .to_string()
-            .contains("remote working directory")
+        error.to_string().contains("remote working directory")
             && error.to_string().contains("does not exist"),
         "the real worker path must reject the destination, not invent a transfer: {error}"
     );

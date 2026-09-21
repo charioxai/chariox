@@ -144,8 +144,8 @@ impl DaemonApp {
         let legacy_workflow_history = self.legacy_workflow_history_store();
         let history_migration_store = self.durable_state_store();
         let history_migration_owner = self.config.daemon_id.clone();
-        let reap_remote_execution_leases = self.config.kernel_runtime_role
-            == crate::config::KernelRuntimeRole::RemoteLeaseWorker;
+        let reap_remote_execution_leases =
+            self.config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker;
         let app = Arc::new(tokio::sync::Mutex::new(self));
         let router = std::sync::Arc::new(
             crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
@@ -279,8 +279,7 @@ async fn run_remote_execution_lease_reaper(
     app: Arc<tokio::sync::Mutex<DaemonApp>>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
-    let mut reconciliation =
-        tokio::time::interval(REMOTE_EXECUTION_LEASE_RECONCILIATION_INTERVAL);
+    let mut reconciliation = tokio::time::interval(REMOTE_EXECUTION_LEASE_RECONCILIATION_INTERVAL);
     reconciliation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         if *shutdown.borrow() {

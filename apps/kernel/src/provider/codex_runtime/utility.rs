@@ -47,24 +47,23 @@ pub fn run_codex_utility_prompt(
         .map(|path| path.to_string_lossy().to_string());
     let model = normalize_codex_model(run.model());
     let effort = normalize_variant(run.variant());
-    let (write_access_mode, execution_mode, permission_level) =
-        if policy.is_read_only_discovery() {
-            // Plan plus the tracked live-sync mode is Codex's enforced
-            // read-only sandbox on every host platform, including macOS. Do
-            // not inherit a provider run's ordinary build/yolo capability for
-            // discovery.
-            (
-                ProviderWriteAccessMode::WorkspaceLiveSyncTracked,
-                AgentExecutionMode::Plan,
-                AgentPermissionLevel::Required,
-            )
-        } else {
-            (
-                run.write_access_mode(),
-                run.execution_mode(),
-                run.permission_level(),
-            )
-        };
+    let (write_access_mode, execution_mode, permission_level) = if policy.is_read_only_discovery() {
+        // Plan plus the tracked live-sync mode is Codex's enforced
+        // read-only sandbox on every host platform, including macOS. Do
+        // not inherit a provider run's ordinary build/yolo capability for
+        // discovery.
+        (
+            ProviderWriteAccessMode::WorkspaceLiveSyncTracked,
+            AgentExecutionMode::Plan,
+            AgentPermissionLevel::Required,
+        )
+    } else {
+        (
+            run.write_access_mode(),
+            run.execution_mode(),
+            run.permission_level(),
+        )
+    };
     let thread = client.thread_start(
         &mut socket,
         &mut next_request_id,

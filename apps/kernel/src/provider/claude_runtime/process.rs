@@ -49,11 +49,12 @@ pub(super) fn spawn_claude_child(
         command.current_dir(working_directory);
     }
 
-    let mut child = crate::process_spawn::spawn_command(command)
-        .map_err(|error| DaemonError::LocalTransport {
+    let mut child = crate::process_spawn::spawn_command(command).map_err(|error| {
+        DaemonError::LocalTransport {
             operation,
             message: format!("failed to start Claude Code for `{provider_run_id}`: {error}"),
-        })?;
+        }
+    })?;
     let stdin = child
         .stdin
         .take()

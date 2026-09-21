@@ -6,9 +6,9 @@ use crate::local::{
     ProjectEnvironmentDefinitionOrigin, ProjectEnvironmentDefinitionSource,
     ProjectEnvironmentInput, ProjectEnvironmentInputKind, ProjectEnvironmentPathBase,
     ProjectEnvironmentPathEntry, ProjectEnvironmentSetupPhase, ProjectEnvironmentSetupStatus,
-    ProjectEnvironmentSetupStep, ProjectEnvironmentSetupStepKind,
-    ProjectEnvironmentValidation, RetryProjectEnvironmentSetupRequest,
-    StartProjectEnvironmentSetupRequest, LOCAL_DAEMON_PROTOCOL_VERSION,
+    ProjectEnvironmentSetupStep, ProjectEnvironmentSetupStepKind, ProjectEnvironmentValidation,
+    RetryProjectEnvironmentSetupRequest, StartProjectEnvironmentSetupRequest,
+    LOCAL_DAEMON_PROTOCOL_VERSION,
 };
 
 fn definition() -> ProjectEnvironmentDefinition {

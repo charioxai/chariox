@@ -1149,8 +1149,9 @@ impl AttestedReleaseFixture {
         )
         .expect("link kernel facade");
 
-        let home = root.join("home");
-        let receipt_path = home.join("managed/bootstrap-receipt.json");
+        let process_home = root.join("home");
+        let chariox_home = process_home.join(".chariox");
+        let receipt_path = chariox_home.join("managed/bootstrap-receipt.json");
         fs::create_dir_all(receipt_path.parent().expect("receipt parent"))
             .expect("create receipt parent");
         fs::write(
@@ -1171,7 +1172,8 @@ impl AttestedReleaseFixture {
 
         Self {
             config: BootstrapConfig {
-                chariox_home: home,
+                process_home,
+                chariox_home,
                 envelope_path: root.join("managed-bootstrap.json"),
                 receipt_path: receipt_path.clone(),
                 manifest_path: chariox_root.join("release-manifest.json"),
@@ -1197,6 +1199,7 @@ impl AttestedReleaseFixture {
 
 #[cfg(unix)]
 fn set_release_evidence_env(fixture: &AttestedReleaseFixture) {
+    std::env::set_var("HOME", &fixture.config.process_home);
     std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
     std::env::set_var(
         "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
@@ -1231,6 +1234,7 @@ fn managed_release_evidence_is_kernel_verified_from_active_release_and_receipt()
         "x86_64-unknown-linux-gnu",
     );
     let names = [
+        "HOME",
         "CHARIOX_HOME",
         "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
         "CHARIOX_MANAGED_RELEASE_MANIFEST",
@@ -1298,6 +1302,7 @@ fn managed_release_evidence_fails_closed_for_attestation_target_source_signature
         let tree = format!("{source_tree}{source_tree}").repeat(20);
         let fixture = AttestedReleaseFixture::new(label, &source, &tree, target);
         let names = [
+            "HOME",
             "CHARIOX_HOME",
             "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
             "CHARIOX_MANAGED_RELEASE_MANIFEST",
@@ -1326,6 +1331,7 @@ fn managed_release_evidence_fails_closed_for_attestation_target_source_signature
         "x86_64-unknown-linux-gnu",
     );
     let names = [
+        "HOME",
         "CHARIOX_HOME",
         "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
         "CHARIOX_MANAGED_RELEASE_MANIFEST",
@@ -1371,6 +1377,7 @@ fn managed_release_evidence_fails_closed_for_attestation_target_source_signature
         "x86_64-unknown-linux-gnu",
     );
     let names = [
+        "HOME",
         "CHARIOX_HOME",
         "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
         "CHARIOX_MANAGED_RELEASE_MANIFEST",
