@@ -2148,6 +2148,167 @@ fn claude_transcript_drain_maps_assistant_text_reasoning_and_tools() {
 }
 
 #[test]
+fn claude_transcript_drain_classifies_session_limit_without_success_completion() {
+    let mut cursor = ClaudeTranscriptCursor::default();
+    let dir = std::env::temp_dir().join(format!(
+        "chariox-claude-transcript-session-limit-test-{}",
+        std::process::id()
+    ));
+    let _ = fs::create_dir_all(&dir);
+    let transcript = dir.join("session.jsonl");
+    fs::write(
+        &transcript,
+        serde_json::json!({
+            "type": "assistant",
+            "uuid": "assistant-session-limit",
+            "sessionId": "claude-session-limit",
+            "message": {
+                "id": "message-session-limit",
+                "model": "claude-opus-4-8",
+                "role": "assistant",
+                "stop_reason": "stop_sequence",
+                "content": [{
+                    "type": "text",
+                    "text": "You've hit your session limit · resets 10:40pm (UTC)"
+                }]
+            }
+        })
+        .to_string(),
+    )
+    .expect("fixture should write");
+
+    let drain = drain_claude_transcript_file(&transcript.display().to_string(), &mut cursor);
+
+    assert_eq!(drain.chunks.len(), 1);
+    assert_eq!(drain.assistant_message_ids, vec!["message-session-limit"]);
+    assert_eq!(
+        drain.terminal_assistant_message_ids,
+        vec!["message-session-limit"]
+    );
+    assert!(drain
+        .terminal_failure
+        .as_deref()
+        .is_some_and(|failure| failure.contains("substitutable resource limit")));
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn claude_transcript_session_limit_projects_error_and_preserves_diagnostic() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-claude-transcript-limit",
+            "worktree-claude-transcript-limit",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-claude-transcript-limit",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-transcript-limit-projection-test-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("hidden-context.txt");
+    let transcript_file = root.join("session.jsonl");
+    fs::write(&context_file, "").expect("context should be created");
+    fs::write(
+        &transcript_file,
+        serde_json::json!({
+            "type": "assistant",
+            "uuid": "assistant-session-limit",
+            "sessionId": "claude-session-limit",
+            "message": {
+                "id": "message-session-limit",
+                "model": "claude-opus-4-8",
+                "role": "assistant",
+                "stop_reason": "stop_sequence",
+                "content": [{
+                    "type": "text",
+                    "text": "You've hit your session limit · resets 10:40pm (UTC)"
+                }]
+            }
+        })
+        .to_string(),
+    )
+    .expect("transcript should be written");
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude-headless",
+        "default",
+        "claude-opus-4-8",
+    )
+    .with_agent_id(agent.id())
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let mut run = RuntimeProviderRun::new(
+        "provider-run-claude-transcript-limit",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "claude-transcript-limit".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::from([(
+                "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
+                context_file.display().to_string(),
+            )]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+
+    let failure = ProviderOutputClaudeNativeBridge::new(&mut app)
+        .drain_claude_transcript(
+            session.id(),
+            run.id(),
+            &context_file.display().to_string(),
+            &transcript_file.display().to_string(),
+        )
+        .expect("transcript should drain")
+        .expect("session limit should be terminal");
+
+    assert!(failure.contains("substitutable resource limit"));
+    let output = app
+        .terminal()
+        .output_records()
+        .into_iter()
+        .find(|record| record.kind == TerminalOutputKind::ProviderError)
+        .expect("session limit should be projected as provider error");
+    assert!(String::from_utf8_lossy(&output.bytes).contains("session limit"));
+    assert!(!crate::transport::flow_control::prompt_completion_recorded(
+        &app,
+        run.id()
+    ));
+    assert!(app
+        .providers()
+        .get_run(run.id())
+        .expect("run should remain available")
+        .terminal_diagnostic()
+        .is_some_and(|diagnostic| diagnostic.contains("session limit")));
+    assert_eq!(
+        app.attachments().list_session_attachment_ids(session.id()),
+        vec![attachment.id().to_string()]
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn claude_transcript_drain_skips_content_before_active_prompt() {
     let mut cursor = ClaudeTranscriptCursor::default();
     let dir = std::env::temp_dir().join(format!(

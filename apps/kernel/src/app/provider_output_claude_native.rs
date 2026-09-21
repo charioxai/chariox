@@ -315,6 +315,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             false,
         )? {
             outcome.needs_deferred_transcript_drain = !settled;
+            outcome.terminal_failure = self
+                .app
+                .providers
+                .get_run(provider_run_id)
+                .ok()
+                .and_then(|run| run.terminal_diagnostic().map(str::to_string));
             return Ok(outcome);
         }
         self.inject_pending_prompt(
@@ -324,7 +330,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             context_file,
             provider_run,
         )?;
-        self.drain_known_claude_transcripts(session_id, provider_run_id, context_file)?;
+        if let Some(failure) =
+            self.drain_known_claude_transcripts(session_id, provider_run_id, context_file)?
+        {
+            outcome.terminal_failure = Some(failure);
+            return Ok(outcome);
+        }
         self.process_claude_account_usage(provider_run)?;
 
         let events_path = std::path::Path::new(events_file);
@@ -350,12 +361,15 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
             {
-                self.drain_claude_transcript(
+                if let Some(failure) = self.drain_claude_transcript(
                     session_id,
                     provider_run_id,
                     context_file,
                     transcript_path,
-                )?;
+                )? {
+                    outcome.terminal_failure = Some(failure);
+                    return Ok(outcome);
+                }
             }
             let event_name = event
                 .get("hook_event_name")
@@ -462,7 +476,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 // managed Claude interface. Drain now and once more after a
                 // short off-lock delay because the final transcript flush can
                 // trail the hook event.
-                self.drain_known_claude_transcripts(session_id, provider_run_id, context_file)?;
+                if let Some(failure) =
+                    self.drain_known_claude_transcripts(session_id, provider_run_id, context_file)?
+                {
+                    outcome.terminal_failure = Some(failure);
+                    return Ok(outcome);
+                }
                 if let Some(active_prompt) = self
                     .app
                     .prompt_owner_active_prompt_for_agent(session_id, &agent_id)?
@@ -493,7 +512,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 )?;
             }
         }
-        self.drain_known_claude_transcripts(session_id, provider_run_id, context_file)?;
+        outcome.terminal_failure =
+            self.drain_known_claude_transcripts(session_id, provider_run_id, context_file)?;
         Ok(outcome)
     }
 
@@ -648,12 +668,18 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         session_id: &str,
         provider_run_id: &str,
         context_file: &str,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<Option<String>, DaemonError> {
+        let mut terminal_failure = None;
         let paths = known_claude_transcript_paths(context_file);
         for path in paths {
-            self.drain_claude_transcript(session_id, provider_run_id, context_file, &path)?;
+            terminal_failure = terminal_failure.or(self.drain_claude_transcript(
+                session_id,
+                provider_run_id,
+                context_file,
+                &path,
+            )?);
         }
-        Ok(())
+        Ok(terminal_failure)
     }
 
     fn drain_claude_transcript(
@@ -662,7 +688,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         provider_run_id: &str,
         context_file: &str,
         transcript_path: &str,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<Option<String>, DaemonError> {
         let provider_run = self.app.providers.get_run(provider_run_id)?;
         let Some(transcript_path) =
             crate::provider::provider_reported_path_on_kernel(&provider_run, transcript_path)
@@ -675,7 +701,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     "provider_run_id": provider_run_id,
                 }),
             );
-            return Ok(());
+            return Ok(None);
         };
         let transcript_path = transcript_path.to_string_lossy();
         let minimum_timestamp_ms = self
@@ -705,6 +731,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             minimum_timestamp_ms,
         );
         save_claude_transcript_cursor(context_file, &cursor);
+        let terminal_failure = drain.terminal_failure.clone();
         let active_prompt_id = self
             .app
             .providers
@@ -729,7 +756,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             && drain.session_id.is_none()
             && drain.model.is_none()
         {
-            return Ok(());
+            return Ok(terminal_failure);
         }
 
         let mut metadata = ProviderPromptSignalBatch::default();
@@ -754,9 +781,17 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let fanout = ProviderOutputFanout::new(self.app);
         let mut saw_response_content = false;
         let mut saw_runtime_activity = false;
-        for chunk in drain.chunks {
+        for mut chunk in drain.chunks {
             if chunk.text.is_empty() {
                 continue;
+            }
+            if crate::provider::classify_provider_terminal_failure_output_text(
+                provider_run.adapter_key(),
+                &chunk.text,
+            )
+            .is_some()
+            {
+                chunk.kind = TerminalOutputKind::ProviderError;
             }
             if chunk.kind == TerminalOutputKind::ProviderTool {
                 crate::transport::flow_control::note_prompt_tool_output(
@@ -798,23 +833,33 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         } else if saw_runtime_activity {
             crate::transport::flow_control::note_prompt_output(self.app, provider_run_id);
         }
-        let terminal_assistant_turn_completed = !drain.terminal_assistant_message_ids.is_empty();
-        for message_id in drain.assistant_message_ids {
-            ProviderOutputFanout::new(self.app).record_assistant_message_completion(
-                session_id,
-                provider_run_id,
-                recipient_attachment_ids.clone(),
-                &message_id,
-                unix_epoch_ms(),
-            );
+        if terminal_failure.is_none() {
+            let terminal_assistant_turn_completed =
+                !drain.terminal_assistant_message_ids.is_empty();
+            for message_id in drain.assistant_message_ids {
+                ProviderOutputFanout::new(self.app).record_assistant_message_completion(
+                    session_id,
+                    provider_run_id,
+                    recipient_attachment_ids.clone(),
+                    &message_id,
+                    unix_epoch_ms(),
+                );
+            }
+            if terminal_assistant_turn_completed {
+                crate::transport::flow_control::mark_prompt_completion_recorded(
+                    self.app,
+                    provider_run_id,
+                );
+            }
         }
-        if terminal_assistant_turn_completed {
-            crate::transport::flow_control::mark_prompt_completion_recorded(
-                self.app,
-                provider_run_id,
-            );
+        if let Some(failure) = terminal_failure.as_deref() {
+            let run = self
+                .app
+                .providers
+                .record_terminal_diagnostic(provider_run_id, failure.to_string())?;
+            self.app.update_provider_run_projection(run);
         }
-        Ok(())
+        Ok(terminal_failure)
     }
 
     pub(crate) fn process_terminal_output(

@@ -26,6 +26,28 @@ impl KernelRuntimeState {
                 .connector_adapter_processes
                 .shutdown_run(provider_run_id)
                 .await;
+            let terminal_diagnostic = exit.ended_run.terminal_diagnostic().map(str::to_string);
+            if let Some(diagnostic) = terminal_diagnostic.as_deref() {
+                if owned.provider_run_has_active_prompt(session_id, &exit.ended_run)? {
+                    let termination = crate::provider::ProviderRunTermination::runtime_failure(
+                        "provider run was already ended during liveness reconciliation",
+                        crate::session::unix_epoch_ms(),
+                    );
+                    self.settle_unexpected_provider_run_exit_with_diagnostic(
+                        session_id,
+                        provider_run_id,
+                        exit.ended_run.agent_instance_id().ok_or_else(|| {
+                            DaemonError::AgentNotFound {
+                                agent_id: "provider run has no agent".to_string(),
+                            }
+                        })?,
+                        termination,
+                        Some(diagnostic),
+                    )
+                    .await?;
+                    return Ok(exit.already_ended);
+                }
+            }
             if self
                 .settle_completed_claude_prompt_after_provider_exit(
                     session_id,
@@ -47,7 +69,7 @@ impl KernelRuntimeState {
                     .provider_store
                     .record_terminal_diagnostic(provider_run_id, termination.reason.clone())?;
                 owned.provider_run_projection.update(diagnosed);
-                self.settle_unexpected_provider_run_exit(
+                self.settle_unexpected_provider_run_exit_with_diagnostic(
                     session_id,
                     provider_run_id,
                     exit.ended_run.agent_instance_id().ok_or_else(|| {
@@ -56,6 +78,7 @@ impl KernelRuntimeState {
                         }
                     })?,
                     termination,
+                    None,
                 )
                 .await?
             } else {
@@ -90,15 +113,9 @@ impl KernelRuntimeState {
                 crate::app::ProviderLaunchProcessRuntime::new(app).poll_exit(provider_run_id)
             })
             .await?;
-        let terminal_diagnostic = process_exit
+        let process_terminal_diagnostic = process_exit
             .as_ref()
             .and_then(|exit| exit.terminal_diagnostic.clone());
-        if let Some(diagnostic) = terminal_diagnostic.as_deref() {
-            let run = owned
-                .provider_store
-                .record_terminal_diagnostic(provider_run_id, diagnostic.to_string())?;
-            owned.provider_run_projection.update(run);
-        }
         let Some(exit) = owned.reconcile_provider_run_liveness_provider_phase(
             session_id,
             provider_run_id,
@@ -107,6 +124,14 @@ impl KernelRuntimeState {
         else {
             return Ok(false);
         };
+        let terminal_diagnostic = process_terminal_diagnostic
+            .or_else(|| exit.ended_run.terminal_diagnostic().map(str::to_string));
+        if let Some(diagnostic) = terminal_diagnostic.as_deref() {
+            let run = owned
+                .provider_store
+                .record_terminal_diagnostic(provider_run_id, diagnostic.to_string())?;
+            owned.provider_run_projection.update(run);
+        }
         let (_, process_key) = self
             .with_app_side_effect(|app| {
                 crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(provider_run_id)
@@ -118,6 +143,30 @@ impl KernelRuntimeState {
             .connector_adapter_processes
             .shutdown_run(provider_run_id)
             .await;
+        if let Some(diagnostic) = terminal_diagnostic.as_deref() {
+            if owned.provider_run_has_active_prompt(session_id, &exit.ended_run)? {
+                let agent_id = exit.ended_run.agent_instance_id().ok_or_else(|| {
+                    DaemonError::AgentNotFound {
+                        agent_id: "provider run has no agent".to_string(),
+                    }
+                })?;
+                let termination = termination_for_process_exit(
+                    process_exit
+                        .as_ref()
+                        .map(|exit| (exit.exit_code, exit.signal.as_deref())),
+                    crate::session::unix_epoch_ms(),
+                );
+                self.settle_unexpected_provider_run_exit_with_diagnostic(
+                    session_id,
+                    provider_run_id,
+                    agent_id,
+                    termination,
+                    Some(diagnostic),
+                )
+                .await?;
+                return Ok(true);
+            }
+        }
         if exit.already_ended {
             let _ = self
                 .settle_owned_provider_prompt(session_id, provider_run_id, false, false, true)

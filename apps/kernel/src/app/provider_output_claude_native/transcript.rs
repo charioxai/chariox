@@ -34,6 +34,7 @@ pub(super) struct ClaudeTranscriptDrain {
     pub(super) chunks: Vec<ClaudeTranscriptChunk>,
     pub(super) assistant_message_ids: Vec<String>,
     pub(super) terminal_assistant_message_ids: Vec<String>,
+    pub(super) terminal_failure: Option<String>,
     pub(super) enqueued_prompts: Vec<String>,
     pub(super) session_id: Option<String>,
     pub(super) model: Option<String>,
@@ -136,7 +137,16 @@ pub(super) fn drain_claude_transcript_file_since(
         if let Some(prompt) = claude_transcript_enqueued_prompt(&value) {
             drain.enqueued_prompts.push(prompt);
         }
-        drain.chunks.extend(claude_transcript_chunks(&value));
+        let chunks = claude_transcript_chunks(&value);
+        if drain.terminal_failure.is_none() {
+            drain.terminal_failure = chunks.iter().find_map(|chunk| {
+                crate::provider::classify_provider_terminal_failure_output_text(
+                    "claude",
+                    &chunk.text,
+                )
+            });
+        }
+        drain.chunks.extend(chunks);
         if let Some(message_id) = claude_transcript_assistant_message_id(&value) {
             if cursor.seen_assistant_message_ids.insert(message_id.clone()) {
                 drain.assistant_message_ids.push(message_id.clone());
