@@ -190,6 +190,22 @@ fn acknowledge_claude_headless_dispatch_from_hook_events(
     }
 }
 
+fn claude_transcript_paths_from_hook_events(events_file: &str) -> Vec<String> {
+    let raw = fs::read_to_string(events_file).unwrap_or_default();
+    raw.lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter_map(|event| {
+            event
+                .get("transcript_path")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(str::to_string)
+        })
+        .collect()
+}
+
 fn acknowledge_claude_headless_steering_enqueue(
     context_file: &str,
     active_prompt_id: Option<&str>,
@@ -1043,6 +1059,25 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     events_file,
                     prompt.id,
                 );
+                // A busy Claude run can consume steering as an
+                // AskUserQuestion answer and record the submitted text only
+                // as a queue enqueue. The normal output pump recognizes that
+                // transcript record, but prompt dispatch must not depend on a
+                // concurrent poll while it is waiting for delivery. Drain the
+                // referenced transcript here as well; the shared cursor keeps
+                // the later output-pump pass idempotent.
+                let mut transcript_paths = known_claude_transcript_paths(context_file)
+                    .into_iter()
+                    .collect::<std::collections::BTreeSet<_>>();
+                transcript_paths.extend(claude_transcript_paths_from_hook_events(events_file));
+                for transcript_path in transcript_paths {
+                    self.drain_claude_transcript(
+                        session_id,
+                        provider_run_id,
+                        context_file,
+                        &transcript_path,
+                    )?;
+                }
             }
         }
         // Native TUI injection completes once Enter reaches the provider. A

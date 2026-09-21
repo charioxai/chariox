@@ -1219,6 +1219,184 @@ fn claude_headless_user_prompt_submit_acknowledges_matching_managed_dispatches()
 }
 
 #[test]
+fn claude_headless_dispatch_observes_ask_user_question_queue_acknowledgement() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-ask-user-question-ack",
+            "worktree-ask-user-question-ack",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-ask-user-question-ack",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("session should attach");
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-headless-ask-user-question-ack-test-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
+    let transcript_file = root.join("transcript.jsonl");
+    fs::write(&context_file, "").expect("context file should be created");
+    fs::write(
+        &transcript_file,
+        [
+            serde_json::json!({
+                "type": "assistant",
+                "uuid": "ask-user-question",
+                "message": {
+                    "id": "msg-ask-user-question",
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu-ask-user-question",
+                        "name": "AskUserQuestion",
+                        "input": { "question": "Which topology should the aggregate use?" }
+                    }]
+                }
+            })
+            .to_string(),
+            serde_json::json!({
+                "type": "user",
+                "uuid": "ask-user-question-response",
+                "message": {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "toolu-ask-user-question",
+                        "content": "The user answered the questions:"
+                    }]
+                },
+                "toolUseResult": {
+                    "answers": {
+                        "Which topology should the aggregate use?":
+                            "Use HOME=/home/chariox and continue the aggregate."
+                    }
+                }
+            })
+            .to_string(),
+            serde_json::json!({
+                "type": "queue-operation",
+                "operation": "enqueue",
+                "content": "Use HOME=/home/chariox and continue the aggregate."
+            })
+            .to_string(),
+        ]
+        .join("\n"),
+    )
+    .expect("transcript fixture should be written");
+    fs::write(
+        &events_file,
+        serde_json::json!({
+            "hook_event_name": "SessionStart",
+            "transcript_path": transcript_file.display().to_string(),
+        })
+        .to_string(),
+    )
+    .expect("transcript hook fixture should be written");
+    let context_file = context_file.display().to_string();
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude-headless",
+        "default",
+        "claude-opus",
+    )
+    .with_agent_id(agent.id())
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let mut run = RuntimeProviderRun::new(
+        "provider-run-ask-user-question-ack",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-claude-headless-ask-user-question-ack".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::from([
+                (
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
+                    context_file.clone(),
+                ),
+                (
+                    "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
+                    events_file.display().to_string(),
+                ),
+            ]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    app.record_native_prompt_started_with_attachments(
+        session.id(),
+        attachment.id(),
+        attachment.id(),
+        agent.id(),
+        "Inspect the aggregate and ask for the topology decision.",
+        Vec::new(),
+    )
+    .expect("active prompt should start");
+
+    let steering_prompt_id = "steering-topology-decision";
+    let steering_prompt = "Use HOME=/home/chariox and continue the aggregate.";
+    write_claude_native_marker(&context_file, &format!("injected:{steering_prompt_id}"));
+    write_claude_headless_submit_retry(
+        &context_file,
+        steering_prompt_id,
+        0,
+        unix_epoch_ms(),
+        steering_prompt,
+    );
+    let dispatch = KernelPromptDispatch {
+        session_id: session.id().to_string(),
+        provider_run_id: run.id().to_string(),
+        agent_id: agent.id().to_string(),
+        prompt_id: steering_prompt_id.to_string(),
+        target_active_prompt_id: app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should remain available")
+            .active_prompt_for_agent(agent.id())
+            .map(|prompt| prompt.id().to_string()),
+        source_attachment_id: attachment.id().to_string(),
+        prompt: steering_prompt.to_string(),
+        hidden_system_context: String::new(),
+        attachments: Vec::new(),
+        prompt_origin: crate::session::PromptOrigin::Chariox,
+        external_provider: None,
+        external_provider_session_id: None,
+        external_provider_turn_id: None,
+        steering: true,
+    };
+
+    let outcome = ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch)
+        .expect("AskUserQuestion queue acknowledgement should be processed");
+
+    assert_eq!(outcome, ClaudeNativeDispatchAttempt::Completed);
+    assert_eq!(
+        claude_native_marker(&context_file).as_deref(),
+        Some(format!("accepted:{steering_prompt_id}").as_str()),
+        "the dispatch loop must observe Claude's matching queue record without waiting for the output pump"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn claude_native_dispatch_marker_extracts_steering_identity() {
     assert_eq!(
         claude_native_dispatch_prompt_id("injected:steering-prompt-1"),
