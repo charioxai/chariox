@@ -9,6 +9,8 @@ import {
 const OSS_SHA = "1".repeat(40)
 const CLOUD_SHA = "2".repeat(40)
 const IMAGE_DIGEST = `sha256:${"3".repeat(64)}`
+const SOURCE_TREE = "5".repeat(40)
+const RELEASE_TARGET = "x86_64-unknown-linux-gnu"
 
 function config(overrides = {}) {
   return {
@@ -19,6 +21,8 @@ function config(overrides = {}) {
       digest: IMAGE_DIGEST,
       signature: Buffer.alloc(64, 7).toString("base64"),
       signerFingerprint: `sha256:${"4".repeat(64)}`,
+      sourceTree: SOURCE_TREE,
+      target: RELEASE_TARGET,
     },
     expected: {
       kernelId: "kernel-managed-1",
@@ -45,9 +49,11 @@ function preflight(overrides = {}) {
       digest: IMAGE_DIGEST,
       signature: Buffer.alloc(64, 7).toString("base64"),
       signerFingerprint: `sha256:${"4".repeat(64)}`,
+      sourceTree: SOURCE_TREE,
+      target: RELEASE_TARGET,
       verified: true,
     },
-    source: { ossSha: OSS_SHA, cloudSha: CLOUD_SHA },
+    source: { ossSha: OSS_SHA, sourceTree: SOURCE_TREE, cloudShaExpected: CLOUD_SHA },
     protocol: { kernel: 322, relay: 18, relayVersion: "chariox-relay 0.1.0" },
     target: {
       kernelId: "kernel-managed-1",

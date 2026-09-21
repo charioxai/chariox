@@ -94,7 +94,7 @@ export async function runManagedBrowserComputerParityHarness({
     status: failure ? "failed" : "passed",
     startedAt,
     completedAt,
-    source: preflight?.source ?? { ossSha: config.ossSha, cloudSha: config.cloudSha },
+    source: preflight?.source ?? { ossShaExpected: config.ossSha, cloudShaExpected: config.cloudSha },
     signedImage: preflight?.image ?? { ...config.image, verified: false },
     protocol: preflight?.protocol ?? null,
     target: preflight?.target ?? { ...config.expected },
@@ -195,7 +195,9 @@ function validatePreflight(value, config) {
     || value.image?.verified !== true) {
     fail("signed_image_required", "preflight")
   }
-  if (value.source?.ossSha !== config.ossSha || value.source?.cloudSha !== config.cloudSha) {
+  if (value.source?.ossSha !== config.ossSha
+    || value.source?.sourceTree !== config.image.sourceTree
+    || value.source?.cloudShaExpected !== config.cloudSha) {
     fail("source_identity_mismatch", "preflight")
   }
   if (!Number.isSafeInteger(value.protocol?.kernel)
@@ -278,7 +280,9 @@ function validateConfig(config) {
   }
   if (!/^sha256:[0-9a-f]{64}$/.test(config.image?.digest ?? "")
     || !base64Ed25519Signature(config.image?.signature)
-    || !/^sha256:[0-9a-f]{64}$/.test(config.image?.signerFingerprint ?? "")) {
+    || !/^sha256:[0-9a-f]{64}$/.test(config.image?.signerFingerprint ?? "")
+    || !sha(config.image?.sourceTree)
+    || !text(config.image?.target)) {
     throw new Error("managed parity config requires an exact signed image identity")
   }
   for (const field of ["kernelId", "machineId", "roomId", "environmentId"]) {

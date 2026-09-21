@@ -12,6 +12,27 @@ const moduleRequestApi = {
   },
 }
 
+const RELEASE_DIGEST = `sha256:${"3".repeat(64)}`
+const SOURCE_COMMIT = "1".repeat(40)
+const SOURCE_TREE = "5".repeat(40)
+const RELEASE_TARGET = "x86_64-unknown-linux-gnu"
+
+function verifiedRelease(overrides = {}) {
+  return {
+    status: "verified",
+    runtimeReleaseDigest: RELEASE_DIGEST,
+    sourceCommit: SOURCE_COMMIT,
+    sourceTree: SOURCE_TREE,
+    target: RELEASE_TARGET,
+    activeReleasePath: `/usr/lib/chariox/releases/${RELEASE_DIGEST.slice("sha256:".length)}`,
+    manifestSignatureVerified: true,
+    manifestDigestVerified: true,
+    kernelArtifactVerified: true,
+    bootstrapReceiptVerified: true,
+    ...overrides,
+  }
+}
+
 test("factory uses the released kernel telemetry request without importing dist", async () => {
   const previous = new Map([
     ["CHARIOX_MANAGED_PARITY_HOME_KERNEL_URL", process.env.CHARIOX_MANAGED_PARITY_HOME_KERNEL_URL],
@@ -176,6 +197,7 @@ function managedTelemetry(overrides = {}) {
       source: "kernel-managed-test",
     },
     capturedAt: "2026-09-20T00:00:00.000Z",
+    release: verifiedRelease(),
     memory: { totalBytes: 8_000, usedBytes: 4_000, availableBytes: 4_000 },
     disk: { totalBytes: 16_000, usedBytes: 4_000, availableBytes: 12_000 },
     process: { count: 1, rssBytes: 100 },
@@ -202,6 +224,21 @@ test("managed resource telemetry passes with stable target identity and redactio
   assert.equal(result.providerAuth, "[REDACTED]")
   assert.equal(result.phase, "before-browser-start")
   assert.equal(result.capturedAt, "2026-09-20T00:00:00.000Z")
+  assert.deepEqual(result.release, verifiedRelease())
+})
+
+test("managed resource telemetry rejects missing or incomplete installed release evidence", async () => {
+  await assert.rejects(
+    () => createTelemetryTransport(managedTelemetry({ release: undefined }))
+      .collectManagedTargetResourceSnapshot({ phase: "preflight" }),
+    /requires verified installed release evidence/,
+  )
+  await assert.rejects(
+    () => createTelemetryTransport(managedTelemetry({
+      release: verifiedRelease({ kernelArtifactVerified: false }),
+    })).collectManagedTargetResourceSnapshot({ phase: "preflight" }),
+    /kernelArtifactVerified is not verified/,
+  )
 })
 
 test("managed resource telemetry does not promote partial daemon health into an authoritative sample", async () => {
@@ -245,6 +282,7 @@ test("managed resource telemetry reports unknown data instead of using a host fa
 test("managed resource telemetry rejects authoritative metadata without the complete guard sample", async () => {
   const transport = createTelemetryTransport({
     telemetry: managedTelemetry().telemetry,
+    release: verifiedRelease(),
     process: { rssBytes: 128 },
   })
   await assert.rejects(
@@ -337,6 +375,96 @@ test("compatibility preflight rejects stale and too-new kernel protocol constant
       `protocol ${protocol}`,
     )
   }
+})
+
+function createKernelPreflightTransport(release = verifiedRelease()) {
+  const requestApi = {
+    ...moduleRequestApi,
+    kernelResourceTelemetryMinimumProtocolVersion: 336,
+    getKernelResourceTelemetryRequest() { return { GetKernelResourceTelemetry: null } },
+    relayStatusRequest() { return { RelayStatus: null } },
+    getRoomEnvironmentStateRequest(sessionId) {
+      return { GetRoomEnvironmentState: { session_id: sessionId } }
+    },
+    getProviderCatalogRequest({ provider }) { return { GetProviderCatalog: { provider } } },
+    getProviderAuthStatusRequest(provider) { return { GetProviderAuthStatus: { provider } } },
+    getWorkspaceGitOverviewRequest() { return { GetWorkspaceGitOverview: null } },
+    submitRoomEnvironmentActionRequest() {},
+    readRoomEnvironmentClipboardRequest() {},
+    getProviderCatalogRequestForPreflight() {},
+    submitPromptRequest() {},
+    captureRoomEnvironmentScreenshotRequest() {},
+    requestRoomEnvironmentInputTakeoverRequest() {},
+    releaseRoomEnvironmentInputRequest() {},
+    createSliceRequest() {},
+  }
+  const client = {
+    async send(request) {
+      if (Object.hasOwn(request, "RelayStatus")) {
+        return { RelayStatus: { status: {
+          configured: true,
+          connected: true,
+          daemon_id: "kernel-1",
+          machine_id: "machine-1",
+          heartbeat_age_ms: 100,
+          relay_peer_protocol_version: 18,
+          relay_version: "chariox-relay 0.1.0",
+        } } }
+      }
+      if (Object.hasOwn(request, "GetRoomEnvironmentState")) {
+        return { RoomEnvironmentState: { environment: {
+          session_id: request.GetRoomEnvironmentState.session_id,
+          environment_id: "environment-1",
+        } } }
+      }
+      if (Object.hasOwn(request, "GetProviderCatalog")) {
+        return { ProviderCatalog: { catalog: { all: [{ id: `${request.GetProviderCatalog.provider}-model` }] } } }
+      }
+      if (Object.hasOwn(request, "GetProviderAuthStatus")) {
+        return { ProviderAuthStatus: { status: { auth_state: "authenticated" } } }
+      }
+      throw new Error(`unexpected preflight request: ${JSON.stringify(request)}`)
+    },
+  }
+  return createManagedBrowserComputerParityTransportFromPublicClient({
+    client,
+    requestApi,
+    targetKernelRef: "kernel-1",
+    targetMachineRef: "machine-1",
+    protocolApi: { LOCAL_DAEMON_PROTOCOL_VERSION: 336 },
+    resourceTelemetry: async () => managedTelemetry({ release }),
+    parityConfig: {
+      ossSha: SOURCE_COMMIT,
+      cloudSha: "2".repeat(40),
+      image: {
+        digest: RELEASE_DIGEST,
+        signature: Buffer.alloc(64, 7).toString("base64"),
+        signerFingerprint: `sha256:${"4".repeat(64)}`,
+        sourceTree: SOURCE_TREE,
+        target: RELEASE_TARGET,
+      },
+      expected: { roomId: "room-1", environmentId: "environment-1" },
+      workspaceId: "workspace-1",
+      worktreeId: "worktree-1",
+    },
+  })
+}
+
+test("production preflight binds reported source and image to verified installed release evidence", async () => {
+  const preflight = await createKernelPreflightTransport().run("preflight", { runId: "run-1" })
+  assert.equal(preflight.image.digest, RELEASE_DIGEST)
+  assert.equal(preflight.image.verified, true)
+  assert.equal(preflight.release.runtimeReleaseDigest, RELEASE_DIGEST)
+  assert.equal(preflight.source.ossSha, SOURCE_COMMIT)
+  assert.equal(preflight.source.sourceTree, SOURCE_TREE)
+  assert.equal(preflight.source.cloudShaExpected, "2".repeat(40))
+
+  await assert.rejects(
+    () => createKernelPreflightTransport(verifiedRelease({
+      runtimeReleaseDigest: `sha256:${"9".repeat(64)}`,
+    })).run("preflight", { runId: "run-mismatch" }),
+    /installed release does not match the reviewed release identity/,
+  )
 })
 
 test("transport dispatches every live M0 operation through an explicit operation boundary", async () => {

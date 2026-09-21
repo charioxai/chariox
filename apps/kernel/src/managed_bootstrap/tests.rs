@@ -1135,7 +1135,7 @@ fn set_release_evidence_env(fixture: &AttestedReleaseFixture) {
     );
 }
 
-#[cfg(unix)]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
 fn managed_release_evidence_is_kernel_verified_from_active_release_and_receipt() {
     let _env = crate::env_lock::lock();
@@ -1181,7 +1181,7 @@ fn managed_release_evidence_is_kernel_verified_from_active_release_and_receipt()
     fixture.cleanup();
 }
 
-#[cfg(unix)]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
 fn managed_release_evidence_fails_closed_for_attestation_target_source_signature_artifact_receipt_and_layout_mismatch(
 ) {
