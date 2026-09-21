@@ -91,10 +91,16 @@ pub(crate) fn preflight_working_directory(
     };
 
     let protection = ordinary_working_directory_protection(operation)?;
-    let reexposed_roots = reexposed_roots
+    let mut reexposed_roots = reexposed_roots
         .iter()
         .map(|root| canonical_or_lexical_path(root, operation))
         .collect::<Result<Vec<_>, _>>()?;
+    // Workflow runtime instances are kernel-owned artifacts, not caller-provided
+    // live-sync roots. Derive this one narrow authorization from the configured
+    // Chariox state namespace so every launch boundary shares the same rule.
+    if let Some(root) = kernel_owned_workflow_runtime_instance_root(&canonical_path, operation)? {
+        reexposed_roots.push(root);
+    }
     if reexposed_roots.iter().any(|root| {
         protection
             .directories
@@ -303,6 +309,45 @@ fn lexically_normalized_absolute_path(
 
 fn canonical_path_is_within(path: &Path, root: &Path) -> bool {
     path == root || path.starts_with(root)
+}
+
+fn kernel_owned_workflow_runtime_instance_root(
+    canonical_path: &Path,
+    operation: &'static str,
+) -> Result<Option<PathBuf>, DaemonError> {
+    let instances_roots = if let Some(raw_home) = std::env::var_os("CHARIOX_HOME") {
+        vec![PathBuf::from(raw_home)
+            .join("state")
+            .join("workflow-runtime")
+            .join("instances")]
+    } else if let Some(raw_home) = std::env::var_os("HOME") {
+        vec![PathBuf::from(raw_home)
+            .join(".chariox")
+            .join("state")
+            .join("workflow-runtime")
+            .join("instances")]
+    } else {
+        Vec::new()
+    };
+
+    for instances_root in instances_roots {
+        let instances_root = canonical_or_lexical_path(&instances_root, operation)?;
+        let Ok(relative) = canonical_path.strip_prefix(&instances_root) else {
+            continue;
+        };
+        let mut components = relative.components();
+        let Some(std::path::Component::Normal(session_id)) = components.next() else {
+            continue;
+        };
+        let Some(std::path::Component::Normal(instance_id)) = components.next() else {
+            continue;
+        };
+        let instance_root = instances_root.join(session_id).join(instance_id);
+        if canonical_path_is_within(canonical_path, &instance_root) {
+            return Ok(Some(instance_root));
+        }
+    }
+    Ok(None)
 }
 
 pub(crate) fn resolve_existing_worktree(
@@ -707,6 +752,87 @@ mod tests {
         std::fs::remove_dir_all(root).expect("preflight fixture should be removable");
     }
 
+    #[test]
+    fn chariox_home_authorizes_only_kernel_workflow_runtime_instance_children() {
+        let _env = crate::env_lock::lock();
+        let root = plain_temp_directory("workflow-runtime-auth");
+        let instance = root
+            .join("state")
+            .join("workflow-runtime")
+            .join("instances")
+            .join("session-1")
+            .join("instance-1");
+        let nested = instance.join("src");
+        let unrelated = root.join("state").join("unrelated");
+        std::fs::create_dir_all(&nested).expect("workflow instance should exist");
+        std::fs::create_dir_all(&unrelated).expect("unrelated state should exist");
+
+        let previous_home = std::env::var_os("CHARIOX_HOME");
+        std::env::set_var("CHARIOX_HOME", &root);
+
+        preflight_working_directory(&instance, "workflow.runtime.cwd", false, &[])
+            .expect("the exact kernel-owned workflow instance should be authorized");
+        preflight_working_directory(&nested, "workflow.runtime.nested.cwd", false, &[])
+            .expect("children of the kernel-owned workflow instance should be authorized");
+        preflight_working_directory(&unrelated, "workflow.unrelated.cwd", false, &[])
+            .expect_err("unrelated Chariox state must remain protected");
+
+        restore_env("CHARIOX_HOME", previous_home);
+        std::fs::remove_dir_all(root).expect("workflow auth fixture should be removable");
+    }
+
+    #[test]
+    fn workflow_runtime_git_provisioning_reaches_kernel_owned_instance_root() {
+        let _env = crate::env_lock::lock();
+        let root = plain_temp_directory("workflow-runtime-git");
+        let chariox_home = root.join("chariox-home");
+        let source = root.join("source");
+        let target = chariox_home
+            .join("state")
+            .join("workflow-runtime")
+            .join("instances")
+            .join("session-1")
+            .join("instance-1");
+        std::fs::create_dir_all(&source).expect("source repository should exist");
+        std::fs::create_dir_all(target.parent().expect("target parent should exist"))
+            .expect("workflow instance parent should exist");
+        run_test_git(&source, &["init", "-b", "main"]);
+        run_test_git(&source, &["config", "user.email", "test@chariox.local"]);
+        run_test_git(&source, &["config", "user.name", "Chariox Test"]);
+        std::fs::write(source.join("README"), "workflow runtime\n")
+            .expect("source fixture should be writable");
+        run_test_git(&source, &["add", "README"]);
+        run_test_git(&source, &["commit", "-m", "initial"]);
+
+        let previous_home = std::env::var_os("CHARIOX_HOME");
+        std::env::set_var("CHARIOX_HOME", &chariox_home);
+        let placement = GitWorktreePlacement {
+            target_directory: Some(target.display().to_string()),
+            branch: None,
+            from_ref: Some("HEAD".to_string()),
+        };
+        let selected = prepare_workflow_runtime_worktree_or_reuse_directory(
+            &placement,
+            &source,
+            None,
+            "provision workflow runtime test instance",
+        )
+        .expect("kernel-owned workflow runtime worktree should provision");
+        assert_eq!(PathBuf::from(&selected), target);
+        assert!(is_git_worktree(&target));
+
+        remove_workflow_runtime_worktree(
+            &source,
+            &selected,
+            "cleanup workflow runtime test instance",
+        )
+        .expect("workflow runtime worktree should clean up");
+        assert!(!target.exists());
+
+        restore_env("CHARIOX_HOME", previous_home);
+        std::fs::remove_dir_all(root).expect("workflow git fixture should be removable");
+    }
+
     #[cfg(unix)]
     #[test]
     fn symlinked_directories_follow_ordinary_kernel_resolution() {
@@ -839,5 +965,19 @@ mod tests {
             Some(value) => std::env::set_var(name, value),
             None => std::env::remove_var(name),
         }
+    }
+
+    fn run_test_git(directory: &std::path::Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(directory)
+            .output()
+            .expect("git test command should run");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

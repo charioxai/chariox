@@ -182,13 +182,17 @@ impl DaemonApp {
             );
             request = request.with_workspace_live_sync_roots(workspace_live_sync_roots);
         }
-        if let Some(working_directory) = request.working_directory.as_deref() {
-            crate::git_worktree_placement::preflight_working_directory(
-                working_directory,
-                operation,
-                false,
-                &[],
-            )?;
+        if !(crate::provider::managed_provider_isolation_required()
+            && request.uses_workspace_live_sync())
+        {
+            if let Some(working_directory) = request.working_directory.as_deref() {
+                crate::git_worktree_placement::preflight_working_directory(
+                    working_directory,
+                    operation,
+                    false,
+                    &[],
+                )?;
+            }
         }
         if request.runtime_mcp_binding.is_none() {
             let shared_auth_token = request
