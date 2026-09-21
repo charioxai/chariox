@@ -1664,6 +1664,12 @@ fn claude_headless_early_exit_before_ack_has_bounded_diagnostic() {
 
 #[test]
 fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-startup-trust-rejection-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -1682,7 +1688,7 @@ fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
     let (other_session, _other_default_agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(crate::session::CreateSessionRequest::new(
             "workspace-unrelated-agent",
-            "worktree-unrelated-agent",
+            root.display().to_string(),
         ))
         .expect("unrelated session should be created");
     let other_agent = crate::app::KernelSessionService::new(&mut app)
@@ -1708,12 +1714,6 @@ fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
         Vec::new(),
     )
     .expect("unrelated agent prompt should remain active");
-    let root = std::env::temp_dir().join(format!(
-        "chariox-claude-startup-trust-rejection-{}-{}",
-        std::process::id(),
-        timestamp_millis()
-    ));
-    fs::create_dir_all(&root).expect("test root should be created");
     let context_file = root.join("hidden-context.txt");
     let events_file = root.join("events.jsonl");
     fs::write(&context_file, "").expect("context file should be created");
@@ -2073,6 +2073,7 @@ fn claude_transcript_drain_maps_assistant_text_reasoning_and_tools() {
                         "id": "msg_1",
                         "model": "claude-sonnet-4-6",
                         "role": "assistant",
+                        "stop_reason": "tool_use",
                         "content": [
                             { "type": "thinking", "thinking": "considering" },
                             { "type": "text", "text": "hello" },
@@ -2102,6 +2103,7 @@ fn claude_transcript_drain_maps_assistant_text_reasoning_and_tools() {
     assert_eq!(drain.session_id.as_deref(), Some("claude-session-1"));
     assert_eq!(drain.model.as_deref(), Some("claude/claude-sonnet-4-6"));
     assert_eq!(drain.assistant_message_ids, vec!["msg_1"]);
+    assert!(drain.terminal_assistant_message_ids.is_empty());
     assert_eq!(drain.chunks.len(), 4);
     assert_eq!(drain.chunks[0].kind, TerminalOutputKind::ProviderReasoning);
     assert_eq!(drain.chunks[0].text, "considering");
@@ -2114,6 +2116,33 @@ fn claude_transcript_drain_maps_assistant_text_reasoning_and_tools() {
     let second = drain_claude_transcript_file(&transcript.display().to_string(), &mut cursor);
     assert!(second.chunks.is_empty());
     assert!(second.assistant_message_ids.is_empty());
+
+    let mut transcript_text = fs::read_to_string(&transcript).expect("fixture should read");
+    transcript_text.push('\n');
+    transcript_text.push_str(
+        &serde_json::json!({
+            "type": "assistant",
+            "uuid": "assistant-final",
+            "message": {
+                "id": "msg_final",
+                "model": "claude-sonnet-4-6",
+                "role": "assistant",
+                "stop_reason": "stop_sequence",
+                "content": [{ "type": "text", "text": "done" }]
+            }
+        })
+        .to_string(),
+    );
+    transcript_text.push('\n');
+    fs::write(&transcript, transcript_text).expect("terminal fixture should append");
+
+    let terminal = drain_claude_transcript_file(&transcript.display().to_string(), &mut cursor);
+    assert_eq!(terminal.assistant_message_ids, vec!["msg_final"]);
+    assert_eq!(terminal.terminal_assistant_message_ids, vec!["msg_final"]);
+
+    let after_terminal =
+        drain_claude_transcript_file(&transcript.display().to_string(), &mut cursor);
+    assert!(after_terminal.terminal_assistant_message_ids.is_empty());
 
     let _ = fs::remove_dir_all(dir);
 }

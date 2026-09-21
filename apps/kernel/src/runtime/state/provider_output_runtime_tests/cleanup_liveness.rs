@@ -107,6 +107,119 @@ async fn unexpected_owned_provider_exit_marks_active_agent_error() {
 }
 
 #[tokio::test]
+async fn completed_claude_transcript_exit_settles_prompt_without_agent_error() {
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
+            .expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-completed-claude-exit",
+            "worktree-completed-claude-exit",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-completed-claude-exit",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude-headless",
+        "default",
+        "claude-opus-4-8",
+    )
+    .with_agent_id(agent.id())
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-completed-claude-exit",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "completed-claude-exit".to_string(),
+            pty_target: Some("provider-run-completed-claude-exit".to_string()),
+            pty_program: Some("/bin/sh".to_string()),
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    app.update_provider_run_projection(run.clone());
+    let prompt = crate::session::PromptQueueItem::new(
+        "prompt-completed-claude-exit",
+        attachment.id(),
+        agent.id(),
+        "finish normally\n",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), prompt.clone(), false)
+        .expect("prompt should start")
+    else {
+        panic!("prompt should start immediately");
+    };
+    app.mark_active_prompt_delivery(
+        session.id(),
+        agent.id(),
+        prompt.id(),
+        crate::session::DurablePromptDeliveryPhase::Delivered,
+        Some(run.id().to_string()),
+        None,
+    )
+    .expect("prompt should be delivered");
+    crate::transport::flow_control::note_prompt_started(&mut app, run.id());
+    crate::transport::flow_control::note_prompt_response_content(&mut app, run.id());
+    crate::transport::flow_control::mark_prompt_completion_recorded(&mut app, run.id());
+    let ended = app
+        .providers_mut()
+        .mark_run_ended_provider_only(session.id(), run.id())
+        .expect("provider run should end")
+        .into_run();
+    app.update_provider_run_projection(ended);
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    assert!(runtime
+        .reconcile_provider_run_exit(session.id(), run.id())
+        .await
+        .expect("completed Claude exit should reconcile"));
+
+    let session_state = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should exist");
+    assert!(session_state.active_prompt_for_agent(agent.id()).is_none());
+    assert_ne!(
+        runtime
+            .owned
+            .agent_store
+            .get_agent(agent.id())
+            .expect("agent should remain available")
+            .state(),
+        crate::agent::AgentState::Error,
+    );
+    let completed = runtime
+        .owned
+        .completed_git_turn_snapshots
+        .latest_projection_for_agent(session.id(), agent.id())
+        .expect("completed turn should remain projected");
+    assert_eq!(
+        completed.settlement_status,
+        crate::git_observer::CompletedTurnSettlementStatus::Completed,
+    );
+    assert_eq!(completed.provider_termination, None);
+}
+
+#[tokio::test]
 async fn cancelled_owned_provider_exit_does_not_mark_agent_error() {
     assert_owned_provider_exit_state(true).await;
 }

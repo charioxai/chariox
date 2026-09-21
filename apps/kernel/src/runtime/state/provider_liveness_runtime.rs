@@ -26,6 +26,16 @@ impl KernelRuntimeState {
                 .connector_adapter_processes
                 .shutdown_run(provider_run_id)
                 .await;
+            if self
+                .settle_completed_claude_prompt_after_provider_exit(
+                    session_id,
+                    provider_run_id,
+                    &exit.ended_run,
+                )
+                .await?
+            {
+                return Ok(exit.already_ended);
+            }
             let session_outcome = if owned
                 .provider_run_has_active_prompt(session_id, &exit.ended_run)?
             {
@@ -115,6 +125,17 @@ impl KernelRuntimeState {
             return Ok(true);
         }
 
+        if self
+            .settle_completed_claude_prompt_after_provider_exit(
+                session_id,
+                provider_run_id,
+                &exit.ended_run,
+            )
+            .await?
+        {
+            return Ok(true);
+        }
+
         let agent_id =
             exit.ended_run
                 .agent_instance_id()
@@ -158,6 +179,26 @@ impl KernelRuntimeState {
                 }
             ),
         );
+        Ok(true)
+    }
+
+    async fn settle_completed_claude_prompt_after_provider_exit(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        provider_run: &crate::provider::RuntimeProviderRun,
+    ) -> Result<bool, DaemonError> {
+        // Claude's Stop hook can be lost when the PTY exits immediately after the
+        // final transcript flush. Only trust transcript completion at process exit;
+        // tool-use turns keep running and never set this completion marker.
+        if !crate::provider::provider_run_uses_claude_native_bridge(provider_run)
+            || !self.owned.prompt_completion_recorded(provider_run_id)
+        {
+            return Ok(false);
+        }
+        let _ = self
+            .settle_owned_provider_prompt(session_id, provider_run_id, false, false, true)
+            .await?;
         Ok(true)
     }
 

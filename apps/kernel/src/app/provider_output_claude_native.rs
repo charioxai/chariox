@@ -725,6 +725,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         );
         if drain.chunks.is_empty()
             && drain.assistant_message_ids.is_empty()
+            && drain.terminal_assistant_message_ids.is_empty()
             && drain.session_id.is_none()
             && drain.model.is_none()
         {
@@ -797,6 +798,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         } else if saw_runtime_activity {
             crate::transport::flow_control::note_prompt_output(self.app, provider_run_id);
         }
+        let terminal_assistant_turn_completed = !drain.terminal_assistant_message_ids.is_empty();
         for message_id in drain.assistant_message_ids {
             ProviderOutputFanout::new(self.app).record_assistant_message_completion(
                 session_id,
@@ -804,6 +806,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 recipient_attachment_ids.clone(),
                 &message_id,
                 unix_epoch_ms(),
+            );
+        }
+        if terminal_assistant_turn_completed {
+            crate::transport::flow_control::mark_prompt_completion_recorded(
+                self.app,
+                provider_run_id,
             );
         }
         Ok(())
