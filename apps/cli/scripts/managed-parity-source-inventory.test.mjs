@@ -225,7 +225,8 @@ test("redaction preserves lowercase executable selectors while removing controls
     assert.ok(report.entries.some((entry) => entry.selector === "protected_path"));
     const controlSafe = report.entries.find((entry) => entry.category === "managed_only_error_mapping");
     assert.match(controlSafe?.selector ?? "", /managed = failure/);
-    assert.doesNotMatch(controlSafe?.selector ?? "", /[\u0080-\u009f]/u);
+    assert.doesNotMatch(controlSafe?.selector ?? "", /[\u0000-\u001f]/u);
+    assert.doesNotMatch(controlSafe?.selector ?? "", /[\u007f-\u009f]/u);
     assert.equal(report.entries.some((entry) => entry.selector === "" || entry.selector === "_"), false);
   });
 });

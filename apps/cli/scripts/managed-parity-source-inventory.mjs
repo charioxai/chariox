@@ -356,7 +356,8 @@ function redact(value) {
   return String(value)
     .replace(/sk-[A-Za-z0-9_-]+/g, "sk-<redacted>")
     .replace(/((?:token|secret|password|credential|api[_-]?key)\s*[=:]\s*["']?)[^\s,"']+/gi, "$1<redacted>")
-    .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+    .replace(/[\u0000-\u001f]/g, " ")
+    .replace(/[\u007f-\u009f]/g, " ")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 160);
