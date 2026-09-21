@@ -122,13 +122,13 @@ function cleanInventory() {
   }
 }
 
-function transport() {
+function transport({ persistenceMode = "docker" } = {}) {
   const calls = []
   return {
     calls,
     resourceScope: "managed",
     async describePersistenceMutations() {
-      return persistencePlan()
+      return persistenceMode === "kernel" ? kernelPersistencePlan() : persistencePlan()
     },
     async run(step, input, options = {}) {
       calls.push({ step, input })
@@ -143,7 +143,7 @@ function transport() {
       if (step.endsWith(".computer")) return { ...binding, screenshot: true, pointer: true, keyboard: true }
       if (step.endsWith(".takeover")) return { ...binding, overlayVisible: true, takeoverCompleted: true, actorAttributed: true }
       if (step.endsWith(".persistence")) {
-        const evidence = persistenceEvidence()
+        const evidence = persistenceMode === "kernel" ? kernelPersistenceEvidence() : persistenceEvidence()
         for (const mutation of evidence.persistenceMutations) {
           await options.onPersistenceMutation?.({ phase: "before", mutation })
           await options.onPersistenceMutation?.({ phase: "after", mutation })
@@ -195,6 +195,25 @@ test("live M0 runs compatibility preflight before the first telemetry sample or 
   assert.equal(order[0], "compatibility")
   assert.equal(order.some((entry) => entry.startsWith("telemetry:")), true)
   assert.equal(injected.calls[0]?.step, "preflight")
+})
+
+test("live M0 wrapper validates the released kernel lifecycle plan without Docker argv assumptions", async () => {
+  const kernelConfig = config()
+  kernelConfig.browserComputerGuard.dockerPreconditions = []
+  const injected = transport({ persistenceMode: "kernel" })
+  const report = await runManagedBrowserComputerParityLive({
+    config: kernelConfig,
+    transport: injected,
+    evidenceRoot: EVIDENCE_ROOT,
+    collectResourceSnapshot: ({ phase }) => sample(phase),
+  })
+  assert.equal(report.status, "passed", report.failure?.code ?? "kernel persistence guard rejected the live wrapper")
+  assert.equal(report.browserComputerGuard.persistenceMutationSeam.ok, true)
+  assert.deepEqual(
+    report.browserComputerGuard.persistenceMutationSeam.mutations.map(({ action }) => action),
+    ["save", "remove", "restore"],
+  )
+  assert.equal(report.browserComputerGuard.dockerPreconditions.length, 0)
 })
 
 test("live M0 binds released kernel-client source modules before managed telemetry", async () => {
@@ -319,6 +338,8 @@ function sample(phase, overrun = false) {
     },
     process: { count: values.processCount, rssBytes: 10 },
     logs: { bytes: values.logBytes },
+    cpuPercent: 5,
+    cpuSampleWindowMs: 1_000,
     docker: { containers: [], volumes: [], images: [] },
     telemetry: {
       scope: "managed-target",
@@ -387,6 +408,150 @@ function persistencePlan() {
       request,
       checkpoints,
     }) => ({ action, argv, request, checkpoints })),
+  }
+}
+
+function kernelSlice(status) {
+  return {
+    id: "slice-1",
+    status,
+    environment_session_id: "room-managed-1",
+    environment_id: "environment-managed-1",
+  }
+}
+
+function kernelObservation(status) {
+  const observation = { slice: kernelSlice(status) }
+  if (status !== "stopped") {
+    observation.inventory = {
+      session_id: "room-managed-1",
+      environment_id: "environment-managed-1",
+      slice_id: "slice-1",
+      browser_ids: ["browser-1"],
+      profile_ids: ["profile-1"],
+    }
+  } else {
+    observation.inventory = null
+  }
+  return observation
+}
+
+function kernelPersistenceEvidence() {
+  const requestVariants = { save: "SaveSliceState", remove: "StopSlice", restore: "StartSlice" }
+  const requests = {
+    save: { SaveSliceState: { slice_ref: "slice-1", mode: "shutdown", scope: "this_slice" } },
+    remove: { StopSlice: { slice_ref: "slice-1" } },
+    restore: { StartSlice: { slice_ref: "slice-1" } },
+  }
+  const savedState = {
+    id: "saved-state-1",
+    source_slice_id: "slice-1",
+    home_archive_path: "/tmp/managed-parity-slice-state.tar",
+  }
+  const responseSlice = (status) => kernelSlice(status)
+  const definitions = [
+    {
+      action: "save",
+      before: kernelObservation("running"),
+      after: kernelObservation("stopped"),
+      response: {
+        variant: "SliceStateSaved",
+        payload: { slice: responseSlice("stopped"), state: savedState },
+      },
+      receipt: {
+        ok: true,
+        id: savedState.id,
+        action: "save",
+        requestIdentity: JSON.stringify(requests.save),
+        responseVariant: "SliceStateSaved",
+        responseSliceId: "slice-1",
+        savedStateId: savedState.id,
+        archivePath: savedState.home_archive_path,
+        authoritative: true,
+      },
+    },
+    {
+      action: "remove",
+      before: kernelObservation("stopped"),
+      after: kernelObservation("stopped"),
+      response: {
+        variant: "SliceStopped",
+        payload: { slice: responseSlice("stopped") },
+      },
+      receipt: {
+        ok: true,
+        id: "remove-receipt-1",
+        action: "remove",
+        requestIdentity: JSON.stringify(requests.remove),
+        responseVariant: "SliceStopped",
+        responseSliceId: "slice-1",
+        savedStateId: savedState.id,
+        parentReceiptId: savedState.id,
+        archivePath: savedState.home_archive_path,
+        authoritative: true,
+      },
+    },
+    {
+      action: "restore",
+      before: kernelObservation("stopped"),
+      after: kernelObservation("running"),
+      response: {
+        variant: "SliceStarted",
+        payload: { slice: responseSlice("running") },
+      },
+      receipt: {
+        ok: true,
+        id: "restore-receipt-1",
+        action: "restore",
+        requestIdentity: JSON.stringify(requests.restore),
+        responseVariant: "SliceStarted",
+        responseSliceId: "slice-1",
+        savedStateId: savedState.id,
+        parentReceiptId: "remove-receipt-1",
+        archivePath: savedState.home_archive_path,
+        authoritative: true,
+      },
+    },
+  ]
+  return {
+    persistenceMutations: definitions.map((mutation) => ({
+      ...mutation,
+      argv: [
+        "kernel",
+        requestVariants[mutation.action],
+        "slice-1",
+        ...(mutation.action === "save" ? ["mode=shutdown", "scope=this_slice"] : []),
+      ],
+      request: requests[mutation.action],
+      requestIdentity: JSON.stringify(requests[mutation.action]),
+      responseVariant: mutation.response.variant,
+      checkpoints: {
+        before: `before-docker-${mutation.action}`,
+        after: `after-docker-${mutation.action}`,
+      },
+      ...(mutation.action === "remove"
+        ? { saveReceipt: definitions[0].receipt }
+        : mutation.action === "restore"
+          ? { saveReceipt: definitions[0].receipt, removeReceipt: definitions[1].receipt }
+          : {}),
+    })),
+  }
+}
+
+function kernelPersistencePlan() {
+  return {
+    persistenceMutations: kernelPersistenceEvidence().persistenceMutations.map((mutation) => {
+      const {
+        before,
+        after,
+        response,
+        receipt,
+        saveReceipt,
+        removeReceipt,
+        ...planMutation
+      } = mutation
+      return planMutation
+    }),
   }
 }
 

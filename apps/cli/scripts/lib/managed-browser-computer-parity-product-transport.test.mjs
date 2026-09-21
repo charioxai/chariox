@@ -488,8 +488,11 @@ test("real public create binds and starts the home-owned slice before attach use
   let attachToSessionRequest;
   let bindRoomEnvironmentSliceRequest;
   let createSliceRequest;
+  let deleteSessionRequest;
   let deleteSliceRequest;
   let detachFromSessionRequest;
+  let endSessionRequest;
+  let getRoomEnvironmentSliceRequest;
   let getRoomEnvironmentStateRequest;
   let getRoomEnvironmentResourceInventoryRequest;
   let getSliceRequest;
@@ -507,8 +510,11 @@ test("real public create binds and starts the home-owned slice before attach use
       attachToSessionRequest,
       bindRoomEnvironmentSliceRequest,
       createSliceRequest,
+      deleteSessionRequest,
       deleteSliceRequest,
       detachFromSessionRequest,
+      endSessionRequest,
+      getRoomEnvironmentSliceRequest,
       getRoomEnvironmentStateRequest,
       getRoomEnvironmentResourceInventoryRequest,
       getSliceRequest,
@@ -537,6 +543,9 @@ test("real public create binds and starts the home-owned slice before attach use
   const endpoint = `ws://127.0.0.1:${address.port}`;
   const receivedRequests = [];
   let inventoryMode = "valid";
+  let slicePresent = false;
+  let roomPresent = false;
+  let roomEnded = false;
   let serverError;
   server.on("connection", (socket) => {
     socket.on("message", (raw) => {
@@ -557,6 +566,9 @@ test("real public create binds and starts the home-owned slice before attach use
         receivedRequests.push(envelope.request);
         let response;
         if (Object.hasOwn(envelope.request, "CreateSlice")) {
+          slicePresent = true;
+          roomPresent = true;
+          roomEnded = false;
           const createRequest = envelope.request.CreateSlice;
           assert.match(createRequest.name, /^managed-parity-run-(?:1|zero|duplicate)-selkies$/);
           assert.deepEqual(envelope.request, createSliceRequest({
@@ -658,19 +670,49 @@ test("real public create binds and starts the home-owned slice before attach use
           };
         } else if (Object.hasOwn(envelope.request, "GetRoomEnvironmentState")) {
           assert.deepEqual(envelope.request, getRoomEnvironmentStateRequest("room-1"));
+          const environmentActive = slicePresent && roomPresent;
           response = {
             RoomEnvironmentState: {
               environment: {
                 session_id: "room-1",
                 environment_id: "environment-1",
+                runtime_generation: 1,
+                lifecycle: environmentActive ? "ready" : "stopped",
+                health: ["browser_controller", "browser", "desktop", "streamer"].map((component) => ({
+                  component,
+                  state: environmentActive ? "ready" : "unavailable",
+                  diagnostic_code: null,
+                })),
+                viewport: { revision: 1 },
+                tabs: [],
+                actions: [],
+                input_ownership: [],
+                pending_input_takeovers: [],
               },
+            },
+          };
+        } else if (Object.hasOwn(envelope.request, "GetRoomEnvironmentSlice")) {
+          assert.deepEqual(envelope.request, getRoomEnvironmentSliceRequest("room-1"));
+          response = {
+            RoomEnvironmentSlice: {
+              binding: slicePresent && roomPresent
+                ? {
+                  session_id: "room-1",
+                  slice_id: "slice-1",
+                  owner_kernel_id: "daemon-1",
+                  worker_kernel_ref: "worker-ref-1",
+                }
+                : null,
             },
           };
         } else if (Object.hasOwn(envelope.request, "ListSessions")) {
           assert.deepEqual(envelope.request, listSessionsRequest());
           response = {
             SessionsListed: {
-              sessions: [{ id: "room-1" }, { id: "other-room" }],
+              sessions: [
+                ...(roomPresent ? [{ id: "room-1", status: roomEnded ? "ended" : "active", attachment_ids: [] }] : []),
+                { id: "other-room" },
+              ],
             },
           };
         } else if (Object.hasOwn(envelope.request, "ListSlices")) {
@@ -678,7 +720,13 @@ test("real public create binds and starts the home-owned slice before attach use
           response = {
             SlicesListed: {
               slices: [
-                { id: "slice-1", environment_session_id: "room-1" },
+                ...(slicePresent ? [{
+                  id: "slice-1",
+                  environment_session_id: "room-1",
+                  worker_machine_id: "machine-1",
+                  worker_kernel_ref: "worker-ref-1",
+                  agent_ids: [],
+                }] : []),
                 { id: "foreign-slice", environment_session_id: "other-room" },
               ],
             },
@@ -762,6 +810,7 @@ test("real public create binds and starts the home-owned slice before attach use
           };
         } else if (Object.hasOwn(envelope.request, "DeleteSlice")) {
           assert.deepEqual(envelope.request, deleteSliceRequest("slice-1"));
+          slicePresent = false;
           response = {
             SliceDeleted: {
               slice: {
@@ -783,6 +832,14 @@ test("real public create binds and starts the home-owned slice before attach use
               },
             },
           };
+        } else if (Object.hasOwn(envelope.request, "EndSession")) {
+          assert.deepEqual(envelope.request, endSessionRequest("room-1"));
+          roomEnded = true;
+          response = { SessionEnded: { session: { id: "room-1", status: "ended" } } };
+        } else if (Object.hasOwn(envelope.request, "DeleteSession")) {
+          assert.deepEqual(envelope.request, deleteSessionRequest("room-1"));
+          roomPresent = false;
+          response = { SessionDeleted: { session: { id: "room-1", status: "ended" } } };
         } else {
           throw new Error(`unexpected managed create request ${JSON.stringify(envelope.request)}`);
         }
@@ -814,8 +871,11 @@ test("real public create binds and starts the home-owned slice before attach use
       attachToSessionRequest,
       bindRoomEnvironmentSliceRequest,
       createSliceRequest,
+      deleteSessionRequest,
       deleteSliceRequest,
       detachFromSessionRequest,
+      endSessionRequest,
+      getRoomEnvironmentSliceRequest,
       getRoomEnvironmentStateRequest,
       getRoomEnvironmentResourceInventoryRequest,
       getSliceRequest,
@@ -928,8 +988,21 @@ test("real public create binds and starts the home-owned slice before attach use
       "GetRoomEnvironmentState",
       "AttachToSession",
       "GetSliceDisplayEndpoint",
+      "ListSlices",
+      "ListSessions",
+      "GetRoomEnvironmentResourceInventory",
+      "GetRoomEnvironmentState",
+      "ListSessions",
       "DetachFromSession",
+      "ListSlices",
       "DeleteSlice",
+      "ListSlices",
+      "GetRoomEnvironmentSlice",
+      "GetRoomEnvironmentState",
+      "ListSessions",
+      "EndSession",
+      "DeleteSession",
+      "ListSessions",
     ]);
     assert.ifError(serverError);
 
@@ -941,9 +1014,12 @@ test("real public create binds and starts the home-owned slice before attach use
         requestApi: {
           bindRoomEnvironmentSliceRequest,
           createSliceRequest,
+          deleteSessionRequest,
           deleteSliceRequest,
           detachFromSessionRequest,
+          endSessionRequest,
           getRoomEnvironmentResourceInventoryRequest,
+          getRoomEnvironmentSliceRequest,
           getRoomEnvironmentStateRequest,
           getSliceRequest,
           getSliceDisplayEndpointRequest,
@@ -1050,22 +1126,36 @@ test("real LocalIpcClient rejects foreign destroy identities before any delete r
 
 test("real LocalIpcClient cleanup deletes a slice after post-create validation fails", { skip: !hasPublicClientDist }, async () => {
   let LocalIpcClient;
+  let deleteSessionRequest;
   let createSliceRequest;
   let deleteSliceRequest;
   let detachFromSessionRequest;
+  let endSessionRequest;
+  let getRoomEnvironmentResourceInventoryRequest;
+  let getRoomEnvironmentSliceRequest;
+  let getRoomEnvironmentStateRequest;
   let getSliceRequest;
   let getSliceDisplayEndpointRequest;
+  let listSessionsRequest;
+  let listSlicesRequest;
   let decryptRelayPayload;
   let encryptRelayPayload;
   let WebSocketServer;
   try {
     ({ LocalIpcClient } = await import(kernelClientDistUrl.href));
     ({
+      deleteSessionRequest,
       createSliceRequest,
       deleteSliceRequest,
       detachFromSessionRequest,
+      endSessionRequest,
+      getRoomEnvironmentResourceInventoryRequest,
+      getRoomEnvironmentSliceRequest,
+      getRoomEnvironmentStateRequest,
       getSliceRequest,
       getSliceDisplayEndpointRequest,
+      listSessionsRequest,
+      listSlicesRequest,
     } = await import(kernelRequestsDistUrl.href));
     ({ decryptRelayPayload, encryptRelayPayload } = await import(relayCryptoDistUrl.href));
     ({ WebSocketServer } = createRequire(fileURLToPath(kernelClientDistUrl))("ws"));
@@ -1085,6 +1175,8 @@ test("real LocalIpcClient cleanup deletes a slice after post-create validation f
   assert.ok(address && typeof address === "object");
   const endpoint = `ws://127.0.0.1:${address.port}`;
   const receivedRequests = [];
+  let slicePresent = false;
+  let roomPresent = false;
   let serverError;
   server.on("connection", (socket) => {
     socket.on("message", (raw) => {
@@ -1105,6 +1197,8 @@ test("real LocalIpcClient cleanup deletes a slice after post-create validation f
         receivedRequests.push(envelope.request);
         let response;
         if (Object.hasOwn(envelope.request, "CreateSlice")) {
+          slicePresent = true;
+          roomPresent = true;
           assert.deepEqual(envelope.request, createSliceRequest({
             name: "managed-parity-partial-selkies",
             backend: "ssh_docker",
@@ -1122,9 +1216,65 @@ test("real LocalIpcClient cleanup deletes a slice after post-create validation f
               },
             },
           };
+        } else if (Object.hasOwn(envelope.request, "ListSlices")) {
+          assert.deepEqual(envelope.request, listSlicesRequest());
+          response = { SlicesListed: { slices: slicePresent ? [{
+            id: "slice-partial-1",
+            backend: "unsupported-backend",
+            environment_session_id: "room-1",
+            worker_kernel_ref: "worker-ref-1",
+            worker_machine_id: "machine-1",
+            agent_ids: [],
+          }] : [] } };
+        } else if (Object.hasOwn(envelope.request, "ListSessions")) {
+          assert.deepEqual(envelope.request, listSessionsRequest());
+          response = { SessionsListed: { sessions: roomPresent
+            ? [{ id: "room-1", status: "active", attachment_ids: [] }]
+            : [] } };
+        } else if (Object.hasOwn(envelope.request, "GetRoomEnvironmentResourceInventory")) {
+          assert.deepEqual(
+            envelope.request,
+            getRoomEnvironmentResourceInventoryRequest("room-1", "slice-partial-1"),
+          );
+          response = { RoomEnvironmentResourceInventory: { inventory: {
+            session_id: "room-1",
+            environment_id: "environment-1",
+            slice_id: "slice-partial-1",
+            browser_ids: ["browser-partial-1"],
+            profile_ids: ["profile-partial-1"],
+          } } };
+        } else if (Object.hasOwn(envelope.request, "GetRoomEnvironmentState")) {
+          assert.deepEqual(envelope.request, getRoomEnvironmentStateRequest("room-1"));
+          response = { RoomEnvironmentState: { environment: {
+            session_id: "room-1",
+            environment_id: "environment-1",
+            runtime_generation: 1,
+            lifecycle: slicePresent && roomPresent ? "ready" : "stopped",
+            health: ["browser_controller", "browser", "desktop", "streamer"].map((component) => ({
+              component,
+              state: slicePresent && roomPresent ? "ready" : "unavailable",
+              diagnostic_code: null,
+            })),
+            viewport: { revision: 1 },
+            tabs: [],
+            actions: [],
+            input_ownership: [],
+            pending_input_takeovers: [],
+          } } };
+        } else if (Object.hasOwn(envelope.request, "GetRoomEnvironmentSlice")) {
+          assert.deepEqual(envelope.request, getRoomEnvironmentSliceRequest("room-1"));
+          response = { RoomEnvironmentSlice: { binding: null } };
         } else if (Object.hasOwn(envelope.request, "DeleteSlice")) {
           assert.deepEqual(envelope.request, deleteSliceRequest("slice-partial-1"));
+          slicePresent = false;
           response = { SliceDeleted: { slice: { id: "slice-partial-1" } } };
+        } else if (Object.hasOwn(envelope.request, "EndSession")) {
+          assert.deepEqual(envelope.request, endSessionRequest("room-1"));
+          response = { SessionEnded: { session: { id: "room-1", status: "ended" } } };
+        } else if (Object.hasOwn(envelope.request, "DeleteSession")) {
+          assert.deepEqual(envelope.request, deleteSessionRequest("room-1"));
+          roomPresent = false;
+          response = { SessionDeleted: { session: { id: "room-1", status: "ended" } } };
         } else {
           throw new Error(`unexpected partial cleanup request ${JSON.stringify(envelope.request)}`);
         }
@@ -1153,10 +1303,17 @@ test("real LocalIpcClient cleanup deletes a slice after post-create validation f
     client,
     requestApi: {
       createSliceRequest,
+      deleteSessionRequest,
       deleteSliceRequest,
       detachFromSessionRequest,
+      endSessionRequest,
+      getRoomEnvironmentResourceInventoryRequest,
+      getRoomEnvironmentSliceRequest,
+      getRoomEnvironmentStateRequest,
       getSliceRequest,
       getSliceDisplayEndpointRequest,
+      listSessionsRequest,
+      listSlicesRequest,
     },
     targetKernelRef: "worker-ref-1",
     targetMachineRef: "machine-1",
@@ -1184,7 +1341,19 @@ test("real LocalIpcClient cleanup deletes a slice after post-create validation f
     });
     assert.deepEqual(receivedRequests.map((request) => Object.keys(request)[0]), [
       "CreateSlice",
+      "ListSlices",
+      "ListSessions",
+      "GetRoomEnvironmentResourceInventory",
+      "GetRoomEnvironmentState",
+      "ListSlices",
       "DeleteSlice",
+      "ListSlices",
+      "GetRoomEnvironmentSlice",
+      "GetRoomEnvironmentState",
+      "ListSessions",
+      "EndSession",
+      "DeleteSession",
+      "ListSessions",
     ]);
     assert.ifError(serverError);
   } finally {

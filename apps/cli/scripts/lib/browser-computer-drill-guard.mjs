@@ -681,6 +681,16 @@ const PERSISTENCE_MUTATION_CHECKPOINTS = Object.freeze({
   remove: Object.freeze({ before: "before-docker-remove", after: "after-docker-remove" }),
   restore: Object.freeze({ before: "before-docker-restore", after: "after-docker-restore" }),
 })
+const KERNEL_PERSISTENCE_MUTATION_REQUEST_VARIANTS = Object.freeze({
+  save: "SaveSliceState",
+  remove: "StopSlice",
+  restore: "StartSlice",
+})
+const KERNEL_PERSISTENCE_MUTATION_RESPONSE_VARIANTS = Object.freeze({
+  save: "SliceStateSaved",
+  remove: "SliceStopped",
+  restore: "SliceStarted",
+})
 
 /**
  * A persistence result is not authoritative merely because it says "saved".
@@ -729,15 +739,18 @@ export function evaluateBrowserComputerPersistenceMutationSeams({
     }
     if (seen.has(mutation.action)) violations.push(`persistence mutation repeated: ${mutation.action}`)
     seen.add(mutation.action)
-    const declaration = declarations.find((entry) => entry?.action === mutation.action)
-    if (!declaration) {
+    const kernelMutation = isKernelPersistenceMutation(mutation)
+    const declaration = kernelMutation ? null : declarations.find((entry) => entry?.action === mutation.action)
+    if (!kernelMutation && !declaration) {
       violations.push(`persistence mutation has no declared Docker precondition: ${mutation.action}`)
       continue
     }
     const argv = Array.isArray(mutation.argv) ? mutation.argv.map((entry) => String(entry)) : null
     if (!argv) violations.push(`persistence ${mutation.action} must expose its exact argv array`)
     const request = mutation.request
-    if (!request || typeof request !== "object" || Array.isArray(request)) {
+    if (kernelMutation) {
+      violations.push(...validateKernelPersistenceMutation(mutation.action, mutation, argv))
+    } else if (!request || typeof request !== "object" || Array.isArray(request)) {
       violations.push(`persistence ${mutation.action} must expose its exact request object`)
     } else {
       const requestAction = request.action ?? request.operation ?? request.mutation
@@ -751,7 +764,7 @@ export function evaluateBrowserComputerPersistenceMutationSeams({
     const checkpoint = mutation.checkpoints
     const expectedCheckpoint = PERSISTENCE_MUTATION_CHECKPOINTS[mutation.action]
     if (checkpoint?.before !== expectedCheckpoint.before || checkpoint?.after !== expectedCheckpoint.after) {
-      violations.push(`persistence ${mutation.action} checkpoints do not fence its exact Docker mutation`)
+      violations.push(`persistence ${mutation.action} checkpoints do not fence its exact mutation`)
     }
     let before = mutation.before ?? mutation.inventory
     let receipt = mutation.receipt ?? mutation.receipts?.[mutation.action]
@@ -761,7 +774,7 @@ export function evaluateBrowserComputerPersistenceMutationSeams({
           violations.push(`persistence ${mutation.action} plan must not contain pre-execution ${field} evidence`)
         }
       }
-      before = declaration.before
+      before = kernelMutation ? null : declaration.before
       receipt = null
     } else {
       if (!before || typeof before !== "object" || Array.isArray(before)) {
@@ -773,7 +786,7 @@ export function evaluateBrowserComputerPersistenceMutationSeams({
       }
     }
     if (!planOnly && mutation.action === "save") {
-      if (nonEmptyString(declaration.savePath) && receipt?.archivePath !== declaration.savePath) {
+      if (!kernelMutation && nonEmptyString(declaration.savePath) && receipt?.archivePath !== declaration.savePath) {
         violations.push(`persistence save receipt archivePath must equal savePath: ${receipt?.archivePath ?? "<missing>"} != ${declaration.savePath}`)
       }
       saveReceipt = receipt
@@ -797,11 +810,14 @@ export function evaluateBrowserComputerPersistenceMutationSeams({
       if (receipt?.parentReceiptId !== (removeReceipt?.id ?? removeReceipt?.receiptId)) {
         violations.push("persistence restore receipt must chain from the remove receipt")
       }
-      if (declaration.restorePath !== undefined && declaration.restorePath !== null
+      if (!kernelMutation && declaration.restorePath !== undefined && declaration.restorePath !== null
         && declaration.restorePath !== "" && argv?.[1] === "load"
         && receipt?.archivePath !== declaration.restorePath) {
         violations.push(`persistence restore receipt archivePath must equal restorePath: ${receipt?.archivePath ?? "<missing>"} != ${declaration.restorePath}`)
       }
+    }
+    if (kernelMutation && !planOnly) {
+      violations.push(...validateKernelPersistenceEvidence(mutation.action, mutation, receipt))
     }
     const dockerInput = planOnly
       ? { ...declaration, action: mutation.action, before, command: argv }
@@ -815,9 +831,11 @@ export function evaluateBrowserComputerPersistenceMutationSeams({
         saveReceipt: mutation.saveReceipt,
         removeReceipt: mutation.removeReceipt,
       }
-    const precondition = planOnly
-      ? evaluatePersistencePlanDockerPrecondition(mutation.action, argv, declaration)
-      : evaluateBrowserComputerDockerPreconditions(dockerInput)
+    const precondition = kernelMutation
+      ? evaluateKernelPersistencePrecondition(mutation.action, mutation, argv, receipt, planOnly)
+      : (planOnly
+        ? evaluatePersistencePlanDockerPrecondition(mutation.action, argv, declaration)
+        : evaluateBrowserComputerDockerPreconditions(dockerInput))
     if (!precondition.ok) {
       violations.push(...precondition.violations.map((entry) => `persistence ${mutation.action}: ${entry}`))
     }
@@ -826,7 +844,9 @@ export function evaluateBrowserComputerPersistenceMutationSeams({
       if (!planned || planned.action !== mutation.action
         || !sameArray(planned.argv, mutation.argv)
         || !sameJson(planned.request, mutation.request)
-        || !sameJson(planned.checkpoints, mutation.checkpoints)) {
+        || !sameJson(planned.checkpoints, mutation.checkpoints)
+        || (kernelMutation && (planned.requestIdentity !== mutation.requestIdentity
+          || planned.responseVariant !== mutation.responseVariant))) {
         violations.push(`persistence ${mutation.action} result does not equal its validated mutation plan`)
       }
     }
@@ -843,6 +863,165 @@ export function evaluateBrowserComputerPersistenceMutationSeams({
     schema: BROWSER_COMPUTER_GUARD_SCHEMA,
     ok: violations.length === 0,
     mutations: validated,
+    violations,
+  }
+}
+
+function isKernelPersistenceMutation(mutation) {
+  if (Array.isArray(mutation?.argv) && mutation.argv[0] === "kernel") return true
+  const request = mutation?.request
+  if (!request || typeof request !== "object" || Array.isArray(request)) return false
+  return Object.values(KERNEL_PERSISTENCE_MUTATION_REQUEST_VARIANTS)
+    .some((variant) => Object.hasOwn(request, variant))
+}
+
+function validateKernelPersistenceMutation(action, mutation, argv) {
+  const violations = []
+  const requestVariant = KERNEL_PERSISTENCE_MUTATION_REQUEST_VARIANTS[action]
+  const responseVariant = KERNEL_PERSISTENCE_MUTATION_RESPONSE_VARIANTS[action]
+  const request = mutation?.request
+  if (!request || typeof request !== "object" || Array.isArray(request)
+    || Object.keys(request).length !== 1 || !Object.hasOwn(request, requestVariant)) {
+    violations.push(`persistence ${action} must expose the exact public ${requestVariant} request`)
+    return violations
+  }
+  const payload = request[requestVariant]
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    violations.push(`persistence ${action} ${requestVariant} payload is malformed`)
+    return violations
+  }
+  const expectedFields = action === "save"
+    ? ["slice_ref", "mode", "scope"]
+    : ["slice_ref"]
+  if (Object.keys(payload).some((field) => !expectedFields.includes(field))) {
+    violations.push(`persistence ${action} ${requestVariant} payload has fields outside the released public shape`)
+  }
+  if (Object.keys(payload).length !== expectedFields.length) {
+    violations.push(`persistence ${action} ${requestVariant} payload must contain the complete released public shape`)
+  }
+  const sliceId = payload.slice_ref
+  requireSafeToken(sliceId, `persistence ${action} slice identity`, violations)
+  if (action === "save") {
+    if (payload.mode !== "shutdown") violations.push("persistence save must use shutdown mode")
+    if (payload.scope !== "this_slice") violations.push("persistence save must use this_slice scope")
+  }
+  const expectedArgv = ["kernel", requestVariant, sliceId]
+  if (action === "save") expectedArgv.push("mode=shutdown", "scope=this_slice")
+  if (!sameArray(argv, expectedArgv)) {
+    violations.push(`persistence ${action} argv does not equal its released public ${requestVariant} request`)
+  }
+  if (mutation.requestIdentity !== JSON.stringify(request)) {
+    violations.push(`persistence ${action} request identity is not bound to its released public request`)
+  }
+  if (mutation.responseVariant !== responseVariant) {
+    violations.push(`persistence ${action} response variant is not the released ${responseVariant} variant`)
+  }
+  return violations
+}
+
+function validateKernelPersistenceEvidence(action, mutation, receipt) {
+  const violations = []
+  const requestVariant = KERNEL_PERSISTENCE_MUTATION_REQUEST_VARIANTS[action]
+  const responseVariant = KERNEL_PERSISTENCE_MUTATION_RESPONSE_VARIANTS[action]
+  const sliceId = mutation?.request?.[requestVariant]?.slice_ref
+  const before = mutation?.before ?? mutation?.inventory
+  const after = mutation?.after
+  const expectedStatuses = {
+    save: { before: "running", after: "stopped" },
+    remove: { before: "stopped", after: "stopped" },
+    restore: { before: "stopped", after: "running" },
+  }[action]
+  const beforeSlice = before?.slice
+  const afterSlice = after?.slice
+  for (const [label, observation, expectedStatus] of [
+    ["before", before, expectedStatuses?.before],
+    ["after", after, expectedStatuses?.after],
+  ]) {
+    if (!observation || typeof observation !== "object" || Array.isArray(observation)
+      || !observation.slice || typeof observation.slice !== "object" || Array.isArray(observation.slice)) {
+      violations.push(`persistence ${action} ${label} evidence must expose an authoritative slice state`)
+      continue
+    }
+    if (observation.slice.id !== sliceId) {
+      violations.push(`persistence ${action} ${label} evidence returned a foreign slice identity`)
+    }
+    if (observation.slice.status !== expectedStatus) {
+      violations.push(`persistence ${action} ${label} evidence has invalid slice status`)
+    }
+    if (!nonEmptyString(observation.slice.environment_session_id)) {
+      violations.push(`persistence ${action} ${label} evidence lacks the Room identity`)
+    }
+    if (observation.inventory !== null && observation.inventory !== undefined) {
+      const inventory = observation.inventory
+      if (!inventory || typeof inventory !== "object" || Array.isArray(inventory)
+        || inventory.slice_id !== sliceId
+        || inventory.session_id !== observation.slice.environment_session_id
+        || !nonEmptyString(inventory.environment_id)) {
+        violations.push(`persistence ${action} ${label} evidence lacks the authoritative resource identity`)
+      }
+    } else if (expectedStatus !== "stopped") {
+      violations.push(`persistence ${action} ${label} evidence lacks the live resource inventory`)
+    }
+  }
+  if (beforeSlice && afterSlice
+    && (beforeSlice.id !== afterSlice.id
+      || beforeSlice.environment_session_id !== afterSlice.environment_session_id
+      || beforeSlice.environment_id !== afterSlice.environment_id)) {
+    violations.push(`persistence ${action} changed its authoritative Room or resource identity`)
+  }
+  const response = mutation?.response
+  if (!response || typeof response !== "object" || Array.isArray(response)
+    || response.variant !== responseVariant
+    || !response.payload || typeof response.payload !== "object" || Array.isArray(response.payload)) {
+    violations.push(`persistence ${action} must expose the actual ${responseVariant} response`)
+  } else {
+    const responseSlice = response.payload.slice
+    if (!responseSlice || typeof responseSlice !== "object" || Array.isArray(responseSlice)
+      || responseSlice.id !== sliceId || responseSlice.status !== expectedStatuses.after) {
+      violations.push(`persistence ${action} response does not match its authoritative after state`)
+    }
+    if (action === "save") {
+      const state = response.payload.state
+      if (!state || typeof state !== "object" || Array.isArray(state)
+        || state.id !== receipt?.savedStateId || state.source_slice_id !== sliceId) {
+        violations.push("persistence save response does not expose its authoritative saved state")
+      }
+    }
+  }
+  const receiptId = receipt?.id ?? receipt?.receiptId
+  if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)
+    || receipt.ok !== true || !nonEmptyString(receiptId)) {
+    violations.push(`persistence ${action} must expose a successful authoritative receipt`)
+  } else {
+    if (receipt.action !== action
+      || receipt.requestIdentity !== JSON.stringify(mutation.request)
+      || receipt.responseVariant !== responseVariant
+      || receipt.responseSliceId !== sliceId
+      || receipt.authoritative !== true) {
+      violations.push(`persistence ${action} receipt is not bound to its actual public request and response`)
+    }
+    if (!nonEmptyString(receipt.archivePath)) {
+      violations.push(`persistence ${action} receipt must retain the saved-state archive identity`)
+    }
+  }
+  return violations
+}
+
+function evaluateKernelPersistencePrecondition(action, mutation, argv, receipt, planOnly) {
+  const violations = []
+  const requestVariant = KERNEL_PERSISTENCE_MUTATION_REQUEST_VARIANTS[action]
+  if (!Array.isArray(argv) || argv[0] !== "kernel" || argv[1] !== requestVariant) {
+    violations.push(`must invoke the released public ${requestVariant} request through the kernel path`)
+  }
+  if (!planOnly && (!receipt || receipt.authoritative !== true)) {
+    violations.push("must carry authoritative execution evidence")
+  }
+  return {
+    schema: BROWSER_COMPUTER_GUARD_SCHEMA,
+    mode: "kernel",
+    action,
+    ok: violations.length === 0,
+    targets: { sliceId: mutation?.request?.[requestVariant]?.slice_ref ?? null },
     violations,
   }
 }

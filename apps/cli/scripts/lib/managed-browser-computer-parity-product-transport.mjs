@@ -1,4 +1,5 @@
 import { createRequire } from "node:module"
+import { readdir, stat } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 
 const OPERATOR_ENDPOINT_ENV = "CHARIOX_MANAGED_PARITY_HOME_KERNEL_URL"
@@ -13,6 +14,7 @@ const SLICE_LIFECYCLE_TIMEOUT_MS = 600_000
 const RESOURCE_TELEMETRY_TIMEOUT_MS = 10_000
 const PERSISTENCE_TIMEOUT_MS = 30_000
 const CLEANUP_INSPECTION_TIMEOUT_MS = 15_000
+const DISCONNECT_TIMEOUT_MS = 5_000
 const MANAGED_PARITY_SCHEMA = "chariox.browser_computer_m0_guard.v1"
 // This is the released wire constant at the reviewed PR head. Production
 // construction also binds the value exported by kernel-client; the literal is
@@ -118,6 +120,22 @@ export async function createManagedBrowserComputerParityTransport({
       import.meta.url,
     )))("ws")
     const webSocket = webSocketModule.WebSocket ?? webSocketModule.default ?? webSocketModule
+    let activeWorkerClient = workerClient
+    const reconnectFactory = reconnectClient
+      ? async (input) => {
+        const replacement = await reconnectClient(input)
+        activeWorkerClient = replacement
+        return replacement
+      }
+      : async () => {
+        const replacement = new LocalIpcClient(connection.relay_url, {
+          relayAuthToken: connection.relay_token,
+          targetDaemonId: connection.target_daemon_id ?? undefined,
+          targetDaemonAlias: connection.target_daemon_alias ?? undefined,
+        })
+        activeWorkerClient = replacement
+        return replacement
+      }
     if (!hasManagedResourceTelemetryPath(workerClient, requestApi, resourceTelemetry)) {
       throw new Error("managed parity transport requires a complete kernel-managed resource telemetry path")
     }
@@ -132,13 +150,10 @@ export async function createManagedBrowserComputerParityTransport({
         resourceTelemetry,
         persistence,
         cleanupInspector,
+        evidenceRoot,
         parityConfig: config,
         operationAdapter,
-        reconnectClient: reconnectClient ?? (async () => new LocalIpcClient(connection.relay_url, {
-          relayAuthToken: connection.relay_token,
-          targetDaemonId: connection.target_daemon_id ?? undefined,
-          targetDaemonAlias: connection.target_daemon_alias ?? undefined,
-        })),
+        reconnectClient: reconnectFactory,
         protocolApi: modules.protocolApi,
         timeouts,
         displayTransport: {
@@ -147,7 +162,7 @@ export async function createManagedBrowserComputerParityTransport({
         },
       }),
       close: async () => {
-        await workerClient.close().catch(() => {})
+        await activeWorkerClient.close().catch(() => {})
         await homeClient.close().catch(() => {})
       },
     }
@@ -184,6 +199,7 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
   reconnectClient = null,
   protocolApi = null,
   timeouts = {},
+  evidenceRoot = null,
 } = {}) {
   if (!client || typeof client.send !== "function") {
     throw new Error("managed parity transport requires a public kernel client")
@@ -207,24 +223,30 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
 
   const ownedResources = {
     sliceId: null,
+    expectedRoomId: null,
     attachmentIds: new Set(),
     attachmentsByClient: new Map(),
+    agentIds: new Set(),
     identity: null,
     stableIdentity: null,
     detachedAttachmentIds: new Set(),
     cleanupEvidence: null,
+    cleanupMeasurements: null,
+    evidenceRoot: hasText(evidenceRoot) ? evidenceRoot.trim() : null,
   }
+
+  const activeClientRef = { current: client }
+  const activeIdentityClientRef = { current: identityClient }
 
   const telemetryAdapter = resourceTelemetry ?? managedResourceTelemetry ?? resourceTelemetryAdapter
   const persistenceAdapter = persistence
     ?? persistenceTransport
-    ?? (firstCallable(identityClient, ["describePersistenceMutations", "runPersistenceMutations"])
-      ? identityClient
+    ?? (firstCallable(displayClient, ["describePersistenceMutations", "runPersistenceMutations"])
+      ? displayClient
       : createKernelPersistenceAdapter({
         client: displayClient,
         identityClient: displayClient,
         requestApi,
-        parityConfig,
       }))
   const residueAdapter = cleanupInspector
     ?? residueInspector
@@ -232,10 +254,17 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
       ? identityClient
       : createKernelCleanupInspector({
         client: displayClient,
+        identityClientRef: activeIdentityClientRef,
         requestApi,
+        targetKernelRef,
+        targetMachineRef,
+        telemetryAdapter,
+        ownedResources,
       }))
   const productionOperationAdapter = operationAdapter
     ?? createKernelOperationAdapter({
+      clientRef: activeClientRef,
+      identityClientRef: activeIdentityClientRef,
       client,
       displayClient,
       identityClient,
@@ -271,7 +300,7 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
       if (!compatibilityResult) {
         compatibilityResult = await withDeadline(
           (deadlineSignal) => runCompatibilityPreflight({
-            identityClient,
+            identityClient: activeIdentityClientRef.current,
             displayClient,
             requestApi,
             targetKernelRef,
@@ -291,7 +320,7 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
       }
       return withDeadline(
         (deadlineSignal) => collectManagedTargetResourceSnapshot({
-          client: identityClient,
+          client: activeIdentityClientRef.current,
           requestApi,
           targetKernelRef,
           targetMachineRef,
@@ -309,8 +338,8 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
     async describePersistenceMutations(request, { signal } = {}) {
       return withDeadline(
         (deadlineSignal) => describePersistenceMutations({
-          client,
-          identityClient,
+          client: displayClient,
+          identityClient: displayClient,
           requestApi,
           targetKernelRef,
           targetMachineRef,
@@ -333,7 +362,7 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
         throw new Error(`managed parity ${step} requires compatibility preflight before any target operation`)
       }
       if (productionOperationAdapter && typeof productionOperationAdapter[step] === "function") {
-        return withDeadline(
+        const result = await withDeadline(
           (deadlineSignal) => productionOperationAdapter[step]({
             request,
             signal: deadlineSignal,
@@ -348,6 +377,10 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
             step,
           },
         )
+        if (["selkies.browser", "selkies.computer"].includes(step) && hasText(result?.agentId)) {
+          ownedResources.agentIds.add(result.agentId.trim())
+        }
+        return result
       }
       if (step === "novnc.create") {
         return runDisplayBackendCreate({
@@ -357,6 +390,7 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
           targetKernelRef,
           targetMachineRef,
           ownedResources,
+          evidenceRoot,
           request,
           signal,
           displayBackend: "novnc",
@@ -385,7 +419,11 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
       if (step === "novnc.destroy") {
         return runSelkiesDestroy({
           displayClient,
+          identityClient: activeIdentityClientRef.current,
           requestApi,
+          targetKernelRef,
+          targetMachineRef,
+          telemetryAdapter,
           ownedResources,
           request,
           signal,
@@ -401,6 +439,7 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
           targetKernelRef,
           targetMachineRef,
           ownedResources,
+          evidenceRoot,
           request,
           signal,
           sliceLifecycleTimeoutMs: timeoutConfig.sliceLifecycleMs,
@@ -420,8 +459,8 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
       if (step === "selkies.persistence") {
         return withDeadline(
           (deadlineSignal) => runPersistenceMutations({
-            client,
-            identityClient,
+            client: displayClient,
+            identityClient: displayClient,
             requestApi,
             targetKernelRef,
             targetMachineRef,
@@ -437,7 +476,11 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
       if (step === "selkies.destroy") {
         return runSelkiesDestroy({
           displayClient,
+          identityClient: activeIdentityClientRef.current,
           requestApi,
+          targetKernelRef,
+          targetMachineRef,
+          telemetryAdapter,
           ownedResources,
           request,
           signal,
@@ -448,7 +491,11 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
       if (step === "cleanup.perform") {
         return runCleanup({
           displayClient,
+          identityClient: activeIdentityClientRef.current,
           requestApi,
+          targetKernelRef,
+          targetMachineRef,
+          telemetryAdapter,
           ownedResources,
           signal,
           sliceLifecycleTimeoutMs: timeoutConfig.sliceLifecycleMs,
@@ -474,7 +521,7 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
   return transport
 }
 
-function createKernelPersistenceAdapter({ client, identityClient, requestApi, parityConfig }) {
+function createKernelPersistenceAdapter({ client, identityClient, requestApi }) {
   if (typeof requestApi?.saveSliceStateRequest !== "function"
     || typeof requestApi?.stopSliceRequest !== "function"
     || typeof requestApi?.startSliceRequest !== "function"
@@ -485,50 +532,193 @@ function createKernelPersistenceAdapter({ client, identityClient, requestApi, pa
   }
   return {
     async describe(input) {
-      return createKernelPersistencePlan(input, parityConfig)
+      return createKernelPersistencePlan(input, requestApi)
     },
     async run(input) {
       return executeKernelPersistence({
         ...input,
-        client,
-        identityClient,
+        // runPersistenceMutations supplies display-client wrappers so the
+        // request ledger captures the exact awaited public lifecycle replies.
+        // Those wrappers are already selected from the home/display client;
+        // never fall back to the target-worker client here.
+        client: input?.client ?? client,
+        identityClient: input?.identityClient ?? identityClient,
         requestApi,
       })
     },
   }
 }
 
-function createKernelPersistencePlan(input, parityConfig) {
+const PERSISTENCE_MUTATION_ACTIONS = Object.freeze(["save", "remove", "restore"])
+
+const PERSISTENCE_MUTATION_REQUEST_VARIANTS = Object.freeze({
+  save: "SaveSliceState",
+  remove: "StopSlice",
+  restore: "StartSlice",
+})
+
+const PERSISTENCE_MUTATION_RESPONSE_VARIANTS = Object.freeze({
+  save: "SliceStateSaved",
+  remove: "SliceStopped",
+  restore: "SliceStarted",
+})
+
+const PERSISTENCE_MUTATION_CHECKPOINTS = Object.freeze({
+  save: Object.freeze({ before: "before-docker-save", after: "after-docker-save" }),
+  remove: Object.freeze({ before: "before-docker-remove", after: "after-docker-remove" }),
+  restore: Object.freeze({ before: "before-docker-restore", after: "after-docker-restore" }),
+})
+
+function createKernelPersistencePlan(input, requestApi) {
   const sliceId = requireText(input?.ownedResource?.sliceId, "persistence owned slice id")
-  const configured = parityConfig?.browserComputerGuard?.dockerPreconditions
-    ?? parityConfig?.dockerPreconditions
-    ?? []
-  const fallbackArgv = {
-    save: ["kernel", "SaveSliceState", sliceId],
-    remove: ["kernel", "StopSlice", sliceId],
-    restore: ["kernel", "StartSlice", sliceId],
+  const requests = {
+    save: requireRequestConstructor(requestApi, "saveSliceStateRequest")(
+      sliceId,
+      "shutdown",
+      "this_slice",
+    ),
+    remove: requireRequestConstructor(requestApi, "stopSliceRequest")(sliceId),
+    restore: requireRequestConstructor(requestApi, "startSliceRequest")(sliceId),
   }
-  const checkpoints = {
-    save: { before: "before-docker-save", after: "after-docker-save" },
-    remove: { before: "before-docker-remove", after: "after-docker-remove" },
-    restore: { before: "before-docker-restore", after: "after-docker-restore" },
-  }
-  const mutations = ["save", "remove", "restore"].map((action, index) => {
-    const declaration = configured[index]
-    const argv = declaration?.command ?? declaration?.argv ?? fallbackArgv[action]
-    requireSafeArgv(argv, `persistence ${action}`)
-    return {
-      action,
-      argv: [...argv],
-      request: { action, argv: [...argv] },
-      checkpoints: checkpoints[action],
-    }
-  })
-  return {
+  const plan = {
     schema: MANAGED_PARITY_SCHEMA,
-    persistenceMutations: mutations,
+    persistenceMutations: PERSISTENCE_MUTATION_ACTIONS.map((action) => (
+      createPersistenceMutationDefinition(action, requests[action])
+    )),
     ownedResource: redactManagedValue(input?.ownedResource ?? null),
   }
+  return deepFreeze(plan)
+}
+
+function createPersistenceMutationDefinition(action, request) {
+  const requestVariant = PERSISTENCE_MUTATION_REQUEST_VARIANTS[action]
+  if (!request || typeof request !== "object" || Array.isArray(request)
+    || Object.keys(request).length !== 1 || !Object.hasOwn(request, requestVariant)) {
+    throw new Error(`managed parity persistence ${action} request must be the exact public ${requestVariant} request`)
+  }
+  const normalizedRequest = redactManagedValue(request)
+  const argv = persistenceRequestArgv(action, normalizedRequest)
+  return {
+    action,
+    argv,
+    request: normalizedRequest,
+    requestIdentity: persistenceRequestIdentity(normalizedRequest),
+    responseVariant: PERSISTENCE_MUTATION_RESPONSE_VARIANTS[action],
+    checkpoints: PERSISTENCE_MUTATION_CHECKPOINTS[action],
+  }
+}
+
+function persistenceRequestArgv(action, request) {
+  const requestVariant = PERSISTENCE_MUTATION_REQUEST_VARIANTS[action]
+  const payload = request?.[requestVariant]
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error(`managed parity persistence ${action} request payload is malformed`)
+  }
+  const sliceId = requireText(payload.slice_ref, `${requestVariant}.slice_ref`)
+  const argv = ["kernel", requestVariant, sliceId]
+  if (action === "save") {
+    for (const field of ["mode", "scope"]) {
+      if (payload[field] !== undefined && payload[field] !== null) {
+        if (typeof payload[field] !== "string" || payload[field].trim() === "") {
+          throw new Error(`managed parity persistence ${action} request ${field} is malformed`)
+        }
+        argv.push(`${field}=${payload[field]}`)
+      }
+    }
+  }
+  return requireSafeArgv(argv, `persistence ${action}`)
+}
+
+function persistenceRequestIdentity(request) {
+  return JSON.stringify(request)
+}
+
+function persistenceReceiptId(action, requestIdentity, responseSlice) {
+  return `${action}:${responseSlice.id}:${requestIdentity}`
+}
+
+function requirePersistenceResponseSlice(payload, sliceId, step) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error(`managed parity ${step} response payload is malformed`)
+  }
+  const slice = payload.slice
+  if (!slice || typeof slice !== "object" || slice.id !== sliceId) {
+    throw new Error(`managed parity ${step} response returned a different slice identity`)
+  }
+  return slice
+}
+
+function requireSavedState(value, sliceId, step) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`managed parity ${step} response did not return a saved state`)
+  }
+  if (value.source_slice_id !== sliceId) {
+    throw new Error(`managed parity ${step} saved state belongs to a different slice`)
+  }
+  requireText(value.id, `${step}.state.id`)
+  requireText(value.home_archive_path, `${step}.state.home_archive_path`)
+  return value
+}
+
+function validatePersistenceTransition({
+  action,
+  before,
+  after,
+  response,
+  responseVariant,
+  sliceId,
+  savedState,
+}) {
+  if (!before?.slice || !after?.slice) {
+    throw new Error(`managed parity persistence ${action} requires authoritative before and after slice state`)
+  }
+  if (before.slice.id !== sliceId || after.slice.id !== sliceId) {
+    throw new Error(`managed parity persistence ${action} changed slice identity`)
+  }
+  if (!samePersistenceObservationIdentity(before, after)) {
+    throw new Error(`managed parity persistence ${action} changed its authoritative Room or resource identity`)
+  }
+  const expectedStatuses = {
+    save: { before: "running", after: "stopped" },
+    remove: { before: "stopped", after: "stopped" },
+    restore: { before: "stopped", after: "running" },
+  }[action]
+  if (before.slice.status !== expectedStatuses.before || after.slice.status !== expectedStatuses.after) {
+    throw new Error(
+      `managed parity persistence ${action} observed an invalid authoritative slice transition: `
+      + `${before.slice.status} -> ${after.slice.status}`,
+    )
+  }
+  const responseSlice = requirePersistenceResponseSlice(response, sliceId, `persistence ${action}`)
+  if (responseSlice.status !== after.slice.status) {
+    throw new Error(`managed parity persistence ${action} response slice state differs from its authoritative after state`)
+  }
+  if (responseVariant === PERSISTENCE_MUTATION_RESPONSE_VARIANTS.save) {
+    const state = requireSavedState(response.state, sliceId, `persistence ${action}`)
+    if (state.id !== savedState?.id) {
+      throw new Error("managed parity persistence save response changed saved-state identity")
+    }
+  }
+  if (responseVariant === PERSISTENCE_MUTATION_RESPONSE_VARIANTS.restore
+    && savedState?.id !== undefined
+    && after.slice.saved_state_ref !== undefined
+    && after.slice.saved_state_ref !== null
+    && after.slice.saved_state_ref !== savedState.id) {
+    throw new Error("managed parity persistence restore authoritative slice references a stale saved state")
+  }
+}
+
+function samePersistenceObservationIdentity(left, right) {
+  if (!(left?.slice?.id === right?.slice?.id
+    && left?.slice?.environment_session_id === right?.slice?.environment_session_id
+    && left?.slice?.environment_id === right?.slice?.environment_id)) {
+    return false
+  }
+  if (!left?.inventory || !right?.inventory) return true
+  return left.inventory.session_id === right.inventory.session_id
+    && left.inventory.environment_id === right.inventory.environment_id
+    && left.inventory.slice_id === right.inventory.slice_id
+    && sameArray(left.inventory.profile_ids, right.inventory.profile_ids)
 }
 
 async function executeKernelPersistence({
@@ -548,11 +738,13 @@ async function executeKernelPersistence({
   }
   const before = []
   const receipts = []
+  const executed = []
   let savedState = null
   let initialInventory = null
   let finalInventory = null
+  let previousAfterInventory = null
   for (const [index, mutation] of planned.entries()) {
-    const inventory = await readKernelPersistenceInventory({
+    const beforeInventory = await readKernelPersistenceInventory({
       client: identityClient ?? client,
       requestApi,
       sliceId,
@@ -560,38 +752,65 @@ async function executeKernelPersistence({
       signal,
       step: `persistence ${mutation.action} inventory`,
     })
-    before.push(inventory)
-    if (index === 0) initialInventory = inventory
-    await onPersistenceMutation?.({ phase: "before", mutation: redactManagedValue(mutation) })
+    if (previousAfterInventory && !samePersistenceObservationIdentity(previousAfterInventory, beforeInventory)) {
+      throw new Error(`managed parity persistence ${mutation.action} did not continue from the previous authoritative slice state`)
+    }
+    before.push(beforeInventory)
+    if (index === 0) initialInventory = beforeInventory
+    await onPersistenceMutation?.({
+      phase: "before",
+      mutation: redactManagedValue({ ...mutation, before: beforeInventory }),
+    })
+    const requestIdentity = persistenceRequestIdentity(mutation.request)
+    if (mutation.requestIdentity !== requestIdentity) {
+      throw new Error(`managed parity persistence ${mutation.action} request identity changed after planning`)
+    }
     let response
+    let responseVariantName
+    let responsePayload
     let receipt
     if (mutation.action === "save") {
       response = await sendWithAbortSignal(
         client,
-        requestApi.saveSliceStateRequest(sliceId, "restart_agents", "this_slice"),
+        mutation.request,
         signal,
         "persistence save",
       )
-      const saved = responseVariant(response, "SliceStateSaved", "persistence save")
-      savedState = saved.state
+      responseVariantName = PERSISTENCE_MUTATION_RESPONSE_VARIANTS.save
+      responsePayload = responseVariant(response, responseVariantName, "persistence save")
+      const saved = responsePayload
+      const responseSlice = requirePersistenceResponseSlice(saved, sliceId, "persistence save")
+      savedState = requireSavedState(saved.state, sliceId, "persistence save")
       const archivePath = requireText(savedState?.home_archive_path, "SliceStateSaved.state.home_archive_path")
       receipt = {
         ok: true,
-        id: requireText(savedState?.id, "SliceStateSaved.state.id"),
+        id: savedState.id,
+        action: mutation.action,
+        requestIdentity,
+        responseVariant: responseVariantName,
+        responseSliceId: responseSlice.id,
+        savedStateId: savedState.id,
         archivePath,
         authoritative: true,
       }
     } else if (mutation.action === "remove") {
       response = await sendWithAbortSignal(
         client,
-        requestApi.stopSliceRequest(sliceId),
+        mutation.request,
         signal,
         "persistence remove",
       )
-      responseVariantAny(response, ["SliceStopped", "Slice"], "persistence remove")
+      responseVariantName = PERSISTENCE_MUTATION_RESPONSE_VARIANTS.remove
+      responsePayload = responseVariant(response, responseVariantName, "persistence remove")
+      const responseSlice = requirePersistenceResponseSlice(responsePayload, sliceId, "persistence remove")
       receipt = {
         ok: true,
-        id: `${receiptId(receipts[0])}:remove`,
+        id: persistenceReceiptId(mutation.action, requestIdentity, responseSlice),
+        action: mutation.action,
+        requestIdentity,
+        responseVariant: responseVariantName,
+        responseSliceId: responseSlice.id,
+        savedStateId: requireText(savedState?.id, "persistence remove saved state id"),
         parentReceiptId: receiptId(receipts[0]),
         archivePath: requireText(savedState?.home_archive_path, "saved state archive path"),
         authoritative: true,
@@ -599,12 +818,14 @@ async function executeKernelPersistence({
     } else {
       response = await sendWithAbortSignal(
         client,
-        requestApi.startSliceRequest(sliceId),
+        mutation.request,
         signal,
         "persistence restore",
         SLICE_LIFECYCLE_TIMEOUT_MS,
       )
-      responseVariant(response, "SliceStarted", "persistence restore")
+      responseVariantName = PERSISTENCE_MUTATION_RESPONSE_VARIANTS.restore
+      responsePayload = responseVariant(response, responseVariantName, "persistence restore")
+      const responseSlice = requirePersistenceResponseSlice(responsePayload, sliceId, "persistence restore")
       const statusResponse = await sendWithAbortSignal(
         client,
         requestApi.getSliceStateStatusRequest(sliceId),
@@ -612,28 +833,60 @@ async function executeKernelPersistence({
         "persistence restore state status",
       )
       const status = responseVariant(statusResponse, "SliceStateStatus", "persistence restore state status")
+      if (!status.slice || status.slice.id !== sliceId) {
+        throw new Error("managed parity persistence restore state status returned a different slice identity")
+      }
       if (!status.state || status.state.id !== savedState?.id) {
         throw new Error("managed parity persistence restore did not restore the authoritative saved state")
       }
       receipt = {
         ok: true,
-        id: `${receiptId(receipts[1])}:restore`,
+        id: persistenceReceiptId(mutation.action, requestIdentity, responseSlice),
+        action: mutation.action,
+        requestIdentity,
+        responseVariant: responseVariantName,
+        responseSliceId: responseSlice.id,
+        savedStateId: status.state.id,
         parentReceiptId: receiptId(receipts[1]),
         archivePath: requireText(savedState?.home_archive_path, "saved state archive path"),
         authoritative: true,
       }
     }
+    const afterInventory = await readKernelPersistenceInventory({
+      client: identityClient ?? client,
+      requestApi,
+      sliceId,
+      roomId: ownedResource?.roomId,
+      signal,
+      step: `persistence ${mutation.action} after inventory`,
+    })
+    validatePersistenceTransition({
+      action: mutation.action,
+      before: beforeInventory,
+      after: afterInventory,
+      response: responsePayload,
+      responseVariant: responseVariantName,
+      sliceId,
+      savedState,
+    })
+    previousAfterInventory = afterInventory
+    const evidence = {
+      ...mutation,
+      before: beforeInventory,
+      response: {
+        variant: responseVariantName,
+        payload: redactManagedValue(responsePayload),
+      },
+      after: afterInventory,
+      receipt,
+      ...(index > 0 ? { saveReceipt: receipts[0] } : {}),
+      ...(index > 1 ? { removeReceipt: receipts[1] } : {}),
+    }
     receipts.push(receipt)
-    await onPersistenceMutation?.({ phase: "after", mutation: redactManagedValue({ ...mutation, receipt }) })
+    executed.push(evidence)
+    await onPersistenceMutation?.({ phase: "after", mutation: redactManagedValue(evidence) })
     if (mutation.action === "restore") {
-      finalInventory = await readKernelPersistenceInventory({
-        client: identityClient ?? client,
-        requestApi,
-        sliceId,
-        roomId: ownedResource?.roomId,
-        signal,
-        step: "persistence restore inventory",
-      })
+      finalInventory = afterInventory
     }
   }
   if (!initialInventory || !finalInventory) {
@@ -659,13 +912,7 @@ async function executeKernelPersistence({
     sameRoom,
     sameEnvironment,
     sameProfile,
-    persistenceMutations: planned.map((mutation, index) => ({
-      ...mutation,
-      before: before[index],
-      receipt: receipts[index],
-      ...(index > 0 ? { saveReceipt: receipts[0] } : {}),
-      ...(index > 1 ? { removeReceipt: receipts[1] } : {}),
-    })),
+    persistenceMutations: executed.map((mutation) => redactManagedValue(mutation)),
   }
 }
 
@@ -680,6 +927,24 @@ async function readKernelPersistenceInventory({ client, requestApi, sliceId, roo
   if (!slice || slice.id !== sliceId) throw new Error(`${step} returned a different slice identity`)
   const resolvedRoomId = roomId ?? slice.environment_session_id ?? slice.session_id
   if (!hasText(resolvedRoomId)) throw new Error(`${step} returned no Room identity`)
+  if ((slice.environment_session_id ?? slice.session_id) !== resolvedRoomId) {
+    throw new Error(`${step} returned a different Room identity`)
+  }
+  if (slice.status === "stopped") {
+    return {
+      slice: redactManagedValue({
+        id: slice.id,
+        status: slice.status,
+        environment_session_id: slice.environment_session_id ?? slice.session_id ?? null,
+        environment_id: slice.environment_id ?? null,
+        saved_state_ref: slice.saved_state_ref ?? null,
+        saved_state_status: slice.saved_state_status ?? null,
+        last_operation: slice.last_operation ?? null,
+        last_operation_status: slice.last_operation_status ?? null,
+      }),
+      inventory: null,
+    }
+  }
   const inventoryResponse = await sendWithAbortSignal(
     client,
     requestApi.getRoomEnvironmentResourceInventoryRequest(resolvedRoomId, sliceId),
@@ -691,6 +956,12 @@ async function readKernelPersistenceInventory({ client, requestApi, sliceId, roo
     "RoomEnvironmentResourceInventory",
     `${step} browser/profile inventory`,
   ).inventory
+  if (!inventory || typeof inventory !== "object" || Array.isArray(inventory)
+    || inventory.slice_id !== sliceId
+    || inventory.session_id !== resolvedRoomId
+    || !hasText(inventory.environment_id)) {
+    throw new Error(`${step} returned a different authoritative resource identity`)
+  }
   requireUniqueIdentityArray(inventory?.profile_ids, `${step} profile_ids`)
   requireUniqueIdentityArray(inventory?.browser_ids, `${step} browser_ids`)
   return {
@@ -699,6 +970,10 @@ async function readKernelPersistenceInventory({ client, requestApi, sliceId, roo
       status: slice.status,
       environment_session_id: slice.environment_session_id ?? slice.session_id ?? null,
       environment_id: slice.environment_id ?? null,
+      saved_state_ref: slice.saved_state_ref ?? null,
+      saved_state_status: slice.saved_state_status ?? null,
+      last_operation: slice.last_operation ?? null,
+      last_operation_status: slice.last_operation_status ?? null,
     }),
     inventory: redactManagedValue({
       environment_id: inventory.environment_id,
@@ -709,120 +984,104 @@ async function readKernelPersistenceInventory({ client, requestApi, sliceId, roo
   }
 }
 
-function createKernelCleanupInspector({ client, requestApi }) {
+function createKernelCleanupInspector({
+  client,
+  identityClientRef,
+  requestApi,
+  targetKernelRef,
+  targetMachineRef,
+  telemetryAdapter,
+  ownedResources,
+}) {
   if (typeof client?.send !== "function"
     || typeof requestApi?.listSlicesRequest !== "function"
     || typeof requestApi?.listSessionsRequest !== "function"
+    || typeof requestApi?.getRoomEnvironmentSliceRequest !== "function"
     || typeof requestApi?.getRoomEnvironmentResourceInventoryRequest !== "function"
-    || typeof requestApi?.getRoomEnvironmentStateRequest !== "function") {
+    || typeof requestApi?.getRoomEnvironmentStateRequest !== "function"
+    || !hasManagedResourceTelemetryPath(identityClientRef?.current ?? client, requestApi, telemetryAdapter)) {
     return null
   }
   return {
     async inspect(input) {
-      return inspectAuthoritativeKernelResidue({ client, requestApi, ...input })
+      return inspectMeasuredKernelResidue({
+        client,
+        identityClient: identityClientRef?.current ?? client,
+        requestApi,
+        targetKernelRef,
+        targetMachineRef,
+        telemetryAdapter,
+        ownedResources,
+        ...input,
+      })
     },
   }
 }
 
-async function inspectAuthoritativeKernelResidue({ client, requestApi, ownedResource, cleanupEvidence, signal }) {
-  const sliceId = requireText(cleanupEvidence?.sliceId ?? ownedResource?.sliceId, "cleanup owned slice id")
+async function inspectMeasuredKernelResidue({
+  client,
+  identityClient,
+  requestApi,
+  targetKernelRef,
+  targetMachineRef,
+  telemetryAdapter,
+  ownedResources,
+  cleanupEvidence,
+  signal,
+}) {
+  const sliceId = requireText(cleanupEvidence?.sliceId ?? ownedResources?.sliceId, "cleanup owned slice id")
   const roomId = requireText(
-    cleanupEvidence?.identity?.roomId ?? ownedResource?.roomId,
+    cleanupEvidence?.identity?.roomId ?? ownedResources?.expectedRoomId,
     "cleanup owned Room id",
   )
-  const slicesResponse = await sendWithAbortSignal(
-    client,
-    requestApi.listSlicesRequest(),
-    signal,
-    "cleanup.inspect authoritative slices",
-  )
-  const slices = requireArray(
-    responseVariant(slicesResponse, "SlicesListed", "cleanup.inspect authoritative slices").slices,
-    "cleanup authoritative slices",
-  )
-  const ownedSlices = slices.filter((slice) => slice?.id === sliceId)
-  const sessionsResponse = await sendWithAbortSignal(
-    client,
-    requestApi.listSessionsRequest(),
-    signal,
-    "cleanup.inspect authoritative viewers",
-  )
-  const sessions = requireArray(
-    responseVariant(sessionsResponse, "SessionsListed", "cleanup.inspect authoritative viewers").sessions,
-    "cleanup authoritative sessions",
-  )
-  const roomSessions = sessions.filter((session) => session?.id === roomId)
-  const attachmentIds = new Set(cleanupEvidence?.attachmentIds ?? ownedResource?.attachmentIds ?? [])
-  const residualAttachmentIds = new Set()
-  for (const session of roomSessions) {
-    for (const attachmentId of session?.attachment_ids ?? session?.attachmentIds ?? []) {
-      if (attachmentIds.has(attachmentId) || hasText(attachmentId)) residualAttachmentIds.add(attachmentId)
-    }
+  const measurements = cleanupEvidence?.measurements ?? ownedResources?.cleanupMeasurements
+  const beforeTelemetry = measurements?.beforeTelemetry
+  const beforeInventory = measurements?.beforeInventory
+  if (!beforeTelemetry || !beforeInventory) {
+    throw new Error("managed parity cleanup.inspect requires measured before-cleanup telemetry and inventory")
   }
-  let memberInspection = "public-session-list-only"
-  if (typeof requestApi.listSessionMembersRequest === "function") {
-    const membersResponse = await sendWithAbortSignal(
-      client,
-      requestApi.listSessionMembersRequest(roomId),
-      signal,
-      "cleanup.inspect authoritative viewers",
-    )
-    const members = requireArray(
-      responseVariant(membersResponse, "SessionMembersListed", "cleanup.inspect authoritative viewers").members,
-      "cleanup authoritative members",
-    )
-    for (const member of members) {
-      const attachmentId = member?.attachment_id ?? member?.attachmentId ?? member?.id
-      if (hasText(attachmentId)) residualAttachmentIds.add(attachmentId)
-    }
-    memberInspection = "public-session-members"
+  const afterTelemetry = await collectManagedTargetResourceSnapshot({
+    client: identityClient,
+    requestApi,
+    targetKernelRef,
+    targetMachineRef,
+    ownedResources,
+    telemetryAdapter,
+    phase: "cleanup-after",
+    sampleId: `cleanup:${sliceId}:after`,
+    evidenceRoot: ownedResources?.evidenceRoot,
+    signal,
+  })
+  const afterInventory = await readCleanupInventoryAfter({ client, requestApi, roomId, signal })
+  const postDelete = cleanupEvidence?.postDelete
+  if (!postDelete || postDelete.bindingPresent !== false) {
+    throw new Error("managed parity cleanup.inspect requires an observed unbound Room after slice deletion")
   }
-
-  const inventoryResponse = await sendWithAbortSignal(
-    client,
-    requestApi.getRoomEnvironmentResourceInventoryRequest(roomId, sliceId),
-    signal,
-    "cleanup.inspect authoritative browser/profile resources",
+  const residualAttachmentIds = residualOwnedAttachmentIds(afterInventory.sessions, cleanupEvidence)
+  const roomSessions = afterInventory.sessions.filter((session) => session?.id === roomId)
+  const ownedSlices = afterInventory.slices.filter((slice) => slice?.id === sliceId)
+  const activeEnvironment = postDelete.activeEnvironmentCount
+  const activeProcesses = postDelete.activeProcessCount
+  const evidenceDelta = await measureEvidenceDelta(
+    measurements.evidenceBefore,
+    ownedResources?.evidenceRoot,
   )
-  const inventory = responseVariant(
-    inventoryResponse,
-    "RoomEnvironmentResourceInventory",
-    "cleanup.inspect authoritative browser/profile resources",
-  ).inventory
-  const browserIds = requireUniqueIdentityArray(inventory?.browser_ids, "cleanup browser_ids")
-  const profileIds = requireUniqueIdentityArray(inventory?.profile_ids, "cleanup profile_ids")
-  const stateResponse = await sendWithAbortSignal(
-    client,
-    requestApi.getRoomEnvironmentStateRequest(roomId),
-    signal,
-    "cleanup.inspect authoritative controller state",
-  )
-  const environment = responseVariant(
-    stateResponse,
-    "RoomEnvironmentState",
-    "cleanup.inspect authoritative controller state",
-  ).environment
-  if (environment?.session_id !== roomId) throw new Error("cleanup inspector returned a foreign Room")
-  const health = requireArray(environment?.health, "cleanup environment health")
-  const activeHealth = health.filter((item) => ["starting", "ready", "degraded"].includes(item?.state))
-  const activeControllerResources = activeHealth.filter((item) => [
-    "browser_controller", "browser", "desktop", "streamer",
-  ].includes(item?.component))
-  const activeActions = requireArray(environment?.actions, "cleanup environment actions")
-    .filter((action) => ["queued", "running"].includes(action?.state))
-  const inputResidue = (environment?.input_ownership ?? []).length
-    + (environment?.pending_input_takeovers ?? []).length
-  const managedMachines = 0
+  const resources = {
+    rssDeltaBytes: afterTelemetry.process.rssBytes - beforeTelemetry.process.rssBytes,
+    diskDeltaBytes: afterTelemetry.disk.usedBytes - beforeTelemetry.disk.usedBytes,
+  }
+  const managedMachines = ownedSlices.filter((slice) =>
+    slice?.worker_machine_id === targetMachineRef || slice?.worker_kernel_ref === targetKernelRef).length
   const rooms = roomSessions.length
-  const environments = (environment?.lifecycle !== "stopped" ? 1 : 0) + activeControllerResources.length
-  const processes = browserIds.length + activeControllerResources.length + activeActions.length
-  const listeners = residualAttachmentIds.size
+  const environments = activeEnvironment
+  const processes = activeProcesses
+  const listeners = residualAttachmentIds.size + afterInventory.roomMemberAttachmentIds.length
   const containers = ownedSlices.length
-  const profiles = profileIds.length
-  const activeTargets = browserIds.length
-  const temporaryFiles = 0
-  const retainedEvidenceLeakCount = 0
-  const zeroResidue = ownedSlices.length === 0
+  const profiles = ownedSlices.length > 0 ? postDelete.profileCount : 0
+  const activeTargets = ownedSlices.length > 0 ? postDelete.browserCount : 0
+  const temporaryFiles = evidenceDelta.newPathCount
+  const retainedEvidenceLeakCount = evidenceDelta.newPathCount
+  const zeroResidue = managedMachines === 0
     && rooms === 0
     && environments === 0
     && processes === 0
@@ -830,17 +1089,16 @@ async function inspectAuthoritativeKernelResidue({ client, requestApi, ownedReso
     && containers === 0
     && profiles === 0
     && activeTargets === 0
-    && inputResidue === 0
+    && temporaryFiles === 0
+    && retainedEvidenceLeakCount === 0
+    && postDelete.inputResidueCount === 0
   if (!zeroResidue) {
-    throw new Error(
-      `managed parity cleanup.inspect found residual browser/controller/viewer resources `
-      + `(browsers=${browserIds.length}, profiles=${profileIds.length}, controllers=${activeControllerResources.length}, viewers=${listeners})`,
-    )
+    throw new Error("managed parity cleanup.inspect found residual resources from authoritative post-delete inventories")
   }
   return {
     schema: MANAGED_PARITY_SCHEMA,
     inspected: true,
-    zeroResidue: true,
+    zeroResidue,
     managedMachines,
     rooms,
     environments,
@@ -851,19 +1109,76 @@ async function inspectAuthoritativeKernelResidue({ client, requestApi, ownedReso
     activeTargets,
     temporaryFiles,
     retainedEvidenceLeakCount,
-    resources: { rssDeltaBytes: 0, diskDeltaBytes: 0 },
-    memberInspection,
+    resources,
+    memberInspection: afterInventory.memberInspection,
     publicInventory: {
       ownedSliceCount: ownedSlices.length,
       roomPresent: rooms > 0,
-      browserIds,
-      profileIds,
-      receiptKinds: ["SlicesListed", "SessionsListed", "RoomEnvironmentResourceInventory", "RoomEnvironmentState"],
+      browserIds: postDelete.browserIds,
+      profileIds: postDelete.profileIds,
+      receiptKinds: ["SlicesListed", "SessionsListed", "RoomEnvironmentSlice", "KernelResourceTelemetry"],
     },
   }
 }
 
+async function readCleanupInventoryAfter({ client, requestApi, roomId, signal }) {
+  const slicesResponse = await sendWithAbortSignal(
+    client,
+    requireRequestConstructor(requestApi, "listSlicesRequest")(),
+    signal,
+    "cleanup.inspect post-delete slices",
+  )
+  const slices = requireArray(
+    responseVariant(slicesResponse, "SlicesListed", "cleanup.inspect post-delete slices").slices,
+    "cleanup.inspect post-delete slices",
+  )
+  const sessionsResponse = await sendWithAbortSignal(
+    client,
+    requireRequestConstructor(requestApi, "listSessionsRequest")(),
+    signal,
+    "cleanup.inspect post-delete Rooms",
+  )
+  const sessions = requireArray(
+    responseVariant(sessionsResponse, "SessionsListed", "cleanup.inspect post-delete Rooms").sessions,
+    "cleanup.inspect post-delete Rooms",
+  )
+  const roomSessions = sessions.filter((session) => session?.id === roomId)
+  const roomMemberAttachmentIds = []
+  let memberInspection = "public-session-list-only"
+  if (roomSessions.length > 0 && typeof requestApi.listSessionMembersRequest === "function") {
+    const membersResponse = await sendWithAbortSignal(
+      client,
+      requestApi.listSessionMembersRequest(roomId),
+      signal,
+      "cleanup.inspect post-delete Room members",
+    )
+    const members = requireArray(
+      responseVariant(membersResponse, "SessionMembersListed", "cleanup.inspect post-delete Room members").members,
+      "cleanup.inspect post-delete Room members",
+    )
+    for (const member of members) {
+      const attachmentId = member?.attachment_id ?? member?.attachmentId ?? member?.id
+      if (hasText(attachmentId)) roomMemberAttachmentIds.push(attachmentId)
+    }
+    memberInspection = "public-session-members"
+  }
+  return { slices, sessions, roomMemberAttachmentIds, memberInspection }
+}
+
+function residualOwnedAttachmentIds(sessions, cleanupEvidence) {
+  const attachmentIds = new Set(cleanupEvidence?.attachmentIds ?? [])
+  const residual = new Set()
+  for (const session of sessions) {
+    for (const id of session?.attachment_ids ?? session?.attachmentIds ?? []) {
+      if (attachmentIds.has(id)) residual.add(id)
+    }
+  }
+  return residual
+}
+
 function createKernelOperationAdapter({
+  clientRef = null,
+  identityClientRef = null,
   client,
   displayClient,
   identityClient,
@@ -879,9 +1194,9 @@ function createKernelOperationAdapter({
   const adapter = {
     async preflight({ request, signal, compatibility }) {
       return runKernelPreflight({
-        client: identityClient,
+        client: identityClientRef?.current ?? identityClient,
         displayClient,
-        identityClient,
+        identityClient: identityClientRef?.current ?? identityClient,
         requestApi,
         targetKernelRef,
         targetMachineRef,
@@ -937,10 +1252,13 @@ function createKernelOperationAdapter({
     },
     async ["selkies.reconnect"]({ request, signal }) {
       return runKernelReconnect({
-        client,
+        client: clientRef?.current ?? client,
         displayClient,
         requestApi,
         reconnectClient,
+        clientRef,
+        identityClientRef,
+        ownedResources,
         request,
         signal,
       })
@@ -1098,7 +1416,7 @@ async function runKernelPreflight({
   const resources = {
     rssBytes: requireNonNegativeFinite(telemetry.process.rssBytes, "preflight rssBytes"),
     cpuPercent: requireNonNegativeFinite(
-      telemetry.cpuPercent ?? telemetry.telemetry?.cpuPercent ?? telemetry.process.cpuPercent ?? 0,
+      telemetry.cpuPercent,
       "preflight cpuPercent",
     ),
     freeMemoryBytes: requireNonNegativeFinite(telemetry.memory.availableBytes, "preflight freeMemoryBytes"),
@@ -1243,7 +1561,7 @@ async function runKernelProviderAction({
   }
   for (const name of [
     "spawnAgentRequest", "attachToSessionRequest", "submitPromptRequest", "listRoomEnvironmentActionHistoryRequest",
-    "getSessionHistoryOutlineRequest", "getSessionStateRequest", "listSlicesRequest",
+    "getSessionHistoryOutlineRequest", "getSessionStateRequest", "listSlicesRequest", "listAgentsRequest",
   ]) {
     if (typeof requestApi[name] !== "function") {
       throw new Error(`managed parity selkies.${mode} requires released provider request constructor ${name}`)
@@ -1251,25 +1569,47 @@ async function runKernelProviderAction({
   }
   const beforeAttachments = await readSessionAttachmentIds({ client, requestApi, roomId: binding.roomId, signal })
   const { runRoomRealProviderAction } = await import("./live-room-real-provider.mjs")
-  const result = await runRoomRealProviderAction({
+  const beforeAgents = await readRoomAgentRecords({ client, requestApi, roomId: binding.roomId, signal })
+  let result
+  let actionError
+  try {
+    result = await runRoomRealProviderAction({
+      client,
+      requests: requestApi,
+      sessionId: binding.roomId,
+      sliceId,
+      workspace: request.worktreeId
+        ?? parityConfig?.worktreeId
+        ?? parityConfig?.provider?.worktreeId,
+      options: {
+        provider: provider.trim(),
+        model: model.trim(),
+        mode,
+        accountProfile: request.accountProfile ?? parityConfig?.provider?.accountProfile ?? "default",
+        importFirst: false,
+      },
+      waitFor: (probe, timeoutMs, description) => waitForKernelProbe(probe, timeoutMs, description, signal),
+      withTimeout: (operation, timeoutMs, description) => withKernelTimeout(operation, timeoutMs, description, signal),
+      checkpoint: async () => {},
+    })
+  } catch (error) {
+    actionError = error
+  }
+  const afterAgents = await readRoomAgentRecords({ client, requestApi, roomId: binding.roomId, signal })
+  const sliceAgentIds = await readAuthoritativeSliceAgentIds({
     client,
-    requests: requestApi,
-    sessionId: binding.roomId,
+    requestApi,
     sliceId,
-    workspace: request.worktreeId
-      ?? parityConfig?.worktreeId
-      ?? parityConfig?.provider?.worktreeId,
-    options: {
-      provider: provider.trim(),
-      model: model.trim(),
-      mode,
-      accountProfile: request.accountProfile ?? parityConfig?.provider?.accountProfile ?? "default",
-      importFirst: false,
-    },
-    waitFor: (probe, timeoutMs, description) => waitForKernelProbe(probe, timeoutMs, description, signal),
-    withTimeout: (operation, timeoutMs, description) => withKernelTimeout(operation, timeoutMs, description, signal),
-    checkpoint: async () => {},
+    signal,
+    step: `selkies.${mode} agent tracking`,
   })
+  for (const [agentId] of afterAgents) {
+    if (!beforeAgents.has(agentId) && sliceAgentIds.has(agentId)) {
+      ownedResources.agentIds.add(agentId)
+    }
+  }
+  if (result?.agentId) ownedResources.agentIds.add(requireText(result.agentId, `selkies.${mode} provider agent id`))
+  if (actionError) throw actionError
   await rememberNewSessionAttachments({
     client,
     requestApi,
@@ -1442,16 +1782,41 @@ async function runKernelGit({ client, requestApi, parityConfig, request, signal 
   }
 }
 
-async function runKernelReconnect({ client, displayClient, requestApi, reconnectClient, request, signal }) {
+async function runKernelReconnect({
+  client,
+  displayClient,
+  requestApi,
+  reconnectClient,
+  clientRef,
+  identityClientRef,
+  ownedResources,
+  request,
+  signal,
+}) {
   const binding = requireBinding(request, "selkies.reconnect")
   if (typeof reconnectClient !== "function") {
     throw new Error("managed parity selkies.reconnect requires the released client reconnect boundary")
   }
-  const replacement = await reconnectClient({ signal, request: redactManagedValue(request) })
-  if (!replacement || typeof replacement.send !== "function") {
-    throw new Error("managed parity selkies.reconnect did not return a public kernel client")
+  if (request.fault !== "relay_disconnect") {
+    throw new Error("managed parity selkies.reconnect requires the relay_disconnect fault")
   }
+  const sliceId = resolveOwnedSliceId(request, ownedResources, "selkies.reconnect", { requireOwned: true })
+  const before = await readReconnectIdentitySnapshot({
+    displayClient,
+    requestApi,
+    roomId: binding.roomId,
+    environmentId: binding.environmentId,
+    sliceId,
+    signal,
+    step: "selkies.reconnect before",
+  })
+  await disconnectActiveScopedClient({ client, requestApi, signal })
+  let replacement
   try {
+    replacement = await reconnectClient({ signal, request: redactManagedValue(request) })
+    if (!replacement || typeof replacement.send !== "function") {
+      throw new Error("managed parity selkies.reconnect did not return a public kernel client")
+    }
     const relayResponse = await sendWithAbortSignal(
       replacement,
       requireRequestConstructor(requestApi, "relayStatusRequest")(),
@@ -1462,27 +1827,143 @@ async function runKernelReconnect({ client, displayClient, requestApi, reconnect
     if (relay.daemon_id !== binding.kernelId || relay.machine_id !== binding.machineId) {
       throw new Error("managed parity selkies.reconnect returned a foreign target identity")
     }
-    const state = await sendWithAbortSignal(
-      displayClient,
-      requireRequestConstructor(requestApi, "getRoomEnvironmentStateRequest")(binding.roomId),
+    const roomClient = displayClient === client ? replacement : displayClient
+    const after = await readReconnectIdentitySnapshot({
+      displayClient: roomClient,
+      requestApi,
+      roomId: binding.roomId,
+      environmentId: binding.environmentId,
+      sliceId,
       signal,
-      "selkies.reconnect Room identity",
-    )
-    const environment = responseVariant(state, "RoomEnvironmentState", "selkies.reconnect Room identity").environment
-    if (environment.session_id !== binding.roomId || environment.environment_id !== binding.environmentId) {
-      throw new Error("managed parity selkies.reconnect returned a foreign Room identity")
+      step: "selkies.reconnect after",
+    })
+    const duplicateActions = countNewIdentityOccurrences(before.actionIds, after.actionIds)
+    const duplicateBrowsers = countNewIdentityOccurrences(before.browserIds, after.browserIds)
+    if (clientRef) clientRef.current = replacement
+    if (identityClientRef && identityClientRef.current === client) identityClientRef.current = replacement
+    return {
+      ...binding,
+      displayBackend: "selkies",
+      faultInjected: true,
+      disconnectObserved: true,
+      reconnected: true,
+      duplicateActions,
+      duplicateBrowsers,
+      beforeActionIds: before.actionIds,
+      afterActionIds: after.actionIds,
+      beforeBrowserIds: before.browserIds,
+      afterBrowserIds: after.browserIds,
     }
-  } finally {
-    await Promise.resolve(replacement.close?.()).catch(() => {})
+  } catch (error) {
+    await Promise.resolve(replacement?.close?.()).catch(() => {})
+    throw error
   }
-  return {
-    ...binding,
-    displayBackend: "selkies",
-    faultInjected: request.fault === "relay_disconnect",
-    reconnected: true,
-    duplicateActions: 0,
-    duplicateBrowsers: 0,
+}
+
+async function disconnectActiveScopedClient({ client, requestApi, signal }) {
+  const close = typeof client?.close === "function"
+    ? client.close
+    : typeof client?.destroy === "function"
+      ? client.destroy
+      : null
+  if (!close) {
+    throw new Error("managed parity selkies.reconnect requires a public scoped client close boundary")
   }
+  await withDeadline(
+    () => close.call(client),
+    { signal, timeoutMs: DISCONNECT_TIMEOUT_MS, step: "selkies.reconnect disconnect" },
+  )
+  const probeRequest = requireRequestConstructor(requestApi, "relayStatusRequest")()
+  let disconnected = false
+  try {
+    await withDeadline(
+      () => client.send(probeRequest),
+      { signal, timeoutMs: DISCONNECT_TIMEOUT_MS, step: "selkies.reconnect disconnect observation" },
+    )
+  } catch (error) {
+    if (error?.name === "AbortError" || /timed out/.test(error?.message ?? "")) {
+      throw new Error("managed parity selkies.reconnect did not observe the active scoped client disconnect", {
+        cause: error,
+      })
+    }
+    disconnected = true
+  }
+  if (!disconnected) {
+    throw new Error("managed parity selkies.reconnect did not observe the active scoped client disconnect")
+  }
+}
+
+async function readReconnectIdentitySnapshot({
+  displayClient,
+  requestApi,
+  roomId,
+  environmentId,
+  sliceId,
+  signal,
+  step,
+}) {
+  const historyResponse = await sendWithAbortSignal(
+    displayClient,
+    requireRequestConstructor(requestApi, "listRoomEnvironmentActionHistoryRequest")(roomId, null, 100),
+    signal,
+    `${step} action history`,
+  )
+  const page = responseVariant(
+    historyResponse,
+    "RoomEnvironmentActionHistoryListed",
+    `${step} action history`,
+  ).page
+  const actions = requireArray(page?.actions, `${step} action history actions`)
+  const actionIds = actions.map((action) => requireText(action?.action_id, `${step} action identity`))
+  const inventoryResponse = await sendWithAbortSignal(
+    displayClient,
+    requireRequestConstructor(requestApi, "getRoomEnvironmentResourceInventoryRequest")(roomId, sliceId),
+    signal,
+    `${step} browser inventory`,
+  )
+  const inventory = responseVariant(
+    inventoryResponse,
+    "RoomEnvironmentResourceInventory",
+    `${step} browser inventory`,
+  ).inventory
+  if (inventory?.session_id !== roomId
+    || inventory?.environment_id !== environmentId
+    || inventory?.slice_id !== sliceId) {
+    throw new Error(`${step} browser inventory returned a foreign Room, Environment, or slice`)
+  }
+  const browserIds = requireIdentityValues(inventory.browser_ids, `${step} browser_ids`)
+  return { actionIds, browserIds }
+}
+
+function countNewIdentityOccurrences(before, after) {
+  const beforeCounts = identityCounts(before)
+  const afterCounts = identityCounts(after)
+  let count = 0
+  for (const [identity, occurrences] of afterCounts) {
+    count += Math.max(0, occurrences - (beforeCounts.get(identity) ?? 0))
+  }
+  for (const [identity, occurrences] of beforeCounts) {
+    if ((afterCounts.get(identity) ?? 0) < occurrences) {
+      throw new Error(`managed parity reconnect lost authoritative identity ${identity}`)
+    }
+  }
+  return count
+}
+
+function identityCounts(values) {
+  const counts = new Map()
+  for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1)
+  return counts
+}
+
+function requireIdentityValues(value, label) {
+  const values = requireArray(value, label).map((entry) => requireText(entry, `${label} identity`))
+  if (new Set(values).size !== values.length) {
+    // Duplicate identities are the signal this reconnect check is meant to
+    // report, so retain the authoritative multiplicity for the calculation.
+    return values
+  }
+  return values
 }
 
 async function canReadProductGit({ requestApi, parityConfig }) {
@@ -1553,6 +2034,47 @@ async function readSessionAttachmentIds({ client, requestApi, roomId, signal }) 
     for (const id of session?.attachment_ids ?? session?.attachmentIds ?? []) if (hasText(id)) result.add(id)
   }
   return result
+}
+
+async function readRoomAgentRecords({ client, requestApi, roomId, signal }) {
+  const response = await sendWithAbortSignal(
+    client,
+    requireRequestConstructor(requestApi, "listAgentsRequest")(roomId),
+    signal,
+    "provider agent tracking",
+  )
+  const agents = requireArray(
+    responseVariant(response, "AgentsListed", "provider agent tracking").agents,
+    "provider agent tracking agents",
+  )
+  const records = new Map()
+  for (const agent of agents) {
+    const id = requireText(agent?.id, "provider agent tracking agent.id")
+    if (agent.session_id !== roomId) {
+      throw new Error("managed parity provider agent tracking returned a foreign Room")
+    }
+    if (records.has(id)) throw new Error("managed parity provider agent tracking returned duplicate agent identity")
+    records.set(id, agent)
+  }
+  return records
+}
+
+async function readAuthoritativeSliceAgentIds({ client, requestApi, sliceId, signal, step }) {
+  const response = await sendWithAbortSignal(
+    client,
+    requireRequestConstructor(requestApi, "listSlicesRequest")(),
+    signal,
+    step,
+  )
+  const slices = requireArray(responseVariant(response, "SlicesListed", step).slices, `${step} slices`)
+  const slice = slices.find((item) => item?.id === sliceId)
+  if (!slice) return new Set()
+  const agentIds = requireArray(slice.agent_ids ?? [], `${step} slice.agent_ids`)
+    .map((value) => requireText(value, `${step} slice.agent_ids identity`))
+  if (new Set(agentIds).size !== agentIds.length) {
+    throw new Error(`${step} returned duplicate slice agent identities`)
+  }
+  return new Set(agentIds)
 }
 
 async function rememberNewSessionAttachments({ client, requestApi, roomId, beforeAttachments, ownedResources, signal }) {
@@ -1737,6 +2259,8 @@ function requireCompleteManagedResourceTelemetry(value) {
     [value?.process?.count, "process.count"],
     [value?.process?.rssBytes, "process.rssBytes"],
     [value?.logs?.bytes, "logs.bytes"],
+    [value?.cpuPercent, "cpuPercent"],
+    [value?.cpuSampleWindowMs, "cpuSampleWindowMs"],
   ]) {
     requireNonNegativeFinite(field, `resource telemetry ${label}`)
   }
@@ -1831,10 +2355,13 @@ async function runPersistenceMutations({
   if (!runMethod) {
     throw new Error("managed parity persistence has no kernel-managed execution seam")
   }
+  const requestLedger = []
+  const executionClient = wrapPersistenceExecutionClient(client, requestLedger)
+  const executionIdentityClient = wrapPersistenceExecutionClient(identityClient, requestLedger)
   const raw = await runMethod.call(persistenceAdapter, {
     ...persistenceAdapterInput({
-      client,
-      identityClient,
+      client: executionClient,
+      identityClient: executionIdentityClient,
       requestApi,
       targetKernelRef,
       targetMachineRef,
@@ -1847,7 +2374,65 @@ async function runPersistenceMutations({
       ? (event) => onPersistenceMutation(redactManagedValue(event))
       : undefined,
   })
-  return normalizePersistenceEvidence(raw, ownedResources, plan)
+  const capturedLifecycleResults = validatePersistenceRequestLedger(requestLedger, plan)
+  return normalizePersistenceEvidence(raw, ownedResources, plan, capturedLifecycleResults)
+}
+
+function wrapPersistenceExecutionClient(client, requestLedger) {
+  if (!client || typeof client.send !== "function") {
+    throw new Error("managed parity persistence execution requires a public client send seam")
+  }
+  return {
+    ...client,
+    async send(request) {
+      const response = await client.send(request)
+      requestLedger.push({
+        request: redactManagedValue(request),
+        response: redactManagedValue(response),
+      })
+      return response
+    },
+    ...(typeof client.close === "function"
+      ? { close(...args) { return client.close.apply(client, args) } }
+      : {}),
+    ...(typeof client.destroy === "function"
+      ? { destroy(...args) { return client.destroy.apply(client, args) } }
+      : {}),
+  }
+}
+
+function validatePersistenceRequestLedger(requestLedger, plan) {
+  const lifecycleResults = requestLedger.filter((entry) => Object.keys(PERSISTENCE_MUTATION_REQUEST_VARIANTS)
+    .some((action) => Object.hasOwn(entry?.request ?? {}, PERSISTENCE_MUTATION_REQUEST_VARIANTS[action])))
+  if (!Array.isArray(plan?.persistenceMutations)
+    || lifecycleResults.length !== plan.persistenceMutations.length) {
+    throw new Error("managed parity persistence execution must await exactly one successful planned public lifecycle request per mutation")
+  }
+  return lifecycleResults.map((entry, index) => {
+    const request = entry.request
+    const planned = plan.persistenceMutations[index]
+    if (!sameJson(request, planned.request)) {
+      throw new Error(`managed parity persistence execution request ${index} does not match its immutable plan`)
+    }
+    const responseVariantName = planned.responseVariant
+    const response = entry.response
+    if (!response || typeof response !== "object" || Array.isArray(response)
+      || !Object.hasOwn(response, responseVariantName)
+      || !response[responseVariantName]
+      || typeof response[responseVariantName] !== "object"
+      || Array.isArray(response[responseVariantName])) {
+      throw new Error(
+        `managed parity persistence execution response ${index} must contain the actual ${responseVariantName} variant`,
+      )
+    }
+    return {
+      request,
+      response: {
+        variant: responseVariantName,
+        payload: redactManagedValue(response[responseVariantName]),
+      },
+    }
+  })
 }
 
 function persistenceAdapterInput({
@@ -1873,56 +2458,113 @@ function persistenceAdapterInput({
 }
 
 function normalizePersistencePlan(value, ownedResources) {
+  for (const field of [
+    "before",
+    "after",
+    "afterState",
+    "inventory",
+    "response",
+    "receipt",
+    "receipts",
+    "successReceipt",
+    "mutationReceipt",
+    "savedState",
+    "saveReceipt",
+    "removeReceipt",
+  ]) {
+    if (value && typeof value === "object" && Object.hasOwn(value, field)) {
+      throw new Error(`managed parity persistence plan must not contain pre-execution ${field} evidence`)
+    }
+  }
   const source = value?.persistenceMutations ?? value?.mutations
   if (!Array.isArray(source) || source.length !== 3) {
     throw new Error("managed parity persistence plan must contain exact save/remove/restore mutations")
   }
   const normalized = source.map((mutation, index) => {
-    for (const field of ["before", "inventory", "receipt", "receipts", "saveReceipt", "removeReceipt"]) {
+    for (const field of [
+      "before",
+      "after",
+      "afterState",
+      "inventory",
+      "response",
+      "receipt",
+      "receipts",
+      "successReceipt",
+      "mutationReceipt",
+      "savedState",
+      "saveReceipt",
+      "removeReceipt",
+    ]) {
       if (mutation && Object.hasOwn(mutation, field)) {
         throw new Error(`managed parity persistence plan must not contain pre-execution ${field} evidence`)
       }
     }
-    return normalizePersistenceMutationDefinition(mutation, index)
+    return normalizePersistenceMutationDefinition(mutation, index, ownedResources)
   })
   const output = redactManagedValue({
     schema: value?.schema ?? MANAGED_PARITY_SCHEMA,
     persistenceMutations: normalized,
   })
   output.ownedResource = stableOwnedIdentity(ownedResources)
-  return output
+  return deepFreeze(output)
 }
 
-function normalizePersistenceMutationDefinition(mutation, index) {
-  const actions = ["save", "remove", "restore"]
-  const action = actions[index]
+function normalizePersistenceMutationDefinition(mutation, index, ownedResources = null) {
+  const action = PERSISTENCE_MUTATION_ACTIONS[index]
   if (!mutation || mutation.action !== action) {
     throw new Error(`managed parity persistence mutation ${index} must be ${action}`)
   }
   const argv = requireSafeArgv(mutation.argv, `persistence ${action}`)
   const request = mutation.request
-  const requestAction = request?.action ?? request?.operation ?? request?.mutation
+  const requestVariant = PERSISTENCE_MUTATION_REQUEST_VARIANTS[action]
   if (!request || typeof request !== "object" || Array.isArray(request)
-    || requestAction !== action || !sameArray(request.argv, argv)) {
-    throw new Error(`managed parity persistence ${action} request must exactly repeat its argv`)
+    || Object.keys(request).length !== 1 || !Object.hasOwn(request, requestVariant)) {
+    throw new Error(`managed parity persistence ${action} request must be the exact public ${requestVariant} request`)
   }
-  const expectedCheckpoint = {
-    save: { before: "before-docker-save", after: "after-docker-save" },
-    remove: { before: "before-docker-remove", after: "after-docker-remove" },
-    restore: { before: "before-docker-restore", after: "after-docker-restore" },
-  }[action]
+  const requestPayload = request[requestVariant]
+  const allowedPayloadFields = action === "save"
+    ? ["slice_ref", "mode", "scope"]
+    : ["slice_ref"]
+  if (!requestPayload || typeof requestPayload !== "object" || Array.isArray(requestPayload)
+    || Object.keys(requestPayload).some((field) => !allowedPayloadFields.includes(field))) {
+    throw new Error(`managed parity persistence ${action} request payload is not the released public shape`)
+  }
+  if (action === "save"
+    && (requestPayload.mode !== "shutdown" || requestPayload.scope !== "this_slice")) {
+    throw new Error("managed parity persistence save request must use shutdown for this_slice")
+  }
+  const requestSliceId = requireText(requestPayload.slice_ref, `${requestVariant}.slice_ref`)
+  const ownedSliceId = ownedResources?.sliceId ?? ownedResources?.stableIdentity?.sliceId
+  if (hasText(ownedSliceId) && requestSliceId !== ownedSliceId) {
+    throw new Error(`managed parity persistence ${action} request targets a different slice identity`)
+  }
+  const expectedArgv = persistenceRequestArgv(action, request)
+  if (!sameArray(argv, expectedArgv)) {
+    throw new Error(`managed parity persistence ${action} argv does not describe its exact public request`)
+  }
+  const requestIdentity = persistenceRequestIdentity(request)
+  if (mutation.requestIdentity !== undefined && mutation.requestIdentity !== requestIdentity) {
+    throw new Error(`managed parity persistence ${action} request identity does not match its public request`)
+  }
+  const expectedResponseVariant = PERSISTENCE_MUTATION_RESPONSE_VARIANTS[action]
+  if (mutation.responseVariant !== undefined && mutation.responseVariant !== expectedResponseVariant) {
+    throw new Error(`managed parity persistence ${action} response variant is not authoritative`)
+  }
+  const expectedCheckpoint = PERSISTENCE_MUTATION_CHECKPOINTS[action]
   if (!sameJson(mutation.checkpoints, expectedCheckpoint)) {
     throw new Error(`managed parity persistence ${action} checkpoints are not exact`)
   }
   return {
     action,
     argv,
-    request: redactManagedValue({ ...request, argv }),
+    request: redactManagedValue(request),
+    requestIdentity,
+    responseVariant: expectedResponseVariant,
     checkpoints: expectedCheckpoint,
   }
 }
 
-function normalizePersistenceEvidence(value, ownedResources, plan) {
+function normalizePersistenceEvidence(value, ownedResources, plan, capturedLifecycleResults) {
   const source = value?.persistenceMutations ?? value?.mutations
   if (!Array.isArray(source) || source.length !== 3) {
     throw new Error("managed parity persistence must expose exact save/remove/restore mutation evidence")
@@ -1931,30 +2573,82 @@ function normalizePersistenceEvidence(value, ownedResources, plan) {
   if (!Array.isArray(plannedMutations) || plannedMutations.length !== 3) {
     throw new Error("managed parity persistence execution requires an immutable mutation plan")
   }
+  if (!Array.isArray(capturedLifecycleResults) || capturedLifecycleResults.length !== plannedMutations.length) {
+    throw new Error("managed parity persistence evidence requires captured successful lifecycle responses")
+  }
   const normalized = []
+  let previousAfter = null
   for (const [index, mutation] of source.entries()) {
-    const definition = normalizePersistenceMutationDefinition(mutation, index)
-    const plannedDefinition = normalizePersistenceMutationDefinition(plannedMutations[index], index)
+    const definition = normalizePersistenceMutationDefinition(mutation, index, ownedResources)
+    const plannedDefinition = normalizePersistenceMutationDefinition(plannedMutations[index], index, ownedResources)
     if (!sameJson(definition, plannedDefinition)) {
       throw new Error(`managed parity persistence ${definition.action} result does not match its plan`)
     }
-    const { action, argv, request } = definition
+    const { action, argv, request, requestIdentity, responseVariant } = definition
+    const captured = capturedLifecycleResults[index]
+    if (!captured
+      || !sameJson(captured.request, request)
+      || !sameJson(captured.response, mutation.response)) {
+      throw new Error(`managed parity persistence ${action} evidence is not bound to its captured lifecycle response`)
+    }
     const before = mutation.before ?? mutation.inventory
     if (!before || typeof before !== "object" || Array.isArray(before)) {
-      throw new Error(`managed parity persistence ${action} requires a pre-mutation inventory`)
+      throw new Error(`managed parity persistence ${action} requires an authoritative pre-mutation slice state`)
+    }
+    const after = mutation.after
+    if (!after || typeof after !== "object" || Array.isArray(after)) {
+      throw new Error(`managed parity persistence ${action} requires an authoritative post-mutation slice state`)
+    }
+    validateNormalizedPersistenceObservation(action, before, "before", ownedResources)
+    validateNormalizedPersistenceObservation(action, after, "after", ownedResources)
+    if (previousAfter && !samePersistenceObservationIdentity(previousAfter, before)) {
+      throw new Error(`managed parity persistence ${action} evidence is not continuous with the previous mutation`)
+    }
+    validateNormalizedPersistenceTransition(action, before, after)
+    const response = mutation.response
+    if (!response || typeof response !== "object" || Array.isArray(response)
+      || response.variant !== responseVariant
+      || !response.payload || typeof response.payload !== "object" || Array.isArray(response.payload)) {
+      throw new Error(`managed parity persistence ${action} requires the actual ${responseVariant} response`)
+    }
+    const requestVariant = PERSISTENCE_MUTATION_REQUEST_VARIANTS[action]
+    const sliceId = requireText(request[requestVariant]?.slice_ref, `${requestVariant}.slice_ref`)
+    const responseSlice = requirePersistenceResponseSlice(
+      response.payload,
+      sliceId,
+      `persistence ${action}`,
+    )
+    if (responseSlice.status !== after.slice.status) {
+      throw new Error(`managed parity persistence ${action} response does not match its authoritative after state`)
+    }
+    if (action === "save") {
+      requireSavedState(response.payload.state, sliceId, "persistence save")
     }
     const receipt = mutation.receipt ?? mutation.receipts?.[action]
     if (!receipt || receipt.ok !== true || !hasText(receipt.id ?? receipt.receiptId)) {
       throw new Error(`managed parity persistence ${action} requires a successful receipt`)
     }
+    if (receipt.authoritative !== true
+      || receipt.action !== action
+      || receipt.requestIdentity !== requestIdentity
+      || receipt.responseVariant !== responseVariant
+      || receipt.responseSliceId !== responseSlice.id) {
+      throw new Error(`managed parity persistence ${action} receipt is not bound to its actual request and response`)
+    }
     if (action === "save" && !hasText(receipt.archivePath)) {
       throw new Error("managed parity persistence save requires an archive path receipt")
+    }
+    if (action === "save" && receipt.savedStateId !== response.payload.state?.id) {
+      throw new Error("managed parity persistence save receipt has a stale saved-state identity")
     }
     if (action === "remove" && !sameJson(mutation.saveReceipt, normalized[0]?.receipt)) {
       throw new Error("managed parity persistence remove must carry the exact save receipt")
     }
     if (action === "remove" && receipt.parentReceiptId !== receiptId(normalized[0]?.receipt)) {
       throw new Error("managed parity persistence remove receipt must chain from save")
+    }
+    if (action === "remove" && receipt.savedStateId !== normalized[0]?.receipt?.savedStateId) {
+      throw new Error("managed parity persistence remove receipt has a stale saved-state identity")
     }
     if (action === "restore") {
       if (!sameJson(mutation.saveReceipt, normalized[0]?.receipt)
@@ -1967,6 +2661,9 @@ function normalizePersistenceEvidence(value, ownedResources, plan) {
       if (!hasText(receipt.archivePath)) {
         throw new Error("managed parity persistence restore requires an archive path receipt")
       }
+      if (receipt.savedStateId !== normalized[0]?.receipt?.savedStateId) {
+        throw new Error("managed parity persistence restore receipt has a stale saved-state identity")
+      }
     }
     normalized.push({
       ...redactManagedValue(mutation),
@@ -1975,10 +2672,16 @@ function normalizePersistenceEvidence(value, ownedResources, plan) {
       request,
       checkpoints: definition.checkpoints,
       before: redactManagedValue(before),
+      response: redactManagedValue(response),
+      after: redactManagedValue(after),
       receipt: redactManagedValue(receipt),
       ...(mutation.saveReceipt ? { saveReceipt: redactManagedValue(mutation.saveReceipt) } : {}),
       ...(mutation.removeReceipt ? { removeReceipt: redactManagedValue(mutation.removeReceipt) } : {}),
     })
+    previousAfter = after
+  }
+  if (!samePersistenceObservationIdentity(normalized[0]?.before, normalized.at(-1)?.after)) {
+    throw new Error("managed parity persistence evidence changed its final authoritative identity")
   }
   const output = redactManagedValue({
     ...(value && typeof value === "object" && !Array.isArray(value) ? value : {}),
@@ -1989,6 +2692,48 @@ function normalizePersistenceEvidence(value, ownedResources, plan) {
   // cleanup inspection correlate receipts without trusting caller-supplied IDs.
   output.ownedResource = stableOwnedIdentity(ownedResources)
   return output
+}
+
+function validateNormalizedPersistenceObservation(action, observation, phase, ownedResources) {
+  const slice = observation?.slice
+  if (!slice || typeof slice !== "object" || Array.isArray(slice)) {
+    throw new Error(`managed parity persistence ${action} ${phase} evidence requires an authoritative slice state`)
+  }
+  const ownedSliceId = ownedResources?.sliceId ?? ownedResources?.stableIdentity?.sliceId
+  if (!hasText(slice.id) || (hasText(ownedSliceId) && slice.id !== ownedSliceId)) {
+    throw new Error(`managed parity persistence ${action} ${phase} evidence has a foreign slice identity`)
+  }
+  if (!hasText(slice.status) || !hasText(slice.environment_session_id)) {
+    throw new Error(`managed parity persistence ${action} ${phase} evidence lacks authoritative slice identity or status`)
+  }
+  const inventory = observation.inventory
+  if (!inventory) {
+    if (slice.status !== "stopped") {
+      throw new Error(`managed parity persistence ${action} ${phase} evidence lacks authoritative resource identity`)
+    }
+    return
+  }
+  if (typeof inventory !== "object" || Array.isArray(inventory)
+    || inventory.slice_id !== slice.id
+    || !hasText(inventory.environment_id)) {
+    throw new Error(`managed parity persistence ${action} ${phase} evidence lacks authoritative resource identity`)
+  }
+  requireUniqueIdentityArray(inventory.browser_ids, `persistence ${action} ${phase} browser_ids`)
+  requireUniqueIdentityArray(inventory.profile_ids, `persistence ${action} ${phase} profile_ids`)
+}
+
+function validateNormalizedPersistenceTransition(action, before, after) {
+  const expectedStatuses = {
+    save: { before: "running", after: "stopped" },
+    remove: { before: "stopped", after: "stopped" },
+    restore: { before: "stopped", after: "running" },
+  }[action]
+  if (before.slice.status !== expectedStatuses.before || after.slice.status !== expectedStatuses.after) {
+    throw new Error(`managed parity persistence ${action} evidence has an invalid authoritative state transition`)
+  }
+  if (!samePersistenceObservationIdentity(before, after)) {
+    throw new Error(`managed parity persistence ${action} evidence changed its authoritative identity`)
+  }
 }
 
 function receiptId(receipt) {
@@ -2006,6 +2751,9 @@ async function inspectCleanupResidue({
   const evidence = ownedResources.cleanupEvidence
   if (!evidence?.cleaned) {
     throw new Error("managed parity cleanup.inspect requires a completed cleanup.perform")
+  }
+  if (evidence.roomDeleted !== true) {
+    throw new Error("managed parity cleanup.inspect requires an observed deleted drill Room")
   }
   if (!hasText(evidence.sliceId)) {
     throw new Error("managed parity cleanup.inspect requires a stable owned slice identity")
@@ -2027,6 +2775,9 @@ async function inspectCleanupResidue({
       signal,
     }, "cleanup inspection")
     : null
+  if (!managedInspection) {
+    throw new Error("managed parity cleanup.inspect requires measured post-delete cleanup evidence")
+  }
   const output = normalizeCleanupInspection({
     ...(managedInspection && typeof managedInspection === "object" ? managedInspection : {}),
     ...publicInspection,
@@ -2039,12 +2790,9 @@ async function inspectCleanupResidue({
       }
       : {}),
     owned: stableOwnedIdentity(ownedResources),
-  }, { requireManagedMetrics: Boolean(managedInspection) })
+  }, { requireManagedMetrics: true })
   if (output.zeroResidue !== true) {
     throw new Error("managed parity cleanup.inspect found owned resource residue")
-  }
-  if (request?.requireGlobalZeroResidue === true && !managedInspection) {
-    throw new Error("managed parity cleanup.inspect cannot prove global zero residue through public paths")
   }
   return output
 }
@@ -2076,6 +2824,11 @@ async function inspectOwnedResidue({ displayClient, requestApi, ownedResources, 
     responseVariant(sessionsResponse, "SessionsListed", "cleanup.inspect sessions").sessions,
     "cleanup.inspect SessionsListed.sessions",
   )
+  const roomId = evidence.identity?.roomId ?? evidence.identity?.sessionId
+  const roomSessions = sessions.filter((session) => session?.id === roomId)
+  if (roomSessions.length > 0) {
+    throw new Error("managed parity cleanup.inspect found the owned Room still present")
+  }
   const attachmentIds = new Set(evidence.attachmentIds ?? [])
   if (ownedResourcesTrackedAfterCleanup(ownedResources)) {
     throw new Error("managed parity cleanup.inspect found tracked owned resources")
@@ -2090,8 +2843,7 @@ async function inspectOwnedResidue({ displayClient, requestApi, ownedResources, 
     }
   }
   let memberInspection = "not-requested"
-  const roomId = evidence.identity?.roomId ?? evidence.identity?.sessionId
-  if (hasText(roomId) && typeof requestApi.listSessionMembersRequest === "function") {
+  if (roomSessions.length > 0 && hasText(roomId) && typeof requestApi.listSessionMembersRequest === "function") {
     const membersResponse = await sendWithAbortSignal(
       displayClient,
       requestApi.listSessionMembersRequest(roomId),
@@ -2136,9 +2888,7 @@ async function inspectOwnedResidue({ displayClient, requestApi, ownedResources, 
     ownedAttachmentResidueCount: attachmentResidueCount,
     sessionCount: sessions.filter((session) => session?.id === roomId).length,
     memberInspection,
-    unsupportedChecks: [
-      "global process/listener/container residue requires a kernel-managed cleanup inspector",
-    ],
+    unsupportedChecks: [],
   }
 }
 
@@ -2146,6 +2896,7 @@ function ownedResourcesTrackedAfterCleanup(ownedResources) {
   return Boolean(ownedResources.sliceId)
     || ownedResources.attachmentIds.size !== 0
     || ownedResources.attachmentsByClient.size !== 0
+    || ownedResources.agentIds.size !== 0
 }
 
 function normalizeCleanupInspection(value, { requireManagedMetrics = false } = {}) {
@@ -2167,11 +2918,11 @@ function normalizeCleanupInspection(value, { requireManagedMetrics = false } = {
       ? {}
       : {
         resources: {
-          rssDeltaBytes: requireNonNegativeFinite(
+          rssDeltaBytes: requireFiniteNumber(
             value.resources?.rssDeltaBytes,
             "cleanup resources.rssDeltaBytes",
           ),
-          diskDeltaBytes: requireNonNegativeFinite(
+          diskDeltaBytes: requireFiniteNumber(
             value.resources?.diskDeltaBytes,
             "cleanup resources.diskDeltaBytes",
           ),
@@ -2207,6 +2958,9 @@ function stableOwnedIdentity(ownedResources) {
     detachedAttachmentIds: [...(ownedResources.cleanupEvidence?.detachedAttachmentIds
       ?? ownedResources.detachedAttachmentIds
       ?? [])],
+    agentIds: [...(ownedResources.cleanupEvidence?.agentIds
+      ?? ownedResources.agentIds
+      ?? [])],
     deleted: ownedResources.cleanupEvidence?.deleted === true,
   })
 }
@@ -2235,6 +2989,12 @@ function redactManagedValue(value, key = "") {
     result[entryKey] = redactManagedValue(entryValue, entryKey)
   }
   return result
+}
+
+function deepFreeze(value) {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value
+  for (const child of Object.values(value)) deepFreeze(child)
+  return Object.freeze(value)
 }
 
 function isSensitiveKey(key) {
@@ -2276,6 +3036,13 @@ function normalizeTimestamp(value) {
 function requireNonNegativeFinite(value, label) {
   if (!Number.isFinite(value) || value < 0) {
     throw new Error(`managed parity ${label} must be a finite non-negative number`)
+  }
+  return value
+}
+
+function requireFiniteNumber(value, label) {
+  if (!Number.isFinite(value)) {
+    throw new Error(`managed parity ${label} must be a finite number`)
   }
   return value
 }
@@ -2330,6 +3097,7 @@ async function runSelkiesCreate({
   targetKernelRef,
   targetMachineRef,
   ownedResources,
+  evidenceRoot,
   request,
   signal,
   displayBackend = "selkies",
@@ -2343,6 +3111,7 @@ async function runSelkiesCreate({
       targetKernelRef,
       targetMachineRef,
       ownedResources,
+      evidenceRoot,
       request,
       signal,
       displayBackend,
@@ -2359,6 +3128,12 @@ async function runSelkiesCreate({
   const workerKernelRef = requireText(targetKernelRef, "managed parity target worker kernel reference")
   const roomId = requireText(binding.roomId, "binding.roomId")
   const runId = requireText(request.runId, "runId")
+  ownedResources.expectedRoomId = roomId
+  ownedResources.evidenceRoot = hasText(evidenceRoot) ? evidenceRoot.trim() : ownedResources.evidenceRoot
+  ownedResources.cleanupMeasurements = await createCleanupMeasurementBaseline({
+    evidenceRoot: ownedResources.evidenceRoot,
+    signal,
+  })
   if (request.displayBackend !== null && request.displayBackend !== undefined) {
     throw new Error("managed parity selkies.create requires the kernel-owned display backend default")
   }
@@ -2490,6 +3265,7 @@ async function runDisplayBackendCreate({
   targetKernelRef,
   targetMachineRef,
   ownedResources,
+  evidenceRoot,
   request,
   signal,
   displayBackend,
@@ -2503,6 +3279,7 @@ async function runDisplayBackendCreate({
       targetKernelRef,
       targetMachineRef,
       ownedResources,
+      evidenceRoot,
       request,
       signal,
       displayBackend,
@@ -2522,6 +3299,12 @@ async function runDisplayBackendCreate({
   const workerKernelRef = requireText(targetKernelRef, "managed parity target worker kernel reference")
   const roomId = requireText(binding.roomId, "binding.roomId")
   const runId = requireText(request.runId, "runId")
+  ownedResources.expectedRoomId = roomId
+  ownedResources.evidenceRoot = hasText(evidenceRoot) ? evidenceRoot.trim() : ownedResources.evidenceRoot
+  ownedResources.cleanupMeasurements = await createCleanupMeasurementBaseline({
+    evidenceRoot: ownedResources.evidenceRoot,
+    signal,
+  })
   const createResponse = await sendWithAbortSignal(
     displayClient,
     requestApi.createSliceRequest({
@@ -2618,7 +3401,11 @@ async function runDisplayBackendCreate({
 
 async function runSelkiesDestroy({
   displayClient,
+  identityClient,
   requestApi,
+  targetKernelRef,
+  targetMachineRef,
+  telemetryAdapter,
   ownedResources,
   request,
   signal,
@@ -2632,21 +3419,44 @@ async function runSelkiesDestroy({
     throw new Error(`managed parity ${step} cannot verify the created target identity`)
   }
   const attachmentIds = [...ownedResources.attachmentIds]
-  await detachOwnedAttachments({ displayClient, requestApi, ownedResources, signal, step })
-  const deleteResponse = await sendWithAbortSignal(
+  await captureCleanupMeasurements({
     displayClient,
-    requireRequestConstructor(requestApi, "deleteSliceRequest")(sliceId),
+    identityClient,
+    requestApi,
+    targetKernelRef,
+    targetMachineRef,
+    telemetryAdapter,
+    ownedResources,
+    sliceId,
     signal,
     step,
-    sliceLifecycleTimeoutMs,
-  )
-  const deleted = responseVariant(deleteResponse, "SliceDeleted", "selkies.destroy").slice
-  validateDeletedSlice(deleted, sliceId, step)
+  })
+  await detachOwnedAttachments({ displayClient, requestApi, ownedResources, signal, step })
+  await retireOwnedAgents({
+    displayClient,
+    requestApi,
+    ownedResources,
+    sliceId,
+    roomId: identity.roomId,
+    signal,
+    step,
+  })
+  await deleteOwnedSlice({ displayClient, requestApi, sliceId, signal, step, sliceLifecycleTimeoutMs })
+  ownedResources.cleanupMeasurements.postDelete = await observePostDeleteRoom({
+    displayClient,
+    requestApi,
+    roomId: identity.roomId,
+    sliceId,
+    signal,
+    step,
+  })
   rememberCleanupEvidence(ownedResources, {
     sliceId,
     attachmentIds,
     identity,
     deleted: true,
+    cleaned: false,
+    roomDeleted: false,
     reason: "destroy",
   })
   clearOwnedResources(ownedResources)
@@ -2661,7 +3471,11 @@ async function runSelkiesDestroy({
 
 async function runCleanup({
   displayClient,
+  identityClient,
   requestApi,
+  targetKernelRef,
+  targetMachineRef,
+  telemetryAdapter,
   ownedResources,
   signal,
   sliceLifecycleTimeoutMs,
@@ -2669,27 +3483,433 @@ async function runCleanup({
   const sliceId = ownedResources.sliceId
   const attachmentIds = [...ownedResources.attachmentIds]
   if (sliceId) {
-    await detachOwnedAttachments({ displayClient, requestApi, ownedResources, signal, step: "cleanup.perform" })
-    const deleteResponse = await sendWithAbortSignal(
+    const roomId = ownedResources.identity?.roomId ?? ownedResources.expectedRoomId
+    await captureCleanupMeasurements({
       displayClient,
-      requireRequestConstructor(requestApi, "deleteSliceRequest")(sliceId),
+      identityClient,
+      requestApi,
+      targetKernelRef,
+      targetMachineRef,
+      telemetryAdapter,
+      ownedResources,
+      sliceId,
       signal,
-      "cleanup.perform",
+      step: "cleanup.perform",
+    })
+    await detachOwnedAttachments({ displayClient, requestApi, ownedResources, signal, step: "cleanup.perform" })
+    await retireOwnedAgents({
+      displayClient,
+      requestApi,
+      ownedResources,
+      sliceId,
+      roomId,
+      signal,
+      step: "cleanup.perform",
+    })
+    await deleteOwnedSlice({
+      displayClient,
+      requestApi,
+      sliceId,
+      signal,
+      step: "cleanup.perform",
       sliceLifecycleTimeoutMs,
-    )
-    const deleted = responseVariant(deleteResponse, "SliceDeleted", "cleanup.perform").slice
-    validateDeletedSlice(deleted, sliceId, "cleanup.perform")
+    })
+    ownedResources.cleanupMeasurements.postDelete = await observePostDeleteRoom({
+      displayClient,
+      requestApi,
+      roomId,
+      sliceId,
+      signal,
+      step: "cleanup.perform",
+    })
   }
   const previousEvidence = ownedResources.cleanupEvidence
+  const roomId = previousEvidence?.identity?.roomId
+    ?? ownedResources.identity?.roomId
+    ?? ownedResources.expectedRoomId
+  const roomDeleted = await deleteOwnedRoom({
+    displayClient,
+    requestApi,
+    roomId,
+    signal,
+    step: "cleanup.perform",
+  })
   rememberCleanupEvidence(ownedResources, {
     sliceId: sliceId ?? previousEvidence?.sliceId,
     attachmentIds: attachmentIds.length > 0 ? attachmentIds : previousEvidence?.attachmentIds,
     identity: ownedResources.identity ?? previousEvidence?.identity ?? ownedResources.stableIdentity,
     deleted: true,
+    cleaned: true,
+    roomDeleted,
     reason: "cleanup",
   })
   clearOwnedResources(ownedResources)
   return { cleaned: true, sliceId, attachmentIds }
+}
+
+async function createCleanupMeasurementBaseline({ evidenceRoot, signal }) {
+  return {
+    evidenceBefore: await measureEvidenceInventory(evidenceRoot, signal),
+    beforeInventory: null,
+    beforeTelemetry: null,
+    postDelete: null,
+  }
+}
+
+async function captureCleanupMeasurements({
+  displayClient,
+  identityClient,
+  requestApi,
+  targetKernelRef,
+  targetMachineRef,
+  telemetryAdapter,
+  ownedResources,
+  sliceId,
+  signal,
+  step,
+}) {
+  if (!ownedResources.cleanupMeasurements) {
+    ownedResources.cleanupMeasurements = await createCleanupMeasurementBaseline({
+      evidenceRoot: ownedResources.evidenceRoot,
+      signal,
+    })
+  }
+  const roomId = ownedResources.identity?.roomId ?? ownedResources.expectedRoomId
+  if (!ownedResources.cleanupMeasurements.beforeInventory && hasText(roomId)) {
+    ownedResources.cleanupMeasurements.beforeInventory = await readCleanupInventoryBefore({
+      client: displayClient,
+      requestApi,
+      roomId,
+      sliceId,
+      signal,
+      step: `${step} measured inventory before cleanup`,
+    })
+  }
+  if (!ownedResources.cleanupMeasurements.beforeTelemetry
+    && hasManagedResourceTelemetryPath(identityClient, requestApi, telemetryAdapter)) {
+    ownedResources.cleanupMeasurements.beforeTelemetry = await collectManagedTargetResourceSnapshot({
+      client: identityClient,
+      requestApi,
+      targetKernelRef,
+      targetMachineRef,
+      ownedResources,
+      telemetryAdapter,
+      phase: "cleanup-before",
+      sampleId: `cleanup:${sliceId}:before`,
+      evidenceRoot: ownedResources.evidenceRoot,
+      signal,
+    })
+  }
+}
+
+async function readCleanupInventoryBefore({ client, requestApi, roomId, sliceId, signal, step }) {
+  const slicesResponse = await sendWithAbortSignal(
+    client,
+    requireRequestConstructor(requestApi, "listSlicesRequest")(),
+    signal,
+    `${step} slices`,
+  )
+  const slices = requireArray(responseVariant(slicesResponse, "SlicesListed", `${step} slices`).slices, `${step} slices`)
+  const sessions = await readSessionRecords({ client, requestApi, signal, step: `${step} Rooms` })
+  const slice = slices.find((item) => item?.id === sliceId)
+  let resourceInventory = null
+  if (slice && (slice.environment_session_id === roomId || slice.session_id === roomId)
+    && typeof requestApi.getRoomEnvironmentResourceInventoryRequest === "function") {
+    const response = await sendWithAbortSignal(
+      client,
+      requestApi.getRoomEnvironmentResourceInventoryRequest(roomId, sliceId),
+      signal,
+      `${step} browser/profile inventory`,
+    )
+    const inventory = responseVariant(
+      response,
+      "RoomEnvironmentResourceInventory",
+      `${step} browser/profile inventory`,
+    ).inventory
+    resourceInventory = {
+      ...inventory,
+      browser_ids: requireIdentityValues(inventory?.browser_ids, `${step} browser_ids`),
+      profile_ids: requireIdentityValues(inventory?.profile_ids, `${step} profile_ids`),
+    }
+  }
+  let environment = null
+  if (typeof requestApi.getRoomEnvironmentStateRequest === "function") {
+    const response = await sendWithAbortSignal(
+      client,
+      requestApi.getRoomEnvironmentStateRequest(roomId),
+      signal,
+      `${step} Room state`,
+    )
+    environment = responseVariant(response, "RoomEnvironmentState", `${step} Room state`).environment
+    if (environment?.session_id !== roomId) throw new Error(`${step} returned a foreign Room`)
+  }
+  return {
+    slices: redactManagedValue(slices),
+    sessions: redactManagedValue(sessions),
+    resourceInventory: redactManagedValue(resourceInventory),
+    environment: summarizeEnvironment(environment),
+  }
+}
+
+async function observePostDeleteRoom({ displayClient, requestApi, roomId, sliceId, signal, step }) {
+  const response = await sendWithAbortSignal(
+    displayClient,
+    requireRequestConstructor(requestApi, "getRoomEnvironmentSliceRequest")(roomId),
+    signal,
+    `${step} unbound Room observation`,
+  )
+  const payload = responseVariant(response, "RoomEnvironmentSlice", `${step} unbound Room observation`)
+  if (!Object.hasOwn(payload, "binding")) {
+    throw new Error(`${step} unbound Room observation omitted the binding state`)
+  }
+  if (payload.binding !== null && payload.binding !== undefined) {
+    throw new Error(`${step} slice deletion left the Room bound to a slice`)
+  }
+  const stateResponse = await sendWithAbortSignal(
+    displayClient,
+    requireRequestConstructor(requestApi, "getRoomEnvironmentStateRequest")(roomId),
+    signal,
+    `${step} post-delete Room state`,
+  )
+  const environment = responseVariant(stateResponse, "RoomEnvironmentState", `${step} post-delete Room state`).environment
+  if (environment?.session_id !== roomId) throw new Error(`${step} post-delete Room state returned a foreign Room`)
+  const summary = summarizeEnvironment(environment)
+  return {
+    bindingPresent: false,
+    sliceId,
+    browserIds: [],
+    profileIds: [],
+    ...summary,
+  }
+}
+
+function summarizeEnvironment(environment) {
+  if (!environment) {
+    return {
+      lifecycle: null,
+      activeEnvironmentCount: 0,
+      activeProcessCount: 0,
+      inputResidueCount: 0,
+    }
+  }
+  const health = requireArray(environment.health, "cleanup environment health")
+  const activeHealth = health.filter((item) => ["starting", "ready", "degraded"].includes(item?.state))
+  const activeControllerResources = activeHealth.filter((item) => [
+    "browser_controller", "browser", "desktop", "streamer",
+  ].includes(item?.component))
+  const activeActions = requireArray(environment.actions, "cleanup environment actions")
+    .filter((action) => ["queued", "running"].includes(action?.state))
+  const inputResidueCount = requireArray(environment.input_ownership ?? [], "cleanup input ownership").length
+    + requireArray(environment.pending_input_takeovers ?? [], "cleanup pending input takeovers").length
+  return {
+    lifecycle: environment.lifecycle,
+    activeEnvironmentCount: environment.lifecycle === "stopped" ? 0 : 1,
+    activeProcessCount: activeControllerResources.length + activeActions.length,
+    inputResidueCount,
+  }
+}
+
+async function measureEvidenceInventory(root, signal) {
+  if (!hasText(root)) return null
+  const paths = new Set()
+  let bytes = 0
+  const walk = async (directory) => {
+    if (signal?.aborted) throw abortError("evidence inventory")
+    let entries
+    try {
+      entries = await readdir(directory, { withFileTypes: true })
+    } catch (error) {
+      if (error?.code === "ENOENT") return
+      throw error
+    }
+    for (const entry of entries) {
+      const path = `${directory}/${entry.name}`
+      if (entry.isDirectory()) {
+        await walk(path)
+      } else if (entry.isFile()) {
+        const details = await stat(path)
+        paths.add(path)
+        bytes += details.size
+      }
+    }
+  }
+  await walk(root.trim())
+  return { paths: [...paths].sort(), bytes, fileCount: paths.size }
+}
+
+async function measureEvidenceDelta(before, root) {
+  if (!before || !hasText(root)) {
+    throw new Error("managed parity cleanup.inspect requires an evidence inventory root")
+  }
+  const after = await measureEvidenceInventory(root)
+  if (!after) {
+    throw new Error("managed parity cleanup.inspect could not observe the evidence inventory after cleanup")
+  }
+  const oldPaths = new Set(before.paths)
+  const newPaths = after.paths.filter((path) => !oldPaths.has(path))
+  return {
+    newPathCount: newPaths.length,
+    newBytes: after.bytes - before.bytes,
+  }
+}
+
+async function deleteOwnedSlice({
+  displayClient,
+  requestApi,
+  sliceId,
+  signal,
+  step,
+  sliceLifecycleTimeoutMs,
+}) {
+  const before = await readAuthoritativeSliceRecord({
+    client: displayClient,
+    requestApi,
+    sliceId,
+    signal,
+    step: `${step} slice membership before delete`,
+  })
+  if (!before) return
+  let deleteError
+  try {
+    const deleteResponse = await sendWithAbortSignal(
+      displayClient,
+      requireRequestConstructor(requestApi, "deleteSliceRequest")(sliceId),
+      signal,
+      step,
+      sliceLifecycleTimeoutMs,
+    )
+    const deleted = responseVariant(deleteResponse, "SliceDeleted", step).slice
+    validateDeletedSlice(deleted, sliceId, step)
+  } catch (error) {
+    deleteError = error
+  }
+  const after = await readAuthoritativeSliceRecord({
+    client: displayClient,
+    requestApi,
+    sliceId,
+    signal,
+    step: `${step} slice deletion observation`,
+  })
+  if (after) throw deleteError ?? new Error(`managed parity ${step} left the owned slice present`)
+}
+
+async function retireOwnedAgents({ displayClient, requestApi, ownedResources, sliceId, roomId, signal, step }) {
+  if (typeof requestApi?.listSlicesRequest !== "function") {
+    throw new Error(`managed parity ${step} requires authoritative slice membership before deletion`)
+  }
+  const membership = await readAuthoritativeSliceRecord({
+    client: displayClient,
+    requestApi,
+    sliceId,
+    signal,
+    step: `${step} agent membership`,
+  })
+  if (!membership) return
+  if (membership.agentIds.length === 0) {
+    ownedResources.agentIds.clear()
+    return
+  }
+  const destroyAgent = requireRequestConstructor(requestApi, "destroyAgentRequest")
+  const tracked = new Set(ownedResources.agentIds)
+  const untracked = membership.agentIds.filter((agentId) => !tracked.has(agentId))
+  if (untracked.length > 0) {
+    throw new Error(`${step} found untracked agents on the owned slice: ${untracked.join(",")}`)
+  }
+  for (const agentId of membership.agentIds) {
+    const response = await sendWithAbortSignal(
+      displayClient,
+      destroyAgent(roomId, agentId),
+      signal,
+      `${step} agent retirement`,
+    )
+    const destroyed = responseVariant(response, "AgentDestroyed", `${step} agent retirement`).agent
+    if (destroyed?.id !== agentId) {
+      throw new Error(`${step} agent retirement returned a different agent identity`)
+    }
+  }
+  await waitForKernelProbe(
+    async () => {
+      const latest = await readAuthoritativeSliceRecord({
+        client: displayClient,
+        requestApi,
+        sliceId,
+        signal,
+        step: `${step} agent membership after retirement`,
+      })
+      if (!latest || latest.agentIds.length === 0) {
+        ownedResources.agentIds.clear()
+        return true
+      }
+      return false
+    },
+    5_000,
+    `${step} agent retirement`,
+    signal,
+  )
+}
+
+async function readAuthoritativeSliceRecord({ client, requestApi, sliceId, signal, step }) {
+  const response = await sendWithAbortSignal(
+    client,
+    requireRequestConstructor(requestApi, "listSlicesRequest")(),
+    signal,
+    step,
+  )
+  const slices = requireArray(responseVariant(response, "SlicesListed", step).slices, `${step} slices`)
+  const slice = slices.find((item) => item?.id === sliceId)
+  if (!slice) return null
+  const agentIds = requireArray(slice.agent_ids ?? [], `${step} agent_ids`)
+    .map((agentId) => requireText(agentId, `${step} agent identity`))
+  if (new Set(agentIds).size !== agentIds.length) throw new Error(`${step} returned duplicate agent identities`)
+  return { slice, agentIds }
+}
+
+async function deleteOwnedRoom({ displayClient, requestApi, roomId, signal, step }) {
+  if (!hasText(roomId)) return false
+  const listSessions = requireRequestConstructor(requestApi, "listSessionsRequest")
+  let sessions = await readSessionRecords({ displayClient, requestApi, signal, step: `${step} Room inventory` })
+  let room = sessions.find((session) => session?.id === roomId)
+  if (room) {
+    if (room.status !== "ended") {
+      const endResponse = await sendWithAbortSignal(
+        displayClient,
+        requireRequestConstructor(requestApi, "endSessionRequest")(roomId),
+        signal,
+        `${step} Room end`,
+      )
+      const ended = responseVariant(endResponse, "SessionEnded", `${step} Room end`).session
+      if (ended?.id !== roomId) throw new Error(`${step} Room end returned a foreign Room identity`)
+    }
+    const deleteResponse = await sendWithAbortSignal(
+      displayClient,
+      requireRequestConstructor(requestApi, "deleteSessionRequest")(roomId),
+      signal,
+      `${step} Room delete`,
+    )
+    const deleted = responseVariant(deleteResponse, "SessionDeleted", `${step} Room delete`).session
+    if (deleted?.id !== roomId) throw new Error(`${step} Room delete returned a foreign Room identity`)
+  }
+  await waitForKernelProbe(
+    async () => {
+      sessions = await readSessionRecords({ displayClient, requestApi, signal, step: `${step} Room deletion observation` })
+      room = sessions.find((session) => session?.id === roomId)
+      return !room
+    },
+    5_000,
+    `${step} Room deletion`,
+    signal,
+  )
+  return true
+}
+
+async function readSessionRecords({ displayClient, client = displayClient, requestApi, signal, step }) {
+  const response = await sendWithAbortSignal(
+    client,
+    requireRequestConstructor(requestApi, "listSessionsRequest")(),
+    signal,
+    step,
+  )
+  return requireArray(responseVariant(response, "SessionsListed", step).sessions, `${step} sessions`)
 }
 
 async function detachOwnedAttachments({ displayClient, requestApi, ownedResources, signal, step }) {
@@ -2961,18 +4181,27 @@ function clearOwnedResources(ownedResources) {
   ownedResources.sliceId = null
   ownedResources.attachmentIds.clear()
   ownedResources.attachmentsByClient.clear()
+  ownedResources.agentIds.clear()
   ownedResources.identity = null
 }
 
 function rememberCleanupEvidence(ownedResources, evidence) {
+  const previous = ownedResources.cleanupEvidence
   ownedResources.cleanupEvidence = redactManagedValue({
     schema: MANAGED_PARITY_SCHEMA,
-    cleaned: true,
-    sliceId: evidence.sliceId ?? ownedResources.stableIdentity?.sliceId ?? null,
-    attachmentIds: [...new Set(evidence.attachmentIds ?? [])],
-    detachedAttachmentIds: [...ownedResources.detachedAttachmentIds],
-    identity: evidence.identity ?? ownedResources.stableIdentity ?? null,
+    cleaned: evidence.cleaned === true,
+    sliceId: evidence.sliceId ?? previous?.sliceId ?? ownedResources.stableIdentity?.sliceId ?? null,
+    attachmentIds: [...new Set(evidence.attachmentIds ?? previous?.attachmentIds ?? [])],
+    detachedAttachmentIds: [...new Set([
+      ...(previous?.detachedAttachmentIds ?? []),
+      ...ownedResources.detachedAttachmentIds,
+    ])],
+    agentIds: [...new Set(evidence.agentIds ?? previous?.agentIds ?? [...ownedResources.agentIds])],
+    identity: evidence.identity ?? previous?.identity ?? ownedResources.stableIdentity ?? null,
     deleted: evidence.deleted === true,
+    roomDeleted: evidence.roomDeleted === true || previous?.roomDeleted === true,
+    postDelete: evidence.postDelete ?? previous?.postDelete ?? ownedResources.cleanupMeasurements?.postDelete ?? null,
+    measurements: evidence.measurements ?? previous?.measurements ?? ownedResources.cleanupMeasurements ?? null,
     reason: evidence.reason ?? "cleanup",
   })
 }

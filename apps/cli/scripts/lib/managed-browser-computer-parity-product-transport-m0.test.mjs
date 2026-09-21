@@ -202,6 +202,8 @@ function managedTelemetry(overrides = {}) {
     disk: { totalBytes: 16_000, usedBytes: 4_000, availableBytes: 12_000 },
     process: { count: 1, rssBytes: 100 },
     logs: { bytes: 0 },
+    cpuPercent: 5,
+    cpuSampleWindowMs: 1_000,
     docker: { containers: [] },
     ...overrides,
   }
@@ -305,6 +307,18 @@ test("managed resource telemetry rejects missing used bytes and kernel capture t
     () => createTelemetryTransport(withoutCaptureTime).collectManagedTargetResourceSnapshot({ phase: "during" }),
     /capturedAt must be a kernel-captured timestamp/,
   )
+
+  const withoutCpuPercent = managedTelemetry({ cpuPercent: undefined })
+  await assert.rejects(
+    () => createTelemetryTransport(withoutCpuPercent).collectManagedTargetResourceSnapshot({ phase: "during" }),
+    /resource telemetry cpuPercent must be a finite non-negative number/,
+  )
+
+  const malformedCpuSampleWindow = managedTelemetry({ cpuSampleWindowMs: "1000" })
+  await assert.rejects(
+    () => createTelemetryTransport(malformedCpuSampleWindow).collectManagedTargetResourceSnapshot({ phase: "during" }),
+    /resource telemetry cpuSampleWindowMs must be a finite non-negative number/,
+  )
 })
 
 test("managed resource telemetry has a finite timeout", async () => {
@@ -335,6 +349,7 @@ function createCompatibilityTransport(protocol) {
           connected: true,
           daemon_id: "kernel-1",
           machine_id: "machine-1",
+          heartbeat_age_ms: 1,
           relay_peer_protocol_version: 18,
           relay_version: "chariox-relay 0.1.0",
         } } }
@@ -367,14 +382,20 @@ test("compatibility preflight accepts the released kernel protocol before target
 })
 
 test("compatibility preflight rejects stale and too-new kernel protocol constants before target inspection", async () => {
-  for (const protocol of [322, 337]) {
+  for (const protocol of [322, 334, 337]) {
     const transport = createCompatibilityTransport(protocol)
     await assert.rejects(
       () => transport.assertCompatibilityPreflight(),
-      /requires released kernel protocol 336|observed 322|observed 337/,
+      /requires released kernel protocol 336|observed 322|observed 334|observed 337/,
       `protocol ${protocol}`,
     )
   }
+})
+
+test("compatibility preflight accepts the protocol 336 telemetry expectation", async () => {
+  const transport = createCompatibilityTransport(336)
+  const compatibility = await transport.assertCompatibilityPreflight()
+  assert.equal(compatibility.protocol.kernel, 336)
 })
 
 function createKernelPreflightTransport(release = verifiedRelease()) {
@@ -489,78 +510,197 @@ test("transport dispatches every live M0 operation through an explicit operation
   assert.deepEqual(seen, steps)
 })
 
-function persistenceEvidence() {
-  const inventory = {
-    containers: ["chariox-slice-owned"],
-    images: ["chariox/browser:fixture"],
-    volumes: [],
-    networks: [],
-  }
-  const saveArgv = ["docker", "save", "chariox/browser:fixture", "-o", "/tmp/browser-state.tar"]
-  const removeArgv = ["docker", "rm", "chariox-slice-owned"]
-  const restoreArgv = ["docker", "load", "-i", "/tmp/browser-state.tar"]
-  const saveReceipt = { ok: true, id: "save-receipt-1", archivePath: "/tmp/browser-state.tar" }
-  const removeReceipt = { ok: true, id: "remove-receipt-1", parentReceiptId: saveReceipt.id }
+function persistenceSlice(status) {
   return {
-    persistenceMutations: [
-      {
+    id: "slice-1",
+    status,
+    environment_session_id: "room-1",
+    environment_id: "environment-1",
+  }
+}
+
+function persistenceObservation(status) {
+  const observation = {
+    slice: persistenceSlice(status),
+  }
+  if (status !== "stopped") {
+    observation.inventory = {
+      session_id: "room-1",
+      environment_id: "environment-1",
+      slice_id: "slice-1",
+      browser_ids: ["browser-1"],
+      profile_ids: ["profile-1"],
+    }
+  }
+  return observation
+}
+
+function persistenceRequests() {
+  return {
+    save: { SaveSliceState: { slice_ref: "slice-1", mode: "shutdown", scope: "this_slice" } },
+    remove: { StopSlice: { slice_ref: "slice-1" } },
+    restore: { StartSlice: { slice_ref: "slice-1" } },
+  }
+}
+
+function persistenceResponseForRequest(request) {
+  const variant = Object.keys(request ?? {})[0]
+  const savedState = {
+    id: "saved-state-1",
+    source_slice_id: "slice-1",
+    home_archive_path: "/tmp/managed-parity-slice-state.tar",
+  }
+  if (variant === "SaveSliceState") {
+    return { SliceStateSaved: { slice: persistenceSlice("stopped"), state: savedState } }
+  }
+  if (variant === "StopSlice") {
+    return { SliceStopped: { slice: persistenceSlice("stopped") } }
+  }
+  if (variant === "StartSlice") {
+    return { SliceStarted: { slice: persistenceSlice("running") } }
+  }
+  throw new Error(`unexpected persistence request: ${JSON.stringify(request)}`)
+}
+
+function persistenceArgv(action, request) {
+  const variant = Object.keys(request)[0]
+  const payload = request[variant]
+  return [
+    "kernel",
+    variant,
+    payload.slice_ref,
+    ...(action === "save" ? [`mode=${payload.mode}`, `scope=${payload.scope}`] : []),
+  ]
+}
+
+function persistenceEvidence() {
+  const requests = persistenceRequests()
+  const savedState = {
+    id: "saved-state-1",
+    source_slice_id: "slice-1",
+    home_archive_path: "/tmp/managed-parity-slice-state.tar",
+  }
+  const responseSlice = (status) => persistenceSlice(status)
+  const definitions = [
+    {
+      action: "save",
+      before: persistenceObservation("running"),
+      after: persistenceObservation("stopped"),
+      response: {
+        variant: "SliceStateSaved",
+        payload: { slice: responseSlice("stopped"), state: savedState },
+      },
+      receipt: {
+        ok: true,
+        id: savedState.id,
         action: "save",
-        argv: saveArgv,
-        request: { action: "save", argv: saveArgv },
-        before: inventory,
-        receipt: saveReceipt,
-        checkpoints: { before: "before-docker-save", after: "after-docker-save" },
+        requestIdentity: JSON.stringify(requests.save),
+        responseVariant: "SliceStateSaved",
+        responseSliceId: "slice-1",
+        savedStateId: savedState.id,
+        archivePath: savedState.home_archive_path,
+        authoritative: true,
       },
-      {
+    },
+    {
+      action: "remove",
+      before: persistenceObservation("stopped"),
+      after: persistenceObservation("stopped"),
+      response: {
+        variant: "SliceStopped",
+        payload: { slice: responseSlice("stopped") },
+      },
+      receipt: {
+        ok: true,
+        id: "remove-receipt-1",
         action: "remove",
-        argv: removeArgv,
-        request: { action: "remove", argv: removeArgv },
-        before: inventory,
-        saveReceipt,
-        receipt: removeReceipt,
-        checkpoints: { before: "before-docker-remove", after: "after-docker-remove" },
+        requestIdentity: JSON.stringify(requests.remove),
+        responseVariant: "SliceStopped",
+        responseSliceId: "slice-1",
+        savedStateId: savedState.id,
+        parentReceiptId: savedState.id,
+        archivePath: savedState.home_archive_path,
+        authoritative: true,
       },
-      {
+    },
+    {
+      action: "restore",
+      before: persistenceObservation("stopped"),
+      after: persistenceObservation("running"),
+      response: {
+        variant: "SliceStarted",
+        payload: { slice: responseSlice("running") },
+      },
+      receipt: {
+        ok: true,
+        id: "restore-receipt-1",
         action: "restore",
-        argv: restoreArgv,
-        request: { action: "restore", argv: restoreArgv },
-        before: inventory,
-        saveReceipt,
-        removeReceipt,
-        receipt: {
-          ok: true,
-          id: "restore-receipt-1",
-          parentReceiptId: removeReceipt.id,
-          archivePath: "/tmp/browser-state.tar",
-        },
-        checkpoints: { before: "before-docker-restore", after: "after-docker-restore" },
+        requestIdentity: JSON.stringify(requests.restore),
+        responseVariant: "SliceStarted",
+        responseSliceId: "slice-1",
+        savedStateId: savedState.id,
+        parentReceiptId: "remove-receipt-1",
+        archivePath: savedState.home_archive_path,
+        authoritative: true,
       },
-    ],
+    },
+  ]
+  return {
+    persistenceMutations: definitions.map((mutation) => {
+      const request = requests[mutation.action]
+      return {
+        ...mutation,
+        argv: persistenceArgv(mutation.action, request),
+        request,
+        requestIdentity: JSON.stringify(request),
+        responseVariant: mutation.response.variant,
+        checkpoints: {
+          before: `before-docker-${mutation.action}`,
+          after: `after-docker-${mutation.action}`,
+        },
+        ...(mutation.action === "remove"
+          ? { saveReceipt: definitions[0].receipt }
+          : mutation.action === "restore"
+            ? { saveReceipt: definitions[0].receipt, removeReceipt: definitions[1].receipt }
+            : {}),
+      }
+    }),
   }
 }
 
 function persistencePlan() {
   return {
-    persistenceMutations: persistenceEvidence().persistenceMutations.map(({
-      action,
-      argv,
-      request,
-      checkpoints,
-    }) => ({ action, argv, request, checkpoints })),
+    persistenceMutations: persistenceEvidence().persistenceMutations.map((mutation) => {
+      const {
+        before,
+        after,
+        response,
+        receipt,
+        saveReceipt,
+        removeReceipt,
+        ...planMutation
+      } = mutation
+      return planMutation
+    }),
   }
+}
+
+async function sendPlannedPersistenceRequests(client, plan) {
+  for (const mutation of plan.persistenceMutations) await client.send(mutation.request)
 }
 
 test("persistence plans remain immutable and execution returns post-mutation receipts", async () => {
   const evidence = persistenceEvidence()
   const plan = persistencePlan()
   const transport = createManagedBrowserComputerParityTransportFromPublicClient({
-    client: { async send() { throw new Error("unexpected persistence public request") } },
+    client: { async send(request) { return persistenceResponseForRequest(request) } },
     requestApi: moduleRequestApi,
     persistence: {
       async describe() { return plan },
-      async run({ plan: executionPlan, onPersistenceMutation }) {
+      async run({ plan: executionPlan, onPersistenceMutation, client }) {
         for (const mutation of evidence.persistenceMutations) {
           await onPersistenceMutation?.({ phase: "before", mutation })
+          await client.send(mutation.request)
           await onPersistenceMutation?.({ phase: "after", mutation })
         }
         assert.deepEqual(executionPlan.persistenceMutations, plan.persistenceMutations)
@@ -586,13 +726,20 @@ test("persistence plans remain immutable and execution returns post-mutation rec
     ["before", "restore"], ["after", "restore"],
   ])
   assert.deepEqual(result.persistenceMutations.map((mutation) => mutation.argv), [
-    ["docker", "save", "chariox/browser:fixture", "-o", "/tmp/browser-state.tar"],
-    ["docker", "rm", "chariox-slice-owned"],
-    ["docker", "load", "-i", "/tmp/browser-state.tar"],
+    ["kernel", "SaveSliceState", "slice-1", "mode=shutdown", "scope=this_slice"],
+    ["kernel", "StopSlice", "slice-1"],
+    ["kernel", "StartSlice", "slice-1"],
   ])
+  assert.deepEqual(result.persistenceMutations.map((mutation) => mutation.request), [
+    persistenceRequests().save,
+    persistenceRequests().remove,
+    persistenceRequests().restore,
+  ])
+  assert.ok(Object.isFrozen(described))
+  assert.ok(Object.isFrozen(described.persistenceMutations[0]))
 })
 
-test("persistence rejects receipts declared before execution and no-op plan results", async () => {
+test("persistence rejects predeclared receipts and callback-only no-op execution", async () => {
   const predeclared = createManagedBrowserComputerParityTransportFromPublicClient({
     client: { async send() { throw new Error("unexpected persistence public request") } },
     requestApi: moduleRequestApi,
@@ -622,12 +769,103 @@ test("persistence rejects receipts declared before execution and no-op plan resu
   })
   await assert.rejects(
     () => noOp.run("selkies.persistence", {}),
-    /requires a pre-mutation inventory/,
+    /must await exactly one successful planned public lifecycle request|requires an authoritative pre-mutation slice state/,
+  )
+})
+
+test("persistence does not count a caught rejected lifecycle send as executed evidence", async () => {
+  const evidence = persistenceEvidence()
+  const transport = createManagedBrowserComputerParityTransportFromPublicClient({
+    client: { async send(request) {
+      if (Object.hasOwn(request, "StopSlice")) throw new Error("simulated rejected stop")
+      return persistenceResponseForRequest(request)
+    } },
+    requestApi: moduleRequestApi,
+    persistence: {
+      async describe() { return persistencePlan() },
+      async run({ plan, client }) {
+        await client.send(plan.persistenceMutations[0].request)
+        try {
+          await client.send(plan.persistenceMutations[1].request)
+        } catch {
+          // A caught rejection must not become a lifecycle receipt.
+        }
+        await client.send(plan.persistenceMutations[2].request)
+        return evidence
+      },
+    },
+  })
+  await assert.rejects(
+    () => transport.run("selkies.persistence", {}),
+    /must await exactly one successful planned public lifecycle request per mutation/,
+  )
+})
+
+test("persistence rejects missing or reordered lifecycle operations", async () => {
+  const missing = persistencePlan()
+  missing.persistenceMutations.pop()
+  const reordered = persistencePlan()
+  reordered.persistenceMutations.reverse()
+  for (const invalidPlan of [missing, reordered]) {
+    const transport = createManagedBrowserComputerParityTransportFromPublicClient({
+      client: { async send() {} },
+      requestApi: moduleRequestApi,
+      persistence: { async describe() { return invalidPlan }, async run() { throw new Error("must not execute") } },
+    })
+    await assert.rejects(
+      () => transport.describePersistenceMutations({ runId: "run-invalid-plan" }),
+      /exact save\/remove\/restore|must be save|must be remove|must be restore/,
+    )
+  }
+})
+
+test("persistence rejects request/response mismatch and stale saved-state identity", async () => {
+  const requestMismatch = persistenceEvidence()
+  requestMismatch.persistenceMutations[1].argv = ["kernel", "StopSlice", "foreign-slice"]
+  const responseMismatch = persistenceEvidence()
+  responseMismatch.persistenceMutations[1].response.payload.slice.id = "foreign-slice"
+  const staleState = persistenceEvidence()
+  staleState.persistenceMutations[2].receipt.savedStateId = "stale-state"
+  const cases = [requestMismatch, responseMismatch, staleState]
+  for (const invalidEvidence of cases) {
+    const transport = createManagedBrowserComputerParityTransportFromPublicClient({
+      client: { async send(request) { return persistenceResponseForRequest(request) } },
+      requestApi: moduleRequestApi,
+      persistence: {
+        async describe() { return persistencePlan() },
+        async run({ plan, client }) {
+          await sendPlannedPersistenceRequests(client, plan)
+          return invalidEvidence
+        },
+      },
+    })
+    await assert.rejects(
+      () => transport.run("selkies.persistence", {}),
+      /does not describe|does not match|not bound to its captured lifecycle response|foreign slice identity|returned a different slice identity|stale saved-state identity/,
+    )
+  }
+
+  const staleFixture = createCleanupTransport({ staleSavedStateId: "stale-state" })
+  const binding = {
+    kernelId: "kernel-1",
+    machineId: "machine-1",
+    roomId: "room-1",
+    environmentId: "environment-1",
+  }
+  await staleFixture.transport.run("selkies.create", {
+    runId: "run-stale-saved-state",
+    kernelOwnedDefault: true,
+    displayBackend: null,
+    binding,
+  })
+  await assert.rejects(
+    () => staleFixture.transport.run("selkies.persistence", { binding }),
+    /did not restore the authoritative saved state|stale saved-state identity/,
   )
 })
 
 test("production persistence defaults to authoritative slice save, stop, and restore requests", async () => {
-  const { transport, client } = createCleanupTransport()
+  const { transport, client } = createCleanupTransport({ inventoryUnavailableWhenStopped: true })
   const binding = {
     kernelId: "kernel-1",
     machineId: "machine-1",
@@ -654,32 +892,189 @@ test("production persistence defaults to authoritative slice save, stop, and res
   ].some((variant) => Object.hasOwn(request, variant))).map((request) => Object.keys(request)[0]).slice(-4), [
     "SaveSliceState", "StopSlice", "StartSlice", "GetSliceStateStatus",
   ])
+  assert.equal(
+    client.requests.filter((request) => Object.hasOwn(request, "GetRoomEnvironmentResourceInventory")).length > 0,
+    true,
+  )
+})
+
+test("production persistence routes home-owned lifecycle and inventory through the display client", async () => {
+  const { transport, client, workerRequests } = createCleanupTransport({
+    inventoryUnavailableWhenStopped: true,
+    rejectWorkerLifecycleRequests: true,
+    useSeparateScopedClient: true,
+  })
+  const binding = {
+    kernelId: "kernel-1",
+    machineId: "machine-1",
+    roomId: "room-1",
+    environmentId: "environment-1",
+  }
+  await transport.run("selkies.create", {
+    runId: "run-display-client-persistence",
+    kernelOwnedDefault: true,
+    displayBackend: null,
+    binding,
+  })
+  const result = await transport.run("selkies.persistence", { binding })
+  assert.equal(result.saved, true)
+  const homeOwnedVariants = [
+    "GetSlice",
+    "SaveSliceState",
+    "StopSlice",
+    "StartSlice",
+    "GetSliceStateStatus",
+    "GetRoomEnvironmentResourceInventory",
+  ]
+  assert.deepEqual(
+    workerRequests.filter((request) => homeOwnedVariants.some((variant) => Object.hasOwn(request, variant))),
+    [],
+  )
+  const displayVariants = client.requests
+    .filter((request) => homeOwnedVariants.some((variant) => Object.hasOwn(request, variant)))
+    .map((request) => Object.keys(request)[0])
+  for (const variant of homeOwnedVariants) assert.equal(displayVariants.includes(variant), true, variant)
+  assert.equal(displayVariants.filter((variant) => variant === "SaveSliceState").length, 1)
+  assert.equal(displayVariants.filter((variant) => variant === "StopSlice").length, 1)
+  assert.equal(displayVariants.filter((variant) => variant === "StartSlice").length >= 1, true)
+  assert.equal(displayVariants.filter((variant) => variant === "GetSliceStateStatus").length, 1)
+})
+
+test("factory ignores runbook Docker expectations and exposes the exact kernel lifecycle plan", async () => {
+  const runbookConfig = {
+    expected: { roomId: "room-1", environmentId: "environment-1" },
+    browserComputerGuard: {
+      resourceTelemetry: { mode: "managed-target" },
+      preflight: { requiredMemoryBytes: 0, requiredDiskBytes: 0 },
+    },
+  }
+  const { transport } = createCleanupTransport({
+    parityConfig: runbookConfig,
+    protocolApi: { LOCAL_DAEMON_PROTOCOL_VERSION: 336 },
+    targetKernelRef: "kernel-1",
+  })
+  await transport.assertCompatibilityPreflight({ config: runbookConfig })
+  await transport.run("selkies.create", {
+    runId: "run-runbook-config",
+    kernelOwnedDefault: true,
+    displayBackend: null,
+    binding: {
+      kernelId: "kernel-1",
+      machineId: "machine-1",
+      roomId: "room-1",
+      environmentId: "environment-1",
+    },
+  })
+  const plan = await transport.describePersistenceMutations({ runId: "run-runbook-config" })
+  assert.deepEqual(plan.persistenceMutations.map(({ request }) => Object.keys(request)[0]), [
+    "SaveSliceState", "StopSlice", "StartSlice",
+  ])
+  assert.ok(plan.persistenceMutations.every(({ argv }) => argv[0] === "kernel"))
+  assert.equal(Object.hasOwn(runbookConfig.browserComputerGuard, "dockerPreconditions"), false)
+  assert.ok(plan.persistenceMutations.every((mutation) => !Object.hasOwn(mutation, "receipt")))
+})
+
+test("persistence timeout and partial lifecycle failure do not retry mutations", async () => {
+  const timeoutFixture = createCleanupTransport({ startDelayMs: 40, timeouts: { persistenceMs: 10 } })
+  const binding = {
+    kernelId: "kernel-1",
+    machineId: "machine-1",
+    roomId: "room-1",
+    environmentId: "environment-1",
+  }
+  await timeoutFixture.transport.run("selkies.create", {
+    runId: "run-persistence-timeout",
+    kernelOwnedDefault: true,
+    displayBackend: null,
+    binding,
+  })
+  const startsBeforePersistence = timeoutFixture.requests.filter((request) => Object.hasOwn(request, "StartSlice")).length
+  await assert.rejects(
+    () => timeoutFixture.transport.run("selkies.persistence", { binding }),
+    /persistence execution timed out|persistence restore timed out/,
+  )
+  assert.equal(
+    timeoutFixture.requests.filter((request) => Object.hasOwn(request, "StartSlice")).length,
+    startsBeforePersistence + 1,
+  )
+  assert.equal(timeoutFixture.isClientClosed(), true)
+  assert.equal(timeoutFixture.isCloseReceiverCorrect(), true)
+  assert.equal(timeoutFixture.isDelayedRequestRetired(), true)
+
+  const partialFixture = createCleanupTransport({ persistenceFailureAction: "remove" })
+  await partialFixture.transport.run("selkies.create", {
+    runId: "run-persistence-partial",
+    kernelOwnedDefault: true,
+    displayBackend: null,
+    binding,
+  })
+  await assert.rejects(
+    () => partialFixture.transport.run("selkies.persistence", { binding }),
+    /simulated persistence failure: remove/,
+  )
+  assert.deepEqual(partialFixture.requests.filter((request) => [
+    "SaveSliceState", "StopSlice", "StartSlice",
+  ].some((variant) => Object.hasOwn(request, variant))).map((request) => Object.keys(request)[0]).slice(-2), [
+    "SaveSliceState", "StopSlice",
+  ])
 })
 
 function createCleanupTransport({
   deleteRemovesSlice = true,
   startDelayMs = 0,
+  persistenceFailureAction = null,
+  staleSavedStateId = null,
+  persistenceResponseMismatch = null,
   detachAckLossAttachmentId = null,
   residualBrowserId = null,
+  postDeleteEnvironmentResidue = false,
   cleanupInspector = null,
+  operationAdapter = null,
+  trackedProviderAgents = [],
+  initialAgentIds = [],
+  failDestroyAgentId = null,
+  useSeparateScopedClient = false,
+  reconnectClient = null,
+  reconnectActionSnapshots = null,
+  reconnectBrowserSnapshots = null,
+  inventoryUnavailableWhenStopped = false,
+  rejectWorkerLifecycleRequests = false,
+  telemetrySamples = null,
+  evidenceRoot = "/proc/managed-parity-m0-evidence-never-present",
+  parityConfig = null,
+  protocolApi = null,
+  targetKernelRef = "worker-ref-1",
   timeouts,
 } = {}) {
   let slicePresent = true
+  let roomPresent = true
+  let roomEnded = false
   let attachmentSequence = 0
   let ackLossInjected = false
+  let destroyFailureInjected = false
+  let reconnectHistoryCalls = 0
+  let reconnectInventoryCalls = 0
+  let reconnectMode = false
+  const activeAgentIds = new Set(initialAgentIds)
   const activeAttachmentIds = new Set()
   const detachAttempts = []
   const requests = []
+  const workerRequests = []
+  let clientClosed = false
+  let closeReceiverCorrect = false
+  let pendingDelayedRequestReject = null
+  let delayedRequestRetired = false
   const slice = {
     id: "slice-1",
     backend: "ssh_docker",
     display_mode: "headed",
-    worker_kernel_ref: "worker-ref-1",
+    worker_kernel_ref: targetKernelRef,
     worker_kernel_id: "kernel-1",
     worker_machine_id: "machine-1",
     environment_session_id: "room-1",
     session_id: "room-1",
     status: "running",
+    agent_ids: [...activeAgentIds],
     display_endpoint: { slice_id: "slice-1", kind: "selkies" },
   }
   let savedState = null
@@ -704,11 +1099,25 @@ function createCleanupTransport({
     getRoomEnvironmentResourceInventoryRequest(sessionId, sliceId) {
       return { GetRoomEnvironmentResourceInventory: { session_id: sessionId, slice_id: sliceId } }
     },
+    getRoomEnvironmentSliceRequest(sessionId) {
+      return { GetRoomEnvironmentSlice: { session_id: sessionId } }
+    },
     getRoomEnvironmentStateRequest(sessionId) {
       return { GetRoomEnvironmentState: { session_id: sessionId } }
     },
+    getKernelResourceTelemetryRequest() { return { GetKernelResourceTelemetry: null } },
+    LOCAL_DAEMON_PROTOCOL_VERSION: 336,
     relayStatusRequest() { return { RelayStatus: null } },
     deleteSliceRequest(sliceId) { return { DeleteSlice: { slice_ref: sliceId } } },
+    destroyAgentRequest(sessionId, agentId) {
+      return { DestroyAgent: { session_id: sessionId, agent_id: agentId } }
+    },
+    listAgentsRequest(sessionId) { return { ListAgents: { session_id: sessionId } } },
+    listRoomEnvironmentActionHistoryRequest(sessionId, before, limit) {
+      return { ListRoomEnvironmentActionHistory: { session_id: sessionId, before, limit } }
+    },
+    endSessionRequest(sessionId) { return { EndSession: { session_id: sessionId } } },
+    deleteSessionRequest(sessionId) { return { DeleteSession: { session_ref: sessionId, workspace_id: null } } },
     detachFromSessionRequest(attachmentId) {
       return { DetachFromSession: { attachment_id: attachmentId } }
     },
@@ -721,44 +1130,91 @@ function createCleanupTransport({
         return { SliceCreated: { slice: { ...slice, status: "stopped", worker_kernel_id: null, worker_machine_id: null, environment_session_id: null, session_id: null } } }
       }
       if (Object.hasOwn(request, "BindRoomEnvironmentSlice")) {
-        return { RoomEnvironmentSlice: { binding: { session_id: "room-1", slice_id: "slice-1", owner_kernel_id: "kernel-1", worker_kernel_ref: "worker-ref-1" } } }
+        return { RoomEnvironmentSlice: { binding: {
+          session_id: "room-1",
+          slice_id: "slice-1",
+          owner_kernel_id: "kernel-1",
+          worker_kernel_ref: targetKernelRef,
+        } } }
       }
       if (Object.hasOwn(request, "StartSlice") || Object.hasOwn(request, "GetSlice")) {
         if (Object.hasOwn(request, "StartSlice") && startDelayMs > 0) {
-          await new Promise((resolve) => setTimeout(resolve, startDelayMs))
+          await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+              pendingDelayedRequestReject = null
+              resolve()
+            }, startDelayMs)
+            pendingDelayedRequestReject = (error) => {
+              clearTimeout(timer)
+              pendingDelayedRequestReject = null
+              delayedRequestRetired = true
+              reject(error)
+            }
+          })
         }
         if (Object.hasOwn(request, "StartSlice")) slice.status = "running"
+        const observedSlice = persistenceResponseMismatch === "restore"
+          ? { ...slice, id: "foreign-slice" }
+          : slice
         return Object.hasOwn(request, "StartSlice")
-          ? { SliceStarted: { slice } }
-          : { Slice: { slice } }
+          ? { SliceStarted: { slice: observedSlice } }
+          : { Slice: { slice: observedSlice } }
       }
       if (Object.hasOwn(request, "SaveSliceState")) {
+        if (persistenceFailureAction === "save") {
+          throw new Error("simulated persistence failure: save")
+        }
         savedState = {
           id: "saved-state-1",
           source_slice_id: "slice-1",
           home_archive_path: "/tmp/managed-parity-slice-state.tar",
         }
-        return { SliceStateSaved: { slice, state: savedState } }
+        if (request.SaveSliceState.mode === "shutdown") slice.status = "stopped"
+        const observedState = persistenceResponseMismatch === "save"
+          ? { ...savedState, source_slice_id: "foreign-slice" }
+          : savedState
+        return { SliceStateSaved: { slice, state: observedState } }
       }
       if (Object.hasOwn(request, "StopSlice")) {
+        if (persistenceFailureAction === "remove") {
+          throw new Error("simulated persistence failure: remove")
+        }
         slice.status = "stopped"
-        return { SliceStopped: { slice } }
+        const observedSlice = persistenceResponseMismatch === "remove"
+          ? { ...slice, id: "foreign-slice" }
+          : slice
+        return { SliceStopped: { slice: observedSlice } }
       }
       if (Object.hasOwn(request, "GetSliceStateStatus")) {
-        return { SliceStateStatus: { slice, state: savedState } }
+        const observedState = staleSavedStateId
+          ? { ...savedState, id: staleSavedStateId }
+          : savedState
+        return { SliceStateStatus: { slice, state: observedState } }
       }
       if (Object.hasOwn(request, "RelayStatus")) {
-        return { RelayStatus: { status: { configured: true, connected: true, daemon_id: "kernel-1", machine_id: "machine-1" } } }
+        return { RelayStatus: { status: {
+          configured: true,
+          connected: true,
+          daemon_id: "kernel-1",
+          machine_id: "machine-1",
+          heartbeat_age_ms: 0,
+          relay_peer_protocol_version: 18,
+          relay_version: "fixture-relay",
+        } } }
+      }
+      if (Object.hasOwn(request, "GetKernelResourceTelemetry")) {
+        return { KernelResourceTelemetry: { snapshot: managedTelemetry() } }
       }
       if (Object.hasOwn(request, "GetRoomEnvironmentState")) {
+        const environmentActive = roomPresent && (slicePresent || postDeleteEnvironmentResidue)
         return { RoomEnvironmentState: { environment: {
           session_id: "room-1",
           environment_id: "environment-1",
           runtime_generation: 1,
-          lifecycle: slicePresent ? "ready" : "stopped",
+          lifecycle: environmentActive ? "ready" : "stopped",
           health: ["browser_controller", "browser", "desktop", "streamer"].map((component) => ({
             component,
-            state: slicePresent ? "ready" : "unavailable",
+            state: environmentActive ? "ready" : "unavailable",
             diagnostic_code: null,
           })),
           viewport: { revision: 1 },
@@ -768,20 +1224,50 @@ function createCleanupTransport({
           pending_input_takeovers: [],
         } } }
       }
+      if (Object.hasOwn(request, "GetRoomEnvironmentSlice")) {
+        return { RoomEnvironmentSlice: { binding: slicePresent && roomPresent
+          ? { session_id: "room-1", slice_id: "slice-1", owner_kernel_id: "kernel-1", worker_kernel_ref: targetKernelRef }
+          : null } }
+      }
       if (Object.hasOwn(request, "ListSessions")) {
-        return { SessionsListed: { sessions: slicePresent ? [{ id: "room-1", attachment_ids: [...activeAttachmentIds] }] : [] } }
+        return { SessionsListed: { sessions: roomPresent
+          ? [{ id: "room-1", status: roomEnded ? "ended" : "active", attachment_ids: [...activeAttachmentIds] }]
+          : [] } }
       }
       if (Object.hasOwn(request, "ListSlices")) {
-        return { SlicesListed: { slices: slicePresent ? [slice] : [] } }
+        return { SlicesListed: { slices: slicePresent ? [{ ...slice, agent_ids: [...activeAgentIds] }] : [] } }
+      }
+      if (Object.hasOwn(request, "ListAgents")) {
+        return { AgentsListed: { agents: [...activeAgentIds].map((id) => ({
+          id,
+          session_id: "room-1",
+          provider: "codex",
+          model: "gpt-test",
+        })) } }
       }
       if (Object.hasOwn(request, "GetRoomEnvironmentResourceInventory")) {
+        if (inventoryUnavailableWhenStopped && slice.status === "stopped") {
+          throw new Error("live worker inventory unavailable while stopped")
+        }
+        const browserIds = reconnectMode && Array.isArray(reconnectBrowserSnapshots)
+          ? reconnectBrowserSnapshots[Math.min(reconnectInventoryCalls++, reconnectBrowserSnapshots.length - 1)]
+          : slicePresent ? ["browser-1"] : (residualBrowserId ? [residualBrowserId] : [])
         return { RoomEnvironmentResourceInventory: { inventory: {
           session_id: "room-1",
           environment_id: "environment-1",
           slice_id: "slice-1",
-          browser_ids: slicePresent ? ["browser-1"] : (residualBrowserId ? [residualBrowserId] : []),
+          browser_ids: browserIds,
           profile_ids: slicePresent ? ["profile-1"] : (residualBrowserId ? ["profile-1"] : []),
         } } }
+      }
+      if (Object.hasOwn(request, "ListRoomEnvironmentActionHistory")) {
+        reconnectMode = true
+        const actionIds = Array.isArray(reconnectActionSnapshots)
+          ? reconnectActionSnapshots[Math.min(reconnectHistoryCalls++, reconnectActionSnapshots.length - 1)]
+          : ["action-1"]
+        return { RoomEnvironmentActionHistoryListed: {
+          page: { actions: actionIds.map((actionId) => ({ action_id: actionId })) },
+        } }
       }
       if (Object.hasOwn(request, "AttachToSession")) {
         const attachmentId = `attachment-${++attachmentSequence}`
@@ -804,17 +1290,89 @@ function createCleanupTransport({
         if (deleteRemovesSlice) slicePresent = false
         return { SliceDeleted: { slice: { id: "slice-1" } } }
       }
+      if (Object.hasOwn(request, "DestroyAgent")) {
+        const agentId = request.DestroyAgent.agent_id
+        if (agentId === failDestroyAgentId && !destroyFailureInjected) {
+          destroyFailureInjected = true
+          throw new Error(`simulated agent retirement failure: ${agentId}`)
+        }
+        activeAgentIds.delete(agentId)
+        return { AgentDestroyed: { agent: { id: agentId, session_id: "room-1" } } }
+      }
+      if (Object.hasOwn(request, "EndSession")) {
+        roomEnded = true
+        return { SessionEnded: { session: { id: "room-1", status: "ended" } } }
+      }
+      if (Object.hasOwn(request, "DeleteSession")) {
+        roomPresent = false
+        return { SessionDeleted: { session: { id: "room-1", status: "ended" } } }
+      }
       throw new Error(`unexpected cleanup request: ${JSON.stringify(request)}`)
     },
+    async close() {
+      closeReceiverCorrect = this === client
+      clientClosed = true
+      pendingDelayedRequestReject?.(new Error("delayed request retired by client close"))
+    },
+    async destroy() {
+      closeReceiverCorrect = this === client
+      clientClosed = true
+      pendingDelayedRequestReject?.(new Error("delayed request retired by client destroy"))
+    },
   }
+  const providerAgentQueue = [...trackedProviderAgents]
+  const providerOperationAdapter = operationAdapter ?? (providerAgentQueue.length > 0
+    ? {
+      "selkies.browser": async () => {
+        const agentId = providerAgentQueue.shift()
+        if (agentId) activeAgentIds.add(agentId)
+        return agentId ? { agentId } : {}
+      },
+      "selkies.computer": async () => {
+        const agentId = providerAgentQueue.shift()
+        if (agentId) activeAgentIds.add(agentId)
+        return agentId ? { agentId } : {}
+      },
+    }
+    : null)
+  let scopedClosed = false
+  const scopedClient = {
+    async send(request) {
+      if (scopedClosed) throw new Error("scoped client disconnected")
+      workerRequests.push(request)
+      if (rejectWorkerLifecycleRequests && [
+        "GetSlice",
+        "SaveSliceState",
+        "StopSlice",
+        "StartSlice",
+        "GetSliceStateStatus",
+        "GetRoomEnvironmentResourceInventory",
+      ].some((variant) => Object.hasOwn(request, variant))) {
+        throw new Error("worker must not receive home-owned lifecycle request")
+      }
+      return client.send(request)
+    },
+    async close() {
+      scopedClosed = true
+    },
+  }
+  const transportClient = useSeparateScopedClient ? scopedClient : client
   return {
     transport: createManagedBrowserComputerParityTransportFromPublicClient({
-      client,
+      client: transportClient,
       requestApi,
-      targetKernelRef: "worker-ref-1",
+      targetKernelRef,
       targetMachineRef: "machine-1",
       cleanupInspector,
+      operationAdapter: providerOperationAdapter,
+      displayClient: client,
+      identityClient: transportClient,
+      reconnectClient,
+      resourceTelemetry: telemetrySamples ?? (() => managedTelemetry()),
+      parityConfig,
+      protocolApi,
       timeouts,
+      evidenceRoot,
       displayTransport: {
         async openSelkiesDisplayStream() {
           let receiveCount = 0
@@ -837,13 +1395,20 @@ function createCleanupTransport({
       },
     }),
     client,
+    scopedClient,
+    isScopedClosed: () => scopedClosed,
+    isClientClosed: () => clientClosed,
+    isCloseReceiverCorrect: () => closeReceiverCorrect,
+    isDelayedRequestRetired: () => delayedRequestRetired,
     detachAttempts,
     requests,
+    workerRequests,
+    activeAgentIds,
   }
 }
 
-test("cleanup.inspect proves the stable owned slice has no public residue", async () => {
-  const { transport } = createCleanupTransport()
+test("cleanup removes the owned Room after slice deletion and proves no public residue", async () => {
+  const { transport, requests } = createCleanupTransport()
   await transport.run("selkies.create", {
     runId: "run-1",
     kernelOwnedDefault: true,
@@ -858,16 +1423,156 @@ test("cleanup.inspect proves the stable owned slice has no public residue", asyn
   await transport.run("cleanup.perform", {})
   const inspection = await transport.run("cleanup.inspect", {})
 
+  const cleanupLifecycle = requests
+    .filter((request) => Object.hasOwn(request, "DeleteSlice")
+      || Object.hasOwn(request, "GetRoomEnvironmentSlice")
+      || Object.hasOwn(request, "EndSession")
+      || Object.hasOwn(request, "DeleteSession"))
+    .map((request) => Object.keys(request)[0])
+  assert.deepEqual(cleanupLifecycle, [
+    "DeleteSlice", "GetRoomEnvironmentSlice", "EndSession", "DeleteSession",
+  ])
   assert.equal(inspection.zeroResidue, true)
   assert.equal(inspection.owned.sliceId, "slice-1")
   assert.equal(inspection.owned.deleted, true)
   assert.equal(inspection.ownedSliceCount, 0)
   assert.equal(inspection.ownedAttachmentResidueCount, 0)
+  assert.deepEqual(inspection.resources, { rssDeltaBytes: 0, diskDeltaBytes: 0 })
   assert.deepEqual(inspection.unsupportedChecks, [])
 })
 
-test("cleanup.inspect queries authoritative browser resources and fails closed on residue", async () => {
-  const { transport } = createCleanupTransport({ residualBrowserId: "browser-left-behind" })
+test("cleanup retires Browser and Computer agents before authoritative DeleteSlice", async () => {
+  const { transport, requests, activeAgentIds } = createCleanupTransport({
+    trackedProviderAgents: ["agent-browser", "agent-computer"],
+  })
+  const binding = {
+    kernelId: "kernel-1",
+    machineId: "machine-1",
+    roomId: "room-1",
+    environmentId: "environment-1",
+  }
+  await transport.run("selkies.create", {
+    runId: "run-agents",
+    kernelOwnedDefault: true,
+    displayBackend: null,
+    binding,
+  })
+  await transport.run("selkies.browser", { binding })
+  await transport.run("selkies.computer", { binding })
+  await transport.run("selkies.destroy", { sliceId: "slice-1" })
+
+  const retirementAndDelete = requests
+    .filter((request) => Object.hasOwn(request, "DestroyAgent") || Object.hasOwn(request, "DeleteSlice"))
+    .map((request) => Object.keys(request)[0])
+  assert.deepEqual(retirementAndDelete, ["DestroyAgent", "DestroyAgent", "DeleteSlice"])
+  assert.deepEqual(activeAgentIds, new Set())
+  await transport.run("cleanup.perform", {})
+})
+
+test("cleanup retries partial agent retirement before deleting the slice", async () => {
+  const { transport, requests, activeAgentIds } = createCleanupTransport({
+    trackedProviderAgents: ["agent-browser", "agent-computer"],
+    failDestroyAgentId: "agent-computer",
+  })
+  const binding = {
+    kernelId: "kernel-1",
+    machineId: "machine-1",
+    roomId: "room-1",
+    environmentId: "environment-1",
+  }
+  await transport.run("selkies.create", {
+    runId: "run-agent-retry",
+    kernelOwnedDefault: true,
+    displayBackend: null,
+    binding,
+  })
+  await transport.run("selkies.browser", { binding })
+  await transport.run("selkies.computer", { binding })
+  await assert.rejects(
+    () => transport.run("selkies.destroy", { sliceId: "slice-1" }),
+    /simulated agent retirement failure: agent-computer/,
+  )
+  assert.deepEqual(
+    requests
+      .filter((request) => Object.hasOwn(request, "DestroyAgent"))
+      .map((request) => request.DestroyAgent.agent_id),
+    ["agent-browser", "agent-computer"],
+  )
+  assert.deepEqual(activeAgentIds, new Set(["agent-computer"]))
+
+  await transport.run("selkies.destroy", { sliceId: "slice-1" })
+  assert.deepEqual(
+    requests
+      .filter((request) => Object.hasOwn(request, "DestroyAgent"))
+      .map((request) => request.DestroyAgent.agent_id),
+    ["agent-browser", "agent-computer", "agent-computer"],
+  )
+  assert.equal(requests.filter((request) => Object.hasOwn(request, "DeleteSlice")).length, 1)
+  await transport.run("cleanup.perform", {})
+})
+
+test("selkies.reconnect observes scoped disconnect before reconnect and counts duplicate identities", async () => {
+  let reconnectCalls = 0
+  let replacementClosed = false
+  const replacement = {
+    async send(request) {
+      if (Object.hasOwn(request, "RelayStatus")) {
+        return { RelayStatus: { status: {
+          configured: true,
+          connected: true,
+          daemon_id: "kernel-1",
+          machine_id: "machine-1",
+        } } }
+      }
+      throw new Error(`unexpected replacement request: ${JSON.stringify(request)}`)
+    },
+    async close() {
+      replacementClosed = true
+    },
+  }
+  const fixture = createCleanupTransport({
+    useSeparateScopedClient: true,
+    reconnectActionSnapshots: [["action-1"], ["action-1", "action-1"]],
+    reconnectBrowserSnapshots: [["browser-1"], ["browser-1", "browser-1"]],
+    reconnectClient: async () => {
+      reconnectCalls += 1
+      assert.equal(fixture.isScopedClosed(), true)
+      return replacement
+    },
+  })
+  const binding = {
+    kernelId: "kernel-1",
+    machineId: "machine-1",
+    roomId: "room-1",
+    environmentId: "environment-1",
+  }
+  await fixture.transport.run("selkies.create", {
+    runId: "run-reconnect",
+    kernelOwnedDefault: true,
+    displayBackend: null,
+    binding,
+  })
+  const result = await fixture.transport.run("selkies.reconnect", {
+    binding,
+    fault: "relay_disconnect",
+  })
+
+  assert.equal(reconnectCalls, 1)
+  assert.equal(result.disconnectObserved, true)
+  assert.equal(result.reconnected, true)
+  assert.equal(result.duplicateActions, 1)
+  assert.equal(result.duplicateBrowsers, 1)
+  assert.deepEqual(result.beforeActionIds, ["action-1"])
+  assert.deepEqual(result.afterActionIds, ["action-1", "action-1"])
+  assert.deepEqual(result.beforeBrowserIds, ["browser-1"])
+  assert.deepEqual(result.afterBrowserIds, ["browser-1", "browser-1"])
+  await fixture.transport.run("cleanup.perform", {})
+  await replacement.close()
+  assert.equal(replacementClosed, true)
+})
+
+test("cleanup.inspect fails closed on authoritative post-delete environment residue", async () => {
+  const { transport } = createCleanupTransport({ postDeleteEnvironmentResidue: true })
   await transport.run("selkies.create", {
     runId: "run-residue",
     kernelOwnedDefault: true,
@@ -882,7 +1587,7 @@ test("cleanup.inspect queries authoritative browser resources and fails closed o
   await transport.run("cleanup.perform", {})
   await assert.rejects(
     () => transport.run("cleanup.inspect", {}),
-    /residual browser\/controller\/viewer resources/,
+    /found residual resources from authoritative post-delete inventories/,
   )
 })
 
@@ -899,10 +1604,9 @@ test("cleanup.inspect fails when the owned slice remains after a delete receipt"
       environmentId: "environment-1",
     },
   })
-  await transport.run("cleanup.perform", {})
   await assert.rejects(
-    () => transport.run("cleanup.inspect", {}),
-    /owned slice still present/,
+    () => transport.run("cleanup.perform", {}),
+    /left the owned slice present/,
   )
 })
 
@@ -1035,7 +1739,7 @@ test("cleanup inspection rejects missing and malformed managed residue metrics",
     await transport.run("cleanup.perform", {})
     await assert.rejects(
       () => transport.run("cleanup.inspect", {}),
-      /must be a finite non-negative|must contain finite non-negative deltas/,
+      /must be a finite non-negative|must contain finite non-negative deltas|must be a finite number/,
       label,
     )
   }
