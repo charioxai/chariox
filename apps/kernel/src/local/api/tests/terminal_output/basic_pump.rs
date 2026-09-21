@@ -2,10 +2,11 @@ use super::*;
 
 #[test]
 fn local_request_api_rejects_terminal_input_without_active_run() {
+    let worktree = crate::test_support::TestWorktree::new("terminal-input-no-run");
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-terminal-input", "worktree-terminal-input"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -47,10 +48,11 @@ fn local_request_api_rejects_terminal_input_without_active_run() {
 
 #[test]
 fn structured_output_pump_applies_finished_jobs_from_other_runs() {
+    let worktree = crate::test_support::TestWorktree::new("terminal-structured-jobs");
     let harness = LocalRouterTestHarness::new();
     let (session, default_agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-structured-output", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -135,10 +137,11 @@ fn structured_output_pump_applies_finished_jobs_from_other_runs() {
 
 #[test]
 fn terminal_output_drain_survives_missing_focused_provider_run() {
+    let worktree = crate::test_support::TestWorktree::new("terminal-missing-focused-run");
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -170,13 +173,11 @@ fn terminal_output_drain_survives_missing_focused_provider_run() {
 
 #[test]
 fn subscription_watch_can_skip_snapshot_while_draining_terminal_output() {
+    let worktree = crate::test_support::TestWorktree::new("terminal-subscription-watch");
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-subscription-output",
-            "worktree-subscription-output",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -223,13 +224,11 @@ fn subscription_watch_can_skip_snapshot_while_draining_terminal_output() {
 
 #[test]
 fn compatibility_output_pump_preserves_quiet_provider_turn() {
+    let worktree = crate::test_support::TestWorktree::new("terminal-quiet-provider");
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-first-output-timeout",
-            "worktree-first-output-timeout",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
