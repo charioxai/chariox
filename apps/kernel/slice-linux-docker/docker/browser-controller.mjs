@@ -2,8 +2,15 @@ import { spawn as nodeSpawn } from "node:child_process";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { createHash, randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
+
+const browserControllerRequire = createRequire(
+  process.env.CHARIOX_BROWSER_CONTROLLER_PACKAGE_JSON ??
+    new URL("../toolchain/package.json", import.meta.url),
+);
+const NodeWebSocket = browserControllerRequire("ws");
 
 import { BrowserTabRegistry } from "./browser-tab-registry.mjs";
 import {
@@ -71,6 +78,7 @@ export const ERROR_CODES = Object.freeze({
   PAGE_FEATURE_TIMEOUT: "PAGE_FEATURE_TIMEOUT",
   PAGE_FEATURE_FAILED: "PAGE_FEATURE_FAILED",
   PAGE_FEATURE_PATH_DENIED: "PAGE_FEATURE_PATH_DENIED",
+  ACTION_POST_ACTION_UNCERTAIN: "ACTION_POST_ACTION_UNCERTAIN",
   REQUEST_CANCELLED: "REQUEST_CANCELLED",
   OUTPUT_TOO_LARGE: "OUTPUT_TOO_LARGE",
   INTERNAL_ERROR: "INTERNAL_ERROR",
@@ -110,6 +118,7 @@ const ERROR_MESSAGES = Object.freeze({
   [ERROR_CODES.PAGE_FEATURE_TIMEOUT]: "browser page feature timed out",
   [ERROR_CODES.PAGE_FEATURE_FAILED]: "browser page feature failed",
   [ERROR_CODES.PAGE_FEATURE_PATH_DENIED]: "browser file path is not allowed",
+  [ERROR_CODES.ACTION_POST_ACTION_UNCERTAIN]: "browser action outcome is uncertain after a post-action failure",
   [ERROR_CODES.REQUEST_CANCELLED]: "request was cancelled",
   [ERROR_CODES.OUTPUT_TOO_LARGE]: "response exceeds the byte limit",
   [ERROR_CODES.INTERNAL_ERROR]: "internal controller error",
@@ -130,6 +139,12 @@ const MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const MAX_CDP_BODY_BYTES = 64 * 1024;
 const MAX_CDP_FRAME_BYTES = 64 * 1024;
+const CDP_WEBSOCKET_OPTIONS = Object.freeze({
+  // The ws receiver applies maxPayload while consuming continuation frames,
+  // before it assembles and emits a message. Native WebSocket implementations
+  // ignore the extra constructor arguments and retain the application check.
+  maxPayload: OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES,
+});
 const LARGE_CDP_RESPONSE_METHODS = new Set([
   "Accessibility.getFullAXTree",
   "DOMSnapshot.captureSnapshot",
@@ -145,6 +160,9 @@ const MAX_MUTATION_FILL_TEXT_BYTES = 48 * 1024;
 const MAX_MUTATION_PROMPT_BYTES = 8 * 1024;
 const MAX_MUTATION_PATH_BYTES = 4 * 1024;
 const MUTATION_DIGEST_HEX_LENGTH = 40;
+const DEFAULT_ACTION_TIMEOUT_MS = 5_000;
+const MIN_ACTION_TIMEOUT_MS = 100;
+const MAX_ACTION_TIMEOUT_MS = 5_000;
 
 export class ControllerError extends Error {
   constructor(code, message = ERROR_MESSAGES[code] || ERROR_MESSAGES[ERROR_CODES.INTERNAL_ERROR]) {
@@ -228,6 +246,11 @@ function validateGeneration(value) {
     schemaError();
   }
   return value;
+}
+
+function normalizeActionTimeout(value) {
+  const requested = value ?? DEFAULT_ACTION_TIMEOUT_MS;
+  return Math.max(MIN_ACTION_TIMEOUT_MS, Math.min(requested, MAX_ACTION_TIMEOUT_MS));
 }
 
 function boundedJson(value, limit) {
@@ -461,6 +484,19 @@ function isOpenState(socket) {
   return socket?.readyState === 1 || socket?.readyState === socket?.OPEN;
 }
 
+function createCdpWebSocket(WebSocketImpl, url) {
+  try {
+    // ws accepts its connection options as the second argument and enforces
+    // maxPayload while it consumes fragmented frames.
+    return new WebSocketImpl(url, CDP_WEBSOCKET_OPTIONS);
+  } catch {
+    // The WHATWG constructor treats the second argument as protocols. Keep
+    // the same option available to implementations that accept a third
+    // options argument, while its message boundary remains guarded below.
+    return new WebSocketImpl(url, [], CDP_WEBSOCKET_OPTIONS);
+  }
+}
+
 function validateCdpResultMessage(value) {
   if (!isPlainObject(value) || !Number.isSafeInteger(value.id) || value.id < 1) {
     throw controllerError(ERROR_CODES.CDP_PROTOCOL_INVALID);
@@ -632,20 +668,21 @@ class CdpConnection {
   }
 
   _onMessage(event) {
-    let encoded;
-    if (typeof event?.data === "string") {
-      encoded = event.data;
-    } else if (event?.data instanceof Uint8Array) {
-      encoded = Buffer.from(event.data).toString("utf8");
-    } else {
+    const data = event?.data;
+    const encodedBytes = typeof data === "string"
+      ? Buffer.byteLength(data, "utf8")
+      : data instanceof Uint8Array
+        ? data.byteLength
+        : null;
+    if (encodedBytes === null || encodedBytes > OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES) {
       this._failConnection(ERROR_CODES.CDP_PROTOCOL_INVALID);
       return;
     }
-    const encodedBytes = Buffer.byteLength(encoded, "utf8");
-    if (encodedBytes > OBSERVATION_RAW_SNAPSHOT_LIMIT_BYTES) {
-      this._failConnection(ERROR_CODES.CDP_PROTOCOL_INVALID);
-      return;
-    }
+
+    // Check the raw payload before any binary-to-text conversion or JSON parse.
+    const encoded = typeof data === "string"
+      ? data
+      : Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString("utf8");
     let message;
     try {
       message = JSON.parse(encoded);
@@ -718,7 +755,7 @@ export class BrowserController {
     this.clock = options.clock || defaultClock();
     this.timers = options.timers || defaultTimers();
     this.fetchImpl = options.fetchImpl || globalThis.fetch;
-    this.WebSocketImpl = options.WebSocketImpl || globalThis.WebSocket;
+    this.WebSocketImpl = options.WebSocketImpl || NodeWebSocket;
     this.spawnBrowser = options.spawnBrowser || defaultSpawnBrowser;
     this.signalProcess = options.signalProcess || ((child, signal) => child.kill?.(signal));
     this.executable = options.executable || DEFAULT_EXECUTABLE;
@@ -759,6 +796,7 @@ export class BrowserController {
     this.pageFeatures = options.pageFeatures ?? new BrowserPageFeatures({
       uploadRoots: options.uploadRoots ?? [],
       downloadRoot: options.downloadRoot ?? null,
+      uploadArtifactBroker: options.uploadArtifactBroker ?? null,
       now: () => this._now(),
       sleep: (milliseconds) => this.timers.sleep(milliseconds),
     });
@@ -812,6 +850,14 @@ export class BrowserController {
       throw controllerError(ERROR_CODES.RESTART_REQUIRED);
     }
 
+    if (typeof this.pageFeatures.prepare === "function") {
+      try {
+        await this.pageFeatures.prepare();
+      } catch (error) {
+        throw normalizeError(error, ERROR_CODES.PAGE_FEATURE_PATH_DENIED);
+      }
+    }
+
     this.generation += 1;
     this._advanceMutationBrowserGeneration(this.generation);
     this.state = "starting";
@@ -837,7 +883,7 @@ export class BrowserController {
         throw controllerError(ERROR_CODES.CONTROLLER_CRASHED);
       }
       this._cdp = connected.connection;
-      this._reconcileTabRegistry(this.generation, connected.targets);
+      await this._reconcileTabRegistry(this.generation, connected.targets);
       this.state = "ready";
       this._startHeartbeat();
       this._emit("ready", {
@@ -974,11 +1020,18 @@ export class BrowserController {
       });
       const connection = await this._ensureTargetConnection(target);
       try {
-        return await this.observationStore.capture({
+        const snapshot = await this.observationStore.capture({
           connection,
           tab: target,
           limits: request.limits,
         });
+        if (typeof this.pageFeatures.observeDocument === "function") {
+          await this.pageFeatures.observeDocument({
+            tab_id: snapshot.tab_id,
+            document_id: snapshot.document_id,
+          });
+        }
+        return snapshot;
       } catch (error) {
         throw normalizeError(error);
       }
@@ -995,15 +1048,19 @@ export class BrowserController {
     const tabId = validateIdentifier(request.tab_id, "tab_id");
     const targetGeneration = validateGeneration(request.target_generation);
     const elementRef = validateIdentifier(request.element_ref, "element_ref");
-    const target = this.tabRegistry.getTab(tabId, {
-      generation: this.generation,
-      target_generation: targetGeneration,
+    const generation = this.generation;
+    return this._enqueue(generation, async () => {
+      const target = this.tabRegistry.resolveTarget(tabId, {
+        generation,
+        target_generation: targetGeneration,
+      });
+      const connection = await this._ensureTargetConnection(target);
+      try {
+        return await this.observationStore.resolve(target, elementRef, { connection });
+      } catch (error) {
+        throw normalizeError(error);
+      }
     });
-    try {
-      return this.observationStore.resolve(target, elementRef);
-    } catch (error) {
-      throw normalizeError(error);
-    }
   }
 
   async performElementAction(ownerId, expectedGeneration, request, mutation) {
@@ -1024,6 +1081,8 @@ export class BrowserController {
       schemaError();
     }
     const generation = this.generation;
+    const actionTimeoutMs = normalizeActionTimeout(request.timeout_ms);
+    const actionDeadline = this._now() + actionTimeoutMs;
     const attribution = this._createTabMutationAttribution(
       mutation,
       "perform_element_action",
@@ -1040,6 +1099,9 @@ export class BrowserController {
       if (signal.aborted) {
         throw new BrowserMutationError(MUTATION_ERROR_CODES.INDETERMINATE);
       }
+      if (actionDeadline - this._now() <= 0) {
+        throw controllerError(ERROR_CODES.ACTION_TIMEOUT);
+      }
       const target = this.tabRegistry.resolveTarget(tabId, {
         generation,
         target_generation: targetGeneration,
@@ -1051,12 +1113,16 @@ export class BrowserController {
         throw normalizeError(error);
       }
       const connection = await this._ensureTargetConnection(target);
+      if (actionDeadline - this._now() <= 0) {
+        throw controllerError(ERROR_CODES.ACTION_TIMEOUT);
+      }
       try {
         const result = await performBrowserAction({
           connection,
           element,
           action: request.action,
-          timeoutMs: request.timeout_ms,
+          timeoutMs: actionTimeoutMs,
+          deadline: actionDeadline,
           now: () => this._now(),
           sleep: (milliseconds) => this.timers.sleep(milliseconds),
         });
@@ -1067,6 +1133,16 @@ export class BrowserController {
       } catch (error) {
         throw normalizeError(error);
       }
+    }, {
+      target_id: null,
+      page_id: null,
+      document_id: null,
+      arguments: {
+        element_ref: elementRef,
+        action: normalizeMutationAction(request.action),
+        timeout_ms: actionTimeoutMs,
+      },
+      payload: null,
     });
   }
 
@@ -1138,6 +1214,12 @@ export class BrowserController {
       } catch (error) {
         throw normalizeError(error);
       }
+    }, {
+      target_id: null,
+      page_id: null,
+      document_id: null,
+      arguments: { dialog: normalizeMutationDialog(request.dialog) },
+      payload: null,
     });
   }
 
@@ -1164,7 +1246,7 @@ export class BrowserController {
             if (this.state !== "ready" || this.generation !== generation) {
               throw controllerError(ERROR_CODES.STALE_GENERATION);
             }
-            return this._reconcileTabRegistry(generation, targets);
+            return await this._reconcileTabRegistry(generation, targets);
           },
         });
       } catch (error) {
@@ -1238,6 +1320,12 @@ export class BrowserController {
       } catch (error) {
         throw normalizeError(error);
       }
+    }, {
+      target_id: null,
+      page_id: null,
+      document_id: null,
+      arguments: { element_ref: elementRef },
+      payload: { paths: request.paths.map(normalizeMutationPath) },
     });
   }
 
@@ -1409,13 +1497,13 @@ export class BrowserController {
     };
   }
 
-  _enqueueTabMutation(attribution, run) {
+  _enqueueTabMutation(attribution, run, identity) {
     return this.mutationCoordinator.mutate(attribution, async (context) => {
       if (context.signal.aborted) {
         throw new BrowserMutationError(MUTATION_ERROR_CODES.INDETERMINATE);
       }
       return run(context);
-    });
+    }, identity);
   }
 
   _invalidateAllMutations() {
@@ -1511,7 +1599,7 @@ export class BrowserController {
       if (target) {
         let connection;
         try {
-          const socket = new this.WebSocketImpl(target.webSocketDebuggerUrl);
+          const socket = createCdpWebSocket(this.WebSocketImpl, target.webSocketDebuggerUrl);
           connection = new CdpConnection({
             socket,
             timers: this.timers,
@@ -1607,7 +1695,8 @@ export class BrowserController {
     }
   }
 
-  _reconcileTabRegistry(generation, targets, options = {}) {
+  async _reconcileTabRegistry(generation, targets, options = {}) {
+    const previousTabs = this.tabRegistry.listTabs();
     const registryTargets = targets.map((target) => {
       if (!isValidTabTargetId(target.id)) {
         throw controllerError(ERROR_CODES.CDP_PROTOCOL_INVALID);
@@ -1624,6 +1713,14 @@ export class BrowserController {
     }
     this.observationStore.reconcile(result.tabs);
     this._reconcileTargetConnections(result.tabs);
+    if (typeof this.pageFeatures.releaseUploadsForTab === "function") {
+      const activeTabIds = new Set(result.tabs.map((tab) => tab.tab_id));
+      for (const tab of previousTabs) {
+        if (!activeTabIds.has(tab.tab_id)) {
+          await this.pageFeatures.releaseUploadsForTab(tab.tab_id);
+        }
+      }
+    }
     return result;
   }
 
@@ -1645,7 +1742,7 @@ export class BrowserController {
     let record;
     try {
       const connection = new CdpConnection({
-        socket: new this.WebSocketImpl(target.websocket_url),
+        socket: createCdpWebSocket(this.WebSocketImpl, target.websocket_url),
         timers: this.timers,
         commandTimeoutMs: this.cdpCommandTimeoutMs,
         onDisconnect: () => {
@@ -1667,6 +1764,7 @@ export class BrowserController {
             }
             this.observationStore.invalidate(target.tab_id);
             this.mutationCoordinator.invalidateTab(target.tab_id, target.target_generation);
+            void Promise.resolve(this.pageFeatures.releaseUploadsForTab?.(target.tab_id)).catch(() => {});
           }
         },
       });
@@ -1722,9 +1820,16 @@ export class BrowserController {
     this.observationStore.clear();
   }
 
+  async _shutdownPageFeatures() {
+    if (typeof this.pageFeatures.shutdown === "function") {
+      await this.pageFeatures.shutdown();
+    }
+  }
+
   async _abortStart(record) {
     this._stopHeartbeat();
     this._closeTargetConnections();
+    await this._shutdownPageFeatures();
     if (this._cdp) {
       this._cdp.close();
       this._cdp = null;
@@ -1744,6 +1849,7 @@ export class BrowserController {
     this._stopHeartbeat();
     this._invalidateAllMutations();
     this._closeTargetConnections();
+    await this._shutdownPageFeatures();
     this._rejectQueued(controllerError(
       reason === "restart" ? ERROR_CODES.STALE_GENERATION : ERROR_CODES.REQUEST_CANCELLED,
     ));
@@ -1835,6 +1941,7 @@ export class BrowserController {
     this._invalidateAllMutations();
     this._closeTargetConnections();
     this._rejectQueued(controllerError(code));
+    void Promise.resolve(this.pageFeatures.shutdown?.()).catch(() => {});
     const connection = this._cdp;
     this._cdp = null;
     connection?.close();

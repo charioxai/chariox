@@ -87,6 +87,7 @@ pub(super) fn ensure_browser_fill_target(
     if let Some(target) = target.map(str::trim).filter(|value| !value.is_empty()) {
         let found = status
             .get("fields")
+            .or_else(|| status.get("matches"))
             .and_then(serde_json::Value::as_array)
             .is_some_and(|fields| {
                 fields.iter().any(|field| {
@@ -181,5 +182,19 @@ mod tests {
         ensure_browser_fill_target(&status, Some("field:1"))
             .expect("known fillable field id should pass");
         assert!(ensure_browser_fill_target(&status, None).is_err());
+    }
+
+    #[test]
+    fn browser_fill_target_accepts_an_exact_bounded_find_match() {
+        let result = serde_json::json!({
+            "matches": [{"selector": "#field-33", "field_id": "field:33"}],
+            "truncated": false
+        });
+
+        ensure_browser_fill_target(&result, Some("#field-33"))
+            .expect("an exact find match should authorize the requested field");
+        ensure_browser_fill_target(&result, Some("field:33"))
+            .expect("an exact find match should authorize the requested field id");
+        assert!(ensure_browser_fill_target(&result, Some("#field-34")).is_err());
     }
 }
