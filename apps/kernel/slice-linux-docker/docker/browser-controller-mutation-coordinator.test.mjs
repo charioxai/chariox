@@ -63,7 +63,6 @@ function legacyPayloadDigest(rawAttribution, identity) {
   };
   return createHash("sha256").update(JSON.stringify(semanticIdentity)).digest("hex");
 }
-
 function deferred() {
   let resolve;
   let reject;
@@ -88,7 +87,6 @@ function assertTerminalRecord(record, outcome, secret) {
     assert.equal(key in record, false, `terminal record retained ${key}`);
   }
 }
-
 test("serializes mutations on one tab and preserves actor attribution", async () => {
   const coordinator = new BrowserMutationCoordinator();
   const first = deferred();
@@ -390,7 +388,6 @@ test("retained fingerprints do not enable a candidate dictionary recovery", asyn
     false,
   );
 });
-
 test("rejects an action ID reused with different attribution", async () => {
   const coordinator = new BrowserMutationCoordinator();
   const gate = deferred();
@@ -598,7 +595,6 @@ test("deduplicates a pending action during invalidation overflow", async () => {
   gate.resolve();
   assert.equal(await retry, "pending-result");
 });
-
 test("preserves undefined rejection for the original action and deduplicated replay", async () => {
   const coordinator = new BrowserMutationCoordinator();
   let calls = 0;
@@ -621,6 +617,50 @@ test("preserves undefined rejection for the original action and deduplicated rep
   assert.equal(calls, 1);
 });
 
+test("retains only bounded terminal dedup state after execution settles", async () => {
+  const coordinator = new BrowserMutationCoordinator();
+  const requestPayload = {
+    action: { kind: "fill", text: "private request text" },
+    nested: { response: { secret: "private response" } },
+  };
+  const result = await coordinator.mutate(attribution(), async () => {
+    assert.equal(requestPayload.action.kind, "fill");
+    return { ok: true };
+  });
+  assert.deepEqual(result, { ok: true });
+
+  const retained = coordinator.actions.get("action-1");
+  assert.deepEqual(Object.keys(retained).sort(), ["fingerprint", "outcome", "promise"]);
+  assert.equal(retained.outcome, "fulfilled");
+  assert.equal(retained.fingerprint.includes("private request text"), false);
+  assert.equal(retained.fingerprint.includes("private response"), false);
+  assert.equal("run" in retained, false);
+  assert.equal("resolve" in retained, false);
+  assert.equal("reject" in retained, false);
+  assert.equal("abortController" in retained, false);
+  assert.deepEqual(await coordinator.mutate(attribution(), async () => "must-not-run"), { ok: true });
+
+  const gate = deferred();
+  const active = coordinator.mutate(
+    attribution({ action_id: "action-active" }),
+    () => gate.promise,
+  );
+  const queuedPayload = { action: { kind: "fill", text: "queued private text" } };
+  const canceled = coordinator.mutate(
+    attribution({ action_id: "action-canceled" }),
+    async () => queuedPayload,
+  );
+  assert.deepEqual(coordinator.cancelAction({ action_id: "action-canceled", actor_id: "agent-1" }), {
+    accepted: true,
+    state: "cancelled",
+  });
+  await assert.rejects(canceled, (error) => error.code === MUTATION_ERROR_CODES.CANCELLED);
+  const canceledRecord = coordinator.actions.get("action-canceled");
+  assert.deepEqual(Object.keys(canceledRecord).sort(), ["fingerprint", "outcome", "promise"]);
+  assert.equal(canceledRecord.fingerprint.includes("queued private text"), false);
+  gate.resolve("active");
+  await active;
+});
 test("bounds queued tabs, per-tab work, and completed deduplication", async () => {
   const coordinator = new BrowserMutationCoordinator({
     maxCompleted: 1,

@@ -278,6 +278,7 @@ export class BrowserMutationCoordinator {
       resolve: resolvePromise,
       run,
       outcome: null,
+      state: "queued",
     };
     this.actions.set(attribution.action_id, record);
     queue.push(record);
@@ -301,10 +302,55 @@ export class BrowserMutationCoordinator {
       MUTATION_ERROR_CODES.CANCELLED,
       (record) => record.attribution.target_generation <= normalizedGeneration,
     );
+    this._pump(normalizedTabId);
     const active = this.active.get(normalizedTabId);
     if (active && active.attribution.target_generation <= normalizedGeneration) {
       active.abortController.abort(MUTATION_ERROR_CODES.INDETERMINATE);
     }
+  }
+
+  cancelAction(rawRequest) {
+    if (!isPlainObject(rawRequest)) fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
+    const allowed = new Set(["action_id", "actor_id"]);
+    if (
+      Object.keys(rawRequest).some((key) => !allowed.has(key)) ||
+      !Object.prototype.hasOwnProperty.call(rawRequest, "action_id") ||
+      !Object.prototype.hasOwnProperty.call(rawRequest, "actor_id")
+    ) {
+      fail(MUTATION_ERROR_CODES.INVALID_ARGUMENT);
+    }
+    const actionId = identifier(rawRequest.action_id);
+    const actorId = identifier(rawRequest.actor_id);
+    const record = this.actions.get(actionId);
+    if (!record) return { accepted: false, state: "unknown" };
+
+    let recordedActorId;
+    try {
+      recordedActorId = JSON.parse(record.fingerprint).actor_id;
+    } catch {
+      fail(MUTATION_ERROR_CODES.ACTION_ID_CONFLICT);
+    }
+    if (recordedActorId !== actorId) {
+      fail(MUTATION_ERROR_CODES.ACTION_ID_CONFLICT);
+    }
+    if (record.outcome !== null) {
+      return { accepted: false, state: "completed" };
+    }
+    if (record.state === "queued") {
+      const tabId = record.attribution.tab_id;
+      const queue = this.queues.get(tabId) ?? [];
+      const retained = queue.filter((candidate) => candidate !== record);
+      if (retained.length === queue.length) {
+        return { accepted: false, state: "completed" };
+      }
+      if (retained.length === 0) this.queues.delete(tabId);
+      else this.queues.set(tabId, retained);
+      this._cancelRecord(record, MUTATION_ERROR_CODES.CANCELLED);
+      this._pump(tabId);
+      return { accepted: true, state: "cancelled" };
+    }
+    record.abortController.abort(MUTATION_ERROR_CODES.INDETERMINATE);
+    return { accepted: true, state: "indeterminate" };
   }
 
   advanceBrowserGeneration(nextGeneration) {
@@ -359,14 +405,20 @@ export class BrowserMutationCoordinator {
         retained.push(record);
         continue;
       }
-      const error = new BrowserMutationError(code);
-      record.outcome = "rejected";
-      record.reject(error);
-      this._retainCompleted(record, record.actionId);
-      this._releaseExecution(record);
+      this._cancelRecord(record, code);
     }
     if (retained.length === 0) this.queues.delete(tabId);
     else this.queues.set(tabId, retained);
+  }
+
+  _cancelRecord(record, code) {
+    const error = new BrowserMutationError(code);
+    record.state = "completed";
+    record.outcome = "rejected";
+    record.error = error;
+    record.reject(error);
+    this._retainCompleted(record, record.actionId);
+    this._releaseExecution(record);
   }
 
   _pump(tabId) {
@@ -378,6 +430,7 @@ export class BrowserMutationCoordinator {
       return;
     }
     if (queue.length === 0) this.queues.delete(tabId);
+    record.state = "active";
     this.active.set(tabId, record);
     Promise.resolve()
       .then(() => {
@@ -399,6 +452,7 @@ export class BrowserMutationCoordinator {
     const terminalValue = wasAborted
       ? new BrowserMutationError(MUTATION_ERROR_CODES.INDETERMINATE)
       : value;
+    record.state = "completed";
     record.outcome = terminalOutcome;
     if (terminalOutcome === "fulfilled") {
       record.resolve(terminalValue);
@@ -418,14 +472,17 @@ export class BrowserMutationCoordinator {
     delete record.resolve;
     delete record.reject;
     delete record.abortController;
+    delete record.state;
+    delete record.error;
+    delete record.result;
     Object.freeze(record);
   }
 
   _retainCompleted(record, actionId) {
     this.completedOrder.push(actionId);
     while (this.completedOrder.length > this.maxCompleted) {
-      const actionId = this.completedOrder.shift();
-      if (this.actions.get(actionId)?.outcome !== null) this.actions.delete(actionId);
+      const evictedActionId = this.completedOrder.shift();
+      if (this.actions.get(evictedActionId)?.outcome !== null) this.actions.delete(evictedActionId);
     }
   }
 }

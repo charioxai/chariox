@@ -10,6 +10,28 @@ import test from 'node:test';
 const root = process.env.CHARIOX_TEST_WS_ROOT;
 const skip = root ? false : 'set CHARIOX_TEST_WS_ROOT to an external locked ws installation';
 
+test('browser controller resolves ws from the pinned slice toolchain', async () => {
+  const controller = await readFile(
+    new URL('../apps/kernel/slice-linux-docker/docker/browser-controller.mjs', import.meta.url),
+    'utf8',
+  );
+  const dockerfile = await readFile(
+    new URL('../apps/kernel/slice-linux-docker/docker/Dockerfile', import.meta.url),
+    'utf8',
+  );
+  const manifest = JSON.parse(await readFile(
+    new URL('../apps/kernel/slice-linux-docker/toolchain/package.json', import.meta.url),
+  ));
+
+  assert.equal(manifest.dependencies.ws, '8.21.3');
+  assert.match(controller, /createRequire\([\s\S]*CHARIOX_BROWSER_CONTROLLER_PACKAGE_JSON/);
+  assert.doesNotMatch(controller, /from ["']ws["']/);
+  assert.match(
+    dockerfile,
+    /ENV CHARIOX_BROWSER_CONTROLLER_PACKAGE_JSON=\/opt\/chariox-toolchain\/package\.json/,
+  );
+});
+
 async function fixture(t, options = {}) {
   const require = createRequire(resolve(root, 'package.json'));
   const manifest = JSON.parse(await readFile(new URL('../apps/kernel/slice-linux-docker/toolchain/package.json', import.meta.url)));

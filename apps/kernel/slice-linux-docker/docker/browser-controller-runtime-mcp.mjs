@@ -52,11 +52,33 @@ const PORT_METHODS = Object.freeze({
 
 const FORBIDDEN_RESULT_KEYS = new Set([
   "backend_node_id",
+  "backendNodeId",
+  "backend_dom_node_id",
+  "backendDOMNodeId",
   "browser_context_id",
+  "browserContextId",
+  "context_id",
+  "contextId",
+  "document_id",
+  "documentId",
+  "execution_context_id",
+  "executionContextId",
+  "frame_id",
+  "frameId",
+  "loader_id",
+  "loaderId",
+  "main_frame_id",
+  "mainFrameId",
+  "node_id",
+  "nodeId",
   "object_id",
+  "objectId",
   "session_id",
+  "sessionId",
   "target_id",
+  "targetId",
   "websocket_url",
+  "websocketUrl",
   "webSocketDebuggerUrl",
 ]);
 
@@ -104,18 +126,19 @@ function optionalTimeout(value) {
 
 function optionalTarget(value, key) {
   if (value === undefined) return undefined;
-  return boundedString(value, { maximum: 8 * 1024 });
+  const target = boundedString(value, { required: true, maximum: 8 * 1024 });
+  if (target.trim().length === 0) fail(RUNTIME_MCP_ERROR_CODES.INVALID_ARGUMENT);
+  return target;
 }
 
 function targetArgs(value, { required = false } = {}) {
   const selector = optionalTarget(value.selector, "selector");
   const fieldId = optionalTarget(value.field_id, "field_id");
-  if ((required && selector === undefined && fieldId === undefined) ||
-      (selector !== undefined && fieldId !== undefined)) {
+  if (required && selector === undefined && fieldId === undefined) {
     fail(RUNTIME_MCP_ERROR_CODES.INVALID_ARGUMENT);
   }
+  if (selector !== undefined) return { selector };
   return {
-    ...(selector === undefined ? {} : { selector }),
     ...(fieldId === undefined ? {} : { field_id: fieldId }),
   };
 }
