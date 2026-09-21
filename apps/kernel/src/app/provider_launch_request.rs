@@ -182,6 +182,18 @@ impl DaemonApp {
             );
             request = request.with_workspace_live_sync_roots(workspace_live_sync_roots);
         }
+        if !(crate::provider::managed_provider_isolation_required()
+            && request.uses_workspace_live_sync())
+        {
+            if let Some(working_directory) = request.working_directory.as_deref() {
+                crate::git_worktree_placement::preflight_working_directory(
+                    working_directory,
+                    operation,
+                    false,
+                    &[],
+                )?;
+            }
+        }
         if request.runtime_mcp_binding.is_none() {
             let shared_auth_token = request
                 .agent_id
@@ -643,10 +655,20 @@ mod tests {
 
     #[test]
     fn app_launch_preparation_preserves_metaagent_mode_and_permission_without_user_mcps() {
+        let worktree = std::env::temp_dir().join(format!(
+            "chariox-metaagent-provider-launch-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&worktree).expect("test worktree should exist");
+        let worktree = worktree.to_string_lossy().into_owned();
         let mut app =
             DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon boot");
         let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .create_session(CreateSessionRequest::new(
+                worktree.as_str(),
+                worktree.as_str(),
+            ))
             .expect("session should be created");
         let metaagent = crate::app::KernelSessionService::new(&mut app)
             .spawn_agent(
@@ -702,6 +724,7 @@ mod tests {
             prepared.mcp_servers.is_empty(),
             "metaagent provider runs should not receive user MCP servers"
         );
+        std::fs::remove_dir_all(worktree).expect("test worktree should be removable");
     }
 
     #[test]

@@ -206,6 +206,18 @@ impl KernelRuntimeOwnedState {
             );
             request = request.with_workspace_live_sync_roots(workspace_live_sync_roots);
         }
+        if !(crate::provider::managed_provider_isolation_required()
+            && request.uses_workspace_live_sync())
+        {
+            if let Some(working_directory) = request.working_directory.as_deref() {
+                crate::git_worktree_placement::preflight_working_directory(
+                    working_directory,
+                    "launch provider run",
+                    false,
+                    &[],
+                )?;
+            }
+        }
         if request.runtime_mcp_binding.is_none() {
             let shared_auth_token = request
                 .agent_id
@@ -679,6 +691,109 @@ mod tests {
                 .iter()
                 .any(|root| root == &primary || root == &supporting));
         }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn workflow_runtime_launch_with_chariox_home_uses_kernel_owned_instance_root() {
+        let _env = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-owned-workflow-runtime-home-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&root).expect("workflow test home should exist");
+        let previous_home = std::env::var_os("CHARIOX_HOME");
+        let previous_user_home = std::env::var_os("HOME");
+        std::env::set_var("CHARIOX_HOME", &root);
+        std::env::set_var("HOME", root.join("unrelated-home"));
+
+        let config = crate::config::DaemonConfig::load_from_env();
+        let workflow_root = config
+            .workflow_runtime_artifact_root()
+            .join("instances")
+            .join("workflow-session");
+        let instance_worktree = workflow_root.join("instance-1");
+        let unrelated = config.durable_state_path().with_file_name("unrelated");
+        std::fs::create_dir_all(&instance_worktree).expect("workflow instance worktree");
+        std::fs::create_dir_all(&unrelated).expect("unrelated state fixture");
+        let source = root.join("source-workspace");
+        std::fs::create_dir_all(&source).expect("source workspace");
+
+        let mut app = crate::app::DaemonApp::bootstrap(config).expect("daemon bootstrap");
+        let (session, source_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                source.to_string_lossy(),
+                source.to_string_lossy(),
+            ))
+            .expect("session should create");
+        let runtime_agent = app.agents().clone().materialize_workflow_runtime_agent(
+            source_agent,
+            session.id(),
+            &instance_worktree.to_string_lossy(),
+        );
+        app.sessions_mut()
+            .register_workflow_runtime_instance(
+                session.id(),
+                crate::session::WorkflowEndpointRuntimeInstance::new(
+                    "instance-1",
+                    "workflow-1",
+                    "endpoint-1",
+                    1,
+                    1,
+                    false,
+                    std::collections::BTreeMap::from([(
+                        "node-1".to_string(),
+                        runtime_agent.id().to_string(),
+                    )]),
+                    instance_worktree.to_string_lossy(),
+                ),
+            )
+            .expect("workflow runtime instance should register");
+
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let prepared = runtime
+            .owned
+            .prepare_provider_launch_request(
+                crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "dev-stub",
+                    "default",
+                    "model",
+                )
+                .with_agent_id(runtime_agent.id()),
+                "http://127.0.0.1:43120/mcp".to_string(),
+            )
+            .expect("kernel-owned workflow runtime cwd should prepare with CHARIOX_HOME");
+        assert_eq!(
+            prepared.working_directory.as_deref(),
+            Some(instance_worktree.as_path())
+        );
+
+        let escalation = runtime.owned.prepare_provider_launch_request(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "model",
+            )
+            .with_agent_id(runtime_agent.id())
+            .with_working_directory(unrelated.clone())
+            .with_workspace_live_sync_roots(vec![unrelated.clone()]),
+            "http://127.0.0.1:43120/mcp".to_string(),
+        );
+        assert!(
+            escalation.is_err(),
+            "a caller-supplied live-sync root must not authorize unrelated kernel state"
+        );
+
+        drop(runtime);
+        drop(app);
+        restore_env("CHARIOX_HOME", previous_home);
+        restore_env("HOME", previous_user_home);
         let _ = std::fs::remove_dir_all(root);
     }
 

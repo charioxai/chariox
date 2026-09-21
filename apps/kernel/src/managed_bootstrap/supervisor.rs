@@ -18,8 +18,13 @@ use crate::error::DaemonError;
 
 use super::cloud::BootstrapCloudClient;
 use super::release::VerifiedRelease;
-use super::state::BootstrapConfig;
-use super::{jittered, PendingConfirmation};
+#[cfg(test)]
+use super::state::BootstrapReceiptStatus;
+use super::state::{BootstrapConfig, BootstrapReceipt};
+use super::{
+    jittered, managed_provider_topology, ManagedProviderTopology, PendingConfirmation,
+    MANAGED_PROVIDER_TOPOLOGY_ENV, PATH1_SHARED_HOST_SELECTOR_ENVS,
+};
 
 const MIN_RESTART_DELAY: Duration = Duration::from_secs(1);
 const MAX_RESTART_DELAY: Duration = Duration::from_secs(30);
@@ -107,11 +112,12 @@ pub(super) fn supervise_kernel(
     release: &VerifiedRelease,
     mut confirmation: Option<PendingConfirmation>,
     cloud: &impl BootstrapCloudClient,
+    topology: ManagedProviderTopology,
 ) -> Result<(), DaemonError> {
     let mut restart_delay = MIN_RESTART_DELAY;
     loop {
         let started_at = Instant::now();
-        match run_kernel_once(config, release, &mut confirmation, cloud) {
+        match run_kernel_once(config, release, &mut confirmation, cloud, topology) {
             Ok(run) => {
                 if run.runtime >= STABLE_RUNTIME {
                     restart_delay = MIN_RESTART_DELAY;
@@ -147,13 +153,14 @@ pub(super) fn run_kernel_once(
     release: &VerifiedRelease,
     confirmation: &mut Option<PendingConfirmation>,
     cloud: &impl BootstrapCloudClient,
+    topology: ManagedProviderTopology,
 ) -> Result<KernelRun, DaemonError> {
     let started_at = Instant::now();
-    let mut child = spawn_kernel(config, release)?;
+    let mut child = spawn_kernel(config, release, topology)?;
     if confirmation.is_some() {
         await_relay_ready_confirmation(config, &mut child, confirmation, cloud)?;
         terminate_child(&mut child)?;
-        child = spawn_kernel(config, release)?;
+        child = spawn_kernel(config, release, topology)?;
     }
     let status = child
         .wait()
@@ -164,11 +171,41 @@ pub(super) fn run_kernel_once(
     })
 }
 
-fn spawn_kernel(config: &BootstrapConfig, release: &VerifiedRelease) -> Result<Child, DaemonError> {
-    let isolation_root = std::env::var_os("CHARIOX_CAPABILITY_ISOLATION_ROOT")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| config.chariox_home.join("managed-context").join("kernel"));
-    let (service_root, publication_root) = managed_slice_boundaries_for_kernel()?;
+fn spawn_kernel(
+    config: &BootstrapConfig,
+    release: &VerifiedRelease,
+    topology: ManagedProviderTopology,
+) -> Result<Child, DaemonError> {
+    spawn_kernel_with_handoff(config, release, topology).map(|(child, _)| child)
+}
+
+fn spawn_kernel_with_handoff(
+    config: &BootstrapConfig,
+    release: &VerifiedRelease,
+    topology: ManagedProviderTopology,
+) -> Result<(Child, Option<i32>), DaemonError> {
+    let managed_repository_root = BootstrapReceipt::read(&config.receipt_path)?
+        .ok_or_else(|| {
+            supervisor_error("managed bootstrap receipt is missing before kernel launch")
+        })?
+        .managed_repository_root()?;
+    let (isolation_root, service_root, publication_root) = match topology {
+        ManagedProviderTopology::Path1 => (None, None, None),
+        ManagedProviderTopology::SharedHost => {
+            let (service_root, publication_root) = managed_slice_boundaries_for_kernel()?;
+            (
+                Some(
+                    std::env::var_os("CHARIOX_CAPABILITY_ISOLATION_ROOT")
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_else(|| {
+                            config.chariox_home.join("managed-context").join("kernel")
+                        }),
+                ),
+                service_root,
+                publication_root,
+            )
+        }
+    };
     let provider_home = prepare_managed_provider_home(config)?;
     let local_auth_path = prepare_kernel_local_auth_file(config)?;
     let mut command = Command::new(&release.kernel_binary);
@@ -176,7 +213,7 @@ fn spawn_kernel(config: &BootstrapConfig, release: &VerifiedRelease) -> Result<C
         .current_dir(&config.process_home)
         .env("HOME", &config.process_home)
         .env("CHARIOX_HOME", &config.chariox_home)
-        .env("CHARIOX_CAPABILITY_ISOLATION_ROOT", isolation_root)
+        .env(super::MANAGED_REPOSITORY_ROOT_ENV, managed_repository_root)
         .env("CHARIOX_MANAGED_PROVIDER_HOME", provider_home)
         .env(
             crate::runtime_transport::KERNEL_LOCAL_AUTH_TOKEN_FILE_ENV,
@@ -184,15 +221,12 @@ fn spawn_kernel(config: &BootstrapConfig, release: &VerifiedRelease) -> Result<C
         )
         .env(
             "CHARIOX_MANAGED_VAULT_PATH",
-            config
-                .chariox_home
-                .join("vault")
-                .join("vault.json"),
+            config.chariox_home.join("vault").join("vault.json"),
         )
         .env("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT", &config.receipt_path)
         .env("CHARIOX_KERNEL_HOST", &config.kernel_host)
         .env("CHARIOX_KERNEL_PORT", config.kernel_port.to_string())
-        .env("CHARIOX_MANAGED_PROVIDER_ISOLATION", "1")
+        .env(MANAGED_PROVIDER_TOPOLOGY_ENV, topology.as_str())
         .env_remove("CHARIOX_DAEMON_ID")
         .env_remove("CHARIOX_MACHINE_ID")
         .env_remove("CHARIOX_RELAY_TOKEN")
@@ -200,6 +234,15 @@ fn spawn_kernel(config: &BootstrapConfig, release: &VerifiedRelease) -> Result<C
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    if let Some(isolation_root) = isolation_root {
+        command
+            .env("CHARIOX_CAPABILITY_ISOLATION_ROOT", isolation_root)
+            .env("CHARIOX_MANAGED_PROVIDER_ISOLATION", "1");
+    } else {
+        for name in PATH1_SHARED_HOST_SELECTOR_ENVS {
+            command.env_remove(name);
+        }
+    }
     if let Some(service_root) = service_root.as_ref() {
         command.env(
             crate::provider::MANAGED_SLICE_SERVICE_ROOT_ENV,
@@ -216,7 +259,11 @@ fn spawn_kernel(config: &BootstrapConfig, release: &VerifiedRelease) -> Result<C
     } else {
         command.env_remove(crate::provider::MANAGED_SLICE_PUBLICATION_ROOT_ENV);
     }
-    let mut child = match spawn_with_broker_lease(&mut command) {
+    let spawn_result = match topology {
+        ManagedProviderTopology::Path1 => command.spawn().map(|child| (child, None)),
+        ManagedProviderTopology::SharedHost => spawn_with_broker_lease(&mut command),
+    };
+    let (mut child, handed_off_fd) = match spawn_result {
         Ok(child) => child,
         Err(error) => {
             let _ = std::fs::remove_file(&local_auth_path);
@@ -224,7 +271,7 @@ fn spawn_kernel(config: &BootstrapConfig, release: &VerifiedRelease) -> Result<C
         }
     };
     wait_for_local_auth_consumption(&mut child, &local_auth_path)?;
-    Ok(child)
+    Ok((child, handed_off_fd))
 }
 
 fn configured_managed_slice_boundary(
@@ -388,7 +435,7 @@ fn wait_for_local_auth_consumption(
     ))
 }
 
-fn spawn_with_broker_lease(command: &mut Command) -> std::io::Result<Child> {
+fn spawn_with_broker_lease(command: &mut Command) -> std::io::Result<(Child, Option<i32>)> {
     #[cfg(unix)]
     {
         let lease = BROKER_LEASE.get_or_init(|| Mutex::new(None));
@@ -428,14 +475,14 @@ fn spawn_with_broker_lease(command: &mut Command) -> std::io::Result<Child> {
             if spawned.is_err() {
                 let _ = proxy.join();
             }
-            return spawned;
+            return spawned.map(|child| (child, Some(fd)));
         }
     }
     command
         .env_remove(BROKER_SOCKET_ENV)
         .env_remove(BROKER_FD_ENV)
         .env(BROKER_REQUIRED_ENV, "1");
-    command.spawn()
+    command.spawn().map(|child| (child, None))
 }
 
 #[cfg(unix)]
@@ -543,7 +590,36 @@ mod broker_proxy_tests {
     }
 
     #[test]
-    fn managed_kernel_child_receives_publication_policy_through_fd_and_fallback_handoffs() {
+    fn managed_provider_topology_is_explicit_and_fail_closed() {
+        let _env = crate::env_lock::lock();
+        let previous = std::env::var_os(MANAGED_PROVIDER_TOPOLOGY_ENV);
+
+        std::env::remove_var(MANAGED_PROVIDER_TOPOLOGY_ENV);
+        assert!(managed_provider_topology()
+            .expect_err("missing topology must fail closed")
+            .to_string()
+            .contains("explicitly set"));
+        std::env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "unknown");
+        assert!(managed_provider_topology()
+            .expect_err("unknown topology must fail closed")
+            .to_string()
+            .contains("must be path1 or shared_host"));
+        std::env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "path1");
+        assert_eq!(
+            managed_provider_topology().unwrap(),
+            ManagedProviderTopology::Path1
+        );
+        std::env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "shared_host");
+        assert_eq!(
+            managed_provider_topology().unwrap(),
+            ManagedProviderTopology::SharedHost
+        );
+
+        restore_env(MANAGED_PROVIDER_TOPOLOGY_ENV, previous);
+    }
+
+    #[test]
+    fn managed_and_path1_kernel_children_keep_their_launch_boundaries_separate() {
         let _env = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-managed-supervisor-boundary-contract-{}-{}",
@@ -554,6 +630,7 @@ mod broker_proxy_tests {
         let kernel = root.join("bin/kernel");
         let fallback_record = root.join("fallback.env");
         let fd_record = root.join("fd.env");
+        let path1_record = root.join("path1.env");
         let service_root = root.join("relocated-share");
         let publication_root = service_root.join("configured-publications");
         std::fs::create_dir_all(kernel.parent().expect("kernel parent"))
@@ -564,14 +641,19 @@ mod broker_proxy_tests {
 {
   printf 'home=%s\n' "${HOME-}"
   printf 'chariox_home=%s\n' "${CHARIOX_HOME-}"
+  printf 'repository_root=%s\n' "${CHARIOX_MANAGED_REPOSITORY_ROOT-}"
   printf 'cwd=%s\n' "$(pwd)"
+  printf 'topology=%s\n' "${CHARIOX_MANAGED_PROVIDER_TOPOLOGY-<unset>}"
+  printf 'capability_root=%s\n' "${CHARIOX_CAPABILITY_ISOLATION_ROOT-<unset>}"
   printf 'provider_isolation=%s\n' "${CHARIOX_MANAGED_PROVIDER_ISOLATION-<unset>}"
+  printf 'provider_isolation_active=%s\n' "${CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE-<unset>}"
+  printf 'provider_bwrap=%s\n' "${CHARIOX_MANAGED_PROVIDER_BWRAP-<unset>}"
   printf 'vault=%s\n' "${CHARIOX_MANAGED_VAULT_PATH-}"
-  printf 'service=%s\n' "${CHARIOX_MANAGED_SLICE_SERVICE_ROOT-}"
-  printf 'publication=%s\n' "${CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT-}"
-  printf 'socket=%s\n' "${CHARIOX_SLICE_DOCKER_BROKER_SOCKET-}"
-  printf 'fd=%s\n' "${CHARIOX_SLICE_DOCKER_BROKER_FD-}"
-  printf 'required=%s\n' "${CHARIOX_SLICE_DOCKER_BROKER_REQUIRED-}"
+  printf 'service=%s\n' "${CHARIOX_MANAGED_SLICE_SERVICE_ROOT-<unset>}"
+  printf 'publication=%s\n' "${CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT-<unset>}"
+  printf 'socket=%s\n' "${CHARIOX_SLICE_DOCKER_BROKER_SOCKET-<unset>}"
+  printf 'fd=%s\n' "${CHARIOX_SLICE_DOCKER_BROKER_FD-<unset>}"
+  printf 'required=%s\n' "${CHARIOX_SLICE_DOCKER_BROKER_REQUIRED-<unset>}"
 } > "$CHARIOX_ENV_RECORD"
 rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
 "##;
@@ -590,9 +672,14 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         let previous_socket = std::env::var_os(BROKER_SOCKET_ENV);
         let previous_fd = std::env::var_os(BROKER_FD_ENV);
         let previous_required = std::env::var_os(BROKER_REQUIRED_ENV);
-        let previous_provider_isolation =
-            std::env::var_os("CHARIOX_MANAGED_PROVIDER_ISOLATION");
+        let previous_topology = std::env::var_os(MANAGED_PROVIDER_TOPOLOGY_ENV);
+        let previous_capability_root = std::env::var_os("CHARIOX_CAPABILITY_ISOLATION_ROOT");
+        let previous_provider_isolation = std::env::var_os("CHARIOX_MANAGED_PROVIDER_ISOLATION");
+        let previous_provider_isolation_active =
+            std::env::var_os("CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE");
+        let previous_provider_bwrap = std::env::var_os("CHARIOX_MANAGED_PROVIDER_BWRAP");
         let previous_record = std::env::var_os("CHARIOX_ENV_RECORD");
+        std::env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "shared_host");
         std::env::set_var(
             crate::provider::MANAGED_SLICE_SERVICE_ROOT_ENV,
             &service_root,
@@ -626,6 +713,20 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             digest: "test".to_string(),
             kernel_binary: kernel,
         };
+        BootstrapReceipt {
+            schema_version: 2,
+            status: BootstrapReceiptStatus::Confirmed,
+            environment_id: "managed-env-1".to_string(),
+            machine_id: "managed-machine-1".to_string(),
+            kernel_id: "managed-kernel-1".to_string(),
+            relay_public_key: "managed-public-key".to_string(),
+            runtime_release_digest: format!("sha256:{}", "a".repeat(64)),
+            managed_repository_root: Some("/srv/managed workspaces".to_string()),
+            confirmed_at: Some("2026-09-20T20:00:00Z".to_string()),
+            context_plan: None,
+        }
+        .persist(&config.receipt_path)
+        .expect("managed receipt should persist");
 
         // No broker lease exercises the required-fallback path. The
         // supervisor strips transport variables, but the explicit service
@@ -633,24 +734,30 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         let lease = BROKER_LEASE.get_or_init(|| Mutex::new(None));
         assert!(lease.lock().expect("broker lease").is_none());
         std::env::set_var("CHARIOX_ENV_RECORD", &fallback_record);
-        let mut child = spawn_kernel(&config, &release).expect("fallback kernel should spawn");
+        let mut child = spawn_kernel(&config, &release, ManagedProviderTopology::SharedHost)
+            .expect("fallback kernel should spawn");
         child.wait().expect("fallback kernel should exit");
         let fallback = std::fs::read_to_string(&fallback_record).expect("fallback env record");
+        let canonical_home = home
+            .canonicalize()
+            .expect("kernel home should canonicalize");
         assert!(fallback.contains(&format!("home={}\n", home.display())));
         assert!(fallback.contains(&format!(
             "chariox_home={}\n",
             home.join(".chariox").display()
         )));
-        assert!(fallback.contains(&format!("cwd={}\n", home.display())));
+        assert!(fallback.contains(&format!("cwd={}\n", canonical_home.display())));
+        assert!(fallback.contains("repository_root=/srv/managed workspaces\n"));
         assert!(fallback.contains(&format!(
             "vault={}\n",
             home.join(".chariox/vault/vault.json").display()
         )));
+        assert!(fallback.contains("topology=shared_host\n"));
         assert!(fallback.contains("provider_isolation=1\n"));
         assert!(fallback.contains(&format!("service={}\n", service_root.display())));
         assert!(fallback.contains(&format!("publication={}\n", publication_root.display())));
-        assert!(fallback.contains("socket=\n"));
-        assert!(fallback.contains("fd=\n"));
+        assert!(fallback.contains("socket=<unset>\n"));
+        assert!(fallback.contains("fd=<unset>\n"));
         assert!(fallback.contains("required=1\n"));
 
         // Install a test-only broker lease and run the same real supervisor
@@ -663,19 +770,68 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             writer: backend,
         });
         std::env::set_var("CHARIOX_ENV_RECORD", &fd_record);
-        let mut child = spawn_kernel(&config, &release).expect("FD kernel should spawn");
-        child.wait().expect("FD kernel should exit");
+        let handed_off_fd = {
+            let (mut child, handed_off_fd) =
+                spawn_kernel_with_handoff(&config, &release, ManagedProviderTopology::SharedHost)
+                    .expect("FD kernel should spawn");
+            child.wait().expect("FD kernel should exit");
+            handed_off_fd.expect("broker lease should hand off an FD")
+        };
         let fd = std::fs::read_to_string(&fd_record).expect("FD env record");
         assert!(fd.contains(&format!("service={}\n", service_root.display())));
         assert!(fd.contains(&format!("publication={}\n", publication_root.display())));
-        assert!(fd.contains("socket=\n"));
-        assert!(fd.lines().any(|line| {
-            line.strip_prefix("fd=")
-                .and_then(|value| value.parse::<i32>().ok())
-                .is_some_and(|value| value > 2)
-        }));
-        assert!(fd.contains("required=\n"));
+        assert!(fd.contains("socket=<unset>\n"));
+        assert!(fd.contains(&format!("fd={handed_off_fd}\n")));
+        assert!(fd.contains("required=<unset>\n"));
         *lease.lock().expect("broker lease") = None;
+
+        // A Path-1 launch must ignore inherited shared-host selectors and must
+        // not turn a stale broker lease/configuration into a child requirement.
+        std::env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "path1");
+        std::env::set_var(
+            "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+            root.join("stale-capability-root"),
+        );
+        std::env::set_var("CHARIOX_MANAGED_PROVIDER_ISOLATION", "1");
+        std::env::set_var("CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE", "1");
+        std::env::set_var("CHARIOX_MANAGED_PROVIDER_BWRAP", "/usr/bin/bwrap");
+        std::env::set_var(
+            crate::provider::MANAGED_SLICE_SERVICE_ROOT_ENV,
+            &service_root,
+        );
+        std::env::set_var(
+            crate::provider::MANAGED_SLICE_PUBLICATION_ROOT_ENV,
+            &publication_root,
+        );
+        std::env::set_var("CHARIOX_SLICE_ROOT", &publication_root);
+        std::env::set_var(
+            BROKER_SOCKET_ENV,
+            service_root.join(".private-control/control/control.sock"),
+        );
+        std::env::set_var(BROKER_FD_ENV, "99");
+        std::env::set_var(BROKER_REQUIRED_ENV, "1");
+        std::env::set_var("CHARIOX_ENV_RECORD", &path1_record);
+        let mut child = spawn_kernel(&config, &release, ManagedProviderTopology::Path1)
+            .expect("Path-1 kernel should spawn");
+        child.wait().expect("Path-1 kernel should exit");
+        let path1 = std::fs::read_to_string(&path1_record).expect("Path-1 env record");
+        assert!(path1.contains(&format!("home={}\n", home.display())));
+        assert!(path1.contains(&format!(
+            "chariox_home={}\n",
+            home.join(".chariox").display()
+        )));
+        assert!(path1.contains(&format!("cwd={}\n", canonical_home.display())));
+        assert!(path1.contains("repository_root=/srv/managed workspaces\n"));
+        assert!(path1.contains("topology=path1\n"));
+        assert!(path1.contains("capability_root=<unset>\n"));
+        assert!(path1.contains("provider_isolation=<unset>\n"));
+        assert!(path1.contains("provider_isolation_active=<unset>\n"));
+        assert!(path1.contains("provider_bwrap=<unset>\n"));
+        assert!(path1.contains("service=<unset>\n"));
+        assert!(path1.contains("publication=<unset>\n"));
+        assert!(path1.contains("socket=<unset>\n"));
+        assert!(path1.contains("fd=<unset>\n"));
+        assert!(path1.contains("required=<unset>\n"));
 
         restore_env(
             crate::provider::MANAGED_SLICE_SERVICE_ROOT_ENV,
@@ -689,10 +845,20 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         restore_env(BROKER_SOCKET_ENV, previous_socket);
         restore_env(BROKER_FD_ENV, previous_fd);
         restore_env(BROKER_REQUIRED_ENV, previous_required);
+        restore_env(MANAGED_PROVIDER_TOPOLOGY_ENV, previous_topology);
+        restore_env(
+            "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+            previous_capability_root,
+        );
         restore_env(
             "CHARIOX_MANAGED_PROVIDER_ISOLATION",
             previous_provider_isolation,
         );
+        restore_env(
+            "CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE",
+            previous_provider_isolation_active,
+        );
+        restore_env("CHARIOX_MANAGED_PROVIDER_BWRAP", previous_provider_bwrap);
         restore_env("CHARIOX_ENV_RECORD", previous_record);
         let _ = std::fs::remove_dir_all(root);
     }

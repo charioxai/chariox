@@ -1577,6 +1577,37 @@ fn managed_materialization_requires_the_explicit_trusted_control_parent() {
     fs::remove_dir_all(root).expect("remove test root");
 }
 
+#[test]
+fn managed_materialization_uses_the_bootstrap_repository_root() {
+    let _lock = crate::env_lock::lock();
+    let previous = std::env::var_os(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV);
+    let root = test_root("managed-configured-root");
+    let repository_root = root.join("user-selected workspaces");
+    let trusted_parent = root.join("control/managed-context-workspaces");
+    fs::create_dir_all(&repository_root).expect("create configured repository root");
+    fs::create_dir_all(&trusted_parent).expect("create trusted control parent");
+    std::env::set_var(
+        crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
+        &repository_root,
+    );
+
+    let resolved = super::import::managed_materialization_root_for_control(
+        &trusted_parent.join("publication"),
+        Some(&trusted_parent),
+    )
+    .expect("resolve configured repository root")
+    .expect("managed materialization root");
+    assert_eq!(resolved, fs::canonicalize(&repository_root).unwrap());
+
+    match previous {
+        Some(value) => {
+            std::env::set_var(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV, value)
+        }
+        None => std::env::remove_var(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV),
+    }
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
 #[cfg(unix)]
 #[test]
 fn interrupted_materialization_recovers_the_directory_published_after_intent() {

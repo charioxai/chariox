@@ -17,7 +17,7 @@ use super::prepare_managed_kernel;
 use super::release::verify_release;
 use super::state::{BootstrapConfig, BootstrapReceipt, BootstrapReceiptStatus};
 use super::supervisor::run_kernel_once;
-use super::ManagedKernelContextPlan;
+use super::{ManagedKernelContextPlan, ManagedProviderTopology, MANAGED_PROVIDER_TOPOLOGY_ENV};
 use crate::error::DaemonError;
 
 mod disposable_worker;
@@ -99,6 +99,7 @@ impl BootstrapCloudClient for FakeCloud {
         Ok(ConfirmResponse {
             confirmed: true,
             observed_state: "awaiting_context".to_string(),
+            managed_repository_root: self.exchange_response.managed_repository_root.clone(),
         })
     }
 }
@@ -141,12 +142,15 @@ fn bootstrap_verifies_release_persists_identity_and_profile_then_resumes_without
         .confirm_after_child_marker
         .lock()
         .expect("confirmation marker") = Some(fixture.kernel_started_marker.clone());
+    let previous_topology = std::env::var_os(MANAGED_PROVIDER_TOPOLOGY_ENV);
+    std::env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "shared_host");
 
     run_kernel_once(
         &fixture.config,
         &prepared.release,
         &mut prepared.confirmation,
         &cloud,
+        ManagedProviderTopology::SharedHost,
     )
     .expect("kernel child should start before relay-ready confirmation");
     assert!(prepared.confirmation.is_none());
@@ -205,7 +209,84 @@ fn bootstrap_verifies_release_persists_identity_and_profile_then_resumes_without
     );
     assert_eq!(cloud.confirm_calls.lock().expect("confirm calls").len(), 1);
 
+    restore_env(MANAGED_PROVIDER_TOPOLOGY_ENV, previous_topology);
     restore_env("CHARIOX_HOME", previous_home);
+    fixture.cleanup();
+}
+
+#[test]
+fn schema_two_bootstrap_persists_the_exact_managed_repository_root() {
+    let _env = crate::env_lock::lock();
+    let fixture = Fixture::new("schema-two-repository-root");
+    let previous_home = std::env::var_os("CHARIOX_HOME");
+    std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
+    fs::write(
+        &fixture.config.envelope_path,
+        serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 2,
+            "cloudApiUrl": "https://cloud.example.test",
+            "environmentId": "managed-env-1",
+            "token": fixture.token,
+            "expiresAt": (fixture.now + chrono::Duration::minutes(1)).to_rfc3339(),
+            "runtimeReleaseDigest": fixture.release_digest,
+            "managedRepositoryRoot": "/srv/managed workspaces",
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut response = fixture.exchange_response();
+    response.managed_repository_root = Some("/srv/managed workspaces".to_string());
+    let cloud = FakeCloud::new(response);
+
+    let prepared = prepare_managed_kernel(&fixture.config, &cloud, fixture.now)
+        .expect("schema two bootstrap should exchange");
+    assert!(prepared.confirmation.is_some());
+    let receipt = BootstrapReceipt::read(&fixture.config.receipt_path)
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.schema_version, 2);
+    assert_eq!(
+        receipt.managed_repository_root().unwrap(),
+        "/srv/managed workspaces"
+    );
+
+    match previous_home {
+        Some(value) => std::env::set_var("CHARIOX_HOME", value),
+        None => std::env::remove_var("CHARIOX_HOME"),
+    }
+    fixture.cleanup();
+}
+
+#[test]
+fn schema_two_bootstrap_rejects_a_cloud_repository_root_mismatch() {
+    let _env = crate::env_lock::lock();
+    let fixture = Fixture::new("schema-two-repository-root-mismatch");
+    let previous_home = std::env::var_os("CHARIOX_HOME");
+    std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
+    fs::write(
+        &fixture.config.envelope_path,
+        serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 2,
+            "cloudApiUrl": "https://cloud.example.test",
+            "environmentId": "managed-env-1",
+            "token": fixture.token,
+            "expiresAt": (fixture.now + chrono::Duration::minutes(1)).to_rfc3339(),
+            "runtimeReleaseDigest": fixture.release_digest,
+            "managedRepositoryRoot": "/srv/expected",
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut response = fixture.exchange_response();
+    response.managed_repository_root = Some("/srv/different".to_string());
+    let cloud = FakeCloud::new(response);
+
+    assert!(prepare_managed_kernel(&fixture.config, &cloud, fixture.now).is_err());
+
+    match previous_home {
+        Some(value) => std::env::set_var("CHARIOX_HOME", value),
+        None => std::env::remove_var("CHARIOX_HOME"),
+    }
     fixture.cleanup();
 }
 
@@ -842,6 +923,7 @@ impl Fixture {
             environment_id: String::new(),
             kernel_id: String::new(),
             runtime_release_digest: String::new(),
+            managed_repository_root: None,
             context_plan: ManagedKernelContextPlan::empty_for_tests("managed_ctx_bootstrap"),
             cloud_relay: ManagedCloudRelayProfile {
                 api_url: "https://cloud.example.test".to_string(),

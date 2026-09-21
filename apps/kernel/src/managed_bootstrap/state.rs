@@ -14,6 +14,7 @@ use super::cloud::{DisposableWorkerEnrollmentReceipt, ManagedCloudRelayProfile};
 use super::context_plan::ManagedKernelContextPlan;
 
 const MAX_STATE_BYTES: u64 = 96 * 1024;
+pub(super) const DEFAULT_MANAGED_REPOSITORY_ROOT: &str = "/home/chariox";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct BootstrapConfig {
@@ -45,6 +46,8 @@ pub(super) struct ManagedBootstrapEnvelope {
     pub(super) token: String,
     pub(super) expires_at: String,
     pub(super) runtime_release_digest: String,
+    #[serde(default)]
+    pub(super) managed_repository_root: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,6 +95,8 @@ pub(super) struct BootstrapReceipt {
     pub(super) kernel_id: String,
     pub(super) relay_public_key: String,
     pub(super) runtime_release_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) managed_repository_root: Option<String>,
     pub(super) confirmed_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) context_plan: Option<ManagedKernelContextPlan>,
@@ -247,15 +252,27 @@ impl ManagedBootstrapEnvelope {
     }
 
     fn validate(&self) -> Result<(), DaemonError> {
-        if self.schema_version != 1
+        if !matches!(self.schema_version, 1 | 2)
             || !valid_identifier(&self.environment_id)
             || !valid_secret(&self.token, "mkboot_")
             || !valid_digest(&self.runtime_release_digest)
+            || managed_repository_root_for_schema(
+                self.schema_version,
+                self.managed_repository_root.as_deref(),
+            )
+            .is_err()
         {
             return Err(state_error("managed bootstrap envelope is invalid"));
         }
         self.expires_at()?;
         validate_cloud_url(&self.cloud_api_url)
+    }
+
+    pub(super) fn managed_repository_root(&self) -> Result<String, DaemonError> {
+        managed_repository_root_for_schema(
+            self.schema_version,
+            self.managed_repository_root.as_deref(),
+        )
     }
 }
 
@@ -330,12 +347,17 @@ impl BootstrapReceipt {
             }
             _ => false,
         };
-        if self.schema_version != 1
+        if !matches!(self.schema_version, 1 | 2)
             || !valid_identifier(&self.environment_id)
             || !valid_identifier(&self.machine_id)
             || !valid_identifier(&self.kernel_id)
             || self.relay_public_key.trim().is_empty()
             || !valid_digest(&self.runtime_release_digest)
+            || managed_repository_root_for_schema(
+                self.schema_version,
+                self.managed_repository_root.as_deref(),
+            )
+            .is_err()
             || self
                 .context_plan
                 .as_ref()
@@ -347,6 +369,13 @@ impl BootstrapReceipt {
         Ok(())
     }
 
+    pub(super) fn managed_repository_root(&self) -> Result<String, DaemonError> {
+        managed_repository_root_for_schema(
+            self.schema_version,
+            self.managed_repository_root.as_deref(),
+        )
+    }
+
     pub(super) fn persist(&self, path: &Path) -> Result<(), DaemonError> {
         let bytes =
             serde_json::to_vec_pretty(self).map_err(|error| state_error(&error.to_string()))?;
@@ -355,6 +384,64 @@ impl BootstrapReceipt {
         }
         write_private_file(path, &bytes).map_err(|error| state_error(&error.to_string()))
     }
+}
+
+pub(super) fn managed_repository_root_for_schema(
+    schema_version: u32,
+    value: Option<&str>,
+) -> Result<String, DaemonError> {
+    match (schema_version, value) {
+        (1, None) => Ok(DEFAULT_MANAGED_REPOSITORY_ROOT.to_string()),
+        (2, Some(value)) => {
+            let normalized = normalize_managed_repository_root(value)?;
+            if normalized != value {
+                return Err(state_error("managed repository root must be normalized"));
+            }
+            Ok(normalized)
+        }
+        _ => Err(state_error(
+            "managed repository root does not match the bootstrap schema",
+        )),
+    }
+}
+
+pub(super) fn normalize_managed_repository_root(value: &str) -> Result<String, DaemonError> {
+    if value.is_empty()
+        || value.len() > 4096
+        || value.trim() != value
+        || value.chars().any(char::is_control)
+        || !value.starts_with('/')
+        || value.starts_with("//")
+    {
+        return Err(state_error("managed repository root is invalid"));
+    }
+    let mut segments = Vec::new();
+    for segment in value.split('/').skip(1) {
+        if segment.is_empty() {
+            continue;
+        }
+        if matches!(segment, "." | "..") {
+            return Err(state_error("managed repository root is invalid"));
+        }
+        segments.push(segment);
+    }
+    let normalized = if segments.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", segments.join("/"))
+    };
+    if overlaps_protected_managed_root(&normalized) {
+        return Err(state_error("managed repository root is protected"));
+    }
+    Ok(normalized)
+}
+
+fn overlaps_protected_managed_root(candidate: &str) -> bool {
+    ["/", "/var/lib/chariox", "/usr/lib/chariox"]
+        .iter()
+        .any(|protected| candidate == *protected || candidate.starts_with(&format!("{protected}/")))
+        || candidate == "/home/chariox/.chariox"
+        || candidate.starts_with("/home/chariox/.chariox/")
 }
 
 impl BootstrapReceiptDocument {
@@ -612,5 +699,64 @@ mod tests {
         restore_env("HOME", previous_home);
         restore_env("CHARIOX_HOME", previous_chariox_home);
         restore_env("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT", previous_receipt);
+    }
+
+    #[test]
+    fn managed_repository_root_matches_the_cloud_trust_boundary() {
+        for value in [
+            "/home",
+            "/home/chariox",
+            "/tmp",
+            "/var",
+            "/usr/lib",
+            "/srv/managed workspaces",
+            "/srv/$(literal);workspace",
+        ] {
+            assert_eq!(
+                normalize_managed_repository_root(value).unwrap(),
+                value,
+                "accepted root {value}"
+            );
+        }
+        assert_eq!(
+            normalize_managed_repository_root("/srv//managed/").unwrap(),
+            "/srv/managed"
+        );
+        for value in [
+            "",
+            "relative",
+            "//srv/workspaces",
+            "/srv/./workspaces",
+            "/srv/../workspaces",
+            "/",
+            "/var/lib/chariox",
+            "/var/lib/chariox/workspaces",
+            "/usr/lib/chariox",
+            "/usr/lib/chariox/releases/v1",
+            "/home/chariox/.chariox",
+            "/home/chariox/.chariox/workspaces",
+            "/srv/workspaces\nother",
+        ] {
+            assert!(
+                normalize_managed_repository_root(value).is_err(),
+                "rejected root {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn managed_repository_root_is_bound_to_the_bootstrap_schema() {
+        assert_eq!(
+            managed_repository_root_for_schema(1, None).unwrap(),
+            DEFAULT_MANAGED_REPOSITORY_ROOT
+        );
+        assert_eq!(
+            managed_repository_root_for_schema(2, Some("/srv/workspaces")).unwrap(),
+            "/srv/workspaces"
+        );
+        assert!(managed_repository_root_for_schema(1, Some("/srv/workspaces")).is_err());
+        assert!(managed_repository_root_for_schema(2, None).is_err());
+        assert!(managed_repository_root_for_schema(2, Some("/srv//workspaces")).is_err());
+        assert!(managed_repository_root_for_schema(3, Some("/srv/workspaces")).is_err());
     }
 }

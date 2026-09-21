@@ -20,11 +20,15 @@ use crate::error::DaemonError;
 use super::cloud::{HttpBootstrapCloudClient, ManagedCloudRelayProfile};
 use super::release::{verify_release, VerifiedRelease};
 use super::state::{
-    default_disposable_worker_receipt_path, managed_home_paths, read_bounded_json,
-    remove_envelope, valid_digest, valid_identifier, valid_secret, validate_cloud_url,
-    validate_managed_state_path,
+    default_disposable_worker_receipt_path, managed_home_paths, managed_repository_root_for_schema,
+    read_bounded_json, remove_envelope, valid_digest, valid_identifier, valid_secret,
+    validate_cloud_url, validate_managed_state_path,
 };
-use super::{jittered, normalized_api_url, persisted_profile, valid_managed_relay_url};
+use super::{
+    jittered, managed_provider_topology, normalized_api_url, persisted_profile,
+    valid_managed_relay_url, ManagedProviderTopology, MANAGED_PROVIDER_TOPOLOGY_ENV,
+    PATH1_SHARED_HOST_SELECTOR_ENVS,
+};
 
 const MIN_RETRY: Duration = Duration::from_secs(1);
 const MAX_RETRY: Duration = Duration::from_secs(60);
@@ -125,6 +129,8 @@ struct WorkerEnvelope {
     token: String,
     expires_at: String,
     runtime_release_digest: String,
+    #[serde(default)]
+    managed_repository_root: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,6 +150,8 @@ struct WorkerReceipt {
     kernel_id: String,
     relay_public_key: String,
     runtime_release_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    managed_repository_root: Option<String>,
     home_caller: CloudHomeCaller,
     confirmed_at: Option<String>,
 }
@@ -200,6 +208,8 @@ struct ExchangeResponse {
     allocation_id: String,
     kernel_id: String,
     runtime_release_digest: String,
+    #[serde(default)]
+    managed_repository_root: Option<String>,
     lease_worker_capacity: u32,
     home_caller: CloudHomeCaller,
     cloud_relay: ManagedCloudRelayProfile,
@@ -220,6 +230,8 @@ struct ConfirmRequest {
 struct ConfirmResponse {
     confirmed: bool,
     observed_state: String,
+    #[serde(default)]
+    managed_repository_root: Option<String>,
 }
 
 trait WorkerCloudClient {
@@ -264,13 +276,19 @@ struct PreparedWorker {
 }
 
 pub fn run_from_env() -> Result<(), DaemonError> {
+    let topology = managed_provider_topology()?;
+    if topology != ManagedProviderTopology::Path1 {
+        return Err(worker_error(
+            "disposable worker bootstrap requires path1 topology",
+        ));
+    }
     let cloud = HttpBootstrapCloudClient::default();
     let mut delay = MIN_RETRY;
     loop {
         let prepared = WorkerConfig::from_env()
             .and_then(|config| prepare(&config, &cloud, Utc::now()).map(|worker| (config, worker)));
         match prepared {
-            Ok((config, worker)) => supervise(&config, worker, &cloud)?,
+            Ok((config, worker)) => supervise(&config, worker, &cloud, topology)?,
             Err(error) => crate::logging::warn_with_fields(
                 "disposable_worker_bootstrap.prepare_failed",
                 "disposable worker bootstrap failed; retrying",
@@ -311,6 +329,7 @@ fn prepare(
     if let (Some(envelope), Some(receipt)) = (&envelope, &receipt) {
         if envelope.allocation_id != receipt.allocation_id
             || envelope.runtime_release_digest != receipt.runtime_release_digest
+            || envelope.managed_repository_root()? != receipt.managed_repository_root()?
         {
             return Err(worker_error("worker envelope conflicts with its receipt"));
         }
@@ -366,13 +385,16 @@ fn prepare(
             validate_exchange(&envelope, &identity, &response)?;
             persist_managed_cloud_relay_profile(persisted_profile(response.cloud_relay))?;
             let receipt = WorkerReceipt {
-                schema_version: 1,
+                schema_version: envelope.schema_version,
                 status: WorkerReceiptStatus::Exchanged,
                 allocation_id: envelope.allocation_id.clone(),
                 machine_id: identity.machine_id,
                 kernel_id: identity.kernel_id,
                 relay_public_key: identity.relay_public_key,
                 runtime_release_digest: envelope.runtime_release_digest.clone(),
+                managed_repository_root: (envelope.schema_version == 2)
+                    .then(|| envelope.managed_repository_root())
+                    .transpose()?,
                 home_caller: response.home_caller,
                 confirmed_at: None,
             };
@@ -392,6 +414,10 @@ fn validate_exchange(
     identity: &ManagedRuntimeIdentity,
     response: &ExchangeResponse,
 ) -> Result<(), DaemonError> {
+    let response_repository_root = managed_repository_root_for_schema(
+        envelope.schema_version,
+        response.managed_repository_root.as_deref(),
+    )?;
     if response.allocation_id != envelope.allocation_id
         || response.kernel_id != identity.kernel_id
         || response.runtime_release_digest != envelope.runtime_release_digest
@@ -405,6 +431,7 @@ fn validate_exchange(
             != normalized_api_url(&envelope.cloud_api_url)
         || !valid_managed_relay_url(&response.cloud_relay.relay_url)
         || !valid_secret(&response.cloud_relay.machine_credential, "mcred_")
+        || response_repository_root != envelope.managed_repository_root()?
     {
         return Err(worker_error("Cloud worker bootstrap response is invalid"));
     }
@@ -436,11 +463,12 @@ fn supervise(
     config: &WorkerConfig,
     mut worker: PreparedWorker,
     cloud: &impl WorkerCloudClient,
+    topology: ManagedProviderTopology,
 ) -> Result<(), DaemonError> {
     let mut delay = MIN_RETRY;
     loop {
         let started = Instant::now();
-        match run_once(config, &mut worker, cloud) {
+        match run_once(config, &mut worker, cloud, topology) {
             Ok(status) => crate::logging::warn_with_fields(
                 "disposable_worker_bootstrap.kernel_exit",
                 "disposable worker kernel exited; restarting",
@@ -464,8 +492,9 @@ fn run_once(
     config: &WorkerConfig,
     worker: &mut PreparedWorker,
     cloud: &impl WorkerCloudClient,
+    topology: ManagedProviderTopology,
 ) -> Result<std::process::ExitStatus, DaemonError> {
-    let mut child = spawn_kernel(config, &worker.release, &worker.receipt)?;
+    let mut child = spawn_kernel(config, &worker.release, &worker.receipt, topology)?;
     if let Some(envelope) = &worker.pending {
         let confirmation = (|| {
             confirm_when_relay_ready(&mut child, &worker.receipt, envelope, cloud)?;
@@ -489,7 +518,13 @@ fn spawn_kernel(
     config: &WorkerConfig,
     release: &VerifiedRelease,
     receipt: &WorkerReceipt,
+    topology: ManagedProviderTopology,
 ) -> Result<Child, DaemonError> {
+    if topology != ManagedProviderTopology::Path1 {
+        return Err(worker_error(
+            "disposable worker kernel requires path1 topology",
+        ));
+    }
     let home_caller = serde_json::to_string(&receipt.home_caller.lease_binding())
         .map_err(|error| worker_error(format!("encode home caller: {error}")))?;
     let mut command = Command::new(&release.kernel_binary);
@@ -497,6 +532,10 @@ fn spawn_kernel(
         .current_dir(&config.process_home)
         .env("HOME", &config.process_home)
         .env("CHARIOX_HOME", &config.chariox_home)
+        .env(
+            super::MANAGED_REPOSITORY_ROOT_ENV,
+            receipt.managed_repository_root()?,
+        )
         .env("CHARIOX_KERNEL_HOST", &config.kernel_host)
         .env("CHARIOX_KERNEL_PORT", config.kernel_port.to_string())
         .env("CHARIOX_ACCEPT_REMOTE_LEASES", "1")
@@ -504,44 +543,27 @@ fn spawn_kernel(
         .env("CHARIOX_REMOTE_LEASE_CAPACITY", "1")
         .env("CHARIOX_LEASE_WORKER_HOME_CALLER", home_caller)
         .env(ACTIVITY_RECEIPT_ENV, &config.receipt_path)
+        .env(MANAGED_PROVIDER_TOPOLOGY_ENV, topology.as_str())
         .env_remove("CHARIOX_MANAGED_BOOTSTRAP_PATH")
         .env_remove("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT")
-        .env_remove("CHARIOX_MANAGED_PROVIDER_ISOLATION")
         .env_remove("CHARIOX_DAEMON_ID")
         .env_remove("CHARIOX_MACHINE_ID")
         .env_remove("CHARIOX_RELAY_TOKEN")
         .env_remove("CHARIOX_DAEMON_SOCKET")
-        .env_remove("CHARIOX_SLICE_DOCKER_BROKER_SOCKET")
-        .env_remove("CHARIOX_SLICE_DOCKER_BROKER_FD")
-        .env_remove("CHARIOX_SLICE_DOCKER_BROKER_REQUIRED")
-        .env_remove("CHARIOX_MANAGED_SLICE_SERVICE_ROOT")
-        .env_remove("CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT")
-        .env_remove("CHARIOX_SLICE_ROOT")
-        .env_remove("CHARIOX_MANAGED_PROVIDER_BWRAP")
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    for name in PATH1_SHARED_HOST_SELECTOR_ENVS {
+        command.env_remove(name);
+    }
     #[cfg(target_os = "linux")]
     {
         let provider_home = prepare_disposable_worker_provider_home(config)?;
-        let isolation_root = match env::var_os("CHARIOX_CAPABILITY_ISOLATION_ROOT") {
-            Some(value) if value.is_empty() => {
-                return Err(worker_error(
-                    "CHARIOX_CAPABILITY_ISOLATION_ROOT must not be empty",
-                ));
-            }
-            Some(value) => PathBuf::from(value),
-            None => config.chariox_home.join("managed-context").join("kernel"),
-        };
         command
-            .env("CHARIOX_CAPABILITY_ISOLATION_ROOT", isolation_root)
             .env("CHARIOX_MANAGED_PROVIDER_HOME", provider_home)
             .env(
                 "CHARIOX_MANAGED_VAULT_PATH",
-                config
-                    .chariox_home
-                    .join("vault")
-                    .join("vault.json"),
+                config.chariox_home.join("vault").join("vault.json"),
             );
     }
     command
@@ -550,9 +572,7 @@ fn spawn_kernel(
 }
 
 #[cfg(target_os = "linux")]
-fn prepare_disposable_worker_provider_home(
-    config: &WorkerConfig,
-) -> Result<PathBuf, DaemonError> {
+fn prepare_disposable_worker_provider_home(config: &WorkerConfig) -> Result<PathBuf, DaemonError> {
     use std::os::unix::fs::PermissionsExt;
 
     let path = match env::var_os("CHARIOX_MANAGED_PROVIDER_HOME") {
@@ -673,7 +693,19 @@ fn confirm_when_relay_ready(
             Ok(ConfirmResponse {
                 confirmed: true,
                 observed_state,
-            }) if observed_state == "ready" => return Ok(()),
+                managed_repository_root,
+            }) if observed_state == "ready" => {
+                let confirmed_root = managed_repository_root_for_schema(
+                    receipt.schema_version,
+                    managed_repository_root.as_deref(),
+                )?;
+                if confirmed_root != receipt.managed_repository_root()? {
+                    return Err(worker_error(
+                        "Cloud confirmed a different managed repository root",
+                    ));
+                }
+                return Ok(());
+            }
             Ok(_) => crate::logging::warn_with_fields(
                 "disposable_worker_bootstrap.confirm_pending",
                 "Cloud has not confirmed worker readiness",
@@ -773,16 +805,24 @@ impl WorkerConfig {
 impl WorkerEnvelope {
     fn read(path: &Path) -> Result<Self, DaemonError> {
         let value: Self = read_bounded_json(path, "disposable worker envelope")?;
-        if value.schema_version != 1
+        if !matches!(value.schema_version, 1 | 2)
             || !valid_identifier(&value.allocation_id)
             || !valid_secret(&value.token, "mboot_")
             || !valid_digest(&value.runtime_release_digest)
+            || value.managed_repository_root().is_err()
         {
             return Err(worker_error("disposable worker envelope is invalid"));
         }
         validate_cloud_url(&value.cloud_api_url)?;
         value.expires_at()?;
         Ok(value)
+    }
+
+    fn managed_repository_root(&self) -> Result<String, DaemonError> {
+        managed_repository_root_for_schema(
+            self.schema_version,
+            self.managed_repository_root.as_deref(),
+        )
     }
 
     fn expires_at(&self) -> Result<DateTime<Utc>, DaemonError> {
@@ -794,7 +834,7 @@ impl WorkerEnvelope {
 
 impl WorkerReceipt {
     fn binding_digest(&self) -> Result<String, DaemonError> {
-        let binding = serde_json::json!({
+        let mut binding = serde_json::json!({
             "allocationId": self.allocation_id,
             "homeCaller": self.home_caller,
             "kernelId": self.kernel_id,
@@ -803,6 +843,15 @@ impl WorkerReceipt {
             "runtimeReleaseDigest": self.runtime_release_digest,
             "schemaVersion": self.schema_version,
         });
+        if let Some(root) = self.managed_repository_root.as_ref() {
+            binding
+                .as_object_mut()
+                .expect("worker binding must be an object")
+                .insert(
+                    "managedRepositoryRoot".to_string(),
+                    serde_json::Value::String(root.clone()),
+                );
+        }
         let bytes = serde_json::to_vec(&binding)
             .map_err(|error| worker_error(format!("encode worker binding: {error}")))?;
         Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
@@ -835,18 +884,26 @@ impl WorkerReceipt {
             }
             _ => false,
         };
-        if value.schema_version != 1
+        if !matches!(value.schema_version, 1 | 2)
             || !status_valid
             || !valid_identifier(&value.allocation_id)
             || !valid_identifier(&value.machine_id)
             || !valid_identifier(&value.kernel_id)
             || value.relay_public_key.trim().is_empty()
             || !valid_digest(&value.runtime_release_digest)
+            || value.managed_repository_root().is_err()
             || !value.home_caller.valid()
         {
             return Err(worker_error("disposable worker receipt is invalid"));
         }
         Ok(Some(value))
+    }
+
+    fn managed_repository_root(&self) -> Result<String, DaemonError> {
+        managed_repository_root_for_schema(
+            self.schema_version,
+            self.managed_repository_root.as_deref(),
+        )
     }
 
     fn persist(&self, path: &Path) -> Result<(), DaemonError> {
@@ -957,6 +1014,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn disposable_worker_entry_requires_explicit_path1_topology() {
+        let _lock = crate::env_lock::lock();
+        let previous = env::var_os(MANAGED_PROVIDER_TOPOLOGY_ENV);
+
+        env::remove_var(MANAGED_PROVIDER_TOPOLOGY_ENV);
+        assert!(run_from_env()
+            .expect_err("missing topology must fail before worker preparation")
+            .to_string()
+            .contains("explicitly set to path1 or shared_host"));
+        env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "unknown");
+        assert!(run_from_env()
+            .expect_err("unknown topology must fail before worker preparation")
+            .to_string()
+            .contains("must be path1 or shared_host"));
+        env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "shared_host");
+        assert!(run_from_env()
+            .expect_err("disposable worker must reject shared-host topology")
+            .to_string()
+            .contains("requires path1 topology"));
+
+        restore_worker_test_env(MANAGED_PROVIDER_TOPOLOGY_ENV, previous);
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn disposable_worker_spawn_uses_ordinary_kernel_and_scrubs_parent_state() {
@@ -980,6 +1061,7 @@ mod tests {
             kernel_port: fixture.config.kernel_port,
         };
         fs::create_dir_all(&config.process_home).expect("worker HOME should exist");
+        fs::create_dir_all(&config.chariox_home).expect("worker CHARIOX_HOME should exist");
         let marker = config.chariox_home.join("worker-isolation-env.txt");
         let provider_home = config
             .chariox_home
@@ -987,7 +1069,13 @@ mod tests {
             .expect("worker fixture should have a parent")
             .join("provider-home");
         let capability_root = config.chariox_home.join("managed-context/kernel");
-        let kernel_script = b"#!/bin/sh\nset -eu\nmarker=\"${CHARIOX_WORKER_ISOLATION_PROBE_MARKER:?}\"\nprintf 'home=%s\\n' \"${HOME-<unset>}\" > \"$marker\"\nprintf 'chariox_home=%s\\n' \"${CHARIOX_HOME-<unset>}\" >> \"$marker\"\nprintf 'cwd=%s\\n' \"$(pwd)\" >> \"$marker\"\nprintf 'isolation=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_ISOLATION-<unset>}\" >> \"$marker\"\nprintf 'provider_home=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_HOME-<unset>}\" >> \"$marker\"\nprintf 'capability_root=%s\\n' \"${CHARIOX_CAPABILITY_ISOLATION_ROOT-<unset>}\" >> \"$marker\"\nprintf 'vault=%s\\n' \"${CHARIOX_MANAGED_VAULT_PATH-<unset>}\" >> \"$marker\"\nprintf 'daemon_socket=%s\\n' \"${CHARIOX_DAEMON_SOCKET-<unset>}\" >> \"$marker\"\nprintf 'broker_socket=%s\\n' \"${CHARIOX_SLICE_DOCKER_BROKER_SOCKET-<unset>}\" >> \"$marker\"\nprintf 'slice_root=%s\\n' \"${CHARIOX_SLICE_ROOT-<unset>}\" >> \"$marker\"\nprintf 'relay_token=%s\\n' \"${CHARIOX_RELAY_TOKEN-<unset>}\" >> \"$marker\"\nprintf 'daemon_id=%s\\n' \"${CHARIOX_DAEMON_ID-<unset>}\" >> \"$marker\"\nprintf 'machine_id=%s\\n' \"${CHARIOX_MACHINE_ID-<unset>}\" >> \"$marker\"\nprintf 'bootstrap_path=%s\\n' \"${CHARIOX_MANAGED_BOOTSTRAP_PATH-<unset>}\" >> \"$marker\"\nprintf ordinary > \"$HOME/ordinary-worker-write\"\n";
+        let kernel_script = b"#!/bin/sh\nset -eu\nmarker=\"${CHARIOX_WORKER_ISOLATION_PROBE_MARKER:?}\"\nprintf 'home=%s\\n' \"${HOME-<unset>}\" > \"$marker\"\nprintf 'chariox_home=%s\\n' \"${CHARIOX_HOME-<unset>}\" >> \"$marker\"\nprintf 'repository_root=%s\\n' \"${CHARIOX_MANAGED_REPOSITORY_ROOT-<unset>}\" >> \"$marker\"\nprintf 'topology=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_TOPOLOGY-<unset>}\" >> \"$marker\"\nprintf 'cwd=%s\\n' \"$(pwd)\" >> \"$marker\"\nprintf 'isolation=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_ISOLATION-<unset>}\" >> \"$marker\"\nprintf 'provider_home=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_HOME-<unset>}\" >> \"$marker\"\nprintf 'capability_root=%s\\n' \"${CHARIOX_CAPABILITY_ISOLATION_ROOT-<unset>}\" >> \"$marker\"\nprintf 'provider_isolation_active=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE-<unset>}\" >> \"$marker\"\nprintf 'vault=%s\\n' \"${CHARIOX_MANAGED_VAULT_PATH-<unset>}\" >> \"$marker\"\nprintf 'daemon_socket=%s\\n' \"${CHARIOX_DAEMON_SOCKET-<unset>}\" >> \"$marker\"\nprintf 'broker_socket=%s\\n' \"${CHARIOX_SLICE_DOCKER_BROKER_SOCKET-<unset>}\" >> \"$marker\"\nprintf 'slice_root=%s\\n' \"${CHARIOX_SLICE_ROOT-<unset>}\" >> \"$marker\"\nprintf 'relay_token=%s\\n' \"${CHARIOX_RELAY_TOKEN-<unset>}\" >> \"$marker\"\nprintf 'daemon_id=%s\\n' \"${CHARIOX_DAEMON_ID-<unset>}\" >> \"$marker\"\nprintf 'machine_id=%s\\n' \"${CHARIOX_MACHINE_ID-<unset>}\" >> \"$marker\"\nprintf 'bootstrap_path=%s\\n' \"${CHARIOX_MANAGED_BOOTSTRAP_PATH-<unset>}\" >> \"$marker\"\nprintf ordinary > \"$HOME/ordinary-worker-write\"\n";
+        let kernel_script = [
+            kernel_script.as_slice(),
+            b"printf 'provider_bwrap=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_BWRAP-<unset>}\" >> \"$marker\"\nprintf 'slice_service=%s\\n' \"${CHARIOX_MANAGED_SLICE_SERVICE_ROOT-<unset>}\" >> \"$marker\"\nprintf 'slice_publication=%s\\n' \"${CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT-<unset>}\" >> \"$marker\"\n"
+                .as_slice(),
+        ]
+        .concat();
         fs::write(&config.kernel_binary, kernel_script).expect("write worker probe kernel");
         fs::set_permissions(&config.kernel_binary, fs::Permissions::from_mode(0o755))
             .expect("make worker probe kernel executable");
@@ -995,12 +1083,17 @@ mod tests {
         let names = [
             "HOME",
             "CHARIOX_WORKER_ISOLATION_PROBE_MARKER",
+            MANAGED_PROVIDER_TOPOLOGY_ENV,
             "CHARIOX_MANAGED_PROVIDER_ISOLATION",
+            "CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE",
+            "CHARIOX_MANAGED_PROVIDER_BWRAP",
             "CHARIOX_MANAGED_PROVIDER_HOME",
             "CHARIOX_CAPABILITY_ISOLATION_ROOT",
             "CHARIOX_MANAGED_VAULT_PATH",
             "CHARIOX_DAEMON_SOCKET",
             "CHARIOX_SLICE_DOCKER_BROKER_SOCKET",
+            "CHARIOX_MANAGED_SLICE_SERVICE_ROOT",
+            "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT",
             "CHARIOX_SLICE_ROOT",
             "CHARIOX_RELAY_TOKEN",
             "CHARIOX_DAEMON_ID",
@@ -1013,17 +1106,27 @@ mod tests {
             .collect::<Vec<_>>();
         env::set_var("HOME", &config.process_home);
         env::set_var("CHARIOX_WORKER_ISOLATION_PROBE_MARKER", &marker);
-        env::set_var("CHARIOX_MANAGED_PROVIDER_ISOLATION", "0");
+        env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "path1");
+        // Model the managed bootstrap parent: Path 1 must strip its marker
+        // and shared-host slice controls before starting the worker kernel.
+        env::set_var("CHARIOX_MANAGED_PROVIDER_ISOLATION", "1");
+        env::set_var("CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE", "1");
+        env::set_var("CHARIOX_MANAGED_PROVIDER_BWRAP", "/usr/bin/bwrap");
         env::set_var("CHARIOX_MANAGED_PROVIDER_HOME", &provider_home);
         env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", &capability_root);
-        env::set_var(
-            "CHARIOX_MANAGED_VAULT_PATH",
-            "/host/credentials/vault.json",
-        );
+        env::set_var("CHARIOX_MANAGED_VAULT_PATH", "/host/credentials/vault.json");
         env::set_var("CHARIOX_DAEMON_SOCKET", "/run/chariox/daemon.sock");
         env::set_var(
             "CHARIOX_SLICE_DOCKER_BROKER_SOCKET",
             "/run/chariox/broker.sock",
+        );
+        env::set_var(
+            "CHARIOX_MANAGED_SLICE_SERVICE_ROOT",
+            "/var/lib/chariox-slice-share",
+        );
+        env::set_var(
+            "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT",
+            "/var/lib/chariox-slice-share/slices",
         );
         env::set_var("CHARIOX_SLICE_ROOT", "/var/lib/chariox-slice-share");
         env::set_var("CHARIOX_RELAY_TOKEN", "mrelay_parent_secret");
@@ -1036,13 +1139,14 @@ mod tests {
 
         let response = response();
         let receipt = WorkerReceipt {
-            schema_version: 1,
+            schema_version: 2,
             status: WorkerReceiptStatus::Confirmed,
             allocation_id: response.allocation_id,
             machine_id: "worker-machine".to_string(),
             kernel_id: response.kernel_id,
             relay_public_key: "worker-public-key".to_string(),
             runtime_release_digest: response.runtime_release_digest,
+            managed_repository_root: Some("/srv/worker workspaces".to_string()),
             home_caller: response.home_caller,
             confirmed_at: Some("2026-09-16T15:38:00Z".to_string()),
         };
@@ -1050,7 +1154,7 @@ mod tests {
             digest: "sha256:worker-isolation-probe".to_string(),
             kernel_binary: config.kernel_binary.clone(),
         };
-        let mut child = spawn_kernel(&config, &release, &receipt)
+        let mut child = spawn_kernel(&config, &release, &receipt, ManagedProviderTopology::Path1)
             .expect("disposable worker should start the managed kernel");
         let status = child.wait().expect("worker probe kernel should exit");
 
@@ -1061,17 +1165,17 @@ mod tests {
         assert!(status.success(), "worker probe kernel failed: {status}");
         let observed = fs::read_to_string(&marker).expect("worker probe should record its env");
         assert!(observed.contains(&format!("home={}\n", config.process_home.display())));
-        assert!(observed.contains(&format!(
-            "chariox_home={}\n",
-            config.chariox_home.display()
-        )));
+        assert!(observed.contains(&format!("chariox_home={}\n", config.chariox_home.display())));
+        assert!(observed.contains("repository_root=/srv/worker workspaces\n"));
+        assert!(observed.contains("topology=path1\n"));
         assert!(observed.contains(&format!("cwd={}\n", config.process_home.display())));
         assert!(observed.contains("isolation=<unset>"));
+        assert!(observed.contains("capability_root=<unset>"));
+        assert!(observed.contains("provider_isolation_active=<unset>"));
+        assert!(observed.contains("provider_bwrap=<unset>"));
+        assert!(observed.contains("slice_service=<unset>"));
+        assert!(observed.contains("slice_publication=<unset>"));
         assert!(observed.contains(&format!("provider_home={}\n", provider_home.display())));
-        assert!(observed.contains(&format!(
-            "capability_root={}\n",
-            capability_root.display()
-        )));
         assert!(observed.contains(&format!(
             "vault={}\n",
             config.chariox_home.join("vault/vault.json").display()
@@ -1079,6 +1183,8 @@ mod tests {
         for name in [
             "daemon_socket",
             "broker_socket",
+            "slice_service",
+            "slice_publication",
             "slice_root",
             "relay_token",
             "daemon_id",
@@ -1130,6 +1236,7 @@ mod tests {
                 Ok(ConfirmResponse {
                     confirmed: true,
                     observed_state: "ready".into(),
+                    managed_repository_root: None,
                 })
             }
         }
@@ -1147,6 +1254,7 @@ mod tests {
                 kernel_id: response.kernel_id,
                 relay_public_key: "worker-public-key".into(),
                 runtime_release_digest: response.runtime_release_digest,
+                managed_repository_root: None,
                 home_caller: response.home_caller,
                 confirmed_at: None,
             };
@@ -1420,8 +1528,13 @@ mod tests {
         write_private_file(&local_auth_path, b"test-local-auth")
             .expect("write synthetic worker auth fixture");
         env::set_var("CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE", &local_auth_path);
-        run_once(&worker_config, &mut prepared, &worker_cloud)
-            .expect("confirmed worker bootstrap should persist the receipt");
+        run_once(
+            &worker_config,
+            &mut prepared,
+            &worker_cloud,
+            ManagedProviderTopology::Path1,
+        )
+        .expect("confirmed worker bootstrap should persist the receipt");
         assert_eq!(prepared.receipt.status, WorkerReceiptStatus::Confirmed);
         assert!(prepared.pending.is_none());
         assert!(!worker_config.envelope_path.exists());
@@ -1877,10 +1990,9 @@ mod tests {
         };
         let test_now = chrono::Utc::now();
         let home_private_key = crate::transport::relay_crypto::generate_private_key_base64();
-        let home_public_key = crate::transport::relay_crypto::public_key_from_private_key_base64(
-            &home_private_key,
-        )
-        .expect("home public key should derive");
+        let home_public_key =
+            crate::transport::relay_crypto::public_key_from_private_key_base64(&home_private_key)
+                .expect("home public key should derive");
         let worker_envelope = serde_json::json!({
             "schemaVersion": 1,
             "cloudApiUrl": "https://cloud.example.test",
@@ -1928,18 +2040,23 @@ mod tests {
         write_private_file(&local_auth_path, b"test-local-auth")
             .expect("write synthetic worker auth fixture");
         env::set_var("CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE", &local_auth_path);
-        run_once(&worker_config, &mut prepared, &worker_cloud)
-            .expect("normal worker bootstrap should confirm the receipt");
+        run_once(
+            &worker_config,
+            &mut prepared,
+            &worker_cloud,
+            ManagedProviderTopology::Path1,
+        )
+        .expect("normal worker bootstrap should confirm the receipt");
         assert_eq!(prepared.receipt.status, WorkerReceiptStatus::Confirmed);
         assert!(prepared.pending.is_none());
 
         worker_app_config.kernel_runtime_role = KernelRuntimeRole::RemoteLeaseWorker;
         worker_app_config.accept_remote_leases = true;
         worker_app_config.remote_lease_capacity = Some(1);
-        worker_app_config.cloud_relay = Some(persisted_profile(
-            worker_cloud.response.cloud_relay.clone(),
-        ));
-        worker_app_config.lease_worker_home_caller = Some(prepared.receipt.home_caller.lease_binding());
+        worker_app_config.cloud_relay =
+            Some(persisted_profile(worker_cloud.response.cloud_relay.clone()));
+        worker_app_config.lease_worker_home_caller =
+            Some(prepared.receipt.home_caller.lease_binding());
         env::set_var(ACTIVITY_RECEIPT_ENV, &worker_config.receipt_path);
         env::set_var("CHARIOX_KERNEL_RUNTIME_ROLE", "remote_lease_worker");
         env::set_var("CHARIOX_ACCEPT_REMOTE_LEASES", "1");
@@ -1961,8 +2078,7 @@ mod tests {
         let worker_state = worker_app.lock().await.relay_client_state();
         let (outgoing_tx, _priority_rx, _event_rx) =
             crate::transport::relay_client::RelayOutgoingSender::channel(1);
-        let from_daemon_id =
-            "home-kernel:peer-tmp:daemon-peer-tmp-4242-1767225600123-7";
+        let from_daemon_id = "home-kernel:peer-tmp:daemon-peer-tmp-4242-1767225600123-7";
         let caller_identity = chariox_relay::protocol::RelayCallerIdentity {
             realm_id: "default".to_string(),
             subject: "home-machine".to_string(),
@@ -1970,9 +2086,9 @@ mod tests {
             expires_at_ms: u64::MAX,
             token_id: Some("peer-token".to_string()),
             user_id: Some("local".to_string()),
-            public_key_thumbprint: Some(
-                crate::runtime::terminal_pairings::public_key_thumbprint(&home_public_key),
-            ),
+            public_key_thumbprint: Some(crate::runtime::terminal_pairings::public_key_thumbprint(
+                &home_public_key,
+            )),
         };
 
         let lease = match send_authenticated_peer_request_for_test(
@@ -2026,8 +2142,8 @@ mod tests {
         };
         let target_platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
         let operation_id = "peer-setup-attempt-two".to_string();
-        let start = |attempt: u32, project_id: &str| {
-            RelayPeerRequest::StartLeasedProjectEnvironmentSetup {
+        let start =
+            |attempt: u32, project_id: &str| RelayPeerRequest::StartLeasedProjectEnvironmentSetup {
                 leased_agent_id: leased_agent_id.clone(),
                 operation_id: operation_id.clone(),
                 attempt,
@@ -2039,8 +2155,7 @@ mod tests {
                 target_platform: target_platform.clone(),
                 definition: None,
                 validation_commands: Vec::new(),
-            }
-        };
+            };
 
         let started = send_authenticated_peer_request_for_test(
             &worker_router,
@@ -2226,6 +2341,7 @@ mod tests {
             Ok(ConfirmResponse {
                 confirmed: true,
                 observed_state: "ready".to_string(),
+                managed_repository_root: self.response.managed_repository_root.clone(),
             })
         }
     }
@@ -2544,6 +2660,7 @@ mod tests {
             token: format!("mboot_{}", "a".repeat(40)),
             expires_at: "2026-09-13T12:00:00Z".to_string(),
             runtime_release_digest: format!("sha256:{}", "b".repeat(64)),
+            managed_repository_root: None,
         }
     }
 
@@ -2560,6 +2677,7 @@ mod tests {
             allocation_id: "worker-1".to_string(),
             kernel_id: "worker-kernel".to_string(),
             runtime_release_digest: envelope().runtime_release_digest,
+            managed_repository_root: None,
             lease_worker_capacity: 1,
             home_caller: CloudHomeCaller {
                 account_id: "account-1".to_string(),
@@ -2587,23 +2705,33 @@ mod tests {
 
     #[test]
     fn exchange_requires_exact_worker_and_home_binding() {
-        let envelope = envelope();
+        let valid_envelope = envelope();
         let identity = identity();
         let valid = response();
-        validate_exchange(&envelope, &identity, &valid).expect("valid Cloud exchange");
+        validate_exchange(&valid_envelope, &identity, &valid).expect("valid Cloud exchange");
 
         let mut changed = valid.clone();
         changed.lease_worker_capacity = 2;
-        assert!(validate_exchange(&envelope, &identity, &changed).is_err());
+        assert!(validate_exchange(&valid_envelope, &identity, &changed).is_err());
         let mut changed = valid.clone();
         changed.cloud_relay.machine_id = "other-machine".to_string();
-        assert!(validate_exchange(&envelope, &identity, &changed).is_err());
+        assert!(validate_exchange(&valid_envelope, &identity, &changed).is_err());
         let mut changed = valid.clone();
         changed.home_caller.realm_id = "other-realm".to_string();
-        assert!(validate_exchange(&envelope, &identity, &changed).is_err());
+        assert!(validate_exchange(&valid_envelope, &identity, &changed).is_err());
         let mut changed = valid;
         changed.home_caller.account_id = "other-account".to_string();
-        assert!(validate_exchange(&envelope, &identity, &changed).is_err());
+        assert!(validate_exchange(&valid_envelope, &identity, &changed).is_err());
+
+        let mut schema_two_envelope = envelope();
+        schema_two_envelope.schema_version = 2;
+        schema_two_envelope.managed_repository_root = Some("/srv/worker roots".to_string());
+        let mut schema_two_response = response();
+        schema_two_response.managed_repository_root = Some("/srv/worker roots".to_string());
+        validate_exchange(&schema_two_envelope, &identity, &schema_two_response)
+            .expect("schema two root should match");
+        schema_two_response.managed_repository_root = Some("/srv/different".to_string());
+        assert!(validate_exchange(&schema_two_envelope, &identity, &schema_two_response).is_err());
     }
 
     #[test]
@@ -2622,6 +2750,7 @@ mod tests {
             kernel_id: identity().kernel_id,
             relay_public_key: identity().relay_public_key,
             runtime_release_digest: envelope().runtime_release_digest,
+            managed_repository_root: None,
             home_caller: response().home_caller,
             confirmed_at: None,
         };

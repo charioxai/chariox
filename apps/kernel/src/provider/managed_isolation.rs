@@ -888,6 +888,14 @@ pub(crate) fn apply_managed_provider_isolation(
     request: &LaunchProviderRequest,
 ) -> Result<ProviderLaunchResult, DaemonError> {
     if !managed_provider_isolation_required() {
+        if let Some(working_directory) = request.working_directory.as_deref() {
+            crate::git_worktree_placement::preflight_working_directory(
+                working_directory,
+                "provider launch",
+                false,
+                &[],
+            )?;
+        }
         let mut environment_remove = managed_provider_control_env_remove();
         environment_remove.extend(launch.pty_env.keys().filter_map(|name| {
             (name.starts_with("GIT_CONFIG_KEY_") || name.starts_with("GIT_CONFIG_VALUE_"))
@@ -1697,13 +1705,28 @@ fn managed_working_directory(
         .working_directory
         .as_ref()
         .ok_or_else(|| isolation_error("managed provider launch has no working directory"))?;
-    let directory = canonical_directory(directory, "managed provider working directory")?;
-    let protected = managed_protected_namespace_directories(&[])?;
-    if let Some(protected_root) = protected.iter().find(|path| directory.starts_with(path)) {
+    let preflight = crate::git_worktree_placement::preflight_working_directory(
+        directory,
+        "managed provider working directory",
+        false,
+        roots,
+    )
+    .map_err(|error| isolation_error(error.to_string()))?;
+
+    // Preserve the managed namespace's existing mask contract. The shared
+    // ordinary check handles exact control paths and re-exposed roots; this
+    // additional topology check keeps /run and any managed-only service
+    // boundary hidden unless one selected child is explicitly rebound.
+    let protected = managed_protected_namespace_directories(&[])
+        .map_err(|error| isolation_error(error.to_string()))?;
+    if let Some(protected_root) = protected
+        .iter()
+        .find(|path| preflight.canonical_path.starts_with(path))
+    {
         let reexposed_child = roots.iter().any(|root| {
             root != protected_root
                 && root.starts_with(protected_root)
-                && directory.starts_with(root)
+                && preflight.canonical_path.starts_with(root)
         });
         if !reexposed_child {
             return Err(isolation_error(
@@ -1711,7 +1734,7 @@ fn managed_working_directory(
             ));
         }
     }
-    Ok(directory)
+    Ok(preflight.canonical_path)
 }
 
 #[cfg(target_os = "linux")]
@@ -5066,7 +5089,7 @@ printf 'managed account environment probe passed\n'
     }
 
     #[test]
-    fn ordinary_kernel_keeps_provider_launch_unwrapped() {
+    fn path1_ordinary_provider_launch_is_unwrapped_and_scrubs_managed_controls() {
         let _env = crate::env_lock::lock();
         let previous_isolation = std::env::var_os(MANAGED_PROVIDER_ISOLATION_ENV);
         std::env::remove_var(MANAGED_PROVIDER_ISOLATION_ENV);
@@ -5081,6 +5104,22 @@ printf 'managed account environment probe passed\n'
                 (
                     String::from("CODEX_HOME"),
                     String::from("/home/chariox/.codex"),
+                ),
+                (
+                    String::from("CHARIOX_MANAGED_PROVIDER_ISOLATION"),
+                    String::from("1"),
+                ),
+                (
+                    String::from("CHARIOX_MANAGED_PROVIDER_BWRAP"),
+                    String::from("/usr/bin/bwrap"),
+                ),
+                (
+                    String::from("CHARIOX_MANAGED_PROVIDER_HOME"),
+                    String::from("/home/chariox/provider-home"),
+                ),
+                (
+                    String::from("CHARIOX_CAPABILITY_ISOLATION_ROOT"),
+                    String::from("/home/chariox/.chariox/managed-context/kernel"),
                 ),
                 (
                     String::from("CHARIOX_RELAY_TOKEN"),
@@ -5117,7 +5156,14 @@ printf 'managed account environment probe passed\n'
             prepared.pty_env.get("CODEX_HOME").map(String::as_str),
             Some("/home/chariox/.codex")
         );
-        for name in ["CHARIOX_RELAY_TOKEN", "GIT_CONFIG_KEY_0"] {
+        for name in [
+            "CHARIOX_MANAGED_PROVIDER_ISOLATION",
+            "CHARIOX_MANAGED_PROVIDER_BWRAP",
+            "CHARIOX_MANAGED_PROVIDER_HOME",
+            "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+            "CHARIOX_RELAY_TOKEN",
+            "GIT_CONFIG_KEY_0",
+        ] {
             assert!(!prepared.pty_env.contains_key(name));
             assert!(prepared
                 .pty_env_remove
