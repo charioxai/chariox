@@ -7,6 +7,7 @@ import type {
   ManagedEnvironmentCatalog,
   ManagedEnvironmentContextPlanInput,
   ManagedEnvironmentLifecycleAction,
+  ManagedEnvironmentReimageResult,
   ManagedEnvironmentResult,
   ManagedEnvironmentSummary,
 } from "@chariox/kernel-client/ipc-managed-environment-requests"
@@ -19,6 +20,7 @@ import {
   listManagedEnvironmentCatalogRequest,
   prepareManagedEnvironmentContextTransferRequest,
   requestManagedEnvironmentLifecycleRequest,
+  requestManagedEnvironmentReimageRequest,
   startManagedContextTransferRequest,
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
@@ -87,6 +89,32 @@ export async function requestManagedEnvironmentLifecycle(
   return result
 }
 
+export async function requestManagedEnvironmentReimage(
+  client: LocalIpcClient,
+  input: {
+    environmentId: string
+    expectedGeneration: number
+    expectedProviderServerId: string
+    expectedProviderImageId: string
+    expectedProviderProfileId: string
+    expectedProviderProfileDigest: string
+    expectedRuntimeReleaseDigest: string
+    expectedRuntimeSourceCommit: string
+    expectedRuntimeSourceTree: string
+    idempotencyKey: string
+  },
+): Promise<ManagedEnvironmentReimageResult> {
+  const response = await client.send<Record<string, unknown>>(
+    requestManagedEnvironmentReimageRequest(input),
+  )
+  const result = expectVariant<{ result: ManagedEnvironmentReimageResult }>(
+    response,
+    "ManagedEnvironmentReimageRequested",
+  ).result
+  validateManagedEnvironmentReimageResult(result, input)
+  return result
+}
+
 export async function prepareManagedEnvironmentContextTransfer(
   client: LocalIpcClient,
   environmentId: string,
@@ -150,4 +178,64 @@ function validateManagedEnvironmentResult(
     || (expectedEnvironmentId !== undefined && result.environment.environmentId !== expectedEnvironmentId)) {
     throw new Error("kernel returned a mismatched managed environment result")
   }
+}
+
+function validateManagedEnvironmentReimageResult(
+  result: ManagedEnvironmentReimageResult,
+  input: {
+    environmentId: string
+    expectedGeneration: number
+    expectedProviderServerId: string
+    expectedProviderImageId: string
+    expectedProviderProfileId: string
+    expectedProviderProfileDigest: string
+    expectedRuntimeReleaseDigest: string
+    expectedRuntimeSourceCommit: string
+    expectedRuntimeSourceTree: string
+    idempotencyKey: string
+  },
+): void {
+  const receipt = result.receipt
+  if (result.environment.environmentId !== input.environmentId
+    || result.operation.environmentId !== input.environmentId
+    || result.operation.kind !== "reimage"
+    || result.operation.idempotencyKey !== input.idempotencyKey
+    || receipt.environmentId !== input.environmentId
+    || receipt.operationId !== result.operation.operationId
+    || receipt.previousGeneration !== input.expectedGeneration
+    || receipt.generation !== input.expectedGeneration + 1
+    || receipt.receiptId.trim() === ""
+    || receipt.providerServerId !== input.expectedProviderServerId
+    || receipt.providerImageId !== input.expectedProviderImageId
+    || receipt.providerProfileId !== input.expectedProviderProfileId
+    || receipt.providerProfileDigest !== input.expectedProviderProfileDigest
+    || receipt.runtimeReleaseDigest !== input.expectedRuntimeReleaseDigest
+    || !sourceEvidenceMatchesRequest(receipt.sourceEvidence, input)) {
+    throw new Error(
+      "kernel returned managed reimage evidence that does not match the requested generation or exact provider identity",
+    )
+  }
+}
+
+function sourceEvidenceMatchesRequest(
+  sourceEvidence: unknown,
+  input: {
+    expectedProviderImageId: string
+    expectedProviderProfileId: string
+    expectedProviderProfileDigest: string
+    expectedRuntimeReleaseDigest: string
+    expectedRuntimeSourceCommit: string
+    expectedRuntimeSourceTree: string
+  },
+): boolean {
+  if (sourceEvidence === null || typeof sourceEvidence !== "object" || Array.isArray(sourceEvidence)) {
+    return false
+  }
+  const evidence = sourceEvidence as Record<string, unknown>
+  return evidence.providerImageId === input.expectedProviderImageId
+    && evidence.providerProfileId === input.expectedProviderProfileId
+    && evidence.providerProfileDigest === input.expectedProviderProfileDigest
+    && evidence.runtimeReleaseDigest === input.expectedRuntimeReleaseDigest
+    && evidence.runtimeSourceCommit === input.expectedRuntimeSourceCommit
+    && evidence.runtimeSourceTree === input.expectedRuntimeSourceTree
 }

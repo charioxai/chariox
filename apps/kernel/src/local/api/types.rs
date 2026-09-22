@@ -92,4 +92,5 @@ pub use workspace::*;
 /// Version 334 carries kernel-authoritative managed-target resource telemetry.
 /// Version 335 adds measured CPU utilization and its sample window to that telemetry.
 /// Version 336 adds kernel-verified installed release identity to resource telemetry.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 336;
+/// Version 337 adds authenticated managed-environment reimage control and receipt evidence.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 337;

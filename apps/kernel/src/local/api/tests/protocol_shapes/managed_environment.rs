@@ -3,7 +3,7 @@ use crate::local::*;
 
 #[test]
 fn local_daemon_managed_environment_control_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 336);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 337);
     let policy = ManagedEnvironmentAutoStopPolicy {
         minimum_runtime_seconds: 0,
         idle_delay_seconds: Some(900),
@@ -66,6 +66,72 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
         retryable: false,
         failure_code: None,
         failure_message: None,
+        completed_at: None,
+        created_at: "2026-08-21T00:00:00.000Z".to_string(),
+        updated_at: "2026-08-21T00:00:00.000Z".to_string(),
+    };
+    let reimage_operation = ManagedEnvironmentOperationSummary {
+        operation_id: "operation-reimage-1".to_string(),
+        environment_id: "environment-1".to_string(),
+        requested_by_user_id: "user-1".to_string(),
+        kind: ManagedEnvironmentOperationKind::Reimage,
+        idempotency_key: "reimage-1".to_string(),
+        request_digest: format!("sha256:{}", "d".repeat(64)),
+        desired_revision: 2,
+        status: ManagedEnvironmentOperationStatus::Pending,
+        attempt: 0,
+        retryable: false,
+        failure_code: None,
+        failure_message: None,
+        completed_at: None,
+        created_at: "2026-08-21T00:00:00.000Z".to_string(),
+        updated_at: "2026-08-21T00:00:00.000Z".to_string(),
+    };
+    let reimage_receipt = ManagedEnvironmentReimageReceipt {
+        receipt_id: "receipt-reimage-1".to_string(),
+        environment_id: "environment-1".to_string(),
+        operation_id: "operation-reimage-1".to_string(),
+        previous_generation: 1,
+        generation: 2,
+        status: ManagedEnvironmentReimageReceiptStatus::Pending,
+        fresh_equivalent: false,
+        provider_server_id: "123456789".to_string(),
+        previous_provider_image_id: Some("987654321".to_string()),
+        provider_image_id: "987654321".to_string(),
+        provider_profile_id: "hetzner-path1".to_string(),
+        provider_profile_digest: format!("sha256:{}", "b".repeat(64)),
+        runtime_release_digest: format!("sha256:{}", "e".repeat(64)),
+        old_machine_id: Some("managed-machine-1".to_string()),
+        new_machine_id: None,
+        old_kernel_id: Some("managed-kernel-1".to_string()),
+        new_kernel_id: None,
+        old_relay_realm_id: Some("realm-1".to_string()),
+        new_relay_realm_id: Some("realm-2".to_string()),
+        old_relay_target_id: Some("target-1".to_string()),
+        new_relay_target_id: None,
+        old_bootstrap_grant_id: Some("grant-1".to_string()),
+        new_bootstrap_grant_id: None,
+        old_credential_ids: serde_json::json!(["credential-1"]),
+        new_credential_ids: serde_json::json!([]),
+        runtime_evidence: serde_json::json!({"generation": 2}),
+        source_evidence: serde_json::json!({
+            "providerProfileId": "hetzner-path1",
+            "providerProfileDigest": format!("sha256:{}", "b".repeat(64)),
+            "providerImageId": "987654321",
+            "runtimeReleaseDigest": format!("sha256:{}", "e".repeat(64)),
+            "runtimeSourceCommit": "c".repeat(40),
+            "runtimeSourceTree": "d".repeat(40),
+        }),
+        residue_checks: serde_json::json!({"oldGenerationFenced": true}),
+        revocations: serde_json::json!({"machineId": "managed-machine-1"}),
+        billing_observation: serde_json::json!({"provider": "hetzner"}),
+        resource_observation: serde_json::json!({"providerServerId": "123456789"}),
+        cleanup_state: serde_json::json!({"oldGenerationFenced": true}),
+        rollback_state: serde_json::json!({"state": "fail_closed"}),
+        receipt_digest: None,
+        failure_code: None,
+        failure_message: None,
+        requested_at: "2026-08-21T00:00:00.000Z".to_string(),
         completed_at: None,
         created_at: "2026-08-21T00:00:00.000Z".to_string(),
         updated_at: "2026-08-21T00:00:00.000Z".to_string(),
@@ -181,6 +247,27 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
                 operation,
             },
         },
+        LocalDaemonRequest::RequestManagedEnvironmentReimage(
+            RequestManagedEnvironmentReimageRequest {
+                environment_id: "environment-1".to_string(),
+                expected_generation: 1,
+                expected_provider_server_id: "123456789".to_string(),
+                expected_provider_image_id: "987654321".to_string(),
+                expected_provider_profile_id: "hetzner-path1".to_string(),
+                expected_provider_profile_digest: format!("sha256:{}", "b".repeat(64)),
+                expected_runtime_release_digest: format!("sha256:{}", "e".repeat(64)),
+                expected_runtime_source_commit: "c".repeat(40),
+                expected_runtime_source_tree: "d".repeat(40),
+                idempotency_key: "reimage-1".to_string(),
+            },
+        ),
+        LocalDaemonResponse::ManagedEnvironmentReimageRequested {
+            result: ManagedEnvironmentReimageResult {
+                environment: environment.clone(),
+                operation: reimage_operation,
+                receipt: reimage_receipt,
+            },
+        },
         serde_json::json!({
             "desiredStates": [
                 ManagedEnvironmentDesiredState::Running,
@@ -206,6 +293,7 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
                 ManagedEnvironmentOperationKind::Stop,
                 ManagedEnvironmentOperationKind::Restart,
                 ManagedEnvironmentOperationKind::Delete,
+                ManagedEnvironmentOperationKind::Reimage,
             ],
             "operationStatuses": [
                 ManagedEnvironmentOperationStatus::Pending,
@@ -239,6 +327,14 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
     assert_eq!(
         snapshot.pointer("/14/ManagedEnvironmentLifecycleRequested/result/operation/status"),
         Some(&serde_json::json!("pending"))
+    );
+    assert_eq!(
+        snapshot.pointer("/15/RequestManagedEnvironmentReimage/expectedGeneration"),
+        Some(&serde_json::json!(1))
+    );
+    assert_eq!(
+        snapshot.pointer("/16/ManagedEnvironmentReimageRequested/result/receipt/providerProfileId"),
+        Some(&serde_json::json!("hetzner-path1"))
     );
     assert_eq!(
         snapshot.pointer("/10/ManagedEnvironmentCatalog/catalog/environments/0/runtimeKernelId"),

@@ -8,6 +8,7 @@ import {
   prepareManagedEnvironmentContextTransferRequest,
   prepareManagedEnvironmentGitCredentialEnrollmentRequest,
   requestManagedEnvironmentLifecycleRequest,
+  requestManagedEnvironmentReimageRequest,
   type ManagedEnvironmentSummary,
 } from "./ipc-managed-environment-requests.js"
 
@@ -121,6 +122,31 @@ test("managed environment requests use the shared local daemon shape", () => {
       },
     })
   }
+  assert.deepEqual(requestManagedEnvironmentReimageRequest({
+    environmentId: "environment-1",
+    expectedGeneration: 3,
+    expectedProviderServerId: "123456789",
+    expectedProviderImageId: "987654321",
+    expectedProviderProfileId: "hetzner-path1",
+    expectedProviderProfileDigest: `sha256:${"b".repeat(64)}`,
+    expectedRuntimeReleaseDigest: `sha256:${"a".repeat(64)}`,
+    expectedRuntimeSourceCommit: "c".repeat(40),
+    expectedRuntimeSourceTree: "d".repeat(40),
+    idempotencyKey: "reimage-1",
+  }), {
+    RequestManagedEnvironmentReimage: {
+      environmentId: "environment-1",
+      expectedGeneration: 3,
+      expectedProviderServerId: "123456789",
+      expectedProviderImageId: "987654321",
+      expectedProviderProfileId: "hetzner-path1",
+      expectedProviderProfileDigest: `sha256:${"b".repeat(64)}`,
+      expectedRuntimeReleaseDigest: `sha256:${"a".repeat(64)}`,
+      expectedRuntimeSourceCommit: "c".repeat(40),
+      expectedRuntimeSourceTree: "d".repeat(40),
+      idempotencyKey: "reimage-1",
+    },
+  })
 })
 
 test("managed environment summaries bind the runtime machine and kernel", () => {

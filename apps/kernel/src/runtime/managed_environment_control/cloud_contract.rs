@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::error::DaemonError;
 use crate::local::{
@@ -9,8 +10,10 @@ use crate::local::{
     ManagedEnvironmentKernelContextSelection, ManagedEnvironmentObservedState,
     ManagedEnvironmentOperationKind, ManagedEnvironmentOperationStatus,
     ManagedEnvironmentOperationSummary, ManagedEnvironmentProviderAccountSelection,
-    ManagedEnvironmentProviderAccounts, ManagedEnvironmentRepositoryRole,
-    ManagedEnvironmentRepositorySelection, ManagedEnvironmentResult, ManagedEnvironmentSummary,
+    ManagedEnvironmentProviderAccounts, ManagedEnvironmentReimageReceipt,
+    ManagedEnvironmentReimageReceiptStatus, ManagedEnvironmentReimageResult,
+    ManagedEnvironmentRepositoryRole, ManagedEnvironmentRepositorySelection,
+    ManagedEnvironmentResult, ManagedEnvironmentSummary,
 };
 use crate::managed_context::outbound_service::{
     ManagedContextTransferTarget, ManagedContextTransferTicket,
@@ -42,6 +45,59 @@ pub(super) struct EnvironmentDetailsResponse {
 pub(super) struct EnvironmentResult {
     environment: EnvironmentSummary,
     operation: OperationSummary,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ReimageResult {
+    environment: EnvironmentSummary,
+    operation: OperationSummary,
+    receipt: ReimageReceipt,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReimageReceipt {
+    receipt_id: String,
+    environment_id: String,
+    operation_id: String,
+    previous_generation: u64,
+    generation: u64,
+    status: ManagedEnvironmentReimageReceiptStatus,
+    fresh_equivalent: bool,
+    provider_server_id: String,
+    previous_provider_image_id: Option<String>,
+    provider_image_id: String,
+    provider_profile_id: String,
+    provider_profile_digest: String,
+    runtime_release_digest: String,
+    old_machine_id: Option<String>,
+    new_machine_id: Option<String>,
+    old_kernel_id: Option<String>,
+    new_kernel_id: Option<String>,
+    old_relay_realm_id: Option<String>,
+    new_relay_realm_id: Option<String>,
+    old_relay_target_id: Option<String>,
+    new_relay_target_id: Option<String>,
+    old_bootstrap_grant_id: Option<String>,
+    new_bootstrap_grant_id: Option<String>,
+    old_credential_ids: Value,
+    new_credential_ids: Value,
+    runtime_evidence: Value,
+    source_evidence: Value,
+    residue_checks: Value,
+    revocations: Value,
+    billing_observation: Value,
+    resource_observation: Value,
+    cleanup_state: Value,
+    rollback_state: Value,
+    receipt_digest: Option<String>,
+    failure_code: Option<String>,
+    failure_message: Option<String>,
+    requested_at: String,
+    completed_at: Option<String>,
+    created_at: String,
+    updated_at: String,
 }
 
 #[derive(Deserialize)]
@@ -371,6 +427,63 @@ impl From<EnvironmentResult> for ManagedEnvironmentResult {
         Self {
             environment: value.environment.into(),
             operation: value.operation.into(),
+        }
+    }
+}
+
+impl From<ReimageReceipt> for ManagedEnvironmentReimageReceipt {
+    fn from(value: ReimageReceipt) -> Self {
+        Self {
+            receipt_id: value.receipt_id,
+            environment_id: value.environment_id,
+            operation_id: value.operation_id,
+            previous_generation: value.previous_generation,
+            generation: value.generation,
+            status: value.status,
+            fresh_equivalent: value.fresh_equivalent,
+            provider_server_id: value.provider_server_id,
+            previous_provider_image_id: value.previous_provider_image_id,
+            provider_image_id: value.provider_image_id,
+            provider_profile_id: value.provider_profile_id,
+            provider_profile_digest: value.provider_profile_digest,
+            runtime_release_digest: value.runtime_release_digest,
+            old_machine_id: value.old_machine_id,
+            new_machine_id: value.new_machine_id,
+            old_kernel_id: value.old_kernel_id,
+            new_kernel_id: value.new_kernel_id,
+            old_relay_realm_id: value.old_relay_realm_id,
+            new_relay_realm_id: value.new_relay_realm_id,
+            old_relay_target_id: value.old_relay_target_id,
+            new_relay_target_id: value.new_relay_target_id,
+            old_bootstrap_grant_id: value.old_bootstrap_grant_id,
+            new_bootstrap_grant_id: value.new_bootstrap_grant_id,
+            old_credential_ids: value.old_credential_ids,
+            new_credential_ids: value.new_credential_ids,
+            runtime_evidence: value.runtime_evidence,
+            source_evidence: value.source_evidence,
+            residue_checks: value.residue_checks,
+            revocations: value.revocations,
+            billing_observation: value.billing_observation,
+            resource_observation: value.resource_observation,
+            cleanup_state: value.cleanup_state,
+            rollback_state: value.rollback_state,
+            receipt_digest: value.receipt_digest,
+            failure_code: value.failure_code,
+            failure_message: value.failure_message,
+            requested_at: value.requested_at,
+            completed_at: value.completed_at,
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+        }
+    }
+}
+
+impl From<ReimageResult> for ManagedEnvironmentReimageResult {
+    fn from(value: ReimageResult) -> Self {
+        Self {
+            environment: value.environment.into(),
+            operation: value.operation.into(),
+            receipt: value.receipt.into(),
         }
     }
 }

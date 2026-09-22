@@ -10,6 +10,7 @@ import {
   listManagedEnvironmentCatalog,
   prepareManagedEnvironmentContextTransfer,
   requestManagedEnvironmentLifecycle,
+  requestManagedEnvironmentReimage,
   startManagedContextTransfer,
 } from "./managed-environment-api.js"
 
@@ -20,6 +21,7 @@ test("managed environment API uses only shared LocalDaemon request variants", as
     { ManagedEnvironment: { environment: { environmentId: "environment-1" } } },
     { ManagedEnvironmentCreated: { result: { environment: { environmentId: "environment-1" }, operation: { environmentId: "environment-1" } } } },
     { ManagedEnvironmentLifecycleRequested: { result: { environment: { environmentId: "environment-1" }, operation: { environmentId: "environment-1" } } } },
+    { ManagedEnvironmentReimageRequested: { result: reimageResult() } },
     { ManagedEnvironmentContextTransferPrepared: { ticket: ticket() } },
     { ManagedContextTransferStarted: { status: status("preparing") } },
     { ManagedContextTransferStatus: { status: status("completed") } },
@@ -53,6 +55,18 @@ test("managed environment API uses only shared LocalDaemon request variants", as
     action: "start",
     idempotencyKey: "start-1",
   })
+  await requestManagedEnvironmentReimage(client, {
+    environmentId: "environment-1",
+    expectedGeneration: 3,
+    expectedProviderServerId: "123456789",
+    expectedProviderImageId: "987654321",
+    expectedProviderProfileId: "hetzner-path1",
+    expectedProviderProfileDigest: `sha256:${"b".repeat(64)}`,
+    expectedRuntimeReleaseDigest: `sha256:${"a".repeat(64)}`,
+    expectedRuntimeSourceCommit: "c".repeat(40),
+    expectedRuntimeSourceTree: "d".repeat(40),
+    idempotencyKey: "reimage-1",
+  })
   await prepareManagedEnvironmentContextTransfer(client, "environment-1")
   await startManagedContextTransfer(client, ticket())
   await getManagedContextTransferStatus(client, "context-1")
@@ -78,6 +92,20 @@ test("managed environment API uses only shared LocalDaemon request variants", as
       },
     },
     { RequestManagedEnvironmentLifecycle: { environmentId: "environment-1", action: "start", idempotencyKey: "start-1" } },
+    {
+      RequestManagedEnvironmentReimage: {
+        environmentId: "environment-1",
+        expectedGeneration: 3,
+        expectedProviderServerId: "123456789",
+        expectedProviderImageId: "987654321",
+        expectedProviderProfileId: "hetzner-path1",
+        expectedProviderProfileDigest: `sha256:${"b".repeat(64)}`,
+        expectedRuntimeReleaseDigest: `sha256:${"a".repeat(64)}`,
+        expectedRuntimeSourceCommit: "c".repeat(40),
+        expectedRuntimeSourceTree: "d".repeat(40),
+        idempotencyKey: "reimage-1",
+      },
+    },
     { PrepareManagedEnvironmentContextTransfer: { environmentId: "environment-1" } },
     { StartManagedContextTransfer: { ticket: ticket() } },
     { GetManagedContextTransferStatus: { contextId: "context-1" } },
@@ -93,6 +121,30 @@ test("managed environment API rejects responses for another environment", async 
   await assert.rejects(
     getManagedEnvironment(client, "environment-1"),
     /different managed environment/,
+  )
+})
+
+test("managed environment API rejects stale or incomplete reimage evidence", async () => {
+  const result = reimageResult()
+  result.receipt.generation = 5
+  const client = {
+    send: async () => ({ ManagedEnvironmentReimageRequested: { result } }),
+  } as unknown as LocalIpcClient
+
+  await assert.rejects(
+    requestManagedEnvironmentReimage(client, {
+      environmentId: "environment-1",
+      expectedGeneration: 3,
+      expectedProviderServerId: "123456789",
+      expectedProviderImageId: "987654321",
+      expectedProviderProfileId: "hetzner-path1",
+      expectedProviderProfileDigest: `sha256:${"b".repeat(64)}`,
+      expectedRuntimeReleaseDigest: `sha256:${"a".repeat(64)}`,
+      expectedRuntimeSourceCommit: "c".repeat(40),
+      expectedRuntimeSourceTree: "d".repeat(40),
+      idempotencyKey: "reimage-1",
+    }),
+    /does not match the requested generation or exact provider identity/,
   )
 })
 
@@ -138,5 +190,37 @@ function launchTarget() {
     contextId: "context-1",
     planDigest: "sha256:plan",
     development: { kind: "empty" as const, workspacePath: "/managed/workspace" },
+  }
+}
+
+function reimageResult() {
+  return {
+    environment: { environmentId: "environment-1" },
+    operation: {
+      operationId: "operation-reimage-1",
+      environmentId: "environment-1",
+      kind: "reimage",
+      idempotencyKey: "reimage-1",
+    },
+    receipt: {
+      receiptId: "receipt-1",
+      environmentId: "environment-1",
+      operationId: "operation-reimage-1",
+      previousGeneration: 3,
+      generation: 4,
+      providerServerId: "123456789",
+      providerImageId: "987654321",
+      providerProfileId: "hetzner-path1",
+      providerProfileDigest: `sha256:${"b".repeat(64)}`,
+      runtimeReleaseDigest: `sha256:${"a".repeat(64)}`,
+      sourceEvidence: {
+        providerImageId: "987654321",
+        providerProfileId: "hetzner-path1",
+        providerProfileDigest: `sha256:${"b".repeat(64)}`,
+        runtimeReleaseDigest: `sha256:${"a".repeat(64)}`,
+        runtimeSourceCommit: "c".repeat(40),
+        runtimeSourceTree: "d".repeat(40),
+      },
+    },
   }
 }

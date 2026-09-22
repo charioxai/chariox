@@ -2,7 +2,8 @@ use crate::config::{DaemonConfig, PersistedCloudRelayProfile};
 use crate::error::DaemonError;
 use crate::local::{
     LocalDaemonRequest, LocalDaemonResponse, ManagedEnvironmentCatalog,
-    ManagedEnvironmentProviderAccounts,
+    ManagedEnvironmentOperationKind, ManagedEnvironmentProviderAccounts,
+    ManagedEnvironmentReimageResult, RequestManagedEnvironmentReimageRequest,
 };
 use crate::runtime::cloud_api_client::{
     cloud_url_component, get_cloud_json_authenticated, post_cloud_json_authenticated,
@@ -11,6 +12,7 @@ use crate::runtime::cloud_api_client::{
 mod cloud_contract;
 use cloud_contract::{
     EnvironmentDetailsResponse, EnvironmentResult, EnvironmentsResponse, OptionsResponse,
+    ReimageResult,
 };
 
 pub(crate) async fn execute_managed_environment_control_request(
@@ -188,6 +190,36 @@ pub(crate) async fn execute_managed_environment_control_request(
                 result: result.into(),
             })
         }
+        LocalDaemonRequest::RequestManagedEnvironmentReimage(request) => {
+            validate_reimage_request(&request)?;
+            let path = format!(
+                "/v1/managed-environments/{}/reimage",
+                cloud_url_component(&request.environment_id),
+            );
+            let body = serde_json::json!({
+                "accountId": account_id,
+                "expectedGeneration": request.expected_generation,
+                "expectedProviderServerId": request.expected_provider_server_id,
+                "expectedProviderImageId": request.expected_provider_image_id,
+                "expectedProviderProfileId": request.expected_provider_profile_id,
+                "expectedProviderProfileDigest": request.expected_provider_profile_digest,
+                "expectedRuntimeReleaseDigest": request.expected_runtime_release_digest,
+                "expectedRuntimeSourceCommit": request.expected_runtime_source_commit,
+                "expectedRuntimeSourceTree": request.expected_runtime_source_tree,
+                "idempotencyKey": request.idempotency_key,
+            });
+            let result: ManagedEnvironmentReimageResult =
+                post_cloud_json_authenticated::<ReimageResult>(
+                    cloud.api_url.clone(),
+                    path,
+                    token.to_string(),
+                    body,
+                )
+                .await?
+                .into();
+            validate_reimage_result(&request, &result)?;
+            Ok(LocalDaemonResponse::ManagedEnvironmentReimageRequested { result })
+        }
         _ => Err(DaemonError::LocalTransport {
             operation: "managed environment control",
             message: "unsupported request".to_string(),
@@ -248,6 +280,129 @@ fn control_error(message: impl Into<String>) -> DaemonError {
     }
 }
 
+fn validate_reimage_request(
+    request: &RequestManagedEnvironmentReimageRequest,
+) -> Result<(), DaemonError> {
+    if !is_cloud_control_identifier(&request.environment_id)
+        || !is_cloud_control_identifier(&request.idempotency_key)
+        || request.expected_generation == 0
+        || request.expected_generation > 9_007_199_254_740_991
+        || !is_provider_resource_id(&request.expected_provider_server_id)
+        || !is_provider_resource_id(&request.expected_provider_image_id)
+        || !is_cloud_control_identifier(&request.expected_provider_profile_id)
+        || !is_sha256_digest(&request.expected_provider_profile_digest)
+        || !is_sha256_digest(&request.expected_runtime_release_digest)
+        || !is_source_identity(&request.expected_runtime_source_commit)
+        || !is_source_identity(&request.expected_runtime_source_tree)
+    {
+        return Err(control_error(
+            "managed environment reimage request is invalid",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_reimage_result(
+    request: &RequestManagedEnvironmentReimageRequest,
+    result: &ManagedEnvironmentReimageResult,
+) -> Result<(), DaemonError> {
+    let expected_generation = request
+        .expected_generation
+        .checked_add(1)
+        .ok_or_else(|| control_error("managed environment reimage generation is exhausted"))?;
+    let receipt = &result.receipt;
+    if result.environment.environment_id != request.environment_id
+        || result.operation.environment_id != request.environment_id
+        || result.operation.kind != ManagedEnvironmentOperationKind::Reimage
+        || result.operation.idempotency_key != request.idempotency_key
+        || receipt.environment_id != request.environment_id
+        || receipt.operation_id != result.operation.operation_id
+        || receipt.previous_generation != request.expected_generation
+        || receipt.generation != expected_generation
+        || receipt.receipt_id.trim().is_empty()
+        || receipt.provider_server_id != request.expected_provider_server_id
+        || receipt.provider_image_id != request.expected_provider_image_id
+        || receipt.provider_profile_id != request.expected_provider_profile_id
+        || receipt.provider_profile_digest != request.expected_provider_profile_digest
+        || receipt.runtime_release_digest != request.expected_runtime_release_digest
+        || !source_evidence_matches_request(&receipt.source_evidence, request)
+    {
+        return Err(control_error(
+            "Cloud returned managed reimage evidence that does not match the requested generation or exact provider identity",
+        ));
+    }
+    Ok(())
+}
+
+fn is_cloud_control_identifier(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.is_empty()
+        || bytes.len() > 128
+        || (!bytes[0].is_ascii_lowercase() && !bytes[0].is_ascii_digit())
+    {
+        return false;
+    }
+    bytes[1..]
+        .iter()
+        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._:-".contains(byte))
+}
+
+fn is_provider_resource_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 18
+        && bytes[0] != b'0'
+        && bytes.iter().all(|byte| byte.is_ascii_digit())
+}
+
+fn is_source_identity(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(is_lower_hex_byte)
+}
+
+fn is_sha256_digest(value: &str) -> bool {
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        return false;
+    };
+    hex.len() == 64 && hex.bytes().all(is_lower_hex_byte)
+}
+
+fn is_lower_hex_byte(byte: u8) -> bool {
+    byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+}
+
+fn source_evidence_matches_request(
+    source_evidence: &serde_json::Value,
+    request: &RequestManagedEnvironmentReimageRequest,
+) -> bool {
+    let Some(source_evidence) = source_evidence.as_object() else {
+        return false;
+    };
+    source_evidence
+        .get("providerProfileId")
+        .and_then(serde_json::Value::as_str)
+        == Some(request.expected_provider_profile_id.as_str())
+        && source_evidence
+            .get("providerProfileDigest")
+            .and_then(serde_json::Value::as_str)
+            == Some(request.expected_provider_profile_digest.as_str())
+        && source_evidence
+            .get("providerImageId")
+            .and_then(serde_json::Value::as_str)
+            == Some(request.expected_provider_image_id.as_str())
+        && source_evidence
+            .get("runtimeReleaseDigest")
+            .and_then(serde_json::Value::as_str)
+            == Some(request.expected_runtime_release_digest.as_str())
+        && source_evidence
+            .get("runtimeSourceCommit")
+            .and_then(serde_json::Value::as_str)
+            == Some(request.expected_runtime_source_commit.as_str())
+        && source_evidence
+            .get("runtimeSourceTree")
+            .and_then(serde_json::Value::as_str)
+            == Some(request.expected_runtime_source_tree.as_str())
+}
+
 fn validate_git_credential_enrollment_ticket(
     ticket: &crate::managed_context::outbound_service::ManagedContextTransferTicket,
     request: &crate::local::PrepareManagedEnvironmentGitCredentialEnrollmentRequest,
@@ -292,7 +447,7 @@ mod tests {
         ManagedEnvironmentLifecycleAction, ManagedEnvironmentProviderAccountSelection,
         ManagedEnvironmentProviderAccounts, PrepareManagedEnvironmentContextTransferRequest,
         PrepareManagedEnvironmentGitCredentialEnrollmentRequest,
-        RequestManagedEnvironmentLifecycleRequest,
+        RequestManagedEnvironmentLifecycleRequest, RequestManagedEnvironmentReimageRequest,
     };
     use std::fs;
     use std::io::{Read, Write};
@@ -447,6 +602,47 @@ mod tests {
             &request("other-source", "github")
         )
         .is_err());
+    }
+
+    #[test]
+    fn managed_environment_reimage_request_requires_cloud_safe_identity_and_generation() {
+        let valid = RequestManagedEnvironmentReimageRequest {
+            environment_id: "environment-1".to_string(),
+            expected_generation: 1,
+            expected_provider_server_id: "123456789".to_string(),
+            expected_provider_image_id: "987654321".to_string(),
+            expected_provider_profile_id: "hetzner-path1".to_string(),
+            expected_provider_profile_digest: format!("sha256:{}", "b".repeat(64)),
+            expected_runtime_release_digest: format!("sha256:{}", "a".repeat(64)),
+            expected_runtime_source_commit: "c".repeat(40),
+            expected_runtime_source_tree: "d".repeat(40),
+            idempotency_key: "reimage-1".to_string(),
+        };
+        validate_reimage_request(&valid).expect("valid reimage request");
+
+        let mut invalid = valid.clone();
+        invalid.expected_generation = 0;
+        assert!(validate_reimage_request(&invalid).is_err());
+
+        let mut invalid = valid.clone();
+        invalid.environment_id = "Environment-1".to_string();
+        assert!(validate_reimage_request(&invalid).is_err());
+
+        let mut invalid = valid.clone();
+        invalid.idempotency_key = "reimage key".to_string();
+        assert!(validate_reimage_request(&invalid).is_err());
+
+        let mut invalid = valid.clone();
+        invalid.expected_provider_server_id = "server-1".to_string();
+        assert!(validate_reimage_request(&invalid).is_err());
+
+        let mut invalid = valid.clone();
+        invalid.expected_provider_profile_digest = format!("sha256:{}", "B".repeat(64));
+        assert!(validate_reimage_request(&invalid).is_err());
+
+        let mut invalid = valid;
+        invalid.expected_runtime_source_commit = "not-a-commit".to_string();
+        assert!(validate_reimage_request(&invalid).is_err());
     }
 
     #[tokio::test]
@@ -629,6 +825,35 @@ mod tests {
             LocalDaemonResponse::ManagedEnvironmentContextTransferPrepared { .. }
         ));
 
+        let reimage = execute_managed_environment_control_request(
+            config.clone(),
+            provider_account_profiles.clone(),
+            outbound_store.clone(),
+            "cloud-user-1",
+            LocalDaemonRequest::RequestManagedEnvironmentReimage(
+                RequestManagedEnvironmentReimageRequest {
+                    environment_id: "environment-1".to_string(),
+                    expected_generation: 1,
+                    expected_provider_server_id: "123456789".to_string(),
+                    expected_provider_image_id: "987654321".to_string(),
+                    expected_provider_profile_id: "hetzner-path1".to_string(),
+                    expected_provider_profile_digest: format!("sha256:{}", "b".repeat(64)),
+                    expected_runtime_release_digest: format!("sha256:{}", "a".repeat(64)),
+                    expected_runtime_source_commit: "c".repeat(40),
+                    expected_runtime_source_tree: "d".repeat(40),
+                    idempotency_key: "reimage-1".to_string(),
+                },
+            ),
+        )
+        .await
+        .expect("reimage request");
+        let LocalDaemonResponse::ManagedEnvironmentReimageRequested { result } = reimage else {
+            panic!("unexpected reimage response");
+        };
+        assert_eq!(result.receipt.previous_generation, 1);
+        assert_eq!(result.receipt.generation, 2);
+        assert_eq!(result.receipt.provider_server_id, "123456789");
+
         let lifecycle = execute_managed_environment_control_request(
             config,
             provider_account_profiles,
@@ -650,7 +875,7 @@ mod tests {
         ));
 
         let requests = server.requests();
-        assert_eq!(requests.len(), 7);
+        assert_eq!(requests.len(), 8);
         assert!(requests.iter().all(|request| request
             .to_ascii_lowercase()
             .contains("authorization: bearer session-secret")));
@@ -683,6 +908,44 @@ mod tests {
             .expect("lifecycle HTTP request");
         assert!(lifecycle_request.contains(r#""action":"start""#));
         assert!(lifecycle_request.contains(r#""idempotencyKey":"start-1""#));
+        let reimage_request = requests
+            .iter()
+            .find(|request| {
+                request.contains("/v1/managed-environments/environment-1/reimage HTTP/1.1")
+            })
+            .expect("reimage HTTP request");
+        let reimage_body = reimage_request
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| {
+                serde_json::from_str::<serde_json::Value>(body).expect("reimage JSON body")
+            })
+            .expect("reimage request body");
+        assert_eq!(
+            reimage_body.as_object().expect("reimage JSON object").len(),
+            10
+        );
+        assert!(reimage_request.contains(r#""accountId":"account / one""#));
+        assert!(reimage_request.contains(r#""expectedGeneration":1"#));
+        assert!(reimage_request.contains(r#""expectedProviderServerId":"123456789""#));
+        assert!(reimage_request.contains(r#""expectedProviderImageId":"987654321""#));
+        assert!(reimage_request.contains(r#""expectedProviderProfileId":"hetzner-path1""#));
+        assert!(reimage_request.contains(&format!(
+            r#""expectedProviderProfileDigest":"sha256:{}""#,
+            "b".repeat(64)
+        )));
+        assert!(reimage_request.contains(&format!(
+            r#""expectedRuntimeReleaseDigest":"sha256:{}""#,
+            "a".repeat(64)
+        )));
+        assert!(reimage_request.contains(&format!(
+            r#""expectedRuntimeSourceCommit":"{}""#,
+            "c".repeat(40)
+        )));
+        assert!(reimage_request.contains(&format!(
+            r#""expectedRuntimeSourceTree":"{}""#,
+            "d".repeat(40)
+        )));
+        assert!(reimage_request.contains(r#""idempotencyKey":"reimage-1""#));
         assert!(!requests.join("\n").contains("session-secret\""));
     }
 
@@ -834,6 +1097,14 @@ mod tests {
         if request.contains("/git-credential-enrollment ") {
             return git_enrollment_ticket.clone();
         }
+        if request.contains("/reimage HTTP/1.1") {
+            return serde_json::json!({
+                "environment": environment_json(),
+                "operation": reimage_operation_json(),
+                "receipt": reimage_receipt_json(),
+                "futureReimageResultField": true
+            });
+        }
         if request.starts_with("GET /managed-environments/") {
             return serde_json::json!({
                 "environment": environment_json(),
@@ -905,6 +1176,81 @@ mod tests {
             "createdAt": "2026-08-21T00:00:00.000Z",
             "updatedAt": "2026-08-21T00:00:00.000Z",
             "futureOperationField": true
+        })
+    }
+
+    fn reimage_operation_json() -> serde_json::Value {
+        serde_json::json!({
+            "operationId": "operation-reimage-1",
+            "environmentId": "environment-1",
+            "requestedByUserId": "cloud-user-1",
+            "kind": "reimage",
+            "idempotencyKey": "reimage-1",
+            "requestDigest": "sha256:request-reimage",
+            "desiredRevision": 2,
+            "generation": 2,
+            "status": "pending",
+            "attempt": 0,
+            "retryable": false,
+            "failureCode": null,
+            "failureMessage": null,
+            "completedAt": null,
+            "createdAt": "2026-08-21T00:00:00.000Z",
+            "updatedAt": "2026-08-21T00:00:00.000Z",
+            "futureOperationField": true
+        })
+    }
+
+    fn reimage_receipt_json() -> serde_json::Value {
+        serde_json::json!({
+            "receiptId": "receipt-reimage-1",
+            "environmentId": "environment-1",
+            "operationId": "operation-reimage-1",
+            "previousGeneration": 1,
+            "generation": 2,
+            "status": "pending",
+            "freshEquivalent": false,
+            "providerServerId": "123456789",
+            "previousProviderImageId": "987654321",
+            "providerImageId": "987654321",
+            "providerProfileId": "hetzner-path1",
+            "providerProfileDigest": format!("sha256:{}", "b".repeat(64)),
+            "runtimeReleaseDigest": format!("sha256:{}", "a".repeat(64)),
+            "oldMachineId": "managed-machine-1",
+            "newMachineId": null,
+            "oldKernelId": "managed-kernel-1",
+            "newKernelId": null,
+            "oldRelayRealmId": "realm-1",
+            "newRelayRealmId": "realm-2",
+            "oldRelayTargetId": "target-1",
+            "newRelayTargetId": null,
+            "oldBootstrapGrantId": "grant-1",
+            "newBootstrapGrantId": null,
+            "oldCredentialIds": ["credential-1"],
+            "newCredentialIds": [],
+            "runtimeEvidence": {"generation": 2},
+            "sourceEvidence": {
+                "providerProfileId": "hetzner-path1",
+                "providerProfileDigest": format!("sha256:{}", "b".repeat(64)),
+                "providerImageId": "987654321",
+                "runtimeReleaseDigest": format!("sha256:{}", "a".repeat(64)),
+                "runtimeSourceCommit": "c".repeat(40),
+                "runtimeSourceTree": "d".repeat(40)
+            },
+            "residueChecks": {"oldGenerationFenced": true},
+            "revocations": {"machineId": "managed-machine-1"},
+            "billingObservation": {"provider": "hetzner"},
+            "resourceObservation": {"providerServerId": "123456789"},
+            "cleanupState": {"oldGenerationFenced": true},
+            "rollbackState": {"state": "fail_closed"},
+            "receiptDigest": null,
+            "failureCode": null,
+            "failureMessage": null,
+            "requestedAt": "2026-08-21T00:00:00.000Z",
+            "completedAt": null,
+            "createdAt": "2026-08-21T00:00:00.000Z",
+            "updatedAt": "2026-08-21T00:00:00.000Z",
+            "futureReceiptField": true
         })
     }
 

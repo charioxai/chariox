@@ -14,6 +14,12 @@ export type ManagedEnvironmentObservedState =
   | "failed"
 
 export type ManagedEnvironmentLifecycleAction = "start" | "stop" | "restart" | "delete"
+export type ManagedEnvironmentReimageReceiptStatus =
+  | "pending"
+  | "provider_applied"
+  | "reenrolling"
+  | "fresh_equivalent"
+  | "failed_closed"
 
 export type ManagedEnvironmentAutoStopPolicy = {
   readonly minimumRuntimeSeconds: number
@@ -108,7 +114,7 @@ export type ManagedEnvironmentOperationSummary = {
   readonly operationId: string
   readonly environmentId: string
   readonly requestedByUserId: string
-  readonly kind: "create" | ManagedEnvironmentLifecycleAction
+  readonly kind: "create" | ManagedEnvironmentLifecycleAction | "reimage"
   readonly idempotencyKey: string
   readonly requestDigest: string
   readonly desiredRevision: number
@@ -125,6 +131,53 @@ export type ManagedEnvironmentOperationSummary = {
 export type ManagedEnvironmentResult = {
   readonly environment: ManagedEnvironmentSummary
   readonly operation: ManagedEnvironmentOperationSummary
+}
+
+export type ManagedEnvironmentReimageReceipt = {
+  readonly receiptId: string
+  readonly environmentId: string
+  readonly operationId: string
+  readonly previousGeneration: number
+  readonly generation: number
+  readonly status: ManagedEnvironmentReimageReceiptStatus
+  readonly freshEquivalent: boolean
+  readonly providerServerId: string
+  readonly previousProviderImageId: string | null
+  readonly providerImageId: string
+  readonly providerProfileId: string
+  readonly providerProfileDigest: string
+  readonly runtimeReleaseDigest: string
+  readonly oldMachineId: string | null
+  readonly newMachineId: string | null
+  readonly oldKernelId: string | null
+  readonly newKernelId: string | null
+  readonly oldRelayRealmId: string | null
+  readonly newRelayRealmId: string | null
+  readonly oldRelayTargetId: string | null
+  readonly newRelayTargetId: string | null
+  readonly oldBootstrapGrantId: string | null
+  readonly newBootstrapGrantId: string | null
+  readonly oldCredentialIds: unknown
+  readonly newCredentialIds: unknown
+  readonly runtimeEvidence: unknown
+  readonly sourceEvidence: unknown
+  readonly residueChecks: unknown
+  readonly revocations: unknown
+  readonly billingObservation: unknown
+  readonly resourceObservation: unknown
+  readonly cleanupState: unknown
+  readonly rollbackState: unknown
+  readonly receiptDigest: string | null
+  readonly failureCode: string | null
+  readonly failureMessage: string | null
+  readonly requestedAt: string
+  readonly completedAt: string | null
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
+export type ManagedEnvironmentReimageResult = ManagedEnvironmentResult & {
+  readonly receipt: ManagedEnvironmentReimageReceipt
 }
 
 export type ManagedEnvironmentCatalog = {
@@ -182,4 +235,19 @@ export function requestManagedEnvironmentLifecycleRequest(input: {
   readonly idempotencyKey: string
 }) {
   return { RequestManagedEnvironmentLifecycle: input } as const
+}
+
+export function requestManagedEnvironmentReimageRequest(input: {
+  readonly environmentId: string
+  readonly expectedGeneration: number
+  readonly expectedProviderServerId: string
+  readonly expectedProviderImageId: string
+  readonly expectedProviderProfileId: string
+  readonly expectedProviderProfileDigest: string
+  readonly expectedRuntimeReleaseDigest: string
+  readonly expectedRuntimeSourceCommit: string
+  readonly expectedRuntimeSourceTree: string
+  readonly idempotencyKey: string
+}) {
+  return { RequestManagedEnvironmentReimage: input } as const
 }

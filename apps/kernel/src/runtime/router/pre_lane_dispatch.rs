@@ -108,7 +108,8 @@ impl CommandRouter {
             | LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(_)
             | LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(_)
             | LocalDaemonRequest::CreateManagedEnvironment(_)
-            | LocalDaemonRequest::RequestManagedEnvironmentLifecycle(_)) => {
+            | LocalDaemonRequest::RequestManagedEnvironmentLifecycle(_)
+            | LocalDaemonRequest::RequestManagedEnvironmentReimage(_)) => {
                 return execute_managed_environment_control_request(
                     self.config_projection.snapshot(),
                     self.provider_account_profiles.clone(),

@@ -209,6 +209,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::RequestManagedEnvironmentLifecycle(_) => {
             LocalRequestMetadata::new("managed_environment.lifecycle", Interactive)
         }
+        LocalDaemonRequest::RequestManagedEnvironmentReimage(_) => {
+            LocalRequestMetadata::new("managed_environment.reimage", Interactive)
+        }
         LocalDaemonRequest::StartManagedContextTransfer(_) => {
             LocalRequestMetadata::new("managed_context.transfer.start", Background)
         }
@@ -919,6 +922,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(_)
         | LocalDaemonRequest::CreateManagedEnvironment(_)
         | LocalDaemonRequest::RequestManagedEnvironmentLifecycle(_)
+        | LocalDaemonRequest::RequestManagedEnvironmentReimage(_)
         | LocalDaemonRequest::StartManagedContextTransfer(_)
         | LocalDaemonRequest::GetManagedContextTransferStatus(_)
         | LocalDaemonRequest::GetManagedContextLaunchTarget(_)
