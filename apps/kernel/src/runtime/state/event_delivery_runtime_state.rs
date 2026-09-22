@@ -429,10 +429,12 @@ mod tests {
             .expect("event workflow endpoint should create");
         let publication = app
             .sessions_mut()
-            .create_workflow_publication(
+            .create_workflow_publication_idempotent(
                 session.id(),
                 workflow.id(),
                 endpoint.id(),
+                None,
+                None,
                 Some("default".to_string()),
                 Some("event-publication".to_string()),
                 Some(crate::session::WORKFLOW_PUBLICATION_KIND_EVENT_BASED.to_string()),
@@ -445,6 +447,7 @@ mod tests {
                 None,
                 None,
                 None,
+                vec![agent.clone()],
                 crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
             )
             .expect("event publication should create");
