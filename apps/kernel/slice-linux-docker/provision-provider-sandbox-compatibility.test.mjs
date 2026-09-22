@@ -17,6 +17,10 @@ const { appendFileSync } = require("node:fs");
 const args = process.argv.slice(2);
 if (args[0] === "info") process.exit(0);
 if (args[0] === "container" && args[1] === "inspect") process.exit(1);
+if (args[0] === "volume" && args[1] === "inspect") {
+  console.error("Error: no such volume: fixture-home");
+  process.exit(1);
+}
 if (args[0] === "volume" && args[1] === "create") process.exit(0);
 if (args[0] === "create") {
   appendFileSync(process.env.CHARIOX_TEST_DOCKER_LOG, JSON.stringify(args) + "\\n");
