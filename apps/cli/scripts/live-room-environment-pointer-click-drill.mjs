@@ -2,6 +2,7 @@
 
 import assert from "node:assert/strict"
 import { validatePrebuiltSliceImage } from "./lib/prebuilt-slice-image.mjs"
+import { roomTuiPtyInvocation } from "./lib/room-tui-pty.mjs"
 import { spawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import { createWriteStream } from "node:fs"
@@ -2278,9 +2279,7 @@ async function startLocalTui({ tempRoot, kernelUrl }) {
 
 async function startTui({ kind, tempRoot, env, connectionArgs }) {
   const automationSocket = path.join(tempRoot, `${kind}-tui.sock`)
-  const args = [
-    "-q",
-    "/dev/null",
+  const invocation = roomTuiPtyInvocation([
     "bun",
     path.join(repoRoot, "apps", "cli", "dist", "index.js"),
     ...connectionArgs,
@@ -2291,8 +2290,8 @@ async function startTui({ kind, tempRoot, env, connectionArgs }) {
     "--provider", "dev-stub",
     "--model", `room-activity-${kind}-tui-drill`,
     "--client-id", `${runId}-${kind}-tui`,
-  ]
-  const tui = spawn("script", args, {
+  ])
+  const tui = spawn(invocation.command, invocation.args, {
     cwd: repoRoot,
     env,
     detached: true,
