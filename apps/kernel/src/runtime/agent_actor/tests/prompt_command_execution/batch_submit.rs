@@ -2,18 +2,16 @@ use super::*;
 
 #[tokio::test]
 async fn prompt_submit_batch_starts_multiple_agents_with_one_kernel_request() {
+    let worktree = TestWorktree::new("owned-submit-batch");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-owned-submit-batch",
-            "worktree-owned-submit-batch",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let second_agent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
                 .with_alias("batch-agent")
-                .with_worktree("worktree-owned-submit-batch"),
+                .with_worktree(worktree.path().display().to_string()),
         )
         .expect("second agent should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
@@ -115,12 +113,10 @@ async fn prompt_submit_batch_starts_multiple_agents_with_one_kernel_request() {
 
 #[tokio::test]
 async fn prompt_submit_batch_rejects_duplicate_targets_without_partial_submit() {
+    let worktree = TestWorktree::new("owned-submit-batch-duplicate");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-owned-submit-batch-duplicate",
-            "worktree-owned-submit-batch-duplicate",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(
@@ -212,12 +208,10 @@ async fn prompt_submit_batch_rejects_duplicate_targets_without_partial_submit() 
 
 #[tokio::test]
 async fn prompt_submit_batch_rejects_invalid_targets_without_partial_submit() {
+    let worktree = TestWorktree::new("owned-submit-batch-invalid");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-owned-submit-batch-invalid",
-            "worktree-owned-submit-batch-invalid",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(
@@ -309,18 +303,14 @@ async fn prompt_submit_batch_rejects_invalid_targets_without_partial_submit() {
 
 #[tokio::test]
 async fn prompt_submit_batch_accepts_explicit_mixed_sessions() {
+    let first_worktree = TestWorktree::new("owned-submit-batch-mixed-1");
+    let second_worktree = TestWorktree::new("owned-submit-batch-mixed-2");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (first_session, first_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-owned-submit-batch-mixed-1",
-            "worktree-owned-submit-batch-mixed-1",
-        ))
+        .create_session(first_worktree.session_request())
         .expect("first session should be created");
     let (second_session, second_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-owned-submit-batch-mixed-2",
-            "worktree-owned-submit-batch-mixed-2",
-        ))
+        .create_session(second_worktree.session_request())
         .expect("second session should be created");
     let first_attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(
@@ -434,18 +424,16 @@ async fn prompt_submit_batch_accepts_explicit_mixed_sessions() {
 
 #[tokio::test]
 async fn prompt_submit_batch_projects_final_queued_prompt_state() {
+    let worktree = TestWorktree::new("owned-submit-batch-queued");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-owned-submit-batch-queued",
-            "worktree-owned-submit-batch-queued",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let second_agent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
                 .with_alias("batch-queued-agent")
-                .with_worktree("worktree-owned-submit-batch-queued"),
+                .with_worktree(worktree.path().display().to_string()),
         )
         .expect("second agent should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
