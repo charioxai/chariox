@@ -683,10 +683,11 @@ impl KernelRuntimeOwnedState {
         )?;
         self.workflow_validate_agents(session_id, &workflow)?;
         let activity_mutation = self.begin_managed_activity_mutation();
-        let queued_prompt = self
-            .session_store
-            .write()
-            .enqueue_workflow_prompt_with_publication_invocation(
+        let durable_state_store = self.durable_state_store.clone();
+        let queued_prompt = durable_state_store.with_workflow_runtime_transition_lock(|| {
+            let mut sessions = self.session_store.write();
+            let session_before_enqueue = sessions.get_session(session_id)?;
+            let queued_prompt = sessions.enqueue_workflow_prompt_with_publication_invocation(
                 session_id,
                 workflow.id(),
                 endpoint.id(),
@@ -696,11 +697,21 @@ impl KernelRuntimeOwnedState {
                 None,
                 publication_invocation,
             )?;
-        self.persist_workflow_runtime_session_with_activity_mutation(
-            session_id,
-            "workflow_prompt_enqueued",
-            activity_mutation,
-        )?;
+            let durable_session = sessions.get_session(session_id)?;
+            if let Err(error) = durable_state_store.persist_workflow_runtime_transition(
+                &durable_session,
+                "workflow_prompt_enqueued",
+            ) {
+                // The session write guard excludes concurrent unrelated session mutations, so
+                // restoring this exact pre-enqueue value cannot erase a later successful write.
+                sessions.restore_session(session_before_enqueue);
+                return Err(error);
+            }
+            Ok(queued_prompt)
+        })?;
+        activity_mutation.record();
+        // Publication is deliberately after durable admission and activity capture.
+        self.session_snapshot(session_id)?;
         let (claimed, dispatches) =
             self.workflow_start_next_queued_prompt_for_response(session_id)?;
         let Some(claimed_outcome) = claimed else {

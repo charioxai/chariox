@@ -13,7 +13,6 @@ impl KernelRuntimeState {
         Option<crate::session::RuntimeSession>,
     ) {
         let owned = &self.owned;
-        let session_id = request.session_id.clone();
         let result = match owned.ensure_workflow_endpoint_owner(
             &request.session_id,
             &request.workflow_ref,
@@ -31,7 +30,7 @@ impl KernelRuntimeState {
                     request.publication_invocation.clone(),
                 ) {
                     Ok(outcome) => outcome,
-                    Err(error) => return (Err(error), owned.session_snapshot(&session_id).ok()),
+                    Err(error) => return (Err(error), None),
                 };
                 let dev_stub_workflow_run_id = match &outcome {
                     crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
@@ -90,8 +89,7 @@ impl KernelRuntimeState {
         let session = result
             .as_ref()
             .ok()
-            .and_then(workflow_response_session)
-            .or_else(|| owned.session_snapshot(&session_id).ok());
+            .and_then(workflow_response_session);
         (result, session)
     }
 

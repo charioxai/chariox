@@ -14,6 +14,122 @@ fn concurrent_owned_workflow_launches_preserve_single_run_admission() {
     }
 }
 
+#[tokio::test]
+async fn invoke_append_failure_rolls_back_before_snapshot_and_retries_once() {
+    let (runtime, session_id, workflow_id, endpoint_id, _test_root) = runtime_with_idle_workflow();
+    runtime
+        .owned
+        .session_store
+        .write()
+        .update_workflow_prompt_queue(
+            &session_id,
+            &workflow_id,
+            "default",
+            None,
+            None,
+            Some(false),
+        )
+        .expect("default queue should disable for deterministic queued admission");
+    runtime
+        .owned
+        .persist_workflow_runtime_session(&session_id, "invoke_failure_test_queue_disabled")
+        .expect("disabled queue baseline should persist");
+    let state_path = runtime.owned.durable_state_store.path().to_path_buf();
+    let connection = rusqlite::Connection::open(state_path)
+        .expect("durable database should open for invoke failure injection");
+    connection
+        .execute_batch(
+            "CREATE TRIGGER fail_workflow_invoke_append
+             BEFORE INSERT ON durable_state_events
+             WHEN NEW.kind = 'workflow.runtime.updated'
+             BEGIN
+               SELECT RAISE(FAIL, 'injected workflow invoke append failure');
+             END;",
+        )
+        .expect("invoke append failure trigger should install");
+    let request = crate::local::InvokeWorkflowEndpointRequest {
+        session_id: session_id.clone(),
+        workflow_ref: workflow_id.clone(),
+        endpoint_ref: endpoint_id,
+        prompt: Some("admit exactly once".to_string()),
+        queue_ref: Some("default".to_string()),
+        publication_invocation: None,
+    };
+
+    let (failed, projected) = runtime
+        .execute_workflow_invoke_endpoint_request(
+            request.clone(),
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        )
+        .await;
+    assert!(failed
+        .expect_err("failed durable append should reject invoke admission")
+        .to_string()
+        .contains("injected workflow invoke append failure"));
+    assert!(
+        projected.is_none(),
+        "failed invoke admission must not return a projection snapshot"
+    );
+    let rolled_back = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .expect("rolled-back session should remain available");
+    assert!(rolled_back.workflow_queued_prompts().is_empty());
+    assert!(rolled_back.workflow_runs().is_empty());
+
+    // A later unrelated snapshot must not reveal the rejected prompt or a phantom run.
+    let unrelated_snapshot = runtime
+        .owned
+        .session_snapshot(&session_id)
+        .expect("unrelated session snapshot should remain available");
+    assert!(unrelated_snapshot.workflow_queued_prompts().is_empty());
+    assert!(unrelated_snapshot.workflow_runs().is_empty());
+
+    connection
+        .execute_batch("DROP TRIGGER fail_workflow_invoke_append;")
+        .expect("invoke append failure trigger should be removed");
+    let (retried, projected) = runtime
+        .execute_workflow_invoke_endpoint_request(
+            request,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        )
+        .await;
+    let queued_prompt_id = match retried.expect("invoke retry should succeed") {
+        crate::local::LocalDaemonResponse::WorkflowPromptEnqueued { queued_prompt, .. } => {
+            queued_prompt.id().to_string()
+        }
+        other => panic!("unexpected invoke retry response: {other:?}"),
+    };
+    let projected = projected.expect("successful retry should return a projection snapshot");
+    assert_eq!(projected.workflow_queued_prompts().len(), 1);
+    assert_eq!(projected.workflow_queued_prompts()[0].id(), queued_prompt_id);
+    assert!(projected.workflow_runs().is_empty());
+
+    let owner_id = projected.host_daemon_id().to_string();
+    let durable_hot_state = runtime
+        .owned
+        .durable_state_store
+        .load_workflow_hot_states(&owner_id)
+        .expect("durable workflow hot state should load")
+        .into_iter()
+        .find_map(|(candidate_session_id, state)| {
+            (candidate_session_id == session_id).then_some(state)
+        })
+        .expect("retried session should have durable workflow hot state");
+    assert_eq!(durable_hot_state.workflow_queued_prompts.len(), 1);
+    assert_eq!(
+        durable_hot_state.workflow_queued_prompts[0].id(),
+        queued_prompt_id
+    );
+    let durable_runs = runtime
+        .owned
+        .durable_state_store
+        .list_workflow_runs_page(&owner_id, &session_id, Some(&workflow_id), None, 10)
+        .expect("durable workflow runs should load");
+    assert!(durable_runs.workflow_runs.is_empty());
+}
+
 fn run_single_run_admission_scenario(iteration: usize) {
     const INVOCATION_COUNT: usize = 32;
 
