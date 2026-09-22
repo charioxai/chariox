@@ -52,7 +52,10 @@ impl KernelRuntimeOwnedState {
                         );
                     }
                 }
-                if let Ok(hot_session) = self.session_store.read().get_session(session_id) {
+                // Release the session guard before activity persistence takes its
+                // locks. An if-let scrutinee built from read() retains that guard.
+                let hot_session = self.session_store.get_session(session_id);
+                if let Ok(hot_session) = hot_session {
                     #[cfg(test)]
                     run_before_workflow_activity_persistence_hook();
                     self.publish_session_after_durable_mutation(hot_session);
