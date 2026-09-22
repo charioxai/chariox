@@ -24,9 +24,37 @@ pub(super) async fn handle_display_tunnel_open(
     daemon_private_key: String,
 ) {
     let stream_id = request.stream_id.clone();
-    let target = {
+    let admission: Result<Option<RelayDisplayTunnelTarget>, RelayError> = {
         let mut guard = state.write().await;
-        guard.claim_display_tunnel_for_open(&request.tunnel_id, crate::session::unix_epoch_ms())
+        if let Some(target) = guard.display_tunnel(
+            &request.tunnel_id,
+            crate::session::unix_epoch_ms(),
+        )
+        .filter(|target| matches!(&target.kind, RelayDisplayTunnelTargetKind::Selkies { .. }))
+        {
+            // A Selkies grant is consumed exactly once. Validate the relay's
+            // handshake before claiming it so a malformed or stale first open
+            // does not prevent the viewer from retrying with the same grant.
+            match validate_selkies_open_request(&request, &target.tunnel_id) {
+                Ok(()) => Ok(guard.claim_display_tunnel_for_open(
+                    &request.tunnel_id,
+                    crate::session::unix_epoch_ms(),
+                )),
+                Err(error) => Err(error),
+            }
+        } else {
+            Ok(guard.claim_display_tunnel_for_open(
+                &request.tunnel_id,
+                crate::session::unix_epoch_ms(),
+            ))
+        }
+    };
+    let target = match admission {
+        Ok(target) => target,
+        Err(error) => {
+            close_display_tunnel_stream(&outgoing_tx, stream_id, error);
+            return;
+        }
     };
     if display_request_is_websocket(&request) {
         if let Some(target) = target {
@@ -163,14 +191,7 @@ async fn proxy_selkies_websocket(
     mut client_rx: mpsc::Receiver<RelayDisplayTunnelClientEvent>,
     daemon_private_key: String,
 ) -> Result<(), RelayError> {
-    let expected_path = format!("/display/{}/stream", target.tunnel_id);
-    if !request.method.eq_ignore_ascii_case("GET") || request.path != expected_path {
-        return Err(relay_error(
-            "display_stream_path_invalid",
-            "Selkies display stream path is invalid",
-            false,
-        ));
-    }
+    validate_selkies_open_request(request, &target.tunnel_id)?;
     let RelayDisplayTunnelTargetKind::Selkies {
         viewer_public_key,
         command_program,
@@ -313,6 +334,34 @@ async fn proxy_selkies_websocket(
             true,
         )),
     }
+}
+
+fn validate_selkies_open_request(
+    request: &RelayDisplayTunnelOpenRequest,
+    tunnel_id: &str,
+) -> Result<(), RelayError> {
+    if !display_request_is_websocket(request) {
+        return Err(relay_error(
+            "display_stream_upgrade_invalid",
+            "Selkies display stream requires a WebSocket upgrade",
+            false,
+        ));
+    }
+    if !request.method.eq_ignore_ascii_case("GET") {
+        return Err(relay_error(
+            "display_stream_method_invalid",
+            "Selkies display stream requires GET",
+            false,
+        ));
+    }
+    if request.path != format!("/display/{tunnel_id}/stream") {
+        return Err(relay_error(
+            "display_stream_path_invalid",
+            "Selkies display stream path is invalid",
+            false,
+        ));
+    }
+    Ok(())
 }
 
 fn proxy_display_request(
@@ -694,6 +743,119 @@ mod tests {
     use std::io::Write;
     use tokio::net::TcpListener;
     use tokio::time::{timeout, Duration};
+
+    #[tokio::test]
+    async fn invalid_selkies_open_preserves_one_time_admission_for_retry() {
+        let kernel_private = crate::transport::relay_crypto::generate_private_key_base64();
+        let viewer_private = crate::transport::relay_crypto::generate_private_key_base64();
+        let viewer_public =
+            crate::transport::relay_crypto::public_key_from_private_key_base64(&viewer_private)
+                .expect("viewer public key should derive");
+        let tunnel_id = "display-retry";
+        let mut state = RelayClientState::default();
+        state.upsert_display_tunnel(RelayDisplayTunnelTarget {
+            tunnel_id: tunnel_id.to_string(),
+            slice_id: "slice-1".to_string(),
+            kind: RelayDisplayTunnelTargetKind::Selkies {
+                viewer_public_key: viewer_public,
+                command_program: "/bin/false".to_string(),
+                command_args: Vec::new(),
+            },
+            expires_at_ms: crate::session::unix_epoch_ms().saturating_add(30_000),
+            capabilities: vec!["view".to_string(), "encrypted".to_string()],
+        });
+        let state = Arc::new(RwLock::new(state));
+        let (outgoing_tx, _priority_rx, mut event_rx) = RelayOutgoingSender::channel(4);
+        handle_display_tunnel_open(
+            Arc::clone(&state),
+            outgoing_tx,
+            RelayDisplayTunnelOpenRequest {
+                stream_id: "relay-stream-invalid".to_string(),
+                tunnel_id: tunnel_id.to_string(),
+                method: "GET".to_string(),
+                path: format!("/display/{tunnel_id}/wrong"),
+                headers: vec![
+                    RelayDisplayTunnelHeader {
+                        name: "connection".to_string(),
+                        value: "Upgrade".to_string(),
+                    },
+                    RelayDisplayTunnelHeader {
+                        name: "upgrade".to_string(),
+                        value: "websocket".to_string(),
+                    },
+                ],
+                body_base64: None,
+            },
+            kernel_private,
+        )
+        .await;
+
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(RelayEnvelope::DaemonDisplayTunnelClose { stream_id, error: Some(error) })
+                if stream_id == "relay-stream-invalid"
+                    && error.code == "display_stream_path_invalid"
+        ));
+        assert!(state
+            .read()
+            .await
+            .display_tunnel(tunnel_id, crate::session::unix_epoch_ms())
+            .is_some(), "invalid handshakes must leave the grant available for retry");
+    }
+
+    #[test]
+    fn invalid_selkies_open_requests_report_method_upgrade_and_path_failures() {
+        let websocket_headers = || {
+            vec![
+                RelayDisplayTunnelHeader {
+                    name: "connection".to_string(),
+                    value: "Upgrade".to_string(),
+                },
+                RelayDisplayTunnelHeader {
+                    name: "upgrade".to_string(),
+                    value: "websocket".to_string(),
+                },
+            ]
+        };
+        let cases = [
+            (
+                "method",
+                "POST",
+                "/display/display-retry/stream",
+                websocket_headers(),
+                "display_stream_method_invalid",
+            ),
+            (
+                "upgrade",
+                "GET",
+                "/display/display-retry/stream",
+                Vec::new(),
+                "display_stream_upgrade_invalid",
+            ),
+            (
+                "path",
+                "GET",
+                "/display/display-retry/wrong",
+                websocket_headers(),
+                "display_stream_path_invalid",
+            ),
+        ];
+        for (name, method, path, headers, code) in cases {
+            let error = validate_selkies_open_request(
+                &RelayDisplayTunnelOpenRequest {
+                    stream_id: "stream-1".to_string(),
+                    tunnel_id: "display-retry".to_string(),
+                    method: method.to_string(),
+                    path: path.to_string(),
+                    headers,
+                    body_base64: None,
+                },
+                "display-retry",
+            )
+            .expect_err("invalid Selkies handshakes must be rejected");
+            assert_eq!(error.code, code, "{name} validation should be classified");
+        }
+    }
 
     #[tokio::test]
     async fn admitted_selkies_target_uses_encrypted_single_use_relay_stream() {
