@@ -150,7 +150,14 @@ environments, processes, listeners, containers, profiles, active relay targets
 and heartbeats, temporary files, and evidence leaks. RSS/disk deltas must fit
 their ceilings. Cleanup command success without a clean inventory fails.
 
-Retain only `managed-browser-computer-parity.json` and checksummed
-`chariox-drill-artifacts.json` outside repositories. Review the recorded image
-signature/digest, SHAs, protocol/relay versions, identity, resources, steps, and
-cleanup before deleting the private metadata config.
+After the report and `chariox-drill-artifacts.json` are written, the CLI physically
+enumerates the complete run directory with bounded file/byte/depth limits. It
+rejects symlinks, special files, secret-looking names or values, and emits the
+checksummed manifest as a private sibling of the run directory so the manifest
+does not enumerate itself. A run is not accepted when this final scan fails.
+
+Retain `managed-browser-computer-parity.json`, checksummed
+`chariox-drill-artifacts.json`, and the private sibling evidence manifest
+outside repositories. Review the recorded image signature/digest, SHAs,
+protocol/relay versions, identity, resources, steps, and cleanup before deleting
+the private metadata config.

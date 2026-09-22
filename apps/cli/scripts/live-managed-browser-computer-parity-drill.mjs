@@ -27,6 +27,10 @@ import {
   parseManagedBrowserComputerParityArgs,
   readPrivateManagedParityConfig,
 } from "./lib/managed-browser-computer-parity-cli.mjs"
+import {
+  managedParityEvidenceManifestPath,
+  writeManagedParityEvidenceManifest,
+} from "./lib/managed-browser-computer-parity-evidence.mjs"
 import { runManagedBrowserComputerParityHarness } from "./lib/managed-browser-computer-parity-harness.mjs"
 
 const repoRoot = path.resolve(import.meta.dirname, "../../..")
@@ -612,6 +616,7 @@ function sameArgv(left, right) {
 
 async function main() {
   let incompleteRunDir = null
+  let incompleteEvidenceManifestPath = null
   let transport = null
   const interruption = new AbortController()
   const interrupt = () => interruption.abort()
@@ -640,6 +645,8 @@ async function main() {
     }
     incompleteRunDir = runDir
     await mkdir(runDir, { recursive: true, mode: 0o700 })
+    const evidenceManifestPath = managedParityEvidenceManifestPath(runDir)
+    incompleteEvidenceManifestPath = evidenceManifestPath
     transport = await imported.createManagedBrowserComputerParityTransport({
       evidenceRoot: runDir,
       signal: interruption.signal,
@@ -661,23 +668,31 @@ async function main() {
     })
     const resultPath = path.join(runDir, "managed-browser-computer-parity.json")
     const artifactIndexPath = path.join(runDir, "chariox-drill-artifacts.json")
+    const reportWithEvidenceManifestPath = {
+      ...report,
+      evidenceManifestPath,
+    }
     await writeDrillJsonArtifactOutput({
       outputPath: resultPath,
-      value: report,
+      value: reportWithEvidenceManifestPath,
       artifactIndexPath,
     })
+    await writeManagedParityEvidenceManifest(runDir)
     incompleteRunDir = null
+    incompleteEvidenceManifestPath = null
     process.stdout.write(`${JSON.stringify({
-      schema: report.schema,
-      status: report.status,
-      runId: report.runId,
+      schema: reportWithEvidenceManifestPath.schema,
+      status: reportWithEvidenceManifestPath.status,
+      runId: reportWithEvidenceManifestPath.runId,
       resultPath,
       artifactIndexPath,
-      failureCode: report.failure?.code ?? null,
+      evidenceManifestPath,
+      failureCode: reportWithEvidenceManifestPath.failure?.code ?? null,
     })}\n`)
-    if (report.status !== "passed") process.exitCode = 1
+    if (reportWithEvidenceManifestPath.status !== "passed") process.exitCode = 1
   } catch {
     if (incompleteRunDir) await rm(incompleteRunDir, { recursive: true, force: true }).catch(() => {})
+    if (incompleteEvidenceManifestPath) await rm(incompleteEvidenceManifestPath, { force: true }).catch(() => {})
     process.stderr.write("managed browser/computer parity harness failed before producing validated evidence\n")
     process.exitCode = 1
   } finally {
