@@ -1,15 +1,14 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-#[cfg(test)]
 use tokio::sync::oneshot;
 use tokio::sync::{mpsc, Mutex};
 
@@ -21,6 +20,8 @@ const PERSISTENT_COMPACTION_FILE_GROWTH_MULTIPLIER: u64 = 1;
 const PERSISTENT_COMPACTION_TARGET_NUMERATOR: u64 = 3;
 const PERSISTENT_COMPACTION_TARGET_DENOMINATOR: u64 = 4;
 const PERSISTENT_EVENT_WRITE_QUEUE_CAPACITY: usize = 32;
+const PERSISTENT_WRITE_MAX_ATTEMPTS: usize = 3;
+const PERSISTENT_WRITE_RETRY_BASE_DELAY_MS: u64 = 25;
 #[cfg(test)]
 const PERSISTENT_WRITER_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -132,43 +133,61 @@ impl<E: Clone + Serialize> EventLog<E> {
     ) -> io::Result<LoggedEvent<E>> {
         let stream_id = stream_id.into();
         let event_id = self.event_ids.next()?;
-        let (logged, compact_snapshot) = {
-            let mut streams = self.streams.lock().await;
-            let stream = streams.entry(stream_id.clone()).or_default();
-            let logged = LoggedEvent {
-                event_id,
-                stream_id,
-                stream_seq: stream.next_stream_seq,
-                recorded_at_ms: unix_epoch_ms(),
-                event,
-            };
-            let logged_jsonl_bytes = logged_event_jsonl_bytes(&logged)?;
-            stream.next_stream_seq += 1;
-            stream.latest_event_id = Some(event_id);
-            stream.retained.push_back(logged.clone());
-            stream.retained_jsonl_bytes = stream
-                .retained_jsonl_bytes
-                .saturating_add(logged_jsonl_bytes);
-            let compact_after_append =
-                apply_retention(&mut streams, self.retention, unix_epoch_ms());
-            let compact_snapshot = if compact_after_append {
-                match &self.persistence {
-                    Some(persistence)
-                        if persistence.should_compact_now_after_append(logged_jsonl_bytes)? =>
-                    {
-                        Some(retained_events_snapshot(&streams))
-                    }
-                    _ => None,
-                }
-            } else {
-                None
-            };
-            (logged, compact_snapshot)
+        let mut streams = self.streams.lock().await;
+        let stream = streams.entry(stream_id.clone()).or_default();
+        let previous_latest_event_id = stream.latest_event_id;
+        let logged = LoggedEvent {
+            event_id,
+            stream_id: stream_id.clone(),
+            stream_seq: stream.next_stream_seq,
+            recorded_at_ms: unix_epoch_ms(),
+            event,
         };
+        let logged_jsonl_bytes = logged_event_jsonl_bytes(&logged)?;
+        stream.next_stream_seq += 1;
+        stream.latest_event_id = Some(event_id);
+        stream.retained.push_back(logged.clone());
+        stream.retained_jsonl_bytes = stream
+            .retained_jsonl_bytes
+            .saturating_add(logged_jsonl_bytes);
         if let Some(persistence) = &self.persistence {
-            persistence
-                .persist_event(&logged, compact_snapshot.as_deref())
-                .await?;
+            if let Err(error) = persistence.persist_event(&logged).await {
+                let stream = streams
+                    .get_mut(&stream_id)
+                    .expect("appended event stream should remain present");
+                let removed = stream
+                    .retained
+                    .pop_back()
+                    .expect("failed appended event should remain at the back");
+                debug_assert_eq!(removed.event_id, event_id);
+                stream.next_stream_seq = logged.stream_seq;
+                stream.latest_event_id = previous_latest_event_id;
+                stream.retained_jsonl_bytes = stream
+                    .retained_jsonl_bytes
+                    .saturating_sub(logged_jsonl_bytes);
+                if previous_latest_event_id.is_none() && stream.retained.is_empty() {
+                    streams.remove(&stream_id);
+                }
+                return Err(error);
+            }
+        }
+        let compact_after_append = apply_retention(&mut streams, self.retention, unix_epoch_ms());
+        if compact_after_append {
+            if let Some(persistence) = &self.persistence {
+                if persistence.should_compact_now() {
+                    let compact_snapshot = retained_events_snapshot(&streams);
+                    if let Err(error) = persistence.persist_compaction(&compact_snapshot).await {
+                        crate::logging::warn_with_fields(
+                            "daemon.event_log",
+                            "persistent event log compaction failed",
+                            serde_json::json!({
+                                "path": persistence.path.display().to_string(),
+                                "error": error.to_string(),
+                            }),
+                        );
+                    }
+                }
+            }
         }
         Ok(logged)
     }
@@ -250,6 +269,7 @@ where
     ) -> io::Result<Self> {
         let event_counter_path = event_counter_path.into();
         let event_store_path = event_store_path.into();
+        truncate_torn_jsonl_tail(&event_store_path)?;
         let (streams, compact_after_load) = load_retained_streams(&event_store_path, retention)?;
         if compact_after_load {
             let snapshot = retained_events_snapshot(&streams);
@@ -274,14 +294,17 @@ struct PersistentEventStore {
     skipped_compactions: AtomicU64,
     max_file_bytes_before_compaction: Option<u64>,
     estimated_file_bytes: AtomicU64,
-    last_error: Arc<StdMutex<Option<String>>>,
 }
 
 #[derive(Debug)]
 enum PersistentEventWrite {
     Append {
         append_jsonl: Vec<u8>,
-        compact_jsonl: Option<Vec<u8>>,
+        reply_tx: oneshot::Sender<io::Result<()>>,
+    },
+    Compact {
+        compact_jsonl: Vec<u8>,
+        reply_tx: oneshot::Sender<io::Result<()>>,
     },
     #[cfg(test)]
     Flush(oneshot::Sender<io::Result<()>>),
@@ -295,8 +318,7 @@ impl PersistentEventStore {
             Err(error) => return Err(error),
         };
         let (write_tx, write_rx) = mpsc::channel(PERSISTENT_EVENT_WRITE_QUEUE_CAPACITY);
-        let last_error = Arc::new(StdMutex::new(None));
-        spawn_persistent_event_writer(path.clone(), write_rx, Arc::clone(&last_error))?;
+        spawn_persistent_event_writer(path.clone(), write_rx)?;
         Ok(Self {
             path,
             write_tx,
@@ -305,71 +327,64 @@ impl PersistentEventStore {
                 .max_total_bytes
                 .map(|bytes| bytes.saturating_mul(PERSISTENT_COMPACTION_FILE_GROWTH_MULTIPLIER)),
             estimated_file_bytes: AtomicU64::new(estimated_file_bytes),
-            last_error,
         })
     }
 
-    async fn persist_event<E>(
-        &self,
-        logged: &LoggedEvent<E>,
-        compact_snapshot: Option<&[LoggedEvent<E>]>,
-    ) -> io::Result<()>
+    async fn persist_event<E>(&self, logged: &LoggedEvent<E>) -> io::Result<()>
     where
         E: Clone + Serialize,
     {
-        self.check_last_error()?;
         let append_jsonl = logged_event_jsonl_payload(logged)?;
-        let compact_jsonl = compact_snapshot
-            .map(logged_events_jsonl_payload)
-            .transpose()?;
-        let compact_jsonl_len = compact_jsonl.as_ref().map(|payload| payload.len() as u64);
         let append_jsonl_len = append_jsonl.len() as u64;
+        let (reply_tx, reply_rx) = oneshot::channel();
         self.write_tx
             .send(PersistentEventWrite::Append {
                 append_jsonl,
-                compact_jsonl,
+                reply_tx,
             })
             .await
             .map_err(|_| io::Error::other("persistent event writer stopped"))?;
-        if let Some(compact_jsonl_len) = compact_jsonl_len {
-            self.estimated_file_bytes
-                .store(compact_jsonl_len, Ordering::Release);
-            self.skipped_compactions.store(0, Ordering::Release);
-        } else {
-            self.estimated_file_bytes
-                .fetch_add(append_jsonl_len, Ordering::AcqRel);
-        }
+        reply_rx
+            .await
+            .map_err(|_| io::Error::other("persistent event writer stopped before append"))??;
+        self.estimated_file_bytes
+            .fetch_add(append_jsonl_len, Ordering::AcqRel);
         Ok(())
     }
 
-    fn should_compact_now_after_append(&self, append_bytes: u64) -> io::Result<bool> {
-        self.check_last_error()?;
-        let skipped = self.skipped_compactions.fetch_add(1, Ordering::AcqRel) + 1;
-        if skipped >= PERSISTENT_COMPACTION_SKIP_LIMIT {
-            return Ok(true);
-        }
-        if let Some(max_file_bytes) = self.max_file_bytes_before_compaction {
-            let file_bytes = self
-                .estimated_file_bytes
-                .load(Ordering::Acquire)
-                .saturating_add(append_bytes);
-            return Ok(file_bytes > max_file_bytes);
-        }
-        Ok(false)
+    async fn persist_compaction<E>(&self, compact_snapshot: &[LoggedEvent<E>]) -> io::Result<()>
+    where
+        E: Serialize,
+    {
+        let compact_jsonl = logged_events_jsonl_payload(compact_snapshot)?;
+        let compact_jsonl_len = compact_jsonl.len() as u64;
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.write_tx
+            .send(PersistentEventWrite::Compact {
+                compact_jsonl,
+                reply_tx,
+            })
+            .await
+            .map_err(|_| io::Error::other("persistent event writer stopped"))?;
+        reply_rx
+            .await
+            .map_err(|_| io::Error::other("persistent event writer stopped before compaction"))??;
+        self.estimated_file_bytes
+            .store(compact_jsonl_len, Ordering::Release);
+        self.skipped_compactions.store(0, Ordering::Release);
+        Ok(())
     }
 
-    fn check_last_error(&self) -> io::Result<()> {
-        let guard = self
-            .last_error
-            .lock()
-            .map_err(|_| io::Error::other("persistent event writer error lock was poisoned"))?;
-        match guard.as_ref() {
-            Some(message) => Err(io::Error::other(format!(
-                "persistent event writer failed for {}: {message}",
-                self.path.display()
-            ))),
-            None => Ok(()),
+    fn should_compact_now(&self) -> bool {
+        let skipped = self.skipped_compactions.fetch_add(1, Ordering::AcqRel) + 1;
+        if skipped >= PERSISTENT_COMPACTION_SKIP_LIMIT {
+            return true;
         }
+        if let Some(max_file_bytes) = self.max_file_bytes_before_compaction {
+            let file_bytes = self.estimated_file_bytes.load(Ordering::Acquire);
+            return file_bytes > max_file_bytes;
+        }
+        false
     }
 
     #[cfg(test)]
@@ -389,68 +404,71 @@ impl PersistentEventStore {
 fn spawn_persistent_event_writer(
     path: PathBuf,
     write_rx: mpsc::Receiver<PersistentEventWrite>,
-    last_error: Arc<StdMutex<Option<String>>>,
 ) -> io::Result<()> {
     thread::Builder::new()
         .name("chariox-event-log-writer".to_string())
-        .spawn(move || run_persistent_event_writer(path, write_rx, last_error))
+        .spawn(move || run_persistent_event_writer(path, write_rx))
         .map(|_| ())
 }
 
 fn run_persistent_event_writer(
     path: PathBuf,
     mut write_rx: mpsc::Receiver<PersistentEventWrite>,
-    last_error: Arc<StdMutex<Option<String>>>,
 ) {
     while let Some(write) = write_rx.blocking_recv() {
-        let result = match write {
+        match write {
             PersistentEventWrite::Append {
                 append_jsonl,
+                reply_tx,
+            } => {
+                let result = retry_persistent_write(|| {
+                    if let Some(parent) = path.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    append_logged_event_jsonl(&path, &append_jsonl)
+                });
+                if let Err(error) = &result {
+                    crate::logging::warn_with_fields(
+                        "daemon.event_log",
+                        "persistent event append failed after bounded retries",
+                        serde_json::json!({
+                            "path": path.display().to_string(),
+                            "attempts": PERSISTENT_WRITE_MAX_ATTEMPTS,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+                let _ = reply_tx.send(result);
+            }
+            PersistentEventWrite::Compact {
                 compact_jsonl,
-            } => persist_event_jsonl_payloads(&path, &append_jsonl, compact_jsonl.as_deref()),
+                reply_tx,
+            } => {
+                let result = retry_persistent_write(|| {
+                    rewrite_logged_events_jsonl(&path, &compact_jsonl)
+                });
+                let _ = reply_tx.send(result);
+            }
             #[cfg(test)]
             PersistentEventWrite::Flush(reply_tx) => {
-                let result = persistent_writer_last_error(&last_error);
-                let _ = reply_tx.send(result);
-                continue;
+                let _ = reply_tx.send(Ok(()));
             }
-        };
-        if let Err(error) = result {
-            record_persistent_writer_error(&last_error, error);
         }
     }
 }
 
-fn persist_event_jsonl_payloads(
-    path: &Path,
-    append_jsonl: &[u8],
-    compact_jsonl: Option<&[u8]>,
-) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    append_logged_event_jsonl(path, append_jsonl)?;
-    if let Some(compact_jsonl) = compact_jsonl {
-        rewrite_logged_events_jsonl(path, compact_jsonl)?;
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-fn persistent_writer_last_error(last_error: &Arc<StdMutex<Option<String>>>) -> io::Result<()> {
-    let guard = last_error
-        .lock()
-        .map_err(|_| io::Error::other("persistent event writer error lock was poisoned"))?;
-    match guard.as_ref() {
-        Some(message) => Err(io::Error::other(message.clone())),
-        None => Ok(()),
-    }
-}
-
-fn record_persistent_writer_error(last_error: &Arc<StdMutex<Option<String>>>, error: io::Error) {
-    if let Ok(mut guard) = last_error.lock() {
-        if guard.is_none() {
-            *guard = Some(error.to_string());
+fn retry_persistent_write(mut write: impl FnMut() -> io::Result<()>) -> io::Result<()> {
+    let mut attempt = 0_usize;
+    loop {
+        attempt += 1;
+        match write() {
+            Ok(()) => return Ok(()),
+            Err(_) if attempt < PERSISTENT_WRITE_MAX_ATTEMPTS => {
+                let retry_delay_ms = PERSISTENT_WRITE_RETRY_BASE_DELAY_MS
+                    .saturating_mul(1_u64 << (attempt - 1));
+                thread::sleep(Duration::from_millis(retry_delay_ms));
+            }
+            Err(error) => return Err(error),
         }
     }
 }
@@ -618,9 +636,53 @@ where
 fn append_logged_event_jsonl(path: &Path, payload: &[u8]) -> io::Result<()> {
     let mut file = fs::OpenOptions::new()
         .create(true)
+        .read(true)
         .append(true)
         .open(path)?;
+    truncate_torn_jsonl_file_tail(&mut file)?;
     file.write_all(payload)
+}
+
+fn truncate_torn_jsonl_tail(path: &Path) -> io::Result<()> {
+    let mut file = match fs::OpenOptions::new().read(true).write(true).open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    truncate_torn_jsonl_file_tail(&mut file)
+}
+
+fn truncate_torn_jsonl_file_tail(file: &mut fs::File) -> io::Result<()> {
+    const SCAN_CHUNK_BYTES: u64 = 8 * 1024;
+
+    let file_len = file.metadata()?.len();
+    if file_len == 0 {
+        return Ok(());
+    }
+    file.seek(SeekFrom::End(-1))?;
+    let mut final_byte = [0_u8; 1];
+    file.read_exact(&mut final_byte)?;
+    if final_byte[0] == b'\n' {
+        return Ok(());
+    }
+
+    let mut search_end = file_len;
+    let mut buffer = vec![0_u8; SCAN_CHUNK_BYTES as usize];
+    while search_end > 0 {
+        let search_start = search_end.saturating_sub(SCAN_CHUNK_BYTES);
+        let read_len = (search_end - search_start) as usize;
+        file.seek(SeekFrom::Start(search_start))?;
+        file.read_exact(&mut buffer[..read_len])?;
+        if let Some(newline_offset) = buffer[..read_len].iter().rposition(|byte| *byte == b'\n') {
+            file.set_len(search_start + newline_offset as u64 + 1)?;
+            file.seek(SeekFrom::End(0))?;
+            return Ok(());
+        }
+        search_end = search_start;
+    }
+    file.set_len(0)?;
+    file.seek(SeekFrom::Start(0))?;
+    Ok(())
 }
 
 fn rewrite_logged_events<E>(path: &Path, events: &[LoggedEvent<E>]) -> io::Result<()>
