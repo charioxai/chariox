@@ -1,6 +1,34 @@
 use super::*;
 
 #[tokio::test(flavor = "current_thread")]
+async fn normal_project_update_reaches_session_lane_on_default_stack() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let project_id = session.project_id().to_string();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    let request =
+        LocalDaemonRequest::UpdateProjectWorkspaces(crate::local::UpdateProjectWorkspacesRequest {
+            project_id,
+            workspace_ids: vec!["workspace".to_string()],
+        });
+    let command = KernelCommand::from_local_request("project-stack-budget", None, None, &request);
+    assert_eq!(
+        command.priority,
+        crate::runtime::command::KernelCommandPriority::Normal
+    );
+    let response = router
+        .dispatch(command, request)
+        .await
+        .expect("project update should run");
+    assert!(matches!(
+        response,
+        LocalDaemonResponse::ProjectWorkspacesUpdated { .. }
+    ));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn normal_dispatch_keeps_the_request_match_out_of_its_callers_future() {
     let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
