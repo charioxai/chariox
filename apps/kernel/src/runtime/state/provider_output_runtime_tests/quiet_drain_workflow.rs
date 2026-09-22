@@ -28,13 +28,11 @@ fn submit_delivered_prompt_fixture(
 
 #[tokio::test]
 async fn provider_message_completion_without_prompt_completed_settles_after_quiet_drain() {
+    let worktree = crate::test_support::TestWorktree::new("quiet-drain-provider-message");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -124,13 +122,11 @@ async fn provider_message_completion_without_prompt_completed_settles_after_quie
 
 #[tokio::test]
 async fn codex_completion_output_does_not_settle_before_authoritative_turn_completion() {
+    let worktree = crate::test_support::TestWorktree::new("quiet-drain-codex-completion");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-codex-terminal-gate",
-            "worktree-codex-terminal-gate",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -243,13 +239,11 @@ async fn codex_completion_output_does_not_settle_before_authoritative_turn_compl
 
 #[tokio::test]
 async fn metaagent_quiet_drain_settlement_recovers_orphaned_task() {
+    let worktree = crate::test_support::TestWorktree::new("quiet-drain-metaagent");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let agent = app
         .agents_mut()
@@ -347,13 +341,11 @@ async fn metaagent_quiet_drain_settlement_recovers_orphaned_task() {
 
 #[tokio::test]
 async fn provider_quiet_gap_does_not_settle_without_completion_signal() {
+    let worktree = crate::test_support::TestWorktree::new("quiet-drain-provider-gap");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -427,11 +419,9 @@ async fn workflow_prompt_with_completed_tool_advances_when_output_pump_consumed_
     let mut app =
         crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("quiet-drain-workflow-tool");
     let (session, first_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let second_agent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
@@ -714,13 +704,11 @@ async fn workflow_prompt_with_completed_tool_advances_when_output_pump_consumed_
 
 #[tokio::test]
 async fn workflow_prompt_without_structured_output_fails_without_automatic_retry() {
+    let worktree = crate::test_support::TestWorktree::new("quiet-drain-workflow-no-output");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let run = app
         .launch_provider(
@@ -881,13 +869,11 @@ async fn workflow_prompt_without_structured_output_fails_without_automatic_retry
 
 #[tokio::test]
 async fn runtime_owned_invalid_handoff_fails_without_automatic_retry() {
+    let worktree = crate::test_support::TestWorktree::new("quiet-drain-invalid-handoff");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, classifier_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let specialist_agent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
@@ -1088,13 +1074,11 @@ async fn runtime_owned_invalid_handoff_fails_without_automatic_retry() {
 
 #[tokio::test]
 async fn workflow_reasoning_records_thinking_from_prompt_owner_context() {
+    let worktree = crate::test_support::TestWorktree::new("quiet-drain-workflow-reasoning");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let run = app
         .launch_provider(
