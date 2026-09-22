@@ -7,6 +7,8 @@ import test from "node:test"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
+import { createRunner } from "./lib/local-rust-fault-drill-runtime.mjs"
+
 const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./live-slice-save-ack-loss-fault-drill.mjs", import.meta.url))
 
@@ -88,4 +90,26 @@ test("fault-drill failed child preserves status and an early diagnostic after lo
   } finally {
     await rm(root, { recursive: true, force: true })
   }
+})
+
+test("timed-out child is failed closed even when it exits zero after SIGTERM", async () => {
+  const children = new Set()
+  const run = createRunner({ repoRoot: process.cwd(), children })
+  await assert.rejects(
+    run(
+      process.execPath,
+      [
+        "-e",
+        "process.on('SIGTERM', () => {}); setTimeout(() => process.exit(0), 1000)",
+      ],
+      { timeoutMs: 250 },
+    ),
+    (error) => {
+      assert.match(error.message, /exited with timeout/)
+      assert.equal(error.result.code, 0)
+      assert.equal(error.result.timedOut, true)
+      return true
+    },
+  )
+  assert.equal(children.size, 0)
 })

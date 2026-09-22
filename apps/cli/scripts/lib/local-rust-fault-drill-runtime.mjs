@@ -157,7 +157,7 @@ function defaultReportPath(evidenceSubdir, now = new Date()) {
   return path.join(os.homedir(), ".codex", "evidence", "browser-computer-use", evidenceSubdir, stamp, "report.json")
 }
 
-function createRunner({ repoRoot, children }) {
+export function createRunner({ repoRoot, children }) {
   return (command, args, { env = process.env, timeoutMs = 600_000, allowFailure = false, onSpawn } = {}) => (
     new Promise((resolve, reject) => {
       const child = spawn(command, args, {
@@ -193,7 +193,7 @@ function createRunner({ repoRoot, children }) {
           stderr: Buffer.concat(stderr).toString("utf8"),
         }
         result.timedOut = timedOut
-        if (allowFailure || code === 0) resolve(result)
+        if (allowFailure || (!timedOut && code === 0)) resolve(result)
         else {
           const error = new Error(
             `${command} exited with ${timedOut ? "timeout" : signal ? `signal ${signal}` : `code ${code}`}`,
