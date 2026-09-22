@@ -2,13 +2,11 @@ use super::*;
 
 #[tokio::test]
 async fn owned_prompt_mirror_refreshes_projected_external_active_prompt() {
+    let worktree = crate::test_support::TestWorktree::new("pump-selection-external-mirror");
     let mut app =
         DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-owned-external-projection",
-            "worktree-owned-external-projection",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();
@@ -46,13 +44,11 @@ async fn owned_prompt_mirror_refreshes_projected_external_active_prompt() {
 
 #[tokio::test]
 async fn provider_output_pump_ignores_projected_remote_active_run() {
+    let worktree = crate::test_support::TestWorktree::new("pump-selection-remote-run");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, _) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     app.sessions
         .set_active_provider_run(
@@ -78,13 +74,11 @@ async fn provider_output_pump_ignores_projected_remote_active_run() {
 
 #[tokio::test]
 async fn provider_output_pump_treats_unregistered_starting_pty_as_launch_in_progress() {
+    let worktree = crate::test_support::TestWorktree::new("pump-selection-starting-pty");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-starting-provider-pump",
-            "worktree-starting-provider-pump",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
@@ -121,13 +115,11 @@ async fn provider_output_pump_treats_unregistered_starting_pty_as_launch_in_prog
 
 #[tokio::test]
 async fn idle_focus_sync_preserves_downstream_provider_launch_in_progress() {
+    let worktree = crate::test_support::TestWorktree::new("pump-selection-focus-sync");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, focused_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-starting-provider-focus",
-            "worktree-starting-provider-focus",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let downstream_agent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
@@ -219,13 +211,11 @@ async fn idle_focus_sync_preserves_downstream_provider_launch_in_progress() {
 
 #[tokio::test]
 async fn local_provider_launch_preserves_and_restores_projected_remote_predecessor() {
+    let worktree = crate::test_support::TestWorktree::new("pump-selection-remote-predecessor");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, remote_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-remote-predecessor",
-            "worktree-remote-predecessor",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let local_agent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
@@ -323,13 +313,11 @@ async fn local_provider_launch_preserves_and_restores_projected_remote_predecess
 
 #[tokio::test]
 async fn provider_switch_does_not_park_runs_with_active_prompts() {
+    let worktree = crate::test_support::TestWorktree::new("pump-selection-provider-switch");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, first_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -426,13 +414,11 @@ async fn provider_switch_does_not_park_runs_with_active_prompts() {
 
 #[tokio::test]
 async fn provider_output_pump_includes_unfocused_active_prompt_runs() {
+    let worktree = crate::test_support::TestWorktree::new("pump-selection-unfocused");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, first_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -537,13 +523,11 @@ async fn provider_output_pump_includes_unfocused_active_prompt_runs() {
 
 #[tokio::test]
 async fn provider_output_pump_includes_runs_with_pending_git_snapshots() {
+    let worktree = crate::test_support::TestWorktree::new("pump-selection-git-snapshot");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
 
     let provider_run = app
