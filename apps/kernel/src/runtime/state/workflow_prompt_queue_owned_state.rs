@@ -542,8 +542,7 @@ impl KernelRuntimeOwnedState {
             session_id,
             "workflow_live_orphan_reconciled",
             activity_mutation,
-        )
-        {
+        ) {
             crate::logging::warn_with_fields(
                 "daemon.runtime",
                 "live workflow orphan reconciliation persistence failed",
@@ -622,8 +621,7 @@ impl KernelRuntimeOwnedState {
                 &plan.session_id,
                 "workflow_watchdog_prompt_enqueued",
                 |sessions| {
-                    if !sessions
-                        .workflow_watchdog_can_start(&plan.session_id, &plan.watchdog_id)?
+                    if !sessions.workflow_watchdog_can_start(&plan.session_id, &plan.watchdog_id)?
                         || sessions.has_queued_workflow_prompt_for_watchdog(
                             &plan.session_id,
                             &plan.watchdog_id,
@@ -640,10 +638,7 @@ impl KernelRuntimeOwnedState {
                         crate::session::WorkflowQueuedPromptSource::Scheduled,
                         Some(plan.watchdog_id.clone()),
                     )?;
-                    sessions.mark_workflow_watchdog_queued(
-                        &plan.session_id,
-                        &plan.watchdog_id,
-                    )?;
+                    sessions.mark_workflow_watchdog_queued(&plan.session_id, &plan.watchdog_id)?;
                     Ok(Some(()))
                 },
             )?;
@@ -680,9 +675,7 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
         reason: &str,
-        admit: impl FnOnce(
-            &mut crate::session::SessionService,
-        ) -> Result<Option<T>, DaemonError>,
+        admit: impl FnOnce(&mut crate::session::SessionService) -> Result<Option<T>, DaemonError>,
     ) -> Result<Option<T>, DaemonError> {
         let activity_mutation = self.begin_managed_activity_mutation();
         let durable_state_store = self.durable_state_store.clone();
@@ -711,6 +704,50 @@ impl KernelRuntimeOwnedState {
         if admitted.is_some() {
             activity_mutation.record();
             // Publication is deliberately after durable admission and activity capture.
+            self.session_snapshot(session_id)?;
+        }
+        Ok(admitted)
+    }
+
+    /// Promote one queued Meta task without exposing a rejected durable removal.
+    fn admit_next_queued_metaagent_task_transaction(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<crate::session::QueuedMetaagentTask>, DaemonError> {
+        let activity_mutation = self.begin_managed_activity_mutation();
+        let durable_state_store = self.durable_state_store.clone();
+        let admitted = durable_state_store.with_workflow_runtime_transition_lock(|| {
+            let mut sessions = self.session_store.write();
+            let session_before_admission = sessions.get_session(session_id)?;
+            let task = match sessions.pop_next_queued_metaagent_task(session_id) {
+                Ok(task) => task,
+                Err(error) => {
+                    sessions.restore_session(session_before_admission);
+                    return Err(error);
+                }
+            };
+            let Some(task) = task else {
+                return Ok(None);
+            };
+            let mut durable_session = sessions.get_session(session_id)?;
+            durable_session.set_agents(self.agent_store.get_session_agents(session_id));
+            self.project_session_runtime_view(&mut durable_session);
+            if let Err(error) = durable_state_store.append_event(
+                "session.updated",
+                Some(session_id.to_string()),
+                serde_json::json!({
+                    "session": &durable_session,
+                    "reason": "metaagent_queued_task_promoted",
+                }),
+            ) {
+                sessions.restore_session(session_before_admission);
+                return Err(error);
+            }
+            Ok(Some(task))
+        })?;
+        if admitted.is_some() {
+            activity_mutation.record();
+            // Publication follows durable ownership transfer and runs without admission guards.
             self.session_snapshot(session_id)?;
         }
         Ok(admitted)
@@ -955,9 +992,11 @@ impl KernelRuntimeOwnedState {
         loop {
             self.workflow_ensure_dispatchable_runtime_instance(session_id)?;
             let Some((queued_prompt, workflow_run, workflow, endpoint)) = self
-                .session_store
-                .write()
-                .dequeue_next_workflow_prompt_and_create_run(session_id)?
+                .workflow_admit_prompt_transaction(
+                    session_id,
+                    "workflow_queued_prompt_promoted",
+                    |sessions| sessions.dequeue_next_workflow_prompt_and_create_run(session_id),
+                )?
             else {
                 return Ok((None, accumulated));
             };
@@ -1004,11 +1043,11 @@ impl KernelRuntimeOwnedState {
                 );
                 return accumulated;
             }
-            let next_workflow = {
-                self.session_store
-                    .write()
-                    .dequeue_next_workflow_prompt_and_create_run(session_id)
-            };
+            let next_workflow = self.workflow_admit_prompt_transaction(
+                session_id,
+                "workflow_queued_prompt_promoted",
+                |sessions| sessions.dequeue_next_workflow_prompt_and_create_run(session_id),
+            );
             let (queued_prompt, workflow_run, workflow, endpoint) = match next_workflow {
                 Ok(Some(claimed)) => claimed,
                 Ok(None) => {
@@ -1029,10 +1068,8 @@ impl KernelRuntimeOwnedState {
                     if queued_metaagent_is_busy {
                         return accumulated;
                     }
-                    let queued_metaagent_task = self
-                        .session_store
-                        .write()
-                        .pop_next_queued_metaagent_task(session_id);
+                    let queued_metaagent_task =
+                        self.admit_next_queued_metaagent_task_transaction(session_id);
                     return match queued_metaagent_task {
                         Ok(Some(task)) => {
                             accumulated.starting_metaagent_tasks.push(task);
@@ -1159,11 +1196,13 @@ impl KernelRuntimeOwnedState {
             )
         };
         if update.is_ok() {
-            if let Err(persist_error) = self.persist_workflow_runtime_session_with_activity_mutation(
-                session_id,
-                "workflow_watchdog_launch_failed",
-                activity_mutation,
-            ) {
+            if let Err(persist_error) = self
+                .persist_workflow_runtime_session_with_activity_mutation(
+                    session_id,
+                    "workflow_watchdog_launch_failed",
+                    activity_mutation,
+                )
+            {
                 crate::logging::warn_with_fields(
                     "daemon.runtime",
                     "workflow watchdog failure persistence failed",

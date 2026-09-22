@@ -90,10 +90,7 @@ async fn invoke_append_failure_rolls_back_before_snapshot_and_retries_once() {
         .execute_batch("DROP TRIGGER fail_workflow_invoke_append;")
         .expect("invoke append failure trigger should be removed");
     let (retried, projected) = runtime
-        .execute_workflow_invoke_endpoint_request(
-            request,
-            crate::session::DEFAULT_LOCAL_USER_ID,
-        )
+        .execute_workflow_invoke_endpoint_request(request, crate::session::DEFAULT_LOCAL_USER_ID)
         .await;
     let queued_prompt_id = match retried.expect("invoke retry should succeed") {
         crate::local::LocalDaemonResponse::WorkflowPromptEnqueued { queued_prompt, .. } => {
@@ -103,7 +100,10 @@ async fn invoke_append_failure_rolls_back_before_snapshot_and_retries_once() {
     };
     let projected = projected.expect("successful retry should return a projection snapshot");
     assert_eq!(projected.workflow_queued_prompts().len(), 1);
-    assert_eq!(projected.workflow_queued_prompts()[0].id(), queued_prompt_id);
+    assert_eq!(
+        projected.workflow_queued_prompts()[0].id(),
+        queued_prompt_id
+    );
     assert!(projected.workflow_runs().is_empty());
 
     let owner_id = projected.host_daemon_id().to_string();
@@ -295,12 +295,7 @@ fn assert_workflow_queue_promotion_append_failure_is_retryable(requested: bool) 
         .owned
         .session_store
         .write()
-        .create_workflow_prompt_queue(
-            &session_id,
-            &workflow_id,
-            "held".to_string(),
-            -10,
-        )
+        .create_workflow_prompt_queue(&session_id, &workflow_id, "held".to_string(), -10)
         .expect("held queue should create");
     runtime
         .owned
@@ -414,7 +409,10 @@ fn assert_workflow_queue_promotion_append_failure_is_retryable(requested: bool) 
         .owned
         .session_snapshot(&session_id)
         .expect("later snapshot should remain available");
-    assert_eq!(later.workflow_queued_prompts(), before.workflow_queued_prompts());
+    assert_eq!(
+        later.workflow_queued_prompts(),
+        before.workflow_queued_prompts()
+    );
     assert!(later.workflow_runs().is_empty());
     assert_eq!(
         runtime.managed_activity_change_sequence(),
@@ -436,8 +434,7 @@ fn assert_workflow_queue_promotion_append_failure_is_retryable(requested: bool) 
         let outcome = outcome.expect("retry should own one promoted run");
         let workflow_run = match outcome {
             crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
-                workflow_run,
-                ..
+                workflow_run, ..
             } => workflow_run,
             crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued { .. } => {
                 panic!("retry must report the promoted prompt's run")
@@ -610,7 +607,10 @@ fn meta_queue_promotion_append_failure_rolls_back_and_retries_once() {
         .owned
         .session_snapshot(&session_id)
         .expect("later snapshot should remain available");
-    assert_eq!(later.queued_metaagent_tasks(), before.queued_metaagent_tasks());
+    assert_eq!(
+        later.queued_metaagent_tasks(),
+        before.queued_metaagent_tasks()
+    );
     assert_eq!(
         runtime.managed_activity_change_sequence(),
         activity_sequence
@@ -1410,8 +1410,7 @@ fn deleting_session_removes_registered_workflow_runtime_worktrees() {
 
 #[tokio::test]
 async fn pool_clone_binds_exact_stable_account_and_launch_ignores_later_default_change() {
-    let (runtime, session_id, _workflow_id, _endpoint_id, test_root) =
-        runtime_with_idle_workflow();
+    let (runtime, session_id, _workflow_id, _endpoint_id, test_root) = runtime_with_idle_workflow();
     let clone_worktree = test_root.0.join("clone-a");
     std::fs::create_dir_all(&clone_worktree).expect("clone test worktree should exist");
 
