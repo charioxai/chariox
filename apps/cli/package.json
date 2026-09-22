@@ -51,6 +51,7 @@
     "browser-download:disk-fault-drill": "node scripts/live-browser-download-disk-fault-drill.mjs",
     "slice:resource-exhaustion-fault-drill": "node scripts/live-resource-exhaustion-fault-drill.mjs",
     "browser-computer:fixture": "node scripts/live-browser-computer-fixture.mjs",
+    "browser-computer:m0:red-cap": "node scripts/live-browser-computer-red-cap.mjs",
     "browser-computer:persistence-drill": "node scripts/live-docker-slice-browser-state-drill.mjs",
     "browser-computer:soak": "node scripts/live-browser-computer-soak.mjs",
     "test:browser-computer-soak": "node --test scripts/lib/browser-computer-soak.test.mjs",
