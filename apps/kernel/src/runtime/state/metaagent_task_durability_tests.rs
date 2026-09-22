@@ -215,3 +215,156 @@ async fn meta_block_task_append_failure_is_retryable() {
     )
     .await;
 }
+
+async fn assert_meta_request_append_failure_rolls_back(kind: &str) {
+    let (runtime, _, session_id, agent_id) = meta_runtime();
+    if kind == "resume" {
+        runtime
+            .owned
+            .session_store
+            .write()
+            .set_metaagent_task_status(&session_id, &agent_id, MetaagentTaskStatus::Paused)
+            .expect("resume fixture should start paused");
+    }
+    runtime
+        .ensure_managed_activity_tracking("meta-request-durability")
+        .expect("activity tracking should activate");
+    let before = runtime
+        .owned
+        .session_snapshot(&session_id)
+        .expect("baseline should project");
+    let activity_sequence = runtime.managed_activity_change_sequence();
+    let projection_sequence = runtime.owned.session_projection.change_sequence();
+    let request = match kind {
+        "update" => {
+            LocalDaemonRequest::UpdateMetaagentTask(crate::local::UpdateMetaagentTaskRequest {
+                session_id: session_id.clone(),
+                metaagent_id: agent_id.clone(),
+                task_markdown: Some("Changed task".to_string()),
+                plan_markdown: Some("Changed plan".to_string()),
+            })
+        }
+        "pause" => {
+            LocalDaemonRequest::PauseMetaagentTask(crate::local::PauseMetaagentTaskRequest {
+                session_id: session_id.clone(),
+                metaagent_id: agent_id.clone(),
+            })
+        }
+        "resume" => {
+            LocalDaemonRequest::ResumeMetaagentTask(crate::local::ResumeMetaagentTaskRequest {
+                session_id: session_id.clone(),
+                metaagent_id: agent_id.clone(),
+            })
+        }
+        "abort" => {
+            LocalDaemonRequest::AbortMetaagentTask(crate::local::AbortMetaagentTaskRequest {
+                session_id: session_id.clone(),
+                metaagent_id: agent_id.clone(),
+                reason: Some("User cancelled".to_string()),
+            })
+        }
+        _ => panic!("unknown meta request fixture"),
+    };
+    let connection = rusqlite::Connection::open(runtime.owned.durable_state_store.path())
+        .expect("failure injection connection should open");
+    connection
+        .execute_batch(
+            "CREATE TRIGGER fail_meta_request_append BEFORE INSERT ON durable_state_events
+         WHEN NEW.kind = 'session.updated'
+         BEGIN SELECT RAISE(FAIL, 'injected meta request append failure'); END;",
+        )
+        .expect("append failure should install");
+
+    let error = runtime
+        .execute_metaagent_task_request(request.clone())
+        .await
+        .expect_err("failed append must reject the request");
+    assert!(
+        error
+            .to_string()
+            .contains("injected meta request append failure"),
+        "{error}"
+    );
+    let raw = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .expect("session should exist");
+    assert_eq!(
+        serde_json::to_value(raw.metaagent_task(&agent_id)).unwrap(),
+        serde_json::to_value(before.metaagent_task(&agent_id)).unwrap(),
+        "failed request must restore the entire task, including both edits and revision"
+    );
+    assert!(runtime
+        .owned
+        .agent_store
+        .get_agent(&agent_id)
+        .unwrap()
+        .is_metaagent());
+    assert_eq!(
+        runtime.managed_activity_change_sequence(),
+        activity_sequence
+    );
+    assert_eq!(
+        runtime.owned.session_projection.change_sequence(),
+        projection_sequence
+    );
+    assert!(
+        runtime.owned.provider_store.list_runs().is_empty(),
+        "rejected requests must not dispatch provider work"
+    );
+    let projected = runtime
+        .owned
+        .session_snapshot(&session_id)
+        .expect("later snapshot should work");
+    assert_eq!(
+        serde_json::to_value(projected.metaagent_task(&agent_id)).unwrap(),
+        serde_json::to_value(before.metaagent_task(&agent_id)).unwrap()
+    );
+    connection
+        .execute_batch("DROP TRIGGER fail_meta_request_append;")
+        .expect("failure should clear");
+    // These two commands have no notification launch on success, so also exercise their retry
+    // without starting a provider. Update/resume notification delivery has separate tests.
+    if matches!(kind, "pause" | "abort") {
+        runtime
+            .execute_metaagent_task_request(request)
+            .await
+            .expect("request should retry");
+        let task = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap()
+            .metaagent_task(&agent_id)
+            .cloned()
+            .unwrap();
+        let expected = if kind == "pause" {
+            MetaagentTaskStatus::Paused
+        } else {
+            MetaagentTaskStatus::Aborted
+        };
+        assert_eq!(task.status(), expected);
+        assert!(runtime.owned.provider_store.list_runs().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn meta_update_request_append_failure_rolls_back() {
+    assert_meta_request_append_failure_rolls_back("update").await;
+}
+
+#[tokio::test]
+async fn meta_pause_request_append_failure_rolls_back() {
+    assert_meta_request_append_failure_rolls_back("pause").await;
+}
+
+#[tokio::test]
+async fn meta_resume_request_append_failure_rolls_back() {
+    assert_meta_request_append_failure_rolls_back("resume").await;
+}
+
+#[tokio::test]
+async fn meta_abort_request_append_failure_rolls_back() {
+    assert_meta_request_append_failure_rolls_back("abort").await;
+}
