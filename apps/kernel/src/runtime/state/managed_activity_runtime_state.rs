@@ -29,13 +29,7 @@ impl KernelRuntimeState {
 
     pub(crate) fn managed_activity_report_snapshot(
         &self,
-    ) -> Result<
-        (
-            u64,
-            super::ManagedActivityObservation,
-        ),
-        crate::error::DaemonError,
-    > {
+    ) -> Result<(u64, super::ManagedActivityObservation), crate::error::DaemonError> {
         loop {
             let (sequence, running_agent_count) = self.managed_activity_snapshot();
             match self
@@ -85,10 +79,7 @@ impl KernelRuntimeState {
     }
 
     #[cfg(test)]
-    pub(crate) fn clear_prompt_activity_for_managed_activity_test(
-        &self,
-        provider_run_id: &str,
-    ) {
+    pub(crate) fn clear_prompt_activity_for_managed_activity_test(&self, provider_run_id: &str) {
         let _ = self.owned.clear_prompt_activity(provider_run_id);
     }
 }
@@ -111,19 +102,20 @@ impl KernelRuntimeOwnedState {
         if !self.managed_activity_transitions.is_enabled() {
             return;
         }
-        let runtime_sequence = self.runtime_projection_changes.sequence();
-        let running_agent_count = self.managed_running_agent_count();
-        if let Err(error) = self.managed_activity_transitions.record_transition(
-            runtime_sequence,
-            running_agent_count,
-            crate::session::unix_epoch_ms(),
-        ) {
+        if let Err(error) = self
+            .managed_activity_transitions
+            .record_current_transition(|| {
+                (
+                    self.runtime_projection_changes.sequence(),
+                    self.managed_running_agent_count(),
+                    crate::session::unix_epoch_ms(),
+                )
+            })
+        {
             crate::logging::error_with_fields(
                 "managed_kernel.activity",
                 "managed activity transition could not be persisted",
                 serde_json::json!({
-                    "runtime_sequence": runtime_sequence,
-                    "running_agent_count": running_agent_count,
                     "error": error.to_string(),
                 }),
             );
@@ -280,11 +272,10 @@ mod tests {
             ));
         runtime.record_managed_activity_transition_for_test();
         runtime.owned.runtime_projection_changes.record_change();
-        let (_, latest) =
-            tokio::time::timeout(std::time::Duration::from_secs(1), wait)
-                .await
-                .expect("real activity transition should wake")
-                .expect("activity transition should remain readable");
+        let (_, latest) = tokio::time::timeout(std::time::Duration::from_secs(1), wait)
+            .await
+            .expect("real activity transition should wake")
+            .expect("activity transition should remain readable");
         assert_eq!(latest.running_agent_count, 1);
     }
 

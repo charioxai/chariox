@@ -9,7 +9,8 @@ use crate::error::DaemonError;
 const MANAGED_ACTIVITY_EVENT_KIND: &str = "managed_kernel.activity.changed";
 const MAX_PENDING_ACTIVITY_TRANSITIONS: usize = 256;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct ManagedActivityObservation {
     pub(crate) running_agent_count: u8,
     pub(crate) changed_at_ms: u64,
@@ -23,11 +24,19 @@ struct PersistedManagedActivityTransition {
     activity_changed_at_ms: u64,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingManagedActivityTransitions {
+    kernel_id: String,
+    observations: VecDeque<ManagedActivityObservation>,
+}
+
 #[derive(Debug, Default)]
 struct ManagedActivityTransitionInner {
     restored: bool,
     latest_durable: Option<ManagedActivityObservation>,
     pending: VecDeque<ManagedActivityObservation>,
+    pending_journal_dirty: bool,
     last_runtime_sequence: u64,
 }
 
@@ -78,24 +87,36 @@ impl ManagedActivityTransitionState {
         }
     }
 
-    pub(super) fn record_transition(
+    #[cfg(test)]
+    fn record_transition(
         &self,
         runtime_sequence: u64,
         running_agent_count: u8,
         changed_at_ms: u64,
     ) -> Result<Option<ManagedActivityObservation>, DaemonError> {
+        self.record_current_transition(|| (runtime_sequence, running_agent_count, changed_at_ms))
+    }
+
+    pub(super) fn record_current_transition(
+        &self,
+        sample: impl FnOnce() -> (u64, u8, u64),
+    ) -> Result<Option<ManagedActivityObservation>, DaemonError> {
         let Some(kernel_id) = self.kernel_id() else {
             return Ok(None);
         };
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("managed activity transition mutex poisoned");
+        // Sample while holding the same lock as persistence. Sampling first permits
+        // a delayed caller to append stale busy state after a newer idle transition,
+        // even at the same projection sequence.
+        let (runtime_sequence, running_agent_count, changed_at_ms) = sample();
         if running_agent_count > 1 {
             return Err(activity_state_error(
                 "managed activity running-agent count is not binary",
             ));
         }
-        let mut inner = self
-            .inner
-            .lock()
-            .expect("managed activity transition mutex poisoned");
         self.restore_locked(&kernel_id, &mut inner)?;
         if runtime_sequence < inner.last_runtime_sequence {
             return Ok(inner.pending.back().copied().or(inner.latest_durable));
@@ -120,6 +141,7 @@ impl ManagedActivityTransitionState {
             running_agent_count,
             changed_at_ms,
         });
+        inner.pending_journal_dirty = true;
         self.flush_pending_locked(&kernel_id, &mut inner)?;
         Ok(inner.latest_durable)
     }
@@ -168,14 +190,13 @@ impl ManagedActivityTransitionState {
             .load_subject_events_by_kind(kernel_id, MANAGED_ACTIVITY_EVENT_KIND, 1)?
             .pop()
             .map(|event| {
-                let persisted = serde_json::from_value::<PersistedManagedActivityTransition>(
-                    event.payload,
-                )
-                .map_err(|error| {
-                    activity_state_error(format!(
-                        "could not decode managed activity transition: {error}"
-                    ))
-                })?;
+                let persisted =
+                    serde_json::from_value::<PersistedManagedActivityTransition>(event.payload)
+                        .map_err(|error| {
+                            activity_state_error(format!(
+                                "could not decode managed activity transition: {error}"
+                            ))
+                        })?;
                 if persisted.kernel_id != kernel_id
                     || persisted.running_agent_count > 1
                     || persisted.activity_changed_at_ms == 0
@@ -190,8 +211,73 @@ impl ManagedActivityTransitionState {
                 })
             })
             .transpose()?;
+        let mut pending = match std::fs::read(self.pending_journal_path()) {
+            Ok(bytes) => {
+                let journal: PendingManagedActivityTransitions = serde_json::from_slice(&bytes)
+                    .map_err(|error| {
+                        activity_state_error(format!("invalid activity journal: {error}"))
+                    })?;
+                if journal.kernel_id != kernel_id
+                    || journal.observations.len() > MAX_PENDING_ACTIVITY_TRANSITIONS
+                    || journal.observations.iter().any(|observation| {
+                        observation.running_agent_count > 1 || observation.changed_at_ms == 0
+                    })
+                {
+                    return Err(activity_state_error(
+                        "activity journal identity or observations are invalid",
+                    ));
+                }
+                journal.observations
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => VecDeque::new(),
+            Err(error) => {
+                return Err(activity_state_error(format!(
+                    "could not read activity journal: {error}"
+                )))
+            }
+        };
+        // A crash can occur after the database commits but before the pending journal
+        // is cleared. Trim that acknowledged prefix instead of replaying older clocks.
+        inner.pending_journal_dirty = !pending.is_empty();
+        if let Some(index) =
+            latest.and_then(|latest| pending.iter().rposition(|item| *item == latest))
+        {
+            pending.drain(..=index);
+        }
+        inner.pending = pending;
         inner.latest_durable = latest;
         inner.restored = true;
+        Ok(())
+    }
+
+    fn pending_journal_path(&self) -> std::path::PathBuf {
+        self.store
+            .path()
+            .with_extension("managed-activity.pending.json")
+    }
+
+    fn persist_pending_locked(
+        &self,
+        kernel_id: &str,
+        inner: &mut ManagedActivityTransitionInner,
+    ) -> Result<(), DaemonError> {
+        if !inner.pending_journal_dirty {
+            return Ok(());
+        }
+        let payload = serde_json::to_vec(&PendingManagedActivityTransitions {
+            kernel_id: kernel_id.to_string(),
+            observations: inner.pending.clone(),
+        })
+        .map_err(|error| {
+            activity_state_error(format!("could not encode activity journal: {error}"))
+        })?;
+        // The existing private-file helper fsyncs both the atomic replacement and
+        // parent directory. This kernel-owned outbox retains T0 when SQLite rejects
+        // an append and the process exits before an in-memory retry succeeds.
+        crate::config::write_private_file(&self.pending_journal_path(), &payload).map_err(
+            |error| activity_state_error(format!("could not persist activity journal: {error}")),
+        )?;
+        inner.pending_journal_dirty = false;
         Ok(())
     }
 
@@ -200,6 +286,7 @@ impl ManagedActivityTransitionState {
         kernel_id: &str,
         inner: &mut ManagedActivityTransitionInner,
     ) -> Result<(), DaemonError> {
+        self.persist_pending_locked(kernel_id, inner)?;
         while let Some(observation) = inner.pending.front().copied() {
             self.store.append_event(
                 MANAGED_ACTIVITY_EVENT_KIND,
@@ -217,8 +304,9 @@ impl ManagedActivityTransitionState {
             )?;
             inner.latest_durable = Some(observation);
             inner.pending.pop_front();
+            inner.pending_journal_dirty = true;
         }
-        Ok(())
+        self.persist_pending_locked(kernel_id, inner)
     }
 }
 
@@ -234,13 +322,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn activity_observation_is_sampled_under_transition_lock() {
+        let state_path = test_state_path("serialized-sample");
+        let store = DurableKernelStateStore::open(state_path.clone()).expect("open store");
+        let state =
+            ManagedActivityTransitionState::new(store.clone(), Some("kernel-sample".into()));
+        state
+            .record_current_transition(|| {
+                assert!(
+                    state.inner.try_lock().is_err(),
+                    "sample must not precede the persistence lock"
+                );
+                (0, 1, 1_000)
+            })
+            .expect("busy sample");
+        state
+            .record_current_transition(|| (0, 0, 2_000))
+            .expect("same-sequence idle sample");
+        assert_eq!(
+            state
+                .current_observation(0)
+                .expect("latest idle")
+                .changed_at_ms,
+            2_000
+        );
+        drop(state);
+        drop(store);
+        remove_test_state(&state_path);
+    }
+
+    #[test]
     fn rapid_busy_idle_cycle_is_durable_before_reporter_polling() {
         let state_path = test_state_path("rapid-cycle");
         let store = DurableKernelStateStore::open(state_path.clone()).expect("open state store");
-        let state = ManagedActivityTransitionState::new(
-            store.clone(),
-            Some("kernel-rapid".to_string()),
-        );
+        let state =
+            ManagedActivityTransitionState::new(store.clone(), Some("kernel-rapid".to_string()));
 
         assert_eq!(
             state.record_transition(0, 0, 1_000).expect("baseline"),
@@ -257,11 +373,7 @@ mod tests {
             .expect("idle transition");
 
         let events = store
-            .load_subject_events_by_kind(
-                "kernel-rapid",
-                MANAGED_ACTIVITY_EVENT_KIND,
-                10,
-            )
+            .load_subject_events_by_kind("kernel-rapid", MANAGED_ACTIVITY_EVENT_KIND, 10)
             .expect("load activity transitions");
         assert_eq!(events.len(), 3);
         assert_eq!(events[1].payload["activityChangedAtMs"], 2_000);
@@ -288,16 +400,24 @@ mod tests {
         );
         state.record_transition(0, 0, 1_000).expect("initial idle");
         let database = rusqlite::Connection::open(&state_path).expect("open failure injector");
-        database.execute_batch(
-            "CREATE TRIGGER fail_activity BEFORE INSERT ON durable_state_events
+        database
+            .execute_batch(
+                "CREATE TRIGGER fail_activity BEFORE INSERT ON durable_state_events
              WHEN NEW.kind = 'managed_kernel.activity.changed'
              BEGIN SELECT RAISE(FAIL, 'injected activity append failure'); END;",
-        ).expect("install failure");
-        state.record_transition(1, 1, 2_000).expect_err("busy append fails");
-        state.record_transition(2, 0, 3_000).expect_err("idle append fails");
+            )
+            .expect("install failure");
+        state
+            .record_transition(1, 1, 2_000)
+            .expect_err("busy append fails");
+        state
+            .record_transition(2, 0, 3_000)
+            .expect_err("idle append fails");
         drop(state);
         drop(store);
-        database.execute_batch("DROP TRIGGER fail_activity;").expect("recover storage");
+        database
+            .execute_batch("DROP TRIGGER fail_activity;")
+            .expect("recover storage");
         drop(database);
 
         let store = DurableKernelStateStore::open(state_path.clone()).expect("reopen store");
@@ -305,12 +425,94 @@ mod tests {
             store.clone(),
             Some("kernel-failed-append".to_string()),
         );
-        assert_eq!(state.current_observation(0).expect("recover original idle"),
-            ManagedActivityObservation { running_agent_count: 0, changed_at_ms: 3_000 });
-        let events = store.load_subject_events_by_kind(
-            "kernel-failed-append", MANAGED_ACTIVITY_EVENT_KIND, 10,
-        ).expect("read transitions");
-        assert_eq!(events.len(), 3, "retain both transitions from the busy/idle cycle");
+        assert_eq!(
+            state.current_observation(0).expect("recover original idle"),
+            ManagedActivityObservation {
+                running_agent_count: 0,
+                changed_at_ms: 3_000
+            }
+        );
+        let events = store
+            .load_subject_events_by_kind("kernel-failed-append", MANAGED_ACTIVITY_EVENT_KIND, 10)
+            .expect("read transitions");
+        assert_eq!(
+            events.len(),
+            3,
+            "retain both transitions from the busy/idle cycle"
+        );
+        drop(state);
+        drop(store);
+        remove_test_state(&state_path);
+    }
+
+    #[test]
+    fn restart_trims_committed_journal_prefix_without_replaying_older_activity() {
+        let state_path = test_state_path("journal-prefix");
+        let store = DurableKernelStateStore::open(state_path.clone()).expect("open store");
+        let state =
+            ManagedActivityTransitionState::new(store.clone(), Some("kernel-prefix".into()));
+        state.record_transition(0, 0, 1_000).expect("idle");
+        state.record_transition(1, 1, 2_000).expect("busy");
+        let pending = PendingManagedActivityTransitions {
+            kernel_id: "kernel-prefix".into(),
+            observations: VecDeque::from([
+                ManagedActivityObservation {
+                    running_agent_count: 0,
+                    changed_at_ms: 1_000,
+                },
+                ManagedActivityObservation {
+                    running_agent_count: 1,
+                    changed_at_ms: 2_000,
+                },
+                ManagedActivityObservation {
+                    running_agent_count: 0,
+                    changed_at_ms: 3_000,
+                },
+            ]),
+        };
+        crate::config::write_private_file(
+            &state.pending_journal_path(),
+            &serde_json::to_vec(&pending).unwrap(),
+        )
+        .expect("model crash after partial database commit");
+        drop(state);
+        let restored =
+            ManagedActivityTransitionState::new(store.clone(), Some("kernel-prefix".into()));
+        assert_eq!(
+            restored
+                .current_observation(0)
+                .expect("recovered final idle")
+                .changed_at_ms,
+            3_000
+        );
+        assert_eq!(
+            store
+                .load_subject_events_by_kind("kernel-prefix", MANAGED_ACTIVITY_EVENT_KIND, 10)
+                .expect("read persisted events")
+                .len(),
+            3,
+            "do not duplicate committed transitions"
+        );
+        drop(restored);
+        drop(store);
+        remove_test_state(&state_path);
+    }
+
+    #[test]
+    fn activity_journal_rejects_foreign_kernel_identity() {
+        let state_path = test_state_path("foreign-journal");
+        let store = DurableKernelStateStore::open(state_path.clone()).expect("open store");
+        let state = ManagedActivityTransitionState::new(store.clone(), Some("kernel-owner".into()));
+        crate::config::write_private_file(
+            &state.pending_journal_path(),
+            br#"{"kernelId":"foreign","observations":[]}"#,
+        )
+        .expect("write foreign journal");
+        assert!(state
+            .current_observation(0)
+            .expect_err("reject foreign journal")
+            .to_string()
+            .contains("identity"));
         drop(state);
         drop(store);
         remove_test_state(&state_path);
@@ -322,10 +524,8 @@ mod tests {
         {
             let store =
                 DurableKernelStateStore::open(state_path.clone()).expect("open first state store");
-            let state = ManagedActivityTransitionState::new(
-                store,
-                Some("kernel-restart".to_string()),
-            );
+            let state =
+                ManagedActivityTransitionState::new(store, Some("kernel-restart".to_string()));
             state.record_transition(0, 1, 10_000).expect("busy");
             state.record_transition(1, 0, 20_000).expect("idle");
             assert_eq!(
@@ -339,10 +539,8 @@ mod tests {
         {
             let store = DurableKernelStateStore::open(state_path.clone())
                 .expect("reopen state store after kernel restart");
-            let restored = ManagedActivityTransitionState::new(
-                store,
-                Some("kernel-restart".to_string()),
-            );
+            let restored =
+                ManagedActivityTransitionState::new(store, Some("kernel-restart".to_string()));
             assert_eq!(
                 restored.current_observation(0).expect("restored idle"),
                 ManagedActivityObservation {
@@ -398,6 +596,7 @@ mod tests {
     }
 
     fn remove_test_state(path: &std::path::Path) {
+        let _ = std::fs::remove_file(path.with_extension("managed-activity.pending.json"));
         let _ = std::fs::remove_file(path);
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
         let _ = std::fs::remove_file(format!("{}-wal", path.display()));
