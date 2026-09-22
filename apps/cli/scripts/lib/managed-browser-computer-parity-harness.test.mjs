@@ -1,10 +1,15 @@
 import assert from "node:assert/strict"
+import { createHash } from "node:crypto"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import { test } from "node:test"
 
 import {
   MANAGED_BROWSER_COMPUTER_PARITY_SCHEMA,
   runManagedBrowserComputerParityHarness,
 } from "./managed-browser-computer-parity-harness.mjs"
+import { loadReviewedManagedParityInspectorModule } from "./managed-browser-computer-parity-cli.mjs"
 
 const OSS_SHA = "1".repeat(40)
 const CLOUD_SHA = "2".repeat(40)
@@ -171,6 +176,66 @@ test("managed parity harness accepts Selkies only after all released Web and TUI
     "web", "local_tui", "remote_tui",
     "web", "local_tui", "remote_tui",
   ])
+})
+
+test("invalid or missing required inspector fails admission before product work but still runs cleanup", async () => {
+  const inspectorConfig = {
+    identity: "reviewed-inspector-v1",
+    sha256: `sha256:${"a".repeat(64)}`,
+  }
+  for (const inspector of [
+    {
+      authority: { kind: "independent-product-inspector", ...inspectorConfig },
+      async run() { throw new Error("must not inspect after invalid admission") },
+    },
+    null,
+  ]) {
+    const injected = transport()
+    const report = await runManagedBrowserComputerParityHarness({
+      config: config({ inspector: inspectorConfig }),
+      transport: injected,
+      ...(inspector ? {
+        inspector,
+        inspectorVerification: { ...inspectorConfig, verifiedBy: "chariox-harness-loader" },
+      } : {}),
+    })
+    assert.equal(report.status, "failed")
+    assert.equal(report.failure.code, inspector ? "reviewed_inspector_verification_required" : "independent_cleanup_inspector_required")
+    assert.deepEqual(injected.calls.map(({ step }) => step), ["cleanup.perform", "cleanup.inspect"])
+  }
+})
+
+test("a loader-proven independent inspector owns the final cleanup inventory", async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-managed-parity-harness-inspector-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const modulePath = path.join(root, "inspector.mjs")
+  const source = 'export const MANAGED_BROWSER_COMPUTER_PARITY_INSPECTOR_IDENTITY = "reviewed-inspector-v1"\n'
+  await writeFile(modulePath, source, { mode: 0o600 })
+  const inspectorConfig = {
+    identity: "reviewed-inspector-v1",
+    sha256: `sha256:${createHash("sha256").update(source).digest("hex")}`,
+  }
+  const { verification } = await loadReviewedManagedParityInspectorModule(modulePath, inspectorConfig)
+  const inspectorCalls = []
+  const inspector = {
+    authority: { kind: "independent-product-inspector", ...inspectorConfig },
+    async run(step, input) {
+      inspectorCalls.push({ step, input })
+      assert.equal(step, "cleanup.inspect")
+      return cleanInventory()
+    },
+  }
+  const injected = transport()
+  const report = await runManagedBrowserComputerParityHarness({
+    config: config({ inspector: inspectorConfig }),
+    transport: injected,
+    inspector,
+    inspectorVerification: verification,
+  })
+  assert.equal(report.status, "passed")
+  assert.equal(report.cleanup.independent, true)
+  assert.deepEqual(inspectorCalls.map(({ step }) => step), ["cleanup.inspect"])
+  assert.equal(injected.calls.some(({ step }) => step === "cleanup.inspect"), false)
 })
 
 test("managed parity harness rejects a run id that could escape its evidence root", async () => {

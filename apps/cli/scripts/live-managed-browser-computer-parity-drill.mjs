@@ -23,6 +23,7 @@ import {
 } from "./lib/browser-computer-drill-guard.mjs"
 import {
   loadReviewedManagedParityAdapterModule,
+  loadReviewedManagedParityInspectorModule,
   parseManagedBrowserComputerParityArgs,
   readPrivateManagedParityConfig,
 } from "./lib/managed-browser-computer-parity-cli.mjs"
@@ -51,6 +52,8 @@ export async function runManagedBrowserComputerParityLive({
   collectResourceSnapshot = null,
   dockerPreconditions = null,
   adapterVerification = null,
+  inspector = null,
+  inspectorVerification = null,
   now = () => new Date(),
   secretValues = [],
 } = {}) {
@@ -387,6 +390,9 @@ export async function runManagedBrowserComputerParityLive({
           report = await runManagedBrowserComputerParityHarness({
             config,
             transport: guardedTransport,
+            inspector,
+            adapterVerification,
+            inspectorVerification,
             signal: workloadController.signal,
             now,
           })
@@ -452,6 +458,9 @@ export async function runManagedBrowserComputerParityLive({
     ...baseReport,
     adapter: adapterVerification
       ? { identity: adapterVerification.identity, sha256: adapterVerification.sha256 }
+      : null,
+    inspector: inspectorVerification
+      ? { identity: inspectorVerification.identity, sha256: inspectorVerification.sha256 }
       : null,
     status: failed ? "failed" : baseReport.status,
     ...(failed ? { acceptanceBackend: null, failure } : {}),
@@ -618,6 +627,13 @@ async function main() {
     if (typeof imported.createManagedBrowserComputerParityTransport !== "function") {
       throw new Error("transport module must export createManagedBrowserComputerParityTransport")
     }
+    const { imported: importedInspector, verification: inspectorVerification } = await loadReviewedManagedParityInspectorModule(
+      options.inspectorModulePath,
+      config.inspector,
+    )
+    if (typeof importedInspector.createManagedBrowserComputerParityInspector !== "function") {
+      throw new Error("inspector module must export createManagedBrowserComputerParityInspector")
+    }
     const runDir = path.join(options.evidenceRoot, config.runId)
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(config.runId ?? "")) {
       throw new Error("managed parity run id is invalid")
@@ -629,12 +645,19 @@ async function main() {
       signal: interruption.signal,
       config,
     })
+    const inspector = await importedInspector.createManagedBrowserComputerParityInspector({
+      evidenceRoot: runDir,
+      runId: config.runId,
+      config,
+    })
     const report = await runManagedBrowserComputerParityLive({
       config,
       transport,
       evidenceRoot: runDir,
       signal: interruption.signal,
       adapterVerification,
+      inspector,
+      inspectorVerification,
     })
     const resultPath = path.join(runDir, "managed-browser-computer-parity.json")
     const artifactIndexPath = path.join(runDir, "chariox-drill-artifacts.json")

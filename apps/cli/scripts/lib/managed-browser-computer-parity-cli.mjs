@@ -3,9 +3,11 @@ import { lstat, open, readFile, unlink } from "node:fs/promises"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 
+const reviewedModuleProofs = new WeakMap()
+
 export function parseManagedBrowserComputerParityArgs(argv, { repoRoot }) {
   const values = new Map()
-  const allowed = new Set(["--config", "--transport-module", "--evidence-root"])
+  const allowed = new Set(["--config", "--transport-module", "--inspector-module", "--evidence-root"])
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index]
     if (!allowed.has(flag)) throw new Error(`unknown managed parity argument ${flag}`)
@@ -21,6 +23,7 @@ export function parseManagedBrowserComputerParityArgs(argv, { repoRoot }) {
   return {
     configPath: values.get("--config"),
     transportModulePath: values.get("--transport-module"),
+    inspectorModulePath: values.get("--inspector-module"),
     evidenceRoot,
   }
 }
@@ -58,11 +61,46 @@ export async function loadReviewedManagedParityAdapterModule(
   expected,
   load = (filePath) => import(pathToFileURL(filePath).href),
 ) {
+  return loadReviewedManagedParityModule({
+    modulePath,
+    expected,
+    load,
+    role: "adapter",
+    identityExport: "MANAGED_BROWSER_COMPUTER_PARITY_ADAPTER_IDENTITY",
+  })
+}
+
+export async function loadReviewedManagedParityInspectorModule(
+  modulePath,
+  expected,
+  load = (filePath) => import(pathToFileURL(filePath).href),
+) {
+  return loadReviewedManagedParityModule({
+    modulePath,
+    expected,
+    load,
+    role: "inspector",
+    identityExport: "MANAGED_BROWSER_COMPUTER_PARITY_INSPECTOR_IDENTITY",
+  })
+}
+
+export function isReviewedManagedParityModuleVerification(verification, role) {
+  if (!verification || (typeof verification !== "object" && typeof verification !== "function")) return false
+  const proof = reviewedModuleProofs.get(verification)
+  return proof?.role === role
+    && proof.identity === verification.identity
+    && proof.sha256 === verification.sha256
+}
+
+async function loadReviewedManagedParityModule({ modulePath, expected, load, role, identityExport }) {
   const { snapshotPath, sha256 } = await createReviewedModuleSnapshot(modulePath)
   try {
-    if (sha256 !== expected?.sha256) throw new Error("managed parity adapter module hash does not match reviewed pin")
+    if (sha256 !== expected?.sha256) throw new Error(`managed parity ${role} module hash does not match reviewed pin`)
     const imported = await load(snapshotPath)
-    const verification = await verifyManagedParityAdapterModule(snapshotPath, imported, expected)
+    const identity = imported?.[identityExport]
+    if (identity !== expected?.identity) throw new Error(`managed parity ${role} module identity does not match reviewed pin`)
+    const verification = Object.freeze({ identity, sha256, verifiedBy: "chariox-harness-loader" })
+    reviewedModuleProofs.set(verification, { role, identity, sha256 })
     return { imported, verification }
   } finally {
     await unlink(snapshotPath, { force: true })

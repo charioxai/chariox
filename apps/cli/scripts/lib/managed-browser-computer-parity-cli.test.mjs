@@ -10,6 +10,8 @@ import {
   parseManagedBrowserComputerParityArgs,
   readPrivateManagedParityConfig,
   loadReviewedManagedParityAdapterModule,
+  loadReviewedManagedParityInspectorModule,
+  isReviewedManagedParityModuleVerification,
   verifyManagedParityAdapterModule,
 } from "./managed-browser-computer-parity-cli.mjs"
 
@@ -17,15 +19,18 @@ test("managed parity CLI accepts only metadata paths and external evidence", () 
   const options = parseManagedBrowserComputerParityArgs([
     "--config", "/private/config.json",
     "--transport-module", "/reviewed/product-transport.mjs",
+    "--inspector-module", "/reviewed/cleanup-inspector.mjs",
     "--evidence-root", "/evidence/cha-16",
   ], { repoRoot: "/source/chariox" })
   assert.equal(options.configPath, "/private/config.json")
   assert.equal(options.transportModulePath, "/reviewed/product-transport.mjs")
+  assert.equal(options.inspectorModulePath, "/reviewed/cleanup-inspector.mjs")
   assert.equal(options.evidenceRoot, "/evidence/cha-16")
   assert.throws(
     () => parseManagedBrowserComputerParityArgs([
       "--config", "/private/config.json",
       "--transport-module", "/reviewed/product-transport.mjs",
+      "--inspector-module", "/reviewed/cleanup-inspector.mjs",
       "--evidence-root", "/source/chariox/evidence",
     ], { repoRoot: "/source/chariox" }),
     /outside the repository/,
@@ -93,6 +98,27 @@ test("managed parity CLI independently pins reviewed adapter identity and file h
     /hash does not match/,
   )
   assert.equal(loaded, false)
+})
+
+test("managed parity CLI issues a non-forgeable reviewed proof for the independent inspector", async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-managed-parity-inspector-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const modulePath = path.join(root, "inspector.mjs")
+  const source = 'export const MANAGED_BROWSER_COMPUTER_PARITY_INSPECTOR_IDENTITY = "reviewed-inspector-v1"\n'
+  await writeFile(modulePath, source, { mode: 0o600 })
+  const expected = {
+    identity: "reviewed-inspector-v1",
+    sha256: `sha256:${createHash("sha256").update(source).digest("hex")}`,
+  }
+  const { imported, verification } = await loadReviewedManagedParityInspectorModule(modulePath, expected)
+  assert.equal(imported.MANAGED_BROWSER_COMPUTER_PARITY_INSPECTOR_IDENTITY, expected.identity)
+  assert.equal(isReviewedManagedParityModuleVerification(verification, "inspector"), true)
+  assert.equal(isReviewedManagedParityModuleVerification(verification, "adapter"), false)
+  assert.equal(isReviewedManagedParityModuleVerification({ ...verification }, "inspector"), false)
+  await assert.rejects(
+    () => loadReviewedManagedParityInspectorModule(modulePath, { ...expected, identity: "self-asserted" }),
+    /identity does not match/,
+  )
 })
 
 test("managed parity adapter executes verified bytes during deterministic replacement races", async (context) => {

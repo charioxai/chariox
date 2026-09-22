@@ -2,6 +2,7 @@ import {
   isSensitiveDrillKey,
   looksLikeDrillSecretValue,
 } from "./drill-secrets.mjs"
+import { isReviewedManagedParityModuleVerification } from "./managed-browser-computer-parity-cli.mjs"
 
 export const MANAGED_BROWSER_COMPUTER_PARITY_SCHEMA = "chariox.browser_computer.managed_parity.v1"
 export const MANAGED_BROWSER_COMPUTER_PARITY_MINIMUM_PROTOCOL = 322
@@ -13,6 +14,9 @@ const DEFAULT_STEP_TIMEOUT_MS = 10 * 60_000
 export async function runManagedBrowserComputerParityHarness({
   config,
   transport,
+  inspector = null,
+  adapterVerification = null,
+  inspectorVerification = null,
   now = () => new Date(),
   signal = null,
 }) {
@@ -20,10 +24,22 @@ export async function runManagedBrowserComputerParityHarness({
   if (!transport || typeof transport.run !== "function") {
     throw new Error("managed parity transport.run is required")
   }
+  if (inspector !== null && (!inspector || inspector === transport || typeof inspector.run !== "function")) {
+    throw new Error("managed parity independent inspector.run is required")
+  }
 
   const startedAt = now().toISOString()
   const steps = []
-  let failure = null
+  const inspectorRequired = config.inspector !== undefined && config.inspector !== null
+  const inspectorFailure = inspectorRequired
+    ? inspector === null
+      ? new HarnessFailure("independent_cleanup_inspector_required", "inspector")
+      : validateIndependentInspectorAuthority(config, inspector, inspectorVerification, adapterVerification)
+    : inspector
+      ? validateIndependentInspectorAuthority(config, inspector, inspectorVerification, adapterVerification)
+      : null
+  const inspectorAuthorized = inspector !== null && inspectorFailure === null
+  let failure = inspectorFailure
   let preflight = null
   let rollback = { status: "not_run" }
   let cleanup = { clean: false, inventory: null }
@@ -58,6 +74,7 @@ export async function runManagedBrowserComputerParityHarness({
   }
 
   try {
+    if (failure) throw failure
     preflight = await run("preflight", {
       resourceCeilings: { ...config.resourceCeilings },
     }, { bound: false })
@@ -73,11 +90,12 @@ export async function runManagedBrowserComputerParityHarness({
   } finally {
     try {
       await run("cleanup.perform", { scope: "run_owned_resources" })
-      const inventory = await run("cleanup.inspect", {
-        resourceCeilings: { ...config.resourceCeilings },
-      })
+      const inventory = inspectorAuthorized
+        ? await runIndependentInspection(inspector, config, config.stepTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS)
+        : await run("cleanup.inspect", { resourceCeilings: { ...config.resourceCeilings } })
+      if (inspectorAuthorized) steps.push({ name: "cleanup.inspect.independent", status: "passed", result: inventory })
       validateCleanupInventory(inventory, config.resourceCeilings)
-      cleanup = { clean: true, inventory }
+      cleanup = { clean: true, inventory, independent: inspectorAuthorized }
     } catch {
       cleanup = {
         clean: false,
@@ -94,6 +112,9 @@ export async function runManagedBrowserComputerParityHarness({
     status: failure ? "failed" : "passed",
     startedAt,
     completedAt,
+    inspector: inspectorVerification
+      ? { identity: inspectorVerification.identity, sha256: inspectorVerification.sha256 }
+      : null,
     source: preflight?.source ?? { ossShaExpected: config.ossSha, cloudShaExpected: config.cloudSha },
     signedImage: preflight?.image ?? { ...config.image, verified: false },
     protocol: preflight?.protocol ?? null,
@@ -110,6 +131,54 @@ export async function runManagedBrowserComputerParityHarness({
   }
   assertSecretFree(report, "managed parity report")
   return report
+}
+
+function validateIndependentInspectorAuthority(config, inspector, verification, adapterVerification) {
+  if (!config.inspector || !text(config.inspector.identity) || !/^sha256:[0-9a-f]{64}$/.test(config.inspector.sha256 ?? "")) {
+    return new HarnessFailure("reviewed_inspector_config_required", "inspector")
+  }
+  if (!isReviewedManagedParityModuleVerification(verification, "inspector")) {
+    return new HarnessFailure("reviewed_inspector_verification_required", "inspector")
+  }
+  if (verification.identity !== config.inspector.identity || verification.sha256 !== config.inspector.sha256) {
+    return new HarnessFailure("reviewed_inspector_mismatch", "inspector")
+  }
+  if (inspector.authority?.kind !== "independent-product-inspector") {
+    return new HarnessFailure("independent_cleanup_inspector_required", "inspector")
+  }
+  if (inspector.authority.identity !== verification.identity || inspector.authority.sha256 !== verification.sha256) {
+    return new HarnessFailure("reviewed_inspector_mismatch", "inspector")
+  }
+  if (adapterVerification?.sha256 === verification.sha256) {
+    return new HarnessFailure("reviewed_inspector_mismatch", "inspector")
+  }
+  return null
+}
+
+async function runIndependentInspection(inspector, config, timeoutMs) {
+  const request = {
+    runId: config.runId,
+    binding: { ...config.expected },
+    scope: "run_owned_resources",
+  }
+  assertSecretFree(request, "managed parity independent cleanup inspection request")
+  const controller = new AbortController()
+  let timer
+  try {
+    const result = await Promise.race([
+      Promise.resolve().then(() => inspector.run("cleanup.inspect", request, { signal: controller.signal })),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort()
+          reject(new HarnessFailure("cleanup_incomplete", "cleanup.inspect"))
+        }, timeoutMs)
+      }),
+    ])
+    assertSecretFree(result, "managed parity independent cleanup inspection result")
+    return result
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 async function exerciseBackend({ backend, run, expected, fullAcceptance }) {

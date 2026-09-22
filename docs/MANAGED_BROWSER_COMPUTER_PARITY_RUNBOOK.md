@@ -41,7 +41,13 @@ Browser, Computer, prompt, provider, Git, or vault payloads.
    evidence directory. Preflight must independently inspect the installed
    image/source/protocol/target rather than echo expected config values;
    expected identity is supplied only to bound product and cleanup steps.
-9. Conservative ceilings for RSS, CPU, free memory/disk, heartbeat age, and
+9. A separately reviewed cleanup-inspector module exporting
+   `MANAGED_BROWSER_COMPUTER_PARITY_INSPECTOR_IDENTITY` and
+   `createManagedBrowserComputerParityInspector`. Its exact bytes and identity
+   are pinned under `inspector` below. The inspector must be independent of the
+   product transport, use only authoritative cleanup inventories, and fail
+   closed on a mismatched loader proof or target identity.
+10. Conservative ceilings for RSS, CPU, free memory/disk, heartbeat age, and
    post-cleanup RSS/disk deltas, with enough reserve to complete cleanup.
 
 Create a regular mode-0600 metadata JSON file outside both repositories. It
@@ -54,6 +60,10 @@ contains no credential or secret value:
   "cloudSha": "<40 lowercase hex>",
   "adapter": {
     "identity": "<reviewed adapter identity>",
+    "sha256": "sha256:<64 lowercase hex>"
+  },
+  "inspector": {
+    "identity": "<reviewed independent inspector identity>",
     "sha256": "sha256:<64 lowercase hex>"
   },
   "image": {
@@ -91,6 +101,7 @@ authentication stays in the already-authenticated product clients:
 node apps/cli/scripts/live-managed-browser-computer-parity-drill.mjs \
   --config /absolute/private/cha-16-managed-parity.json \
   --transport-module /absolute/reviewed/managed-parity-product-transport.mjs \
+  --inspector-module /absolute/reviewed/managed-parity-cleanup-inspector.mjs \
   --evidence-root /absolute/external/evidence/browser-computer-use/cha-16
 ```
 
@@ -101,7 +112,8 @@ fixtures. The adapter uses only existing authenticated product stores.
 ## Orchestrated product sequence
 
 After verifying signed image/source/protocol/relay/target metadata, heartbeat,
-capabilities, and resource headroom, the orchestrator:
+capabilities, resource headroom, and the separately pinned inspector authority,
+the orchestrator:
 
 1. Creates the headed environment through the kernel-owned default. The result
    must be `selkies` with exactly one Room, browser, and profile.
@@ -126,7 +138,9 @@ claim fails the run.
 
 ## Cleanup and evidence
 
-Cleanup runs exactly once after success, failure, or timeout. Remove only
+Cleanup runs exactly once after success, failure, or timeout. The final inventory
+is obtained through the independently pinned cleanup inspector, never by
+delegating inspection back to the product transport. Remove only
 drill-owned OpenShip/Cloud records, Room/environment/slice state, containers,
 volumes, networks, processes, listeners, profiles, tunnels, temporary files,
 and synthetic grants. Never prune shared resources.
