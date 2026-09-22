@@ -130,6 +130,152 @@ async fn invoke_append_failure_rolls_back_before_snapshot_and_retries_once() {
     assert!(durable_runs.workflow_runs.is_empty());
 }
 
+#[test]
+fn scheduled_watchdog_append_failure_rolls_back_before_snapshot_and_retries_once() {
+    let (runtime, session_id, workflow_id, endpoint_id, _test_root) = runtime_with_idle_workflow();
+    runtime
+        .owned
+        .session_store
+        .write()
+        .update_workflow_prompt_queue(
+            &session_id,
+            &workflow_id,
+            "default",
+            None,
+            None,
+            Some(false),
+        )
+        .expect("default queue should disable for deterministic scheduled admission");
+    let watchdog = runtime
+        .owned
+        .session_store
+        .write()
+        .create_workflow_watchdog(
+            &session_id,
+            &workflow_id,
+            &endpoint_id,
+            Some("default"),
+            1,
+            "scheduled exactly once".to_string(),
+            crate::session::WorkflowWatchdogPolicy::Queue,
+            None,
+        )
+        .expect("scheduled watchdog should be created");
+    runtime
+        .owned
+        .persist_workflow_runtime_session(&session_id, "watchdog_failure_test_baseline")
+        .expect("watchdog baseline should persist");
+
+    let state_path = runtime.owned.durable_state_store.path().to_path_buf();
+    let connection = rusqlite::Connection::open(state_path)
+        .expect("durable database should open for watchdog failure injection");
+    connection
+        .execute_batch(
+            r#"CREATE TRIGGER fail_workflow_watchdog_admission_append
+             BEFORE INSERT ON durable_state_events
+             WHEN NEW.kind = 'workflow.runtime.updated'
+               AND instr(
+                   NEW.payload_json,
+                   '"reason":"workflow_watchdog_prompt_enqueued"'
+               ) > 0
+             BEGIN
+               SELECT RAISE(FAIL, 'injected workflow watchdog admission append failure');
+             END;"#,
+        )
+        .expect("watchdog admission append failure trigger should install");
+
+    let failed_dispatches = runtime
+        .owned
+        .workflow_collect_due_watchdog_dispatches(watchdog.next_run_at_ms());
+    assert!(failed_dispatches.is_empty());
+    let rolled_back = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .expect("rolled-back session should remain available");
+    assert!(rolled_back.workflow_queued_prompts().is_empty());
+    assert!(rolled_back.workflow_runs().is_empty());
+    assert!(
+        !rolled_back
+            .workflow_prompt_queues()
+            .iter()
+            .find(|queue| queue.alias() == "default")
+            .expect("unrelated default queue configuration should remain available")
+            .enabled(),
+        "admission rollback must preserve unrelated session state"
+    );
+    let failed_watchdog = rolled_back
+        .workflow_watchdogs()
+        .iter()
+        .find(|candidate| candidate.id() == watchdog.id())
+        .expect("failed watchdog should remain available");
+    assert_eq!(failed_watchdog.last_status(), Some("invoke_failed"));
+    let retry_at_ms = failed_watchdog.next_run_at_ms();
+
+    // A later unrelated projection must not reveal the rejected scheduled prompt.
+    let unrelated_snapshot = runtime
+        .owned
+        .session_snapshot(&session_id)
+        .expect("unrelated session snapshot should remain available");
+    assert!(unrelated_snapshot.workflow_queued_prompts().is_empty());
+    assert!(unrelated_snapshot.workflow_runs().is_empty());
+
+    connection
+        .execute_batch("DROP TRIGGER fail_workflow_watchdog_admission_append;")
+        .expect("watchdog admission append failure trigger should be removed");
+    let retried_dispatches = runtime
+        .owned
+        .workflow_collect_due_watchdog_dispatches(retry_at_ms);
+    assert!(retried_dispatches.is_empty());
+    let retried = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .expect("retried session should remain available");
+    assert!(retried.workflow_runs().is_empty());
+    assert_eq!(retried.workflow_queued_prompts().len(), 1);
+    assert!(!retried
+        .workflow_prompt_queues()
+        .iter()
+        .find(|queue| queue.alias() == "default")
+        .expect("default queue configuration should remain available after retry")
+        .enabled());
+    let queued_prompt = &retried.workflow_queued_prompts()[0];
+    assert_eq!(queued_prompt.watchdog_id(), Some(watchdog.id()));
+    assert_eq!(queued_prompt.prompt(), Some("scheduled exactly once"));
+    let retried_watchdog = retried
+        .workflow_watchdogs()
+        .iter()
+        .find(|candidate| candidate.id() == watchdog.id())
+        .expect("retried watchdog should remain available");
+    assert!(retried_watchdog.pending_run());
+    assert_eq!(retried_watchdog.last_status(), Some("queued_running"));
+
+    let owner_id = retried.host_daemon_id().to_string();
+    let durable_hot_state = runtime
+        .owned
+        .durable_state_store
+        .load_workflow_hot_states(&owner_id)
+        .expect("durable workflow hot state should load")
+        .into_iter()
+        .find_map(|(candidate_session_id, state)| {
+            (candidate_session_id == session_id).then_some(state)
+        })
+        .expect("retried session should have durable workflow hot state");
+    assert_eq!(durable_hot_state.workflow_queued_prompts.len(), 1);
+    assert_eq!(
+        durable_hot_state.workflow_queued_prompts[0].watchdog_id(),
+        Some(watchdog.id())
+    );
+    let durable_watchdog = durable_hot_state
+        .workflow_schedules
+        .iter()
+        .find(|candidate| candidate.id() == watchdog.id())
+        .expect("durable watchdog should remain available");
+    assert!(durable_watchdog.pending_run());
+    assert_eq!(durable_watchdog.last_status(), Some("queued_running"));
+}
+
 fn run_single_run_admission_scenario(iteration: usize) {
     const INVOCATION_COUNT: usize = 32;
 
