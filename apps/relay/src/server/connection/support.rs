@@ -40,6 +40,7 @@ pub(super) async fn handle_client_packet_route_envelope(
     envelope: RelayEnvelope,
     registry: &Arc<RwLock<RelayRegistry>>,
     routes: &Arc<crate::registry::RelayRouteIndex>,
+    auth_verifier: &RelayAuthVerifier,
     peer_addr: SocketAddr,
     outgoing_tx: &RelaySender,
     relay_request_counter: &AtomicU64,
@@ -85,7 +86,8 @@ pub(super) async fn handle_client_packet_route_envelope(
                 )?;
                 return Ok(ConnectionAction::Continue);
             }
-            let Some(daemon_key) = resolve_target_daemon_key(registry, &realm_id, &target).await
+            let Some(daemon_key) =
+                resolve_target_daemon_key(registry, auth_verifier, &realm_id, &target).await
             else {
                 log_target_not_connected("client_request", registry, peer_addr, &realm_id, &target)
                     .await;
@@ -131,17 +133,10 @@ pub(super) async fn handle_client_packet_route_envelope(
                     kind: PendingRequestKind::Request,
                 },
             );
-            let daemon_sender = routes.daemon_sender(&daemon_key);
-            let Some(daemon_sender) = daemon_sender else {
+            let Some(daemon_sender) =
+                route_admitted_daemon_sender(registry, routes, auth_verifier, &daemon_key).await
+            else {
                 routes.remove_pending_client(&relay_request_id);
-                log_daemon_sender_missing(
-                    "client_request",
-                    registry,
-                    peer_addr,
-                    &daemon_key,
-                    &relay_request_id,
-                )
-                .await;
                 send_envelope(
                     outgoing_tx,
                     &RelayEnvelope::ClientResponse {
@@ -280,7 +275,8 @@ pub(super) async fn handle_client_packet_route_envelope(
                     "resume_from_event_id": resume_from_event_id,
                 }),
             );
-            let Some(daemon_key) = resolve_target_daemon_key(registry, &realm_id, &target).await
+            let Some(daemon_key) =
+                resolve_target_daemon_key(registry, auth_verifier, &realm_id, &target).await
             else {
                 log_target_not_connected(
                     "client_subscribe",
@@ -342,6 +338,8 @@ pub(super) async fn handle_client_packet_route_envelope(
                 let guard = registry.read().await;
                 if subscription_owned_by_other_client(&guard, routes, &subscription_id, peer_addr) {
                     (true, None)
+                } else if !daemon_route_is_admitted(&guard, auth_verifier, &daemon_key) {
+                    (false, None)
                 } else {
                     routes.insert_pending_client(
                         relay_request_id.clone(),
@@ -534,17 +532,10 @@ pub(super) async fn handle_client_packet_route_envelope(
                     },
                 },
             );
-            let daemon_sender = routes.daemon_sender(&daemon_key);
-            let Some(daemon_sender) = daemon_sender else {
+            let Some(daemon_sender) =
+                route_admitted_daemon_sender(registry, routes, auth_verifier, &daemon_key).await
+            else {
                 routes.remove_pending_client(&relay_request_id);
-                log_daemon_sender_missing(
-                    "client_unsubscribe",
-                    registry,
-                    peer_addr,
-                    &daemon_key,
-                    &relay_request_id,
-                )
-                .await;
                 send_envelope(
                     outgoing_tx,
                     &RelayEnvelope::ClientResponse {
@@ -723,13 +714,17 @@ pub(super) async fn route_daemon_event(
 
 pub(super) async fn resolve_target_daemon_key(
     registry: &Arc<RwLock<RelayRegistry>>,
+    auth_verifier: &RelayAuthVerifier,
     realm_id: &str,
     target: &ClientTarget,
 ) -> Option<DaemonKey> {
     let guard = registry.read().await;
     if let Some(daemon_id) = target.daemon_id.as_ref() {
         let key = DaemonKey::new(realm_id.to_string(), daemon_id.clone());
-        return guard.live_daemon_sender(&key).map(|_| key);
+        return guard
+            .live_daemon_sender(&key)
+            .filter(|_| daemon_route_is_admitted(&guard, auth_verifier, &key))
+            .map(|_| key);
     }
     let alias = target.daemon_alias.as_ref()?;
     let mut matches = guard
@@ -740,6 +735,7 @@ pub(super) async fn resolve_target_daemon_key(
                 && registration.daemon_alias.as_ref() == Some(alias)
                 && crate::registry::daemon_registration_is_kernel_target(registration)
                 && guard.live_daemon_sender(key).is_some()
+                && daemon_route_is_admitted(&guard, auth_verifier, key)
         })
         .map(|(key, _)| key.clone());
     let daemon_key = matches.next()?;
@@ -748,6 +744,48 @@ pub(super) async fn resolve_target_daemon_key(
     } else {
         Some(daemon_key)
     }
+}
+
+async fn route_admitted_daemon_sender(
+    registry: &Arc<RwLock<RelayRegistry>>,
+    routes: &Arc<RelayRouteIndex>,
+    auth_verifier: &RelayAuthVerifier,
+    daemon_key: &DaemonKey,
+) -> Option<RelaySender> {
+    let guard = registry.read().await;
+    daemon_route_is_admitted(&guard, auth_verifier, daemon_key)
+        .then(|| routes.daemon_sender(daemon_key))
+        .flatten()
+}
+
+// Revocation updates and per-connection cleanup run on separate tasks. Recheck
+// the daemon's already-verified registration token at route admission so a
+// tombstone fences new traffic before the daemon task removes its route.
+fn daemon_route_is_admitted(
+    registry: &RelayRegistry,
+    auth_verifier: &RelayAuthVerifier,
+    daemon_key: &DaemonKey,
+) -> bool {
+    let Some(registration) = registry.daemons.get(daemon_key) else {
+        return false;
+    };
+    let Some(peer) = registry
+        .daemon_peers
+        .get(daemon_key)
+        .and_then(|peer_addr| registry.peers.get(peer_addr))
+    else {
+        return false;
+    };
+    let Some(action) = peer.allowed_actions.first().copied() else {
+        return false;
+    };
+    auth_verifier
+        .verify(RelayAuthRequest {
+            token: &registration.auth_token,
+            action,
+            target: None,
+        })
+        .is_ok()
 }
 
 pub(super) async fn log_target_not_connected(

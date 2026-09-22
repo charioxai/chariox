@@ -369,8 +369,13 @@ pub(crate) async fn handle_connection(
                             let allowed_targets = identity.allowed_targets.clone();
                             verified_identity = Some(identity.clone());
                             let Some(daemon_key) =
-                                resolve_target_daemon_key(&registry, &identity.realm_id, &target)
-                                    .await
+                                resolve_target_daemon_key(
+                                    &registry,
+                                    &auth_verifier,
+                                    &identity.realm_id,
+                                    &target,
+                                )
+                                .await
                             else {
                                 log_target_not_connected(
                                     "client_connect",
@@ -523,6 +528,7 @@ pub(crate) async fn handle_connection(
                             }
                             let Some(target_daemon_key) = resolve_target_daemon_key(
                                 &registry,
+                                &auth_verifier,
                                 &requester_daemon_key.realm_id,
                                 &target,
                             )
@@ -605,6 +611,7 @@ pub(crate) async fn handle_connection(
                             }
                             let Some(target_daemon_key) = resolve_target_daemon_key(
                                 &registry,
+                                &auth_verifier,
                                 &requester_daemon_key.realm_id,
                                 &target,
                             )
@@ -647,6 +654,7 @@ pub(crate) async fn handle_connection(
                                 envelope,
                                 &registry,
                                 &routes,
+                                &auth_verifier,
                                 peer_addr,
                                 &outgoing_tx,
                                 &relay_request_counter,
