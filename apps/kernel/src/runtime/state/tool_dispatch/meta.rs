@@ -429,12 +429,17 @@ impl KernelRuntimeState {
             META_UPDATE_TASK_TOOL => {
                 let args = serde_json::from_value::<MetaUpdateTaskArgs>(arguments)
                     .map_err(invalid_meta_args)?;
-                let updated = self
-                    .owned
-                    .session_store
-                    .write()
-                    .update_metaagent_task_markdown(session.id(), agent.id(), args.markdown)?;
-                let projected = self.owned.session_snapshot(updated.id())?;
+                let projected = self.mutate_metaagent_task_session(
+                    session.id(),
+                    "metaagent_task_updated",
+                    |sessions| {
+                        sessions.update_metaagent_task_markdown(
+                            session.id(),
+                            agent.id(),
+                            args.markdown,
+                        )
+                    },
+                )?;
                 Ok(RuntimeToolResult {
                     ok: true,
                     payload: metaagent_task_payload(&projected, agent),
@@ -452,14 +457,16 @@ impl KernelRuntimeState {
             META_UPDATE_PLAN_TOOL => {
                 let args = serde_json::from_value::<MetaUpdatePlanArgs>(arguments)
                     .map_err(invalid_meta_args)?;
-                let updated = self
-                    .owned
-                    .session_store
-                    .write()
-                    .update_metaagent_plan_markdown(session.id(), agent.id(), args.markdown)?;
-                let projected = self.persist_metaagent_task_session_update(
-                    updated.id(),
+                let projected = self.mutate_metaagent_task_session(
+                    session.id(),
                     "metaagent_plan_updated",
+                    |sessions| {
+                        sessions.update_metaagent_plan_markdown(
+                            session.id(),
+                            agent.id(),
+                            args.markdown,
+                        )
+                    },
                 )?;
                 Ok(RuntimeToolResult {
                     ok: true,
@@ -475,16 +482,12 @@ impl KernelRuntimeState {
                         message: "cannot complete the Meta task while a controlled agent or workflow still has active, queued, completing, or paused work; wait for it to settle or stop it first".to_string(),
                     });
                 }
-                let activity_mutation = self.owned.begin_managed_activity_mutation();
-                let updated = self.owned.session_store.write().complete_metaagent_task(
+                let updated = self.mutate_metaagent_task_session(
                     session.id(),
-                    agent.id(),
-                    args.summary,
-                )?;
-                self.persist_metaagent_task_session_update_with_activity_mutation(
-                    updated.id(),
                     "metaagent_task_completed",
-                    activity_mutation,
+                    |sessions| {
+                        sessions.complete_metaagent_task(session.id(), agent.id(), args.summary)
+                    },
                 )?;
                 let projected = self
                     .deactivate_meta_mode_for_terminal_task(
@@ -511,16 +514,10 @@ impl KernelRuntimeState {
                         message: "cannot block the Meta task while a controlled agent or workflow still has active, queued, completing, or paused work; wait for it to settle or stop it first".to_string(),
                     });
                 }
-                let activity_mutation = self.owned.begin_managed_activity_mutation();
-                let updated = self.owned.session_store.write().block_metaagent_task(
+                let updated = self.mutate_metaagent_task_session(
                     session.id(),
-                    agent.id(),
-                    args.reason,
-                )?;
-                self.persist_metaagent_task_session_update_with_activity_mutation(
-                    updated.id(),
                     "metaagent_task_blocked",
-                    activity_mutation,
+                    |sessions| sessions.block_metaagent_task(session.id(), agent.id(), args.reason),
                 )?;
                 let projected = self
                     .deactivate_meta_mode_for_terminal_task(

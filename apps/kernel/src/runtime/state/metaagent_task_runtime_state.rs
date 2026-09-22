@@ -23,6 +23,43 @@ pub(crate) fn parse_meta_slash_command(prompt: &str) -> Option<MetaSlashCommand>
 }
 
 impl KernelRuntimeState {
+    /// Keep rejected task mutations invisible to session readers and activity sampling.
+    pub(super) fn mutate_metaagent_task_session(
+        &self,
+        session_id: &str,
+        reason: &str,
+        mutate: impl FnOnce(
+            &mut crate::session::SessionService,
+        ) -> Result<crate::session::RuntimeSession, DaemonError>,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let activity_mutation = self.owned.begin_managed_activity_mutation();
+        let committed = self
+            .owned
+            .durable_state_store
+            .with_workflow_runtime_transition_lock(|| {
+                let mut sessions = self.owned.session_store.write();
+                let before = sessions.get_session(session_id)?;
+                let result = (|| {
+                    let mut session = mutate(&mut sessions)?;
+                    session.set_agents(self.owned.agent_store.get_session_agents(session_id));
+                    self.owned.project_session_runtime_view(&mut session);
+                    self.owned.durable_state_store.append_event(
+                        "session.updated",
+                        Some(session_id.to_string()),
+                        serde_json::json!({"session": &session, "reason": reason}),
+                    )?;
+                    Ok(session)
+                })();
+                if result.is_err() {
+                    // Restore under the same write guard, before unrelated writers can intervene.
+                    sessions.restore_session(before);
+                }
+                result
+            })?;
+        activity_mutation.record();
+        Ok(self.owned.publish_session_after_durable_mutation(committed))
+    }
+
     pub(super) fn persist_metaagent_task_session_update(
         &self,
         session_id: &str,
@@ -54,9 +91,7 @@ impl KernelRuntimeState {
             }),
         )?;
         activity_mutation.record();
-        Ok(self
-            .owned
-            .publish_session_after_durable_mutation(session))
+        Ok(self.owned.publish_session_after_durable_mutation(session))
     }
 
     pub(crate) fn session_task_lane_busy(&self, session_id: &str) -> Result<bool, DaemonError> {
