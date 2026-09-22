@@ -14,13 +14,11 @@ fn promptless_pty_output_is_projected_for_failures_and_transient_native_terminal
 
 #[test]
 fn exited_pty_is_drained_before_liveness_settlement() {
+    let worktree = crate::test_support::TestWorktree::new("provider-output-exited-pty");
     let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-exited-pty",
-            "worktree-exited-pty",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -107,13 +105,11 @@ fn exited_pty_is_drained_before_liveness_settlement() {
 
 #[test]
 fn raw_provider_output_does_not_promote_framed_reviewer_prose_to_a_terminal_error() {
+    let worktree = crate::test_support::TestWorktree::new("provider-output-reviewer-prose");
     let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-reviewer-prose",
-            "worktree-reviewer-prose",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -209,13 +205,11 @@ fn raw_provider_output_does_not_promote_framed_reviewer_prose_to_a_terminal_erro
 
 #[test]
 fn idle_claude_native_tui_projects_startup_terminal_output() {
+    let worktree = crate::test_support::TestWorktree::new("provider-output-idle-claude");
     let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-idle-claude-native",
-            "worktree-idle-claude-native",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -296,14 +290,18 @@ fn idle_claude_native_tui_projects_startup_terminal_output() {
     assert!(output.contains("\u{1b}[?2004h"));
 }
 
-fn structured_provider_test_app() -> (DaemonApp, String, String, String) {
+fn structured_provider_test_app() -> (
+    DaemonApp,
+    crate::test_support::TestWorktree,
+    String,
+    String,
+    String,
+) {
+    let worktree = crate::test_support::TestWorktree::new("provider-output-structured-poll");
     let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-structured-poll",
-            "worktree-structured-poll",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -343,6 +341,7 @@ fn structured_provider_test_app() -> (DaemonApp, String, String, String) {
     app.update_provider_run_projection(run.clone());
     (
         app,
+        worktree,
         session.id().to_string(),
         attachment.id().to_string(),
         run.id().to_string(),
@@ -369,7 +368,8 @@ fn pump_structured_test_run(
 
 #[test]
 fn live_requested_structured_poll_failures_are_retried_then_surfaced() {
-    let (mut app, session_id, attachment_id, provider_run_id) = structured_provider_test_app();
+    let (mut app, _worktree, session_id, attachment_id, provider_run_id) =
+        structured_provider_test_app();
     let output_store = app.structured_output_record_store();
     for attempt in 1..=STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT {
         output_store.mark_poll_enqueued(&provider_run_id, None);
@@ -409,7 +409,8 @@ fn live_requested_structured_poll_failures_are_retried_then_surfaced() {
 
 #[test]
 fn app_side_stale_poll_failure_reschedules_replacement_and_delivers_followup_output() {
-    let (mut app, session_id, attachment_id, provider_run_id) = structured_provider_test_app();
+    let (mut app, _worktree, session_id, attachment_id, provider_run_id) =
+        structured_provider_test_app();
     let agent_id = app
         .providers
         .get_run(&provider_run_id)
@@ -607,7 +608,8 @@ fn app_side_stale_poll_failure_reschedules_replacement_and_delivers_followup_out
 
 #[test]
 fn app_side_promptless_poll_failure_reschedules_bound_prompt_and_delivers_output() {
-    let (mut app, session_id, attachment_id, provider_run_id) = structured_provider_test_app();
+    let (mut app, _worktree, session_id, attachment_id, provider_run_id) =
+        structured_provider_test_app();
     let agent_id = app
         .providers
         .get_run(&provider_run_id)
@@ -709,7 +711,8 @@ fn app_side_promptless_poll_failure_reschedules_bound_prompt_and_delivers_output
 
 #[test]
 fn app_side_promptless_poll_failure_before_prompt_start_reschedules_and_delivers_output() {
-    let (mut app, session_id, attachment_id, provider_run_id) = structured_provider_test_app();
+    let (mut app, _worktree, session_id, attachment_id, provider_run_id) =
+        structured_provider_test_app();
     let agent_id = app
         .providers
         .get_run(&provider_run_id)
@@ -918,7 +921,8 @@ fn app_side_promptless_poll_failure_before_prompt_start_reschedules_and_delivers
 
 #[test]
 fn provider_terminal_is_transient_and_does_not_wake_meta_traces() {
-    let (app, session_id, attachment_id, provider_run_id) = structured_provider_test_app();
+    let (app, _worktree, session_id, attachment_id, provider_run_id) =
+        structured_provider_test_app();
     let session = app
         .sessions
         .get_session(&session_id)
@@ -994,7 +998,8 @@ fn pending_structured_output_record(
 fn assert_pending_structured_output_drains_after_state_change(
     transition: impl FnOnce(&mut crate::provider::RuntimeProviderRun),
 ) {
-    let (mut app, session_id, attachment_id, provider_run_id) = structured_provider_test_app();
+    let (mut app, _worktree, session_id, attachment_id, provider_run_id) =
+        structured_provider_test_app();
     let expected = pending_structured_output_record(&session_id, &provider_run_id, &attachment_id);
     app.structured_output_record_store()
         .append(provider_run_id.clone(), vec![expected.clone()]);
@@ -1034,13 +1039,11 @@ fn ended_structured_run_drains_completed_pending_output() {
 
 #[test]
 fn active_prompt_belongs_only_to_its_durable_delivery_provider_run() {
+    let worktree = crate::test_support::TestWorktree::new("provider-output-run-bound");
     let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-run-bound-prompt",
-            "worktree-run-bound-prompt",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -1117,13 +1120,11 @@ fn active_prompt_belongs_only_to_its_durable_delivery_provider_run() {
 
 #[test]
 fn pump_active_prompt_outputs_ignores_projected_remote_active_run() {
+    let worktree = crate::test_support::TestWorktree::new("provider-output-remote-run");
     let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, _) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     app.sessions
         .set_active_provider_run(
@@ -1142,13 +1143,11 @@ fn pump_active_prompt_outputs_ignores_projected_remote_active_run() {
 
 #[test]
 fn pump_active_prompt_outputs_skips_idle_running_chariox_provider_run() {
+    let worktree = crate::test_support::TestWorktree::new("provider-output-idle-run");
     let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let request = crate::provider::LaunchProviderRequest::new(
         session.id(),
@@ -1189,13 +1188,11 @@ fn pump_active_prompt_outputs_skips_idle_running_chariox_provider_run() {
 
 #[test]
 fn legacy_pump_preserves_quiet_provider_turn() {
+    let worktree = crate::test_support::TestWorktree::new("provider-output-legacy-pump");
     let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -1276,7 +1273,8 @@ fn legacy_pump_preserves_quiet_provider_turn() {
 
 #[test]
 fn app_side_structured_pump_defers_empty_poll_reenqueue() {
-    let (mut app, session_id, attachment_id, provider_run_id) = structured_provider_test_app();
+    let (mut app, _worktree, session_id, attachment_id, provider_run_id) =
+        structured_provider_test_app();
     app.providers_mut()
         .push_finished_structured_output_poll_for_test(provider_run_id.clone(), Ok(None));
 
@@ -1302,7 +1300,8 @@ fn app_side_structured_pump_defers_empty_poll_reenqueue() {
 
 #[test]
 fn app_side_structured_resume_retries_without_advancing_run_ahead_of_storage() {
-    let (mut app, session_id, attachment_id, provider_run_id) = structured_provider_test_app();
+    let (mut app, _worktree, session_id, attachment_id, provider_run_id) =
+        structured_provider_test_app();
     let initial_resume = crate::provider::ProviderResumeState::from_opencode_session_id(
         "opencode-session-output-s1",
     );
@@ -1437,7 +1436,8 @@ fn app_side_structured_resume_retries_without_advancing_run_ahead_of_storage() {
 
 #[test]
 fn provider_dispatch_marks_new_workflow_prompt_before_draining_stale_completion() {
-    let (mut app, session_id, attachment_id, provider_run_id) = structured_provider_test_app();
+    let (mut app, _worktree, session_id, attachment_id, provider_run_id) =
+        structured_provider_test_app();
     let agent_id = app
         .providers
         .get_run(&provider_run_id)
@@ -1545,7 +1545,8 @@ fn provider_dispatch_marks_new_workflow_prompt_before_draining_stale_completion(
 
 #[test]
 fn app_side_duplicate_completion_before_promoted_workflow_dispatch_is_ignored() {
-    let (mut app, session_id, attachment_id, provider_run_id) = structured_provider_test_app();
+    let (mut app, _worktree, session_id, attachment_id, provider_run_id) =
+        structured_provider_test_app();
     let agent_id = app
         .providers
         .get_run(&provider_run_id)
@@ -1679,7 +1680,8 @@ fn app_side_duplicate_completion_before_promoted_workflow_dispatch_is_ignored() 
 
 #[test]
 fn metadata_only_structured_batch_backs_off_polling() {
-    let (mut app, session_id, attachment_id, provider_run_id) = structured_provider_test_app();
+    let (mut app, _worktree, session_id, attachment_id, provider_run_id) =
+        structured_provider_test_app();
     app.providers_mut()
         .push_finished_structured_output_poll_for_test(
             provider_run_id.clone(),
