@@ -1,9 +1,9 @@
 import assert from "node:assert/strict"
-import { access, chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises"
-import os from "node:os"
+import { access, chmod, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises"
 import path from "node:path"
 import test from "node:test"
 import { roomDrillCompanionTimeoutMs } from "./room-drill-companion-budget.mjs"
+import { makePrivateTestDirectory } from "./room-companion-test-fixture.mjs"
 
 import {
   publishRoomDrillCompanionReady,
@@ -42,7 +42,7 @@ test("companion budget rejects unsafe or unbounded values", () => {
 })
 
 test("Room drill companion handoff is private and validates the matching result", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-room-companion-"))
+  const root = await makePrivateTestDirectory("chariox-room-companion-")
   try {
     const ready = {
       schema: "chariox.room_environment.companion_ready.v1",
@@ -75,7 +75,7 @@ test("Room drill companion handoff is private and validates the matching result"
 })
 
 test("Room drill companion rejects a symlinked coordination directory", { skip: process.platform === "win32" }, async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-room-companion-"))
+  const root = await makePrivateTestDirectory("chariox-room-companion-")
   try {
     const target = path.join(root, "target")
     const alias = path.join(root, "alias")
@@ -92,7 +92,7 @@ test("Room drill companion rejects a symlinked coordination directory", { skip: 
 })
 
 test("Room drill companion rejects a non-private existing directory without chmodding it", { skip: process.platform === "win32" }, async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-room-companion-"))
+  const root = await makePrivateTestDirectory("chariox-room-companion-")
   try {
     const directory = path.join(root, "coordination")
     await mkdir(directory)
@@ -109,7 +109,7 @@ test("Room drill companion rejects a non-private existing directory without chmo
 })
 
 test("Room drill companion rejects a non-directory coordination path", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-room-companion-"))
+  const root = await makePrivateTestDirectory("chariox-room-companion-")
   try {
     const file = path.join(root, "coordination")
     await writeFile(file, "not a directory")
@@ -123,7 +123,7 @@ test("Room drill companion rejects a non-directory coordination path", async () 
 })
 
 test("Room drill companion removes its temporary ready file when publication fails", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-room-companion-"))
+  const root = await makePrivateTestDirectory("chariox-room-companion-")
   try {
     await mkdir(path.join(root, "ready.json"))
     await assert.rejects(
@@ -136,7 +136,7 @@ test("Room drill companion removes its temporary ready file when publication fai
 })
 
 test("Room drill companion retries a valid but incomplete result write", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-room-companion-"))
+  const root = await makePrivateTestDirectory("chariox-room-companion-")
   try {
     const resultPath = path.join(root, "result.json")
     await writeFile(resultPath, JSON.stringify({
@@ -164,7 +164,7 @@ test("Room drill companion retries a valid but incomplete result write", async (
 })
 
 test("Room drill companion rejects a stale or failed result", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-room-companion-"))
+  const root = await makePrivateTestDirectory("chariox-room-companion-")
   try {
     await writeFile(path.join(root, "result.json"), JSON.stringify({
       schema: "chariox.room_environment.companion_result.v1",
@@ -191,7 +191,7 @@ test("Room drill companion rejects a stale or failed result", async () => {
 })
 
 test("Room drill companion times out without leaving a result file", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-room-companion-"))
+  const root = await makePrivateTestDirectory("chariox-room-companion-")
   try {
     await assert.rejects(
       waitForRoomDrillCompanionResult(root, {
