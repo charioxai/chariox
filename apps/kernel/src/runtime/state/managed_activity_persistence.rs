@@ -691,6 +691,82 @@ mod tests {
     }
 
     #[test]
+    fn recovery_rejects_conflicting_journal_acknowledgement() {
+        let state_path = test_state_path("conflicting-ack");
+        let store = DurableKernelStateStore::open(state_path.clone()).expect("open store");
+        let state =
+            ManagedActivityTransitionState::new(store.clone(), Some("kernel-conflict".into()));
+        state
+            .record_transition(0, 0, 1_000)
+            .expect("durable initial idle");
+        crate::config::write_private_file(
+            &state.pending_journal_path(),
+            &serde_json::to_vec(&serde_json::json!({
+                "kernelId": "kernel-conflict",
+                "observations": [
+                    {"transitionSequence": 1, "runningAgentCount": 1, "changedAtMs": 2_000},
+                    {"transitionSequence": 2, "runningAgentCount": 0, "changedAtMs": 3_000},
+                ],
+            }))
+            .unwrap(),
+        )
+        .expect("write conflicting journal");
+        drop(state);
+        let restored =
+            ManagedActivityTransitionState::new(store.clone(), Some("kernel-conflict".into()));
+        restored
+            .current_observation(0)
+            .expect_err("do not acknowledge conflicting observation");
+        assert_eq!(
+            store
+                .load_events_by_kind(MANAGED_ACTIVITY_EVENT_KIND)
+                .unwrap()
+                .len(),
+            1
+        );
+        drop(restored);
+        drop(store);
+        remove_test_state(&state_path);
+    }
+
+    #[test]
+    fn recovery_rejects_malformed_durable_transition_tail() {
+        for (case, sequences) in [vec![2], vec![1, 1], vec![1, 3]].into_iter().enumerate() {
+            let state_path = test_state_path(&format!("malformed-durable-{case}"));
+            let store = DurableKernelStateStore::open(state_path.clone()).expect("open store");
+            for sequence in &sequences {
+                store
+                    .append_event(
+                        MANAGED_ACTIVITY_EVENT_KIND,
+                        Some("kernel-malformed".into()),
+                        serde_json::json!({
+                            "kernelId": "kernel-malformed",
+                            "transitionSequence": sequence,
+                            "runningAgentCount": 0,
+                            "activityChangedAtMs": 1_000,
+                        }),
+                    )
+                    .expect("seed malformed transition tail");
+            }
+            let state =
+                ManagedActivityTransitionState::new(store.clone(), Some("kernel-malformed".into()));
+            state
+                .current_observation(0)
+                .expect_err("malformed durable tail must fail closed");
+            assert_eq!(
+                store
+                    .load_events_by_kind(MANAGED_ACTIVITY_EVENT_KIND)
+                    .unwrap()
+                    .len(),
+                sequences.len()
+            );
+            drop(state);
+            drop(store);
+            remove_test_state(&state_path);
+        }
+    }
+
+    #[test]
     fn idle_transition_survives_reporter_and_kernel_state_restart() {
         let state_path = test_state_path("restart");
         {
