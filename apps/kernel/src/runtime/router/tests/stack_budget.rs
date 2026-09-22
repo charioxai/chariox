@@ -4,7 +4,10 @@ use super::*;
 async fn normal_project_update_reaches_session_lane_on_default_stack() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, _) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .create_session(
+            CreateSessionRequest::new("workspace", "worktree")
+                .with_project_selection(crate::local::SessionProjectSelection::New),
+        )
         .expect("session should be created");
     let project_id = session.project_id().to_string();
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
