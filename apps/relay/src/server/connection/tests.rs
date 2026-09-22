@@ -151,8 +151,10 @@ fn scoped_daemon_registration_binds_subject_and_public_key() {
         allowed_targets: None,
         expires_at_ms: u64::MAX,
         token_id: Some("token-1".to_string()),
+        account_id: Some("account-1".to_string()),
         user_id: Some("user-1".to_string()),
         machine_id: Some(registration.machine_id.clone()),
+        client_id: None,
         public_key_thumbprint: Some(thumbprint),
     };
 

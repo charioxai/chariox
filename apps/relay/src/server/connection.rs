@@ -10,7 +10,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, RwLock};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
-use crate::auth::{RelayAction, RelayAuthVerifier};
+use crate::auth::{RelayAction, RelayAuthVerifier, VerifiedRelayIdentity};
 use crate::protocol::{RelayConnectionRole, RelayEnvelope, RelayError, RelayMetadataQuery};
 use crate::registry::{
     ActiveEventRoute, ActiveSubscription, DaemonKey, DisplayStreamEvent, PeerHandle,
@@ -31,6 +31,15 @@ const RELAY_CONNECTION_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 const RELAY_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const RELAY_PONG_TIMEOUT: Duration = Duration::from_secs(15);
 const RELAY_WEBSOCKET_CLOSE_TIMEOUT: Duration = Duration::from_millis(250);
+
+async fn wait_for_revocation_update(updates: &mut Option<tokio::sync::watch::Receiver<u64>>) {
+    match updates {
+        Some(updates) => {
+            let _ = updates.changed().await;
+        }
+        None => pending().await,
+    }
+}
 
 async fn try_forward_display_stream_event(
     registry: &Arc<RwLock<RelayRegistry>>,
@@ -113,7 +122,9 @@ pub(crate) async fn handle_connection(
         }
     }));
     let mut registered_daemon_key: Option<DaemonKey> = None;
+    let mut verified_identity: Option<VerifiedRelayIdentity> = None;
     let mut auth_expiry_deadline: Option<Instant> = None;
+    let mut revocation_updates = auth_verifier.revocation_updates();
     let mut first_message_received = false;
     let mut last_read_at = Instant::now();
     let mut last_ping_at = Instant::now() - RELAY_HEARTBEAT_INTERVAL;
@@ -140,6 +151,22 @@ pub(crate) async fn handle_connection(
                     );
                     send_close(&outgoing_tx, "relay token expired".to_string());
                     break;
+                }
+                _ = wait_for_revocation_update(&mut revocation_updates) => {
+                    if verified_identity.as_ref().is_some_and(|identity| {
+                        auth_verifier.is_identity_revoked(identity)
+                    }) {
+                        relay_log(
+                            "warn",
+                            "relay_connection_token_revoked",
+                            json!({
+                                "peer_addr": peer_addr.to_string(),
+                            }),
+                        );
+                        send_close(&outgoing_tx, "relay token revoked".to_string());
+                        break;
+                    }
+                    continue;
                 }
                 _ = connection_check.tick() => {
                     let elapsed = last_read_at.elapsed();
@@ -227,6 +254,7 @@ pub(crate) async fn handle_connection(
                             );
                             let allowed_actions = identity.allowed_actions.clone();
                             let allowed_targets = identity.allowed_targets.clone();
+                            verified_identity = Some(identity.clone());
                             if registered_daemon_key
                                 .as_ref()
                                 .is_some_and(|current_key| current_key != &daemon_key)
@@ -311,6 +339,7 @@ pub(crate) async fn handle_connection(
                                 }
                                 let allowed_actions = identity.allowed_actions.clone();
                                 let allowed_targets = identity.allowed_targets.clone();
+                                verified_identity = Some(identity.clone());
                                 let mut guard = registry.write().await;
                                 if let Some(peer) = guard.peers.get_mut(&peer_addr) {
                                     peer.realm_id = Some(identity.realm_id.clone());
@@ -338,6 +367,7 @@ pub(crate) async fn handle_connection(
                             );
                             let allowed_actions = identity.allowed_actions.clone();
                             let allowed_targets = identity.allowed_targets.clone();
+                            verified_identity = Some(identity.clone());
                             let Some(daemon_key) =
                                 resolve_target_daemon_key(&registry, &identity.realm_id, &target)
                                     .await
