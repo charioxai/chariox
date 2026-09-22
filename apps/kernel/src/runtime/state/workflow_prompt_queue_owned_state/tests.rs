@@ -765,8 +765,10 @@ fn deleting_session_removes_registered_workflow_runtime_worktrees() {
 
 #[tokio::test]
 async fn pool_clone_binds_exact_stable_account_and_launch_ignores_later_default_change() {
-    let (runtime, session_id, _workflow_id, _endpoint_id, _test_root) =
+    let (runtime, session_id, _workflow_id, _endpoint_id, test_root) =
         runtime_with_idle_workflow();
+    let clone_worktree = test_root.0.join("clone-a");
+    std::fs::create_dir_all(&clone_worktree).expect("clone test worktree should exist");
 
     // Register two managed accounts; the first is the default at bind time.
     let first = runtime
@@ -828,7 +830,11 @@ async fn pool_clone_binds_exact_stable_account_and_launch_ignores_later_default_
     let clone_a = runtime
         .owned
         .agent_store
-        .materialize_workflow_runtime_agent(source.clone(), &session_id, "wt-clone-a");
+        .materialize_workflow_runtime_agent(
+            source.clone(),
+            &session_id,
+            &clone_worktree.to_string_lossy(),
+        );
     assert_eq!(clone_a.alias(), Some("owned-workflow-agent-2"));
     assert_eq!(clone_a.provider(), source.provider());
     assert_eq!(clone_a.model(), source.model());

@@ -168,6 +168,14 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
+    struct TestWorktree(std::path::PathBuf);
+
+    impl Drop for TestWorktree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
         let (
             config_projection,
@@ -242,11 +250,17 @@ mod tests {
 
     #[tokio::test]
     async fn workflow_provider_failure_persists_terminal_run_state_for_restart() {
+        let worktree = TestWorktree(std::env::temp_dir().join(format!(
+            "chariox-workflow-failure-{}-{:032x}",
+            std::process::id(),
+            rand::random::<u128>()
+        )));
+        std::fs::create_dir_all(&worktree.0).expect("workflow test worktree should exist");
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, agent) = KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new(
                 "workspace-workflow-failure",
-                "worktree-workflow-failure",
+                worktree.0.to_string_lossy(),
             ))
             .expect("session should create");
         let workflow = app
