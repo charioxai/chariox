@@ -1041,6 +1041,7 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             kernel_host: "127.0.0.1".to_string(),
             kernel_port: 43118,
         };
+        let runtime_release_digest = format!("sha256:{}", "c".repeat(64));
         let receipt = BootstrapReceipt {
             schema_version: 1,
             status: BootstrapReceiptStatus::Exchanged,
@@ -1049,7 +1050,7 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             kernel_id: "kernel-1".to_string(),
             generation: 1,
             relay_public_key: "relay-public-key".to_string(),
-            runtime_release_digest: "sha256:path1-confirmation-test".to_string(),
+            runtime_release_digest: runtime_release_digest.clone(),
             managed_repository_root: None,
             confirmed_at: None,
             context_plan: None,
@@ -1059,6 +1060,9 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         receipt
             .persist(&config.receipt_path)
             .expect("exchanged receipt should persist");
+        let receipt = BootstrapReceipt::read(&config.receipt_path)
+            .expect("exchanged receipt should be valid")
+            .expect("exchanged receipt should exist");
         std::fs::write(&config.envelope_path, b"pending confirmation")
             .expect("confirmation envelope should exist");
         let mut profile = crate::config::PersistedCloudRelayProfile::default();
@@ -1078,7 +1082,7 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             profile,
         });
         let release = VerifiedRelease {
-            digest: "sha256:path1-confirmation-test".to_string(),
+            digest: runtime_release_digest,
             kernel_binary,
         };
         let path_value = format!(
