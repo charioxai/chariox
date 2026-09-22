@@ -103,6 +103,8 @@ pub(crate) struct DurablePromptPrivateState {
     pub(crate) session_id: String,
     pub(crate) prompt_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) agent_prompt_schedule_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) source_client_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) source_user_id: Option<String>,
@@ -132,6 +134,7 @@ pub(crate) struct DurablePromptPrivateState {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct PromptPrivateMetadata {
+    agent_prompt_schedule_id: Option<String>,
     source_client_id: Option<String>,
     source_user_id: Option<String>,
     hidden_system_context: String,
@@ -160,6 +163,7 @@ impl DurablePromptPrivateState {
         prompt.private_metadata.as_ref().map(|metadata| Self {
             session_id: session_id.to_string(),
             prompt_id: prompt.id.clone(),
+            agent_prompt_schedule_id: metadata.agent_prompt_schedule_id.clone(),
             source_client_id: metadata.source_client_id.clone(),
             source_user_id: metadata.source_user_id.clone(),
             hidden_system_context: metadata.hidden_system_context.clone(),
@@ -315,6 +319,7 @@ impl PromptQueueItem {
             if let Some(metadata) = self.private_metadata.as_mut() {
                 metadata.hidden_system_context.clear();
                 if metadata.operation_id.is_none()
+                    && metadata.agent_prompt_schedule_id.is_none()
                     && metadata.delivery_phase.is_none()
                     && metadata.recovery_operation_id.is_none()
                     && metadata.source_client_id.is_none()
@@ -341,6 +346,13 @@ impl PromptQueueItem {
             .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()));
         metadata.source_client_id = Some(source_client_id.into());
         metadata.source_user_id = Some(source_user_id.into());
+        self
+    }
+
+    pub(crate) fn with_agent_prompt_schedule(mut self, schedule_id: impl Into<String>) -> Self {
+        self.private_metadata
+            .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()))
+            .agent_prompt_schedule_id = Some(schedule_id.into());
         self
     }
 
@@ -443,6 +455,12 @@ impl PromptQueueItem {
         self.private_metadata
             .as_ref()
             .and_then(|metadata| metadata.source_client_id.as_deref())
+    }
+
+    pub(crate) fn agent_prompt_schedule_id(&self) -> Option<&str> {
+        self.private_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.agent_prompt_schedule_id.as_deref())
     }
 
     pub(crate) fn source_user_id(&self) -> Option<&str> {
@@ -586,6 +604,7 @@ impl PromptQueueItem {
 
     pub(crate) fn restore_durable_private_state(&mut self, private: &DurablePromptPrivateState) {
         if private.hidden_system_context.is_empty()
+            && private.agent_prompt_schedule_id.is_none()
             && private.operation_id.is_none()
             && private.delivery_phase.is_none()
             && !private.delivery_failure_pending
@@ -597,6 +616,7 @@ impl PromptQueueItem {
             return;
         }
         self.private_metadata = Some(Box::new(PromptPrivateMetadata {
+            agent_prompt_schedule_id: private.agent_prompt_schedule_id.clone(),
             source_client_id: private.source_client_id.clone(),
             source_user_id: private.source_user_id.clone(),
             hidden_system_context: private.hidden_system_context.clone(),
@@ -736,6 +756,7 @@ mod tests {
             PromptStatus::Queued,
         )
         .with_source_attribution("client-private", "user-private")
+        .with_agent_prompt_schedule("schedule-private")
         .with_hidden_system_context("HIDDEN_CONTEXT_TOKEN")
         .with_durable_operation("operation-private", "fingerprint-private");
         item.set_durable_initially_queued(true);
@@ -757,6 +778,7 @@ mod tests {
         assert!(!payload.contains("private_metadata"));
         assert!(!payload.contains("client-private"));
         assert!(!payload.contains("user-private"));
+        assert!(!payload.contains("schedule-private"));
         assert!(!payload.contains("provider-run-private"));
         assert!(!payload.contains("provider-session-private"));
         assert!(!payload.contains(&recovery_operation_id));
@@ -781,6 +803,38 @@ mod tests {
 
         assert_eq!(item.prompt(), "VISIBLE_PROMPT_TOKEN");
         assert_eq!(item.hidden_system_context(), "");
+    }
+
+    #[test]
+    fn agent_prompt_schedule_provenance_survives_private_state_and_queue_promotion() {
+        let prompt = PromptQueueItem::new(
+            "scheduled-prompt",
+            "attachment-1",
+            "agent-1",
+            "same text",
+            PromptStatus::Queued,
+        )
+        .with_agent_prompt_schedule("wait-1")
+        .with_hidden_system_context("")
+        .into_pending_queue_item("pending-1");
+        let private = DurablePromptPrivateState::from_prompt("session-1", &prompt).unwrap();
+        let private: DurablePromptPrivateState =
+            serde_json::from_value(serde_json::to_value(private).unwrap()).unwrap();
+        let mut restored: PromptQueueItem =
+            serde_json::from_value(serde_json::to_value(&prompt).unwrap()).unwrap();
+        assert_eq!(restored.agent_prompt_schedule_id(), None);
+        restored.restore_durable_private_state(&private);
+        let promoted = restored.with_id("running-1");
+        assert_eq!(promoted.agent_prompt_schedule_id(), Some("wait-1"));
+        assert!(promoted.hidden_system_context().is_empty());
+
+        let mut legacy = serde_json::to_value(private).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("agent_prompt_schedule_id");
+        let legacy: DurablePromptPrivateState = serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy.agent_prompt_schedule_id, None);
     }
 
     #[test]
