@@ -753,6 +753,7 @@ mod tests {
         CreateSessionRequest, PromptAttachment, PromptQueueItem, PromptStatus,
         PromptSubmissionOutcome,
     };
+    use crate::test_support::TestWorktree;
     use crate::DaemonError;
     use crate::{DaemonApp, DaemonConfig};
 
