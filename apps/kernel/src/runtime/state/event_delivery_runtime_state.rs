@@ -330,7 +330,9 @@ impl KernelRuntimeState {
                 activity_mutation,
                 {
                     let session_store = self.owned.session_store.clone();
-                    move || session_store.write().restore_session(before)
+                    move || {
+                        session_store.write().restore_session(before);
+                    }
                 },
             )
         {

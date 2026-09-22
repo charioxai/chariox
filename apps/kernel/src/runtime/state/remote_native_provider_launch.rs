@@ -297,7 +297,7 @@ mod tests {
                 move |_, credential| {
                     send_calls.fetch_add(1, Ordering::SeqCst);
                     assert!(credential.is_none());
-                    std::future::ready(Err(DaemonError::LeasedAgentNotFound {
+                    std::future::ready(Err::<(), _>(DaemonError::LeasedAgentNotFound {
                         leased_agent_id: "leased-agent-1".to_string(),
                     }))
                 }
@@ -326,7 +326,7 @@ mod tests {
                 let send_calls = Arc::clone(&send_calls);
                 move |_, _| {
                     send_calls.fetch_add(1, Ordering::SeqCst);
-                    std::future::ready(Err(DaemonError::ExecutionLeaseNotFound {
+                    std::future::ready(Err::<(), _>(DaemonError::ExecutionLeaseNotFound {
                         lease_id: "still-stale".to_string(),
                     }))
                 }
