@@ -223,7 +223,12 @@ export class BrowserControllerStdioServer {
           }
           const action = actions.get(target);
           action?.controller.abort();
-          if (action) await action.stopped;
+          // Ordinary browser operations may be inside a CDP send that cannot
+          // observe AbortSignal until the fake/real browser returns. Do not
+          // deadlock their cancellation acknowledgement on that send. Cookie
+          // import is the exception: its acknowledgement promises that the
+          // rollback cleanup has completed before the caller retries.
+          if (action?.method === "browser.cookies.import") await action.stopped;
           const accepted = Boolean(action) && (action.method !== "browser.cookies.import"
             || action.response?.result?.status === "rolled_back"
             || action.response?.error?.code === "browser_action_cancelled");
