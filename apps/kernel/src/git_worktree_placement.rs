@@ -17,10 +17,11 @@ const CHARIOX_STATE_DIRECTORY_NAMES: &[&str] = &[
 ];
 const PROTECTED_DIRECTORY_ENV_NAMES: &[&str] = &[
     "CHARIOX_CAPABILITY_ISOLATION_ROOT",
-    "CHARIOX_MANAGED_PROVIDER_HOME",
     "CHARIOX_MANAGED_SLICE_SERVICE_ROOT",
     "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT",
 ];
+const MANAGED_ISOLATION_PROTECTED_DIRECTORY_ENV_NAMES: &[&str] =
+    &["CHARIOX_MANAGED_PROVIDER_HOME"];
 const PROTECTED_FILE_ENV_NAMES: &[&str] = &[
     "CHARIOX_MANAGED_VAULT_PATH",
     "CHARIOX_SLICE_DOCKER_BROKER_SOCKET",
@@ -191,6 +192,15 @@ fn ordinary_working_directory_protection(
             protection
                 .directories
                 .push(configured_protected_path(&raw, name, operation)?);
+        }
+    }
+    if crate::provider::managed_provider_isolation_required() {
+        for name in MANAGED_ISOLATION_PROTECTED_DIRECTORY_ENV_NAMES {
+            if let Some(raw) = std::env::var_os(name) {
+                protection
+                    .directories
+                    .push(configured_protected_path(&raw, name, operation)?);
+            }
         }
     }
     for name in PROTECTED_FILE_ENV_NAMES {
