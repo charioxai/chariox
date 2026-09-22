@@ -16,7 +16,12 @@ import { runRoomEnvironmentCompanion } from "./lib/live-room-environment-compani
 import { captureRoomStreamerDiagnostics } from "./lib/room-streamer-diagnostics.mjs"
 import { captureRoomKernelDiagnostics } from "./lib/room-kernel-diagnostics.mjs"
 import { startRoomSliceWithForwarding } from "./lib/room-colima-forwarding.mjs"
-import { roomRealProviderOptions, runRoomRealProvider } from "./lib/live-room-real-provider.mjs"
+import {
+  prepareRoomRealProviderAgent,
+  roomProviderAgentReadyMetadata,
+  roomRealProviderOptions,
+  runRoomRealProvider,
+} from "./lib/live-room-real-provider.mjs"
 import { roomProviderBrowserFixture } from "./lib/room-provider-browser-fixture.mjs"
 import { createDrillInterruption } from "./lib/drill-interruption.mjs"
 import { makeAvailablePorts, portIsAvailable } from "./lib/drill-runtime-helpers.mjs"
@@ -2008,6 +2013,30 @@ function scopedRelayToken({ subject, subjectKind, actions, userId = null }) {
 
 async function runCompanionIfConfigured({ environment, localNoticeIds, remoteNoticeIds, activityController }) {
   const noticePattern = roomActionNoticePattern
+  const preparedProvider = realProviderOptions
+    ? await prepareRoomRealProviderAgent({
+      client,
+      requests,
+      sessionId,
+      sliceId: slice.id,
+      workspace: fixtureWorkspace,
+      options: realProviderOptions,
+      checkpoint: (value) => writeFile(
+        path.join(evidenceRoot, "real-provider.json"),
+        `${JSON.stringify(value, null, 2)}\n`,
+        { mode: 0o600 },
+      ),
+      withTimeout,
+    })
+    : null
+  const providerAgent = preparedProvider
+    ? roomProviderAgentReadyMetadata({
+      agent: preparedProvider.agent,
+      sessionId,
+      sliceId: slice.id,
+      options: realProviderOptions,
+    })
+    : null
   return await runRoomEnvironmentCompanion({
     env: process.env,
     sleep,
@@ -2024,6 +2053,7 @@ async function runCompanionIfConfigured({ environment, localNoticeIds, remoteNot
       ...(webPointerGestures ? { pointerGestures: true } : {}),
       pointerClickExpectedCount: 1,
       ...(realProviderOptions ? { realProvider: realProviderOptions, providerWorkspace: fixtureWorkspace } : {}),
+      ...(providerAgent ? { providerAgent } : {}),
       kernelUrl: `ws://127.0.0.1:${kernelPort}/kernel`,
       relayUrl: `ws://127.0.0.1:${relayPort}`,
       relayToken: remoteTuiRelayToken,

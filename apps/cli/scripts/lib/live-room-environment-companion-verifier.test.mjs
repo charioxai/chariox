@@ -75,9 +75,10 @@ test(`Room companion verifier uses stable TUI baselines, provider scenario=${sce
       environmentId: "environment-1",
       actionId: action.action_id,
       actorId: action.actor_id,
-      ...(includeProvider ? { provider: { provider: "codex", model: "gpt-5.4", agentId: "agent-real",
-        actorId: "agent:agent-real", actionId: providerAction.action_id, webObserved: true,
-        ...(form ? { browserTask: "form", browserLayout, fillActionId: fillAction.action_id, baselineSequence: 1 } : {}),
+      ...(includeProvider ? { provider: { provider: "codex", model: "gpt-5.4", accountProfile: "default",
+        mode: providerMode, ...(providerMode === "browser" ? { browserTask: form ? "form" : "click" } : { computerTask: "pointer_click" }),
+        agentId: "agent-real", actorId: "agent:agent-real", actionId: providerAction.action_id, webObserved: true,
+        ...(form ? { browserLayout, fillActionId: fillAction.action_id, baselineSequence: 1 } : {}),
         ...(recovery ? { browserMutation, replacementActionId: replaceAction.action_id, staleActionId: staleAction.action_id, staleErrorObserved: true } : {}),
         screenshot: path.join(root, "provider.png") } } : {}),
       gestures: { dragActionId: dragAction.action_id, scrollActionId: scrollAction.action_id },
@@ -105,11 +106,24 @@ test(`Room companion verifier uses stable TUI baselines, provider scenario=${sce
       ready: {
         schema: "chariox.room_environment.companion_ready.v1",
         sessionId: "session-1",
+        sliceId: "slice-1",
         environmentId: "environment-1",
         keyboardText: "fixture typing",
         keyboardReplacementText: "fixture replacement",
         pointerGestures: true,
-        ...(includeProvider ? { realProvider: { provider: "codex", model: "gpt-5.4", mode: providerMode, ...(form ? { browserTask: "form", browserLayout, browserMutation } : {}) } } : {}),
+        ...(includeProvider ? {
+          realProvider: { provider: "codex", model: "gpt-5.4", mode: providerMode,
+            ...(providerMode === "browser" ? { browserTask: form ? "form" : "click" } : { computerTask: "pointer_click" }),
+            ...(form ? { browserLayout, browserMutation } : {}) },
+          providerAgent: {
+            contract: "chariox.room_environment.official_provider_agent.v1",
+            agentId: "agent-real", sessionId: "session-1", sliceId: "slice-1",
+            provider: "codex", model: "gpt-5.4", accountProfile: "default", mode: providerMode,
+            task: form ? "form" : providerMode === "browser" ? "click" : "pointer_click",
+            ...(providerMode === "browser" ? { browserTask: form ? "form" : "click" } : { computerTask: "pointer_click" }),
+            ...(form ? { browserLayout, browserMutation } : {}),
+          },
+        } : {}),
       },
       client: {
         send: async ({ before }) => {
@@ -191,7 +205,42 @@ test("real-provider opt-in rejects a stub-only Web result", async () => {
     await assert.rejects(runRoomEnvironmentCompanion({
       env: { CHARIOX_ROOM_DRILL_COORDINATION_DIR: root, CHARIOX_ROOM_DRILL_COMPANION_TIMEOUT_MS: "1000" },
       ready: { sessionId: "session-1", environmentId: "environment-1", realProvider: { provider: "codex", model: "gpt-5.4" } },
-    }), /omitted required real-provider evidence/)
+    }), /provider-agent metadata/)
+    await writer
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test("real-provider opt-in rejects provider-agent identity mismatches", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-room-provider-mismatch-"))
+  const writer = (async () => {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      try { await access(path.join(root, "ready.json")); break } catch { await new Promise((resolve) => setTimeout(resolve, 5)) }
+    }
+    await writeFile(path.join(root, "result.json"), JSON.stringify({
+      schema: "chariox.room_environment.companion_result.v1", status: "passed",
+      sessionId: "session-1", environmentId: "environment-1", actionId: "web", actorId: "user:local",
+      client: "production-local-web-view", physicalEffect: "POINTER_CLICK_COUNT=1",
+      screenshot: path.join(root, "web.png"),
+      provider: {
+        provider: "codex", model: "gpt-5.4", accountProfile: "default", mode: "computer",
+        computerTask: "pointer_click", agentId: "agent-real", actorId: "agent:agent-real",
+        actionId: "provider", webObserved: true, screenshot: path.join(root, "provider.png"),
+      },
+    }))
+  })()
+  try {
+    await assert.rejects(runRoomEnvironmentCompanion({
+      env: { CHARIOX_ROOM_DRILL_COORDINATION_DIR: root, CHARIOX_ROOM_DRILL_COMPANION_TIMEOUT_MS: "1000" },
+      ready: {
+        sessionId: "session-1", sliceId: "slice-1", environmentId: "environment-1",
+        realProvider: { provider: "codex", model: "gpt-5.4", mode: "computer" },
+        providerAgent: {
+          contract: "chariox.room_environment.official_provider_agent.v1", agentId: "agent-real",
+          sessionId: "session-1", sliceId: "slice-1", provider: "wrong", model: "gpt-5.4",
+          accountProfile: "default", mode: "computer", task: "pointer_click",
+        },
+      },
+    }), /provider mismatch/)
     await writer
   } finally { await rm(root, { recursive: true, force: true }) }
 })

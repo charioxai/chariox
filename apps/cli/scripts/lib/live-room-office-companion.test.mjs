@@ -21,8 +21,8 @@ test("Web office work requires independent TUI receipts for editor and mail acti
     schema: "chariox.room_environment.companion_result.v1", status: "passed", sessionId: "room", environmentId: "environment",
     client: "production-local-web-office-view", actionId: "pointer", actorId: actor,
     physicalEffect: "POINTER_CLICK_COUNT=1", screenshot: phase.screenshot,
-    provider: { provider: "codex", model: "fixture", agentId: "agent-real", actorId: actor, actionId: "pointer",
-      screenshot: phase.screenshot, webObserved: true },
+    provider: { provider: "codex", model: "fixture", accountProfile: "default", mode: "computer", computerTask: "office",
+      agentId: "agent-real", actorId: actor, actionId: "pointer", screenshot: phase.screenshot, webObserved: true },
     office: { agentId: "agent-real", provider: "codex", model: "fixture", fixtureClosed: true,
       edit: { exactDocument: true, focusPreserved: true, typedActionId: "typed", localTuiObserved: false, remoteTuiObserved: false },
       mail: { activationActionId: "activate", uploadActionId: "upload", submitActionId: "submit", visibleBrowser: true,
@@ -45,8 +45,14 @@ test("Web office work requires independent TUI receipts for editor and mail acti
     try {
       const verified = await runRoomEnvironmentCompanion({
         env: { CHARIOX_ROOM_DRILL_COORDINATION_DIR: root, CHARIOX_ROOM_DRILL_COMPANION_TIMEOUT_MS: "1000" },
-        ready: { sessionId: "room", environmentId: "environment", viewport: { desktop_pixel_width: 1280, desktop_pixel_height: 800 },
-          realProvider: { provider: "codex", model: "fixture", mode: "computer", computerTask: "office" } },
+        ready: { sessionId: "room", sliceId: "slice-1", environmentId: "environment", viewport: { desktop_pixel_width: 1280, desktop_pixel_height: 800 },
+          realProvider: { provider: "codex", model: "fixture", mode: "computer", computerTask: "office" },
+          providerAgent: {
+            contract: "chariox.room_environment.official_provider_agent.v1",
+            agentId: "agent-real", sessionId: "room", sliceId: "slice-1",
+            provider: "codex", model: "fixture", accountProfile: "default", mode: "computer",
+            task: "office", computerTask: "office",
+          } },
         client: { send: async () => ({ RoomEnvironmentActionHistoryListed: { page: { actions: history } } }) },
         observerClient: { send: async () => ({ RoomEnvironmentState: { environment: { input_ownership: [] } } }) },
         requests: { listRoomEnvironmentActionHistoryRequest: () => ({}), getRoomEnvironmentStateRequest: () => ({}) },

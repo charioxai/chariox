@@ -1,6 +1,13 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { roomRealProviderOptions, runRoomRealProvider, runRoomRealProviderAction } from "./live-room-real-provider.mjs"
+import {
+  prepareRoomRealProviderAgent,
+  roomProviderAgentContract,
+  roomProviderAgentReadyMetadata,
+  roomRealProviderOptions,
+  runRoomRealProvider,
+  runRoomRealProviderAction,
+} from "./live-room-real-provider.mjs"
 
 const secret = "synthetic-secret-never-in-diagnostic"
 const entry = (kind, text, entry_index = 1) => ({ entry_index, entry: { kind, text } })
@@ -35,7 +42,8 @@ test("completed history for another prompt cannot prove settlement", async () =>
 
 test("settlement waits for the matching completed turn and an idle agent", async () => {
   const current = { turn_id: "current", prompt_id: "prompt-current", lifecycle: "open", entries: [], blobs: [] }
-  const state = { SessionState: { session: { agents: [{ id: "agent-2", is_processing: true }] } } }
+  const state = { SessionState: { session: { id: "room", agents: [{ id: "agent-2", session_id: "room",
+    provider: "opencode", model: "fixture", account_profile: "default", is_processing: false }] } } }
   const run = settlementFixture({ turns: [current], state })
   const wait = run.input.waitFor
   run.input.waitFor = async (check, timeout, message) => {
@@ -43,6 +51,7 @@ test("settlement waits for the matching completed turn and an idle agent", async
     assert.equal(timeout, 60_000)
     assert.equal(await check(), false, "an open turn is not settled")
     current.lifecycle = "completed"
+    state.SessionState.session.agents[0].is_processing = true
     assert.equal(await check(), false, "a still-processing agent is not idle")
     state.SessionState.session.agents[0].is_processing = false
     return check()
@@ -260,6 +269,75 @@ test("Web real-provider mode requires an explicit opt-in and model", () => {
   assert.equal(roomRealProviderOptions({ ...env, CHARIOX_ROOM_DRILL_WEB_REAL_PROVIDER: "1", CHARIOX_ROOM_DRILL_MODEL: "gpt-5.4" }).provider, "codex")
 })
 
+test("provider preparation imports, spawns, and fences without attaching or prompting", async () => {
+  const run = fixture()
+  run.input.options = { ...run.input.options, importFirst: true }
+  const prepared = await prepareRoomRealProviderAgent(run.input)
+  assert.equal(prepared.agent.id, "agent-2")
+  assert.deepEqual(run.calls.map((call) => call.name), [
+    "importSliceProviderAuth", "spawnAgent", "getSessionState", "listSlices",
+  ])
+  assert.equal(run.calls.some((call) => ["attachToSession", "submitPrompt"].includes(call.name)), false)
+  assert.equal(run.checkpoints.at(-1).phase, "agent-prepared")
+})
+
+test("provider preparation reuses an idle exact agent without import, spawn, attach, or prompt", async () => {
+  const run = fixture()
+  run.input.agent = { id: "agent-2" }
+  const prepared = await prepareRoomRealProviderAgent(run.input)
+  assert.equal(prepared.agent.id, "agent-2")
+  assert.deepEqual(run.calls.map((call) => call.name), ["getSessionState", "listSlices"])
+})
+
+test("provider preparation rejects wrong authoritative session/configuration or slice before prompting", async () => {
+  const validAgent = { id: "agent-2", session_id: "room", provider: "opencode", model: "fixture",
+    account_profile: "default", is_processing: false }
+  for (const state of [
+    { SessionState: { session: { id: "other-room", agents: [validAgent] } } },
+    { SessionState: { session: { id: "room", agents: [{ ...validAgent, provider: "wrong" }] } } },
+    { SessionState: { session: { id: "room", agents: [{ ...validAgent, model: "wrong" }] } } },
+    { SessionState: { session: { id: "room", agents: [{ ...validAgent, account_profile: "wrong" }] } } },
+  ]) {
+    const run = fixture({ state })
+    await assert.rejects(prepareRoomRealProviderAgent(run.input), /authoritative provider/)
+    assert.equal(run.calls.some((call) => call.name === "submitPrompt"), false)
+  }
+  const run = fixture({ slices: [{ id: "slice", session_id: "other-room", agent_ids: ["agent-2"] }] })
+  await assert.rejects(prepareRoomRealProviderAgent(run.input), /intended slice/)
+  assert.equal(run.calls.some((call) => call.name === "submitPrompt"), false)
+})
+
+test("provider ready metadata is an additive redaction-safe identity and task fence", () => {
+  const metadata = roomProviderAgentReadyMetadata({
+    agent: { id: "agent-2", session_id: "room", provider: "opencode", model: "fixture", account_profile: "default" },
+    sessionId: "room",
+    sliceId: "slice",
+    options: {
+      provider: "opencode", model: "fixture", accountProfile: "default", mode: "browser",
+      browserTask: "form", browserLayout: "shadow-root", browserMutation: "replace-field",
+    },
+  })
+  assert.deepEqual(metadata, {
+    contract: roomProviderAgentContract,
+    agentId: "agent-2",
+    sessionId: "room",
+    sliceId: "slice",
+    provider: "opencode",
+    model: "fixture",
+    accountProfile: "default",
+    mode: "browser",
+    task: "form",
+    browserTask: "form",
+    browserLayout: "shadow-root",
+    browserMutation: "replace-field",
+  })
+  assert.doesNotMatch(JSON.stringify(metadata), /prompt|relay|token|secret|credential|history|fill/i)
+  assert.throws(() => roomProviderAgentReadyMetadata({
+    agent: { id: "agent-2", session_id: "other-room", provider: "opencode", model: "fixture", account_profile: "default" },
+    sessionId: "room", sliceId: "slice", options: { provider: "opencode", model: "fixture" },
+  }), /session mismatch/)
+})
+
 test("shared action runner waits for Web readiness without claiming TUI observation", async () => {
   const run = fixture({ actions: [{ actor_id: "agent:agent-2", kind: "pointer_click", state: "completed", mode: "computer",
     action_id: "action-1", sequence: 1, arguments: { x: 640, y: 400, button: "left", click_count: 1 },
@@ -290,7 +368,7 @@ test("failed Web readiness cannot submit a provider prompt", async () => {
 
 for (const [field, value] of [["provider", "dev-stub"], ["model", "wrong"], ["account_profile", "wrong"], ["session_id", "other-room"]]) {
   test(`reused agent rejects authoritative ${field} mismatch before prompting`, async () => {
-    const run = fixture({ state: { SessionState: { session: { agents: [{ id: "agent-2", provider: "opencode", model: "fixture",
+    const run = fixture({ state: { SessionState: { session: { id: "room", agents: [{ id: "agent-2", provider: "opencode", model: "fixture",
       account_profile: "default", session_id: "room", [field]: value }] } } } })
     run.input.agent = { id: "agent-2", provider: "opencode", model: "fixture" }
     await assert.rejects(runRoomRealProviderAction(run.input), /provider configuration/)
@@ -334,7 +412,7 @@ test("an older failed turn cannot abort the reused agent's current prompt", asyn
 })
 
 test("reused agent with an in-flight turn is rejected before prompt submission", async () => {
-  const run = fixture({ state: { SessionState: { session: { agents: [{ id: "agent-2", provider: "opencode", model: "fixture",
+  const run = fixture({ state: { SessionState: { session: { id: "room", agents: [{ id: "agent-2", provider: "opencode", model: "fixture",
     account_profile: "default", session_id: "room", is_processing: true }] } } } })
   run.input.agent = { id: "agent-2" }
   await assert.rejects(runRoomRealProviderAction(run.input), /must be idle/)
@@ -345,7 +423,7 @@ function fixture({ turns = [{ turn_id: "current", prompt_id: "prompt-current", l
   const checkpoints = []
   const calls = []
   const requests = Object.fromEntries([
-    "spawnAgent", "attachToSession", "submitPrompt", "listRoomEnvironmentActionHistory",
+    "importSliceProviderAuth", "spawnAgent", "attachToSession", "submitPrompt", "listRoomEnvironmentActionHistory",
     "getSessionState", "getSessionHistoryOutline", "getSessionHistoryBlobContent", "listSlices",
   ].map((name) => [`${name}Request`, (...args) => ({ name, args })]))
   const input = {
@@ -354,15 +432,16 @@ function fixture({ turns = [{ turn_id: "current", prompt_id: "prompt-current", l
     client: { send: async (request) => {
       calls.push(request)
       switch (request.name) {
+        case "importSliceProviderAuth": return { SliceProviderAuthImported: { status: "imported" } }
         case "spawnAgent": return { AgentSpawned: { agent: { id: "agent-2", session_id: "room", provider: "opencode", model: "fixture", account_profile: "default" } } }
         case "attachToSession": return { SessionAttached: { attachment: { id: "attachment" } } }
         case "submitPrompt": return submit ?? { PromptSubmitted: { outcome: { Started: { prompt: { id: "prompt-current" } } } } }
         case "listRoomEnvironmentActionHistory": return { RoomEnvironmentActionHistoryListed: { page: {
           actions: calls.some((call) => call.name === "submitPrompt") ? actions : priorActions,
         } } }
-        case "listSlices": return { SlicesListed: { slices: slices ?? [{ id: "slice", agent_ids: ["agent-2"] }] } }
+        case "listSlices": return { SlicesListed: { slices: slices ?? [{ id: "slice", session_id: "room", agent_ids: ["agent-2"] }] } }
         case "getSessionState": return state ?? { SessionState: {
-          session: { agents: [{ id: "agent-2", session_id: "room", provider: "opencode", model: "fixture", account_profile: "default", state: "Working", is_processing: false }] },
+          session: { id: "room", agents: [{ id: "agent-2", session_id: "room", provider: "opencode", model: "fixture", account_profile: "default", state: "Working", is_processing: false }] },
           agent_activity: { "agent-2": { status: "working", prompt_status: "running", active_turn: { phase: "awaiting_first_output" } } },
         } }
         case "getSessionHistoryOutline": return { SessionHistoryOutline: { agents: [{ agent_id: "agent-2",
@@ -491,7 +570,8 @@ test("prompt rejection fails immediately rather than waiting for an impossible a
 })
 
 test("oversized blobs are skipped and unknown enum values cannot escape into evidence", async () => {
-  const run = fixture({ state: { SessionState: { session: { agents: [{ id: "agent-2", state: secret }] }, agent_activity: {} } },
+  const run = fixture({ state: { SessionState: { session: { id: "room", agents: [{ id: "agent-2", session_id: "room",
+    provider: "opencode", model: "fixture", account_profile: "default", is_processing: false, state: secret }] }, agent_activity: {} } },
     turns: [{ lifecycle: secret, entries: [entry(secret, secret)], blobs: [
       { blob_id: "oversized", total_chars: 1_000_000, kind: "provider_error", summary: `unauthorized ${secret}` },
       { blob_id: "small", total_chars: 100, kind: "provider_error", summary: "" },

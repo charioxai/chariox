@@ -4,6 +4,8 @@ import { assertRoomBrowserRecoveryActions, observeRoomStaleToolError } from "./l
 import { waitForRoomProviderSettlement } from "./live-room-provider-settlement.mjs"
 import { runRoomOfficeWork } from "./live-room-office-work.mjs"
 
+export const roomProviderAgentContract = "chariox.room_environment.official_provider_agent.v1"
+
 // Opt-in only: this runs a paid, official provider through the kernel, not a
 // driver impersonating an agent by calling its MCP endpoint.
 export function roomRealProviderOptions(env) {
@@ -29,6 +31,85 @@ export function roomRealProviderOptions(env) {
   assert.ok(browserMutation === undefined || browserMutation === "replace-field", "invalid Browser mutation")
   return { provider, model, mode, ...(computerTask ? { computerTask } : {}), ...(browserTask ? { browserTask } : {}), ...(browserLayout ? { browserLayout } : {}),
     ...(browserMutation ? { browserMutation } : {}), accountProfile: "default", importFirst: env.CHARIOX_ROOM_DRILL_IMPORT_FIRST === "1" }
+}
+
+// Prepare only the provider identity that a later companion may reuse. This
+// intentionally stops before AttachToSession and SubmitPrompt; the Cloud
+// companion owns its own attachment and prompt submission after it verifies
+// this exact ready metadata against the authoritative kernel state.
+export async function prepareRoomRealProviderAgent(input) {
+  const { client, requests, sessionId, sliceId, options } = input
+  const accountProfile = options.accountProfile ?? "default"
+  assert.ok(options.provider && options.model, "provider preparation requires a provider and model")
+  assert.ok(!(input.agent && options.importFirst), "import-first must precede agent creation")
+  if (options.importFirst) {
+    await input.checkpoint?.({ phase: "importing-account", provider: options.provider })
+    unwrap(await client.send(requests.importSliceProviderAuthRequest(
+      sliceId, options.provider, accountProfile,
+    )), "SliceProviderAuthImported")
+  }
+  await input.checkpoint?.({ phase: "spawning", provider: options.provider, importFirst: options.importFirst })
+  const alias = `real-${options.provider}`
+  const candidate = input.agent ?? unwrap(await client.send(requests.spawnAgentRequest(
+    sessionId, options.provider, alias, options.model, input.workspace,
+    "low", "build", "yolo", undefined, undefined, sliceId, accountProfile,
+  )), "AgentSpawned").agent
+  assert.ok(candidate && typeof candidate.id === "string" && candidate.id.length > 0,
+    "provider preparation did not return an agent identity")
+
+  const state = unwrap(await input.withTimeout(client.send(requests.getSessionStateRequest(sessionId)),
+    5_000, "provider configuration lookup"), "SessionState")
+  const session = state.session
+  assert.ok(session && session.id === sessionId,
+    "authoritative provider session does not match the requested Room")
+  const agent = session.agents?.find((item) => item.id === candidate.id)
+  assert.ok(agent && agent.session_id === sessionId
+    && agent.provider === options.provider && agent.model === options.model
+    && (agent.account_profile ?? "default") === accountProfile,
+  "authoritative provider configuration does not match the requested provider/model/profile/Room")
+  assert.equal(agent.is_processing, false, "provider must be idle before the companion handoff")
+
+  const slices = unwrap(await input.withTimeout(client.send(requests.listSlicesRequest()),
+    5_000, "provider slice lookup"), "SlicesListed").slices
+  const matchingSlices = slices.filter((slice) => slice.id === sliceId
+    && (slice.session_id === sessionId
+      || slice.environment_session_id === sessionId
+      || slice.session_ids?.includes?.(sessionId))
+    && slice.agent_ids?.includes?.(agent.id))
+  assert.equal(matchingSlices.length, 1,
+    "provider must belong to exactly one intended slice/Room")
+  await input.checkpoint?.({ phase: "agent-prepared", provider: agent.provider, agentId: agent.id })
+  return { agent, slice: matchingSlices[0], accountProfile }
+}
+
+export function roomProviderAgentReadyMetadata({ agent, sessionId, sliceId, options }) {
+  const mode = options.mode ?? "computer"
+  const task = mode === "browser"
+    ? (options.browserTask ?? "click")
+    : (options.computerTask ?? "pointer_click")
+  assert.ok(agent && typeof agent.id === "string" && agent.id.length > 0, "provider ready metadata requires an agent")
+  assert.ok(typeof sessionId === "string" && sessionId.length > 0, "provider ready metadata requires a session")
+  assert.ok(typeof sliceId === "string" && sliceId.length > 0, "provider ready metadata requires a slice")
+  assert.equal(agent.session_id, sessionId, "provider ready metadata agent session mismatch")
+  assert.equal(agent.provider, options.provider, "provider ready metadata provider mismatch")
+  assert.equal(agent.model, options.model, "provider ready metadata model mismatch")
+  assert.equal(agent.account_profile ?? "default", options.accountProfile ?? "default",
+    "provider ready metadata account profile mismatch")
+  return {
+    contract: roomProviderAgentContract,
+    agentId: agent.id,
+    sessionId,
+    sliceId,
+    provider: options.provider,
+    model: options.model,
+    accountProfile: options.accountProfile ?? "default",
+    mode,
+    task,
+    ...(options.computerTask ? { computerTask: options.computerTask } : {}),
+    ...(options.browserTask ? { browserTask: options.browserTask } : {}),
+    ...(options.browserLayout ? { browserLayout: options.browserLayout } : {}),
+    ...(options.browserMutation ? { browserMutation: options.browserMutation } : {}),
+  }
 }
 
 export async function runRoomRealProvider(input) {
@@ -67,19 +148,8 @@ export async function runRoomRealProviderAction(input) {
   const form = mode === "browser" && options.browserTask === "form"
   const recovery = form && options.browserMutation === "replace-field"
   const actionKind = mode === "browser" ? (form ? "submit" : "click") : "pointer_click"
-  assert.ok(!(input.agent && options.importFirst), "import-first must precede agent creation")
-  if (options.importFirst) {
-    await input.checkpoint({ phase: "importing-account", provider: options.provider })
-    unwrap(await client.send(requests.importSliceProviderAuthRequest(
-      sliceId, options.provider, options.accountProfile,
-    )), "SliceProviderAuthImported")
-  }
-  await input.checkpoint({ phase: "spawning", provider: options.provider, importFirst: options.importFirst })
-  const alias = `real-${options.provider}`
-  const agent = input.agent ?? unwrap(await client.send(requests.spawnAgentRequest(
-    sessionId, options.provider, alias, options.model, input.workspace,
-    "low", "build", "yolo", undefined, undefined, sliceId, options.accountProfile,
-  )), "AgentSpawned").agent
+  const prepared = await prepareRoomRealProviderAgent(input)
+  const agent = prepared.agent
   const attachment = unwrap(await client.send(requests.attachToSessionRequest(
     sessionId, "real-provider-drill",
   )), "SessionAttached").attachment
@@ -89,27 +159,13 @@ export async function runRoomRealProviderAction(input) {
   let fillAction
   let recoveryActions
   let settlement
-  let verifiedAgent = agent
+  const verifiedAgent = agent
   let baselineSequence = 0
   const priorTurnIds = new Set()
   let lastFailureProbe = 0
   try {
     await input.beforePrompt?.(agent)
     if (input.agent) {
-      const state = unwrap(await input.withTimeout(client.send(requests.getSessionStateRequest(sessionId)),
-        5_000, "provider configuration lookup"), "SessionState")
-      verifiedAgent = state.session?.agents?.find((item) => item.id === agent.id)
-      const slices = unwrap(await input.withTimeout(client.send(requests.listSlicesRequest()),
-        5_000, "provider slice lookup"), "SlicesListed").slices
-      assert.ok(slices.some((slice) => slice.id === sliceId && slice.agent_ids?.includes(agent.id)),
-        "real provider must belong to the intended slice")
-    }
-    assert.ok(verifiedAgent && verifiedAgent.session_id === sessionId
-      && verifiedAgent.provider === options.provider && verifiedAgent.model === options.model
-      && (verifiedAgent.account_profile ?? "default") === options.accountProfile,
-    "authoritative provider configuration does not match the requested provider/model/profile/Room")
-    if (input.agent) {
-      assert.equal(verifiedAgent.is_processing, false, "reused provider must be idle before this drill")
       const outline = unwrap(await input.withTimeout(client.send(requests.getSessionHistoryOutlineRequest(
         sessionId, [agent.id], 2)), 5_000, "provider history baseline"), "SessionHistoryOutline")
       const turns = outline.agents?.find((item) => item.agent_id === agent.id)?.turns ?? []

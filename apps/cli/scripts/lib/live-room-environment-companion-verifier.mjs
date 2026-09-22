@@ -1,6 +1,10 @@
 import assert from "node:assert/strict"
 import path from "node:path"
-import { assertRoomRealProviderAction, assertRoomBrowserFormActions } from "./live-room-real-provider.mjs"
+import {
+  assertRoomRealProviderAction,
+  assertRoomBrowserFormActions,
+  roomProviderAgentContract,
+} from "./live-room-real-provider.mjs"
 import { assertRoomBrowserRecoveryActions } from "./live-room-browser-recovery.mjs"
 import { roomDrillCompanionTimeoutMs } from "./room-drill-companion-budget.mjs"
 import { readRoomDrillActionHistory } from "./room-drill-action-history.mjs"
@@ -45,6 +49,21 @@ export async function runRoomEnvironmentCompanion(input) {
   await sampleTuis(true)
   validateCompanionResult(companion)
   if (input.ready.realProvider) {
+    const expected = input.ready.providerAgent
+    assert.ok(expected && typeof expected === "object", "Web companion ready omitted required provider-agent metadata")
+    assert.equal(expected.contract, roomProviderAgentContract)
+    assert.equal(expected.sessionId, input.ready.sessionId)
+    assert.ok(typeof input.ready.sliceId === "string" && input.ready.sliceId.length > 0,
+      "Web companion ready omitted provider slice identity")
+    assert.equal(expected.sliceId, input.ready.sliceId)
+    assert.equal(expected.provider, input.ready.realProvider.provider, "provider-agent provider mismatch")
+    assert.equal(expected.model, input.ready.realProvider.model, "provider-agent model mismatch")
+    assert.equal(expected.accountProfile, input.ready.realProvider.accountProfile ?? "default", "provider-agent account profile mismatch")
+    assert.equal(expected.mode, input.ready.realProvider.mode ?? "computer", "provider-agent mode mismatch")
+    const expectedTask = expected.mode === "browser"
+      ? (input.ready.realProvider.browserTask ?? "click")
+      : (input.ready.realProvider.computerTask ?? "pointer_click")
+    assert.equal(expected.task, expectedTask, "provider-agent task mismatch")
     assert.ok(companion.provider, "Web companion omitted required real-provider evidence")
     assert.equal(companion.provider.provider, input.ready.realProvider.provider)
     assert.equal(companion.provider.model, input.ready.realProvider.model)
@@ -54,6 +73,17 @@ export async function runRoomEnvironmentCompanion(input) {
     assert.ok(typeof companion.provider.agentId === "string" && companion.provider.agentId.length > 0)
     assert.equal(companion.provider.actorId, `agent:${companion.provider.agentId}`)
     assert.ok(typeof companion.provider.screenshot === "string" && path.isAbsolute(companion.provider.screenshot))
+    assert.equal(expected.agentId, companion.provider.agentId)
+    assert.equal(expected.provider, companion.provider.provider)
+    assert.equal(expected.model, companion.provider.model)
+    assert.equal(expected.accountProfile, companion.provider.accountProfile ?? "default")
+    assert.equal(expected.mode, companion.provider.mode)
+    const task = companion.provider.mode === "browser"
+      ? (companion.provider.browserTask ?? "click")
+      : (companion.provider.computerTask ?? "pointer_click")
+    assert.equal(expected.task, task)
+    assert.equal(expected.browserLayout, companion.provider.browserLayout)
+    assert.equal(expected.browserMutation, companion.provider.browserMutation)
   }
   if (input.ready.realProvider?.computerTask === "office") {
     return verifyRoomOfficeCompanion(input, companion, tuiEvidence)
