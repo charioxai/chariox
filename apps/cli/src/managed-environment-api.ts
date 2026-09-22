@@ -7,6 +7,7 @@ import type {
   ManagedEnvironmentCatalog,
   ManagedEnvironmentContextPlanInput,
   ManagedEnvironmentLifecycleAction,
+  ManagedEnvironmentPreReimageObservationAcknowledgement,
   ManagedEnvironmentReimageResult,
   ManagedEnvironmentResult,
   ManagedEnvironmentSummary,
@@ -18,6 +19,7 @@ import {
   getManagedContextTransferStatusRequest,
   getManagedEnvironmentRequest,
   listManagedEnvironmentCatalogRequest,
+  observeManagedEnvironmentPreReimageRequest,
   prepareManagedEnvironmentContextTransferRequest,
   requestManagedEnvironmentLifecycleRequest,
   requestManagedEnvironmentReimageRequest,
@@ -113,6 +115,27 @@ export async function requestManagedEnvironmentReimage(
   ).result
   validateManagedEnvironmentReimageResult(result, input)
   return result
+}
+
+export async function observeManagedEnvironmentPreReimage(
+  client: LocalIpcClient,
+  input: {
+    environmentId: string
+    expectedGeneration: number
+  },
+): Promise<ManagedEnvironmentPreReimageObservationAcknowledgement> {
+  const response = await client.send<Record<string, unknown>>(
+    observeManagedEnvironmentPreReimageRequest(input),
+  )
+  const acknowledgement = expectVariant<{
+    acknowledgement: ManagedEnvironmentPreReimageObservationAcknowledgement
+  }>(response, "ManagedEnvironmentPreReimageObserved").acknowledgement
+  if (acknowledgement.environmentId !== input.environmentId
+    || acknowledgement.generation !== input.expectedGeneration
+    || acknowledgement.observedAt.trim() === "") {
+    throw new Error("kernel returned a mismatched managed pre-reimage observation acknowledgement")
+  }
+  return acknowledgement
 }
 
 export async function prepareManagedEnvironmentContextTransfer(

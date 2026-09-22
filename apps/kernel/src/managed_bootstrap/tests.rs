@@ -18,10 +18,103 @@ use super::prepare_managed_kernel;
 use super::release::verify_release;
 use super::state::{BootstrapConfig, BootstrapReceipt, BootstrapReceiptStatus};
 use super::supervisor::run_kernel_once;
-use super::{ManagedKernelContextPlan, ManagedProviderTopology, MANAGED_PROVIDER_TOPOLOGY_ENV};
+use super::{
+    validate_pre_reimage_observation_binding, ConfirmedManagedKernelRegistration,
+    ManagedKernelContextPlan, ManagedProviderTopology, MANAGED_PROVIDER_TOPOLOGY_ENV,
+};
+use crate::config::{DaemonConfig, PersistedCloudRelayProfile};
 use crate::error::DaemonError;
 
 mod disposable_worker;
+
+#[test]
+fn pre_reimage_observation_binding_requires_exact_confirmed_generation_and_current_identity() {
+    let receipt = BootstrapReceipt {
+        schema_version: 1,
+        status: BootstrapReceiptStatus::Confirmed,
+        environment_id: "environment-1".to_string(),
+        machine_id: "machine-1".to_string(),
+        kernel_id: "kernel-1".to_string(),
+        generation: 4,
+        relay_public_key: "relay-public-key".to_string(),
+        runtime_release_digest: format!("sha256:{}", "a".repeat(64)),
+        managed_repository_root: None,
+        confirmed_at: Some("2026-09-22T00:00:00Z".to_string()),
+        context_plan: None,
+        provider_rebuild_action_id: None,
+        freshness_evidence: None,
+    };
+    let registration = ConfirmedManagedKernelRegistration {
+        environment_id: receipt.environment_id.clone(),
+        machine_id: receipt.machine_id.clone(),
+        kernel_id: receipt.kernel_id.clone(),
+        context_plan: None,
+    };
+    let mut config = DaemonConfig::for_tests();
+    config.daemon_id = receipt.kernel_id.clone();
+    config.host_machine_id = receipt.machine_id.clone();
+    config.relay_public_key = receipt.relay_public_key.clone();
+    config.cloud_relay = Some(PersistedCloudRelayProfile {
+        api_url: "https://cloud.example.test".to_string(),
+        user_id: "owner-1".to_string(),
+        machine_id: Some(receipt.machine_id.clone()),
+        machine_credential: Some(format!("mcred_{}", "b".repeat(40))),
+        relay_url: "wss://relay.example.test".to_string(),
+        ..PersistedCloudRelayProfile::default()
+    });
+
+    validate_pre_reimage_observation_binding(
+        &config,
+        &registration,
+        &receipt,
+        "environment-1",
+        4,
+    )
+    .expect("exact current managed generation");
+    assert!(validate_pre_reimage_observation_binding(
+        &config,
+        &registration,
+        &receipt,
+        "environment-2",
+        4,
+    )
+    .is_err());
+    assert!(validate_pre_reimage_observation_binding(
+        &config,
+        &registration,
+        &receipt,
+        "environment-1",
+        3,
+    )
+    .is_err());
+
+    let mut stale_registration = registration;
+    stale_registration.kernel_id = "kernel-old".to_string();
+    assert!(validate_pre_reimage_observation_binding(
+        &config,
+        &stale_registration,
+        &receipt,
+        "environment-1",
+        4,
+    )
+    .is_err());
+}
+
+#[test]
+fn legacy_initial_bootstrap_receipt_defaults_to_generation_one() {
+    let receipt: BootstrapReceipt = serde_json::from_value(serde_json::json!({
+        "schemaVersion": 1,
+        "status": "confirmed",
+        "environmentId": "environment-1",
+        "machineId": "machine-1",
+        "kernelId": "kernel-1",
+        "relayPublicKey": "relay-public-key",
+        "runtimeReleaseDigest": format!("sha256:{}", "a".repeat(64)),
+        "confirmedAt": "2026-09-22T00:00:00Z"
+    }))
+    .expect("legacy receipt shape");
+    assert_eq!(receipt.generation, 1);
+}
 
 struct FakeCloud {
     exchange_response: ExchangeResponse,
@@ -136,6 +229,7 @@ fn bootstrap_verifies_release_persists_identity_and_profile_then_resumes_without
         .expect("read receipt")
         .expect("receipt exists");
     assert_eq!(receipt.status, BootstrapReceiptStatus::Exchanged);
+    assert_eq!(receipt.generation, 1);
     assert_eq!(
         receipt
             .context_plan
@@ -249,6 +343,7 @@ fn schema_two_bootstrap_persists_the_exact_managed_repository_root() {
     )
     .unwrap();
     let mut response = fixture.exchange_response();
+    response.generation = 4;
     response.managed_repository_root = Some("/srv/managed workspaces".to_string());
     let cloud = FakeCloud::new(response);
 
@@ -259,6 +354,7 @@ fn schema_two_bootstrap_persists_the_exact_managed_repository_root() {
         .unwrap()
         .unwrap();
     assert_eq!(receipt.schema_version, 2);
+    assert_eq!(receipt.generation, 4);
     assert_eq!(
         receipt.managed_repository_root().unwrap(),
         "/srv/managed workspaces"
@@ -959,6 +1055,7 @@ impl Fixture {
         ExchangeResponse {
             environment_id: String::new(),
             kernel_id: String::new(),
+            generation: 1,
             runtime_release_digest: String::new(),
             managed_repository_root: None,
             context_plan: ManagedKernelContextPlan::empty_for_tests("managed_ctx_bootstrap"),

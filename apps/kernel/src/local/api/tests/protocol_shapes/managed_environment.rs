@@ -3,7 +3,7 @@ use crate::local::*;
 
 #[test]
 fn local_daemon_managed_environment_control_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 337);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 338);
     let policy = ManagedEnvironmentAutoStopPolicy {
         minimum_runtime_seconds: 0,
         idle_delay_seconds: Some(900),
@@ -354,6 +354,41 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
     assert_eq!(
         format!("{:x}", Sha256::digest(serialized.as_bytes())),
         "9bac614e7957a4134505790e4217ec84f6ec4be2f54806434c8a004726a4f9fe"
+    );
+}
+
+#[test]
+fn local_daemon_pre_reimage_observation_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 338);
+    let snapshot = serde_json::json!([
+        LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(
+            ObserveManagedEnvironmentPreReimageRequest {
+                environment_id: "environment-1".to_string(),
+                expected_generation: 1,
+            },
+        ),
+        LocalDaemonResponse::ManagedEnvironmentPreReimageObserved {
+            acknowledgement: ManagedEnvironmentPreReimageObservationAcknowledgement {
+                environment_id: "environment-1".to_string(),
+                generation: 1,
+                observed_at: "2026-09-22T01:02:03.000Z".to_string(),
+            },
+        },
+    ]);
+    assert_eq!(
+        snapshot.pointer("/0/ObserveManagedEnvironmentPreReimage/expectedGeneration"),
+        Some(&serde_json::json!(1))
+    );
+    assert_eq!(
+        snapshot.pointer(
+            "/1/ManagedEnvironmentPreReimageObserved/acknowledgement/observedAt"
+        ),
+        Some(&serde_json::json!("2026-09-22T01:02:03.000Z"))
+    );
+    let serialized = serde_json::to_string(&snapshot).expect("pre-reimage observation shape");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serialized.as_bytes())),
+        "f4b1b31a6a0aa345f55c9bb1705095d9c0aed67846c93540f02c2eefd2dd2816"
     );
 }
 

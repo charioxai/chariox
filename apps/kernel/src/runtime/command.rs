@@ -216,6 +216,32 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_pre_reimage_observation_to_distinct_interactive_metadata() {
+        let request = LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(
+            crate::local::ObserveManagedEnvironmentPreReimageRequest {
+                environment_id: "environment-1".to_string(),
+                expected_generation: 4,
+            },
+        );
+        let command = KernelCommand::from_local_request("observe-1", None, None, &request);
+
+        assert_eq!(
+            command.command_type,
+            "managed_environment.reimage.observe"
+        );
+        assert_eq!(command.priority, KernelCommandPriority::Interactive);
+        assert_eq!(
+            command.payload,
+            serde_json::json!({
+                "ObserveManagedEnvironmentPreReimage": {
+                    "environmentId": "environment-1",
+                    "expectedGeneration": 4,
+                }
+            })
+        );
+    }
+
+    #[test]
     fn durable_prompt_fingerprint_is_stable_and_payload_sensitive() {
         let request = |prompt: &str| {
             LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {

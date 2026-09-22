@@ -98,6 +98,8 @@ pub(super) struct BootstrapReceipt {
     pub(super) environment_id: String,
     pub(super) machine_id: String,
     pub(super) kernel_id: String,
+    #[serde(default = "initial_managed_environment_generation")]
+    pub(super) generation: u64,
     pub(super) relay_public_key: String,
     pub(super) runtime_release_digest: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -109,6 +111,10 @@ pub(super) struct BootstrapReceipt {
     pub(super) provider_rebuild_action_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) freshness_evidence: Option<ManagedKernelFreshnessEvidence>,
+}
+
+fn initial_managed_environment_generation() -> u64 {
+    1
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -364,6 +370,7 @@ impl BootstrapReceipt {
             || !valid_identifier(&self.environment_id)
             || !valid_identifier(&self.machine_id)
             || !valid_identifier(&self.kernel_id)
+            || !(1..=i32::MAX as u64).contains(&self.generation)
             || self.relay_public_key.trim().is_empty()
             || !valid_digest(&self.runtime_release_digest)
             || managed_repository_root_for_schema(

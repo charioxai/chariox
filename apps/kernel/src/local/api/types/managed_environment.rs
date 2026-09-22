@@ -58,6 +58,21 @@ pub struct RequestManagedEnvironmentReimageRequest {
     pub idempotency_key: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ObserveManagedEnvironmentPreReimageRequest {
+    pub environment_id: String,
+    pub expected_generation: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedEnvironmentPreReimageObservationAcknowledgement {
+    pub environment_id: String,
+    pub generation: u64,
+    pub observed_at: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ManagedEnvironmentLifecycleAction {

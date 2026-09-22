@@ -5,6 +5,7 @@ import {
   createManagedEnvironmentRequest,
   getManagedEnvironmentRequest,
   listManagedEnvironmentCatalogRequest,
+  observeManagedEnvironmentPreReimageRequest,
   prepareManagedEnvironmentContextTransferRequest,
   prepareManagedEnvironmentGitCredentialEnrollmentRequest,
   requestManagedEnvironmentLifecycleRequest,
@@ -145,6 +146,15 @@ test("managed environment requests use the shared local daemon shape", () => {
       expectedRuntimeSourceCommit: "c".repeat(40),
       expectedRuntimeSourceTree: "d".repeat(40),
       idempotencyKey: "reimage-1",
+    },
+  })
+  assert.deepEqual(observeManagedEnvironmentPreReimageRequest({
+    environmentId: "environment-1",
+    expectedGeneration: 3,
+  }), {
+    ObserveManagedEnvironmentPreReimage: {
+      environmentId: "environment-1",
+      expectedGeneration: 3,
     },
   })
 })

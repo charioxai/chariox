@@ -646,6 +646,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn managed_machine_credential_never_authorizes_reimage_control() {
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = Some(PersistedCloudRelayProfile {
+            account_id: "account-1".to_string(),
+            user_id: "owner-1".to_string(),
+            machine_credential: Some(format!("mcred_{}", "a".repeat(40))),
+            cloud_session_token: None,
+            ..PersistedCloudRelayProfile::default()
+        });
+        let provider_account_profiles =
+            crate::account_profile::ProviderAccountProfileRegistry::open(
+                config.account_profile_registry_path(),
+            )
+            .expect("provider account registry");
+        let error = execute_managed_environment_control_request(
+            config,
+            provider_account_profiles,
+            crate::managed_context::outbound_service::ManagedContextOutboundOperationStore::default(
+            ),
+            "owner-1",
+            LocalDaemonRequest::RequestManagedEnvironmentReimage(
+                RequestManagedEnvironmentReimageRequest {
+                    environment_id: "environment-1".to_string(),
+                    expected_generation: 1,
+                    expected_provider_server_id: "123456789".to_string(),
+                    expected_provider_image_id: "987654321".to_string(),
+                    expected_provider_profile_id: "hetzner-path1".to_string(),
+                    expected_provider_profile_digest: format!("sha256:{}", "b".repeat(64)),
+                    expected_runtime_release_digest: format!("sha256:{}", "a".repeat(64)),
+                    expected_runtime_source_commit: "c".repeat(40),
+                    expected_runtime_source_tree: "d".repeat(40),
+                    idempotency_key: "reimage-1".to_string(),
+                },
+            ),
+        )
+        .await
+        .expect_err("machine credential must not authorize reimage");
+        assert!(error.to_string().contains("Cloud session is unavailable"));
+    }
+
+    #[tokio::test]
     async fn managed_environment_control_uses_authenticated_cloud_profile_for_all_operations() {
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {

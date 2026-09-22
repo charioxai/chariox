@@ -719,6 +719,7 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             environment_id: "managed-env-1".to_string(),
             machine_id: "managed-machine-1".to_string(),
             kernel_id: "managed-kernel-1".to_string(),
+            generation: 1,
             relay_public_key: "managed-public-key".to_string(),
             runtime_release_digest: format!("sha256:{}", "a".repeat(64)),
             managed_repository_root: Some("/srv/managed workspaces".to_string()),

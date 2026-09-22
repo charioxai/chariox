@@ -26,11 +26,17 @@ pub(super) struct ExchangeRequest {
 pub(super) struct ExchangeResponse {
     pub(super) environment_id: String,
     pub(super) kernel_id: String,
+    #[serde(default = "initial_managed_environment_generation")]
+    pub(super) generation: u64,
     pub(super) runtime_release_digest: String,
     #[serde(default)]
     pub(super) managed_repository_root: Option<String>,
     pub(super) context_plan: ManagedKernelContextPlan,
     pub(super) cloud_relay: ManagedCloudRelayProfile,
+}
+
+fn initial_managed_environment_generation() -> u64 {
+    1
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

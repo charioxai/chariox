@@ -458,6 +458,34 @@ mod tests {
     use base64::Engine;
 
     #[test]
+    fn pre_reimage_observation_uses_the_normal_encrypted_daemon_request_envelope() {
+        let payload = serde_json::json!({
+            "command_id": "observe-1",
+            "request": {
+                "ObserveManagedEnvironmentPreReimage": {
+                    "environmentId": "environment-1",
+                    "expectedGeneration": 4
+                }
+            }
+        });
+        let parsed = super::parse_relay_client_request(payload.to_string().as_bytes())
+            .expect("normal relay request");
+        let super::ParsedRelayClientMessage::Request(request) = parsed else {
+            panic!("observation must use the normal daemon request path")
+        };
+        assert_eq!(request.command_id.as_deref(), Some("observe-1"));
+        assert!(matches!(
+            request.request,
+            crate::local::LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(
+                crate::local::ObserveManagedEnvironmentPreReimageRequest {
+                    environment_id,
+                    expected_generation: 4,
+                }
+            ) if environment_id == "environment-1"
+        ));
+    }
+
+    #[test]
     fn encrypted_delivery_parser_keeps_cookie_payload_out_of_daemon_requests_and_debug() {
         let generated_value = format!("generated-{}", crate::session::unix_epoch_ms());
         let payload = serde_json::json!([{

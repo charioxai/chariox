@@ -8,6 +8,7 @@ import {
   getManagedContextTransferStatus,
   getManagedEnvironment,
   listManagedEnvironmentCatalog,
+  observeManagedEnvironmentPreReimage,
   prepareManagedEnvironmentContextTransfer,
   requestManagedEnvironmentLifecycle,
   requestManagedEnvironmentReimage,
@@ -22,6 +23,15 @@ test("managed environment API uses only shared LocalDaemon request variants", as
     { ManagedEnvironmentCreated: { result: { environment: { environmentId: "environment-1" }, operation: { environmentId: "environment-1" } } } },
     { ManagedEnvironmentLifecycleRequested: { result: { environment: { environmentId: "environment-1" }, operation: { environmentId: "environment-1" } } } },
     { ManagedEnvironmentReimageRequested: { result: reimageResult() } },
+    {
+      ManagedEnvironmentPreReimageObserved: {
+        acknowledgement: {
+          environmentId: "environment-1",
+          generation: 3,
+          observedAt: "2026-09-22T01:02:03.000Z",
+        },
+      },
+    },
     { ManagedEnvironmentContextTransferPrepared: { ticket: ticket() } },
     { ManagedContextTransferStarted: { status: status("preparing") } },
     { ManagedContextTransferStatus: { status: status("completed") } },
@@ -67,6 +77,10 @@ test("managed environment API uses only shared LocalDaemon request variants", as
     expectedRuntimeSourceTree: "d".repeat(40),
     idempotencyKey: "reimage-1",
   })
+  await observeManagedEnvironmentPreReimage(client, {
+    environmentId: "environment-1",
+    expectedGeneration: 3,
+  })
   await prepareManagedEnvironmentContextTransfer(client, "environment-1")
   await startManagedContextTransfer(client, ticket())
   await getManagedContextTransferStatus(client, "context-1")
@@ -104,6 +118,12 @@ test("managed environment API uses only shared LocalDaemon request variants", as
         expectedRuntimeSourceCommit: "c".repeat(40),
         expectedRuntimeSourceTree: "d".repeat(40),
         idempotencyKey: "reimage-1",
+      },
+    },
+    {
+      ObserveManagedEnvironmentPreReimage: {
+        environmentId: "environment-1",
+        expectedGeneration: 3,
       },
     },
     { PrepareManagedEnvironmentContextTransfer: { environmentId: "environment-1" } },
@@ -145,6 +165,28 @@ test("managed environment API rejects stale or incomplete reimage evidence", asy
       idempotencyKey: "reimage-1",
     }),
     /does not match the requested generation or exact provider identity/,
+  )
+})
+
+test("managed environment API rejects a mismatched pre-reimage acknowledgement", async () => {
+  const client = {
+    send: async () => ({
+      ManagedEnvironmentPreReimageObserved: {
+        acknowledgement: {
+          environmentId: "environment-1",
+          generation: 4,
+          observedAt: "2026-09-22T01:02:03.000Z",
+        },
+      },
+    }),
+  } as unknown as LocalIpcClient
+
+  await assert.rejects(
+    observeManagedEnvironmentPreReimage(client, {
+      environmentId: "environment-1",
+      expectedGeneration: 3,
+    }),
+    /mismatched managed pre-reimage observation acknowledgement/,
   )
 })
 

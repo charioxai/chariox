@@ -13,7 +13,7 @@ use chrono::{DateTime, Utc};
 use rand::Rng;
 
 use crate::config::{
-    load_managed_cloud_relay_profile, load_or_create_managed_runtime_identity,
+    load_managed_cloud_relay_profile, load_or_create_managed_runtime_identity, DaemonConfig,
     persist_managed_cloud_relay_profile, ManagedRuntimeIdentity, PersistedCloudRelayProfile,
 };
 use crate::error::DaemonError;
@@ -122,6 +122,13 @@ pub(crate) struct ManagedReleaseEvidence {
     pub(crate) manifest_digest_verified: bool,
     pub(crate) kernel_artifact_verified: bool,
     pub(crate) bootstrap_receipt_verified: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PreReimageObservationAcknowledgement {
+    pub(crate) environment_id: String,
+    pub(crate) generation: u64,
+    pub(crate) observed_at: String,
 }
 
 #[derive(Debug)]
@@ -384,6 +391,7 @@ fn begin_registration(
         environment_id: envelope.environment_id.clone(),
         machine_id: identity.machine_id.clone(),
         kernel_id: identity.kernel_id.clone(),
+        generation: exchanged.generation,
         relay_public_key: identity.relay_public_key.clone(),
         runtime_release_digest: envelope.runtime_release_digest.clone(),
         managed_repository_root: (envelope.schema_version == 2).then_some(managed_repository_root),
@@ -575,6 +583,98 @@ pub(super) fn report_pre_reimage_runtime_identity(
     Ok(report)
 }
 
+pub(crate) fn observe_managed_environment_pre_reimage(
+    daemon_config: &DaemonConfig,
+    registration: &ConfirmedManagedKernelRegistration,
+    expected_environment_id: &str,
+    expected_generation: u64,
+    observed_at: DateTime<Utc>,
+) -> Result<PreReimageObservationAcknowledgement, DaemonError> {
+    let config = BootstrapConfig::from_env()?;
+    let receipt = match BootstrapReceiptDocument::read(&config.receipt_path)? {
+        Some(BootstrapReceiptDocument::ManagedEnvironment(receipt)) => receipt,
+        Some(BootstrapReceiptDocument::DisposableWorker(_)) => {
+            return Err(bootstrap_error(
+                "managed pre-reimage observation cannot use a disposable-worker receipt",
+            ));
+        }
+        None => {
+            return Err(bootstrap_error(
+                "managed pre-reimage observation requires a bootstrap receipt",
+            ));
+        }
+    };
+    if receipt.status != BootstrapReceiptStatus::Confirmed {
+        return Err(bootstrap_error(
+            "managed pre-reimage observation requires a confirmed bootstrap receipt",
+        ));
+    }
+    let profile = validate_pre_reimage_observation_binding(
+        daemon_config,
+        registration,
+        &receipt,
+        expected_environment_id,
+        expected_generation,
+    )?;
+    let release = verify_release(
+        &config.manifest_path,
+        &config.signature_path,
+        &config.public_key_path,
+        &receipt.runtime_release_digest,
+        &config.kernel_binary,
+    )?;
+    let report = report_pre_reimage_runtime_identity(
+        &config,
+        &HttpBootstrapCloudClient::default(),
+        &profile.api_url,
+        &receipt.environment_id,
+        &receipt.machine_id,
+        &receipt.kernel_id,
+        receipt.generation,
+        profile,
+        &release,
+        observed_at,
+    )?;
+    Ok(PreReimageObservationAcknowledgement {
+        environment_id: report.environment_id,
+        generation: report.generation,
+        observed_at: report.observed_at,
+    })
+}
+
+fn validate_pre_reimage_observation_binding<'a>(
+    daemon_config: &'a DaemonConfig,
+    registration: &ConfirmedManagedKernelRegistration,
+    receipt: &BootstrapReceipt,
+    expected_environment_id: &str,
+    expected_generation: u64,
+) -> Result<&'a PersistedCloudRelayProfile, DaemonError> {
+    if expected_environment_id != receipt.environment_id
+        || expected_generation != receipt.generation
+    {
+        return Err(bootstrap_error(
+            "managed pre-reimage observation does not match the current environment generation",
+        ));
+    }
+    if registration.environment_id != receipt.environment_id
+        || registration.machine_id != receipt.machine_id
+        || registration.kernel_id != receipt.kernel_id
+        || daemon_config.daemon_id != receipt.kernel_id
+        || daemon_config.host_machine_id != receipt.machine_id
+        || daemon_config.relay_public_key != receipt.relay_public_key
+    {
+        return Err(bootstrap_error(
+            "managed pre-reimage observation does not match the running kernel identity",
+        ));
+    }
+    let profile = daemon_config
+        .cloud_relay
+        .as_ref()
+        .ok_or_else(|| bootstrap_error("managed Cloud profile is missing"))?;
+    validate_profile(profile, receipt)?;
+    Ok(profile)
+}
+
 fn capture_rebuild_freshness_evidence(
     config: &BootstrapConfig,
     release: &VerifiedRelease,
@@ -662,6 +762,7 @@ fn validate_exchange_response(
     )?;
     if response.environment_id != envelope.environment_id
         || response.kernel_id != identity.kernel_id
+        || !(1..=i32::MAX as u64).contains(&response.generation)
         || response.runtime_release_digest != envelope.runtime_release_digest
         || response.cloud_relay.machine_id != identity.machine_id
         || normalized_api_url(&response.cloud_relay.api_url)

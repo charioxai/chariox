@@ -157,6 +157,7 @@ pub enum LocalDaemonRequest {
     CreateManagedEnvironment(CreateManagedEnvironmentRequest),
     RequestManagedEnvironmentLifecycle(RequestManagedEnvironmentLifecycleRequest),
     RequestManagedEnvironmentReimage(RequestManagedEnvironmentReimageRequest),
+    ObserveManagedEnvironmentPreReimage(ObserveManagedEnvironmentPreReimageRequest),
     StartManagedContextTransfer(StartManagedContextTransferRequest),
     GetManagedContextTransferStatus(GetManagedContextTransferStatusRequest),
     GetManagedContextLaunchTarget(GetManagedContextLaunchTargetRequest),

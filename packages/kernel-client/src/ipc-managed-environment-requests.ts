@@ -180,6 +180,12 @@ export type ManagedEnvironmentReimageResult = ManagedEnvironmentResult & {
   readonly receipt: ManagedEnvironmentReimageReceipt
 }
 
+export type ManagedEnvironmentPreReimageObservationAcknowledgement = {
+  readonly environmentId: string
+  readonly generation: number
+  readonly observedAt: string
+}
+
 export type ManagedEnvironmentCatalog = {
   readonly computeClasses: readonly ManagedEnvironmentComputeClassOption[]
   readonly contextSources: readonly ManagedEnvironmentContextSourceOption[]
@@ -250,4 +256,11 @@ export function requestManagedEnvironmentReimageRequest(input: {
   readonly idempotencyKey: string
 }) {
   return { RequestManagedEnvironmentReimage: input } as const
+}
+
+export function observeManagedEnvironmentPreReimageRequest(input: {
+  readonly environmentId: string
+  readonly expectedGeneration: number
+}) {
+  return { ObserveManagedEnvironmentPreReimage: input } as const
 }
