@@ -20,22 +20,32 @@ pub(crate) struct ManagedActivityObservation {
 #[serde(rename_all = "camelCase")]
 struct PersistedManagedActivityTransition {
     kernel_id: String,
+    transition_sequence: u64,
     running_agent_count: u8,
     activity_changed_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingManagedActivityTransition {
+    transition_sequence: u64,
+    #[serde(flatten)]
+    observation: ManagedActivityObservation,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PendingManagedActivityTransitions {
     kernel_id: String,
-    observations: VecDeque<ManagedActivityObservation>,
+    observations: VecDeque<PendingManagedActivityTransition>,
 }
 
 #[derive(Debug, Default)]
 struct ManagedActivityTransitionInner {
     restored: bool,
     latest_durable: Option<ManagedActivityObservation>,
-    pending: VecDeque<ManagedActivityObservation>,
+    latest_durable_sequence: u64,
+    pending: VecDeque<PendingManagedActivityTransition>,
     pending_journal_dirty: bool,
     last_runtime_sequence: u64,
 }
@@ -119,27 +129,47 @@ impl ManagedActivityTransitionState {
         }
         self.restore_locked(&kernel_id, &mut inner)?;
         if runtime_sequence < inner.last_runtime_sequence {
-            return Ok(inner.pending.back().copied().or(inner.latest_durable));
+            return Ok(inner
+                .pending
+                .back()
+                .map(|entry| entry.observation)
+                .or(inner.latest_durable));
         }
         inner.last_runtime_sequence = runtime_sequence;
         if inner
             .pending
             .back()
-            .copied()
+            .map(|entry| entry.observation)
             .or(inner.latest_durable)
             .is_some_and(|latest| latest.running_agent_count == running_agent_count)
         {
             self.flush_pending_locked(&kernel_id, &mut inner)?;
-            return Ok(inner.pending.back().copied().or(inner.latest_durable));
+            return Ok(inner
+                .pending
+                .back()
+                .map(|entry| entry.observation)
+                .or(inner.latest_durable));
         }
         if inner.pending.len() >= MAX_PENDING_ACTIVITY_TRANSITIONS {
             return Err(activity_state_error(format!(
                 "managed activity pending transition limit {MAX_PENDING_ACTIVITY_TRANSITIONS} is exhausted"
             )));
         }
-        inner.pending.push_back(ManagedActivityObservation {
-            running_agent_count,
-            changed_at_ms,
+        let transition_sequence = inner
+            .pending
+            .back()
+            .map(|entry| entry.transition_sequence)
+            .unwrap_or(inner.latest_durable_sequence)
+            .checked_add(1)
+            .ok_or_else(|| {
+                activity_state_error("managed activity transition sequence exhausted")
+            })?;
+        inner.pending.push_back(PendingManagedActivityTransition {
+            transition_sequence,
+            observation: ManagedActivityObservation {
+                running_agent_count,
+                changed_at_ms,
+            },
         });
         inner.pending_journal_dirty = true;
         self.flush_pending_locked(&kernel_id, &mut inner)?;
@@ -198,6 +228,7 @@ impl ManagedActivityTransitionState {
                             ))
                         })?;
                 if persisted.kernel_id != kernel_id
+                    || persisted.transition_sequence == 0
                     || persisted.running_agent_count > 1
                     || persisted.activity_changed_at_ms == 0
                 {
@@ -205,10 +236,13 @@ impl ManagedActivityTransitionState {
                         "stored managed activity transition is invalid",
                     ));
                 }
-                Ok(ManagedActivityObservation {
-                    running_agent_count: persisted.running_agent_count,
-                    changed_at_ms: persisted.activity_changed_at_ms,
-                })
+                Ok((
+                    persisted.transition_sequence,
+                    ManagedActivityObservation {
+                        running_agent_count: persisted.running_agent_count,
+                        changed_at_ms: persisted.activity_changed_at_ms,
+                    },
+                ))
             })
             .transpose()?;
         let mut pending = match std::fs::read(self.pending_journal_path()) {
@@ -219,9 +253,19 @@ impl ManagedActivityTransitionState {
                     })?;
                 if journal.kernel_id != kernel_id
                     || journal.observations.len() > MAX_PENDING_ACTIVITY_TRANSITIONS
-                    || journal.observations.iter().any(|observation| {
-                        observation.running_agent_count > 1 || observation.changed_at_ms == 0
+                    || journal.observations.iter().any(|entry| {
+                        entry.transition_sequence == 0
+                            || entry.observation.running_agent_count > 1
+                            || entry.observation.changed_at_ms == 0
                     })
+                    || journal
+                        .observations
+                        .iter()
+                        .zip(journal.observations.iter().skip(1))
+                        .any(|(previous, next)| {
+                            previous.transition_sequence.checked_add(1)
+                                != Some(next.transition_sequence)
+                        })
                 {
                     return Err(activity_state_error(
                         "activity journal identity or observations are invalid",
@@ -237,15 +281,22 @@ impl ManagedActivityTransitionState {
             }
         };
         // A crash can occur after the database commits but before the pending journal
-        // is cleared. Trim that acknowledged prefix instead of replaying older clocks.
+        // is cleared. A clock/count pair is not an identity: a busy/idle cycle can
+        // finish in one millisecond. Acknowledge only committed transition sequences.
         inner.pending_journal_dirty = !pending.is_empty();
-        if let Some(index) =
-            latest.and_then(|latest| pending.iter().rposition(|item| *item == latest))
+        let latest_sequence = latest.map(|(sequence, _)| sequence).unwrap_or(0);
+        pending.retain(|entry| entry.transition_sequence > latest_sequence);
+        if pending
+            .front()
+            .is_some_and(|entry| latest_sequence.checked_add(1) != Some(entry.transition_sequence))
         {
-            pending.drain(..=index);
+            return Err(activity_state_error(
+                "activity journal has a transition sequence gap",
+            ));
         }
         inner.pending = pending;
-        inner.latest_durable = latest;
+        inner.latest_durable = latest.map(|(_, observation)| observation);
+        inner.latest_durable_sequence = latest_sequence;
         inner.restored = true;
         Ok(())
     }
@@ -287,12 +338,14 @@ impl ManagedActivityTransitionState {
         inner: &mut ManagedActivityTransitionInner,
     ) -> Result<(), DaemonError> {
         self.persist_pending_locked(kernel_id, inner)?;
-        while let Some(observation) = inner.pending.front().copied() {
+        while let Some(entry) = inner.pending.front().copied() {
+            let observation = entry.observation;
             self.store.append_event(
                 MANAGED_ACTIVITY_EVENT_KIND,
                 Some(kernel_id.to_string()),
                 serde_json::to_value(PersistedManagedActivityTransition {
                     kernel_id: kernel_id.to_string(),
+                    transition_sequence: entry.transition_sequence,
                     running_agent_count: observation.running_agent_count,
                     activity_changed_at_ms: observation.changed_at_ms,
                 })
@@ -303,6 +356,7 @@ impl ManagedActivityTransitionState {
                 })?,
             )?;
             inner.latest_durable = Some(observation);
+            inner.latest_durable_sequence = entry.transition_sequence;
             inner.pending.pop_front();
             inner.pending_journal_dirty = true;
         }
@@ -456,17 +510,26 @@ mod tests {
         let pending = PendingManagedActivityTransitions {
             kernel_id: "kernel-prefix".into(),
             observations: VecDeque::from([
-                ManagedActivityObservation {
-                    running_agent_count: 0,
-                    changed_at_ms: 1_000,
+                PendingManagedActivityTransition {
+                    transition_sequence: 1,
+                    observation: ManagedActivityObservation {
+                        running_agent_count: 0,
+                        changed_at_ms: 1_000,
+                    },
                 },
-                ManagedActivityObservation {
-                    running_agent_count: 1,
-                    changed_at_ms: 2_000,
+                PendingManagedActivityTransition {
+                    transition_sequence: 2,
+                    observation: ManagedActivityObservation {
+                        running_agent_count: 1,
+                        changed_at_ms: 2_000,
+                    },
                 },
-                ManagedActivityObservation {
-                    running_agent_count: 0,
-                    changed_at_ms: 3_000,
+                PendingManagedActivityTransition {
+                    transition_sequence: 3,
+                    observation: ManagedActivityObservation {
+                        running_agent_count: 0,
+                        changed_at_ms: 3_000,
+                    },
                 },
             ]),
         };
@@ -573,9 +636,58 @@ mod tests {
             vec![0, 1, 0],
             "equal observation values must not acknowledge uncommitted transitions"
         );
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.payload["transitionSequence"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
         drop(restored);
         drop(store);
         remove_test_state(&state_path);
+    }
+
+    #[test]
+    fn activity_journal_rejects_missing_or_ambiguous_transition_sequences() {
+        for (case, sequences) in [vec![0], vec![1, 1], vec![1, 3], vec![2]]
+            .into_iter()
+            .enumerate()
+        {
+            let state_path = test_state_path(&format!("invalid-sequence-{case}"));
+            let store = DurableKernelStateStore::open(state_path.clone()).expect("open store");
+            let state =
+                ManagedActivityTransitionState::new(store.clone(), Some("kernel-invalid".into()));
+            let observations = sequences
+                .into_iter()
+                .map(|sequence| {
+                    serde_json::json!({
+                        "transitionSequence": sequence,
+                        "runningAgentCount": 0,
+                        "changedAtMs": 1_000,
+                    })
+                })
+                .collect::<Vec<_>>();
+            crate::config::write_private_file(
+                &state.pending_journal_path(),
+                &serde_json::to_vec(&serde_json::json!({
+                    "kernelId": "kernel-invalid",
+                    "observations": observations,
+                }))
+                .unwrap(),
+            )
+            .expect("write invalid journal");
+            state
+                .current_observation(0)
+                .expect_err("invalid journal must fail closed");
+            assert!(store
+                .load_events_by_kind(MANAGED_ACTIVITY_EVENT_KIND)
+                .unwrap()
+                .is_empty());
+            drop(state);
+            drop(store);
+            remove_test_state(&state_path);
+        }
     }
 
     #[test]
