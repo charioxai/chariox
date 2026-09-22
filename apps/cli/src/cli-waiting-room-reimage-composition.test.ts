@@ -37,10 +37,18 @@ const LOCAL_ENDPOINT = "memory://local-kernel"
 const OLD_ENDPOINT = "ws://old-kernel.test"
 const REPLACEMENT_ENDPOINT = "ws://replacement-kernel.test"
 
-test("production Waiting Room reimage composition", async (suite) => {
+function reimageTest(name: string, run: (router: TestRouter) => Promise<void>) {
+  test(`production Waiting Room reimage composition: ${name}`, async () => {
   const router = installLocalIpcClientTestRouter()
   try {
-    await suite.test("observes the old kernel transactionally, rolls back failure, and requires confirmation", async () => {
+    await run(router)
+  } finally {
+    router.restore()
+  }
+  })
+}
+
+reimageTest("observes the old kernel transactionally, rolls back failure, and requires confirmation", async (router) => {
       const harness = createHarness(router, { observationFailure: new Error("old observation failed") })
       try {
         await harness.initialize()
@@ -63,7 +71,7 @@ test("production Waiting Room reimage composition", async (suite) => {
       }
     })
 
-    await suite.test("keeps destructive admission local and launches the exact replacement identity", async () => {
+reimageTest("keeps destructive admission local and launches the exact replacement identity", async (router) => {
       const harness = createHarness(router)
       try {
         await harness.initialize()
@@ -98,7 +106,7 @@ test("production Waiting Room reimage composition", async (suite) => {
       }
     })
 
-    await suite.test("does not report cutover success when Project setup fails", async () => {
+reimageTest("does not report cutover success when Project setup fails", async (router) => {
       const harness = createHarness(router, {
         contextPlan: sourcePlan(),
         setupFailure: new Error("dependency validation failed"),
@@ -122,7 +130,7 @@ test("production Waiting Room reimage composition", async (suite) => {
       }
     })
 
-    await suite.test("does not report cutover success when replacement attachment fails", async () => {
+reimageTest("does not report cutover success when replacement attachment fails", async (router) => {
       const harness = createHarness(router, { attachFailure: new Error("attach rejected") })
       try {
         await harness.initialize()
@@ -142,11 +150,6 @@ test("production Waiting Room reimage composition", async (suite) => {
         harness.cleanup()
       }
     })
-  } finally {
-    router.restore()
-  }
-})
-
 type TestEndpoint = {
   readonly client: LocalIpcClient
   readonly requests: unknown[]
