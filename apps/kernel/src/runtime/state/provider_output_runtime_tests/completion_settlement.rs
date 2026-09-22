@@ -87,17 +87,47 @@ async fn managed_activity_reaches_zero_only_after_prompt_settlement_is_durable()
     assert!(runtime.managed_activity_change_sequence() > before_settlement);
 }
 
-#[tokio::test]
-async fn workflow_prompt_completion_append_failure_retains_retry_ownership() {
-    assert_workflow_completion_failure_is_retryable("workflow.runtime.updated").await;
+#[test]
+fn workflow_prompt_completion_append_failure_retains_retry_ownership() {
+    assert_workflow_completion_failure_and_restart("workflow.runtime.updated");
 }
 
-#[tokio::test]
-async fn workflow_prompt_state_append_failure_retains_retry_ownership() {
-    assert_workflow_completion_failure_is_retryable("session.prompt_state.updated").await;
+#[test]
+fn workflow_prompt_state_append_failure_retains_retry_ownership() {
+    assert_workflow_completion_failure_and_restart("session.prompt_state.updated");
 }
 
-async fn assert_workflow_completion_failure_is_retryable(event_kind: &str) {
+fn assert_workflow_completion_failure_and_restart(event_kind: &str) {
+    let executor = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test executor should start");
+    let (config, session_id, agent_id, _worktree) =
+        executor.block_on(assert_workflow_completion_failure_is_retryable(event_kind));
+    // Drop all first-kernel async owners without a shutdown cleanup that could
+    // rewrite prompt state and hide a failed composite commit.
+    drop(executor);
+    let restored = DaemonApp::bootstrap(config).expect("kernel state should restore");
+    let restored_session = restored
+        .sessions()
+        .get_session(&session_id)
+        .expect("session should restore");
+    assert!(
+        restored_session
+            .active_prompt_for_agent(&agent_id)
+            .is_none(),
+        "restart must not resurrect the completed provider prompt"
+    );
+}
+
+async fn assert_workflow_completion_failure_is_retryable(
+    event_kind: &str,
+) -> (
+    crate::config::DaemonConfig,
+    String,
+    String,
+    crate::test_support::TestWorktree,
+) {
     let worktree = crate::test_support::TestWorktree::new("workflow-settlement-append-retry");
     let config = crate::config::DaemonConfig::for_tests();
     let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
@@ -314,17 +344,12 @@ async fn assert_workflow_completion_failure_is_retryable(event_kind: &str) {
     drop(connection);
     drop(runtime);
     drop(app);
-    let restored = DaemonApp::bootstrap(config).expect("kernel state should restore");
-    let restored_session = restored
-        .sessions()
-        .get_session(session.id())
-        .expect("session should restore");
-    assert!(
-        restored_session
-            .active_prompt_for_agent(agent.id())
-            .is_none(),
-        "restart must not resurrect the completed provider prompt"
-    );
+    (
+        config,
+        session.id().to_string(),
+        agent.id().to_string(),
+        worktree,
+    )
 }
 
 #[tokio::test]

@@ -1805,6 +1805,82 @@ mod tests {
     }
 
     #[test]
+    fn reserved_prompt_restore_preserves_other_agents_and_rejects_replacement() {
+        let owner = PromptStateOwner::default();
+        let mut session = RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        );
+        let original = PromptQueueItem::new(
+            "original",
+            "attachment-1",
+            "agent-1",
+            "first",
+            PromptStatus::Running,
+        );
+        session.mirror_agent_prompt_state("agent-1", Some(original.clone()), VecDeque::new());
+        owner.restore_session_state(&session);
+        owner
+            .complete_active_prompt_if_matches(&session, "agent-1", Some("original"))
+            .expect("first prompt should be reserved");
+        owner
+            .submit_prepared_prompt(
+                &session,
+                PromptQueueItem::new(
+                    "other",
+                    "attachment-2",
+                    "agent-2",
+                    "other",
+                    PromptStatus::Queued,
+                ),
+                false,
+            )
+            .expect("another agent should accept work");
+        let other_before = owner.state_parts(&session, "agent-2");
+        assert!(owner.restore_reserved_prompt_if_unclaimed(
+            &session,
+            "agent-1",
+            original.clone(),
+            &VecDeque::new(),
+        ));
+        assert_eq!(owner.state_parts(&session, "agent-2"), other_before);
+        assert_eq!(
+            owner.state_parts(&session, "agent-1").0,
+            Some(original.clone())
+        );
+
+        owner
+            .complete_active_prompt_if_matches(&session, "agent-1", Some("original"))
+            .expect("first prompt should be reserved again");
+        owner
+            .submit_prepared_prompt(
+                &session,
+                PromptQueueItem::new(
+                    "replacement",
+                    "attachment-1",
+                    "agent-1",
+                    "new",
+                    PromptStatus::Queued,
+                ),
+                false,
+            )
+            .expect("replacement prompt should start");
+        let replacement = owner.state_parts(&session, "agent-1");
+        assert!(!owner.restore_reserved_prompt_if_unclaimed(
+            &session,
+            "agent-1",
+            original,
+            &VecDeque::new(),
+        ));
+        assert_eq!(owner.state_parts(&session, "agent-1"), replacement);
+        assert_eq!(owner.state_parts(&session, "agent-2"), other_before);
+    }
+
+    #[test]
     fn restore_session_state_hydrates_owner_before_projection() {
         let owner = PromptStateOwner::default();
         let mut session = RuntimeSession::new(
