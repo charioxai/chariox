@@ -379,8 +379,8 @@ mod lock_order_tests {
     use std::time::Duration;
     use tokio::sync::Mutex;
 
-    #[test]
-    fn workflow_completion_drops_session_read_guard_before_activity_persistence() {
+    #[tokio::test]
+    async fn workflow_completion_drops_session_read_guard_before_activity_persistence() {
         let app = Arc::new(Mutex::new(
             DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
         ));
