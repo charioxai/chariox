@@ -59,6 +59,11 @@ import {
 } from "./lib/room-tui-notices.mjs"
 import { hasRoomReadyProjection } from "./lib/room-drill-ready-notices.mjs"
 import { roomDrillRelayToken } from "./lib/room-drill-relay-token.mjs"
+import {
+  assertRoomRootlessWorkspaceFixture,
+  assertRoomRootlessWorkspaceFixtureRemoved,
+  managedRoomFixtureSliceRoot,
+} from "./lib/room-rootless-workspace-fixture.mjs"
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, "..", "..", "..")
@@ -209,6 +214,7 @@ let sourceIdentity = null
 let sliceRuntimeIdentity = null
 let prebuiltSliceImageId = null
 let fixtureWorkspace = repoRoot
+let fixtureWorkspaceLease = null
 
 const interruption = createDrillInterruption()
 await interruption.run(async () => {
@@ -316,45 +322,18 @@ async function run() {
   }, 60_000, "kernel did not accept local connections")
   observerClient = interruption.guardClient(new LocalIpcClient(`ws://127.0.0.1:${kernelPort}/kernel`))
 
-  const session = unwrap(
-    await client.send(requests.createSessionRequest(fixtureWorkspace, fixtureWorkspace, runId)),
-    "SessionCreated",
-  ).session
-  sessionId = session.id
-  remoteAutomation = await startRemoteTui({ tempRoot })
-  const attachedRemoteTui = await waitForAutomationSnapshot(
-    remoteAutomation,
-    (snapshot) => snapshot.session?.id === sessionId,
-    "relay-attached remote TUI session",
-    30_000,
-  )
-  assert.equal(attachedRemoteTui.session?.id, sessionId)
-  localAutomation = await startLocalTui({ tempRoot, kernelUrl: `ws://127.0.0.1:${kernelPort}/kernel` })
-  const attachedLocalTui = await waitForAutomationSnapshot(
-    localAutomation,
-    (snapshot) => snapshot.session?.id === sessionId,
-    "direct local TUI session",
-    30_000,
-  )
-  assert.equal(attachedLocalTui.session?.id, sessionId)
-
   const createSliceResponse = await withTimeout(client.send(requests.createSliceRequest({
     name: runId,
     backend: "local_docker",
     displayMode: "headed",
     displayBackend: "selkies",
-    workspaceMount: fixtureWorkspace,
+    ...(realProviderOptions
+      ? { workspaceMount: fixtureWorkspace }
+      : { developmentSetup: { kind: "empty" } }),
     workerKernelRef: `${runId}-worker`,
     base: "clean",
   })), 15_000, "CreateSlice response")
   slice = unwrap(createSliceResponse, "SliceCreated").slice
-  const binding = unwrap(
-    await client.send(requests.bindRoomEnvironmentSliceRequest(sessionId, slice.id)),
-    "RoomEnvironmentSlice",
-  ).binding
-  assert.equal(binding.session_id, sessionId)
-  assert.equal(binding.slice_id, slice.id)
-
   localForwarding = await startRoomSliceWithForwarding({
     sshConfig: process.env.CHARIOX_ROOM_DRILL_COLIMA_SSH_CONFIG,
     slice,
@@ -389,6 +368,47 @@ async function run() {
   assert.equal(limits.memorySwapBytes, limits.memoryBytes)
   assert.equal(limits.nanoCpus, 1_000_000_000)
   assert.equal(limits.pidsLimit, 1024)
+  if (!realProviderOptions) {
+    const configuredSliceRoot = process.env.CHARIOX_SLICE_ROOT?.trim()
+    const allowedSliceRoot = process.env.CHARIOX_SLICE_DOCKER_BROKER_SOCKET?.trim()
+      ? managedRoomFixtureSliceRoot
+      : path.resolve(configuredSliceRoot || path.join(tempRoot, "slices"))
+    fixtureWorkspaceLease = await assertRoomRootlessWorkspaceFixture({
+      slice,
+      allowedDevelopmentRoot: path.join(allowedSliceRoot, "development"),
+      repositoryRoot: repoRoot,
+    })
+    fixtureWorkspace = fixtureWorkspaceLease.workspace
+  }
+
+  const session = unwrap(
+    await client.send(requests.createSessionRequest(fixtureWorkspace, fixtureWorkspace, runId)),
+    "SessionCreated",
+  ).session
+  sessionId = session.id
+  remoteAutomation = await startRemoteTui({ tempRoot })
+  const attachedRemoteTui = await waitForAutomationSnapshot(
+    remoteAutomation,
+    (snapshot) => snapshot.session?.id === sessionId,
+    "relay-attached remote TUI session",
+    30_000,
+  )
+  assert.equal(attachedRemoteTui.session?.id, sessionId)
+  localAutomation = await startLocalTui({ tempRoot, kernelUrl: `ws://127.0.0.1:${kernelPort}/kernel` })
+  const attachedLocalTui = await waitForAutomationSnapshot(
+    localAutomation,
+    (snapshot) => snapshot.session?.id === sessionId,
+    "direct local TUI session",
+    30_000,
+  )
+  assert.equal(attachedLocalTui.session?.id, sessionId)
+  const binding = unwrap(
+    await client.send(requests.bindRoomEnvironmentSliceRequest(sessionId, slice.id)),
+    "RoomEnvironmentSlice",
+  ).binding
+  assert.equal(binding.session_id, sessionId)
+  assert.equal(binding.slice_id, slice.id)
+
   await waitForBrowserReady(60_000)
   await sliceScreen(["open-url", `http://host.docker.internal:${fixture.port}/click`])
   await waitForBrowserText("POINTER_CLICK_READY", 30_000, "click fixture did not load")
@@ -2830,6 +2850,7 @@ async function dockerLimits() {
 
 async function cleanup() {
   const tempRoot = await tempRootPromise
+  let leakedEvidence = false
   try { localForwarding?.assertHealthy() } catch (error) { failure ??= error }
   if (failure) {
     // Capture the failure before teardown adds disconnect/retry noise.
@@ -2870,8 +2891,17 @@ async function cleanup() {
       ).catch(() => undefined)
     }
   }
+  if (fixtureWorkspaceLease) {
+    try {
+      await assertNoPlaintextSecretInTree(fixtureWorkspaceLease.workspace, sensitiveValues)
+    } catch (error) {
+      leakedEvidence = true
+      failure ??= error
+    }
+  }
   if (client && requests && slice) {
-    await withTimeout(client.send(requests.deleteSliceRequest(slice.id)), 2_000, "cleanup DeleteSlice").catch(() => undefined)
+    await withTimeout(client.send(requests.deleteSliceRequest(slice.id)), 30_000, "cleanup DeleteSlice")
+      .catch((error) => { failure ??= error })
   }
   await client?.close?.()
   await observerClient?.close?.()
@@ -2886,7 +2916,6 @@ async function cleanup() {
   // appear after cleanup has already removed its predecessor.
   await docker(["rm", "-f", containerName]).catch(() => undefined)
   await docker(["volume", "rm", "-f", homeVolume]).catch(() => undefined)
-  let leakedEvidence = false
   try {
     await assertNoPlaintextSecretInTree(tempRoot, sensitiveValues)
     await assertNoPlaintextSecretInTree(evidenceRoot, sensitiveValues)
@@ -2895,6 +2924,15 @@ async function cleanup() {
     failure ??= error
     await rm(evidenceRoot, { recursive: true, force: true })
     await mkdir(evidenceRoot, { recursive: true, mode: 0o700 })
+  }
+  let fixtureWorkspaceRemoved = fixtureWorkspaceLease == null
+  if (fixtureWorkspaceLease) {
+    try {
+      await assertRoomRootlessWorkspaceFixtureRemoved(fixtureWorkspaceLease)
+      fixtureWorkspaceRemoved = true
+    } catch (error) {
+      failure ??= error
+    }
   }
   await rm(tempRoot, { recursive: true, force: true })
   const after = await resourceSnapshot("after").catch(() => ({ label: "after", at: new Date().toISOString() }))
@@ -2911,6 +2949,7 @@ async function cleanup() {
   const cleanupResult = {
     containerGone,
     volumeGone,
+    fixtureWorkspaceRemoved,
     tempRootRemoved,
     listenersReleased: occupiedPorts.length === 0,
     plaintextSecretLeak: leakedEvidence,
@@ -2918,7 +2957,8 @@ async function cleanup() {
     resource: after,
   }
   await writeFile(path.join(evidenceRoot, "cleanup.json"), `${JSON.stringify(cleanupResult, null, 2)}\n`)
-  if ((!containerGone || !volumeGone || !tempRootRemoved || occupiedPorts.length > 0) && failure == null) {
+  if ((!containerGone || !volumeGone || !fixtureWorkspaceRemoved || !tempRootRemoved || occupiedPorts.length > 0)
+      && failure == null) {
     failure = new Error(`drill cleanup failed: ${JSON.stringify(cleanupResult)}`)
   }
   if (result && failure == null) {
