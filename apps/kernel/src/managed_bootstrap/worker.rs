@@ -2091,49 +2091,47 @@ mod tests {
             )),
         };
 
-        let lease = match send_authenticated_peer_request_for_test(
-            &worker_router,
-            &worker_state,
-            &outgoing_tx,
-            from_daemon_id,
-            caller_identity.clone(),
-            &home_private_key,
-            &worker_public_key,
-            RelayPeerRequest::CreateExecutionLease {
-                home_kernel_id: "home-kernel".to_string(),
-                home_session_id: "home-session".to_string(),
-                home_agent_id: "home-agent".to_string(),
-                home_agent_metaagent: false,
-                owner_user_id: "local".to_string(),
-            },
-        )
+        // Construct the large peer-dispatch future outside this test's poll
+        // frame. Keeping each request inline exhausts the default test stack
+        // when the authenticated peer handler is polled beneath it.
+        let send_peer_request = |request| {
+            Box::pin(send_authenticated_peer_request_for_test(
+                &worker_router,
+                &worker_state,
+                &outgoing_tx,
+                from_daemon_id,
+                caller_identity.clone(),
+                &home_private_key,
+                &worker_public_key,
+                request,
+            ))
+        };
+
+        let lease = match send_peer_request(RelayPeerRequest::CreateExecutionLease {
+            home_kernel_id: "home-kernel".to_string(),
+            home_session_id: "home-session".to_string(),
+            home_agent_id: "home-agent".to_string(),
+            home_agent_metaagent: false,
+            owner_user_id: "local".to_string(),
+        })
         .await
         .expect("authenticated home should create a worker lease")
         {
             RelayPeerResponse::ExecutionLeaseCreated { lease, .. } => lease,
             other => panic!("unexpected lease response: {other:?}"),
         };
-        let leased_agent_id = match send_authenticated_peer_request_for_test(
-            &worker_router,
-            &worker_state,
-            &outgoing_tx,
-            from_daemon_id,
-            caller_identity.clone(),
-            &home_private_key,
-            &worker_public_key,
-            RelayPeerRequest::SpawnLeasedAgent {
-                lease_id: lease.id.clone(),
-                provider: "managed-dev-stub".to_string(),
-                account_profile: "default".to_string(),
-                model: Some("default".to_string()),
-                effort: None,
-                execution_mode: None,
-                permission_level: None,
-                workspace_live_sync_mode: None,
-                worktree_id: Some(worker_worktree.display().to_string()),
-                worktree_placement: None,
-            },
-        )
+        let leased_agent_id = match send_peer_request(RelayPeerRequest::SpawnLeasedAgent {
+            lease_id: lease.id.clone(),
+            provider: "managed-dev-stub".to_string(),
+            account_profile: "default".to_string(),
+            model: Some("default".to_string()),
+            effort: None,
+            execution_mode: None,
+            permission_level: None,
+            workspace_live_sync_mode: None,
+            worktree_id: Some(worker_worktree.display().to_string()),
+            worktree_placement: None,
+        })
         .await
         .expect("authenticated home should spawn the worker agent")
         {
@@ -2157,18 +2155,9 @@ mod tests {
                 validation_commands: Vec::new(),
             };
 
-        let started = send_authenticated_peer_request_for_test(
-            &worker_router,
-            &worker_state,
-            &outgoing_tx,
-            from_daemon_id,
-            caller_identity.clone(),
-            &home_private_key,
-            &worker_public_key,
-            start(2, "project-attempt-two"),
-        )
-        .await
-        .expect("worker peer handler should accept home attempt two");
+        let started = send_peer_request(start(2, "project-attempt-two"))
+            .await
+            .expect("worker peer handler should accept home attempt two");
         let started_status = match started {
             RelayPeerResponse::LeasedProjectEnvironmentSetupStarted { setup } => setup,
             other => panic!("unexpected setup start response: {other:?}"),
@@ -2176,23 +2165,15 @@ mod tests {
         assert_eq!(started_status.status.operation_id, operation_id);
         assert_eq!(started_status.status.attempt, 2);
 
-        let observed = send_authenticated_peer_request_for_test(
-            &worker_router,
-            &worker_state,
-            &outgoing_tx,
-            from_daemon_id,
-            caller_identity.clone(),
-            &home_private_key,
-            &worker_public_key,
-            RelayPeerRequest::GetLeasedProjectEnvironmentSetupStatus {
+        let observed =
+            send_peer_request(RelayPeerRequest::GetLeasedProjectEnvironmentSetupStatus {
                 leased_agent_id: leased_agent_id.clone(),
                 operation_id: operation_id.clone(),
                 home_session_id: "home-session".to_string(),
                 home_agent_id: "home-agent".to_string(),
-            },
-        )
-        .await
-        .expect("worker peer handler should return authenticated attempt two status");
+            })
+            .await
+            .expect("worker peer handler should return authenticated attempt two status");
         match observed {
             RelayPeerResponse::LeasedProjectEnvironmentSetupStatus { setup } => {
                 assert_eq!(setup.status.operation_id, operation_id);
@@ -2216,15 +2197,8 @@ mod tests {
             validation_commands: vec!["command -v sh".to_string()],
         };
         assert!(legacy_definition.is_unattested_file_backed());
-        let repaired_admission = send_authenticated_peer_request_for_test(
-            &worker_router,
-            &worker_state,
-            &outgoing_tx,
-            from_daemon_id,
-            caller_identity.clone(),
-            &home_private_key,
-            &worker_public_key,
-            RelayPeerRequest::StartLeasedProjectEnvironmentSetup {
+        let repaired_admission =
+            send_peer_request(RelayPeerRequest::StartLeasedProjectEnvironmentSetup {
                 leased_agent_id: leased_agent_id.clone(),
                 operation_id: "peer-legacy-definition".to_string(),
                 attempt: 1,
@@ -2236,10 +2210,9 @@ mod tests {
                 target_platform: target_platform.clone(),
                 definition: Some(legacy_definition),
                 validation_commands: Vec::new(),
-            },
-        )
-        .await
-        .expect("home setup with a repairable legacy definition should reach the worker");
+            })
+            .await
+            .expect("home setup with a repairable legacy definition should reach the worker");
         match repaired_admission {
             RelayPeerResponse::LeasedProjectEnvironmentSetupStarted { setup } => {
                 assert_eq!(setup.status.operation_id, "peer-legacy-definition");
@@ -2253,18 +2226,9 @@ mod tests {
             ("zero attempt", start(0, "project-attempt-two")),
             ("conflicting fingerprint", start(2, "different-project")),
         ] {
-            let error = send_authenticated_peer_request_for_test(
-                &worker_router,
-                &worker_state,
-                &outgoing_tx,
-                from_daemon_id,
-                caller_identity.clone(),
-                &home_private_key,
-                &worker_public_key,
-                request,
-            )
-            .await
-            .expect_err("invalid worker replay must be rejected");
+            let error = send_peer_request(request)
+                .await
+                .expect_err("invalid worker replay must be rejected");
             assert_eq!(
                 error.code,
                 crate::transport::relay_peer::PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE,
@@ -2272,32 +2236,14 @@ mod tests {
             );
         }
 
-        let _ = send_authenticated_peer_request_for_test(
-            &worker_router,
-            &worker_state,
-            &outgoing_tx,
-            from_daemon_id,
-            caller_identity.clone(),
-            &home_private_key,
-            &worker_public_key,
-            RelayPeerRequest::DestroyLeasedAgent {
-                leased_agent_id: leased_agent_id.clone(),
-            },
-        )
+        let _ = send_peer_request(RelayPeerRequest::DestroyLeasedAgent {
+            leased_agent_id: leased_agent_id.clone(),
+        })
         .await
         .expect("worker agent cleanup should remain authenticated");
-        let _ = send_authenticated_peer_request_for_test(
-            &worker_router,
-            &worker_state,
-            &outgoing_tx,
-            from_daemon_id,
-            caller_identity,
-            &home_private_key,
-            &worker_public_key,
-            RelayPeerRequest::DestroyExecutionLease { lease_id: lease.id },
-        )
-        .await
-        .expect("worker lease cleanup should remain authenticated");
+        let _ = send_peer_request(RelayPeerRequest::DestroyExecutionLease { lease_id: lease.id })
+            .await
+            .expect("worker lease cleanup should remain authenticated");
 
         restore_worker_test_env("CHARIOX_HOME", previous_chariox_home);
         restore_worker_test_env(ACTIVITY_RECEIPT_ENV, previous_receipt);
@@ -2608,17 +2554,19 @@ mod tests {
         RelayAuthVerifier::ScopedToken(ScopedTokenVerifier::new(claims, BTreeMap::new(), None))
     }
 
-    async fn dispatch_public(
+    fn dispatch_public(
         router: &crate::runtime::router::CommandRouter,
         request: LocalDaemonRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
+    ) -> impl std::future::Future<Output = Result<LocalDaemonResponse, DaemonError>> + '_ {
         let command = KernelCommand::from_local_request(
             format!("disposable-project-{}", rand::random::<u64>()),
             None,
             None,
             &request,
         );
-        router.dispatch(command, request).await
+        // Construct and box the large router future outside the test's poll
+        // frame so public requests run on the default test stack.
+        Box::pin(router.dispatch(command, request))
     }
 
     fn restore_worker_test_env(name: &str, value: Option<std::ffi::OsString>) {

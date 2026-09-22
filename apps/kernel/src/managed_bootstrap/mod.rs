@@ -13,8 +13,9 @@ use chrono::{DateTime, Utc};
 use rand::Rng;
 
 use crate::config::{
-    load_managed_cloud_relay_profile, load_or_create_managed_runtime_identity, DaemonConfig,
-    persist_managed_cloud_relay_profile, ManagedRuntimeIdentity, PersistedCloudRelayProfile,
+    load_managed_cloud_relay_profile, load_or_create_managed_runtime_identity,
+    persist_managed_cloud_relay_profile, DaemonConfig, ManagedRuntimeIdentity,
+    PersistedCloudRelayProfile,
 };
 use crate::error::DaemonError;
 
@@ -533,7 +534,7 @@ fn confirm_registration(
     remove_envelope(&config.envelope_path)
 }
 
-pub(super) fn report_pre_reimage_runtime_identity(
+fn report_pre_reimage_runtime_identity(
     config: &BootstrapConfig,
     cloud: &impl BootstrapCloudClient,
     api_url: &str,
