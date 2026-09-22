@@ -1,5 +1,6 @@
 #![allow(unused_imports)]
 use super::support::*;
+use crate::transport::relay_client::subscriptions::run_relay_subscription_loop;
 
 struct RelayEventStoreTestRoot(std::path::PathBuf);
 
