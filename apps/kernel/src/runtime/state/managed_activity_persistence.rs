@@ -215,10 +215,12 @@ impl ManagedActivityTransitionState {
         if inner.restored {
             return Ok(());
         }
-        let latest = self
+        // Validate the bounded durable tail as well as the pending journal. The
+        // activity stream is not checkpoint-pruned, so its first entry is sequence 1.
+        let mut durable_tail = self
             .store
-            .load_subject_events_by_kind(kernel_id, MANAGED_ACTIVITY_EVENT_KIND, 1)?
-            .pop()
+            .load_subject_events_by_kind(kernel_id, MANAGED_ACTIVITY_EVENT_KIND, 2)?
+            .into_iter()
             .map(|event| {
                 let persisted =
                     serde_json::from_value::<PersistedManagedActivityTransition>(event.payload)
@@ -244,7 +246,21 @@ impl ManagedActivityTransitionState {
                     },
                 ))
             })
-            .transpose()?;
+            .collect::<Result<Vec<_>, DaemonError>>()?;
+        match durable_tail.as_slice() {
+            [(sequence, _)] if *sequence != 1 => {
+                return Err(activity_state_error(
+                    "activity durable sequence does not start at one",
+                ));
+            }
+            [(previous, _), (latest, _)] if previous.checked_add(1) != Some(*latest) => {
+                return Err(activity_state_error(
+                    "activity durable sequence is not contiguous",
+                ));
+            }
+            _ => {}
+        }
+        let latest = durable_tail.pop();
         let mut pending = match std::fs::read(self.pending_journal_path()) {
             Ok(bytes) => {
                 let journal: PendingManagedActivityTransitions = serde_json::from_slice(&bytes)
@@ -285,6 +301,15 @@ impl ManagedActivityTransitionState {
         // finish in one millisecond. Acknowledge only committed transition sequences.
         inner.pending_journal_dirty = !pending.is_empty();
         let latest_sequence = latest.map(|(sequence, _)| sequence).unwrap_or(0);
+        if let Some((sequence, observation)) = latest {
+            if pending.iter().any(|entry| {
+                entry.transition_sequence == sequence && entry.observation != observation
+            }) {
+                return Err(activity_state_error(
+                    "activity journal conflicts with durable acknowledgement",
+                ));
+            }
+        }
         pending.retain(|entry| entry.transition_sequence > latest_sequence);
         if pending
             .front()
