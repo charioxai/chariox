@@ -2,7 +2,72 @@
 
 use super::*;
 
+struct WorkflowPromptFailureRollback {
+    workflow_run: crate::session::WorkflowRun,
+    runtime_instance: Option<crate::session::WorkflowEndpointRuntimeInstance>,
+}
+
 impl KernelRuntimeOwnedState {
+    fn workflow_run_before_prompt_failure(
+        &self,
+        session_id: &str,
+        workflow_run_id: &str,
+    ) -> Result<WorkflowPromptFailureRollback, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let workflow_run = session
+            .workflow_run(workflow_run_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::WorkflowRunNotFound {
+                session_id: session_id.to_string(),
+                workflow_run_id: workflow_run_id.to_string(),
+            })?;
+        let runtime_instance = workflow_run
+            .runtime_instance_id()
+            .and_then(|instance_id| session.workflow_runtime_instance(instance_id))
+            .cloned();
+        Ok(WorkflowPromptFailureRollback {
+            workflow_run,
+            runtime_instance,
+        })
+    }
+
+    fn restore_workflow_run_after_prompt_failure(
+        &self,
+        session_id: &str,
+        rollback: WorkflowPromptFailureRollback,
+    ) {
+        let restore: Result<(), DaemonError> = (|| {
+            let mut session_store = self.session_store.write();
+            let session = session_store.get_session(session_id)?;
+            let mut workflow_runs = session.workflow_runs().to_vec();
+            if let Some(current) = workflow_runs
+                .iter_mut()
+                .find(|current| current.id() == rollback.workflow_run.id())
+            {
+                *current = rollback.workflow_run;
+            } else {
+                workflow_runs.push(rollback.workflow_run);
+            }
+            session_store.restore_active_workflow_runs(session_id, workflow_runs)?;
+            if let Some(runtime_instance) = rollback.runtime_instance {
+                let _ = session_store
+                    .remove_workflow_runtime_instance(session_id, runtime_instance.id())?;
+                session_store.register_workflow_runtime_instance(session_id, runtime_instance)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = restore {
+            crate::logging::error_with_fields(
+                "daemon.workflow",
+                "failed to restore workflow prompt failure after durable append failure",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
+
     pub(super) fn workflow_cancel_prompt(
         &self,
         session_id: &str,
@@ -34,16 +99,19 @@ impl KernelRuntimeOwnedState {
             return Ok(());
         }
         let activity_mutation = self.begin_managed_activity_mutation();
-        let workflow_run = self.session_store.write().stop_workflow_node_run(
-            session_id,
-            workflow_run_id,
-            workflow_node_run_id,
-        )?;
-        let _ = self.release_workflow_node_workspace_claim(
-            session_id,
-            workflow_run_id,
-            workflow_node_run_id,
-        );
+        let workflow_run_before =
+            self.workflow_run_before_prompt_failure(session_id, workflow_run_id)?;
+        let workflow_run = {
+            let mut session_store = self.session_store.write();
+            session_store.stop_workflow_node_run(session_id, workflow_run_id, workflow_node_run_id)
+        };
+        let workflow_run = match workflow_run {
+            Ok(workflow_run) => workflow_run,
+            Err(error) => {
+                self.restore_workflow_run_after_prompt_failure(session_id, workflow_run_before);
+                return Err(error);
+            }
+        };
         self.workflow_record_failure(
             session_id,
             workflow_run_id,
@@ -54,6 +122,19 @@ impl KernelRuntimeOwnedState {
                 "workflow node run was stopped before validated completion",
             ),
         );
+        self.persist_workflow_runtime_session_with_activity_mutation_and_rollback(
+            session_id,
+            "workflow_prompt_cancelled",
+            activity_mutation,
+            || {
+                self.restore_workflow_run_after_prompt_failure(session_id, workflow_run_before);
+            },
+        )?;
+        let _ = self.release_workflow_node_workspace_claim(
+            session_id,
+            workflow_run_id,
+            workflow_node_run_id,
+        );
         self.record_notice(
             session_id,
             None,
@@ -61,11 +142,6 @@ impl KernelRuntimeOwnedState {
                 .list_session_attachment_ids(session_id),
             format!("Workflow run `{}` was stopped.", workflow_run.id()),
         );
-        self.persist_workflow_runtime_session_with_activity_mutation(
-            session_id,
-            "workflow_prompt_cancelled",
-            activity_mutation,
-        )?;
         self.workflow_maybe_start_next_queued_prompt(session_id);
         Ok(())
     }
@@ -80,12 +156,11 @@ impl KernelRuntimeOwnedState {
         if prompt.workflow_run_id().is_none() || prompt.workflow_node_run_id().is_none() {
             return Ok(WorkflowPromptDispatches::default());
         }
-        let activity_mutation = self.begin_managed_activity_mutation();
-        self.workflow_fail_provider_prompt_state(session_id, prompt, provider_run_id, message)?;
-        self.persist_workflow_runtime_session_with_activity_mutation(
+        self.workflow_fail_provider_prompt_transition(
             session_id,
-            "workflow_provider_prompt_failed",
-            activity_mutation,
+            prompt,
+            provider_run_id,
+            message,
         )?;
         let dispatches = self.workflow_maybe_start_next_queued_prompt(session_id);
         Ok(dispatches)
@@ -101,18 +176,10 @@ impl KernelRuntimeOwnedState {
         if prompt.workflow_run_id().is_none() || prompt.workflow_node_run_id().is_none() {
             return Ok(false);
         }
-        let activity_mutation = self.begin_managed_activity_mutation();
-        let released_claim =
-            self.workflow_fail_provider_prompt_state(session_id, prompt, provider_run_id, message)?;
-        self.persist_workflow_runtime_session_with_activity_mutation(
-            session_id,
-            "workflow_provider_prompt_failed",
-            activity_mutation,
-        )?;
-        Ok(released_claim)
+        self.workflow_fail_provider_prompt_transition(session_id, prompt, provider_run_id, message)
     }
 
-    fn workflow_fail_provider_prompt_state(
+    fn workflow_fail_provider_prompt_transition(
         &self,
         session_id: &str,
         prompt: &crate::session::PromptQueueItem,
@@ -124,20 +191,37 @@ impl KernelRuntimeOwnedState {
         else {
             return Ok(false);
         };
-        self.workflow_record_failure(
+        let activity_mutation = self.begin_managed_activity_mutation();
+        let workflow_run_before =
+            self.workflow_run_before_prompt_failure(session_id, workflow_run_id)?;
+        let workflow_run = (|| {
+            self.workflow_record_failure(
+                session_id,
+                workflow_run_id,
+                &crate::session::WorkflowFailureEvent::new(
+                    crate::session::WorkflowFailureKind::ProviderFailure,
+                    workflow_node_run_id,
+                    Vec::new(),
+                    message,
+                ),
+            );
+            let mut session_store = self.session_store.write();
+            session_store.fail_workflow_node_run(session_id, workflow_run_id, workflow_node_run_id)
+        })();
+        let workflow_run = match workflow_run {
+            Ok(workflow_run) => workflow_run,
+            Err(error) => {
+                self.restore_workflow_run_after_prompt_failure(session_id, workflow_run_before);
+                return Err(error);
+            }
+        };
+        self.persist_workflow_runtime_session_with_activity_mutation_and_rollback(
             session_id,
-            workflow_run_id,
-            &crate::session::WorkflowFailureEvent::new(
-                crate::session::WorkflowFailureKind::ProviderFailure,
-                workflow_node_run_id,
-                Vec::new(),
-                message,
-            ),
-        );
-        let workflow_run = self.session_store.write().fail_workflow_node_run(
-            session_id,
-            workflow_run_id,
-            workflow_node_run_id,
+            "workflow_provider_prompt_failed",
+            activity_mutation,
+            || {
+                self.restore_workflow_run_after_prompt_failure(session_id, workflow_run_before);
+            },
         )?;
         let released_claim = self.release_workflow_node_workspace_claim(
             session_id,
@@ -320,11 +404,7 @@ mod tests {
             )
             .expect("workflow turn should prepare");
         app.sessions_mut()
-            .start_workflow_node_run(
-                session.id(),
-                workflow_run.id(),
-                &workflow_node_run_id,
-            )
+            .start_workflow_node_run(session.id(), workflow_run.id(), &workflow_node_run_id)
             .expect("workflow node should start");
         let prompt = PromptQueueItem::new(
             format!("prompt-{label}"),
@@ -380,10 +460,9 @@ mod tests {
         fixture: &WorkflowFailureFixture,
         reason: &str,
     ) -> rusqlite::Connection {
-        let connection = rusqlite::Connection::open(
-            fixture.runtime.owned.durable_state_store.path(),
-        )
-        .expect("durable database should open for failure injection");
+        let connection =
+            rusqlite::Connection::open(fixture.runtime.owned.durable_state_store.path())
+                .expect("durable database should open for failure injection");
         connection
             .execute_batch(&format!(
                 "CREATE TRIGGER fail_workflow_prompt_failure_append
@@ -413,7 +492,10 @@ mod tests {
         let workflow_run = session
             .workflow_run(&fixture.workflow_run_id)
             .expect("failed append must retain the workflow run");
-        assert_eq!(workflow_run.status(), crate::session::WorkflowRunStatus::Running);
+        assert_eq!(
+            workflow_run.status(),
+            crate::session::WorkflowRunStatus::Running
+        );
         assert_eq!(
             workflow_run
                 .node_runs()
@@ -555,7 +637,10 @@ mod tests {
             )
             .expect("durable workflow run should load")
             .expect("durable workflow run should exist");
-        assert_eq!(durable_run.status(), crate::session::WorkflowRunStatus::Stopped);
+        assert_eq!(
+            durable_run.status(),
+            crate::session::WorkflowRunStatus::Stopped
+        );
     }
 
     #[tokio::test]
@@ -637,7 +722,10 @@ mod tests {
             )
             .expect("durable workflow run should load")
             .expect("durable workflow run should exist");
-        assert_eq!(durable_run.status(), crate::session::WorkflowRunStatus::Failed);
+        assert_eq!(
+            durable_run.status(),
+            crate::session::WorkflowRunStatus::Failed
+        );
     }
 
     #[tokio::test]
