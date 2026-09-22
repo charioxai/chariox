@@ -12,6 +12,13 @@ import type {
   ManagedEnvironmentResult,
   ManagedEnvironmentSummary,
 } from "@chariox/kernel-client/ipc-managed-environment-requests"
+import type {
+  ProjectEnvironmentSetupStartInput,
+} from "@chariox/kernel-client/project-environment-setup-orchestration"
+import type {
+  ProjectEnvironmentSetupStatus,
+  RuntimeSession,
+} from "@chariox/kernel-client/kernel-types"
 import {
   WaitingRoomManagedEnvironmentLaunchController,
 } from "./waiting-room-managed-environment-launch-controller.js"
@@ -30,6 +37,8 @@ test("managed TUI launch creates Empty context and returns the target workspace"
   assert.equal(prepared.workspacePath, "/managed/empty/context-1")
   assert.equal(prepared.worktreePath, "/managed/empty/context-1")
   assert.deepEqual(prepared.projectSelection, { kind: "default" })
+  await prepared.prepareProject(session())
+  assert.deepEqual(harness.setupInputs, [])
   await prepared.commit()
   assert.equal(harness.connectionCommits, 1)
   assert.equal(harness.connectionRollbacks, 0)
@@ -58,6 +67,66 @@ test("managed TUI launch starts and monitors direct source transfer", async () =
     kind: "existing",
     project_id: "project-1",
   })
+  await prepared.prepareProject(session({ project_id: "project-1" }))
+  assert.deepEqual(harness.setupInputs, [{
+    operationId: "managed-launch-project-setup:session-1",
+    projectId: "project-1",
+    sessionId: "session-1",
+    agentId: "agent-1",
+    targetWorkerId: "machine-managed",
+    targetPlatform: "linux-x86_64",
+  }])
+})
+
+test("managed TUI launch keeps Project preparation pending until kernel setup is ready", async () => {
+  let releaseSetup = () => {}
+  const setupGate = new Promise<void>((resolve) => {
+    releaseSetup = resolve
+  })
+  const plan = sourcePlan()
+  const harness = createHarness({
+    createResults: [result(environment("ready", { contextPlan: plan }))],
+    launchTarget: sourceLaunchTarget(),
+    setupGate,
+  })
+  const prepared = await harness.controller.prepare(newSelection(plan), harness.attempt)
+  let settled = false
+  const pending = prepared.prepareProject(session({ project_id: "project-1" })).then(() => {
+    settled = true
+  })
+
+  await Promise.resolve()
+  assert.equal(settled, false)
+  assert.equal(harness.connectionCommits, 0)
+
+  releaseSetup()
+  await pending
+  assert.equal(settled, true)
+})
+
+test("managed TUI launch rejects a superseded Project setup before committing the pivot", async () => {
+  let releaseSetup = () => {}
+  const setupGate = new Promise<void>((resolve) => {
+    releaseSetup = resolve
+  })
+  const plan = sourcePlan()
+  const harness = createHarness({
+    createResults: [result(environment("ready", { contextPlan: plan }))],
+    launchTarget: sourceLaunchTarget(),
+    setupGate,
+  })
+  const prepared = await harness.controller.prepare(newSelection(plan), harness.attempt)
+  const pending = prepared.prepareProject(session({ project_id: "project-1" }))
+
+  await Promise.resolve()
+  harness.cancel()
+  releaseSetup()
+
+  await assert.rejects(pending, /cancelled/)
+  assert.equal(harness.setupInputs.length, 1)
+  assert.equal(harness.connectionCommits, 0)
+  await prepared.rollback()
+  assert.equal(harness.connectionRollbacks, 1)
 })
 
 test("managed TUI launch starts a converged stopped environment", async () => {
@@ -207,6 +276,7 @@ type HarnessOptions = {
   launchTarget?: ManagedContextLaunchTarget
   launchTargetResults?: Array<ManagedContextLaunchTarget | Error>
   connectResults?: Array<boolean | Error>
+  setupGate?: Promise<void>
   cancelOnDelay?: number
 }
 
@@ -232,6 +302,7 @@ function createHarness(options: HarnessOptions) {
   const transferStatuses = [...(options.transferStatuses ?? [])]
   const launchTargetResults = [...(options.launchTargetResults ?? [])]
   const connectResults = [...(options.connectResults ?? [])]
+  const setupInputs: ProjectEnvironmentSetupStartInput[] = []
   let connectAttempts = 0
   let connectionCommits = 0
   let connectionRollbacks = 0
@@ -302,6 +373,13 @@ function createHarness(options: HarnessOptions) {
       if (next instanceof Error) throw next
       return next ?? options.launchTarget ?? emptyLaunchTarget()
     },
+    ensureProjectSetup: async (input, setupAttempt) => {
+      setupInputs.push(input)
+      setupAttempt.assertActive()
+      await options.setupGate
+      setupAttempt.assertActive()
+      return setupStatus(input)
+    },
     createIdempotencyKey: () => `key-${++keySequence}`,
     environmentName: () => "Managed agent",
     delay: async (ms) => {
@@ -320,6 +398,7 @@ function createHarness(options: HarnessOptions) {
     transferStarts,
     transferStatusRequests,
     launchTargetRequests,
+    setupInputs,
     get connectAttempts() {
       return connectAttempts
     },
@@ -332,6 +411,56 @@ function createHarness(options: HarnessOptions) {
     cancel: () => {
       active = false
     },
+  }
+}
+
+function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
+  return {
+    id: "session-1",
+    project_id: "project-1",
+    workspace_id: "/managed/context-1/primary",
+    worktree_id: "/managed/context-1/primary",
+    created_at_ms: 1,
+    status: "Active",
+    active_provider_run_id: null,
+    attachment_ids: [],
+    active_prompt: null,
+    queued_prompts: [],
+    focused_agent_id: "agent-1",
+    max_agents: 6,
+    agents: [{ id: "agent-1" } as RuntimeSession["agents"][number]],
+    config_state: {
+      version: 1,
+      values: {},
+      updated_by_attachment_id: null,
+    },
+    ...overrides,
+  }
+}
+
+function setupStatus(input: ProjectEnvironmentSetupStartInput): ProjectEnvironmentSetupStatus {
+  return {
+    operation_id: input.operationId,
+    project_id: input.projectId,
+    session_id: input.sessionId,
+    agent_id: input.agentId,
+    worker_id: input.targetWorkerId,
+    platform: input.targetPlatform,
+    phase: "ready",
+    attempt: 1,
+    progress_percent: 100,
+    definition_digest: "sha256:definition",
+    validation: {
+      worker_id: input.targetWorkerId,
+      platform: input.targetPlatform,
+      commands: [],
+    },
+    message: "ready",
+    failure_code: null,
+    failure_message: null,
+    retryable: false,
+    created_at_ms: 1,
+    updated_at_ms: 2,
   }
 }
 

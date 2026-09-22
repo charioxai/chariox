@@ -1,8 +1,12 @@
 import type {
-  ProjectEnvironmentDefinition,
   ProjectEnvironmentSetupPhase,
   ProjectEnvironmentSetupStatus,
 } from "@chariox/kernel-client/kernel-types"
+import {
+  ensureProjectEnvironmentSetupReady,
+  type ProjectEnvironmentSetupReadinessOptions,
+  type ProjectEnvironmentSetupStartInput,
+} from "@chariox/kernel-client/project-environment-setup-orchestration"
 import {
   cancelProjectEnvironmentSetupRequest,
   getProjectEnvironmentSetupStatusRequest,
@@ -26,22 +30,17 @@ export type ProjectEnvironmentSetupRequestClient = {
   send<TResponse>(request: unknown): Promise<TResponse>
 }
 
-export type ProjectEnvironmentSetupStartInput = {
-  readonly operationId: string
-  readonly projectId: string
-  readonly sessionId: string
-  readonly agentId: string
-  readonly targetWorkerId: string
-  readonly targetPlatform: string
-  readonly definition?: ProjectEnvironmentDefinition | null
-  readonly validationCommands?: readonly string[]
-}
+export type { ProjectEnvironmentSetupStartInput }
 
 export type ProjectEnvironmentSetupProjection = {
   status(): ProjectEnvironmentSetupStatus | null
   lastError(): string | null
   adopt(status: ProjectEnvironmentSetupStatus): ProjectEnvironmentSetupStatus
   start(input: ProjectEnvironmentSetupStartInput): Promise<ProjectEnvironmentSetupStatus>
+  ensureReady(
+    input: ProjectEnvironmentSetupStartInput,
+    options?: ProjectEnvironmentSetupReadinessOptions,
+  ): Promise<ProjectEnvironmentSetupStatus>
   poll(): Promise<ProjectEnvironmentSetupStatus | null>
   cancel(): Promise<ProjectEnvironmentSetupStatus | null>
   retry(): Promise<ProjectEnvironmentSetupStatus | null>
@@ -69,7 +68,7 @@ export function createProjectEnvironmentSetupProjection(
   let revision = 0
   let pendingPoll: Promise<ProjectEnvironmentSetupStatus | null> | null = null
 
-  const publish = (status: ProjectEnvironmentSetupStatus | null) => {
+  const publish = <TStatus extends ProjectEnvironmentSetupStatus | null>(status: TStatus): TStatus => {
     currentStatus = status
     deps.onStatusChanged?.(status)
     return status
@@ -124,6 +123,42 @@ export function createProjectEnvironmentSetupProjection(
       reportError("start project environment setup", error)
       throw error
     }
+  }
+
+  const ensureReady = async (
+    input: ProjectEnvironmentSetupStartInput,
+    options: ProjectEnvironmentSetupReadinessOptions = {},
+  ) => {
+    const operationRevision = ++revision
+    currentError = null
+    return await ensureProjectEnvironmentSetupReady({
+      start: async (startInput) => {
+        const response = await deps.client.send<ProjectEnvironmentSetupResponse>(
+          startProjectEnvironmentSetupRequest(startInput),
+        )
+        return normalizeProjectEnvironmentSetupStatus(responseStatus(response))
+      },
+      get: async (operationId) => {
+        const response = await deps.client.send<ProjectEnvironmentSetupResponse>(
+          getProjectEnvironmentSetupStatusRequest(operationId),
+        )
+        return normalizeProjectEnvironmentSetupStatus(responseStatus(response))
+      },
+    }, input, {
+      ...options,
+      onStatus: (status) => {
+        if (operationRevision !== revision
+          && currentStatus?.operation_id !== input.operationId) {
+          throw new Error("project environment setup orchestration was superseded")
+        }
+        publishServerStatus(status, input.operationId)
+        options.onStatus?.(status)
+      },
+      onTransportError: (operation, error) => {
+        reportError(`${operation} project environment setup`, error)
+        options.onTransportError?.(operation, error)
+      },
+    })
   }
 
   const poll = () => {
@@ -188,6 +223,7 @@ export function createProjectEnvironmentSetupProjection(
       return publishServerStatus(status)
     },
     start,
+    ensureReady,
     poll,
     cancel: () => runControl("cancel"),
     retry: () => runControl("retry"),

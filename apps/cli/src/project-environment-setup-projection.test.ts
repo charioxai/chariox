@@ -141,6 +141,61 @@ test("project environment setup cancel and retry use the persisted server identi
   ])
 })
 
+test("automatic setup waits through retryable failure and existing retry on the same operation", async () => {
+  const requests: unknown[] = []
+  let releasePoll = () => {}
+  const pollGate = new Promise<void>((resolve) => {
+    releasePoll = resolve
+  })
+  const projection = createProjectEnvironmentSetupProjection({
+    client: fakeClient(requests, {
+      StartProjectEnvironmentSetup: {
+        ProjectEnvironmentSetupStarted: {
+          status: status({
+            phase: "failed",
+            failure_code: "setup_failed",
+            failure_message: "retry me",
+            retryable: true,
+          }),
+        },
+      },
+      RetryProjectEnvironmentSetup: {
+        ProjectEnvironmentSetupRetried: {
+          status: status({ phase: "requested", attempt: 2 }),
+        },
+      },
+      GetProjectEnvironmentSetupStatus: {
+        ProjectEnvironmentSetupStatus: {
+          status: status({ phase: "ready", attempt: 2, progress_percent: 100 }),
+        },
+      },
+    }),
+  })
+  const ready = projection.ensureReady({
+    operationId: "setup-1",
+    projectId: "project-1",
+    sessionId: "session-1",
+    agentId: "agent-1",
+    targetWorkerId: "worker-1",
+    targetPlatform: "linux-x86_64",
+  }, {
+    delay: async () => await pollGate,
+  })
+
+  await Promise.resolve()
+  await Promise.resolve()
+  assert.equal(projection.status()?.phase, "failed")
+  assert.equal((await projection.retry())?.attempt, 2)
+  releasePoll()
+
+  assert.equal((await ready).phase, "ready")
+  assert.deepEqual(requests.map((request) => Object.keys(request as object)[0]), [
+    "StartProjectEnvironmentSetup",
+    "RetryProjectEnvironmentSetup",
+    "GetProjectEnvironmentSetupStatus",
+  ])
+})
+
 test("project environment setup failure details are bounded and safe for rows", () => {
   assert.equal(boundedProgressPercent(-5), 0)
   assert.equal(boundedProgressPercent(101), 100)
