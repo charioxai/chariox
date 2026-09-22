@@ -232,6 +232,7 @@ impl KernelRuntimeState {
         for provider_run_id in provider_run_ids {
             _provider_run_permits.push(self.provider_runtime_lanes.acquire(&provider_run_id).await);
         }
+        let activity_mutation = owned.begin_managed_activity_mutation();
         let session_before_interrupt = owned.session_store.get_session(session_id)?;
         let _ = owned
             .prompt_state_owner
@@ -247,6 +248,15 @@ impl KernelRuntimeState {
                 .write()
                 .cancel_workflow_run(session_id, workflow_run_ref)?
         };
+        owned.persist_workflow_runtime_session_with_activity_mutation(
+            session_id,
+            if pause {
+                "workflow_run_paused"
+            } else {
+                "workflow_run_cancelled"
+            },
+            activity_mutation,
+        )?;
         let workflow_claim_owner_prefix = format!("{workflow_run_id}:");
         let _ = owned.prompt_workspace_claims.remove_matching(|claim| {
             claim.session_id == session_id

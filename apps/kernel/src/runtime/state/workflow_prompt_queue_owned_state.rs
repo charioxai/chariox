@@ -219,6 +219,7 @@ impl KernelRuntimeOwnedState {
                     .resolve_workflow_run_ref(session_id, &active_run_id)
                     .ok()
                     .and_then(|run| run.node_runs().first().map(|node| node.id().to_string()));
+                let activity_mutation = self.begin_managed_activity_mutation();
                 if let Some(node_run_id) = node_run_id {
                     let _ = self.session_store.write().fail_workflow_node_run(
                         session_id,
@@ -231,6 +232,11 @@ impl KernelRuntimeOwnedState {
                         .write()
                         .release_workflow_runtime_instance_for_run(session_id, &active_run_id);
                 }
+                self.persist_workflow_runtime_session_with_activity_mutation(
+                    session_id,
+                    "missing_workflow_runtime_instance_reconciled",
+                    activity_mutation,
+                )?;
             }
             self.session_store
                 .write()
@@ -499,6 +505,7 @@ impl KernelRuntimeOwnedState {
     }
 
     fn workflow_reconcile_live_orphans(&self, session_id: &str) {
+        let activity_mutation = self.begin_managed_activity_mutation();
         let reconciled = self
             .session_store
             .write()
@@ -531,8 +538,11 @@ impl KernelRuntimeOwnedState {
                 .list_session_attachment_ids(session_id),
             format!("Stopped {count} orphaned workflow run(s) so queued prompts can advance."),
         );
-        if let Err(error) =
-            self.persist_workflow_runtime_session(session_id, "workflow_live_orphan_reconciled")
+        if let Err(error) = self.persist_workflow_runtime_session_with_activity_mutation(
+            session_id,
+            "workflow_live_orphan_reconciled",
+            activity_mutation,
+        )
         {
             crate::logging::warn_with_fields(
                 "daemon.runtime",
@@ -615,6 +625,7 @@ impl KernelRuntimeOwnedState {
             return Ok(WorkflowPromptDispatches::default());
         }
         if plan.enqueue_prompt {
+            let activity_mutation = self.begin_managed_activity_mutation();
             self.session_store.write().enqueue_workflow_prompt(
                 &plan.session_id,
                 &plan.workflow_id,
@@ -623,6 +634,11 @@ impl KernelRuntimeOwnedState {
                 plan.queue_id.as_deref(),
                 crate::session::WorkflowQueuedPromptSource::Scheduled,
                 Some(plan.watchdog_id.clone()),
+            )?;
+            self.persist_workflow_runtime_session_with_activity_mutation(
+                &plan.session_id,
+                "workflow_watchdog_prompt_enqueued",
+                activity_mutation,
             )?;
         }
         let (_outcome, dispatches) =
@@ -666,6 +682,7 @@ impl KernelRuntimeOwnedState {
             endpoint_ref,
         )?;
         self.workflow_validate_agents(session_id, &workflow)?;
+        let activity_mutation = self.begin_managed_activity_mutation();
         let queued_prompt = self
             .session_store
             .write()
@@ -679,6 +696,11 @@ impl KernelRuntimeOwnedState {
                 None,
                 publication_invocation,
             )?;
+        self.persist_workflow_runtime_session_with_activity_mutation(
+            session_id,
+            "workflow_prompt_enqueued",
+            activity_mutation,
+        )?;
         let (claimed, dispatches) =
             self.workflow_start_next_queued_prompt_for_response(session_id)?;
         let Some(claimed_outcome) = claimed else {
@@ -796,6 +818,7 @@ impl KernelRuntimeOwnedState {
         {
             Ok(dispatches) => dispatches,
             Err(error) => {
+                let activity_mutation = self.begin_managed_activity_mutation();
                 let failed_node_run_id = workflow_run
                     .node_runs()
                     .first()
@@ -817,19 +840,25 @@ impl KernelRuntimeOwnedState {
                         node_run.id(),
                     );
                 }
-                if let Some(node_run_id) = failed_node_run_id {
-                    if self.release_workflow_node_workspace_claim(
+                let released_claim = failed_node_run_id.is_some_and(|node_run_id| {
+                    self.release_workflow_node_workspace_claim(
                         session_id,
                         workflow_run.id(),
                         &node_run_id,
-                    ) {
-                        failure_dispatches.extend(self.workflow_retry_blocked_claims());
-                    }
-                }
+                    )
+                });
                 let _ = self
                     .session_store
                     .write()
                     .release_workflow_runtime_instance_for_run(session_id, workflow_run.id());
+                self.persist_workflow_runtime_session_with_activity_mutation(
+                    session_id,
+                    "workflow_prompt_schedule_failed",
+                    activity_mutation,
+                )?;
+                if released_claim {
+                    failure_dispatches.extend(self.workflow_retry_blocked_claims());
+                }
                 return Err(error);
             }
         };
@@ -1052,16 +1081,38 @@ impl KernelRuntimeOwnedState {
         watchdog_id: &str,
         error: &DaemonError,
     ) {
-        let mut sessions = self.session_store.write();
-        if workflow_watchdog_failure_is_terminal(error) {
-            let _ = sessions.mark_workflow_watchdog_failed_and_disable(
+        let activity_mutation = self.begin_managed_activity_mutation();
+        let update = if workflow_watchdog_failure_is_terminal(error) {
+            self.session_store
+                .write()
+                .mark_workflow_watchdog_failed_and_disable(
+                    session_id,
+                    watchdog_id,
+                    error.to_string(),
+                )
+        } else {
+            self.session_store.write().mark_workflow_watchdog_failed(
                 session_id,
                 watchdog_id,
                 error.to_string(),
-            );
-        } else {
-            let _ =
-                sessions.mark_workflow_watchdog_failed(session_id, watchdog_id, error.to_string());
+            )
+        };
+        if update.is_ok() {
+            if let Err(persist_error) = self.persist_workflow_runtime_session_with_activity_mutation(
+                session_id,
+                "workflow_watchdog_launch_failed",
+                activity_mutation,
+            ) {
+                crate::logging::warn_with_fields(
+                    "daemon.runtime",
+                    "workflow watchdog failure persistence failed",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "watchdog_id": watchdog_id,
+                        "error": persist_error.to_string(),
+                    }),
+                );
+            }
         }
     }
 

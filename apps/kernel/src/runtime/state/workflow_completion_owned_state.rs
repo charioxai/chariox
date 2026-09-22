@@ -21,13 +21,46 @@ fn run_before_workflow_activity_persistence_hook() {
     });
 }
 
+#[cfg(test)]
+pub(super) fn set_before_workflow_activity_persistence_hook(hook: impl FnOnce() + 'static) {
+    BEFORE_WORKFLOW_ACTIVITY_PERSISTENCE.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(hook));
+    });
+}
+
 impl KernelRuntimeOwnedState {
+    fn publish_workflow_session_after_activity_capture(
+        &self,
+        session: crate::session::RuntimeSession,
+    ) {
+        let projection_sequence = self.session_projection.change_sequence();
+        self.update_session_projection(session);
+        if self.session_projection.change_sequence() != projection_sequence {
+            self.runtime_projection_changes.record_change();
+        }
+    }
+
     pub(super) fn persist_workflow_runtime_session(
         &self,
         session_id: &str,
         reason: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        self.durable_state_store
+        let activity_mutation = self.begin_managed_activity_mutation();
+        self.persist_workflow_runtime_session_with_activity_mutation(
+            session_id,
+            reason,
+            activity_mutation,
+        )
+    }
+
+    pub(super) fn persist_workflow_runtime_session_with_activity_mutation(
+        &self,
+        session_id: &str,
+        reason: &str,
+        activity_mutation: super::managed_activity_runtime_state::ManagedActivityMutation<'_>,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let (session, hot_session) = self
+            .durable_state_store
             .with_workflow_runtime_transition_lock(|| {
                 let session = self.session_snapshot_without_projection_update(session_id)?;
                 self.durable_state_store
@@ -55,15 +88,15 @@ impl KernelRuntimeOwnedState {
                 // Release the session guard before activity persistence takes its
                 // locks. An if-let scrutinee built from read() retains that guard.
                 let hot_session = self.session_store.get_session(session_id);
-                if let Ok(hot_session) = hot_session {
-                    #[cfg(test)]
-                    run_before_workflow_activity_persistence_hook();
-                    self.publish_session_after_durable_mutation(hot_session);
-                } else {
-                    self.record_managed_activity_transition();
-                }
-                Ok(session)
-            })
+                #[cfg(test)]
+                run_before_workflow_activity_persistence_hook();
+                activity_mutation.record();
+                Ok((session, hot_session.ok()))
+            })?;
+        if let Some(hot_session) = hot_session {
+            self.publish_workflow_session_after_activity_capture(hot_session);
+        }
+        Ok(session)
     }
 
     #[allow(dead_code)]
@@ -89,6 +122,7 @@ impl KernelRuntimeOwnedState {
             workflow_run_id,
             workflow_node_run_id,
         );
+        let activity_mutation = self.begin_managed_activity_mutation();
         if completion_snapshot.is_none() && !has_valid_pending_final_output {
             if let Some(provider_diagnostic) =
                 provider_run_id.and_then(|run_id| self.provider_run_terminal_diagnostic(run_id))
@@ -122,11 +156,12 @@ impl KernelRuntimeOwnedState {
                         "Workflow run `{workflow_run_id}` failed after provider turn failure: {provider_diagnostic}"
                     ),
                 );
-                self.workflow_maybe_start_next_queued_prompt(session_id);
-                self.persist_workflow_runtime_session(
+                self.persist_workflow_runtime_session_with_activity_mutation(
                     session_id,
                     "workflow_provider_prompt_failed",
+                    activity_mutation,
                 )?;
+                self.workflow_maybe_start_next_queued_prompt(session_id);
                 return Ok(WorkflowPromptDispatches::default());
             }
         }
@@ -263,6 +298,11 @@ impl KernelRuntimeOwnedState {
                     workflow_node_run_id,
                 )?;
         }
+        self.persist_workflow_runtime_session_with_activity_mutation(
+            session_id,
+            "workflow_prompt_completed",
+            activity_mutation,
+        )?;
         self.release_workflow_node_workspace_claim(
             session_id,
             workflow_run_id,
@@ -352,7 +392,6 @@ impl KernelRuntimeOwnedState {
         ) {
             dispatches.extend(self.workflow_maybe_start_next_queued_prompt(session_id));
         }
-        self.persist_workflow_runtime_session(session_id, "workflow_prompt_completed")?;
         Ok(dispatches)
     }
 

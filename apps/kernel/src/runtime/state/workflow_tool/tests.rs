@@ -225,6 +225,15 @@ fn starting_workflow_prompt_persists_running_node_for_restart_recovery() {
     .with_workflow_context(workflow_run.id(), &node_run_id);
 
     let runtime = runtime_state_from_app(app);
+    let activity_lock = Arc::clone(&runtime.owned.managed_activity_mutation_lock);
+    super::super::workflow_completion_owned_state::set_before_workflow_activity_persistence_hook(
+        move || {
+            assert!(matches!(
+                activity_lock.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ));
+        },
+    );
     runtime
         .owned
         .workflow_start_prompt(session.id(), &prompt)

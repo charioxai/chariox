@@ -33,6 +33,7 @@ impl KernelRuntimeOwnedState {
             let _ = self.session_snapshot(session_id)?;
             return Ok(());
         }
+        let activity_mutation = self.begin_managed_activity_mutation();
         let workflow_run = self.session_store.write().stop_workflow_node_run(
             session_id,
             workflow_run_id,
@@ -60,8 +61,12 @@ impl KernelRuntimeOwnedState {
                 .list_session_attachment_ids(session_id),
             format!("Workflow run `{}` was stopped.", workflow_run.id()),
         );
+        self.persist_workflow_runtime_session_with_activity_mutation(
+            session_id,
+            "workflow_prompt_cancelled",
+            activity_mutation,
+        )?;
         self.workflow_maybe_start_next_queued_prompt(session_id);
-        self.persist_workflow_runtime_session(session_id, "workflow_prompt_cancelled")?;
         Ok(())
     }
 
@@ -75,9 +80,14 @@ impl KernelRuntimeOwnedState {
         if prompt.workflow_run_id().is_none() || prompt.workflow_node_run_id().is_none() {
             return Ok(WorkflowPromptDispatches::default());
         }
+        let activity_mutation = self.begin_managed_activity_mutation();
         self.workflow_fail_provider_prompt_state(session_id, prompt, provider_run_id, message)?;
+        self.persist_workflow_runtime_session_with_activity_mutation(
+            session_id,
+            "workflow_provider_prompt_failed",
+            activity_mutation,
+        )?;
         let dispatches = self.workflow_maybe_start_next_queued_prompt(session_id);
-        self.persist_workflow_runtime_session(session_id, "workflow_provider_prompt_failed")?;
         Ok(dispatches)
     }
 
@@ -91,9 +101,14 @@ impl KernelRuntimeOwnedState {
         if prompt.workflow_run_id().is_none() || prompt.workflow_node_run_id().is_none() {
             return Ok(false);
         }
+        let activity_mutation = self.begin_managed_activity_mutation();
         let released_claim =
             self.workflow_fail_provider_prompt_state(session_id, prompt, provider_run_id, message)?;
-        self.persist_workflow_runtime_session(session_id, "workflow_provider_prompt_failed")?;
+        self.persist_workflow_runtime_session_with_activity_mutation(
+            session_id,
+            "workflow_provider_prompt_failed",
+            activity_mutation,
+        )?;
         Ok(released_claim)
     }
 
@@ -284,6 +299,14 @@ mod tests {
         let workflow_run_id = workflow_run.id().to_string();
         let app = Arc::new(Mutex::new(app));
         let runtime = owned_runtime_state(&app).await;
+        let activity_lock = Arc::clone(&runtime.owned.managed_activity_mutation_lock);
+        super::super::workflow_completion_owned_state::
+            set_before_workflow_activity_persistence_hook(move || {
+                assert!(matches!(
+                    activity_lock.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ));
+            });
 
         let dispatches = runtime
             .owned

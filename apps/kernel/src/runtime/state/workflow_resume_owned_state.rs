@@ -24,10 +24,16 @@ impl KernelRuntimeOwnedState {
             })
             .map(|node_run| node_run.id().to_string())
             .collect::<std::collections::BTreeSet<_>>();
+        let activity_mutation = self.begin_managed_activity_mutation();
         let workflow_run = self
             .session_store
             .write()
             .resume_workflow_run(session_id, workflow_run_ref)?;
+        self.persist_workflow_runtime_session_with_activity_mutation(
+            session_id,
+            "workflow_run_resumed",
+            activity_mutation,
+        )?;
         let resumable = workflow_run
             .node_runs()
             .iter()

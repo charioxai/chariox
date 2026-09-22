@@ -38,12 +38,18 @@ impl KernelRuntimeOwnedState {
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
         let reconciles_runtime_instances =
             workflow_design_op_reconciles_runtime_instances(&request.op);
+        let removes_pending_work = matches!(
+            &request.op,
+            crate::local::WorkflowDesignOp::WorkflowRemove { .. }
+        );
         let node_owner_user_id = self.ensure_workflow_design_op_authorized(
             &request.session_id,
             &request.op,
             caller_user_id,
             caller_metaagent_id,
         )?;
+        let activity_mutation =
+            removes_pending_work.then(|| self.begin_managed_activity_mutation());
         self.session_store
             .write()
             .apply_workflow_design_op_with_authority(
@@ -53,6 +59,13 @@ impl KernelRuntimeOwnedState {
                 node_owner_user_id,
                 caller_metaagent_id.map(str::to_string),
             )?;
+        if let Some(activity_mutation) = activity_mutation {
+            self.persist_workflow_runtime_session_with_activity_mutation(
+                &request.session_id,
+                "workflow_removed",
+                activity_mutation,
+            )?;
+        }
         if reconciles_runtime_instances {
             self.workflow_cleanup_runtime_instances_exclusive(&request.session_id)?;
         }

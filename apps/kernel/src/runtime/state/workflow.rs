@@ -52,6 +52,7 @@ impl KernelRuntimeOwnedState {
         else {
             return Ok(());
         };
+        let activity_mutation = self.begin_managed_activity_mutation();
         let workflow_run = self.session_store.write().start_workflow_node_run(
             session_id,
             workflow_run_id,
@@ -80,7 +81,11 @@ impl KernelRuntimeOwnedState {
         // updating the in-memory session/projection is insufficient: after a restart the
         // provider prompt can be active while its workflow node is still persisted as Ready.
         // Persist the Running transition before the provider can call workflow runtime tools.
-        self.persist_workflow_runtime_session(session_id, "workflow_prompt_started")?;
+        self.persist_workflow_runtime_session_with_activity_mutation(
+            session_id,
+            "workflow_prompt_started",
+            activity_mutation,
+        )?;
         Ok(())
     }
 
