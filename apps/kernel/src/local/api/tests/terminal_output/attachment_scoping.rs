@@ -2,13 +2,11 @@ use super::*;
 
 #[test]
 fn terminal_output_and_subscription_snapshots_are_scoped_to_attachment_owner() {
+    let worktree = crate::test_support::TestWorktree::new("terminal-attachment-scoping");
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let (session, owner_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-collab-output",
-            "worktree-collab-output",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     {
         let mut sessions = app.sessions_mut();
@@ -225,13 +223,11 @@ fn terminal_output_and_subscription_snapshots_are_scoped_to_attachment_owner() {
 
 #[test]
 fn terminal_trace_fanout_respects_collaboration_levels() {
+    let worktree = crate::test_support::TestWorktree::new("terminal-trace-collaboration");
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let (session, owner_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-collaboration-level-output",
-            "worktree-collaboration-level-output",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     {
         let mut sessions = app.sessions_mut();
