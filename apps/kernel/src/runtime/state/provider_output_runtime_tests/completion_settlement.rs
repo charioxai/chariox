@@ -2,13 +2,11 @@ use super::*;
 
 #[tokio::test]
 async fn managed_activity_reaches_zero_only_after_prompt_settlement_is_durable() {
+    let worktree = crate::test_support::TestWorktree::new("output-settlement-managed");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-managed-activity-settlement",
-            "worktree-managed-activity-settlement",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -91,13 +89,11 @@ async fn managed_activity_reaches_zero_only_after_prompt_settlement_is_durable()
 
 #[tokio::test]
 async fn provider_settlement_starts_metaagent_task_queued_behind_completed_turn() {
+    let worktree = crate::test_support::TestWorktree::new("output-settlement-metaagent");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-metaagent-settlement-fifo",
-            "worktree-metaagent-settlement-fifo",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let agent = app
         .agents_mut()
@@ -197,13 +193,11 @@ async fn provider_settlement_starts_metaagent_task_queued_behind_completed_turn(
 
 #[tokio::test]
 async fn duplicate_completion_before_promoted_workflow_dispatch_is_ignored() {
+    let worktree = crate::test_support::TestWorktree::new("output-settlement-duplicate");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-stale-poll-workflow-promotion",
-            "worktree-stale-poll-workflow-promotion",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -447,13 +441,11 @@ async fn duplicate_completion_before_promoted_workflow_dispatch_is_ignored() {
 
 #[tokio::test]
 async fn provider_settlement_rotates_context_before_promoting_queued_workflow() {
+    let worktree = crate::test_support::TestWorktree::new("output-settlement-rotation");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-runtime-fresh-queue",
-            "worktree-runtime-fresh-queue",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -586,13 +578,11 @@ async fn provider_settlement_rotates_context_before_promoting_queued_workflow() 
 
 #[tokio::test]
 async fn provider_completed_signal_settles_matching_active_prompt_after_quiet_interval() {
+    let worktree = crate::test_support::TestWorktree::new("output-settlement-quiet");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -672,17 +662,12 @@ async fn provider_completed_signal_settles_matching_active_prompt_after_quiet_in
 
 #[tokio::test]
 async fn detached_session_completes_active_and_two_queued_prompts_without_transient_backlog() {
+    let worktree = crate::test_support::TestWorktree::new("output-settlement-detached");
     let owner_user_id = "user-detached-queue";
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(
-            crate::session::CreateSessionRequest::new(
-                "workspace-detached-queue",
-                "worktree-detached-queue",
-            )
-            .with_owner_user_id(owner_user_id),
-        )
+        .create_session(worktree.session_request().with_owner_user_id(owner_user_id))
         .expect("session should be created");
     let agent = app
         .agents_mut()
@@ -894,13 +879,11 @@ async fn detached_session_completes_active_and_two_queued_prompts_without_transi
 
 #[tokio::test]
 async fn failed_prompt_dispatch_persists_terminal_prompt_settlement() {
+    let worktree = crate::test_support::TestWorktree::new("output-settlement-dispatch-failure");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-dispatch-failure-settlement",
-            "worktree-dispatch-failure-settlement",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -998,13 +981,11 @@ async fn failed_prompt_dispatch_persists_terminal_prompt_settlement() {
 
 #[tokio::test]
 async fn failed_prompt_dispatch_advances_the_next_queued_prompt() {
+    let worktree = crate::test_support::TestWorktree::new("output-settlement-dispatch-queue");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-dispatch-failure-queue-advance",
-            "worktree-dispatch-failure-queue-advance",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -1101,13 +1082,11 @@ async fn failed_prompt_dispatch_advances_the_next_queued_prompt() {
 
 #[tokio::test]
 async fn provider_completion_signal_preserves_external_active_prompt_and_queue() {
+    let worktree = crate::test_support::TestWorktree::new("output-settlement-external");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-external-settlement",
-            "worktree-external-settlement",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -1156,13 +1135,11 @@ async fn provider_completion_signal_preserves_external_active_prompt_and_queue()
 
 #[tokio::test]
 async fn provider_terminal_failure_preserves_external_active_prompt_and_queue() {
+    let worktree = crate::test_support::TestWorktree::new("output-settlement-external-failure");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-external-terminal-failure",
-            "worktree-external-terminal-failure",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -1244,13 +1221,11 @@ async fn provider_terminal_failure_preserves_external_active_prompt_and_queue() 
 
 #[tokio::test]
 async fn provider_completion_with_output_waits_for_a_quiet_poll_before_settling() {
+    let worktree = crate::test_support::TestWorktree::new("output-settlement-drain");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -1355,13 +1330,11 @@ async fn provider_completion_with_output_waits_for_a_quiet_poll_before_settling(
 
 #[tokio::test]
 async fn provider_output_records_carry_active_external_prompt_origin() {
+    let worktree = crate::test_support::TestWorktree::new("output-settlement-external-origin");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -1439,13 +1412,18 @@ async fn provider_output_records_carry_active_external_prompt_origin() {
     );
 }
 
-fn spawn_shared_worktree_agent(app: &mut DaemonApp, session_id: &str, alias: &str) -> String {
+fn spawn_shared_worktree_agent(
+    app: &mut DaemonApp,
+    session_id: &str,
+    alias: &str,
+    worktree_path: &std::path::Path,
+) -> String {
     crate::app::KernelSessionService::new(app)
         .spawn_agent(
             crate::agent::CreateAgentRequest::new(session_id, "dev-stub")
                 .with_alias(alias)
                 .with_model("test-model")
-                .with_worktree("worktree-blocked-retry-fifo"),
+                .with_worktree(worktree_path.to_string_lossy().into_owned()),
         )
         .expect("shared-worktree agent should spawn")
         .id()
@@ -1540,16 +1518,16 @@ async fn settle_and_promote_next_queued_prompt(
 
 #[tokio::test]
 async fn failed_workflow_dispatch_retries_a_node_blocked_on_its_released_claim() {
+    let worktree = crate::test_support::TestWorktree::new("output-settlement-blocked-retry");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-failed-dispatch-retry",
-            "worktree-blocked-retry-fifo",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
-    let holder = spawn_shared_worktree_agent(&mut app, session.id(), "failed-holder");
-    let worker = spawn_shared_worktree_agent(&mut app, session.id(), "blocked-worker");
+    let holder =
+        spawn_shared_worktree_agent(&mut app, session.id(), "failed-holder", worktree.path());
+    let worker =
+        spawn_shared_worktree_agent(&mut app, session.id(), "blocked-worker", worktree.path());
 
     let (holder_run, holder_node) =
         invoke_single_node_workflow(&mut app, session.id(), "wf-failed-holder", &holder);
@@ -1637,16 +1615,14 @@ async fn failed_workflow_dispatch_retries_a_node_blocked_on_its_released_claim()
 
 #[tokio::test]
 async fn blocked_claim_retry_queued_behind_work_advances_in_fifo_order() {
+    let worktree = crate::test_support::TestWorktree::new("output-settlement-blocked-fifo");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-blocked-retry-fifo",
-            "worktree-blocked-retry-fifo",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
-    let holder = spawn_shared_worktree_agent(&mut app, session.id(), "holder");
-    let worker = spawn_shared_worktree_agent(&mut app, session.id(), "worker");
+    let holder = spawn_shared_worktree_agent(&mut app, session.id(), "holder", worktree.path());
+    let worker = spawn_shared_worktree_agent(&mut app, session.id(), "worker", worktree.path());
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
             session.id(),
