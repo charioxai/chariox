@@ -1,6 +1,30 @@
 #![allow(unused_imports)]
 use super::support::*;
 
+struct RelayEventStoreTestRoot(std::path::PathBuf);
+
+impl RelayEventStoreTestRoot {
+    fn new(label: &str) -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "chariox-{label}-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms(),
+        ));
+        std::fs::create_dir_all(&path).expect("relay event test root should be created");
+        Self(path)
+    }
+
+    fn join(&self, path: &str) -> std::path::PathBuf {
+        self.0.join(path)
+    }
+}
+
+impl Drop for RelayEventStoreTestRoot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[tokio::test]
 async fn relay_event_store_recovers_both_subscription_scopes_after_append_failure() {
     let root = std::env::temp_dir().join(format!(
@@ -779,4 +803,197 @@ async fn relay_subscription_emits_replay_gap_and_snapshot_for_stale_cursor() {
         resumed.1["resumed_from_event_id"],
         serde_json::json!(first.event_id)
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn relay_replay_after_runtime_recreation_filters_historical_resume_and_resets_snapshot() {
+    const HISTORICAL_ACTIVITY_REVISION: u64 = 13_088;
+
+    let config = DaemonConfig::for_tests();
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(config).expect("daemon should bootstrap"),
+    ));
+    let session_id = {
+        let mut app = app.lock().await;
+        create_test_session(&mut app, "workspace-relay-replay", "worktree-relay-replay")
+    };
+    let attachment_id = {
+        let mut app = app.lock().await;
+        attach_test_client(
+            &mut app,
+            &session_id,
+            "relay-replay-client",
+            ClientCapabilityLevel::MessageTransport,
+        )
+    };
+    let provider_runtime_lanes = {
+        let app = app.lock().await;
+        app.provider_run_operation_lanes()
+    };
+    let router = Arc::new(CommandRouter::with_interactive_capacity_and_provider_lanes(
+        Arc::clone(&app),
+        INTERACTIVE_COMMAND_QUEUE_LIMIT,
+        provider_runtime_lanes,
+    ));
+    let current_activity_revision = router.session_projection_change_sequence();
+    assert!(
+        current_activity_revision < HISTORICAL_ACTIVITY_REVISION,
+        "fixture must model a projection revision reset"
+    );
+
+    let root = RelayEventStoreTestRoot::new("relay-runtime-recreation");
+    let counter_path = root.join("event-counter.json");
+    let stream_id = subscription_event_stream_id(&session_id, &attachment_id);
+    let historical_projection = router
+        .session_snapshot_projection_for_attachment(
+            &session_id,
+            &attachment_id,
+            HISTORICAL_ACTIVITY_REVISION,
+        )
+        .expect("historical projection should build");
+    let first_runtime = RelayEventRuntime::new(&counter_path)
+        .expect("first persistent relay event runtime should initialize");
+    let cursor = first_runtime
+        .event_log
+        .append(
+            stream_id.clone(),
+            KernelEvent::Heartbeat {
+                session_id: session_id.clone(),
+            },
+        )
+        .await
+        .expect("cursor event should persist");
+    let historical_snapshot = first_runtime
+        .event_log
+        .append(
+            stream_id.clone(),
+            KernelEvent::SessionSnapshot {
+                session: Box::new(historical_projection.session),
+                provider_run: Box::new(historical_projection.provider_run),
+                agent_activity: Box::new(historical_projection.agent_activity),
+                agent_activity_revision: HISTORICAL_ACTIVITY_REVISION,
+            },
+        )
+        .await
+        .expect("historical snapshot should persist");
+    first_runtime
+        .event_log
+        .append(
+            stream_id.clone(),
+            KernelEvent::TransportResumed {
+                session_id: session_id.clone(),
+                resumed_from_event_id: Some(cursor.event_id),
+            },
+        )
+        .await
+        .expect("historical resume marker should persist");
+    let historical_heartbeat = first_runtime
+        .event_log
+        .append(
+            stream_id,
+            KernelEvent::Heartbeat {
+                session_id: session_id.clone(),
+            },
+        )
+        .await
+        .expect("historical heartbeat should persist");
+    drop(first_runtime);
+
+    // Recreating the persistent relay event runtime models the transport portion of a
+    // kernel restart. A separate process-restart drill remains outside this unit test.
+    let restarted_runtime = Arc::new(
+        RelayEventRuntime::new(&counter_path)
+            .expect("persistent relay event runtime should reload"),
+    );
+    let (outgoing_tx, _priority_rx, mut event_rx) =
+        RelayOutgoingSender::channel(RELAY_OUTGOING_QUEUE_LIMIT);
+    let subscription_private_key = relay_crypto::generate_private_key_base64();
+    let subscription_public_key =
+        relay_crypto::public_key_from_private_key_base64(&subscription_private_key)
+            .expect("subscription public key should derive");
+
+    replay_recent_relay_events(
+        &restarted_runtime,
+        &router,
+        &outgoing_tx,
+        "subscription-recreated-runtime",
+        &subscription_public_key,
+        &session_id,
+        &attachment_id,
+        Some(cursor.event_id),
+    )
+    .await
+    .expect("persisted events should replay after runtime recreation");
+
+    let replayed_snapshot =
+        decrypt_relay_event_from_channel(&mut event_rx, &subscription_private_key).await;
+    assert_eq!(replayed_snapshot.0, historical_snapshot.event_id);
+    assert_eq!(
+        replayed_snapshot.1["event"],
+        serde_json::json!("session_snapshot")
+    );
+    assert_eq!(
+        replayed_snapshot.1["agent_activity_revision"],
+        serde_json::json!(HISTORICAL_ACTIVITY_REVISION)
+    );
+
+    let replayed_heartbeat =
+        decrypt_relay_event_from_channel(&mut event_rx, &subscription_private_key).await;
+    assert_eq!(replayed_heartbeat.0, historical_heartbeat.event_id);
+    assert_eq!(
+        replayed_heartbeat.1["event"],
+        serde_json::json!("heartbeat")
+    );
+
+    let replay_boundary =
+        decrypt_relay_event_from_channel(&mut event_rx, &subscription_private_key).await;
+    assert_eq!(
+        replay_boundary.1["event"],
+        serde_json::json!("transport_resumed")
+    );
+    assert!(replay_boundary.0 > historical_heartbeat.event_id);
+    assert_eq!(
+        replay_boundary.1["resumed_from_event_id"],
+        serde_json::json!(cursor.event_id)
+    );
+
+    let subscription_task = tokio::spawn(run_relay_subscription_loop(
+        Arc::clone(&router),
+        outgoing_tx,
+        "subscription-recreated-runtime".to_string(),
+        subscription_public_key,
+        session_id,
+        attachment_id,
+        None,
+        Arc::clone(&restarted_runtime),
+        true,
+        crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
+    ));
+    let current_snapshot = tokio::time::timeout(
+        Duration::from_secs(5),
+        decrypt_relay_event_from_channel(&mut event_rx, &subscription_private_key),
+    )
+    .await
+    .expect("current post-restart snapshot should arrive");
+    assert_eq!(
+        current_snapshot.1["event"],
+        serde_json::json!("session_snapshot")
+    );
+    assert_eq!(
+        current_snapshot.1["agent_activity_revision"],
+        serde_json::json!(current_activity_revision)
+    );
+
+    let current_heartbeat = tokio::time::timeout(
+        Duration::from_secs(5),
+        decrypt_relay_event_from_channel(&mut event_rx, &subscription_private_key),
+    )
+    .await
+    .expect("current post-restart heartbeat should follow the snapshot");
+    assert_eq!(
+        current_heartbeat.1["event"],
+        serde_json::json!("heartbeat")
+    );
+    subscription_task.abort();
+    let _ = subscription_task.await;
 }
