@@ -1,4 +1,6 @@
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
+import { randomUUID } from "node:crypto"
+import { constants } from "node:fs"
+import { chmod, lstat, mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises"
 import path from "node:path"
 
 const readySchema = "chariox.room_environment.companion_ready.v1"
@@ -9,13 +11,76 @@ export async function publishRoomDrillCompanionReady(directory, ready) {
   if (ready.schema !== readySchema) {
     throw new Error(`Room drill companion ready schema must be ${readySchema}`)
   }
-  await mkdir(directory, { recursive: true, mode: 0o700 })
-  await rm(path.join(directory, "result.json"), { force: true })
-  const readyPath = path.join(directory, "ready.json")
-  const temporaryPath = path.join(directory, `.ready-${process.pid}-${Date.now()}.json`)
-  await writeFile(temporaryPath, `${JSON.stringify(ready, null, 2)}\n`, { mode: 0o600 })
-  await rename(temporaryPath, readyPath)
+  const resolvedDirectory = await ensurePrivateDirectory(directory)
+  await rm(path.join(resolvedDirectory, "result.json"), { force: true })
+  const readyPath = path.join(resolvedDirectory, "ready.json")
+  const temporaryPath = path.join(resolvedDirectory, `.ready-${randomUUID()}.json`)
+  let handle = null
+  try {
+    handle = await open(
+      temporaryPath,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
+      0o600,
+    )
+    await handle.writeFile(`${JSON.stringify(ready, null, 2)}\n`, "utf8")
+    await handle.close()
+    handle = null
+    await chmod(temporaryPath, 0o600)
+    await rename(temporaryPath, readyPath)
+  } finally {
+    await handle?.close().catch(() => undefined)
+    await rm(temporaryPath, { force: true }).catch(() => undefined)
+  }
   return readyPath
+}
+
+async function ensurePrivateDirectory(directory) {
+  const resolved = requireAbsoluteDirectory(directory)
+  await rejectExistingSymlinkPath(resolved)
+  await mkdir(resolved, { recursive: true, mode: 0o700 })
+  const entry = await lstat(resolved)
+  if (!entry.isDirectory() || entry.isSymbolicLink()) {
+    throw new Error("Room drill companion coordination path must be a real directory")
+  }
+  if (await realpath(resolved) !== resolved) {
+    throw new Error("Room drill companion coordination path must not contain symbolic links")
+  }
+  const uid = process.getuid?.()
+  if (uid !== undefined && entry.uid !== uid) {
+    throw new Error("Room drill companion coordination directory owner mismatch")
+  }
+  if (uid !== undefined && (entry.mode & 0o077) !== 0) {
+    throw new Error("Room drill companion coordination directory must be private")
+  }
+  return resolved
+}
+
+function requireAbsoluteDirectory(directory) {
+  if (typeof directory !== "string" || !directory.trim() || !path.isAbsolute(directory)) {
+    throw new Error("Room drill companion coordination directory must be absolute")
+  }
+  return path.resolve(directory)
+}
+
+async function rejectExistingSymlinkPath(resolved) {
+  const parsed = path.parse(resolved)
+  let current = parsed.root
+  for (const part of resolved.slice(parsed.root.length).split(path.sep).filter(Boolean)) {
+    current = path.join(current, part)
+    let entry
+    try {
+      entry = await lstat(current)
+    } catch (error) {
+      if (error?.code === "ENOENT") return
+      throw error
+    }
+    if (entry.isSymbolicLink()) {
+      throw new Error("Room drill companion coordination path must not contain symbolic links")
+    }
+    if (!entry.isDirectory()) {
+      throw new Error("Room drill companion coordination path must be a directory")
+    }
+  }
 }
 
 export async function waitForRoomDrillCompanionResult(directory, options) {

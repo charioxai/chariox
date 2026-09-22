@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { access, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { access, chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -69,6 +69,67 @@ test("Room drill companion handoff is private and validates the matching result"
     }))
 
     assert.equal((await resultPromise).actionId, "action-1")
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("Room drill companion rejects a symlinked coordination directory", { skip: process.platform === "win32" }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-room-companion-"))
+  try {
+    const target = path.join(root, "target")
+    const alias = path.join(root, "alias")
+    await mkdir(target)
+    await symlink(target, alias, "dir")
+    await assert.rejects(
+      publishRoomDrillCompanionReady(alias, { schema: "chariox.room_environment.companion_ready.v1" }),
+      /must not contain symbolic links/,
+    )
+    await assert.rejects(access(path.join(target, "ready.json")))
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("Room drill companion rejects a non-private existing directory without chmodding it", { skip: process.platform === "win32" }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-room-companion-"))
+  try {
+    const directory = path.join(root, "coordination")
+    await mkdir(directory)
+    await chmod(directory, 0o755)
+    await assert.rejects(
+      publishRoomDrillCompanionReady(directory, { schema: "chariox.room_environment.companion_ready.v1" }),
+      /must be private/,
+    )
+    assert.equal((await stat(directory)).mode & 0o777, 0o755)
+    await assert.rejects(access(path.join(directory, "ready.json")))
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("Room drill companion rejects a non-directory coordination path", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-room-companion-"))
+  try {
+    const file = path.join(root, "coordination")
+    await writeFile(file, "not a directory")
+    await assert.rejects(
+      publishRoomDrillCompanionReady(file, { schema: "chariox.room_environment.companion_ready.v1" }),
+      /must be a directory/,
+    )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("Room drill companion removes its temporary ready file when publication fails", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-room-companion-"))
+  try {
+    await mkdir(path.join(root, "ready.json"))
+    await assert.rejects(
+      publishRoomDrillCompanionReady(root, { schema: "chariox.room_environment.companion_ready.v1" }),
+    )
+    assert.deepEqual((await readdir(root)).filter(name => name.startsWith(".ready-")), [])
   } finally {
     await rm(root, { recursive: true, force: true })
   }
