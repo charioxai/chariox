@@ -17,6 +17,28 @@ impl KernelRuntimeState {
         let started = {
             let owned = &self.owned;
             let config = owned.config_projection.snapshot();
+            let agent = launch_request
+                .agent_id
+                .as_deref()
+                .and_then(|agent_id| owned.agent_store.get_agent(agent_id).ok());
+            let launch_request =
+                crate::app::apply_metaagent_launch_policy(launch_request, agent.as_ref());
+            if let Some(run) = owned.reusable_native_tui_run_for_launch(&launch_request)? {
+                owned.provider_run_projection.mark_leased_provider_run(run.id());
+                return Ok(run);
+            }
+            if crate::provider::canonical_provider_family(&launch_request.provider)
+                == Some("claude")
+                && provider_launch_credential.is_none()
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "launch remote provider without credential",
+                    message: format!(
+                        "{}: the worker must cold-launch the selected Claude profile",
+                        crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE,
+                    ),
+                });
+            }
             let launch_request = apply_remote_provider_launch_credential(
                 launch_request,
                 provider_launch_credential,

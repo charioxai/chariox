@@ -30,8 +30,17 @@ where
     RefreshFuture: Future<Output = Result<RemoteAgentBinding, DaemonError>>,
 {
     ensure_compatible_binding(&initial_binding)?;
+    let skipped_credential_for_active_run =
+        initial_binding.active_worker_provider_run_id.is_some();
     let credential = credential_for_binding(&initial_binding, &mut resolve_credential).await?;
-    match send(initial_binding.clone(), credential).await {
+    let mut initial_result = send(initial_binding.clone(), credential).await;
+    if skipped_credential_for_active_run
+        && launch_requires_provider_credential(&initial_result)
+    {
+        let credential = resolve_credential().await?;
+        initial_result = send(initial_binding.clone(), credential).await;
+    }
+    match initial_result {
         Ok(response) => Ok((response, initial_binding)),
         Err(error)
             if super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_refresh_binding(
@@ -40,12 +49,38 @@ where
         {
             let refreshed_binding = refresh().await?;
             ensure_compatible_binding(&refreshed_binding)?;
+            let skipped_credential_for_active_run =
+                refreshed_binding.active_worker_provider_run_id.is_some();
             let credential =
                 credential_for_binding(&refreshed_binding, &mut resolve_credential).await?;
-            let response = send(refreshed_binding.clone(), credential).await?;
+            let mut refreshed_result = send(refreshed_binding.clone(), credential).await;
+            if skipped_credential_for_active_run
+                && launch_requires_provider_credential(&refreshed_result)
+            {
+                let credential = resolve_credential().await?;
+                refreshed_result = send(refreshed_binding.clone(), credential).await;
+            }
+            let response = refreshed_result?;
             Ok((response, refreshed_binding))
         }
         Err(error) => Err(error),
+    }
+}
+
+fn launch_requires_provider_credential<Response>(
+    result: &Result<Response, DaemonError>,
+) -> bool {
+    let Err(error) = result else {
+        return false;
+    };
+    let required_code =
+        crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE;
+    match error {
+        DaemonError::LocalTransport { message, .. } => message.contains(required_code),
+        DaemonError::RelayTransport { code, message, .. } => {
+            code == required_code || message.contains(required_code)
+        }
+        _ => false,
     }
 }
 
@@ -189,6 +224,59 @@ mod tests {
 
         assert_eq!(result.0, "reused");
         assert_eq!(credential_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn stale_active_run_hint_retries_once_when_worker_requires_cold_credential() {
+        let credential_calls = Arc::new(AtomicUsize::new(0));
+        let send_calls = Arc::new(AtomicUsize::new(0));
+        let refresh_calls = Arc::new(AtomicUsize::new(0));
+        let result = launch_with_one_binding_refresh(
+            binding(
+                Some(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION),
+                Some("stale-worker-run"),
+            ),
+            {
+                let credential_calls = Arc::clone(&credential_calls);
+                move || {
+                    credential_calls.fetch_add(1, Ordering::SeqCst);
+                    std::future::ready(Ok(Some(credential())))
+                }
+            },
+            {
+                let send_calls = Arc::clone(&send_calls);
+                move |_, credential| {
+                    let attempt = send_calls.fetch_add(1, Ordering::SeqCst);
+                    if attempt == 0 {
+                        assert!(credential.is_none());
+                        std::future::ready(Err(DaemonError::RelayTransport {
+                            operation: "read relay peer response",
+                            code: crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE
+                                .to_string(),
+                            message: "the hinted worker run is no longer live".to_string(),
+                            retryable: false,
+                        }))
+                    } else {
+                        assert!(credential.is_some());
+                        std::future::ready(Ok("launched-after-credential"))
+                    }
+                }
+            },
+            {
+                let refresh_calls = Arc::clone(&refresh_calls);
+                move || {
+                    refresh_calls.fetch_add(1, Ordering::SeqCst);
+                    std::future::ready(Ok(binding(None, None)))
+                }
+            },
+        )
+        .await
+        .expect("a stale active-run hint should request the cold-launch credential once");
+
+        assert_eq!(result.0, "launched-after-credential");
+        assert_eq!(credential_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(send_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(refresh_calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
