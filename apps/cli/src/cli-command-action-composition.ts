@@ -222,6 +222,7 @@ export type CliCommandActionCompositionDeps = {
   currentExecutionMode: AnyFn
   currentPermissionLevel: AnyFn
   refreshWaitingRoomData: AnyFn
+  reimageManagedEnvironment?: AnyFn
   remoteMachinesState: AnyFn
   setRemoteMachinesState: AnyFn
   reconcileWaitingRoom: AnyFn
@@ -338,6 +339,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     currentExecutionMode,
     currentPermissionLevel,
     refreshWaitingRoomData,
+    reimageManagedEnvironment,
     remoteMachinesState,
     setRemoteMachinesState,
     reconcileWaitingRoom,
@@ -572,6 +574,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     setWorkspaceLiveSyncMode: (sessionId, mode) => setWorkspaceLiveSyncMode(client, sessionId, mode),
     unsetUserConfigValue: (path) => unsetUserConfigValue(client, path),
     refreshWaitingRoomData,
+    reimageManagedEnvironment,
     getRemoteMachines: remoteMachinesState,
     setRemoteMachines: setRemoteMachinesState,
     reconcileWaitingRoom: () => reconcileWaitingRoom(),

@@ -386,7 +386,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     restoreWaitingRoomProject, renameWaitingRoomProject,
     currentProviderSelection, currentVariantId, promptMetaParts, promptUsageMeta,
     reconcileWaitingRoom, reconcileWaitingRoomProjection, refreshWaitingRoomData,
-    refreshWaitingRoomDataNow, startSessionFromWaitingRoomDefaults,
+    refreshWaitingRoomDataNow, reimageManagedEnvironment, startSessionFromWaitingRoomDefaults,
     waitingRoomTargets,
   } = createCliWaitingRoomComposition({
     client, options, appLogger, formatError,
@@ -894,7 +894,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     setRemoteMachinesState, remoteKernelsState, providerAccountsState, terminalsState, slicesState,
     themeRegistryState, reconcileWaitingRoom, setWaitingRoomState, applyWaitingRoomSessionLifecycleAction,
     restoreWaitingRoomProject, renameWaitingRoomProject,
-    activateWaitingRoom, startSessionFromWaitingRoomDefaults, handleSessionBrowserKey,
+    activateWaitingRoom, reimageManagedEnvironment, startSessionFromWaitingRoomDefaults, handleSessionBrowserKey,
     handleManagedMachineDialogKey, openManagedMachineDialog,
     toggleWorkspaceScreen: workflowActions.toggleWorkspaceScreen,
     cycleWorkflowCanvasNode: workflowActions.cycleWorkflowCanvasNode,
