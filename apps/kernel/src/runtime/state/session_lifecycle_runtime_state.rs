@@ -860,6 +860,10 @@ impl KernelRuntimeState {
             .await;
         let owned = &self.owned;
         let (session, terminated_run_ids) = owned.end_session(session_id)?;
+        self.append_session_durable_event("session.ended", &session, "runtime_end_session")
+            .await?;
+        owned.clear_session_prompt_runtime_state(session_id);
+        let session = owned.publish_session_after_durable_mutation(session);
         for provider_run_id in terminated_run_ids {
             let (_, process_key) = self
                 .with_app_side_effect(|app| {
@@ -870,8 +874,6 @@ impl KernelRuntimeState {
             owned.remove_provider_process_tracking_for_run(&provider_run_id, process_key);
         }
         self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
-        self.append_session_durable_event("session.ended", &session, "runtime_end_session")
-            .await?;
         self.detach_session_slices(&session).await?;
         Ok(session)
     }
@@ -889,6 +891,13 @@ impl KernelRuntimeState {
         let owned = &self.owned;
         let (session, terminated_run_ids, removed_project) =
             owned.delete_session_ref(session_ref, workspace_id)?;
+        self.append_session_durable_event("session.deleted", &session, "runtime_delete_session")
+            .await?;
+        if let Some(project) = removed_project.as_ref() {
+            self.append_project_durable_event("project.deleted", project)?;
+        }
+        owned.clear_session_prompt_runtime_state(&session_id);
+        owned.remove_session_projection_after_durable_mutation(&session_id);
         for provider_run_id in terminated_run_ids {
             let (_, process_key) = self
                 .with_app_side_effect(|app| {
@@ -897,11 +906,6 @@ impl KernelRuntimeState {
                 .await
                 .unwrap_or((false, None));
             owned.remove_provider_process_tracking_for_run(&provider_run_id, process_key);
-        }
-        self.append_session_durable_event("session.deleted", &session, "runtime_delete_session")
-            .await?;
-        if let Some(project) = removed_project {
-            self.append_project_durable_event("project.deleted", &project)?;
         }
         self.detach_session_slices(&session).await?;
         Ok(session)
@@ -1230,6 +1234,313 @@ mod tests {
             metaagent_events,
             workspace_coordinator,
         )
+    }
+
+    fn create_activity_test_session(
+        runtime: &KernelRuntimeState,
+        label: &str,
+    ) -> crate::session::RuntimeSession {
+        SessionStateOwner::new(runtime.owned.session_store.clone())
+            .create_session(crate::session::CreateSessionRequest::new(
+                format!("workspace-{label}"),
+                format!("worktree-{label}"),
+            ))
+            .expect("activity test session should create")
+    }
+
+    fn install_durable_event_failure(
+        runtime: &KernelRuntimeState,
+        trigger_name: &str,
+        event_kind: &str,
+    ) -> rusqlite::Connection {
+        let connection = rusqlite::Connection::open(runtime.owned.durable_state_store.path())
+            .expect("durable database should open for failure injection");
+        connection
+            .execute_batch(&format!(
+                "CREATE TRIGGER {trigger_name}
+                 BEFORE INSERT ON durable_state_events
+                 WHEN NEW.kind = '{event_kind}'
+                 BEGIN
+                   SELECT RAISE(FAIL, 'injected durable mutation failure');
+                 END;"
+            ))
+            .expect("durable mutation failure trigger should install");
+        connection
+    }
+
+    #[tokio::test]
+    async fn workflow_persistence_failure_does_not_publish_projection_or_activity() {
+        let runtime = runtime_state_for_rollback_test().await;
+        runtime
+            .ensure_managed_activity_tracking("kernel-workflow-order")
+            .expect("managed activity tracking should activate before work");
+        let mut session = create_activity_test_session(&runtime, "workflow-order");
+        let session_id = session.id().to_string();
+        let mut workflow_run = crate::session::WorkflowRun::new(
+            "run-order",
+            "workflow-order",
+            "endpoint-order",
+            "node-order",
+            None,
+            None,
+            Vec::new(),
+            Vec::new(),
+        );
+        workflow_run.set_status(crate::session::WorkflowRunStatus::Running);
+        session.create_workflow_run(workflow_run);
+        runtime.owned.session_store.restore_session(session);
+        runtime.record_managed_activity_transition_for_test();
+        let projected = runtime
+            .owned
+            .session_snapshot(&session_id)
+            .expect("busy workflow projection should publish");
+        assert_eq!(
+            projected
+                .workflow_run("run-order")
+                .expect("workflow run should project")
+                .status(),
+            crate::session::WorkflowRunStatus::Running
+        );
+        let runtime_sequence = runtime.managed_activity_change_sequence();
+        let projection_sequence = runtime.owned.session_projection.change_sequence();
+
+        let mut completed = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("workflow session should exist");
+        completed
+            .workflow_run_mut("run-order")
+            .expect("workflow run should exist")
+            .set_status(crate::session::WorkflowRunStatus::Completed);
+        runtime.owned.session_store.restore_session(completed);
+        let connection = install_durable_event_failure(
+            &runtime,
+            "fail_workflow_runtime_update_order",
+            "workflow.runtime.updated",
+        );
+
+        let error = runtime
+            .owned
+            .persist_workflow_runtime_session(&session_id, "workflow_order_test")
+            .expect_err("workflow durable transition should fail");
+
+        connection
+            .execute_batch("DROP TRIGGER fail_workflow_runtime_update_order;")
+            .expect("workflow failure trigger should be removed");
+        assert!(error
+            .to_string()
+            .contains("injected durable mutation failure"));
+        assert_eq!(runtime.managed_activity_change_sequence(), runtime_sequence);
+        assert_eq!(
+            runtime.owned.session_projection.change_sequence(),
+            projection_sequence
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .session_projection
+                .get(&session_id)
+                .expect("last durable projection should remain")
+                .workflow_run("run-order")
+                .expect("projected workflow should remain")
+                .status(),
+            crate::session::WorkflowRunStatus::Running
+        );
+        assert!(runtime.managed_activity_report_snapshot().is_err());
+    }
+
+    #[tokio::test]
+    async fn metaagent_persistence_failure_does_not_publish_projection_or_activity() {
+        let runtime = runtime_state_for_rollback_test().await;
+        runtime
+            .ensure_managed_activity_tracking("kernel-metaagent-order")
+            .expect("managed activity tracking should activate before work");
+        let session = create_activity_test_session(&runtime, "metaagent-order");
+        let session_id = session.id().to_string();
+        runtime
+            .owned
+            .session_snapshot(&session_id)
+            .expect("idle session projection should publish");
+        let runtime_sequence = runtime.managed_activity_change_sequence();
+        let projection_sequence = runtime.owned.session_projection.change_sequence();
+        runtime
+            .owned
+            .session_store
+            .write()
+            .enqueue_metaagent_task(
+                &session_id,
+                "metaagent-order",
+                "attachment-order",
+                "perform ordered work",
+                Vec::new(),
+            )
+            .expect("metaagent task should enqueue");
+        let connection = install_durable_event_failure(
+            &runtime,
+            "fail_metaagent_session_update_order",
+            "session.updated",
+        );
+
+        let error = runtime
+            .persist_metaagent_task_session_update(&session_id, "metaagent_order_test")
+            .expect_err("metaagent durable transition should fail");
+
+        connection
+            .execute_batch("DROP TRIGGER fail_metaagent_session_update_order;")
+            .expect("metaagent failure trigger should be removed");
+        assert!(error
+            .to_string()
+            .contains("injected durable mutation failure"));
+        assert_eq!(runtime.managed_activity_change_sequence(), runtime_sequence);
+        assert_eq!(
+            runtime.owned.session_projection.change_sequence(),
+            projection_sequence
+        );
+        assert!(runtime
+            .owned
+            .session_projection
+            .get(&session_id)
+            .expect("last durable projection should remain")
+            .queued_metaagent_tasks()
+            .is_empty());
+        assert!(runtime.managed_activity_report_snapshot().is_err());
+    }
+
+    #[tokio::test]
+    async fn ending_last_active_session_persists_final_idle_transition() {
+        let runtime = runtime_state_for_rollback_test().await;
+        runtime
+            .ensure_managed_activity_tracking("kernel-end-session-order")
+            .expect("managed activity tracking should activate before work");
+        let session = create_activity_test_session(&runtime, "end-session-order");
+        let session_id = session.id().to_string();
+        runtime
+            .owned
+            .session_store
+            .write()
+            .enqueue_metaagent_task(
+                &session_id,
+                "metaagent-end",
+                "attachment-end",
+                "finish before shutdown",
+                Vec::new(),
+            )
+            .expect("session work should enqueue");
+        runtime.record_managed_activity_transition_for_test();
+        let (_, busy) = runtime
+            .managed_activity_report_snapshot()
+            .expect("busy activity should be durable");
+        assert_eq!(busy.running_agent_count, 1);
+        runtime
+            .owned
+            .session_snapshot(&session_id)
+            .expect("busy session projection should publish");
+        let projection_sequence = runtime.owned.session_projection.change_sequence();
+
+        let ended = runtime
+            .end_session(&session_id)
+            .await
+            .expect("last active session should end durably");
+
+        assert_eq!(ended.status(), crate::session::SessionStatus::Ended);
+        assert_eq!(
+            runtime
+                .owned
+                .durable_state_store
+                .load_events_by_kind("session.ended")
+                .expect("session end events should read")
+                .len(),
+            1
+        );
+        let (_, idle) = runtime
+            .managed_activity_report_snapshot()
+            .expect("final idle activity should be durable");
+        assert_eq!(idle.running_agent_count, 0);
+        assert!(idle.changed_at_ms >= busy.changed_at_ms);
+        assert!(runtime.owned.session_projection.change_sequence() > projection_sequence);
+        assert_eq!(
+            runtime
+                .owned
+                .session_projection
+                .get(&session_id)
+                .expect("ended session should project")
+                .status(),
+            crate::session::SessionStatus::Ended
+        );
+    }
+
+    #[tokio::test]
+    async fn session_end_persistence_failure_does_not_publish_idle_transition() {
+        let runtime = runtime_state_for_rollback_test().await;
+        runtime
+            .ensure_managed_activity_tracking("kernel-end-session-failure")
+            .expect("managed activity tracking should activate before work");
+        let session = create_activity_test_session(&runtime, "end-session-failure");
+        let session_id = session.id().to_string();
+        runtime
+            .owned
+            .session_store
+            .write()
+            .enqueue_metaagent_task(
+                &session_id,
+                "metaagent-end-failure",
+                "attachment-end-failure",
+                "remain busy until durable end",
+                Vec::new(),
+            )
+            .expect("session work should enqueue");
+        runtime.record_managed_activity_transition_for_test();
+        runtime
+            .owned
+            .session_snapshot(&session_id)
+            .expect("busy session projection should publish");
+        let runtime_sequence = runtime.managed_activity_change_sequence();
+        let projection_sequence = runtime.owned.session_projection.change_sequence();
+        let projected_status = runtime
+            .owned
+            .session_projection
+            .get(&session_id)
+            .expect("busy session should project")
+            .status();
+        let connection = install_durable_event_failure(
+            &runtime,
+            "fail_session_end_order",
+            "session.ended",
+        );
+
+        let error = runtime
+            .end_session(&session_id)
+            .await
+            .expect_err("session end durable transition should fail");
+
+        connection
+            .execute_batch("DROP TRIGGER fail_session_end_order;")
+            .expect("session end failure trigger should be removed");
+        assert!(error
+            .to_string()
+            .contains("injected durable mutation failure"));
+        assert_eq!(runtime.managed_activity_change_sequence(), runtime_sequence);
+        assert_eq!(
+            runtime.owned.session_projection.change_sequence(),
+            projection_sequence
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .session_projection
+                .get(&session_id)
+                .expect("last durable projection should remain")
+                .status(),
+            projected_status
+        );
+        assert!(runtime.managed_activity_report_snapshot().is_err());
+        assert!(runtime
+            .owned
+            .durable_state_store
+            .load_events_by_kind("session.ended")
+            .expect("session end events should read")
+            .is_empty());
     }
 
     #[test]

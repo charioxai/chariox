@@ -27,8 +27,9 @@ impl KernelRuntimeState {
         session_id: &str,
         reason: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        self.owned.record_managed_activity_transition();
-        let session = self.owned.session_snapshot(session_id)?;
+        let session = self
+            .owned
+            .session_snapshot_without_projection_update(session_id)?;
         self.owned.durable_state_store.append_event(
             "session.updated",
             Some(session_id.to_string()),
@@ -37,7 +38,9 @@ impl KernelRuntimeState {
                 "reason": reason,
             }),
         )?;
-        Ok(session)
+        Ok(self
+            .owned
+            .publish_session_after_durable_mutation(session))
     }
 
     pub(crate) fn session_task_lane_busy(&self, session_id: &str) -> Result<bool, DaemonError> {
@@ -66,16 +69,8 @@ impl KernelRuntimeState {
             task_markdown,
             attachments,
         )?;
-        self.owned.record_managed_activity_transition();
-        let session = self.owned.session_snapshot(session_id)?;
-        self.owned.durable_state_store.append_event(
-            "session.updated",
-            Some(session_id.to_string()),
-            serde_json::json!({
-                "session": &session,
-                "reason": "metaagent_task_queued",
-            }),
-        )?;
+        let session =
+            self.persist_metaagent_task_session_update(session_id, "metaagent_task_queued")?;
         Ok((task, session))
     }
 

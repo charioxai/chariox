@@ -94,6 +94,31 @@ impl KernelRuntimeOwnedState {
         session
     }
 
+    pub(super) fn publish_session_after_durable_mutation(
+        &self,
+        session: crate::session::RuntimeSession,
+    ) -> crate::session::RuntimeSession {
+        // Callers must durably append the authoritative session mutation first. Activity is
+        // persisted before either projection signal can expose the new in-memory state.
+        self.record_managed_activity_transition();
+        let projection_sequence = self.session_projection.change_sequence();
+        let session = self.update_session_projection(session);
+        if self.session_projection.change_sequence() != projection_sequence {
+            self.runtime_projection_changes.record_change();
+        }
+        session
+    }
+
+    pub(super) fn remove_session_projection_after_durable_mutation(&self, session_id: &str) {
+        // Deletion follows the same durable mutation -> activity -> projection boundary.
+        self.record_managed_activity_transition();
+        let projection_sequence = self.session_projection.change_sequence();
+        self.session_projection.remove(session_id);
+        if self.session_projection.change_sequence() != projection_sequence {
+            self.runtime_projection_changes.record_change();
+        }
+    }
+
     pub(super) fn create_session_response(
         &self,
         request: crate::session::CreateSessionRequest,
@@ -316,7 +341,6 @@ impl KernelRuntimeOwnedState {
         let session = self.session_store.get_session(session_id)?;
 
         if session.status() == crate::session::SessionStatus::Ended {
-            self.clear_session_prompt_runtime_state(session_id);
             self.remove_session_workflow_dispatch_claims(session_id);
             self.prompt_state_owner.remove_session(session_id);
             self.external_provider_sessions.detach_session(session_id);
@@ -355,7 +379,6 @@ impl KernelRuntimeOwnedState {
             .map(|agent| format!("{} ({})", agent.agent_ref(), agent.id()))
             .collect();
 
-        self.clear_session_prompt_runtime_state(session_id);
         self.remove_session_workflow_dispatch_claims(session_id);
         self.prompt_state_owner.remove_session(session_id);
         self.external_provider_sessions.detach_session(session_id);
@@ -364,7 +387,6 @@ impl KernelRuntimeOwnedState {
         let mut ended = self.session_store.end_session(session_id)?;
         ended.set_agents(removed_agents);
         crate::provider::shutdown_provider_mcp_proxy_session(session_id);
-        self.runtime_projection_changes.record_change();
         crate::logging::info_with_fields(
             "daemon.session",
             "session ended",
@@ -406,7 +428,6 @@ impl KernelRuntimeOwnedState {
         let session_id = session.id().to_string();
         let (ended, terminated_run_ids) =
             if session.status() == crate::session::SessionStatus::Ended {
-                self.clear_session_prompt_runtime_state(&session_id);
                 self.external_provider_sessions.detach_session(&session_id);
                 self.attached_provider_transcript_cursors
                     .detach_session(&session_id);
@@ -420,8 +441,6 @@ impl KernelRuntimeOwnedState {
             .delete_session_with_project_cleanup(ended.id())?;
         deleted.set_agents(ended.agents().to_vec());
         crate::provider::shutdown_provider_mcp_proxy_session(&session_id);
-        self.session_projection.remove(deleted.id());
-        self.runtime_projection_changes.record_change();
         crate::logging::info_with_fields(
             "daemon.session",
             "session deleted",

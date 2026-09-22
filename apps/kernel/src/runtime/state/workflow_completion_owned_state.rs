@@ -14,10 +14,9 @@ impl KernelRuntimeOwnedState {
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
         self.durable_state_store
             .with_workflow_runtime_transition_lock(|| {
-                let session = self.session_snapshot(session_id)?;
+                let session = self.session_snapshot_without_projection_update(session_id)?;
                 self.durable_state_store
                     .persist_workflow_runtime_transition(&session, reason)?;
-                self.record_managed_activity_transition();
                 let archived = self
                     .session_store
                     .write()
@@ -39,7 +38,9 @@ impl KernelRuntimeOwnedState {
                     }
                 }
                 if let Ok(hot_session) = self.session_store.read().get_session(session_id) {
-                    self.session_projection.update(hot_session);
+                    self.publish_session_after_durable_mutation(hot_session);
+                } else {
+                    self.record_managed_activity_transition();
                 }
                 Ok(session)
             })
