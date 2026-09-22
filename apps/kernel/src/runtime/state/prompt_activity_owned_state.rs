@@ -472,6 +472,7 @@ impl KernelRuntimeOwnedState {
         // the reporter's barrier across that window, so publish a second change only after the
         // turn has been cleared by the completed settlement path.
         if active_turn.is_some() {
+            self.record_managed_activity_transition();
             self.runtime_projection_changes.record_change();
         }
         released_claim

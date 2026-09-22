@@ -17,6 +17,7 @@ impl KernelRuntimeOwnedState {
                 let session = self.session_snapshot(session_id)?;
                 self.durable_state_store
                     .persist_workflow_runtime_transition(&session, reason)?;
+                self.record_managed_activity_transition();
                 let archived = self
                     .session_store
                     .write()

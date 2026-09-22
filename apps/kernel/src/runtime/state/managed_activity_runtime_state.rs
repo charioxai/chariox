@@ -15,6 +15,44 @@ impl KernelRuntimeState {
         }
     }
 
+    pub(crate) fn ensure_managed_activity_tracking(
+        &self,
+        kernel_id: &str,
+    ) -> Result<(), crate::error::DaemonError> {
+        let sequence = self.managed_activity_change_sequence();
+        self.owned
+            .managed_activity_transitions
+            .enable_before_activity(kernel_id, sequence)?;
+        self.owned.record_managed_activity_transition();
+        Ok(())
+    }
+
+    pub(crate) fn managed_activity_report_snapshot(
+        &self,
+    ) -> Result<
+        (
+            u64,
+            super::ManagedActivityObservation,
+        ),
+        crate::error::DaemonError,
+    > {
+        loop {
+            let (sequence, running_agent_count) = self.managed_activity_snapshot();
+            match self
+                .owned
+                .managed_activity_transitions
+                .current_observation(running_agent_count)
+            {
+                Ok(observation) if sequence == self.managed_activity_change_sequence() => {
+                    return Ok((sequence, observation));
+                }
+                Ok(_) => {}
+                Err(_) if sequence != self.managed_activity_change_sequence() => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     pub(crate) async fn wait_for_managed_activity_transition_after(
         &self,
         mut sequence: u64,
@@ -37,17 +75,58 @@ impl KernelRuntimeState {
     }
 
     pub(crate) fn managed_running_agent_count(&self) -> u8 {
-        let active_turn_count = self.owned.active_turns.snapshot().len();
+        self.owned.managed_running_agent_count()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_managed_activity_transition_for_test(&self) {
+        self.owned.record_managed_activity_transition();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_prompt_activity_for_managed_activity_test(
+        &self,
+        provider_run_id: &str,
+    ) {
+        let _ = self.owned.clear_prompt_activity(provider_run_id);
+    }
+}
+
+impl KernelRuntimeOwnedState {
+    fn managed_running_agent_count(&self) -> u8 {
+        let active_turn_count = self.active_turns.snapshot().len();
         let sessions = self
-            .owned
             .session_store
             .list_non_ended_sessions_including_hidden()
             .into_iter()
             .map(|mut session| {
-                self.owned.project_session_runtime_view(&mut session);
+                self.project_session_runtime_view(&mut session);
                 session
             });
         running_agent_count(active_turn_count, sessions)
+    }
+
+    pub(super) fn record_managed_activity_transition(&self) {
+        if !self.managed_activity_transitions.is_enabled() {
+            return;
+        }
+        let runtime_sequence = self.runtime_projection_changes.sequence();
+        let running_agent_count = self.managed_running_agent_count();
+        if let Err(error) = self.managed_activity_transitions.record_transition(
+            runtime_sequence,
+            running_agent_count,
+            crate::session::unix_epoch_ms(),
+        ) {
+            crate::logging::error_with_fields(
+                "managed_kernel.activity",
+                "managed activity transition could not be persisted",
+                serde_json::json!({
+                    "runtime_sequence": runtime_sequence,
+                    "running_agent_count": running_agent_count,
+                    "error": error.to_string(),
+                }),
+            );
+        }
     }
 }
 
@@ -76,7 +155,7 @@ mod tests {
     use crate::runtime::router::CommandRouter;
     use crate::session::{
         PromptQueueItem, PromptStatus, RuntimeInteraction, RuntimeInteractionKind,
-        RuntimeInteractionLevel, RuntimeSession,
+        RuntimeInteractionLevel, RuntimeSession, WorkflowRun, WorkflowRunStatus,
     };
     use crate::DaemonApp;
     use std::collections::VecDeque;
@@ -144,6 +223,23 @@ mod tests {
     }
 
     #[test]
+    fn managed_activity_counts_active_and_queued_session_tasks() {
+        let mut active = session();
+        active.start_or_update_metaagent_task("agent-1", "active task");
+        assert_eq!(running_agent_count(0, [active]), 1);
+
+        let mut queued = session();
+        queued.enqueue_metaagent_task(crate::session::QueuedMetaagentTask::new(
+            "task-1",
+            "agent-1",
+            "attachment-1",
+            "queued task",
+            Vec::new(),
+        ));
+        assert_eq!(running_agent_count(0, [queued]), 1);
+    }
+
+    #[test]
     fn active_turn_blocks_zero_until_prompt_settlement_finishes() {
         assert_eq!(running_agent_count(1, [session()]), 1);
         assert_eq!(running_agent_count(0, [session()]), 0);
@@ -182,5 +278,59 @@ mod tests {
                 .await
                 .expect("real activity transition should wake");
         assert_eq!(running_agent_count, 1);
+    }
+
+    #[tokio::test]
+    async fn workflow_completion_without_active_prompt_persists_idle_transition() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let runtime = CommandRouter::with_interactive_capacity(app, 1).runtime_state();
+        runtime
+            .ensure_managed_activity_tracking("kernel-workflow-completion")
+            .expect("managed activity tracking should activate before work");
+
+        let mut session = session();
+        let mut workflow_run = WorkflowRun::new(
+            "run-1",
+            "workflow-1",
+            "endpoint-1",
+            "node-1",
+            None,
+            None,
+            Vec::new(),
+            Vec::new(),
+        );
+        workflow_run.set_status(WorkflowRunStatus::Running);
+        session.create_workflow_run(workflow_run);
+        assert!(!session.has_any_prompt_work());
+        runtime.owned.session_store.restore_session(session);
+        runtime.record_managed_activity_transition_for_test();
+        let (_, busy) = runtime
+            .managed_activity_report_snapshot()
+            .expect("busy workflow transition should be durable");
+        assert_eq!(busy.running_agent_count, 1);
+
+        let mut session = runtime
+            .owned
+            .session_store
+            .get_session("session-1")
+            .expect("workflow session should exist");
+        session
+            .workflow_run_mut("run-1")
+            .expect("workflow run should exist")
+            .set_status(WorkflowRunStatus::Completed);
+        assert!(!session.has_any_prompt_work());
+        runtime.owned.session_store.restore_session(session);
+        runtime
+            .owned
+            .persist_workflow_runtime_session("session-1", "workflow_test_completed")
+            .expect("workflow completion should persist");
+
+        let (_, idle) = runtime
+            .managed_activity_report_snapshot()
+            .expect("idle workflow transition should be durable");
+        assert_eq!(idle.running_agent_count, 0);
+        assert!(idle.changed_at_ms >= busy.changed_at_ms);
     }
 }

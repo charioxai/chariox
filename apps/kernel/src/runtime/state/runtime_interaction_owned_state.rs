@@ -7,7 +7,9 @@ impl KernelRuntimeOwnedState {
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
         let session_id = session.id().to_string();
         self.session_store.restore_session(session);
-        self.session_snapshot(&session_id)
+        self.record_managed_activity_transition();
+        let session = self.session_snapshot(&session_id)?;
+        Ok(session)
     }
 
     pub(super) fn register_runtime_interaction(

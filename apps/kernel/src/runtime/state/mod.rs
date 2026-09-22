@@ -106,6 +106,8 @@ struct KernelRuntimeOwnedState {
     operational_history_store: OperationalHistoryStore,
     transcript_history_append_lock: Arc<std::sync::Mutex<()>>,
     durable_state_store: DurableKernelStateStore,
+    managed_activity_transitions:
+        managed_activity_persistence::ManagedActivityTransitionState,
     legacy_workflow_history: crate::app::LegacyWorkflowHistoryStore,
     provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
     provider_login_processes: ProviderLoginProcessStore,
@@ -250,6 +252,8 @@ mod remote_profile_account_runtime;
 use pending_runtime_state::*;
 mod local_prompt_dispatch_runtime;
 mod local_prompt_submission_owned_state;
+mod managed_activity_persistence;
+pub(crate) use managed_activity_persistence::ManagedActivityObservation;
 mod metaagent_event_owned_state;
 mod metaagent_task_runtime_state;
 pub(crate) use metaagent_task_runtime_state::parse_meta_slash_command;
@@ -471,6 +475,7 @@ impl KernelRuntimeState {
             relay_state,
             legacy_workflow_history,
             agent_runtime_projection,
+            has_managed_kernel_registration,
         ) = {
             let started = Instant::now();
             loop {
@@ -482,6 +487,7 @@ impl KernelRuntimeState {
                         app.relay_client_state(),
                         app.legacy_workflow_history_store(),
                         app.agent_runtime_projection_store(),
+                        app.managed_kernel_registration().is_some(),
                     );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
@@ -516,7 +522,23 @@ impl KernelRuntimeState {
             project_environment_setup::ProjectEnvironmentSetupStore::restore_from_durable_state(
                 &durable_state_store,
             );
-        Self {
+        let config = config_projection.snapshot();
+        let managed_activity_kernel_id = (has_managed_kernel_registration
+            || (config.kernel_runtime_role
+                == crate::config::KernelRuntimeRole::RemoteLeaseWorker
+                && std::env::var_os(
+                    crate::managed_bootstrap::worker::ACTIVITY_RECEIPT_ENV,
+                )
+                .filter(|value| !value.is_empty())
+                .map(std::path::PathBuf::from)
+                .is_some_and(|path| path.exists())))
+        .then(|| config.daemon_id.clone());
+        let managed_activity_transitions =
+            managed_activity_persistence::ManagedActivityTransitionState::new(
+                durable_state_store.clone(),
+                managed_activity_kernel_id,
+            );
+        let runtime = Self {
             app,
             provider_runtime_lanes,
             leased_agent_operations: leased_agent_operations::LeasedAgentOperations::default(),
@@ -557,6 +579,7 @@ impl KernelRuntimeState {
                         durable_state_store.clone(),
                     ),
                 durable_state_store,
+                managed_activity_transitions,
                 legacy_workflow_history,
                 provider_account_profiles,
                 provider_login_processes: ProviderLoginProcessStore::default(),
@@ -608,7 +631,9 @@ impl KernelRuntimeState {
                     crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore::default(),
                 project_environment_setups,
             },
-        }
+        };
+        runtime.owned.record_managed_activity_transition();
+        runtime
     }
 
     pub(crate) async fn with_app_side_effect<R>(

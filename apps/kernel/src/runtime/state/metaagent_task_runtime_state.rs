@@ -27,6 +27,7 @@ impl KernelRuntimeState {
         session_id: &str,
         reason: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        self.owned.record_managed_activity_transition();
         let session = self.owned.session_snapshot(session_id)?;
         self.owned.durable_state_store.append_event(
             "session.updated",
@@ -65,6 +66,7 @@ impl KernelRuntimeState {
             task_markdown,
             attachments,
         )?;
+        self.owned.record_managed_activity_transition();
         let session = self.owned.session_snapshot(session_id)?;
         self.owned.durable_state_store.append_event(
             "session.updated",
