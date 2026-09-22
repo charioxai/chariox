@@ -6,6 +6,21 @@
 
 use super::*;
 
+#[cfg(test)]
+std::thread_local! {
+    static BEFORE_WORKFLOW_ACTIVITY_PERSISTENCE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+fn run_before_workflow_activity_persistence_hook() {
+    BEFORE_WORKFLOW_ACTIVITY_PERSISTENCE.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
 impl KernelRuntimeOwnedState {
     pub(super) fn persist_workflow_runtime_session(
         &self,
@@ -38,6 +53,8 @@ impl KernelRuntimeOwnedState {
                     }
                 }
                 if let Ok(hot_session) = self.session_store.read().get_session(session_id) {
+                    #[cfg(test)]
+                    run_before_workflow_activity_persistence_hook();
                     self.publish_session_after_durable_mutation(hot_session);
                 } else {
                     self.record_managed_activity_transition();
@@ -347,5 +364,59 @@ impl KernelRuntimeOwnedState {
             workflow_run_id,
             failure.clone(),
         );
+    }
+}
+
+#[cfg(test)]
+mod lock_order_tests {
+    use super::BEFORE_WORKFLOW_ACTIVITY_PERSISTENCE;
+    use crate::config::DaemonConfig;
+    use crate::runtime::router::CommandRouter;
+    use crate::session::RuntimeSession;
+    use crate::DaemonApp;
+    use std::sync::mpsc;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::Mutex;
+
+    #[test]
+    fn workflow_completion_drops_session_read_guard_before_activity_persistence() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let runtime = CommandRouter::with_interactive_capacity(app, 1).runtime_state();
+        runtime
+            .ensure_managed_activity_tracking("kernel-workflow-lock-order")
+            .expect("managed activity tracking should activate");
+        runtime
+            .owned
+            .session_store
+            .restore_session(RuntimeSession::new(
+                "session-1",
+                None,
+                "workspace",
+                "worktree",
+                "machine",
+                "kernel-workflow-lock-order",
+            ));
+
+        let session_store = runtime.owned.session_store.clone();
+        BEFORE_WORKFLOW_ACTIVITY_PERSISTENCE.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                let (writer_acquired_tx, writer_acquired_rx) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let _writer = session_store.write();
+                    let _ = writer_acquired_tx.send(());
+                });
+                writer_acquired_rx
+                    .recv_timeout(Duration::from_secs(1))
+                    .expect("session writer must acquire before activity persistence");
+            }));
+        });
+
+        runtime
+            .owned
+            .persist_workflow_runtime_session("session-1", "lock_order_regression")
+            .expect("workflow persistence should not retain a session read guard");
     }
 }
