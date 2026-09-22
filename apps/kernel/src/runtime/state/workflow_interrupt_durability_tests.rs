@@ -101,11 +101,7 @@ async fn run_interrupt_append_failure_regression(pause: bool) {
         .session_store
         .get_session(&fixture.session_id)
         .expect("rolled-back session should remain available");
-    assert_running_workflow(
-        &rolled_back,
-        &fixture.workflow_run_id,
-        &fixture.node_run_id,
-    );
+    assert_running_workflow(&rolled_back, &fixture.workflow_run_id, &fixture.node_run_id);
     assert_eq!(
         fixture
             .runtime
@@ -157,7 +153,10 @@ async fn run_interrupt_append_failure_regression(pause: bool) {
             .as_ref()
             .map(|prompt| prompt.id())
     );
-    assert_eq!(fixture.runtime.managed_activity_snapshot(), baseline_activity);
+    assert_eq!(
+        fixture.runtime.managed_activity_snapshot(),
+        baseline_activity
+    );
 
     connection
         .execute_batch("DROP TRIGGER fail_workflow_interrupt_append;")
@@ -408,7 +407,8 @@ fn interrupt_fixture() -> InterruptFixture {
         },
     );
     provider_run.mark_running();
-    app.providers_mut().insert_run_for_test(provider_run.clone());
+    app.providers_mut()
+        .insert_run_for_test(provider_run.clone());
     app.sessions_mut()
         .set_active_provider_run(session.id(), Some(provider_run.id().to_string()))
         .expect("provider run should become active");
@@ -424,11 +424,10 @@ fn interrupt_fixture() -> InterruptFixture {
         .owned
         .persist_workflow_runtime_session(&session_id, "interrupt_failure_test_baseline")
         .expect("running workflow baseline should persist");
-    let claim_id = runtime.owned.workflow_dispatch_claim_id(
-        &session_id,
-        &workflow_run_id,
-        &node_run_id,
-    );
+    let claim_id =
+        runtime
+            .owned
+            .workflow_dispatch_claim_id(&session_id, &workflow_run_id, &node_run_id);
     runtime
         .owned
         .acquire_workflow_node_workspace_claim(
