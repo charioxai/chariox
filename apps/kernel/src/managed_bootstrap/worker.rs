@@ -969,6 +969,13 @@ mod tests {
     use crate::runtime::command::KernelCommand;
     use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 
+    #[cfg(target_os = "linux")]
+    const RESTART_LOOP_DRIVER_ENV: &str = "CHARIOX_TEST_PATH1_RESTART_LOOP_DRIVER";
+    #[cfg(target_os = "linux")]
+    const RESTART_LOOP_ROOT_ENV: &str = "CHARIOX_TEST_PATH1_RESTART_LOOP_ROOT";
+    #[cfg(target_os = "linux")]
+    const RESTART_LOOP_CAPTURE_ENV: &str = "CHARIOX_TEST_PATH1_RESTART_LOOP_CAPTURE";
+
     #[test]
     fn worker_config_keeps_process_home_and_defaults_receipt_to_control_state() {
         let _lock = crate::env_lock::lock();
@@ -1204,6 +1211,244 @@ mod tests {
             & 0o777;
         assert_eq!(provider_mode, 0o700);
         fixture.cleanup();
+    }
+
+    #[cfg(target_os = "linux")]
+    struct RestartLoopCloud;
+
+    #[cfg(target_os = "linux")]
+    impl WorkerCloudClient for RestartLoopCloud {
+        fn exchange(
+            &self,
+            _: &str,
+            _: &ExchangeRequest,
+        ) -> Result<ExchangeResponse, DaemonError> {
+            panic!("a confirmed worker restart must not exchange credentials")
+        }
+
+        fn confirm(
+            &self,
+            _: &str,
+            _: &ConfirmRequest,
+        ) -> Result<ConfirmResponse, DaemonError> {
+            panic!("a confirmed worker restart must not confirm enrollment")
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn run_restart_loop_test_driver() {
+        let root = PathBuf::from(
+            env::var_os(RESTART_LOOP_ROOT_ENV).expect("restart-loop test root must be set"),
+        );
+        let process_home = root.join("home");
+        let chariox_home = process_home.join(".chariox");
+        let config = WorkerConfig {
+            process_home,
+            chariox_home: chariox_home.clone(),
+            envelope_path: root.join("worker-envelope.json"),
+            receipt_path: root.join("worker-receipt.json"),
+            manifest_path: root.join("release-manifest.json"),
+            signature_path: root.join("release-manifest.sig"),
+            public_key_path: root.join("release-public-key"),
+            kernel_binary: root.join("bin/chariox-kernel"),
+            kernel_host: "127.0.0.1".to_string(),
+            kernel_port: 43118,
+        };
+        let worker = PreparedWorker {
+            release: VerifiedRelease {
+                digest: "sha256:path1-restart-loop-test".to_string(),
+                kernel_binary: config.kernel_binary.clone(),
+            },
+            receipt: WorkerReceipt {
+                schema_version: 2,
+                status: WorkerReceiptStatus::Confirmed,
+                allocation_id: "worker-restart-test".to_string(),
+                machine_id: "worker-machine".to_string(),
+                kernel_id: "worker-kernel".to_string(),
+                relay_public_key: "worker-public-key".to_string(),
+                runtime_release_digest: "sha256:path1-restart-loop-test".to_string(),
+                managed_repository_root: Some("/srv/worker-workspaces".to_string()),
+                home_caller: CloudHomeCaller {
+                    account_id: "account-1".to_string(),
+                    user_id: "user-1".to_string(),
+                    realm_id: "realm-1".to_string(),
+                    machine_id: "home-machine".to_string(),
+                    kernel_id: "home-kernel".to_string(),
+                    relay_public_key: "home-public-key".to_string(),
+                },
+                confirmed_at: Some("2026-09-22T00:00:00Z".to_string()),
+            },
+            pending: None,
+        };
+
+        let result = supervise(
+            &config,
+            worker,
+            &RestartLoopCloud,
+            ManagedProviderTopology::Path1,
+        );
+        panic!("restart-loop test driver returned unexpectedly: {result:?}");
+    }
+
+    #[cfg(target_os = "linux")]
+    fn path1_restart_capture_script() -> String {
+        let mut script = String::from(
+            "#!/bin/sh\n\
+             set -eu\n\
+             capture=\"${CHARIOX_TEST_PATH1_RESTART_LOOP_CAPTURE:?}\"\n\
+             if /bin/mkdir \"$capture.first\" 2>/dev/null; then generation=1; else generation=2; fi\n\
+             record=\"$capture.$generation\"\n\
+             {\n\
+               printf 'home=%s\\n' \"${HOME-<unset>}\"\n\
+               printf 'path=%s\\n' \"${PATH-<unset>}\"\n\
+               printf 'cwd=%s\\n' \"$(pwd)\"\n\
+               printf 'chariox_home=%s\\n' \"${CHARIOX_HOME-<unset>}\"\n\
+               printf 'repository_root=%s\\n' \"${CHARIOX_MANAGED_REPOSITORY_ROOT-<unset>}\"\n\
+               printf 'topology=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_TOPOLOGY-<unset>}\"\n\
+               printf 'provider_home=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_HOME-<unset>}\"\n\
+               printf 'vault=%s\\n' \"${CHARIOX_MANAGED_VAULT_PATH-<unset>}\"\n",
+        );
+        for name in PATH1_SHARED_HOST_SELECTOR_ENVS {
+            script.push_str(&format!(
+                "  printf '{name}=%s\\n' \"${{{name}-<unset>}}\"\n"
+            ));
+        }
+        script.push_str(
+            "} > \"$record.tmp\"\n\
+             /bin/mv \"$record.tmp\" \"$record\"\n\
+             if [ \"$generation\" = 1 ]; then exit 23; fi\n\
+             /bin/sleep 30\n",
+        );
+        script
+    }
+
+    #[cfg(target_os = "linux")]
+    fn assert_path1_restart_capture(
+        path: &Path,
+        process_home: &Path,
+        chariox_home: &Path,
+        provider_home: &Path,
+        path_value: &str,
+    ) {
+        let observed = fs::read_to_string(path).expect("restart child should record its boundary");
+        for expected in [
+            format!("home={}\n", process_home.display()),
+            format!("path={path_value}\n"),
+            format!("cwd={}\n", process_home.display()),
+            format!("chariox_home={}\n", chariox_home.display()),
+            "repository_root=/srv/worker-workspaces\n".to_string(),
+            "topology=path1\n".to_string(),
+            format!("provider_home={}\n", provider_home.display()),
+            format!("vault={}\n", chariox_home.join("vault/vault.json").display()),
+        ] {
+            assert!(
+                observed.contains(&expected),
+                "missing `{}` from {}: {observed}",
+                expected.trim(),
+                path.display()
+            );
+        }
+        for name in PATH1_SHARED_HOST_SELECTOR_ENVS {
+            assert!(
+                observed.contains(&format!("{name}=<unset>\n")),
+                "restart child inherited {name}: {observed}"
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn disposable_worker_restart_reapplies_path1_contract() {
+        if env::var_os(RESTART_LOOP_DRIVER_ENV).is_some() {
+            run_restart_loop_test_driver();
+            return;
+        }
+
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::process::CommandExt;
+
+        let root = env::temp_dir().join(format!(
+            "chariox-worker-restart-boundary-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let process_home = root.join("home");
+        let chariox_home = process_home.join(".chariox");
+        let provider_home = root.join("provider-home");
+        let kernel_binary = root.join("bin/chariox-kernel");
+        let capture = root.join("kernel-boundary");
+        fs::create_dir_all(&chariox_home).expect("worker test HOME should exist");
+        fs::create_dir_all(kernel_binary.parent().expect("kernel parent should exist"))
+            .expect("kernel parent should be created");
+        fs::write(&kernel_binary, path1_restart_capture_script())
+            .expect("restart probe kernel should be written");
+        fs::set_permissions(&kernel_binary, fs::Permissions::from_mode(0o755))
+            .expect("restart probe kernel should be executable");
+        let path_value = format!(
+            "{}/.local/bin:/usr/local/bin:/usr/bin:/bin",
+            process_home.display()
+        );
+        let test_module = module_path!()
+            .split_once("::")
+            .map(|(_, path)| path)
+            .unwrap_or(module_path!());
+        let test_filter =
+            format!("{test_module}::disposable_worker_restart_reapplies_path1_contract");
+
+        let mut command = Command::new(std::env::current_exe().expect("test executable"));
+        command
+            .arg("--exact")
+            .arg(test_filter)
+            .arg("--nocapture")
+            .arg("--test-threads=1")
+            .env(RESTART_LOOP_DRIVER_ENV, "1")
+            .env(RESTART_LOOP_ROOT_ENV, &root)
+            .env(RESTART_LOOP_CAPTURE_ENV, &capture)
+            .env(MANAGED_PROVIDER_TOPOLOGY_ENV, "path1")
+            .env("HOME", &process_home)
+            .env("PATH", &path_value)
+            .env("CHARIOX_MANAGED_PROVIDER_HOME", &provider_home)
+            .env("CHARIOX_MANAGED_VAULT_PATH", "/stale/managed-vault.json")
+            .process_group(0);
+        for name in PATH1_SHARED_HOST_SELECTOR_ENVS {
+            command.env(name, "contaminated-shared-host-selector");
+        }
+        let mut driver = command.spawn().expect("restart-loop test driver should start");
+        let second_capture = PathBuf::from(format!("{}.2", capture.display()));
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut early_status = None;
+        while !second_capture.is_file() && Instant::now() < deadline {
+            if let Some(status) = driver.try_wait().expect("inspect restart-loop driver") {
+                early_status = Some(status);
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        let process_group = -(driver.id() as i32);
+        unsafe {
+            libc::kill(process_group, libc::SIGKILL);
+        }
+        let _ = driver.wait();
+
+        assert!(
+            early_status.is_none(),
+            "restart-loop driver exited before its second child: {early_status:?}"
+        );
+        assert!(
+            second_capture.is_file(),
+            "restart-loop driver did not start its second child before the deadline"
+        );
+        for generation in [1, 2] {
+            assert_path1_restart_capture(
+                &PathBuf::from(format!("{}.{generation}", capture.display())),
+                &process_home,
+                &chariox_home,
+                &provider_home,
+                &path_value,
+            );
+        }
+        fs::remove_dir_all(root).expect("restart-loop fixture should be removable");
     }
 
     #[cfg(unix)]

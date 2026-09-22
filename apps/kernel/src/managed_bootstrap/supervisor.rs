@@ -866,6 +866,237 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[cfg(target_os = "linux")]
+    struct Path1ConfirmationCloud;
+
+    #[cfg(target_os = "linux")]
+    impl BootstrapCloudClient for Path1ConfirmationCloud {
+        fn exchange(
+            &self,
+            _: &str,
+            _: &super::super::cloud::ExchangeRequest,
+        ) -> Result<super::super::cloud::ExchangeResponse, DaemonError> {
+            panic!("confirmation restart must not exchange credentials")
+        }
+
+        fn confirm(
+            &self,
+            _: &str,
+            _: &super::super::cloud::ConfirmRequest,
+        ) -> Result<super::super::cloud::ConfirmResponse, DaemonError> {
+            Ok(super::super::cloud::ConfirmResponse {
+                confirmed: true,
+                observed_state: "awaiting_context".to_string(),
+                managed_repository_root: None,
+            })
+        }
+
+        fn report_runtime_identity(
+            &self,
+            _: &str,
+            _: &super::super::freshness::ManagedKernelRuntimeIdentityReport,
+        ) -> Result<super::super::cloud::RuntimeIdentityReportResponse, DaemonError> {
+            panic!("confirmation restart must not report reimage identity")
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn path1_confirmation_capture_script() -> String {
+        let mut script = String::from(
+            "#!/bin/sh\n\
+             set -eu\n\
+             capture=\"${CHARIOX_TEST_PATH1_CONFIRM_CAPTURE:?}\"\n\
+             if /bin/mkdir \"$capture.first\" 2>/dev/null; then generation=1; else generation=2; fi\n\
+             record=\"$capture.$generation\"\n\
+             {\n\
+               printf 'home=%s\\n' \"${HOME-<unset>}\"\n\
+               printf 'path=%s\\n' \"${PATH-<unset>}\"\n\
+               printf 'cwd=%s\\n' \"$(pwd)\"\n\
+               printf 'chariox_home=%s\\n' \"${CHARIOX_HOME-<unset>}\"\n\
+               printf 'repository_root=%s\\n' \"${CHARIOX_MANAGED_REPOSITORY_ROOT-<unset>}\"\n\
+               printf 'topology=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_TOPOLOGY-<unset>}\"\n\
+               printf 'provider_home=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_HOME-<unset>}\"\n\
+               printf 'vault=%s\\n' \"${CHARIOX_MANAGED_VAULT_PATH-<unset>}\"\n",
+        );
+        for name in PATH1_SHARED_HOST_SELECTOR_ENVS {
+            script.push_str(&format!(
+                "  printf '{name}=%s\\n' \"${{{name}-<unset>}}\"\n"
+            ));
+        }
+        script.push_str(
+            "} > \"$record.tmp\"\n\
+             /bin/mv \"$record.tmp\" \"$record\"\n\
+             rm -f -- \"$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE\"\n\
+             if [ \"$generation\" = 1 ]; then /bin/sleep 30; fi\n",
+        );
+        script
+    }
+
+    #[cfg(target_os = "linux")]
+    fn assert_path1_confirmation_capture(
+        path: &std::path::Path,
+        process_home: &std::path::Path,
+        chariox_home: &std::path::Path,
+        provider_home: &std::path::Path,
+        path_value: &str,
+    ) {
+        let observed = std::fs::read_to_string(path)
+            .expect("confirmation child should record its boundary");
+        for expected in [
+            format!("home={}\n", process_home.display()),
+            format!("path={path_value}\n"),
+            format!("cwd={}\n", process_home.display()),
+            format!("chariox_home={}\n", chariox_home.display()),
+            "repository_root=/home/chariox\n".to_string(),
+            "topology=path1\n".to_string(),
+            format!("provider_home={}\n", provider_home.display()),
+            format!("vault={}\n", chariox_home.join("vault/vault.json").display()),
+        ] {
+            assert!(
+                observed.contains(&expected),
+                "missing `{}` from {}: {observed}",
+                expected.trim(),
+                path.display()
+            );
+        }
+        for name in PATH1_SHARED_HOST_SELECTOR_ENVS {
+            assert!(
+                observed.contains(&format!("{name}=<unset>\n")),
+                "confirmation child inherited {name}: {observed}"
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn path1_confirmation_restart_reapplies_ordinary_boundary() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _env = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-path1-confirmation-boundary-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let process_home = root.join("home");
+        let chariox_home = process_home.join(".chariox");
+        let provider_home = root.join("provider-home");
+        let kernel_binary = root.join("bin/chariox-kernel");
+        let capture = root.join("kernel-boundary");
+        std::fs::create_dir_all(&chariox_home).expect("Path-1 test HOME should exist");
+        std::fs::create_dir_all(kernel_binary.parent().expect("kernel parent should exist"))
+            .expect("kernel parent should be created");
+        std::fs::write(&kernel_binary, path1_confirmation_capture_script())
+            .expect("confirmation probe kernel should be written");
+        std::fs::set_permissions(&kernel_binary, std::fs::Permissions::from_mode(0o755))
+            .expect("confirmation probe kernel should be executable");
+
+        let config = BootstrapConfig {
+            process_home: process_home.clone(),
+            chariox_home: chariox_home.clone(),
+            envelope_path: root.join("managed-bootstrap.json"),
+            receipt_path: chariox_home.join("managed/bootstrap-receipt.json"),
+            manifest_path: root.join("release-manifest.json"),
+            signature_path: root.join("release-manifest.sig"),
+            public_key_path: root.join("release-public-key"),
+            kernel_binary: kernel_binary.clone(),
+            kernel_host: "127.0.0.1".to_string(),
+            kernel_port: 43118,
+        };
+        let receipt = BootstrapReceipt {
+            schema_version: 1,
+            status: BootstrapReceiptStatus::Exchanged,
+            environment_id: "environment-1".to_string(),
+            machine_id: "machine-1".to_string(),
+            kernel_id: "kernel-1".to_string(),
+            generation: 1,
+            relay_public_key: "relay-public-key".to_string(),
+            runtime_release_digest: "sha256:path1-confirmation-test".to_string(),
+            managed_repository_root: None,
+            confirmed_at: None,
+            context_plan: None,
+            provider_rebuild_action_id: None,
+            freshness_evidence: None,
+        };
+        receipt
+            .persist(&config.receipt_path)
+            .expect("exchanged receipt should persist");
+        std::fs::write(&config.envelope_path, b"pending confirmation")
+            .expect("confirmation envelope should exist");
+        let mut profile = crate::config::PersistedCloudRelayProfile::default();
+        profile.machine_credential = Some(format!("mcred_{}", "a".repeat(40)));
+        let mut confirmation = Some(PendingConfirmation {
+            envelope: super::super::state::ManagedBootstrapEnvelope {
+                schema_version: 1,
+                cloud_api_url: "https://cloud.example.test".to_string(),
+                environment_id: receipt.environment_id.clone(),
+                token: format!("mkboot_{}", "b".repeat(40)),
+                expires_at: "2026-09-23T00:00:00Z".to_string(),
+                runtime_release_digest: receipt.runtime_release_digest.clone(),
+                managed_repository_root: None,
+                provider_rebuild_action_id: None,
+            },
+            receipt,
+            profile,
+        });
+        let release = VerifiedRelease {
+            digest: "sha256:path1-confirmation-test".to_string(),
+            kernel_binary,
+        };
+        let path_value = format!(
+            "{}/.local/bin:/usr/local/bin:/usr/bin:/bin",
+            process_home.display()
+        );
+        let mut saved_environment = PATH1_SHARED_HOST_SELECTOR_ENVS
+            .iter()
+            .map(|name| (*name, std::env::var_os(name)))
+            .collect::<Vec<_>>();
+        for name in [
+            "HOME",
+            "PATH",
+            "CHARIOX_TEST_PATH1_CONFIRM_CAPTURE",
+            "CHARIOX_MANAGED_PROVIDER_HOME",
+            "CHARIOX_MANAGED_VAULT_PATH",
+            MANAGED_PROVIDER_TOPOLOGY_ENV,
+        ] {
+            saved_environment.push((name, std::env::var_os(name)));
+        }
+        for name in PATH1_SHARED_HOST_SELECTOR_ENVS {
+            std::env::set_var(name, "contaminated-shared-host-selector");
+        }
+        std::env::set_var("HOME", root.join("stale-home"));
+        std::env::set_var("PATH", &path_value);
+        std::env::set_var("CHARIOX_TEST_PATH1_CONFIRM_CAPTURE", &capture);
+        std::env::set_var("CHARIOX_MANAGED_PROVIDER_HOME", &provider_home);
+        std::env::set_var("CHARIOX_MANAGED_VAULT_PATH", "/stale/managed-vault.json");
+        std::env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "path1");
+
+        let run = run_kernel_once(
+            &config,
+            &release,
+            &mut confirmation,
+            &Path1ConfirmationCloud,
+            ManagedProviderTopology::Path1,
+        );
+
+        for (name, value) in saved_environment {
+            restore_env(name, value);
+        }
+        let run = run.expect("Path-1 confirmation restart should complete");
+        assert!(run.status.success(), "replacement kernel failed: {}", run.status);
+        assert!(confirmation.is_none());
+        for generation in [1, 2] {
+            assert_path1_confirmation_capture(
+                &std::path::PathBuf::from(format!("{}.{generation}", capture.display())),
+                &process_home,
+                &chariox_home,
+                &provider_home,
+                &path_value,
+            );
+        }
+        std::fs::remove_dir_all(root).expect("confirmation fixture should be removable");
+    }
+
     fn bounded_stream(stream: &UnixStream) {
         let timeout = Some(Duration::from_secs(2));
         stream.set_read_timeout(timeout).unwrap();
