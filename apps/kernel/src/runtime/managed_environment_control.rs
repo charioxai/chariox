@@ -192,6 +192,12 @@ pub(crate) async fn execute_managed_environment_control_request(
         }
         LocalDaemonRequest::RequestManagedEnvironmentReimage(request) => {
             validate_reimage_request(&request)?;
+            preflight_provider_account_exports(
+                &config,
+                cloud,
+                &provider_account_profiles,
+                &request.context_plan.provider_accounts,
+            )?;
             let path = format!(
                 "/v1/managed-environments/{}/reimage",
                 cloud_url_component(&request.environment_id),
@@ -206,6 +212,7 @@ pub(crate) async fn execute_managed_environment_control_request(
                 "expectedRuntimeReleaseDigest": request.expected_runtime_release_digest,
                 "expectedRuntimeSourceCommit": request.expected_runtime_source_commit,
                 "expectedRuntimeSourceTree": request.expected_runtime_source_tree,
+                "contextPlan": request.context_plan,
                 "idempotencyKey": request.idempotency_key,
             });
             let result: ManagedEnvironmentReimageResult =
@@ -457,6 +464,53 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
+    fn empty_context_plan() -> ManagedEnvironmentContextPlanInput {
+        ManagedEnvironmentContextPlanInput {
+            source_target_id: None,
+            kernel_context: ManagedEnvironmentKernelContextSelection::Empty,
+            development_setup: ManagedEnvironmentDevelopmentSetup::Empty,
+            provider_accounts: ManagedEnvironmentProviderAccounts::None,
+            git_credentials: ManagedEnvironmentGitCredentials::None,
+        }
+    }
+
+    fn selected_context_plan(
+        provider_accounts: ManagedEnvironmentProviderAccounts,
+    ) -> ManagedEnvironmentContextPlanInput {
+        ManagedEnvironmentContextPlanInput {
+            source_target_id: Some("source-target-test".to_string()),
+            kernel_context: ManagedEnvironmentKernelContextSelection::SourceKernel,
+            development_setup: ManagedEnvironmentDevelopmentSetup::SourceProject {
+                project_id: "project-1".to_string(),
+                repositories: vec![crate::local::ManagedEnvironmentRepositorySelection {
+                    role: crate::local::ManagedEnvironmentRepositoryRole::Primary,
+                    workspace_id: "workspace-primary".to_string(),
+                    worktree_id: None,
+                }],
+            },
+            provider_accounts,
+            git_credentials: ManagedEnvironmentGitCredentials::None,
+        }
+    }
+
+    fn reimage_request(
+        context_plan: ManagedEnvironmentContextPlanInput,
+    ) -> RequestManagedEnvironmentReimageRequest {
+        RequestManagedEnvironmentReimageRequest {
+            environment_id: "environment-1".to_string(),
+            expected_generation: 1,
+            expected_provider_server_id: "123456789".to_string(),
+            expected_provider_image_id: "987654321".to_string(),
+            expected_provider_profile_id: "hetzner-path1".to_string(),
+            expected_provider_profile_digest: format!("sha256:{}", "b".repeat(64)),
+            expected_runtime_release_digest: format!("sha256:{}", "a".repeat(64)),
+            expected_runtime_source_commit: "c".repeat(40),
+            expected_runtime_source_tree: "d".repeat(40),
+            context_plan,
+            idempotency_key: "reimage-1".to_string(),
+        }
+    }
+
     #[test]
     fn managed_environment_control_rejects_callers_without_the_cloud_user_identity() {
         let mut config = DaemonConfig::for_tests();
@@ -606,18 +660,7 @@ mod tests {
 
     #[test]
     fn managed_environment_reimage_request_requires_cloud_safe_identity_and_generation() {
-        let valid = RequestManagedEnvironmentReimageRequest {
-            environment_id: "environment-1".to_string(),
-            expected_generation: 1,
-            expected_provider_server_id: "123456789".to_string(),
-            expected_provider_image_id: "987654321".to_string(),
-            expected_provider_profile_id: "hetzner-path1".to_string(),
-            expected_provider_profile_digest: format!("sha256:{}", "b".repeat(64)),
-            expected_runtime_release_digest: format!("sha256:{}", "a".repeat(64)),
-            expected_runtime_source_commit: "c".repeat(40),
-            expected_runtime_source_tree: "d".repeat(40),
-            idempotency_key: "reimage-1".to_string(),
-        };
+        let valid = reimage_request(empty_context_plan());
         validate_reimage_request(&valid).expect("valid reimage request");
 
         let mut invalid = valid.clone();
@@ -667,23 +710,114 @@ mod tests {
             ),
             "owner-1",
             LocalDaemonRequest::RequestManagedEnvironmentReimage(
-                RequestManagedEnvironmentReimageRequest {
-                    environment_id: "environment-1".to_string(),
-                    expected_generation: 1,
-                    expected_provider_server_id: "123456789".to_string(),
-                    expected_provider_image_id: "987654321".to_string(),
-                    expected_provider_profile_id: "hetzner-path1".to_string(),
-                    expected_provider_profile_digest: format!("sha256:{}", "b".repeat(64)),
-                    expected_runtime_release_digest: format!("sha256:{}", "a".repeat(64)),
-                    expected_runtime_source_commit: "c".repeat(40),
-                    expected_runtime_source_tree: "d".repeat(40),
-                    idempotency_key: "reimage-1".to_string(),
-                },
+                reimage_request(empty_context_plan()),
             ),
         )
         .await
         .expect_err("machine credential must not authorize reimage");
         assert!(error.to_string().contains("Cloud session is unavailable"));
+    }
+
+    #[tokio::test]
+    async fn managed_environment_reimage_forwards_selected_fresh_context() {
+        let server = ManagedEnvironmentCloudFixture::start(
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+        );
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = Some(PersistedCloudRelayProfile {
+            account_id: "account-1".to_string(),
+            user_id: "cloud-user-1".to_string(),
+            cloud_session_token: Some("session-secret".to_string()),
+            api_url: server.url(),
+            ..PersistedCloudRelayProfile::default()
+        });
+        let provider_account_profiles =
+            crate::account_profile::ProviderAccountProfileRegistry::open(
+                config.account_profile_registry_path(),
+            )
+            .expect("provider account registry");
+
+        execute_managed_environment_control_request(
+            config,
+            provider_account_profiles,
+            crate::managed_context::outbound_service::ManagedContextOutboundOperationStore::default(
+            ),
+            "cloud-user-1",
+            LocalDaemonRequest::RequestManagedEnvironmentReimage(reimage_request(
+                selected_context_plan(ManagedEnvironmentProviderAccounts::None),
+            )),
+        )
+        .await
+        .expect("selected-context reimage request");
+
+        let requests = server.requests();
+        assert_eq!(requests.len(), 1);
+        let body = requests[0]
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| serde_json::from_str::<serde_json::Value>(body).expect("JSON body"))
+            .expect("request body");
+        assert_eq!(
+            body.pointer("/contextPlan"),
+            Some(&serde_json::json!({
+                "sourceTargetId": "source-target-test",
+                "kernelContext": "source_kernel",
+                "developmentSetup": {
+                    "kind": "source_project",
+                    "projectId": "project-1",
+                    "repositories": [{
+                        "role": "primary",
+                        "workspaceId": "workspace-primary",
+                        "worktreeId": null,
+                    }],
+                },
+                "providerAccounts": { "kind": "none" },
+                "gitCredentials": { "kind": "none" },
+            }))
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_environment_reimage_rejects_unexportable_accounts_before_cloud() {
+        let server = ManagedEnvironmentCloudFixture::start(
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+        );
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = Some(PersistedCloudRelayProfile {
+            account_id: "account-1".to_string(),
+            user_id: "cloud-user-1".to_string(),
+            cloud_session_token: Some("session-secret".to_string()),
+            api_url: server.url(),
+            ..PersistedCloudRelayProfile::default()
+        });
+        let provider_account_profiles =
+            crate::account_profile::ProviderAccountProfileRegistry::open(
+                config.account_profile_registry_path(),
+            )
+            .expect("provider account registry");
+        let context_plan = selected_context_plan(ManagedEnvironmentProviderAccounts::Selected {
+            accounts: vec![ManagedEnvironmentProviderAccountSelection {
+                provider: "claude".to_string(),
+                account_profile: "missing".to_string(),
+            }],
+        });
+
+        let error = execute_managed_environment_control_request(
+            config,
+            provider_account_profiles,
+            crate::managed_context::outbound_service::ManagedContextOutboundOperationStore::default(
+            ),
+            "cloud-user-1",
+            LocalDaemonRequest::RequestManagedEnvironmentReimage(reimage_request(context_plan)),
+        )
+        .await
+        .expect_err("unexportable provider account must fail before reimage");
+
+        assert!(error.to_string().contains(
+            "selected claude provider account `missing` has no transferable credentials"
+        ));
+        assert!(server.requests().is_empty());
     }
 
     #[tokio::test]
@@ -872,18 +1006,7 @@ mod tests {
             outbound_store.clone(),
             "cloud-user-1",
             LocalDaemonRequest::RequestManagedEnvironmentReimage(
-                RequestManagedEnvironmentReimageRequest {
-                    environment_id: "environment-1".to_string(),
-                    expected_generation: 1,
-                    expected_provider_server_id: "123456789".to_string(),
-                    expected_provider_image_id: "987654321".to_string(),
-                    expected_provider_profile_id: "hetzner-path1".to_string(),
-                    expected_provider_profile_digest: format!("sha256:{}", "b".repeat(64)),
-                    expected_runtime_release_digest: format!("sha256:{}", "a".repeat(64)),
-                    expected_runtime_source_commit: "c".repeat(40),
-                    expected_runtime_source_tree: "d".repeat(40),
-                    idempotency_key: "reimage-1".to_string(),
-                },
+                reimage_request(empty_context_plan()),
             ),
         )
         .await
@@ -963,7 +1086,7 @@ mod tests {
             .expect("reimage request body");
         assert_eq!(
             reimage_body.as_object().expect("reimage JSON object").len(),
-            10
+            11
         );
         assert!(reimage_request.contains(r#""accountId":"account / one""#));
         assert!(reimage_request.contains(r#""expectedGeneration":1"#));
@@ -986,6 +1109,16 @@ mod tests {
             r#""expectedRuntimeSourceTree":"{}""#,
             "d".repeat(40)
         )));
+        assert_eq!(
+            reimage_body.pointer("/contextPlan"),
+            Some(&serde_json::json!({
+                "sourceTargetId": null,
+                "kernelContext": "empty",
+                "developmentSetup": { "kind": "empty" },
+                "providerAccounts": { "kind": "none" },
+                "gitCredentials": { "kind": "none" },
+            }))
+        );
         assert!(reimage_request.contains(r#""idempotencyKey":"reimage-1""#));
         assert!(!requests.join("\n").contains("session-secret\""));
     }

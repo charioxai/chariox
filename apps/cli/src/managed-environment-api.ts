@@ -103,6 +103,7 @@ export async function requestManagedEnvironmentReimage(
     expectedRuntimeReleaseDigest: string
     expectedRuntimeSourceCommit: string
     expectedRuntimeSourceTree: string
+    contextPlan: ManagedEnvironmentContextPlanInput
     idempotencyKey: string
   },
 ): Promise<ManagedEnvironmentReimageResult> {

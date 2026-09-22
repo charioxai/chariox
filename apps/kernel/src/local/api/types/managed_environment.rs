@@ -55,6 +55,7 @@ pub struct RequestManagedEnvironmentReimageRequest {
     pub expected_runtime_release_digest: String,
     pub expected_runtime_source_commit: String,
     pub expected_runtime_source_tree: String,
+    pub context_plan: ManagedEnvironmentContextPlanInput,
     pub idempotency_key: String,
 }
 

@@ -133,6 +133,13 @@ test("managed environment requests use the shared local daemon shape", () => {
     expectedRuntimeReleaseDigest: `sha256:${"a".repeat(64)}`,
     expectedRuntimeSourceCommit: "c".repeat(40),
     expectedRuntimeSourceTree: "d".repeat(40),
+    contextPlan: {
+      sourceTargetId: null,
+      kernelContext: "empty",
+      developmentSetup: { kind: "empty" },
+      providerAccounts: { kind: "none" },
+      gitCredentials: { kind: "none" },
+    },
     idempotencyKey: "reimage-1",
   }), {
     RequestManagedEnvironmentReimage: {
@@ -145,6 +152,13 @@ test("managed environment requests use the shared local daemon shape", () => {
       expectedRuntimeReleaseDigest: `sha256:${"a".repeat(64)}`,
       expectedRuntimeSourceCommit: "c".repeat(40),
       expectedRuntimeSourceTree: "d".repeat(40),
+      contextPlan: {
+        sourceTargetId: null,
+        kernelContext: "empty",
+        developmentSetup: { kind: "empty" },
+        providerAccounts: { kind: "none" },
+        gitCredentials: { kind: "none" },
+      },
       idempotencyKey: "reimage-1",
     },
   })

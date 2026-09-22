@@ -75,6 +75,21 @@ test("managed environment API uses only shared LocalDaemon request variants", as
     expectedRuntimeReleaseDigest: `sha256:${"a".repeat(64)}`,
     expectedRuntimeSourceCommit: "c".repeat(40),
     expectedRuntimeSourceTree: "d".repeat(40),
+    contextPlan: {
+      sourceTargetId: "source-target-1",
+      kernelContext: "source_kernel",
+      developmentSetup: {
+        kind: "source_project",
+        projectId: "project-1",
+        repositories: [{
+          role: "primary",
+          workspaceId: "workspace-primary",
+          worktreeId: null,
+        }],
+      },
+      providerAccounts: { kind: "none" },
+      gitCredentials: { kind: "none" },
+    },
     idempotencyKey: "reimage-1",
   })
   await observeManagedEnvironmentPreReimage(client, {
@@ -117,6 +132,21 @@ test("managed environment API uses only shared LocalDaemon request variants", as
         expectedRuntimeReleaseDigest: `sha256:${"a".repeat(64)}`,
         expectedRuntimeSourceCommit: "c".repeat(40),
         expectedRuntimeSourceTree: "d".repeat(40),
+        contextPlan: {
+          sourceTargetId: "source-target-1",
+          kernelContext: "source_kernel",
+          developmentSetup: {
+            kind: "source_project",
+            projectId: "project-1",
+            repositories: [{
+              role: "primary",
+              workspaceId: "workspace-primary",
+              worktreeId: null,
+            }],
+          },
+          providerAccounts: { kind: "none" },
+          gitCredentials: { kind: "none" },
+        },
         idempotencyKey: "reimage-1",
       },
     },
@@ -131,6 +161,43 @@ test("managed environment API uses only shared LocalDaemon request variants", as
     { GetManagedContextTransferStatus: { contextId: "context-1" } },
     { GetManagedContextLaunchTarget: { contextId: "context-1", planDigest: "sha256:plan" } },
   ])
+})
+
+test("managed environment API forwards explicit-empty reimage context", async () => {
+  const requests: unknown[] = []
+  const client = {
+    send: async (request: unknown) => {
+      requests.push(request)
+      return { ManagedEnvironmentReimageRequested: { result: reimageResult() } }
+    },
+  } as unknown as LocalIpcClient
+  const contextPlan = {
+    sourceTargetId: null,
+    kernelContext: "empty" as const,
+    developmentSetup: { kind: "empty" as const },
+    providerAccounts: { kind: "none" as const },
+    gitCredentials: { kind: "none" as const },
+  }
+
+  await requestManagedEnvironmentReimage(client, {
+    environmentId: "environment-1",
+    expectedGeneration: 3,
+    expectedProviderServerId: "123456789",
+    expectedProviderImageId: "987654321",
+    expectedProviderProfileId: "hetzner-path1",
+    expectedProviderProfileDigest: `sha256:${"b".repeat(64)}`,
+    expectedRuntimeReleaseDigest: `sha256:${"a".repeat(64)}`,
+    expectedRuntimeSourceCommit: "c".repeat(40),
+    expectedRuntimeSourceTree: "d".repeat(40),
+    contextPlan,
+    idempotencyKey: "reimage-1",
+  })
+
+  assert.deepEqual(
+    (requests[0] as { RequestManagedEnvironmentReimage: { contextPlan: unknown } })
+      .RequestManagedEnvironmentReimage.contextPlan,
+    contextPlan,
+  )
 })
 
 test("managed environment API rejects responses for another environment", async () => {
@@ -162,6 +229,13 @@ test("managed environment API rejects stale or incomplete reimage evidence", asy
       expectedRuntimeReleaseDigest: `sha256:${"a".repeat(64)}`,
       expectedRuntimeSourceCommit: "c".repeat(40),
       expectedRuntimeSourceTree: "d".repeat(40),
+      contextPlan: {
+        sourceTargetId: null,
+        kernelContext: "empty",
+        developmentSetup: { kind: "empty" },
+        providerAccounts: { kind: "none" },
+        gitCredentials: { kind: "none" },
+      },
       idempotencyKey: "reimage-1",
     }),
     /does not match the requested generation or exact provider identity/,

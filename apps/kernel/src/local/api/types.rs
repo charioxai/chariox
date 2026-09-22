@@ -94,4 +94,5 @@ pub use workspace::*;
 /// Version 336 adds kernel-verified installed release identity to resource telemetry.
 /// Version 337 adds authenticated managed-environment reimage control and receipt evidence.
 /// Version 338 adds deliberate, generation-bound pre-reimage observation reporting.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 338;
+/// Version 339 requires a fresh managed-context selection for every reimage request.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 339;

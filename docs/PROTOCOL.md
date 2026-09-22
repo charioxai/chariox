@@ -1606,6 +1606,14 @@ Workflow trigger and deployment direction:
     with the target Machine credential; the target kernel validates the exact
     source/key/realm binding, imports through the encrypted context package,
     and does not replace or publish a development workspace
+- protocol 339 requires `RequestManagedEnvironmentReimage` to carry a fresh
+  `contextPlan` using the same input contract as managed-environment creation.
+  The kernel forwards the exact selected or explicit-empty plan to Cloud and
+  preflights every selected provider account for managed-context export before
+  making the destructive reimage request. Cloud binds the normalized selection
+  into idempotency, creates a new context identity with no inherited manifest,
+  and authorizes the live source realm or an explicit-empty realm. Reimage does
+  not introduce another context-transfer authority or credential path.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

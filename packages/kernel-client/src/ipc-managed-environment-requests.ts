@@ -253,6 +253,7 @@ export function requestManagedEnvironmentReimageRequest(input: {
   readonly expectedRuntimeReleaseDigest: string
   readonly expectedRuntimeSourceCommit: string
   readonly expectedRuntimeSourceTree: string
+  readonly contextPlan: ManagedEnvironmentContextPlanInput
   readonly idempotencyKey: string
 }) {
   return { RequestManagedEnvironmentReimage: input } as const

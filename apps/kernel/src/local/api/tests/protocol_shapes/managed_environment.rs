@@ -3,7 +3,7 @@ use crate::local::*;
 
 #[test]
 fn local_daemon_managed_environment_control_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 338);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 339);
     let policy = ManagedEnvironmentAutoStopPolicy {
         minimum_runtime_seconds: 0,
         idle_delay_seconds: Some(900),
@@ -161,7 +161,7 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
             region: "hel1".to_string(),
             compute_class: "agent-small".to_string(),
             auto_stop_policy: policy.clone(),
-            context_plan: context_input,
+            context_plan: context_input.clone(),
         }),
         LocalDaemonRequest::CreateManagedEnvironment(CreateManagedEnvironmentRequest {
             client_request_id: "create-source-1".to_string(),
@@ -258,6 +258,7 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
                 expected_runtime_release_digest: format!("sha256:{}", "e".repeat(64)),
                 expected_runtime_source_commit: "c".repeat(40),
                 expected_runtime_source_tree: "d".repeat(40),
+                context_plan: context_input,
                 idempotency_key: "reimage-1".to_string(),
             },
         ),
@@ -333,6 +334,10 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
         Some(&serde_json::json!(1))
     );
     assert_eq!(
+        snapshot.pointer("/15/RequestManagedEnvironmentReimage/contextPlan/kernelContext"),
+        Some(&serde_json::json!("empty"))
+    );
+    assert_eq!(
         snapshot.pointer("/16/ManagedEnvironmentReimageRequested/result/receipt/providerProfileId"),
         Some(&serde_json::json!("hetzner-path1"))
     );
@@ -353,13 +358,35 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
     let serialized = serde_json::to_string(&snapshot).expect("managed environment shape");
     assert_eq!(
         format!("{:x}", Sha256::digest(serialized.as_bytes())),
-        "9bac614e7957a4134505790e4217ec84f6ec4be2f54806434c8a004726a4f9fe"
+        "53f9fb27de875d36256fc9c44092350d6e69dfbbe6b0b2649a2d850d6bc9c46d"
     );
 }
 
 #[test]
+fn local_daemon_reimage_request_rejects_missing_context_plan() {
+    let request = serde_json::json!({
+        "RequestManagedEnvironmentReimage": {
+            "environmentId": "environment-1",
+            "expectedGeneration": 1,
+            "expectedProviderServerId": "123456789",
+            "expectedProviderImageId": "987654321",
+            "expectedProviderProfileId": "hetzner-path1",
+            "expectedProviderProfileDigest": format!("sha256:{}", "b".repeat(64)),
+            "expectedRuntimeReleaseDigest": format!("sha256:{}", "e".repeat(64)),
+            "expectedRuntimeSourceCommit": "c".repeat(40),
+            "expectedRuntimeSourceTree": "d".repeat(40),
+            "idempotencyKey": "reimage-1",
+        }
+    });
+
+    let error = serde_json::from_value::<LocalDaemonRequest>(request)
+        .expect_err("reimage contextPlan must be required");
+    assert!(error.to_string().contains("contextPlan"));
+}
+
+#[test]
 fn local_daemon_pre_reimage_observation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 338);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 339);
     let snapshot = serde_json::json!([
         LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(
             ObserveManagedEnvironmentPreReimageRequest {
