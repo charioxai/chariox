@@ -2,10 +2,11 @@ use super::*;
 
 #[test]
 fn append_native_provider_output_batch_fans_out_and_records_history() {
+    let worktree = crate::test_support::TestWorktree::new("terminal-native-output-batch");
     let harness = LocalRouterTestHarness::new();
     let (session, default_agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-batch-output", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session should be created")
     {
@@ -101,10 +102,11 @@ fn append_native_provider_output_batch_fans_out_and_records_history() {
 
 #[test]
 fn append_native_provider_output_batch_keeps_repeated_private_outputs_scoped() {
+    let worktree = crate::test_support::TestWorktree::new("terminal-private-output-batch");
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-private-batch-output", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session should be created")
     {
