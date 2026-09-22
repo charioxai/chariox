@@ -374,7 +374,8 @@ fn assert_workflow_queue_promotion_append_failure_is_retryable(requested: bool) 
         let error = runtime
             .owned
             .workflow_start_next_queued_prompt_for_response(&session_id)
-            .expect_err("failed append must reject requested promotion");
+            .err()
+            .expect("failed append must reject requested promotion");
         assert!(
             error
                 .to_string()
