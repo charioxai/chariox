@@ -622,6 +622,7 @@ test("managed slice provider namespaces receive the required outer Docker compat
   assert.match(provisioner, /--security-opt systempaths=unconfined/)
   assert.match(provisioner, /SLICE_APPARMOR_PROFILE.*\^\[A-Za-z0-9\]/)
   assert.match(provisioner, /CHARIOX_SLICE_ALLOW_UNCONFINED_SECCOMP must be 0 or 1/)
+  assert.match(provisioner, /CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY must be 0 or 1/)
 })
 
 test("Hetzner snapshot labels preserve the complete release digest within provider limits", async () => {

@@ -69,6 +69,7 @@ SLICE_WORKSPACE_SOURCE="${CHARIOX_SLICE_WORKSPACE_SOURCE:-$SLICE_WORKSPACE}"
 SLICE_DEVELOPMENT_MOUNT_COUNT="${CHARIOX_SLICE_DEVELOPMENT_MOUNT_COUNT:-0}"
 SLICE_WORKSPACE_MOUNT_MODE="${CHARIOX_SLICE_WORKSPACE_MOUNT_MODE:-rw}"
 SLICE_ALLOW_UNCONFINED_SECCOMP="${CHARIOX_SLICE_ALLOW_UNCONFINED_SECCOMP:-0}"
+SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY="${CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY:-0}"
 SLICE_APPARMOR_PROFILE="${CHARIOX_SLICE_APPARMOR_PROFILE:-unconfined}"
 SLICE_RECREATE="${CHARIOX_SLICE_RECREATE:-0}"
 SLICE_START_DESKTOP="${CHARIOX_SLICE_START_DESKTOP:-1}"
@@ -596,6 +597,25 @@ refresh_saved_state_runtime() {
   log "refreshed saved slice worker runtime to $SLICE_RUNTIME_SOURCE_REVISION"
 }
 
+probe_provider_sandbox_compatibility() {
+  [[ "$SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY" == "1" ]] || return 0
+  log "probing nested provider sandbox compatibility"
+  if ! run_with_timeout 30 docker exec -u slice "$SLICE_NAME" \
+    setpriv --no-new-privs \
+    bwrap \
+      --die-with-parent \
+      --new-session \
+      --unshare-user \
+      --unshare-pid \
+      --ro-bind / / \
+      --proc /proc \
+      --dev /dev \
+      -- /bin/true; then
+    fail "provider sandbox compatibility probe failed; the selected Docker security boundary cannot create the Bubblewrap namespace required by provider sandboxes. On restricted Ubuntu hosts, load chariox-slice-provider.apparmor and select it with CHARIOX_SLICE_APPARMOR_PROFILE"
+  fi
+  log "provider sandbox compatibility probe passed"
+}
+
 apply_container_process_limit() {
   run_with_timeout 30 docker update --pids-limit "$SLICE_DOCKER_PIDS_LIMIT" "$SLICE_NAME" >/dev/null \
     || fail "failed to apply slice process limit; refusing to start services"
@@ -633,6 +653,10 @@ ensure_container() {
     0|1) ;;
     *) fail "CHARIOX_SLICE_ALLOW_UNCONFINED_SECCOMP must be 0 or 1" ;;
   esac
+  case "$SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY" in
+    0|1) ;;
+    *) fail "CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY must be 0 or 1" ;;
+  esac
 
   if container_exists; then
     log "container $SLICE_NAME already exists"
@@ -665,7 +689,7 @@ ensure_container() {
       -v "$SLICE_WORKSPACE_SOURCE:/workspace:$SLICE_WORKSPACE_MOUNT_MODE"
       --add-host "host.docker.internal:host-gateway"
     )
-    if [[ "$SLICE_ALLOW_UNCONFINED_SECCOMP" == "1" ]]; then
+    if [[ "$SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY" == "1" ]]; then
       # The worker kernel launches providers through an inner bubblewrap user,
       # PID, and mount namespace. Docker's default seccomp, AppArmor, and
       # system-path masks block that setup before bubblewrap can install the
@@ -681,6 +705,8 @@ ensure_container() {
         --security-opt apparmor="$SLICE_APPARMOR_PROFILE"
         --security-opt systempaths=unconfined
       )
+    elif [[ "$SLICE_ALLOW_UNCONFINED_SECCOMP" == "1" ]]; then
+      docker_create_args+=(--security-opt seccomp=unconfined)
     else
       # Chromium still installs its own renderer namespace and seccomp sandbox.
       # Preserve Docker's default restrictions except the namespace syscalls
@@ -757,6 +783,7 @@ ensure_container() {
   configure_slice_state_directory
   refresh_slice_support_files
   refresh_saved_state_runtime
+  probe_provider_sandbox_compatibility
 }
 
 recover_existing_container() {

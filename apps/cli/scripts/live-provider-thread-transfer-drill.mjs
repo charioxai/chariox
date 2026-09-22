@@ -360,6 +360,7 @@ async function main() {
             sliceRoot,
             image: sliceImage,
             buildImage: options.sliceBuildImage,
+            allowProviderSandboxCompatibility: options.allowProviderSandboxCompatibility,
           }),
         })
         const sliceBuildEnv = providerThreadSliceBuildEnv()

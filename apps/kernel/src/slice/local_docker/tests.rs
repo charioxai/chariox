@@ -216,6 +216,7 @@ pub(super) fn test_options() -> LocalDockerSliceOptions {
         build_image: SliceImageBuildPolicy::Never,
         extension_dockerfile: None,
         allow_unconfined_seccomp: false,
+        allow_provider_sandbox_compatibility: false,
         memory_mb: None,
         cpus: None,
         screen_width: 1280,
@@ -1249,13 +1250,13 @@ fn local_docker_slice_uses_the_safe_default_memory_limit() {
 }
 
 #[test]
-fn local_docker_slice_compatibility_mode_probes_the_named_apparmor_boundary() {
+fn local_docker_provider_sandbox_compatibility_selects_named_apparmor_boundary() {
     let _guard = crate::env_lock::lock();
     let previous_profile = std::env::var_os("CHARIOX_SLICE_APPARMOR_PROFILE");
     std::env::set_var("CHARIOX_SLICE_APPARMOR_PROFILE", "chariox-slice-provider");
     let record = test_record();
     let mut options = test_options();
-    options.allow_unconfined_seccomp = true;
+    options.allow_provider_sandbox_compatibility = true;
     let mut command = Command::new("slice-provisioner");
 
     configure_local_docker_slice_command(&mut command, &record, None, &options, true).unwrap();
@@ -1273,7 +1274,7 @@ fn local_docker_slice_compatibility_mode_probes_the_named_apparmor_boundary() {
         Some(&"chariox-slice-provider")
     );
     assert_eq!(
-        envs.get("CHARIOX_MANAGED_PROVIDER_ISOLATION_PROBE"),
+        envs.get("CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY"),
         Some(&"1")
     );
 }

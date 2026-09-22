@@ -246,6 +246,7 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
         CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-dev-home",
         CHARIOX_SLICE_OWNER_PUBLIC_KEY: ownerPublicKey,
         CHARIOX_SLICE_APPARMOR_PROFILE: "chariox-slice-provider",
+        CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY: "1",
       },
       files: [],
     },
