@@ -88,7 +88,7 @@ fn server_revocation_registry_gates_the_attached_verifier() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn subject_revocation_evicts_only_the_connected_old_kernel() {
+async fn subject_revocation_evicts_old_kernel_and_machine_issued_client_only() {
     let mut old_kernel = scoped_claim(
         "old-kernel-jti",
         "kernel-old",
@@ -119,6 +119,17 @@ async fn subject_revocation_evicts_only_the_connected_old_kernel() {
     );
     controller.account_id = Some("account-1".to_string());
     controller.client_id = Some("controller-client".to_string());
+    let mut old_machine_client = scoped_claim(
+        "old-machine-client-jti",
+        "old-machine-client",
+        RelaySubjectKind::Client,
+        "realm-a",
+        vec![RelayAction::ClientConnect],
+        Some(vec!["kernel-replacement"]),
+    );
+    old_machine_client.account_id = Some("account-1".to_string());
+    old_machine_client.machine_id = Some("machine-old".to_string());
+    old_machine_client.client_id = Some("old-machine-client".to_string());
 
     let server = Arc::new(RelayServer::with_auth_verifier(
         RelayConfig {
@@ -131,6 +142,7 @@ async fn subject_revocation_evicts_only_the_connected_old_kernel() {
                 ("old-kernel-token".to_string(), old_kernel),
                 ("replacement-token".to_string(), replacement),
                 ("controller-token".to_string(), controller),
+                ("old-machine-client-token".to_string(), old_machine_client),
             ]),
             BTreeMap::new(),
             Some(10),
@@ -217,6 +229,30 @@ async fn subject_revocation_evicts_only_the_connected_old_kernel() {
         )),
         other => panic!("unexpected controller connect response: {other:?}"),
     }
+    let (mut old_machine_client_socket, _) = connect_async_with_retry(&url)
+        .await
+        .expect("old-machine-issued client should connect before revocation");
+    old_machine_client_socket
+        .send(Message::Text(
+            serde_json::to_string(&RelayEnvelope::ClientConnect {
+                auth_token: "old-machine-client-token".to_string(),
+                target: crate::protocol::ClientTarget {
+                    daemon_id: Some("kernel-replacement".to_string()),
+                    daemon_alias: None,
+                },
+            })
+            .expect("client connect should serialize")
+            .into(),
+        ))
+        .await
+        .expect("old-machine-issued client connect should send");
+    match old_machine_client_socket.next().await {
+        Some(Ok(Message::Text(text))) => assert!(matches!(
+            serde_json::from_str::<RelayEnvelope>(&text).expect("connect should decode"),
+            RelayEnvelope::ClientConnected { .. }
+        )),
+        other => panic!("unexpected old-machine-issued client response: {other:?}"),
+    }
 
     let revocations = serde_json::json!({
         "revocations": [
@@ -254,6 +290,23 @@ async fn subject_revocation_evicts_only_the_connected_old_kernel() {
             Err(_) => panic!("old kernel was not evicted after revocation"),
         }
     }
+    loop {
+        match timeout(Duration::from_millis(500), old_machine_client_socket.next()).await {
+            Ok(Some(Ok(Message::Text(text)))) => {
+                if let RelayEnvelope::Close { reason } =
+                    serde_json::from_str::<RelayEnvelope>(&text).expect("close should decode")
+                {
+                    assert_eq!(reason, "relay token revoked");
+                    break;
+                }
+            }
+            Ok(Some(Ok(Message::Ping(_)))) | Ok(Some(Ok(Message::Pong(_)))) => {}
+            Ok(other) => {
+                panic!("old-machine-issued client closed without revocation notice: {other:?}")
+            }
+            Err(_) => panic!("old-machine-issued client was not evicted after revocation"),
+        }
+    }
     sleep(Duration::from_millis(50)).await;
 
     let connected_subjects = registry
@@ -270,6 +323,9 @@ async fn subject_revocation_evicts_only_the_connected_old_kernel() {
     assert!(!connected_subjects
         .iter()
         .any(|subject| subject == "kernel-old"));
+    assert!(!connected_subjects
+        .iter()
+        .any(|subject| subject == "old-machine-client"));
     assert!(connected_subjects
         .iter()
         .any(|subject| subject == "kernel-replacement"));
@@ -303,6 +359,17 @@ async fn subject_revocation_evicts_only_the_connected_old_kernel() {
                 target: None,
             })
             .expect_err("old kernel must be denied on new admission"),
+        RelayAuthError::TokenRevoked
+    );
+    assert_eq!(
+        server
+            .auth_verifier()
+            .verify(RelayAuthRequest {
+                token: "old-machine-client-token",
+                action: RelayAction::ClientConnect,
+                target: Some("kernel-replacement"),
+            })
+            .expect_err("old-machine-issued client must be denied on new admission"),
         RelayAuthError::TokenRevoked
     );
     server

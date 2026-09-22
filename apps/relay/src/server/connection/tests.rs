@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use tokio::sync::{mpsc, RwLock};
@@ -5,7 +6,10 @@ use tokio::sync::{mpsc, RwLock};
 use super::support::*;
 use super::*;
 use crate::auth::DEFAULT_RELAY_REALM_ID;
-use crate::auth::{RelaySubjectKind, VerifiedRelayIdentity};
+use crate::auth::{
+    RelayRevocationRegistry, RelaySubjectKind, RelayTokenClaims, ScopedTokenVerifier,
+    VerifiedRelayIdentity,
+};
 use crate::protocol::{ClientTarget, DaemonRegistration, EncryptedRelayPayload};
 use crate::registry::{PendingClientRequest, RelaySender};
 
@@ -188,11 +192,124 @@ fn daemon_peer(sender: RelaySender, registration: DaemonRegistration) -> PeerHan
         role: RelayConnectionRole::Daemon,
         realm_id: Some(DEFAULT_RELAY_REALM_ID.to_string()),
         identity: None,
-        allowed_actions: Vec::new(),
+        allowed_actions: vec![RelayAction::DaemonRegister],
         allowed_targets: None,
         daemon_registration: Some(registration),
         client_daemon_key: None,
     }
+}
+
+#[tokio::test]
+async fn revoked_daemon_is_not_route_admitted_before_watch_cleanup() {
+    let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "kernel-old");
+    let daemon_addr = peer_addr(10_010);
+    let client_addr = peer_addr(10_011);
+    let (daemon_sender, mut daemon_receiver) = mpsc::channel::<Message>(2);
+    let (client_sender, mut client_receiver) = mpsc::channel::<Message>(2);
+    let mut registration = daemon_registration("kernel-old");
+    registration.machine_id = "machine-old".to_string();
+    registration.auth_token = "old-kernel-token".to_string();
+
+    let mut registry = RelayRegistry::default();
+    registry
+        .daemons
+        .insert(daemon_key.clone(), registration.clone());
+    registry.peers.insert(
+        daemon_addr,
+        daemon_peer(daemon_sender.clone(), registration),
+    );
+    registry
+        .daemon_peers
+        .insert(daemon_key.clone(), daemon_addr);
+    let mut client = client_peer(client_sender.clone());
+    client.client_daemon_key = Some(daemon_key.clone());
+    registry.peers.insert(client_addr, client);
+    let routes = registry.route_index();
+    routes.set_daemon_sender(daemon_key.clone(), daemon_sender);
+    let registry = Arc::new(RwLock::new(registry));
+
+    let revocations = RelayRevocationRegistry::new();
+    let claims = RelayTokenClaims {
+        issuer: "issuer".to_string(),
+        subject: "kernel-old".to_string(),
+        subject_kind: RelaySubjectKind::Kernel,
+        realm_id: DEFAULT_RELAY_REALM_ID.to_string(),
+        allowed_actions: vec![RelayAction::DaemonRegister],
+        allowed_targets: None,
+        issued_at_ms: 1,
+        expires_at_ms: 100,
+        token_id: "old-kernel-jti".to_string(),
+        account_id: Some("account-1".to_string()),
+        organization_id: None,
+        user_id: None,
+        device_id: None,
+        machine_id: Some("machine-old".to_string()),
+        client_id: None,
+        session_id: None,
+        public_key_thumbprint: None,
+        entitlements_version: None,
+    };
+    let auth_verifier = RelayAuthVerifier::ScopedToken(
+        ScopedTokenVerifier::new(
+            BTreeMap::from([("old-kernel-token".to_string(), claims)]),
+            BTreeMap::new(),
+            Some(10),
+        )
+        .with_revocations(revocations.clone()),
+    );
+    revocations.revoke_scoped_subject(
+        "account-1",
+        RelaySubjectKind::Kernel,
+        "kernel-old",
+        100,
+    );
+    let relay_request_counter = AtomicU64::new(0);
+
+    let action = handle_client_packet_route_envelope(
+        RelayEnvelope::ClientRequest {
+            request_id: "request-after-revocation".to_string(),
+            target: ClientTarget {
+                daemon_id: Some("kernel-old".to_string()),
+                daemon_alias: None,
+            },
+            encrypted_request: encrypted_payload(),
+        },
+        &registry,
+        &routes,
+        &auth_verifier,
+        client_addr,
+        &client_sender,
+        &relay_request_counter,
+    )
+    .await
+    .expect("revoked target should be rejected without closing the client");
+
+    assert_eq!(action, ConnectionAction::Continue);
+    assert!(matches!(
+        daemon_receiver.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+    let Message::Text(payload) = client_receiver
+        .try_recv()
+        .expect("client should receive target-not-connected")
+    else {
+        panic!("expected client response text")
+    };
+    assert!(matches!(
+        serde_json::from_str::<RelayEnvelope>(&payload).expect("response should decode"),
+        RelayEnvelope::ClientResponse {
+            request_id,
+            error: Some(error),
+            ..
+        } if request_id == "request-after-revocation"
+            && error.code == "target_not_connected"
+            && error.retryable
+    ));
+    let guard = registry.read().await;
+    assert!(guard.daemons.contains_key(&daemon_key));
+    assert!(routes.daemon_sender(&daemon_key).is_some());
+    assert!(guard.peers.contains_key(&client_addr));
+    assert_eq!(guard.pending_request_count(), 0);
 }
 
 fn client_peer(sender: RelaySender) -> PeerHandle {
@@ -437,9 +554,11 @@ async fn alias_resolution_ignores_temporary_peer_transport_registrations() {
         .route_index()
         .set_daemon_sender(real_key.clone(), real_sender);
     let registry = Arc::new(RwLock::new(registry));
+    let auth_verifier = RelayAuthVerifier::shared(None);
 
     let resolved = resolve_target_daemon_key(
         &registry,
+        &auth_verifier,
         DEFAULT_RELAY_REALM_ID,
         &ClientTarget {
             daemon_id: None,
@@ -479,9 +598,11 @@ async fn target_resolution_and_live_metadata_ignore_stale_daemon_registration() 
         .route_index()
         .set_daemon_sender(live_key.clone(), live_sender);
     let registry = Arc::new(RwLock::new(registry));
+    let auth_verifier = RelayAuthVerifier::shared(None);
 
     let stale_exact = resolve_target_daemon_key(
         &registry,
+        &auth_verifier,
         DEFAULT_RELAY_REALM_ID,
         &ClientTarget {
             daemon_id: Some("daemon-stale".to_string()),
@@ -491,6 +612,7 @@ async fn target_resolution_and_live_metadata_ignore_stale_daemon_registration() 
     .await;
     let stale_alias = resolve_target_daemon_key(
         &registry,
+        &auth_verifier,
         DEFAULT_RELAY_REALM_ID,
         &ClientTarget {
             daemon_id: None,
@@ -500,6 +622,7 @@ async fn target_resolution_and_live_metadata_ignore_stale_daemon_registration() 
     .await;
     let live_exact = resolve_target_daemon_key(
         &registry,
+        &auth_verifier,
         DEFAULT_RELAY_REALM_ID,
         &ClientTarget {
             daemon_id: Some("daemon-live".to_string()),
@@ -693,6 +816,7 @@ async fn target_backpressure_client_case() -> bool {
     routes.set_daemon_sender(daemon_key.clone(), daemon_sender);
     let registry = Arc::new(RwLock::new(registry));
     let relay_request_counter = AtomicU64::new(0);
+    let auth_verifier = RelayAuthVerifier::shared(None);
 
     handle_client_packet_route_envelope(
         RelayEnvelope::ClientRequest {
@@ -705,6 +829,7 @@ async fn target_backpressure_client_case() -> bool {
         },
         &registry,
         &routes,
+        &auth_verifier,
         client_addr,
         &client_sender,
         &relay_request_counter,
@@ -754,6 +879,7 @@ async fn target_backpressure_client_case() -> bool {
         },
         &registry,
         &routes,
+        &auth_verifier,
         client_addr,
         &client_sender,
         &relay_request_counter,
