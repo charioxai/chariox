@@ -519,6 +519,66 @@ mod tests {
     }
 
     #[test]
+    fn restart_does_not_confuse_same_millisecond_activity_transitions() {
+        let state_path = test_state_path("journal-aba");
+        let store = DurableKernelStateStore::open(state_path.clone()).expect("open store");
+        let state = ManagedActivityTransitionState::new(store.clone(), Some("kernel-aba".into()));
+        let database = rusqlite::Connection::open(&state_path).expect("failure injector");
+        database
+            .execute_batch(
+                "CREATE TRIGGER fail_activity BEFORE INSERT ON durable_state_events
+             WHEN NEW.kind = 'managed_kernel.activity.changed'
+             BEGIN SELECT RAISE(FAIL, 'injected activity append failure'); END;",
+            )
+            .expect("install failure");
+        for (sequence, count) in [(0, 0), (1, 1), (2, 0)] {
+            state
+                .record_transition(sequence, count, 1_000)
+                .expect_err("journal survives failed database append");
+        }
+        let journal_bytes = std::fs::read(state.pending_journal_path()).expect("saved journal");
+        database
+            .execute_batch("DROP TRIGGER fail_activity;")
+            .expect("recover storage");
+        database.execute_batch(
+            "CREATE TRIGGER fail_after_first BEFORE INSERT ON durable_state_events
+             WHEN NEW.kind = 'managed_kernel.activity.changed'
+               AND EXISTS (SELECT 1 FROM durable_state_events WHERE kind = 'managed_kernel.activity.changed')
+             BEGIN SELECT RAISE(FAIL, 'partial activity append failure'); END;",
+        ).expect("stop after first commit");
+        state
+            .current_observation(0)
+            .expect_err("only first transition commits");
+        // Model the crash window before the pending journal acknowledges that commit.
+        assert_eq!(
+            std::fs::read(state.pending_journal_path()).unwrap(),
+            journal_bytes
+        );
+        drop(state);
+        database
+            .execute_batch("DROP TRIGGER fail_after_first;")
+            .expect("recover storage");
+        drop(database);
+        let restored =
+            ManagedActivityTransitionState::new(store.clone(), Some("kernel-aba".into()));
+        restored.current_observation(0).expect("recover final idle");
+        let events = store
+            .load_subject_events_by_kind("kernel-aba", MANAGED_ACTIVITY_EVENT_KIND, 10)
+            .expect("read transitions");
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.payload["runningAgentCount"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![0, 1, 0],
+            "equal observation values must not acknowledge uncommitted transitions"
+        );
+        drop(restored);
+        drop(store);
+        remove_test_state(&state_path);
+    }
+
+    #[test]
     fn idle_transition_survives_reporter_and_kernel_state_restart() {
         let state_path = test_state_path("restart");
         {
