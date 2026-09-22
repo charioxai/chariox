@@ -12,14 +12,59 @@ async fn cancel_append_failure_preserves_interrupt_state_and_retries_once() {
     run_interrupt_append_failure_regression(false).await;
 }
 
+#[test]
+fn paused_interrupt_prompt_removal_survives_restart() {
+    assert_interrupt_prompt_removal_survives_restart(true);
+}
+
+#[test]
+fn cancelled_interrupt_prompt_removal_survives_restart() {
+    assert_interrupt_prompt_removal_survives_restart(false);
+}
+
 async fn run_interrupt_append_failure_regression(pause: bool) {
     let fixture = interrupt_fixture();
+    let stale_projection = fixture
+        .runtime
+        .owned
+        .session_projection
+        .get(&fixture.session_id)
+        .expect("fixture session projection should exist");
+    let activity_before_projection_normalization = fixture.runtime.managed_activity_snapshot();
     let baseline_session = fixture
         .runtime
         .owned
-        .session_store
-        .get_session(&fixture.session_id)
-        .expect("running workflow session should remain available");
+        .session_snapshot(&fixture.session_id)
+        .expect("running workflow session projection should normalize");
+    assert_eq!(
+        stale_projection.active_provider_run_id(),
+        None,
+        "fixture setup deliberately leaves the session projection behind provider state"
+    );
+    assert_eq!(
+        baseline_session.active_provider_run_id(),
+        Some("interrupt-provider-run"),
+        "projection normalization should expose the fixture's active provider"
+    );
+    let baseline_activity = fixture.runtime.managed_activity_snapshot();
+    assert_eq!(
+        baseline_activity,
+        (
+            activity_before_projection_normalization.0.saturating_add(1),
+            activity_before_projection_normalization.1,
+        ),
+        "the first snapshot should account only for the fixture's stale projection"
+    );
+    fixture
+        .runtime
+        .owned
+        .session_snapshot(&fixture.session_id)
+        .expect("unchanged-work control snapshot should succeed");
+    assert_eq!(
+        fixture.runtime.managed_activity_snapshot(),
+        baseline_activity,
+        "an unchanged snapshot after normalization must not advance the activity sequence"
+    );
     let baseline_target_prompts = fixture
         .runtime
         .owned
@@ -30,26 +75,36 @@ async fn run_interrupt_append_failure_regression(pause: bool) {
         .owned
         .prompt_state_owner
         .state_parts(&baseline_session, &fixture.unrelated_agent_id);
+    let baseline_second_target_prompts = fixture
+        .runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&baseline_session, &fixture.second_target_agent_id);
     assert!(baseline_target_prompts.0.is_some());
-    assert_eq!(baseline_target_prompts.1.len(), 1);
+    assert_eq!(baseline_target_prompts.1.len(), 2);
+    assert!(baseline_second_target_prompts.0.is_some());
+    assert_eq!(baseline_second_target_prompts.1.len(), 2);
     assert!(baseline_unrelated_prompts.0.is_some());
     assert!(fixture
         .runtime
         .owned
         .prompt_workspace_claims
         .contains(&fixture.claim_id));
-    let baseline_activity = fixture.runtime.managed_activity_snapshot();
 
     let reason = if pause {
         "workflow_run_paused"
     } else {
         "workflow_run_cancelled"
     };
-    let injected_message = if pause {
-        "injected workflow pause append failure"
-    } else {
-        "injected workflow cancel append failure"
-    };
+    let injected_message = "injected composite prompt-state append failure";
+    let mut affected_agent_ids = vec![
+        fixture.target_agent_id.clone(),
+        fixture.second_target_agent_id.clone(),
+    ];
+    affected_agent_ids.sort();
+    let fail_agent_id = affected_agent_ids
+        .last()
+        .expect("two affected agents should exist");
     let state_path = fixture
         .runtime
         .owned
@@ -62,13 +117,21 @@ async fn run_interrupt_append_failure_regression(pause: bool) {
         .execute_batch(&format!(
             "CREATE TRIGGER fail_workflow_interrupt_append
              BEFORE INSERT ON durable_state_events
-             WHEN NEW.kind = 'workflow.runtime.updated'
-               AND instr(NEW.payload_json, '\"reason\":\"{reason}\"') > 0
+             WHEN NEW.kind = 'session.prompt_state.updated'
+               AND json_extract(NEW.payload_json, '$.agent_id') = '{fail_agent_id}'
              BEGIN
                SELECT RAISE(FAIL, '{injected_message}');
              END;"
         ))
         .expect("interrupt append failure trigger should install");
+    let workflow_event_count_before = workflow_interrupt_event_count(&fixture, reason);
+    let prompt_event_count_before = fixture
+        .runtime
+        .owned
+        .durable_state_store
+        .load_events_by_kind(crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND)
+        .expect("baseline prompt-state events should load")
+        .len();
 
     let (failed, projected) = if pause {
         fixture
@@ -120,6 +183,15 @@ async fn run_interrupt_append_failure_regression(pause: bool) {
         baseline_unrelated_prompts,
         "failed interrupt must preserve another agent's prompt state"
     );
+    assert_eq!(
+        fixture
+            .runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&rolled_back, &fixture.second_target_agent_id),
+        baseline_second_target_prompts,
+        "failed interrupt must preserve the second affected agent's prompt state"
+    );
     assert!(
         fixture
             .runtime
@@ -155,7 +227,24 @@ async fn run_interrupt_append_failure_regression(pause: bool) {
     );
     assert_eq!(
         fixture.runtime.managed_activity_snapshot(),
-        baseline_activity
+        baseline_activity,
+        "a post-rejection snapshot of unchanged work must remain sequence-neutral"
+    );
+    assert_eq!(
+        workflow_interrupt_event_count(&fixture, reason),
+        workflow_event_count_before,
+        "a rejected composite write must roll back its workflow event"
+    );
+    assert_eq!(
+        fixture
+            .runtime
+            .owned
+            .durable_state_store
+            .load_events_by_kind(crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND)
+            .expect("prompt-state events should remain readable")
+            .len(),
+        prompt_event_count_before,
+        "a failure on the second prompt record must roll back the first prompt record"
     );
 
     connection
@@ -205,7 +294,22 @@ async fn run_interrupt_append_failure_regression(pause: bool) {
         target_prompts.0.as_ref().map(|prompt| prompt.status()),
         Some(crate::session::PromptStatus::Cancelling)
     );
-    assert!(target_prompts.1.is_empty());
+    assert_eq!(target_prompts.1.len(), 1);
+    assert!(target_prompts
+        .1
+        .iter()
+        .all(|prompt| prompt.workflow_run_id() != Some(fixture.workflow_run_id.as_str())));
+    let second_target_prompts = fixture
+        .runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&projected, &fixture.second_target_agent_id);
+    assert_eq!(second_target_prompts.0, baseline_second_target_prompts.0);
+    assert_eq!(second_target_prompts.1.len(), 1);
+    assert!(second_target_prompts
+        .1
+        .iter()
+        .all(|prompt| prompt.workflow_run_id() != Some(fixture.workflow_run_id.as_str())));
     assert_eq!(
         fixture
             .runtime
@@ -239,6 +343,143 @@ async fn run_interrupt_append_failure_regression(pause: bool) {
         .expect("durable interrupted workflow run should load");
     assert_eq!(durable_runs.workflow_runs.len(), 1);
     assert_eq!(durable_runs.workflow_runs[0].status(), expected_status);
+    assert_eq!(
+        workflow_interrupt_event_count(&fixture, reason),
+        workflow_event_count_before + 1,
+        "the successful retry must commit the workflow interrupt exactly once"
+    );
+}
+
+fn workflow_interrupt_event_count(fixture: &InterruptFixture, reason: &str) -> usize {
+    fixture
+        .runtime
+        .owned
+        .durable_state_store
+        .load_events_by_kind("workflow.runtime.updated")
+        .expect("workflow runtime events should load")
+        .into_iter()
+        .filter(|event| event.payload["reason"] == reason)
+        .count()
+}
+
+fn assert_interrupt_prompt_removal_survives_restart(pause: bool) {
+    let executor = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("interrupt restart test executor should start");
+    let restart = executor.block_on(commit_interrupt_for_restart(pause));
+    drop(executor);
+
+    let restored = DaemonApp::bootstrap(restart.config.clone())
+        .expect("kernel should restore the committed interrupt");
+    let restored_session = restored
+        .sessions()
+        .get_session(&restart.session_id)
+        .expect("interrupted session should restore");
+    let prompt_owner = restored.prompt_state_owner();
+    for (agent_id, unrelated_prompt_id) in [
+        (
+            &restart.target_agent_id,
+            &restart.target_unrelated_prompt_id,
+        ),
+        (
+            &restart.second_target_agent_id,
+            &restart.second_target_unrelated_prompt_id,
+        ),
+    ] {
+        let (_, queued) = prompt_owner.state_parts(&restored_session, agent_id);
+        assert!(
+            queued
+                .iter()
+                .all(|prompt| prompt.workflow_run_id() != Some(restart.workflow_run_id.as_str())),
+            "restart must not replay a queued prompt from the interrupted workflow"
+        );
+        assert!(
+            queued
+                .iter()
+                .any(|prompt| prompt.id() == unrelated_prompt_id.as_str()),
+            "restart must preserve unrelated queued work for an affected agent"
+        );
+    }
+    let (_, unrelated_queued) =
+        prompt_owner.state_parts(&restored_session, &restart.unrelated_agent_id);
+    assert!(
+        unrelated_queued
+            .iter()
+            .any(|prompt| prompt.id() == restart.unrelated_queued_prompt_id.as_str()),
+        "restart must preserve an unrelated agent's queued work"
+    );
+
+    let expected_status = if pause {
+        crate::session::WorkflowRunStatus::Paused
+    } else {
+        crate::session::WorkflowRunStatus::Stopped
+    };
+    let durable_runs = restored
+        .durable_state_store()
+        .list_workflow_runs_page(
+            restored_session.host_daemon_id(),
+            &restart.session_id,
+            Some(&restart.workflow_id),
+            None,
+            10,
+        )
+        .expect("interrupted workflow history should restore");
+    assert_eq!(durable_runs.workflow_runs.len(), 1);
+    assert_eq!(durable_runs.workflow_runs[0].status(), expected_status);
+}
+
+async fn commit_interrupt_for_restart(pause: bool) -> InterruptRestartAssertion {
+    let fixture = interrupt_fixture();
+    let result = if pause {
+        fixture
+            .runtime
+            .execute_workflow_pause_run_request(crate::local::PauseWorkflowRunRequest {
+                session_id: fixture.session_id.clone(),
+                workflow_run_ref: fixture.workflow_run_id.clone(),
+            })
+            .await
+    } else {
+        fixture
+            .runtime
+            .execute_workflow_cancel_run_request(crate::local::CancelWorkflowRunRequest {
+                session_id: fixture.session_id.clone(),
+                workflow_run_ref: fixture.workflow_run_id.clone(),
+            })
+            .await
+    };
+    result
+        .0
+        .expect("workflow interrupt should commit before restart");
+    let restart = InterruptRestartAssertion {
+        config: fixture.config.clone(),
+        session_id: fixture.session_id.clone(),
+        workflow_id: fixture.workflow_id.clone(),
+        workflow_run_id: fixture.workflow_run_id.clone(),
+        target_agent_id: fixture.target_agent_id.clone(),
+        second_target_agent_id: fixture.second_target_agent_id.clone(),
+        unrelated_agent_id: fixture.unrelated_agent_id.clone(),
+        target_unrelated_prompt_id: fixture.target_unrelated_prompt_id.clone(),
+        second_target_unrelated_prompt_id: fixture.second_target_unrelated_prompt_id.clone(),
+        unrelated_queued_prompt_id: fixture.unrelated_queued_prompt_id.clone(),
+        _worktree: fixture._worktree,
+    };
+    drop(fixture.runtime);
+    restart
+}
+
+struct InterruptRestartAssertion {
+    config: crate::config::DaemonConfig,
+    session_id: String,
+    workflow_id: String,
+    workflow_run_id: String,
+    target_agent_id: String,
+    second_target_agent_id: String,
+    unrelated_agent_id: String,
+    target_unrelated_prompt_id: String,
+    second_target_unrelated_prompt_id: String,
+    unrelated_queued_prompt_id: String,
+    _worktree: crate::test_support::TestWorktree,
 }
 
 fn assert_running_workflow(
@@ -268,20 +509,25 @@ fn assert_running_workflow(
 
 struct InterruptFixture {
     runtime: KernelRuntimeState,
+    config: crate::config::DaemonConfig,
     session_id: String,
     workflow_id: String,
     workflow_run_id: String,
     node_run_id: String,
     target_agent_id: String,
+    second_target_agent_id: String,
     unrelated_agent_id: String,
+    target_unrelated_prompt_id: String,
+    second_target_unrelated_prompt_id: String,
+    unrelated_queued_prompt_id: String,
     claim_id: String,
     _worktree: crate::test_support::TestWorktree,
 }
 
 fn interrupt_fixture() -> InterruptFixture {
     let worktree = crate::test_support::TestWorktree::new("workflow-interrupt-durability");
-    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
-        .expect("daemon bootstrap should succeed");
+    let config = crate::config::DaemonConfig::for_tests();
+    let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
     let (session, _) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .expect("session should be created");
@@ -297,6 +543,12 @@ fn interrupt_fixture() -> InterruptFixture {
                 .with_alias("interrupt-unrelated"),
         )
         .expect("unrelated agent should be created");
+    let second_target_agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("interrupt-second-target"),
+        )
+        .expect("second affected workflow agent should be created");
     let workflow = app
         .sessions_mut()
         .create_workflow(session.id(), Some("interrupt-durability".to_string()))
@@ -369,6 +621,63 @@ fn interrupt_fixture() -> InterruptFixture {
     else {
         panic!("second workflow prompt should queue");
     };
+    let target_unrelated_prompt_id = "interrupt-target-unrelated-queued".to_string();
+    let target_unrelated_prompt = crate::session::PromptQueueItem::new(
+        target_unrelated_prompt_id.as_str(),
+        crate::scheduler::runtime::workflow_prompt_source_attachment_id("unrelated-target-run"),
+        target_agent.id(),
+        "unrelated queued prompt for target agent",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Queued { .. } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), target_unrelated_prompt, true)
+        .expect("target agent's unrelated prompt should queue")
+    else {
+        panic!("target agent's unrelated prompt should remain queued");
+    };
+    let second_target_active = crate::session::PromptQueueItem::new(
+        "interrupt-second-target-active",
+        crate::scheduler::runtime::workflow_prompt_source_attachment_id("unrelated-second-run"),
+        second_target_agent.id(),
+        "second target's unrelated active prompt",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Started { .. } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), second_target_active, false)
+        .expect("second target's unrelated prompt should start")
+    else {
+        panic!("second target's unrelated prompt should start");
+    };
+    let second_target_workflow_prompt = crate::session::PromptQueueItem::new(
+        "interrupt-second-target-workflow-queued",
+        crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),
+        second_target_agent.id(),
+        "second target's queued workflow prompt",
+        crate::session::PromptStatus::Queued,
+    )
+    .with_workflow_context(workflow_run.id(), &node_run_id);
+    let crate::session::PromptSubmissionOutcome::Queued { .. } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), second_target_workflow_prompt, true)
+        .expect("second target's workflow prompt should queue")
+    else {
+        panic!("second target's workflow prompt should remain queued");
+    };
+    let second_target_unrelated_prompt_id = "interrupt-second-target-unrelated-queued".to_string();
+    let second_target_unrelated_prompt = crate::session::PromptQueueItem::new(
+        second_target_unrelated_prompt_id.as_str(),
+        crate::scheduler::runtime::workflow_prompt_source_attachment_id(
+            "unrelated-second-queued-run",
+        ),
+        second_target_agent.id(),
+        "second target's unrelated queued prompt",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Queued { .. } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), second_target_unrelated_prompt, true)
+        .expect("second target's unrelated prompt should queue")
+    else {
+        panic!("second target's unrelated prompt should remain queued");
+    };
     let unrelated_prompt = crate::session::PromptQueueItem::new(
         "interrupt-unrelated-active",
         crate::scheduler::runtime::workflow_prompt_source_attachment_id("unrelated-run"),
@@ -381,6 +690,20 @@ fn interrupt_fixture() -> InterruptFixture {
         .expect("unrelated prompt should start")
     else {
         panic!("unrelated prompt should start");
+    };
+    let unrelated_queued_prompt_id = "interrupt-unrelated-queued".to_string();
+    let unrelated_queued_prompt = crate::session::PromptQueueItem::new(
+        unrelated_queued_prompt_id.as_str(),
+        crate::scheduler::runtime::workflow_prompt_source_attachment_id("unrelated-queued-run"),
+        unrelated_agent.id(),
+        "unrelated agent's queued prompt",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Queued { .. } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), unrelated_queued_prompt, true)
+        .expect("unrelated agent's second prompt should queue")
+    else {
+        panic!("unrelated agent's second prompt should remain queued");
     };
 
     let launch_request = crate::provider::LaunchProviderRequest::new(
@@ -418,6 +741,7 @@ fn interrupt_fixture() -> InterruptFixture {
     let workflow_id = workflow.id().to_string();
     let workflow_run_id = workflow_run.id().to_string();
     let target_agent_id = target_agent.id().to_string();
+    let second_target_agent_id = second_target_agent.id().to_string();
     let unrelated_agent_id = unrelated_agent.id().to_string();
     let runtime = runtime_state_from_app(app);
     runtime
@@ -441,12 +765,17 @@ fn interrupt_fixture() -> InterruptFixture {
 
     InterruptFixture {
         runtime,
+        config,
         session_id,
         workflow_id,
         workflow_run_id,
         node_run_id,
         target_agent_id,
+        second_target_agent_id,
         unrelated_agent_id,
+        target_unrelated_prompt_id,
+        second_target_unrelated_prompt_id,
+        unrelated_queued_prompt_id,
         claim_id,
         _worktree: worktree,
     }
