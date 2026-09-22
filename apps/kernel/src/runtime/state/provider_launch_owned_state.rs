@@ -861,6 +861,8 @@ mod tests {
             .with_session_history_root(root.join("session-history"));
         config.user_config.credential_vault.backend =
             crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.unlock_policy =
+            crate::config::CredentialVaultUnlockPolicy::Always;
         config.user_config.credential_vault.path = vault_path.display().to_string();
         config.user_config.state.path = Some(root.join("state.db").display().to_string());
         config.user_config.history.operational.path =
@@ -952,15 +954,7 @@ mod tests {
             .active_interaction_for_agent(workflow_agent.id())
             .expect("workflow vault unlock interaction should be visible")
             .clone();
-        runtime
-            .resolve_runtime_interaction(
-                session.id(),
-                interaction.id(),
-                "unlock_operation",
-                Some("correct horse battery staple"),
-            )
-            .await
-            .expect("workflow unlock interaction should resolve");
+        resolve_vault_passphrase_interaction(&runtime, session.id(), &interaction).await;
         assert_eq!(
             workflow_credentials
                 .await
@@ -996,15 +990,7 @@ mod tests {
             .expect("vault unlock interaction should be visible")
             .clone();
         assert_eq!(interaction.title(), Some("Unlock Chariox Vault"));
-        runtime
-            .resolve_runtime_interaction(
-                session.id(),
-                interaction.id(),
-                "unlock_operation",
-                Some("correct horse battery staple"),
-            )
-            .await
-            .expect("unlock interaction should resolve");
+        resolve_vault_passphrase_interaction(&runtime, session.id(), &interaction).await;
         let prepared = preparation
             .await
             .expect("launch should prepare after Chariox unlock");
@@ -1035,15 +1021,7 @@ mod tests {
             .active_interaction_for_agent(workflow_agent.id())
             .expect("remote launch vault interaction should be visible")
             .clone();
-        runtime
-            .resolve_runtime_interaction(
-                session.id(),
-                interaction.id(),
-                "unlock_operation",
-                Some("correct horse battery staple"),
-            )
-            .await
-            .expect("remote launch unlock should resolve");
+        resolve_vault_passphrase_interaction(&runtime, session.id(), &interaction).await;
         let credential = remote_credential
             .await
             .expect("remote launch credential should resolve")
@@ -1088,6 +1066,8 @@ mod tests {
             .with_session_history_root(root.join("session-history"));
         config.user_config.credential_vault.backend =
             crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.unlock_policy =
+            crate::config::CredentialVaultUnlockPolicy::Always;
         config.user_config.credential_vault.path = vault_path.display().to_string();
         config.user_config.state.path = Some(root.join("state.db").display().to_string());
         config.user_config.history.operational.path =
@@ -1208,15 +1188,7 @@ mod tests {
             .await
             .prompt_owner_sync_external_active_prompt(session.id(), agent.id(), Some(active_prompt))
             .expect("active prompt should start during unlock");
-        runtime
-            .resolve_runtime_interaction(
-                session.id(),
-                first_unlock.id(),
-                "unlock_operation",
-                Some("correct horse battery staple"),
-            )
-            .await
-            .expect("first vault unlock should resolve");
+        resolve_vault_passphrase_interaction(&runtime, session.id(), &first_unlock).await;
 
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
@@ -1265,15 +1237,7 @@ mod tests {
         })
         .await
         .expect("idle retry should request vault unlock again");
-        runtime
-            .resolve_runtime_interaction(
-                session.id(),
-                second_unlock.id(),
-                "unlock_operation",
-                Some("correct horse battery staple"),
-            )
-            .await
-            .expect("retry vault unlock should resolve");
+        resolve_vault_passphrase_interaction(&runtime, session.id(), &second_unlock).await;
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
                 let resumed = runtime
@@ -1315,6 +1279,22 @@ mod tests {
             Some(value) => std::env::set_var(name, value),
             None => std::env::remove_var(name),
         }
+    }
+
+    async fn resolve_vault_passphrase_interaction(
+        runtime: &KernelRuntimeState,
+        session_id: &str,
+        passphrase_interaction: &crate::session::RuntimeInteraction,
+    ) {
+        runtime
+            .resolve_runtime_interaction(
+                session_id,
+                passphrase_interaction.id(),
+                "passphrase",
+                Some("correct horse battery staple"),
+            )
+            .await
+            .expect("vault passphrase interaction should resolve");
     }
 
     async fn owned_runtime_state(app: &Arc<Mutex<crate::app::DaemonApp>>) -> KernelRuntimeState {
