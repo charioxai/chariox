@@ -2,12 +2,10 @@ use super::*;
 
 #[tokio::test]
 async fn prompt_complete_uses_owned_runtime_state_without_app_lock_for_simple_local_prompt() {
+    let worktree = TestWorktree::new("owned-complete");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-owned-complete",
-            "worktree-owned-complete",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(
@@ -93,12 +91,10 @@ async fn prompt_complete_uses_owned_runtime_state_without_app_lock_for_simple_lo
 
 #[tokio::test]
 async fn prompt_cancel_uses_owned_runtime_state_without_app_lock_for_structured_local_prompt() {
+    let worktree = TestWorktree::new("owned-cancel");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-owned-cancel",
-            "worktree-owned-cancel",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(
@@ -203,12 +199,10 @@ async fn prompt_cancel_uses_owned_runtime_state_without_app_lock_for_structured_
 
 #[tokio::test]
 async fn prompt_complete_advances_queued_prompt_with_owned_runtime_state_without_app_lock() {
+    let worktree = TestWorktree::new("owned-advance");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-owned-advance",
-            "worktree-owned-advance",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(
@@ -332,12 +326,10 @@ async fn prompt_complete_advances_queued_prompt_with_owned_runtime_state_without
 
 #[tokio::test]
 async fn prompt_cancel_uses_owned_runtime_state_for_pty_prompt_without_app_lock() {
+    let worktree = TestWorktree::new("owned-cancel-pty");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "workspace-owned-cancel-pty",
-            "worktree-owned-cancel-pty",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(
