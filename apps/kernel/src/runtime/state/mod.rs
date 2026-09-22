@@ -305,6 +305,7 @@ mod remote_prompt_dispatch_runtime;
 mod remote_prompt_lifecycle_runtime;
 mod remote_prompt_owned_state;
 mod remote_prompt_worker_submission_runtime;
+mod remote_native_provider_launch;
 mod remote_provider_failure_runtime;
 mod restart_recovery_runtime;
 pub(crate) use restart_recovery_runtime::is_internal_recovery_prompt_attachment;

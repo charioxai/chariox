@@ -144,6 +144,12 @@ impl KernelRuntimeState {
             return Ok(None);
         };
         let agent = self.owned.agent_store.get_agent(&agent_id)?;
+        if agent.session_id() != request.session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: request.session_id.clone(),
+                agent_id,
+            });
+        }
         if agent.owner_user_id() != caller_user_id {
             return Err(DaemonError::OwnershipAccessDenied {
                 user_id: caller_user_id.to_string(),
@@ -155,71 +161,102 @@ impl KernelRuntimeState {
         let Some(remote_execution) = agent.remote_execution().cloned() else {
             return Ok(None);
         };
+        super::remote_native_provider_launch::ensure_compatible_binding(&remote_execution)?;
         let required_mcps = self.required_remote_mcps_for_native_provider_launch(&agent)?;
         let required_skills = self.required_remote_skills_for_native_provider_launch(&agent)?;
         let remote_extension_manifest = self
             .remote_extension_manifest_for_agent(&agent)?
             .without_mcp_tools();
-        if !required_mcps.is_empty() {
-            self.ensure_remote_mcp_requirements_available_for_agent(&agent, required_mcps.clone())
-                .await?;
-        }
-        if self.remote_agent_is_home_managed_slice(&agent) {
-            self.ensure_remote_skill_packages_for_agent(&agent).await?;
-        }
-        let provider_launch_credential = self
-            .resolve_remote_provider_launch_credential(
-                &request.session_id,
-                &agent_id,
-                "launch remote native provider run",
+        let credential_state = self.clone();
+        let credential_session_id = request.session_id.clone();
+        let credential_agent_id = agent_id.clone();
+        let send_state = self.clone();
+        let send_request = request.clone();
+        let send_agent_id = agent_id.clone();
+        let send_required_mcps = required_mcps.clone();
+        let send_required_skills = required_skills.clone();
+        let send_extension_manifest = remote_extension_manifest.clone();
+        let refresh_state = self.clone();
+        let refresh_agent_id = agent_id.clone();
+        let refresh_session_id = request.session_id.clone();
+        let refresh_caller_user_id = caller_user_id.to_string();
+        let (response, remote_execution) =
+            super::remote_native_provider_launch::launch_with_one_binding_refresh(
+                remote_execution,
+                move || {
+                    let state = credential_state.clone();
+                    let session_id = credential_session_id.clone();
+                    let agent_id = credential_agent_id.clone();
+                    async move {
+                        state
+                            .resolve_remote_provider_launch_credential(
+                                &session_id,
+                                &agent_id,
+                                "launch remote native provider run",
+                            )
+                            .await
+                    }
+                },
+                move |binding, credential| {
+                    let state = send_state.clone();
+                    let request = send_request.clone();
+                    let agent_id = send_agent_id.clone();
+                    let required_mcps = send_required_mcps.clone();
+                    let required_skills = send_required_skills.clone();
+                    let remote_extension_manifest = send_extension_manifest.clone();
+                    async move {
+                        state
+                            .send_remote_native_provider_launch_attempt(
+                                &request,
+                                &agent_id,
+                                &binding,
+                                required_mcps,
+                                required_skills,
+                                remote_extension_manifest,
+                                credential,
+                            )
+                            .await
+                    }
+                },
+                move || {
+                    let state = refresh_state.clone();
+                    let agent_id = refresh_agent_id.clone();
+                    let session_id = refresh_session_id.clone();
+                    let caller_user_id = refresh_caller_user_id.clone();
+                    async move {
+                        let refreshed_agent_id = agent_id.clone();
+                        let agent = state
+                            .with_app_side_effect_blocking(move |app| {
+                                app.refresh_remote_agent_binding(&refreshed_agent_id)
+                            })
+                            .await?;
+                        if agent.session_id() != session_id {
+                            return Err(DaemonError::AgentNotInSession {
+                                session_id,
+                                agent_id,
+                            });
+                        }
+                        if agent.owner_user_id() != caller_user_id {
+                            return Err(DaemonError::OwnershipAccessDenied {
+                                user_id: caller_user_id,
+                                owner_user_id: agent.owner_user_id().to_string(),
+                                resource: format!("provider run for agent `{agent_id}`"),
+                                operation: "launch provider run",
+                            });
+                        }
+                        agent.remote_execution().cloned().ok_or_else(|| {
+                            DaemonError::LocalTransport {
+                                operation: "refresh remote native provider binding",
+                                message: format!(
+                                    "agent `{agent_id}` did not have remote execution after binding refresh"
+                                ),
+                            }
+                        })
+                    }
+                },
             )
             .await?;
-        let mut relay_config = self.owned.config_projection.snapshot();
-        if let (Some(relay_url), Some(relay_token)) = (
-            remote_execution.relay_url.clone(),
-            remote_execution.relay_token.clone(),
-        ) {
-            relay_config.apply_remote_relay_override(relay_url, relay_token);
-        }
         let leased_agent_id = remote_execution.leased_agent_id.clone();
-        let target = ClientTarget {
-            daemon_id: Some(remote_execution.worker_kernel_id.clone()),
-            daemon_alias: None,
-        };
-        let peer_request = RelayPeerRequest::LaunchLeasedNativeProviderRun {
-            leased_agent_id: leased_agent_id.clone(),
-            adapter_key: crate::provider::adapter_key_for_provider(&request.adapter_key)
-                .to_string(),
-            provider: request.provider.clone(),
-            account_profile: request.account_profile.clone(),
-            model: request.model.clone(),
-            variant: request.variant.clone(),
-            structured_endpoint: request.structured_endpoint.clone(),
-            provider_session_id: request.provider_session_id.clone(),
-            required_mcps,
-            required_skills: Some(required_skills),
-            remote_extension_manifest,
-            provider_launch_credential,
-        };
-        let response = match self.connected_relay_state_for_config(&relay_config).await {
-            Some(relay_state) => {
-                crate::transport::relay_client::send_peer_request_via_connected_relay(
-                    &relay_config,
-                    &relay_state,
-                    target,
-                    peer_request,
-                )
-                .await
-            }
-            None => {
-                crate::transport::relay_client::send_peer_request_via_temporary_connection(
-                    &relay_config,
-                    target,
-                    peer_request,
-                )
-                .await
-            }
-        }?;
         match response {
             RelayPeerResponse::LeasedNativeProviderRunLaunched { provider_run } => {
                 let home_agent_id = agent_id.clone();
@@ -254,6 +291,78 @@ impl KernelRuntimeState {
                 operation: "launch remote native provider run",
                 message: format!("unexpected remote native provider launch response: {other:?}"),
             }),
+        }
+    }
+
+    async fn send_remote_native_provider_launch_attempt(
+        &self,
+        request: &crate::local::LaunchProviderRunRequest,
+        agent_id: &str,
+        remote_execution: &crate::agent::RemoteAgentBinding,
+        required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
+        required_skills: Vec<crate::transport::relay_peer::RequiredRemoteSkill>,
+        remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+        provider_launch_credential: Option<
+            crate::transport::relay_peer::RemoteProviderLaunchCredential,
+        >,
+    ) -> Result<RelayPeerResponse, DaemonError> {
+        let mut agent = self.owned.agent_store.get_agent(agent_id)?;
+        agent.set_remote_execution(Some(remote_execution.clone()));
+        if !required_mcps.is_empty() {
+            self.ensure_remote_mcp_requirements_available_for_agent(
+                &agent,
+                required_mcps.clone(),
+            )
+            .await?;
+        }
+        if self.remote_agent_is_home_managed_slice(&agent) {
+            self.ensure_remote_skill_packages_for_agent(&agent).await?;
+        }
+        let mut relay_config = self.owned.config_projection.snapshot();
+        if let (Some(relay_url), Some(relay_token)) = (
+            remote_execution.relay_url.clone(),
+            remote_execution.relay_token.clone(),
+        ) {
+            relay_config.apply_remote_relay_override(relay_url, relay_token);
+        }
+        let leased_agent_id = remote_execution.leased_agent_id.clone();
+        let target = ClientTarget {
+            daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+            daemon_alias: None,
+        };
+        let peer_request = RelayPeerRequest::LaunchLeasedNativeProviderRun {
+            leased_agent_id: leased_agent_id.clone(),
+            adapter_key: crate::provider::adapter_key_for_provider(&request.adapter_key)
+                .to_string(),
+            provider: request.provider.clone(),
+            account_profile: request.account_profile.clone(),
+            model: request.model.clone(),
+            variant: request.variant.clone(),
+            structured_endpoint: request.structured_endpoint.clone(),
+            provider_session_id: request.provider_session_id.clone(),
+            required_mcps,
+            required_skills: Some(required_skills),
+            remote_extension_manifest,
+            provider_launch_credential,
+        };
+        match self.connected_relay_state_for_config(&relay_config).await {
+            Some(relay_state) => {
+                crate::transport::relay_client::send_peer_request_via_connected_relay(
+                    &relay_config,
+                    &relay_state,
+                    target,
+                    peer_request,
+                )
+                .await
+            }
+            None => {
+                crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                    &relay_config,
+                    target,
+                    peer_request,
+                )
+                .await
+            }
         }
     }
 
