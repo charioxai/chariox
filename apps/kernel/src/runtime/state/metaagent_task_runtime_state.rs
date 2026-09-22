@@ -32,6 +32,22 @@ impl KernelRuntimeState {
             &mut crate::session::SessionService,
         ) -> Result<crate::session::RuntimeSession, DaemonError>,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let (_, session) = self
+            .mutate_metaagent_task_session_with_result(session_id, reason, |sessions| {
+                mutate(sessions).map(Some)
+            })?
+            .expect("required metaagent task mutation must produce a result");
+        Ok(session)
+    }
+
+    /// Commit an optional task mutation and return caller-owned output with its projection.
+    /// `None` is a no-op and therefore must not mutate the session.
+    fn mutate_metaagent_task_session_with_result<T>(
+        &self,
+        session_id: &str,
+        reason: &str,
+        mutate: impl FnOnce(&mut crate::session::SessionService) -> Result<Option<T>, DaemonError>,
+    ) -> Result<Option<(T, crate::session::RuntimeSession)>, DaemonError> {
         let activity_mutation = self.owned.begin_managed_activity_mutation();
         let committed = self
             .owned
@@ -40,7 +56,10 @@ impl KernelRuntimeState {
                 let mut sessions = self.owned.session_store.write();
                 let before = sessions.get_session(session_id)?;
                 let result = (|| {
-                    let mut session = mutate(&mut sessions)?;
+                    let Some(result) = mutate(&mut sessions)? else {
+                        return Ok(None);
+                    };
+                    let mut session = sessions.get_session(session_id)?;
                     session.set_agents(self.owned.agent_store.get_session_agents(session_id));
                     self.owned.project_session_runtime_view(&mut session);
                     self.owned.durable_state_store.append_event(
@@ -48,7 +67,7 @@ impl KernelRuntimeState {
                         Some(session_id.to_string()),
                         serde_json::json!({"session": &session, "reason": reason}),
                     )?;
-                    Ok(session)
+                    Ok(Some((result, session)))
                 })();
                 if result.is_err() {
                     // Restore under the same write guard, before unrelated writers can intervene.
@@ -56,8 +75,14 @@ impl KernelRuntimeState {
                 }
                 result
             })?;
+        let Some((result, committed)) = committed else {
+            return Ok(None);
+        };
         activity_mutation.record();
-        Ok(self.owned.publish_session_after_durable_mutation(committed))
+        Ok(Some((
+            result,
+            self.owned.publish_session_after_durable_mutation(committed),
+        )))
     }
 
     pub(super) fn persist_metaagent_task_session_update(
@@ -113,19 +138,23 @@ impl KernelRuntimeState {
         ),
         DaemonError,
     > {
-        let activity_mutation = self.owned.begin_managed_activity_mutation();
-        let task = self.owned.session_store.write().enqueue_metaagent_task(
-            session_id,
-            metaagent_id,
-            source_attachment_id,
-            task_markdown,
-            attachments,
-        )?;
-        let session = self.persist_metaagent_task_session_update_with_activity_mutation(
-            session_id,
-            "metaagent_task_queued",
-            activity_mutation,
-        )?;
+        let (task, session) = self
+            .mutate_metaagent_task_session_with_result(
+                session_id,
+                "metaagent_task_queued",
+                |sessions| {
+                    sessions
+                        .enqueue_metaagent_task(
+                            session_id,
+                            metaagent_id,
+                            source_attachment_id,
+                            task_markdown,
+                            attachments,
+                        )
+                        .map(Some)
+                },
+            )?
+            .expect("enqueueing a metaagent task must mutate the session");
         Ok((task, session))
     }
 
@@ -328,20 +357,18 @@ impl KernelRuntimeState {
         if !agent.is_metaagent() {
             return Ok(None);
         }
-        let activity_mutation = self.owned.begin_managed_activity_mutation();
-        let Some(_session) = self
-            .owned
-            .session_store
-            .write()
-            .start_metaagent_task_if_needed(session_id, metaagent_id, prompt)?
+        let Some(((), session)) = self.mutate_metaagent_task_session_with_result(
+            session_id,
+            "metaagent_task_started",
+            |sessions| {
+                sessions
+                    .start_metaagent_task_if_needed(session_id, metaagent_id, prompt)
+                    .map(|session| session.map(|_| ()))
+            },
+        )?
         else {
             return Ok(None);
         };
-        let session = self.persist_metaagent_task_session_update_with_activity_mutation(
-            session_id,
-            "metaagent_task_started",
-            activity_mutation,
-        )?;
         Ok(Some(self.project_metaagent_task_session(session)))
     }
 
