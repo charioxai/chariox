@@ -22,6 +22,32 @@ const machineMetadata = Object.freeze({
   platform: os.platform(),
   arch: os.arch(),
 })
+const M1_NOT_APPLICABLE = "not-applicable: OSS-only non-display M1 drill"
+
+function m1EvidenceMetadata({ homeMachineId, workerMachineId, versions }) {
+  return {
+    cloudCommit: M1_NOT_APPLICABLE,
+    versions: {
+      ...versions,
+      provider: "dev-stub",
+      browser: M1_NOT_APPLICABLE,
+      selkies: M1_NOT_APPLICABLE,
+      docker: M1_NOT_APPLICABLE,
+    },
+    machine: {
+      ...machineMetadata,
+      identities: {
+        home: { role: "home", machineId: homeMachineId },
+        worker: { role: "worker", machineId: workerMachineId },
+      },
+    },
+    evidence: {
+      screenshots: { status: M1_NOT_APPLICABLE, items: [] },
+      traces: { status: M1_NOT_APPLICABLE, items: [] },
+      benchmarks: { status: M1_NOT_APPLICABLE, items: [] },
+    },
+  }
+}
 
 function parseArgs(argv) {
   const options = {
@@ -645,12 +671,15 @@ async function main() {
       startedAt,
       finishedAt: new Date().toISOString(),
       ossCommit,
+      ...m1EvidenceMetadata({
+        homeMachineId: home.machineId,
+        workerMachineId: worker.machineId,
+        versions,
+      }),
       protocolVersion: kernelTypes.LOCAL_DAEMON_PROTOCOL_VERSION,
-      versions,
       command: "pnpm --filter @chariox/cli run room-environment:m1-drill",
       relayListener,
       topology: "same-host relay, home kernel, worker kernel, two authenticated clients",
-      machine: machineMetadata,
       provider: "dev-stub",
       sessionId,
       environmentId: user1Snapshot.environment_id,
@@ -693,12 +722,15 @@ async function main() {
       startedAt,
       finishedAt: new Date().toISOString(),
       ossCommit,
+      ...m1EvidenceMetadata({
+        homeMachineId: home.machineId,
+        workerMachineId: worker.machineId,
+        versions,
+      }),
       protocolVersion: null,
-      versions,
       command: "pnpm --filter @chariox/cli run room-environment:m1-drill",
       relayListener,
       topology: "same-host relay, home kernel, worker kernel, two authenticated clients",
-      machine: machineMetadata,
       provider: "dev-stub",
       sessionId,
       assertions,
@@ -735,7 +767,14 @@ async function main() {
   console.log(JSON.stringify({ status: "passed", evidenceRoot, assertions }, null, 2))
 }
 
-export { childDiagnostics, machineMetadata, relayClaims, spawnObserved, waitForTcpListener }
+export {
+  childDiagnostics,
+  machineMetadata,
+  m1EvidenceMetadata,
+  relayClaims,
+  spawnObserved,
+  waitForTcpListener,
+}
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error) => {

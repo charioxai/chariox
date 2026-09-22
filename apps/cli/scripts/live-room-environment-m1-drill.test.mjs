@@ -8,10 +8,55 @@ import test from "node:test"
 import {
   childDiagnostics,
   machineMetadata,
+  m1EvidenceMetadata,
   relayClaims,
   spawnObserved,
   waitForTcpListener,
 } from "./live-room-environment-m1-drill.mjs"
+
+const M1_NOT_APPLICABLE = "not-applicable: OSS-only non-display M1 drill"
+
+test("M1 evidence metadata records non-display scope and same-host machine identities", async () => {
+  const metadata = m1EvidenceMetadata({
+    homeMachineId: "room-environment-home-machine-test",
+    workerMachineId: "room-environment-worker-machine-test",
+    versions: {
+      node: "v22.22.1",
+      kernel: "0.1.0",
+      relay: "0.1.0",
+      os: "linux test x64",
+    },
+  })
+
+  assert.equal(metadata.cloudCommit, M1_NOT_APPLICABLE)
+  assert.deepEqual(metadata.versions, {
+    node: "v22.22.1",
+    kernel: "0.1.0",
+    relay: "0.1.0",
+    os: "linux test x64",
+    provider: "dev-stub",
+    browser: M1_NOT_APPLICABLE,
+    selkies: M1_NOT_APPLICABLE,
+    docker: M1_NOT_APPLICABLE,
+  })
+  assert.deepEqual(metadata.machine.identities, {
+    home: { role: "home", machineId: "room-environment-home-machine-test" },
+    worker: { role: "worker", machineId: "room-environment-worker-machine-test" },
+  })
+  assert.deepEqual(metadata.evidence, {
+    screenshots: { status: M1_NOT_APPLICABLE, items: [] },
+    traces: { status: M1_NOT_APPLICABLE, items: [] },
+    benchmarks: { status: M1_NOT_APPLICABLE, items: [] },
+  })
+})
+
+test("M1 success and failure reports share the metadata builder", async () => {
+  const source = await readFile(
+    new URL("./live-room-environment-m1-drill.mjs", import.meta.url),
+    "utf8",
+  )
+  assert.equal(source.split("...m1EvidenceMetadata(").length - 1, 2)
+})
 
 test("M1 evidence reports truthful host platform and architecture metadata", async () => {
   assert.deepEqual(machineMetadata, {
