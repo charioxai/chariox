@@ -59,6 +59,7 @@ import {
 } from "./lib/room-tui-notices.mjs"
 import { hasRoomReadyProjection } from "./lib/room-drill-ready-notices.mjs"
 import { roomDrillRelayToken } from "./lib/room-drill-relay-token.mjs"
+import { roomFixtureProbeCommand } from "./lib/room-fixture-reachability.mjs"
 import {
   assertRoomRootlessWorkspaceFixture,
   assertRoomRootlessWorkspaceFixtureRemoved,
@@ -431,6 +432,13 @@ async function run() {
   assert.equal(binding.slice_id, slice.id)
 
   await waitForBrowserReady(60_000)
+  const fixtureProbe = JSON.parse((await docker([
+    "exec", containerName,
+    ...roomFixtureProbeCommand(`http://host.docker.internal:${fixture.port}/click`, "POINTER_CLICK_READY"),
+  ], 10_000)).stdout)
+  await writeFile(path.join(evidenceRoot, "fixture-reachability.json"), `${JSON.stringify(fixtureProbe, null, 2)}\n`)
+  assert.ok(fixtureProbe.reachable && fixtureProbe.markerPresent,
+    `slice cannot reach the click fixture: ${JSON.stringify(fixtureProbe)}`)
   await sliceScreen(["open-url", `http://host.docker.internal:${fixture.port}/click`])
   await waitForBrowserText("POINTER_CLICK_READY", 30_000, "click fixture did not load")
   await screenshot("before-click")
