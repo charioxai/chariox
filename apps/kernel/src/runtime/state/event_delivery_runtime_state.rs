@@ -283,7 +283,8 @@ impl KernelRuntimeState {
         // Keep the rollback snapshot raw: session_snapshot publishes a projection and may
         // perform activity capture, which must not nest inside this admission boundary.
         let before = self.owned.session_store.get_session(&session_id)?;
-        let queued_prompt = match self
+        // Drop the write guard before a rejected mutation attempts rollback.
+        let enqueue_result = self
             .owned
             .session_store
             .write()
@@ -296,14 +297,15 @@ impl KernelRuntimeState {
                 crate::session::WorkflowQueuedPromptSource::Event,
                 None,
                 Some(invocation),
-            ) {
+            );
+        let queued_prompt = match enqueue_result {
             Ok(prompt) => prompt,
             Err(error) => {
                 self.owned.session_store.write().restore_session(before);
                 return Err(error);
             }
         };
-        if let Err(error) = self
+        let receipt_result = self
             .owned
             .session_store
             .write()
@@ -317,8 +319,8 @@ impl KernelRuntimeState {
                     accepted_at_ms: now_ms,
                     expires_at_ms: delivery.expires_at_ms,
                 },
-            )
-        {
+            );
+        if let Err(error) = receipt_result {
             self.owned.session_store.write().restore_session(before);
             return Err(error);
         }
@@ -663,7 +665,11 @@ mod tests {
             .recv_timeout(Duration::from_secs(2))
             .expect("rejected enqueue must return without re-locking its session guard");
         worker.join().expect("rejected delivery worker should finish");
-        assert!(outcome.is_err(), "removed queue must reject event admission");
+        assert!(matches!(
+            outcome,
+            Err(DaemonError::InvalidWorkflowGraphReference { reference, .. })
+                if reference == "removed-event-queue"
+        ), "removed queue must reject event admission");
     }
 
     #[tokio::test]
