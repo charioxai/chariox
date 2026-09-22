@@ -257,12 +257,12 @@ async fn revoked_daemon_is_not_route_admitted_before_watch_cleanup() {
         )
         .with_revocations(revocations.clone()),
     );
-    revocations.revoke_scoped_subject(
-        "account-1",
-        RelaySubjectKind::Kernel,
-        "kernel-old",
-        100,
-    );
+    revocations.revoke_scoped_subject("account-1", RelaySubjectKind::Kernel, "kernel-old", 100);
+    let failure = route_admitted_daemon_sender(&registry, &auth_verifier, &daemon_key)
+        .await
+        .expect_err("revoked daemon token must fence routing");
+    assert_eq!(failure, DaemonRouteAdmissionFailure::TokenRevoked);
+    assert_eq!(failure.reason(), "token_revoked");
     let relay_request_counter = AtomicU64::new(0);
 
     let action = handle_client_packet_route_envelope(
@@ -310,6 +310,70 @@ async fn revoked_daemon_is_not_route_admitted_before_watch_cleanup() {
     assert!(routes.daemon_sender(&daemon_key).is_some());
     assert!(guard.peers.contains_key(&client_addr));
     assert_eq!(guard.pending_request_count(), 0);
+}
+
+#[tokio::test]
+async fn daemon_route_admission_distinguishes_expired_token_from_missing_sender() {
+    let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "kernel-expired");
+    let daemon_addr = peer_addr(10_012);
+    let (daemon_sender, _daemon_receiver) = mpsc::channel::<Message>(2);
+    let mut registration = daemon_registration("kernel-expired");
+    registration.auth_token = "expired-kernel-token".to_string();
+
+    let mut registry = RelayRegistry::default();
+    registry
+        .daemons
+        .insert(daemon_key.clone(), registration.clone());
+    registry.peers.insert(
+        daemon_addr,
+        daemon_peer(daemon_sender.clone(), registration),
+    );
+    registry
+        .daemon_peers
+        .insert(daemon_key.clone(), daemon_addr);
+    let routes = registry.route_index();
+    routes.set_daemon_sender(daemon_key.clone(), daemon_sender);
+    let registry = Arc::new(RwLock::new(registry));
+    let auth_verifier = RelayAuthVerifier::ScopedToken(ScopedTokenVerifier::new(
+        BTreeMap::from([(
+            "expired-kernel-token".to_string(),
+            RelayTokenClaims {
+                issuer: "issuer".to_string(),
+                subject: "kernel-expired".to_string(),
+                subject_kind: RelaySubjectKind::Kernel,
+                realm_id: DEFAULT_RELAY_REALM_ID.to_string(),
+                allowed_actions: vec![RelayAction::DaemonRegister],
+                allowed_targets: None,
+                issued_at_ms: 1,
+                expires_at_ms: 9,
+                token_id: "expired-kernel-jti".to_string(),
+                account_id: Some("account-1".to_string()),
+                organization_id: None,
+                user_id: None,
+                device_id: None,
+                machine_id: Some("machine-1".to_string()),
+                client_id: None,
+                session_id: None,
+                public_key_thumbprint: None,
+                entitlements_version: None,
+            },
+        )]),
+        BTreeMap::new(),
+        Some(10),
+    ));
+
+    let failure = route_admitted_daemon_sender(&registry, &auth_verifier, &daemon_key)
+        .await
+        .expect_err("expired daemon token must fence routing");
+    assert_eq!(failure, DaemonRouteAdmissionFailure::TokenExpired);
+    assert_eq!(failure.reason(), "token_expired");
+
+    routes.remove_daemon_sender(&daemon_key);
+    let failure = route_admitted_daemon_sender(&registry, &auth_verifier, &daemon_key)
+        .await
+        .expect_err("missing daemon sender must be reported separately");
+    assert_eq!(failure, DaemonRouteAdmissionFailure::SenderMissing);
+    assert_eq!(failure.reason(), "sender_missing");
 }
 
 fn client_peer(sender: RelaySender) -> PeerHandle {
