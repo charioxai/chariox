@@ -5,13 +5,12 @@ fn waiting_room_inventory_includes_session_workspace_display_labels() {
     run_with_large_test_stack(
         "waiting-room-inventory-session-workspace-display-labels",
         || {
-            let workspace_root =
-                std::env::temp_dir().join("chariox-waiting-room-session-label-test");
-            let _ = std::fs::remove_dir_all(&workspace_root);
-            std::fs::create_dir_all(&workspace_root).expect("workspace should exist");
+            let worktree =
+                crate::test_support::TestWorktree::new("waiting-room-session-label-test");
+            let workspace_root = worktree.path();
             std::process::Command::new("git")
                 .args(["init", "-b", "main"])
-                .current_dir(&workspace_root)
+                .current_dir(workspace_root)
                 .output()
                 .expect("git init should work");
             std::process::Command::new("git")
@@ -21,18 +20,14 @@ fn waiting_room_inventory_includes_session_workspace_display_labels() {
                     "origin",
                     "git@github.com:mgutierrez09/chariox.git",
                 ])
-                .current_dir(&workspace_root)
+                .current_dir(workspace_root)
                 .output()
                 .expect("git remote add should work");
 
             let harness = LocalRouterTestHarness::new();
             let created = match harness
                 .dispatch(LocalDaemonRequest::CreateSession(
-                    CreateSessionRequest::new(
-                        workspace_root.display().to_string(),
-                        workspace_root.display().to_string(),
-                    )
-                    .with_alias("main"),
+                    worktree.session_request().with_alias("main"),
                 ))
                 .expect("session create should succeed")
             {
@@ -68,14 +63,13 @@ fn waiting_room_inventory_includes_session_workspace_display_labels() {
 #[test]
 fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
     run_with_large_test_stack("waiting-room-public-snapshot-private-payload", || {
+        let worktree = crate::test_support::TestWorktree::new("waiting-room-public-snapshot");
         let harness = LocalRouterTestHarness::new();
         let (created, agent) = match harness
             .dispatch(LocalDaemonRequest::CreateSession(
-                CreateSessionRequest::new(
-                    "/tmp/chariox-public-snapshot-workspace",
-                    "/tmp/chariox-public-snapshot-worktree",
-                )
-                .with_workspace_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked),
+                worktree
+                    .session_request()
+                    .with_workspace_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked),
             ))
             .expect("session create should succeed")
         {
@@ -100,11 +94,9 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
             .iter()
             .find(|candidate| candidate.id == created.id())
             .expect("created session should be in public snapshot");
-        assert_eq!(
-            session.workspace_id,
-            "/tmp/chariox-public-snapshot-workspace"
-        );
-        assert_eq!(session.worktree_id, "/tmp/chariox-public-snapshot-worktree");
+        let worktree_path = worktree.path().display().to_string();
+        assert_eq!(session.workspace_id, worktree_path);
+        assert_eq!(session.worktree_id, worktree_path);
         assert_eq!(
             session.workspace_live_sync_mode,
             Some(crate::config::WorkspaceLiveSyncMode::Tracked)
@@ -161,10 +153,14 @@ fn waiting_room_agent_workspace_update_drill_updates_public_projection() {
 }
 
 fn waiting_room_agent_workspace_update_drill_updates_public_projection_inner() {
+    let worktree_a = crate::test_support::TestWorktree::new("waiting-room-workspace-a");
+    let worktree_b = crate::test_support::TestWorktree::new("waiting-room-workspace-b");
+    let worktree_b_feature =
+        crate::test_support::TestWorktree::new("waiting-room-workspace-b-feature");
     let harness = LocalRouterTestHarness::new();
     let (session, agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("/tmp/chariox-workspace-a", "/tmp/chariox-workspace-a"),
+            worktree_a.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -181,9 +177,9 @@ fn waiting_room_agent_workspace_update_drill_updates_public_projection_inner() {
                 clear_execution_mode: false,
                 permission_level: None,
                 clear_permission_level: false,
-                workspace_id: Some("/tmp/chariox-workspace-b".to_string()),
+                workspace_id: Some(worktree_b.path().display().to_string()),
                 clear_workspace_id: false,
-                worktree_id: Some("/tmp/chariox-workspace-b-feature".to_string()),
+                worktree_id: Some(worktree_b_feature.path().display().to_string()),
                 clear_worktree_id: false,
             },
         ))
@@ -210,12 +206,14 @@ fn waiting_room_agent_workspace_update_drill_updates_public_projection_inner() {
         })
         .expect("updated agent should be in public snapshot");
 
-    assert_eq!(public_agent.workspace_id, "/tmp/chariox-workspace-b");
+    let workspace_b_path = worktree_b.path().display().to_string();
+    let worktree_b_feature_path = worktree_b_feature.path().display().to_string();
+    assert_eq!(public_agent.workspace_id, workspace_b_path);
     assert_eq!(
         public_agent.directory.as_deref(),
-        Some("/tmp/chariox-workspace-b")
+        Some(workspace_b_path.as_str())
     );
-    assert_eq!(public_agent.worktree_id, "/tmp/chariox-workspace-b-feature");
+    assert_eq!(public_agent.worktree_id, worktree_b_feature_path);
 }
 
 fn run_with_large_test_stack<F>(name: &'static str, test: F)
@@ -234,13 +232,11 @@ where
 #[test]
 fn waiting_room_public_snapshot_includes_public_workflow_summaries() {
     run_with_large_test_stack("waiting-room-public-snapshot-workflow-summaries", || {
+        let worktree = crate::test_support::TestWorktree::new("waiting-room-public-workflow");
         let harness = LocalRouterTestHarness::new();
         let (session, first_agent) = match harness
             .dispatch(LocalDaemonRequest::CreateSession(
-                CreateSessionRequest::new(
-                    "/tmp/chariox-public-workflow-workspace",
-                    "/tmp/chariox-public-workflow-worktree",
-                ),
+                worktree.session_request(),
             ))
             .expect("session create should succeed")
         {
@@ -390,13 +386,11 @@ fn waiting_room_public_snapshot_includes_public_session_activity_counts() {
     run_with_large_test_stack(
         "waiting-room-public-snapshot-session-activity-counts",
         || {
+            let worktree = crate::test_support::TestWorktree::new("waiting-room-public-activity");
             let harness = LocalRouterTestHarness::new();
             let (session, agent) = match harness
                 .dispatch(LocalDaemonRequest::CreateSession(
-                    CreateSessionRequest::new(
-                        "/tmp/chariox-public-activity-workspace",
-                        "/tmp/chariox-public-activity-worktree",
-                    ),
+                    worktree.session_request(),
                 ))
                 .expect("session create should succeed")
             {
