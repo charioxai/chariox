@@ -3,7 +3,7 @@ use crate::local::*;
 
 #[test]
 fn local_daemon_managed_environment_control_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 339);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 340);
     let policy = ManagedEnvironmentAutoStopPolicy {
         minimum_runtime_seconds: 0,
         idle_delay_seconds: Some(900),
@@ -386,7 +386,7 @@ fn local_daemon_reimage_request_rejects_missing_context_plan() {
 
 #[test]
 fn local_daemon_pre_reimage_observation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 339);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 340);
     let snapshot = serde_json::json!([
         LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(
             ObserveManagedEnvironmentPreReimageRequest {

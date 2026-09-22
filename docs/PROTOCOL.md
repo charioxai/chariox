@@ -1614,6 +1614,23 @@ Workflow trigger and deployment direction:
   into idempotency, creates a new context identity with no inherited manifest,
   and authorizes the live source realm or an explicit-empty realm. Reimage does
   not introduce another context-transfer authority or credential path.
+- protocol 340 coordinates the managed-activity HTTP contract; it does not add
+  a `LocalDaemonRequest` or `LocalDaemonResponse`. Reports to both
+  `/v1/managed-kernels/activity` and `/v1/disposable-workers/activity` MUST
+  include `activityChangedAt` in the canonical JSON covered by the machine
+  credential HMAC. The value is the true kernel-owned aggregate activity
+  transition time, encoded as canonical RFC 3339 UTC with exactly millisecond
+  precision and `Z` (for example, `2026-09-22T12:30:00.000Z`). It is not the
+  HTTP send, retry, or receipt time and MUST remain stable across delayed
+  delivery, retries, reporter restart, and kernel restart. A later transition,
+  including a rapid busy-to-idle cycle, receives its own later timestamp.
+  Managed-environment signatures cover `accountId`, `activityChangedAt`,
+  `environmentId`, `kernelId`, `machineId`, `runningAgentCount`, and `sequence`;
+  disposable-worker signatures replace `environmentId` with `allocationId`.
+  Cloud receivers for both routes MUST accept, validate, and persist this signed
+  field before protocol-340 kernels are rolled out; producer and receiver must
+  not be deployed independently. Existing web/native minimum protocol versions
+  do not change because clients do not consume this kernel-to-Cloud field.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic
