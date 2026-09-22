@@ -18,6 +18,10 @@ const kernelClientRoot = path.join(repoRoot, "packages", "kernel-client")
 const RELAY_ISSUER = "chariox-room-environment-m1-drill"
 const RELAY_SECRET = "chariox-room-environment-m1-drill-secret"
 const RELAY_REALM = "room-environment-m1-drill"
+const machineMetadata = Object.freeze({
+  platform: os.platform(),
+  arch: os.arch(),
+})
 
 function parseArgs(argv) {
   const options = {
@@ -437,7 +441,7 @@ async function main() {
     node: process.version,
     kernel: await cargoPackageVersion(path.join(repoRoot, "apps", "kernel", "Cargo.toml")),
     relay: await cargoPackageVersion(path.join(repoRoot, "apps", "relay", "Cargo.toml")),
-    os: `${os.platform()} ${os.release()} ${os.arch()}`,
+    os: `${machineMetadata.platform} ${os.release()} ${machineMetadata.arch}`,
   }
   let sessionId = null
   let endSessionRequest = null
@@ -646,7 +650,7 @@ async function main() {
       command: "pnpm --filter @chariox/cli run room-environment:m1-drill",
       relayListener,
       topology: "same-host relay, home kernel, worker kernel, two authenticated clients",
-      machine: "local development Mac",
+      machine: machineMetadata,
       provider: "dev-stub",
       sessionId,
       environmentId: user1Snapshot.environment_id,
@@ -694,7 +698,7 @@ async function main() {
       command: "pnpm --filter @chariox/cli run room-environment:m1-drill",
       relayListener,
       topology: "same-host relay, home kernel, worker kernel, two authenticated clients",
-      machine: "local development Mac",
+      machine: machineMetadata,
       provider: "dev-stub",
       sessionId,
       assertions,
@@ -731,7 +735,7 @@ async function main() {
   console.log(JSON.stringify({ status: "passed", evidenceRoot, assertions }, null, 2))
 }
 
-export { childDiagnostics, relayClaims, spawnObserved, waitForTcpListener }
+export { childDiagnostics, machineMetadata, relayClaims, spawnObserved, waitForTcpListener }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error) => {

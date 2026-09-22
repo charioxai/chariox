@@ -1,16 +1,30 @@
 import assert from "node:assert/strict"
 import { createServer } from "node:net"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp, readFile, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 
 import {
   childDiagnostics,
+  machineMetadata,
   relayClaims,
   spawnObserved,
   waitForTcpListener,
 } from "./live-room-environment-m1-drill.mjs"
+
+test("M1 evidence reports truthful host platform and architecture metadata", async () => {
+  assert.deepEqual(machineMetadata, {
+    platform: os.platform(),
+    arch: os.arch(),
+  })
+  assert.notEqual(machineMetadata.platform, "local development Mac")
+  const source = await readFile(
+    new URL("./live-room-environment-m1-drill.mjs", import.meta.url),
+    "utf8",
+  )
+  assert.doesNotMatch(source, /machine:\s*["']local development Mac["']/)
+})
 
 test("M1 relay claims bind kernels to their machine and omit fabricated key claims", () => {
   const kernelClaims = relayClaims({
