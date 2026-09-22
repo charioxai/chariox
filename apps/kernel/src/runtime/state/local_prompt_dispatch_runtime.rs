@@ -302,12 +302,11 @@ mod tests {
     async fn concurrent_workflow_provider_admission_creates_one_starting_run() {
         const INVOCATION_COUNT: usize = 32;
 
+        let worktree =
+            crate::test_support::TestWorktree::new("local-prompt-concurrent-workflow-provider");
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, _default_agent) = KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new(
-                "workspace-concurrent-workflow-provider",
-                "worktree-concurrent-workflow-provider",
-            ))
+            .create_session(worktree.session_request())
             .expect("session should create");
         let workflow_agent = KernelSessionService::new(&mut app)
             .spawn_agent(
@@ -626,6 +625,32 @@ mod tests {
             .push(provider_run_id.clone());
         runtime.spawn_workflow_prompt_dispatches(dispatches);
 
+        let passphrase_interaction =
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    if let Some(interaction) = runtime
+                        .owned
+                        .session_store
+                        .get_session(session.id())
+                        .expect("session should remain available")
+                        .active_interaction_for_agent(workflow_agent.id())
+                    {
+                        break interaction.clone();
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("workflow vault unlock interaction should appear");
+        runtime
+            .resolve_runtime_interaction(
+                session.id(),
+                passphrase_interaction.id(),
+                "passphrase",
+                Some("correct horse battery staple"),
+            )
+            .await
+            .expect("vault passphrase interaction should resolve");
         let interaction = tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
                 if let Some(interaction) = runtime
@@ -635,13 +660,19 @@ mod tests {
                     .expect("session should remain available")
                     .active_interaction_for_agent(workflow_agent.id())
                 {
-                    break interaction.clone();
+                    if interaction
+                        .choices()
+                        .iter()
+                        .any(|choice| choice.id() == "unlock_operation")
+                    {
+                        break interaction.clone();
+                    }
                 }
                 tokio::task::yield_now().await;
             }
         })
         .await
-        .expect("workflow vault unlock interaction should appear");
+        .expect("workflow vault unlock duration interaction should appear");
         let ended = runtime
             .owned
             .provider_store
@@ -652,12 +683,7 @@ mod tests {
             .provider_run_projection
             .update(ended.into_run());
         runtime
-            .resolve_runtime_interaction(
-                session.id(),
-                interaction.id(),
-                "unlock_operation",
-                Some("correct horse battery staple"),
-            )
+            .resolve_runtime_interaction(session.id(), interaction.id(), "unlock_operation", None)
             .await
             .expect("vault unlock interaction should resolve");
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
@@ -702,12 +728,10 @@ mod tests {
 
     #[tokio::test]
     async fn workflow_prompt_stays_bound_to_the_replacement_provider_run() {
+        let worktree = crate::test_support::TestWorktree::new("local-prompt-provider-binding");
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, _default_agent) = KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new(
-                "workspace-workflow-provider-binding",
-                "worktree-workflow-provider-binding",
-            ))
+            .create_session(worktree.session_request())
             .expect("session should create");
         let workflow_agent = KernelSessionService::new(&mut app)
             .spawn_agent(
@@ -857,12 +881,11 @@ mod tests {
 
     #[tokio::test]
     async fn failed_launch_settles_all_queued_workflow_nodes_and_advances_once() {
+        let worktree =
+            crate::test_support::TestWorktree::new("local-prompt-workflow-launch-failure");
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, _default_agent) = KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new(
-                "workspace-workflow-launch-failure",
-                "worktree-workflow-launch-failure",
-            ))
+            .create_session(worktree.session_request())
             .expect("session should create");
         let source = KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
@@ -1228,14 +1251,19 @@ mod tests {
         );
     }
 
-    async fn runtime_with_active_prompt(
-    ) -> (KernelRuntimeState, String, String, String, String, String) {
+    async fn runtime_with_active_prompt() -> (
+        crate::test_support::TestWorktree,
+        KernelRuntimeState,
+        String,
+        String,
+        String,
+        String,
+        String,
+    ) {
+        let worktree = crate::test_support::TestWorktree::new("local-prompt-active");
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, agent) = KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new(
-                "workspace-steering-dispatch",
-                "worktree-steering-dispatch",
-            ))
+            .create_session(worktree.session_request())
             .expect("session should create");
         let attachment = KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
@@ -1277,6 +1305,7 @@ mod tests {
         let provider_run_id = provider_run.id().to_string();
         let app = Arc::new(Mutex::new(app));
         (
+            worktree,
             owned_runtime_state(&app).await,
             session_id,
             agent_id,
@@ -1287,6 +1316,7 @@ mod tests {
     }
 
     async fn runtime_with_admitted_prompt() -> (
+        crate::test_support::TestWorktree,
         KernelRuntimeState,
         String,
         String,
@@ -1294,12 +1324,10 @@ mod tests {
         String,
         crate::app::KernelPromptDispatch,
     ) {
+        let worktree = crate::test_support::TestWorktree::new("local-prompt-admitted");
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, agent) = KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new(
-                "workspace-prompt-dispatch",
-                "worktree-prompt-dispatch",
-            ))
+            .create_session(worktree.session_request())
             .expect("session should create");
         let source = KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
@@ -1351,6 +1379,7 @@ mod tests {
             .expect("prompt should be admitted");
         let dispatch = submission.dispatch.expect("prompt should require dispatch");
         (
+            worktree,
             runtime,
             session_id,
             agent_id,
@@ -1361,6 +1390,7 @@ mod tests {
     }
 
     async fn runtime_with_claude_headless_active_prompt() -> (
+        crate::test_support::TestWorktree,
         KernelRuntimeState,
         String,
         String,
@@ -1370,11 +1400,9 @@ mod tests {
     ) {
         let mut app = crate::test_support::bootstrap_authenticated_app(DaemonConfig::for_tests())
             .expect("daemon should boot");
+        let worktree = crate::test_support::TestWorktree::new("local-prompt-claude-headless");
         let (session, agent) = KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new(
-                "workspace-claude-ack-failure",
-                "worktree-claude-ack-failure",
-            ))
+            .create_session(worktree.session_request())
             .expect("session should create");
         let source = KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
@@ -1479,6 +1507,7 @@ mod tests {
         let source_id = source.id().to_string();
         let app = Arc::new(Mutex::new(app));
         (
+            worktree,
             owned_runtime_state(&app).await,
             session_id,
             agent_id,
@@ -1518,8 +1547,15 @@ mod tests {
 
     #[tokio::test]
     async fn steering_dispatch_matches_target_active_prompt() {
-        let (runtime, session_id, agent_id, attachment_id, active_prompt_id, provider_run_id) =
-            runtime_with_active_prompt().await;
+        let (
+            _worktree,
+            runtime,
+            session_id,
+            agent_id,
+            attachment_id,
+            active_prompt_id,
+            provider_run_id,
+        ) = runtime_with_active_prompt().await;
         let steering_dispatch = dispatch(
             &session_id,
             &agent_id,
@@ -1539,8 +1575,15 @@ mod tests {
 
     #[tokio::test]
     async fn local_dispatch_persists_delivered_phase_after_provider_write() {
-        let (runtime, session_id, agent_id, attachment_id, active_prompt_id, provider_run_id) =
-            runtime_with_active_prompt().await;
+        let (
+            _worktree,
+            runtime,
+            session_id,
+            agent_id,
+            attachment_id,
+            active_prompt_id,
+            provider_run_id,
+        ) = runtime_with_active_prompt().await;
         let prompt_dispatch = dispatch(
             &session_id,
             &agent_id,
@@ -1579,8 +1622,15 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_match_uses_prompt_owner_when_session_mirror_is_stale() {
-        let (runtime, session_id, agent_id, attachment_id, active_prompt_id, provider_run_id) =
-            runtime_with_active_prompt().await;
+        let (
+            _worktree,
+            runtime,
+            session_id,
+            agent_id,
+            attachment_id,
+            active_prompt_id,
+            provider_run_id,
+        ) = runtime_with_active_prompt().await;
         runtime
             .owned
             .session_store
@@ -1620,7 +1670,7 @@ mod tests {
 
     #[tokio::test]
     async fn stale_steering_dispatch_is_rejected() {
-        let (runtime, session_id, agent_id, attachment_id, _, provider_run_id) =
+        let (_worktree, runtime, session_id, agent_id, attachment_id, _, provider_run_id) =
             runtime_with_active_prompt().await;
         let steering_dispatch = dispatch(
             &session_id,
@@ -1647,8 +1697,15 @@ mod tests {
 
     #[tokio::test]
     async fn steering_dispatch_records_provider_input() {
-        let (runtime, session_id, agent_id, attachment_id, active_prompt_id, provider_run_id) =
-            runtime_with_active_prompt().await;
+        let (
+            _worktree,
+            runtime,
+            session_id,
+            agent_id,
+            attachment_id,
+            active_prompt_id,
+            provider_run_id,
+        ) = runtime_with_active_prompt().await;
         let steering_text = "STEERING_DELIVERY_PROOF";
         let steering_dispatch = dispatch(
             &session_id,
@@ -1678,7 +1735,7 @@ mod tests {
 
     #[tokio::test]
     async fn local_prompt_is_echoed_once_across_admission_and_dispatch() {
-        let (runtime, session_id, _, observer_id, _, dispatch) =
+        let (_worktree, runtime, session_id, _, observer_id, _, dispatch) =
             runtime_with_admitted_prompt().await;
         let prompt_id = dispatch.prompt_id.clone();
 
@@ -1705,7 +1762,7 @@ mod tests {
 
     #[tokio::test]
     async fn local_prompt_admission_clears_prior_agent_error() {
-        let (runtime, session_id, agent_id, _, provider_run_id, first_dispatch) =
+        let (_worktree, runtime, session_id, agent_id, _, provider_run_id, first_dispatch) =
             runtime_with_admitted_prompt().await;
         runtime
             .owned
@@ -1750,7 +1807,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_local_dispatch_emits_completion_and_marks_agent_error() {
-        let (runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
+        let (_worktree, runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
             runtime_with_admitted_prompt().await;
 
         runtime
@@ -1816,7 +1873,7 @@ mod tests {
 
     #[tokio::test]
     async fn claude_headless_ack_failure_retires_poisoned_provider_run() {
-        let (runtime, session_id, agent_id, source_id, provider_run, dispatch) =
+        let (_worktree, runtime, session_id, agent_id, source_id, provider_run, dispatch) =
             runtime_with_claude_headless_active_prompt().await;
         let PromptSubmissionOutcome::Queued {
             prompt: queued_prompt,
@@ -1907,7 +1964,7 @@ mod tests {
 
     #[tokio::test]
     async fn claude_headless_ack_failure_intent_finishes_resume_clear_after_restart() {
-        let (runtime, session_id, agent_id, _, provider_run, dispatch) =
+        let (_worktree, runtime, session_id, agent_id, _, provider_run, dispatch) =
             runtime_with_claude_headless_active_prompt().await;
         let durable_path = runtime.owned.durable_state_store.path().to_path_buf();
         let connection = rusqlite::Connection::open(&durable_path)
@@ -2024,7 +2081,7 @@ mod tests {
 
     #[tokio::test]
     async fn claude_headless_ack_failure_does_not_clear_resume_without_durable_intent() {
-        let (runtime, session_id, agent_id, _, provider_run, dispatch) =
+        let (_worktree, runtime, session_id, agent_id, _, provider_run, dispatch) =
             runtime_with_claude_headless_active_prompt().await;
         let durable_path = runtime.owned.durable_state_store.path().to_path_buf();
         let connection = rusqlite::Connection::open(&durable_path)
@@ -2133,7 +2190,7 @@ mod tests {
 
     #[tokio::test]
     async fn claude_headless_late_resume_update_wins_before_delivery_phase_commit() {
-        let (runtime, session_id, agent_id, _, provider_run, dispatch) =
+        let (_worktree, runtime, session_id, agent_id, _, provider_run, dispatch) =
             runtime_with_claude_headless_active_prompt().await;
         let current_resume_state =
             crate::provider::ProviderResumeState::from_claude_session_id("claude-session-current");
@@ -2232,7 +2289,7 @@ mod tests {
 
     #[tokio::test]
     async fn claude_headless_delivered_phase_wins_over_late_timeout() {
-        let (runtime, session_id, agent_id, _, provider_run, dispatch) =
+        let (_worktree, runtime, session_id, agent_id, _, provider_run, dispatch) =
             runtime_with_claude_headless_active_prompt().await;
         runtime
             .owned
@@ -2284,7 +2341,7 @@ mod tests {
 
     #[tokio::test]
     async fn claude_headless_delivery_settlement_claim_blocks_timeout_retirement() {
-        let (runtime, session_id, agent_id, _, provider_run, dispatch) =
+        let (_worktree, runtime, session_id, agent_id, _, provider_run, dispatch) =
             runtime_with_claude_headless_active_prompt().await;
         let session = runtime
             .owned
@@ -2364,7 +2421,7 @@ mod tests {
 
     #[tokio::test]
     async fn stale_claude_headless_ack_failure_preserves_replacement_prompt_and_provider() {
-        let (runtime, session_id, agent_id, source_id, provider_run, stale_dispatch) =
+        let (_worktree, runtime, session_id, agent_id, source_id, provider_run, stale_dispatch) =
             runtime_with_claude_headless_active_prompt().await;
         runtime
             .owned
@@ -2490,7 +2547,7 @@ mod tests {
 
     #[tokio::test]
     async fn stale_dispatch_failure_does_not_settle_the_current_prompt() {
-        let (runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
+        let (_worktree, runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
             runtime_with_admitted_prompt().await;
 
         let settlement = runtime
@@ -2524,8 +2581,15 @@ mod tests {
 
     #[tokio::test]
     async fn stale_dispatch_failure_does_not_cancel_replacement_prompt() {
-        let (runtime, session_id, agent_id, _observer_id, provider_run_id, stale_dispatch) =
-            runtime_with_admitted_prompt().await;
+        let (
+            _worktree,
+            runtime,
+            session_id,
+            agent_id,
+            _observer_id,
+            provider_run_id,
+            stale_dispatch,
+        ) = runtime_with_admitted_prompt().await;
 
         runtime
             .owned
