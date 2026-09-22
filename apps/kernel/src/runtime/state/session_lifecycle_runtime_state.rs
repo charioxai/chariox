@@ -856,12 +856,17 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let owned = &self.owned;
+        let durable_session = owned.session_end_snapshot(session_id)?;
+        self.append_session_durable_event(
+            "session.ended",
+            &durable_session,
+            "runtime_end_session",
+        )
+        .await?;
         self.stop_managed_environment_for_session_lifecycle(session_id)
             .await;
-        let owned = &self.owned;
         let (session, terminated_run_ids) = owned.end_session(session_id)?;
-        self.append_session_durable_event("session.ended", &session, "runtime_end_session")
-            .await?;
         owned.clear_session_prompt_runtime_state(session_id);
         let session = owned.publish_session_after_durable_mutation(session);
         for provider_run_id in terminated_run_ids {
@@ -886,16 +891,26 @@ impl KernelRuntimeState {
         let session_id = self
             .resolve_session_ref_id(session_ref, workspace_id)
             .await?;
-        self.stop_managed_environment_for_session_lifecycle(&session_id)
-            .await;
         let owned = &self.owned;
-        let (session, terminated_run_ids, removed_project) =
-            owned.delete_session_ref(session_ref, workspace_id)?;
-        self.append_session_durable_event("session.deleted", &session, "runtime_delete_session")
-            .await?;
-        if let Some(project) = removed_project.as_ref() {
+        let durable_session = owned.session_end_snapshot(&session_id)?;
+        let durable_project_delete = owned.project_removed_by_session_delete(&session_id);
+        self.append_session_durable_event(
+            "session.deleted",
+            &durable_session,
+            "runtime_delete_session",
+        )
+        .await?;
+        if let Some(project) = durable_project_delete.as_ref() {
             self.append_project_durable_event("project.deleted", project)?;
         }
+        self.stop_managed_environment_for_session_lifecycle(&session_id)
+            .await;
+        let (session, terminated_run_ids, removed_project) =
+            owned.delete_session_ref(session_ref, workspace_id)?;
+        debug_assert_eq!(
+            removed_project.as_ref().map(|project| project.id()),
+            durable_project_delete.as_ref().map(|project| project.id()),
+        );
         owned.clear_session_prompt_runtime_state(&session_id);
         owned.remove_session_projection_after_durable_mutation(&session_id);
         for provider_run_id in terminated_run_ids {
@@ -1471,7 +1486,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_end_persistence_failure_does_not_publish_idle_transition() {
+    async fn session_end_persistence_failure_preserves_snapshot_activity_and_retry() {
         let runtime = runtime_state_for_rollback_test().await;
         runtime
             .ensure_managed_activity_tracking("kernel-end-session-failure")
@@ -1491,6 +1506,10 @@ mod tests {
             )
             .expect("session work should enqueue");
         runtime.record_managed_activity_transition_for_test();
+        let (_, busy) = runtime
+            .managed_activity_report_snapshot()
+            .expect("busy activity should be durable");
+        assert_eq!(busy.running_agent_count, 1);
         runtime
             .owned
             .session_snapshot(&session_id)
@@ -1534,13 +1553,138 @@ mod tests {
                 .status(),
             projected_status
         );
-        assert!(runtime.managed_activity_report_snapshot().is_err());
+        let fresh = runtime
+            .session_snapshot(&session_id)
+            .await
+            .expect("failed durable end must leave the session readable");
+        assert_eq!(fresh.status(), projected_status);
+        assert!(fresh.has_pending_session_task());
+        runtime.record_managed_activity_transition_for_test();
+        let (_, still_busy) = runtime
+            .managed_activity_report_snapshot()
+            .expect("an unrelated activity hook must retain the durable busy state");
+        assert_eq!(still_busy.running_agent_count, 1);
         assert!(runtime
             .owned
             .durable_state_store
             .load_events_by_kind("session.ended")
             .expect("session end events should read")
             .is_empty());
+
+        let ended = runtime
+            .end_session(&session_id)
+            .await
+            .expect("session end should remain retryable");
+        assert_eq!(ended.status(), crate::session::SessionStatus::Ended);
+        let (_, idle) = runtime
+            .managed_activity_report_snapshot()
+            .expect("successful retry should persist idle activity");
+        assert_eq!(idle.running_agent_count, 0);
+        assert_eq!(
+            runtime
+                .owned
+                .durable_state_store
+                .load_events_by_kind("session.ended")
+                .expect("session end events should read")
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn session_delete_persistence_failure_preserves_retry_and_final_idle_transition() {
+        let runtime = runtime_state_for_rollback_test().await;
+        runtime
+            .ensure_managed_activity_tracking("kernel-delete-session-failure")
+            .expect("managed activity tracking should activate before work");
+        let session = create_activity_test_session(&runtime, "delete-session-failure");
+        let session_id = session.id().to_string();
+        runtime
+            .owned
+            .session_store
+            .write()
+            .enqueue_metaagent_task(
+                &session_id,
+                "metaagent-delete-failure",
+                "attachment-delete-failure",
+                "remain busy until durable delete",
+                Vec::new(),
+            )
+            .expect("session work should enqueue");
+        runtime.record_managed_activity_transition_for_test();
+        let (_, busy) = runtime
+            .managed_activity_report_snapshot()
+            .expect("busy activity should be durable");
+        assert_eq!(busy.running_agent_count, 1);
+        runtime
+            .owned
+            .session_snapshot(&session_id)
+            .expect("busy session projection should publish");
+        let runtime_sequence = runtime.managed_activity_change_sequence();
+        let projection_sequence = runtime.owned.session_projection.change_sequence();
+        let connection = install_durable_event_failure(
+            &runtime,
+            "fail_session_delete_order",
+            "session.deleted",
+        );
+
+        let error = runtime
+            .delete_session_ref(&session_id, None)
+            .await
+            .expect_err("session delete durable transition should fail");
+
+        connection
+            .execute_batch("DROP TRIGGER fail_session_delete_order;")
+            .expect("session delete failure trigger should be removed");
+        assert!(error
+            .to_string()
+            .contains("injected durable mutation failure"));
+        assert_eq!(runtime.managed_activity_change_sequence(), runtime_sequence);
+        assert_eq!(
+            runtime.owned.session_projection.change_sequence(),
+            projection_sequence
+        );
+        let fresh = runtime
+            .session_snapshot(&session_id)
+            .await
+            .expect("failed durable delete must leave the session readable");
+        assert!(fresh.has_pending_session_task());
+        runtime.record_managed_activity_transition_for_test();
+        let (_, still_busy) = runtime
+            .managed_activity_report_snapshot()
+            .expect("an unrelated activity hook must retain the durable busy state");
+        assert_eq!(still_busy.running_agent_count, 1);
+        assert!(runtime
+            .owned
+            .durable_state_store
+            .load_events_by_kind("session.deleted")
+            .expect("session delete events should read")
+            .is_empty());
+
+        let deleted = runtime
+            .delete_session_ref(&session_id, None)
+            .await
+            .expect("session delete should remain retryable");
+        assert_eq!(deleted.id(), session_id);
+        assert!(runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .is_err());
+        assert!(runtime.owned.session_projection.get(&session_id).is_none());
+        let (_, idle) = runtime
+            .managed_activity_report_snapshot()
+            .expect("deleting the final busy session should persist idle activity");
+        assert_eq!(idle.running_agent_count, 0);
+        assert_eq!(
+            runtime
+                .owned
+                .durable_state_store
+                .load_events_by_kind("session.deleted")
+                .expect("session delete events should read")
+                .len(),
+            1
+        );
     }
 
     #[test]

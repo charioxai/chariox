@@ -17,6 +17,41 @@ pub(super) enum ProviderTerminalResizeTarget {
 }
 
 impl KernelRuntimeOwnedState {
+    pub(super) fn session_end_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let mut session = self.session_snapshot_without_projection_update(session_id)?;
+        let from = session.status();
+        if !session.transition_to(crate::session::SessionStatus::Ended) {
+            return Err(DaemonError::InvalidSessionTransition {
+                session_id: session_id.to_string(),
+                from,
+                to: crate::session::SessionStatus::Ended,
+            });
+        }
+        session.touch();
+        Ok(session)
+    }
+
+    pub(super) fn project_removed_by_session_delete(
+        &self,
+        session_id: &str,
+    ) -> Option<crate::session::RuntimeProject> {
+        let session = self.session_store.get_session(session_id).ok()?;
+        let project_id = session.project_id();
+        if project_id.is_empty()
+            || self
+                .session_store
+                .sessions_in_project(project_id)
+                .into_iter()
+                .any(|candidate| candidate.id() != session_id && !candidate.is_hidden())
+        {
+            return None;
+        }
+        self.session_store.get_project(project_id).ok()
+    }
+
     pub(super) fn session_snapshot(
         &self,
         session_id: &str,
