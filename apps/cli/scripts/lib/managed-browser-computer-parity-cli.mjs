@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto"
-import { lstat, readFile } from "node:fs/promises"
+import { createHash, randomUUID } from "node:crypto"
+import { lstat, open, readFile, unlink } from "node:fs/promises"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 
@@ -58,18 +58,43 @@ export async function loadReviewedManagedParityAdapterModule(
   expected,
   load = (filePath) => import(pathToFileURL(filePath).href),
 ) {
+  const { snapshotPath, sha256 } = await createReviewedModuleSnapshot(modulePath)
+  try {
+    if (sha256 !== expected?.sha256) throw new Error("managed parity adapter module hash does not match reviewed pin")
+    const imported = await load(snapshotPath)
+    const verification = await verifyManagedParityAdapterModule(snapshotPath, imported, expected)
+    return { imported, verification }
+  } finally {
+    await unlink(snapshotPath, { force: true })
+  }
+}
+
+async function createReviewedModuleSnapshot(modulePath) {
   const info = await lstat(modulePath)
   if (!info.isFile() || info.isSymbolicLink()) {
     throw new Error("managed parity adapter module must be a regular file")
   }
   const bytes = await readFile(modulePath)
   const sha256 = `sha256:${createHash("sha256").update(bytes).digest("hex")}`
-  if (sha256 !== expected?.sha256) {
-    throw new Error("managed parity adapter module hash does not match reviewed pin")
+  const extension = path.extname(modulePath)
+  const snapshotPath = path.join(
+    path.dirname(modulePath),
+    `.${path.basename(modulePath)}.${randomUUID()}${extension}`,
+  )
+  let handle = null
+  let created = false
+  try {
+    handle = await open(snapshotPath, "wx", 0o600)
+    created = true
+    await handle.writeFile(bytes)
+    await handle.sync()
+  } catch (error) {
+    if (created) await unlink(snapshotPath, { force: true })
+    throw error
+  } finally {
+    await handle?.close()
   }
-  const imported = await load(modulePath)
-  const verification = await verifyManagedParityAdapterModule(modulePath, imported, expected)
-  return { imported, verification }
+  return { snapshotPath, sha256 }
 }
 
 function assertOutsideRepository(candidate, repoRoot) {

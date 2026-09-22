@@ -1,8 +1,9 @@
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
-import { chmod, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
+import { chmod, mkdtemp, rename, rm, symlink, unlink, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { pathToFileURL } from "node:url"
 import { test } from "node:test"
 
 import {
@@ -92,4 +93,51 @@ test("managed parity CLI independently pins reviewed adapter identity and file h
     /hash does not match/,
   )
   assert.equal(loaded, false)
+})
+
+test("managed parity adapter executes verified bytes during deterministic replacement races", async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-managed-parity-adapter-race-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const modulePath = path.join(root, "adapter.mjs")
+  const dependencyPath = path.join(root, "adapter-dependency.mjs")
+  const replacementPath = path.join(root, "replacement.mjs")
+  const source = [
+    'import { payload as dependencyPayload } from "./adapter-dependency.mjs"',
+    'export const MANAGED_BROWSER_COMPUTER_PARITY_ADAPTER_IDENTITY = "reviewed-adapter-v1"',
+    'export const payload = `reviewed:${dependencyPayload}`',
+    "",
+  ].join("\n")
+  const substituted = [
+    'export const MANAGED_BROWSER_COMPUTER_PARITY_ADAPTER_IDENTITY = "reviewed-adapter-v1"',
+    'export const payload = "substituted"',
+    "",
+  ].join("\n")
+  await writeFile(modulePath, source, { mode: 0o600 })
+  await writeFile(dependencyPath, 'export const payload = "dependency"\n', { mode: 0o600 })
+  await writeFile(replacementPath, substituted, { mode: 0o600 })
+  const expected = {
+    identity: "reviewed-adapter-v1",
+    sha256: `sha256:${createHash("sha256").update(source).digest("hex")}`,
+  }
+  const result = await loadReviewedManagedParityAdapterModule(modulePath, expected, async (snapshotPath) => {
+    await rename(replacementPath, modulePath)
+    try {
+      return await import(pathToFileURL(snapshotPath).href)
+    } finally {
+      await unlink(modulePath, { force: true })
+      await writeFile(modulePath, source, { mode: 0o600 })
+    }
+  })
+  assert.equal(result.imported.payload, "reviewed:dependency")
+  assert.deepEqual(result.verification, { ...expected, verifiedBy: "chariox-harness-loader" })
+
+  const overwriteResult = await loadReviewedManagedParityAdapterModule(modulePath, expected, async (snapshotPath) => {
+    await writeFile(modulePath, substituted, { mode: 0o600 })
+    try {
+      return await import(`${pathToFileURL(snapshotPath).href}?overwrite-race`)
+    } finally {
+      await writeFile(modulePath, source, { mode: 0o600 })
+    }
+  })
+  assert.equal(overwriteResult.imported.payload, "reviewed:dependency")
 })
