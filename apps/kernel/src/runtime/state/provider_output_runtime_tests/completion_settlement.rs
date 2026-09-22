@@ -110,7 +110,7 @@ async fn workflow_prompt_completion_append_failure_retains_retry_ownership() {
     app.update_provider_run_projection(run.clone());
     let workflow = app
         .sessions_mut()
-        .create_workflow(session.id(), Some("settlement retry".to_string()))
+        .create_workflow(session.id(), Some("settlement-retry".to_string()))
         .expect("workflow should be created");
     let node = app
         .sessions_mut()
