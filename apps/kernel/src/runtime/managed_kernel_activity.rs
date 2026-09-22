@@ -20,6 +20,8 @@ pub(crate) struct ManagedKernelActivityReporter {
     binding: ManagedKernelActivityBinding,
     #[cfg(test)]
     confirmation_wait_started: Option<tokio::sync::mpsc::UnboundedSender<Duration>>,
+    #[cfg(test)]
+    persistence_retry_started: Option<tokio::sync::mpsc::UnboundedSender<Duration>>,
 }
 
 struct ManagedKernelActivityBinding {
@@ -100,6 +102,8 @@ impl ManagedKernelActivityReporter {
                 },
                 #[cfg(test)]
                 confirmation_wait_started: None,
+                #[cfg(test)]
+                persistence_retry_started: None,
             }));
         };
         let profile = config
@@ -111,6 +115,8 @@ impl ManagedKernelActivityReporter {
             binding,
             #[cfg(test)]
             confirmation_wait_started: None,
+            #[cfg(test)]
+            persistence_retry_started: None,
         }))
     }
 
@@ -121,8 +127,18 @@ impl ManagedKernelActivityReporter {
     ) -> Result<(), DaemonError> {
         let mut cursor = ActivityCursor::default();
         runtime.ensure_managed_activity_tracking(&self.binding.kernel_id)?;
-        let (mut change_sequence, mut observation) =
-            runtime.managed_activity_report_snapshot()?;
+        let mut persistence_retry_delay = MIN_RETRY_DELAY;
+        let Some((mut change_sequence, mut observation)) = self
+            .retry_activity_snapshot(
+                &runtime,
+                &mut shutdown,
+                &mut persistence_retry_delay,
+                None,
+            )
+            .await
+        else {
+            return Ok(());
+        };
         let mut retry_delay = MIN_RETRY_DELAY;
         let mut confirmation_delay = MIN_RETRY_DELAY;
 
@@ -147,8 +163,18 @@ impl ManagedKernelActivityReporter {
                                 "running_agent_count": accepted.running_agent_count,
                             }),
                         );
-                        (change_sequence, observation) =
-                            runtime.managed_activity_report_snapshot()?;
+                        let Some(snapshot) = self
+                            .retry_activity_snapshot(
+                                &runtime,
+                                &mut shutdown,
+                                &mut persistence_retry_delay,
+                                None,
+                            )
+                            .await
+                        else {
+                            return Ok(());
+                        };
+                        (change_sequence, observation) = snapshot;
                         retry_delay = MIN_RETRY_DELAY;
                         if cursor.requires_confirmation {
                             crate::logging::warn_with_fields(
@@ -169,30 +195,40 @@ impl ManagedKernelActivityReporter {
                             }
                             let sleep = tokio::time::sleep(jittered(confirmation_delay));
                             tokio::pin!(sleep);
-                            loop {
+                            let snapshot_error = loop {
                                 tokio::select! {
                                     changed = shutdown.changed() => {
                                         if changed.is_err() || *shutdown.borrow() {
                                             return Ok(());
                                         }
                                     }
-                                    _transition = runtime.wait_for_managed_activity_transition_after(
+                                    transition = runtime.wait_for_managed_activity_transition_after(
                                         change_sequence,
-                                        observation.running_agent_count,
+                                        observation,
                                     ) => {
                                         confirmation_delay = MIN_RETRY_DELAY;
-                                        break;
+                                        break transition.err();
                                     }
                                     _ = &mut sleep => {
                                         confirmation_delay = confirmation_delay
                                             .saturating_mul(2)
                                             .min(MAX_RETRY_DELAY);
-                                        break;
+                                        break None;
                                     }
                                 }
-                            }
-                            (change_sequence, observation) =
-                                runtime.managed_activity_report_snapshot()?;
+                            };
+                            let Some(snapshot) = self
+                                .retry_activity_snapshot(
+                                    &runtime,
+                                    &mut shutdown,
+                                    &mut persistence_retry_delay,
+                                    snapshot_error,
+                                )
+                                .await
+                            else {
+                                return Ok(());
+                            };
+                            (change_sequence, observation) = snapshot;
                         } else {
                             confirmation_delay = MIN_RETRY_DELAY;
                         }
@@ -223,11 +259,23 @@ impl ManagedKernelActivityReporter {
                             }
                             transition = runtime.wait_for_managed_activity_transition_after(
                                 change_sequence,
-                                observation.running_agent_count,
+                                observation,
                             ) => {
-                                let _ = transition;
-                                (change_sequence, observation) =
-                                    runtime.managed_activity_report_snapshot()?;
+                                let snapshot = match transition {
+                                    Ok(snapshot) => Some(snapshot),
+                                    Err(error) => self
+                                        .retry_activity_snapshot(
+                                            &runtime,
+                                            &mut shutdown,
+                                            &mut persistence_retry_delay,
+                                            Some(error),
+                                        )
+                                        .await,
+                                };
+                                let Some(snapshot) = snapshot else {
+                                    return Ok(());
+                                };
+                                (change_sequence, observation) = snapshot;
                                 retry_delay = MIN_RETRY_DELAY;
                                 confirmation_delay = MIN_RETRY_DELAY;
                             }
@@ -248,13 +296,81 @@ impl ManagedKernelActivityReporter {
                 }
                 transition = runtime.wait_for_managed_activity_transition_after(
                     change_sequence,
-                    observation.running_agent_count,
+                    observation,
                 ) => {
-                    let _ = transition;
-                    (change_sequence, observation) =
-                        runtime.managed_activity_report_snapshot()?;
+                    let snapshot = match transition {
+                        Ok(snapshot) => Some(snapshot),
+                        Err(error) => self
+                            .retry_activity_snapshot(
+                                &runtime,
+                                &mut shutdown,
+                                &mut persistence_retry_delay,
+                                Some(error),
+                            )
+                            .await,
+                    };
+                    let Some(snapshot) = snapshot else {
+                        return Ok(());
+                    };
+                    (change_sequence, observation) = snapshot;
                     retry_delay = MIN_RETRY_DELAY;
                     confirmation_delay = MIN_RETRY_DELAY;
+                }
+            }
+        }
+    }
+
+    async fn retry_activity_snapshot(
+        &self,
+        runtime: &KernelRuntimeState,
+        shutdown: &mut tokio::sync::watch::Receiver<bool>,
+        retry_delay: &mut Duration,
+        mut first_error: Option<DaemonError>,
+    ) -> Option<(u64, crate::runtime::state::ManagedActivityObservation)> {
+        loop {
+            if *shutdown.borrow() {
+                return None;
+            }
+            let snapshot = match first_error.take() {
+                Some(error) => Err(error),
+                None => runtime.managed_activity_report_snapshot(),
+            };
+            match snapshot {
+                Ok(snapshot) => {
+                    *retry_delay = MIN_RETRY_DELAY;
+                    return Some(snapshot);
+                }
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "managed_kernel.activity",
+                        "managed activity persistence unavailable; reporter will retry",
+                        serde_json::json!({
+                            "resource_id": self.binding.resource_id,
+                            "disposable_worker": self.binding.worker,
+                            "machine_id": self.binding.machine_id,
+                            "kernel_id": self.binding.kernel_id,
+                            "retry_delay_ms": (*retry_delay).as_millis(),
+                            "error": error.to_string(),
+                        }),
+                    );
+                    #[cfg(test)]
+                    if let Some(retry_started) = &self.persistence_retry_started {
+                        let _ = retry_started.send(*retry_delay);
+                    }
+                    let sleep = tokio::time::sleep(jittered(*retry_delay));
+                    tokio::pin!(sleep);
+                    tokio::select! {
+                        changed = shutdown.changed() => {
+                            if changed.is_err() || *shutdown.borrow() {
+                                return None;
+                            }
+                        }
+                        _ = &mut sleep => {
+                            *retry_delay = (*retry_delay)
+                                .saturating_mul(2)
+                                .min(MAX_RETRY_DELAY);
+                        }
+                    }
                 }
             }
         }
@@ -549,6 +665,7 @@ mod tests {
         let reporter = ManagedKernelActivityReporter {
             binding: worker,
             confirmation_wait_started: None,
+            persistence_retry_started: None,
         };
         let response = reporter
             .report(AcceptedActivity {
@@ -736,6 +853,7 @@ mod tests {
         let reporter = ManagedKernelActivityReporter {
             binding: activity_binding,
             confirmation_wait_started: None,
+            persistence_retry_started: None,
         };
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let reporter_runtime = runtime.clone();
@@ -840,6 +958,7 @@ mod tests {
         let reporter = ManagedKernelActivityReporter {
             binding: activity_binding,
             confirmation_wait_started: None,
+            persistence_retry_started: None,
         };
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let reporter_runtime = runtime.clone();
@@ -878,6 +997,164 @@ mod tests {
             .expect("activity reporter task should not panic")
             .expect("activity reporter should succeed");
         fixture.join().expect("activity fixture should stop");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn transient_activity_persistence_failure_retries_original_transition() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind activity fixture");
+        let address = listener.local_addr().expect("activity fixture address");
+        let (initial_request_tx, initial_request_rx) = tokio::sync::oneshot::channel();
+        let (recovered_request_tx, recovered_request_rx) = tokio::sync::oneshot::channel();
+        let fixture = std::thread::spawn(move || {
+            let (mut initial_stream, _) = listener.accept().expect("accept initial report");
+            let initial_request = http_request_body(&read_http_request(&mut initial_stream));
+            write_http_response(
+                &mut initial_stream,
+                &serde_json::json!({
+                    "acceptedSequence": 1,
+                    "runningAgentCount": 0,
+                }),
+            );
+            initial_request_tx
+                .send(initial_request)
+                .expect("publish initial report");
+
+            let (mut recovered_stream, _) = listener.accept().expect("accept recovered report");
+            let recovered_request =
+                http_request_body(&read_http_request(&mut recovered_stream));
+            write_http_response(
+                &mut recovered_stream,
+                &serde_json::json!({
+                    "acceptedSequence": 2,
+                    "runningAgentCount": 1,
+                }),
+            );
+            recovered_request_tx
+                .send(recovered_request)
+                .expect("publish recovered report");
+        });
+
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let state_path = app.durable_state_store().path().to_path_buf();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = CommandRouter::with_interactive_capacity(app, 1).runtime_state();
+        let mut activity_binding = binding();
+        activity_binding.api_url = format!("http://{address}");
+        let (retry_started_tx, mut retry_started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let reporter = ManagedKernelActivityReporter {
+            binding: activity_binding,
+            confirmation_wait_started: None,
+            persistence_retry_started: Some(retry_started_tx),
+        };
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let reporter_runtime = runtime.clone();
+        let reporter_task =
+            tokio::spawn(async move { reporter.run(reporter_runtime, shutdown_rx).await });
+
+        let initial_request = tokio::time::timeout(Duration::from_secs(2), initial_request_rx)
+            .await
+            .expect("initial report should arrive")
+            .expect("activity fixture should stay available");
+        assert_eq!(initial_request["runningAgentCount"], 0);
+
+        let database = rusqlite::Connection::open(state_path)
+            .expect("durable database should open for failure injection");
+        database
+            .execute_batch(
+                "CREATE TRIGGER fail_managed_activity_append
+                 BEFORE INSERT ON durable_state_events
+                 WHEN NEW.kind = 'managed_kernel.activity.changed'
+                 BEGIN
+                   SELECT RAISE(FAIL, 'injected managed activity persistence failure');
+                 END;",
+            )
+            .expect("activity persistence failure trigger should install");
+        runtime.start_active_turn_with_trace_id(
+            "session-1",
+            "agent-1",
+            "prompt-1",
+            "provider-run-1",
+            "trace-1",
+        );
+        runtime.record_managed_activity_transition_for_test();
+        let transition_recorded_by = crate::session::unix_epoch_ms();
+        runtime.record_waiting_room_change();
+
+        let retry_delay = tokio::time::timeout(Duration::from_secs(2), retry_started_rx.recv())
+            .await
+            .expect("persistence retry should start")
+            .expect("activity reporter should stay available");
+        assert_eq!(retry_delay, MIN_RETRY_DELAY);
+        assert!(!reporter_task.is_finished());
+        database
+            .execute_batch("DROP TRIGGER fail_managed_activity_append;")
+            .expect("activity persistence failure trigger should be removed");
+
+        let recovered_request =
+            tokio::time::timeout(Duration::from_secs(3), recovered_request_rx)
+                .await
+                .expect("recovered report should arrive")
+                .expect("activity fixture should stay available");
+        assert_eq!(recovered_request["runningAgentCount"], 1);
+        let recovered_changed_at = chrono::DateTime::parse_from_rfc3339(
+            recovered_request["activityChangedAt"]
+                .as_str()
+                .expect("activity timestamp should be a string"),
+        )
+        .expect("activity timestamp should be canonical RFC3339")
+        .timestamp_millis() as u64;
+        assert!(recovered_changed_at <= transition_recorded_by);
+
+        shutdown_tx.send(true).expect("stop activity reporter");
+        tokio::time::timeout(Duration::from_secs(2), reporter_task)
+            .await
+            .expect("activity reporter should stop")
+            .expect("activity reporter task should not panic")
+            .expect("activity reporter should succeed");
+        fixture.join().expect("activity fixture should stop");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn activity_persistence_retry_wait_is_shutdown_responsive() {
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let state_path = app.durable_state_store().path().to_path_buf();
+        let database = rusqlite::Connection::open(state_path)
+            .expect("durable database should open for failure injection");
+        database
+            .execute_batch(
+                "CREATE TRIGGER fail_managed_activity_append_on_start
+                 BEFORE INSERT ON durable_state_events
+                 WHEN NEW.kind = 'managed_kernel.activity.changed'
+                 BEGIN
+                   SELECT RAISE(FAIL, 'injected initial managed activity persistence failure');
+                 END;",
+            )
+            .expect("initial activity failure trigger should install");
+        let app = Arc::new(Mutex::new(app));
+        let runtime = CommandRouter::with_interactive_capacity(app, 1).runtime_state();
+        let (retry_started_tx, mut retry_started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let reporter = ManagedKernelActivityReporter {
+            binding: binding(),
+            confirmation_wait_started: None,
+            persistence_retry_started: Some(retry_started_tx),
+        };
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let reporter_task = tokio::spawn(async move { reporter.run(runtime, shutdown_rx).await });
+
+        let retry_delay = tokio::time::timeout(Duration::from_secs(2), retry_started_rx.recv())
+            .await
+            .expect("initial persistence retry should start")
+            .expect("activity reporter should stay available");
+        assert_eq!(retry_delay, MIN_RETRY_DELAY);
+        shutdown_tx.send(true).expect("stop activity reporter");
+        tokio::time::timeout(Duration::from_millis(250), reporter_task)
+            .await
+            .expect("persistence backoff should be shutdown responsive")
+            .expect("activity reporter task should not panic")
+            .expect("activity reporter should succeed");
+        database
+            .execute_batch("DROP TRIGGER fail_managed_activity_append_on_start;")
+            .expect("initial activity failure trigger should be removed");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -929,6 +1206,7 @@ mod tests {
         let reporter = ManagedKernelActivityReporter {
             binding: activity_binding,
             confirmation_wait_started: None,
+            persistence_retry_started: None,
         };
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let reporter_task = tokio::spawn(async move { reporter.run(runtime, shutdown_rx).await });
@@ -996,6 +1274,7 @@ mod tests {
         let reporter = ManagedKernelActivityReporter {
             binding: activity_binding,
             confirmation_wait_started: None,
+            persistence_retry_started: None,
         };
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let reporter_task = tokio::spawn(async move { reporter.run(runtime, shutdown_rx).await });
@@ -1063,6 +1342,7 @@ mod tests {
         let reporter = ManagedKernelActivityReporter {
             binding: activity_binding,
             confirmation_wait_started: Some(wait_started_tx),
+            persistence_retry_started: None,
         };
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let reporter_runtime = runtime.clone();

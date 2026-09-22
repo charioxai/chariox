@@ -56,15 +56,16 @@ impl KernelRuntimeState {
     pub(crate) async fn wait_for_managed_activity_transition_after(
         &self,
         mut sequence: u64,
-        running_agent_count: u8,
-    ) -> (u64, u8) {
+        observation: super::ManagedActivityObservation,
+    ) -> Result<(u64, super::ManagedActivityObservation), crate::error::DaemonError> {
         loop {
             let latest_sequence = self.managed_activity_change_sequence();
             if latest_sequence != sequence {
+                let (latest_sequence, latest_observation) =
+                    self.managed_activity_report_snapshot()?;
                 sequence = latest_sequence;
-                let latest_count = self.managed_running_agent_count();
-                if latest_count != running_agent_count {
-                    return (sequence, latest_count);
+                if latest_observation != observation {
+                    return Ok((sequence, latest_observation));
                 }
             }
             self.owned
@@ -251,11 +252,16 @@ mod tests {
             DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
         ));
         let runtime = CommandRouter::with_interactive_capacity(app, 1).runtime_state();
-        let sequence = runtime.managed_activity_change_sequence();
-        assert_eq!(runtime.managed_running_agent_count(), 0);
+        runtime
+            .ensure_managed_activity_tracking("kernel-projection-churn")
+            .expect("managed activity tracking should activate");
+        let (sequence, observation) = runtime
+            .managed_activity_report_snapshot()
+            .expect("initial activity should be durable");
+        assert_eq!(observation.running_agent_count, 0);
 
         runtime.owned.runtime_projection_changes.record_change();
-        let wait = runtime.wait_for_managed_activity_transition_after(sequence, 0);
+        let wait = runtime.wait_for_managed_activity_transition_after(sequence, observation);
         tokio::pin!(wait);
         tokio::select! {
             biased;
@@ -272,12 +278,51 @@ mod tests {
                 "prompt-1".to_string(),
                 "provider-run-1".to_string(),
             ));
+        runtime.record_managed_activity_transition_for_test();
         runtime.owned.runtime_projection_changes.record_change();
-        let (_, running_agent_count) =
+        let (_, latest) =
             tokio::time::timeout(std::time::Duration::from_secs(1), wait)
                 .await
-                .expect("real activity transition should wake");
-        assert_eq!(running_agent_count, 1);
+                .expect("real activity transition should wake")
+                .expect("activity transition should remain readable");
+        assert_eq!(latest.running_agent_count, 1);
+    }
+
+    #[tokio::test]
+    async fn rapid_busy_idle_cycle_wakes_for_later_idle_timestamp() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let runtime = CommandRouter::with_interactive_capacity(app, 1).runtime_state();
+        runtime
+            .ensure_managed_activity_tracking("kernel-rapid-wait")
+            .expect("managed activity tracking should activate");
+        let (sequence, initial_idle) = runtime
+            .managed_activity_report_snapshot()
+            .expect("initial idle activity should be durable");
+
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        runtime.start_active_turn_with_trace_id(
+            "session-1",
+            "agent-1",
+            "prompt-1",
+            "provider-run-1",
+            "trace-1",
+        );
+        runtime.record_managed_activity_transition_for_test();
+        runtime.owned.runtime_projection_changes.record_change();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        runtime.clear_prompt_activity_for_managed_activity_test("provider-run-1");
+
+        let (_, later_idle) = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            runtime.wait_for_managed_activity_transition_after(sequence, initial_idle),
+        )
+        .await
+        .expect("completed busy-idle cycle should wake")
+        .expect("later idle observation should remain readable");
+        assert_eq!(later_idle.running_agent_count, 0);
+        assert!(later_idle.changed_at_ms > initial_idle.changed_at_ms);
     }
 
     #[tokio::test]
