@@ -10,10 +10,41 @@ import { handleBrowserControllerRequest } from "./browser-controller.mjs";
 
 assert.ok(process.env.PLAYWRIGHT_MODULE, "set PLAYWRIGHT_MODULE to the installed module; this test never downloads a browser");
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE);
+const testChromium = process.env.CHARIOX_TEST_CHROMIUM?.trim() ?? "";
+if (testChromium && !path.isAbsolute(testChromium)) {
+  throw new Error("CHARIOX_TEST_CHROMIUM must be an absolute executable path");
+}
+
+function browserLaunchOptions(configuredPath = testChromium) {
+  const executablePath = configuredPath?.trim() ?? "";
+  if (executablePath && !path.isAbsolute(executablePath)) {
+    throw new Error("CHARIOX_TEST_CHROMIUM must be an absolute executable path");
+  }
+  return {
+    headless: true,
+    args: ["--remote-debugging-port=0", "--site-per-process"],
+    ...(executablePath ? { executablePath } : { channel: "chrome" }),
+  };
+}
+
 const viewport = {
   css_width: 1280, css_height: 800, device_scale_factor: 1,
   desktop_pixel_width: 1280, desktop_pixel_height: 800,
 };
+
+test("test Chromium override is trimmed, absolute-only, and keeps the chrome default", () => {
+  assert.deepEqual(browserLaunchOptions("  /opt/chromium  "), {
+    executablePath: "/opt/chromium",
+    headless: true,
+    args: ["--remote-debugging-port=0", "--site-per-process"],
+  });
+  assert.deepEqual(browserLaunchOptions(" \t"), {
+    channel: "chrome",
+    headless: true,
+    args: ["--remote-debugging-port=0", "--site-per-process"],
+  });
+  assert.throws(() => browserLaunchOptions("relative/chromium"), /absolute executable path/);
+});
 
 for (const layout of ["page", "nested-frame", "shadow-root"]) {
 test(`replaced ${layout} fields reject their old reference and can be rediscovered`, async () => {
@@ -1016,9 +1047,7 @@ async function withController(run, clientOptions = {}) {
   let context;
   let browser;
   try {
-    context = await chromium.launchPersistentContext(profile, {
-      channel: "chrome", headless: true, args: ["--remote-debugging-port=0", "--site-per-process"],
-    });
+    context = await chromium.launchPersistentContext(profile, browserLaunchOptions());
     const port = Number((await readFile(path.join(profile, "DevToolsActivePort"), "utf8")).split("\n")[0]);
     assert.ok(Number.isInteger(port) && port > 0 && port <= 65535);
     browser = new BrowserCdpClient({ ...clientOptions, debuggerEndpoint: `http://127.0.0.1:${port}` });
