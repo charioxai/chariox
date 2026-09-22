@@ -16,6 +16,10 @@ export function roomRealProviderOptions(env) {
   assert.ok(["codex", "claude", "opencode"].includes(provider), "select an official Room drill provider")
   const model = env.CHARIOX_ROOM_DRILL_MODEL?.trim()
   assert.ok(model, "CHARIOX_ROOM_DRILL_MODEL must explicitly select a provider model")
+  const accountProfile = (env.CHARIOX_ROOM_DRILL_ACCOUNT_PROFILE ?? "default").trim()
+  const effort = (env.CHARIOX_ROOM_DRILL_EFFORT ?? "low").trim()
+  assert.ok(accountProfile, "CHARIOX_ROOM_DRILL_ACCOUNT_PROFILE must not be empty")
+  assert.ok(effort, "CHARIOX_ROOM_DRILL_EFFORT must not be empty")
   const mode = env.CHARIOX_ROOM_DRILL_PROVIDER_MODE ?? "computer"
   assert.ok(["computer", "browser"].includes(mode), "select Browser or Computer provider mode")
   const computerTask = env.CHARIOX_ROOM_DRILL_COMPUTER_TASK
@@ -30,7 +34,7 @@ export function roomRealProviderOptions(env) {
   assert.ok(browserMutation === undefined || browserTask === "form", "Browser mutation requires the form task")
   assert.ok(browserMutation === undefined || browserMutation === "replace-field", "invalid Browser mutation")
   return { provider, model, mode, ...(computerTask ? { computerTask } : {}), ...(browserTask ? { browserTask } : {}), ...(browserLayout ? { browserLayout } : {}),
-    ...(browserMutation ? { browserMutation } : {}), accountProfile: "default", importFirst: env.CHARIOX_ROOM_DRILL_IMPORT_FIRST === "1" }
+    ...(browserMutation ? { browserMutation } : {}), accountProfile, effort, importFirst: env.CHARIOX_ROOM_DRILL_IMPORT_FIRST === "1" }
 }
 
 // Prepare only the provider identity that a later companion may reuse. This
@@ -52,7 +56,7 @@ export async function prepareRoomRealProviderAgent(input) {
   const alias = `real-${options.provider}`
   const candidate = input.agent ?? unwrap(await client.send(requests.spawnAgentRequest(
     sessionId, options.provider, alias, options.model, input.workspace,
-    "low", "build", "yolo", undefined, undefined, sliceId, accountProfile,
+    options.effort ?? "low", "build", "yolo", undefined, undefined, sliceId, accountProfile,
   )), "AgentSpawned").agent
   assert.ok(candidate && typeof candidate.id === "string" && candidate.id.length > 0,
     "provider preparation did not return an agent identity")
@@ -67,6 +71,8 @@ export async function prepareRoomRealProviderAgent(input) {
     && agent.provider === options.provider && agent.model === options.model
     && (agent.account_profile ?? "default") === accountProfile,
   "authoritative provider configuration does not match the requested provider/model/profile/Room")
+  if (options.effort !== undefined) assert.equal(agent.effort, options.effort,
+    "authoritative provider effort does not match the requested effort")
   assert.equal(agent.is_processing, false, "provider must be idle before the companion handoff")
 
   const slices = unwrap(await input.withTimeout(client.send(requests.listSlicesRequest()),
@@ -95,6 +101,8 @@ export function roomProviderAgentReadyMetadata({ agent, sessionId, sliceId, opti
   assert.equal(agent.model, options.model, "provider ready metadata model mismatch")
   assert.equal(agent.account_profile ?? "default", options.accountProfile ?? "default",
     "provider ready metadata account profile mismatch")
+  if (options.effort !== undefined) assert.equal(agent.effort, options.effort,
+    "provider ready metadata effort mismatch")
   return {
     contract: roomProviderAgentContract,
     agentId: agent.id,
@@ -103,6 +111,7 @@ export function roomProviderAgentReadyMetadata({ agent, sessionId, sliceId, opti
     provider: options.provider,
     model: options.model,
     accountProfile: options.accountProfile ?? "default",
+    ...(options.effort !== undefined ? { effort: options.effort } : {}),
     mode,
     task,
     ...(options.computerTask ? { computerTask: options.computerTask } : {}),
@@ -264,6 +273,7 @@ export async function runRoomRealProviderAction(input) {
   assertRoomRealProviderAction(action, mode, options.browserTask)
   const result = {
     provider: verifiedAgent.provider, model: verifiedAgent.model, accountProfile: verifiedAgent.account_profile ?? "default", importFirst: options.importFirst,
+    ...(options.effort !== undefined ? { effort: verifiedAgent.effort } : {}),
     agentId: agent.id, actorId, actionId: action.action_id, mode, actionKind,
     baselineSequence, actionSequence: action.sequence,
     settlement,

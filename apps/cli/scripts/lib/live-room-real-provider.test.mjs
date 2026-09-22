@@ -12,6 +12,37 @@ import {
 const secret = "synthetic-secret-never-in-diagnostic"
 const entry = (kind, text, entry_index = 1) => ({ entry_index, entry: { kind, text } })
 
+test("real provider drills honor the selected account and effort through preparation", async () => {
+  const options = roomRealProviderOptions({ CHARIOX_ROOM_DRILL_FOCUS: "real-provider",
+    CHARIOX_ROOM_DRILL_PROVIDER: "codex", CHARIOX_ROOM_DRILL_MODEL: "gpt-5.6-sol",
+    CHARIOX_ROOM_DRILL_ACCOUNT_PROFILE: "codex-1", CHARIOX_ROOM_DRILL_EFFORT: "high",
+    CHARIOX_ROOM_DRILL_IMPORT_FIRST: "1" })
+  const agent = { id: "agent-2", session_id: "room", provider: "codex", model: "gpt-5.6-sol",
+    account_profile: "codex-1", effort: "high", is_processing: false }
+  const run = fixture({ state: { SessionState: { session: { id: "room", agents: [agent] } } } })
+  run.input.options = options
+  await prepareRoomRealProviderAgent(run.input)
+  assert.deepEqual(run.calls.find(call => call.name === "importSliceProviderAuth").args,
+    ["slice", "codex", "codex-1"])
+  const spawn = run.calls.find(call => call.name === "spawnAgent").args
+  assert.equal(spawn[5], "high")
+  assert.equal(spawn[11], "codex-1")
+  assert.equal(roomProviderAgentReadyMetadata({ agent, sessionId: "room", sliceId: "slice", options }).effort, "high")
+  agent.effort = "low"
+  await assert.rejects(prepareRoomRealProviderAgent(run.input), /authoritative provider effort/)
+  assert.equal(run.calls.some(call => call.name === "submitPrompt"), false)
+})
+
+test("provider selection defaults remain explicit and empty overrides are rejected", () => {
+  const env = { CHARIOX_ROOM_DRILL_FOCUS: "web-companion", CHARIOX_ROOM_DRILL_WEB_REAL_PROVIDER: "1",
+    CHARIOX_ROOM_DRILL_PROVIDER: "codex", CHARIOX_ROOM_DRILL_MODEL: "gpt-5.6-sol" }
+  assert.equal(roomRealProviderOptions(env).accountProfile, "default")
+  assert.equal(roomRealProviderOptions(env).effort, "low")
+  for (const key of ["CHARIOX_ROOM_DRILL_ACCOUNT_PROFILE", "CHARIOX_ROOM_DRILL_EFFORT"]) {
+    assert.throws(() => roomRealProviderOptions({ ...env, [key]: " " }), /must not be empty/)
+  }
+})
+
 test("office work explicitly selects Computer mode for standalone and Web companion drills", () => {
   const env = { CHARIOX_ROOM_DRILL_FOCUS: "real-provider", CHARIOX_ROOM_DRILL_PROVIDER: "codex",
     CHARIOX_ROOM_DRILL_MODEL: "gpt-5.6-sol", CHARIOX_ROOM_DRILL_COMPUTER_TASK: "office" }

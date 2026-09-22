@@ -5,6 +5,13 @@ Run the existing physical Room fixture with `CHARIOX_ROOM_DRILL_FOCUS=real-provi
 `CHARIOX_ROOM_DRILL_MODEL`. Run one provider at a time. This makes a real provider
 request and can consume provider usage.
 
+Set `CHARIOX_ROOM_DRILL_ACCOUNT_PROFILE=codex-1` and
+`CHARIOX_ROOM_DRILL_EFFORT=high` to use the selected account and effort with
+`CHARIOX_ROOM_DRILL_MODEL=gpt-5.6-sol`. Defaults remain `default` and `low` when
+omitted. Preparation verifies the kernel's actual account and effort before
+any prompt, and includes the selection in Web companion evidence. The drill
+does not silently substitute another account or effort.
+
 Use `CARGO_TARGET_DIR` for the existing matching binaries and
 `CHARIOX_ROOM_DRILL_IMAGE` for an existing exact-source image. The latter disables
 automatic image builds. The fixture enforces one 2-GiB, one-CPU headed slice and

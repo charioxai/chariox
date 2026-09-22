@@ -59,6 +59,7 @@ export async function runRoomEnvironmentCompanion(input) {
     assert.equal(expected.provider, input.ready.realProvider.provider, "provider-agent provider mismatch")
     assert.equal(expected.model, input.ready.realProvider.model, "provider-agent model mismatch")
     assert.equal(expected.accountProfile, input.ready.realProvider.accountProfile ?? "default", "provider-agent account profile mismatch")
+    assert.equal(expected.effort, input.ready.realProvider.effort, "provider-agent effort mismatch")
     assert.equal(expected.mode, input.ready.realProvider.mode ?? "computer", "provider-agent mode mismatch")
     const expectedTask = expected.mode === "browser"
       ? (input.ready.realProvider.browserTask ?? "click")
@@ -77,6 +78,7 @@ export async function runRoomEnvironmentCompanion(input) {
     assert.equal(expected.provider, companion.provider.provider)
     assert.equal(expected.model, companion.provider.model)
     assert.equal(expected.accountProfile, companion.provider.accountProfile ?? "default")
+    assert.equal(expected.effort, companion.provider.effort, "provider evidence effort mismatch")
     assert.equal(expected.mode, companion.provider.mode)
     const task = companion.provider.mode === "browser"
       ? (companion.provider.browserTask ?? "click")
