@@ -377,8 +377,8 @@ impl KernelRuntimeState {
             })
             .transpose()?
             .unwrap_or(false);
-        let defer_queued_workflow_prompt =
-            next_queued_prompt_candidate.as_ref().is_some_and(|prompt| {
+        let defer_queued_prompt = is_workflow_prompt
+            || next_queued_prompt_candidate.as_ref().is_some_and(|prompt| {
                 crate::scheduler::runtime::is_workflow_prompt_attachment(
                     prompt.source_attachment_id(),
                 ) && (next_queued_workflow_requires_fresh_context
@@ -391,7 +391,7 @@ impl KernelRuntimeState {
                         },
                     ))
             });
-        let next_queued_prompt = (!defer_queued_workflow_prompt)
+        let next_queued_prompt = (!defer_queued_prompt)
             .then_some(next_queued_prompt_candidate)
             .flatten();
         // Removing the active prompt is not the end of workflow settlement: the
@@ -405,56 +405,146 @@ impl KernelRuntimeState {
                 .write()
                 .mark_workflow_run_settling(session_id, workflow_run_id)?;
         }
-        let completion = if let Some(next_queued_prompt) = next_queued_prompt.as_ref() {
-            owned.complete_local_prompt_with_queued_advance_if_matches(
+        let settlement_observed_at_ms = crate::session::unix_epoch_ms();
+        let (completion, workflow_dispatches) = if is_workflow_prompt {
+            let activity_mutation = owned.begin_managed_activity_mutation();
+            let reservation = owned.reserve_local_workflow_prompt_completion_if_matches(
                 session_id,
                 &agent_id,
-                Some(provider_run_id),
-                next_queued_prompt,
-                Some(active_prompt.id()),
-            )
-        } else {
-            owned.complete_local_prompt_without_advance_if_matches(
-                session_id,
-                &agent_id,
-                Some(provider_run_id),
-                Some(active_prompt.id()),
-            )
-        };
-        let completion = match completion {
-            Ok(completion) => completion,
-            Err(error) => {
+                active_prompt.id(),
+            );
+            let reservation = match reservation {
+                Ok(reservation) => reservation,
+                Err(error) => {
+                    if let Some(workflow_run_id) = settling_workflow_run_id.as_deref() {
+                        owned
+                            .session_store
+                            .write()
+                            .clear_workflow_run_settling(session_id, workflow_run_id)?;
+                    }
+                    return Err(error);
+                }
+            };
+            let Some((reserved_prompt, queued_prompts)) = reservation else {
                 if let Some(workflow_run_id) = settling_workflow_run_id.as_deref() {
                     owned
                         .session_store
                         .write()
                         .clear_workflow_run_settling(session_id, workflow_run_id)?;
                 }
-                return Err(error);
-            }
-        };
-        let Some(completion) = completion else {
+                return Ok(crate::app::ProviderRunExitSessionSummary {
+                    had_active_prompt: true,
+                    cancelled_prompt: false,
+                    started_next_prompt: false,
+                });
+            };
+            let reserved_prompt_for_rollback = active_prompt.clone();
+            let queued_prompts_for_rollback = queued_prompts.clone();
+            let workflow_dispatches = match owned
+                .workflow_complete_prompt_with_activity_mutation_and_rollback(
+                    session_id,
+                    &reserved_prompt,
+                    Some(provider_run_id),
+                    Some(&agent_id),
+                    activity_mutation,
+                    || {
+                        if let Err(error) = owned.restore_reserved_local_workflow_prompt(
+                            session_id,
+                            &agent_id,
+                            reserved_prompt_for_rollback,
+                            queued_prompts_for_rollback,
+                        ) {
+                            crate::logging::error_with_fields(
+                                "daemon.provider",
+                                "failed to restore provider prompt after workflow append failure",
+                                serde_json::json!({
+                                    "session_id": session_id,
+                                    "provider_run_id": provider_run_id,
+                                    "agent_id": agent_id,
+                                    "error": error.to_string(),
+                                }),
+                            );
+                        }
+                    },
+                ) {
+                Ok(dispatches) => dispatches,
+                Err(error) => {
+                    if let Some(workflow_run_id) = settling_workflow_run_id.as_deref() {
+                        owned
+                            .session_store
+                            .write()
+                            .clear_workflow_run_settling(session_id, workflow_run_id)?;
+                    }
+                    return Err(error);
+                }
+            };
             if let Some(workflow_run_id) = settling_workflow_run_id.as_deref() {
                 owned
                     .session_store
                     .write()
                     .clear_workflow_run_settling(session_id, workflow_run_id)?;
             }
-            crate::logging::debug_with_fields(
-                "daemon.provider",
-                "ignored stale provider settlement after active prompt changed",
-                serde_json::json!({
-                    "session_id": session_id,
-                    "provider_run_id": provider_run_id,
-                    "agent_id": agent_id,
-                    "expected_prompt_id": active_prompt.id(),
-                }),
-            );
-            return Ok(crate::app::ProviderRunExitSessionSummary {
-                had_active_prompt: true,
-                cancelled_prompt: false,
-                started_next_prompt: false,
-            });
+            let completion = owned.finalize_reserved_local_workflow_prompt_completion(
+                session_id,
+                &agent_id,
+                provider_run_id,
+                reserved_prompt,
+                settlement_observed_at_ms,
+            )?;
+            (completion, Some(workflow_dispatches))
+        } else {
+            let completion = if let Some(next_queued_prompt) = next_queued_prompt.as_ref() {
+                owned.complete_local_prompt_with_queued_advance_if_matches(
+                    session_id,
+                    &agent_id,
+                    Some(provider_run_id),
+                    next_queued_prompt,
+                    Some(active_prompt.id()),
+                )
+            } else {
+                owned.complete_local_prompt_without_advance_if_matches(
+                    session_id,
+                    &agent_id,
+                    Some(provider_run_id),
+                    Some(active_prompt.id()),
+                )
+            };
+            let completion = match completion {
+                Ok(completion) => completion,
+                Err(error) => {
+                    if let Some(workflow_run_id) = settling_workflow_run_id.as_deref() {
+                        owned
+                            .session_store
+                            .write()
+                            .clear_workflow_run_settling(session_id, workflow_run_id)?;
+                    }
+                    return Err(error);
+                }
+            };
+            let Some(completion) = completion else {
+                if let Some(workflow_run_id) = settling_workflow_run_id.as_deref() {
+                    owned
+                        .session_store
+                        .write()
+                        .clear_workflow_run_settling(session_id, workflow_run_id)?;
+                }
+                crate::logging::debug_with_fields(
+                    "daemon.provider",
+                    "ignored stale provider settlement after active prompt changed",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "provider_run_id": provider_run_id,
+                        "agent_id": agent_id,
+                        "expected_prompt_id": active_prompt.id(),
+                    }),
+                );
+                return Ok(crate::app::ProviderRunExitSessionSummary {
+                    had_active_prompt: true,
+                    cancelled_prompt: false,
+                    started_next_prompt: false,
+                });
+            };
+            (completion, None)
         };
         self.observe_git_after_prompt_completion(provider_run_id, &completion.completion.completed)
             .await;
@@ -472,18 +562,8 @@ impl KernelRuntimeState {
             }),
         );
         if completion.completion.completed.workflow_run_id().is_some() {
-            let workflow_completion = owned.workflow_complete_prompt(
-                session_id,
-                &completion.completion.completed,
-                Some(provider_run_id),
-            );
-            if let Some(workflow_run_id) = settling_workflow_run_id.as_deref() {
-                owned
-                    .session_store
-                    .write()
-                    .clear_workflow_run_settling(session_id, workflow_run_id)?;
-            }
-            let mut dispatches = workflow_completion?;
+            let mut dispatches = workflow_dispatches
+                .expect("workflow prompt completion should prepare workflow dispatches");
             // Completion persisted while the settlement reservation still held
             // the terminal run. Archive only after its claim cleanup has ended.
             owned
@@ -558,7 +638,7 @@ impl KernelRuntimeState {
                 .write()
                 .clear_workflow_run_settling(session_id, workflow_run_id)?;
         }
-        if defer_queued_workflow_prompt {
+        if defer_queued_prompt {
             let session_id_for_queue = session_id.to_string();
             let agent_id_for_queue = agent_id.clone();
             match self

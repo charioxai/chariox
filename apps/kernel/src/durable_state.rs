@@ -147,6 +147,7 @@ enum DurableWriteOperation {
         hot_entities: Vec<DurableWorkflowHotEntityWrite>,
         workflow_runs: Vec<DurableWorkflowRunWrite>,
         delivery_receipts: Vec<DurableDeliveryReceiptWrite>,
+        prompt_state_json: Option<String>,
     },
     WorkflowRuntimeSessionsTransition {
         event_id: String,
@@ -1370,6 +1371,7 @@ fn commit_durable_write_batch(
                 hot_entities,
                 workflow_runs,
                 delivery_receipts,
+                prompt_state_json,
             } => workflow_runtime::write_workflow_runtime_transition(
                 &transaction,
                 workflow_runtime::WorkflowRuntimeTransitionWrite {
@@ -1382,6 +1384,7 @@ fn commit_durable_write_batch(
                     hot_entities,
                     workflow_runs,
                     delivery_receipts,
+                    prompt_state_json: prompt_state_json.as_deref(),
                 },
             ),
             DurableWriteOperation::WorkflowRuntimeSessionsTransition {

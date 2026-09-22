@@ -7,6 +7,121 @@ use super::owned::OwnedPromptCompletion;
 use super::*;
 
 impl KernelRuntimeOwnedState {
+    pub(super) fn reserve_local_workflow_prompt_completion_if_matches(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        expected_prompt_id: &str,
+    ) -> Result<
+        Option<(
+            crate::session::PromptQueueItem,
+            std::collections::VecDeque<crate::session::PromptQueueItem>,
+        )>,
+        DaemonError,
+    > {
+        let agent = self.agent_store.get_agent(agent_id)?;
+        if agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.to_string(),
+                agent_id: agent_id.to_string(),
+            });
+        }
+        if agent.remote_execution().is_some() {
+            return Ok(None);
+        }
+        let session = self.session_store.get_session(session_id)?;
+        let (_, queued_prompts) = self.prompt_state_owner.state_parts(&session, agent_id);
+        let Some(completed) = self.prompt_state_owner.complete_active_prompt_if_matches(
+            &session,
+            agent_id,
+            Some(expected_prompt_id),
+        ) else {
+            return Ok(None);
+        };
+        let (active_prompt, current_queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        // The caller owns the activity gate. This reservation is neither durable
+        // nor publishable until its workflow transition commits with prompt state.
+        self.session_store.mirror_agent_prompt_state(
+            session_id,
+            agent_id,
+            active_prompt,
+            current_queued_prompts,
+        )?;
+        Ok(Some((completed, queued_prompts)))
+    }
+
+    pub(super) fn restore_reserved_local_workflow_prompt(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        completed: crate::session::PromptQueueItem,
+        queued_prompts: std::collections::VecDeque<crate::session::PromptQueueItem>,
+    ) -> Result<(), DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let prompt_id = completed.id().to_string();
+        if !self
+            .prompt_state_owner
+            .restore_reserved_prompt_if_unclaimed(&session, agent_id, completed, &queued_prompts)
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "restore workflow prompt settlement",
+                message: format!(
+                    "prompt state changed while workflow prompt `{prompt_id}` was reserved"
+                ),
+            });
+        }
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        self.session_store.mirror_agent_prompt_state(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+        )?;
+        Ok(())
+    }
+
+    pub(super) fn finalize_reserved_local_workflow_prompt_completion(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+        completed: crate::session::PromptQueueItem,
+        settled_at_ms: u64,
+    ) -> Result<OwnedPromptCompletion, DaemonError> {
+        self.record_completed_prompt_settlement(
+            session_id,
+            agent_id,
+            &completed,
+            Some(provider_run_id),
+            settled_at_ms,
+            crate::git_observer::CompletedTurnSettlementStatus::Completed,
+            None,
+        );
+        if !self.prompt_completion_recorded(provider_run_id) {
+            self.record_assistant_message_completion(
+                session_id,
+                provider_run_id,
+                self.attachment_store
+                    .list_session_attachment_ids(session_id),
+                &format!("prompt-complete:{}", completed.id()),
+                settled_at_ms,
+            );
+            self.mark_prompt_completion_recorded(provider_run_id);
+        }
+        let released_claim = self.clear_prompt_activity(provider_run_id);
+        let _ = self.session_snapshot(session_id)?;
+        Ok(OwnedPromptCompletion {
+            completion: crate::session::PromptCompletion {
+                completed,
+                started_next: None,
+            },
+            released_claim,
+            dispatch: None,
+        })
+    }
+
     pub(super) fn settle_failed_local_prompt_without_advance(
         &self,
         session_id: &str,

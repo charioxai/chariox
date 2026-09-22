@@ -100,8 +100,7 @@ async fn workflow_prompt_state_append_failure_retains_retry_ownership() {
 async fn assert_workflow_completion_failure_is_retryable(event_kind: &str) {
     let worktree = crate::test_support::TestWorktree::new("workflow-settlement-append-retry");
     let config = crate::config::DaemonConfig::for_tests();
-    let mut app = DaemonApp::bootstrap(config.clone())
-        .expect("daemon bootstrap should succeed");
+    let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .expect("session should be created");
@@ -173,15 +172,16 @@ async fn assert_workflow_completion_failure_is_retryable(event_kind: &str) {
     else {
         panic!("workflow prompt should start immediately");
     };
-    app.mark_active_prompt_delivery(
-        session.id(),
-        agent.id(),
-        prompt.id(),
-        crate::session::DurablePromptDeliveryPhase::Delivered,
-        Some(run.id().to_string()),
-        run.provider_session_id().map(str::to_string),
-    )
-    .expect("workflow prompt should be delivered");
+    let prompt = app
+        .mark_active_prompt_delivery(
+            session.id(),
+            agent.id(),
+            prompt.id(),
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some(run.id().to_string()),
+            run.provider_session_id().map(str::to_string),
+        )
+        .expect("workflow prompt should be delivered");
     crate::transport::flow_control::note_prompt_started(&mut app, run.id());
 
     let app = Arc::new(Mutex::new(app));
@@ -233,11 +233,15 @@ async fn assert_workflow_completion_failure_is_retryable(event_kind: &str) {
         .expect("failed completion must retain the active prompt");
     assert_eq!(retained_prompt.id(), prompt.id());
     assert_eq!(retained_prompt.status(), prompt.status());
-    let durable_prompt_events = runtime.owned.durable_state_store
+    let durable_prompt_events = runtime
+        .owned
+        .durable_state_store
         .load_events_by_kind(crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND)
         .expect("durable prompt events should load");
     assert_eq!(
-        durable_prompt_events.last().expect("delivered prompt should be durable")
+        durable_prompt_events
+            .last()
+            .expect("delivered prompt should be durable")
             .payload["active_prompt"]["id"],
         prompt.id(),
         "a rejected composite completion must retain its durable prompt ownership"
@@ -251,7 +255,10 @@ async fn assert_workflow_completion_failure_is_retryable(event_kind: &str) {
         crate::session::WorkflowNodeRunStatus::Running
     );
     assert_eq!(runtime.managed_running_agent_count(), 1);
-    assert_eq!(runtime.managed_activity_change_sequence(), activity_sequence);
+    assert_eq!(
+        runtime.managed_activity_change_sequence(),
+        activity_sequence
+    );
     assert_eq!(
         runtime.owned.session_projection.change_sequence(),
         projection_sequence,
@@ -300,15 +307,22 @@ async fn assert_workflow_completion_failure_is_retryable(event_kind: &str) {
         .into_iter()
         .filter(|event| event.payload["reason"] == "workflow_prompt_completed")
         .count();
-    assert_eq!(completion_events, 1, "completion should commit exactly once");
+    assert_eq!(
+        completion_events, 1,
+        "completion should commit exactly once"
+    );
     drop(connection);
     drop(runtime);
     drop(app);
     let restored = DaemonApp::bootstrap(config).expect("kernel state should restore");
-    let restored_session = restored.sessions().get_session(session.id())
+    let restored_session = restored
+        .sessions()
+        .get_session(session.id())
         .expect("session should restore");
     assert!(
-        restored_session.active_prompt_for_agent(agent.id()).is_none(),
+        restored_session
+            .active_prompt_for_agent(agent.id())
+            .is_none(),
         "restart must not resurrect the completed provider prompt"
     );
 }

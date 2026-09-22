@@ -549,6 +549,25 @@ impl PromptStateOwner {
         true
     }
 
+    pub(crate) fn restore_reserved_prompt_if_unclaimed(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        prompt: PromptQueueItem,
+        expected_queue: &VecDeque<PromptQueueItem>,
+    ) -> bool {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = owner.ensure_agent_state(session, agent_id);
+        if state.active_prompt.is_some() || &state.queued_prompts != expected_queue {
+            return false;
+        }
+        state.active_prompt = Some(prompt);
+        true
+    }
+
     pub(crate) fn begin_active_prompt_recovery(
         &self,
         session: &RuntimeSession,

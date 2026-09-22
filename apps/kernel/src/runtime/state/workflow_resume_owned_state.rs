@@ -10,8 +10,8 @@ impl KernelRuntimeOwnedState {
     ) -> Result<(crate::session::WorkflowRun, WorkflowPromptDispatches), DaemonError> {
         let activity_mutation = self.begin_managed_activity_mutation();
         let durable_state_store = self.durable_state_store.clone();
-        let (workflow_run, resumable_node_ids) =
-            durable_state_store.with_workflow_runtime_transition_lock(|| {
+        let (workflow_run, resumable_node_ids) = durable_state_store
+            .with_workflow_runtime_transition_lock(|| {
                 let mut sessions = self.session_store.write();
                 let session_before_resume = sessions.get_session(session_id)?;
                 let resumable_node_ids = sessions
@@ -30,10 +30,9 @@ impl KernelRuntimeOwnedState {
                     .collect::<std::collections::BTreeSet<_>>();
                 let workflow_run = sessions.resume_workflow_run(session_id, workflow_run_ref)?;
                 let durable_session = sessions.get_session(session_id)?;
-                if let Err(error) = durable_state_store.persist_workflow_runtime_transition(
-                    &durable_session,
-                    "workflow_run_resumed",
-                ) {
+                if let Err(error) = durable_state_store
+                    .persist_workflow_runtime_transition(&durable_session, "workflow_run_resumed")
+                {
                     // Restore while the write guard still excludes unrelated session mutations.
                     sessions.restore_session(session_before_resume);
                     return Err(error);
@@ -124,11 +123,10 @@ mod tests {
             .owned
             .prompt_state_owner
             .state_parts(&baseline_session, &agent_id);
-        let claim_id = runtime.owned.workflow_dispatch_claim_id(
-            &session_id,
-            &workflow_run_id,
-            &node_run_id,
-        );
+        let claim_id =
+            runtime
+                .owned
+                .workflow_dispatch_claim_id(&session_id, &workflow_run_id, &node_run_id);
         assert!(!runtime.owned.prompt_workspace_claims.contains(&claim_id));
 
         let state_path = runtime.owned.durable_state_store.path().to_path_buf();
@@ -195,19 +193,10 @@ mod tests {
         let durable_before_retry = runtime
             .owned
             .durable_state_store
-            .list_workflow_runs_page(
-                &owner_id,
-                &session_id,
-                Some(&workflow_id),
-                None,
-                10,
-            )
+            .list_workflow_runs_page(&owner_id, &session_id, Some(&workflow_id), None, 10)
             .expect("durable paused workflow run should load");
         assert_eq!(durable_before_retry.workflow_runs.len(), 1);
-        assert_paused_workflow_run(
-            &durable_before_retry.workflow_runs[0],
-            &node_run_id,
-        );
+        assert_paused_workflow_run(&durable_before_retry.workflow_runs[0], &node_run_id);
 
         connection
             .execute_batch("DROP TRIGGER fail_workflow_resume_append;")
@@ -220,7 +209,10 @@ mod tests {
             other => panic!("unexpected workflow resume response: {other:?}"),
         };
         assert_ne!(resumed.status(), crate::session::WorkflowRunStatus::Paused);
-        assert_ne!(resumed.node_runs()[0].status(), crate::session::WorkflowNodeRunStatus::Stopped);
+        assert_ne!(
+            resumed.node_runs()[0].status(),
+            crate::session::WorkflowNodeRunStatus::Stopped
+        );
         let projected = projected.expect("successful resume should publish a session snapshot");
         assert_eq!(projected.workflow_runs().len(), 1);
         assert_ne!(
@@ -232,21 +224,18 @@ mod tests {
             .prompt_state_owner
             .state_parts(&projected, &agent_id);
         assert_eq!(
-            (if resumed_prompt_state.0.is_some() { 1 } else { 0 })
-                + resumed_prompt_state.1.len(),
+            (if resumed_prompt_state.0.is_some() {
+                1
+            } else {
+                0
+            }) + resumed_prompt_state.1.len(),
             1,
             "successful retry should admit exactly one resumed prompt"
         );
         let durable_after_retry = runtime
             .owned
             .durable_state_store
-            .list_workflow_runs_page(
-                &owner_id,
-                &session_id,
-                Some(&workflow_id),
-                None,
-                10,
-            )
+            .list_workflow_runs_page(&owner_id, &session_id, Some(&workflow_id), None, 10)
             .expect("durable resumed workflow run should load");
         assert_eq!(durable_after_retry.workflow_runs.len(), 1);
         assert_ne!(
@@ -268,10 +257,7 @@ mod tests {
         assert_paused_workflow_run(workflow_run, node_run_id);
     }
 
-    fn assert_paused_workflow_run(
-        workflow_run: &crate::session::WorkflowRun,
-        node_run_id: &str,
-    ) {
+    fn assert_paused_workflow_run(workflow_run: &crate::session::WorkflowRun, node_run_id: &str) {
         assert_eq!(
             workflow_run.status(),
             crate::session::WorkflowRunStatus::Paused
