@@ -23,6 +23,7 @@ import {
   runRoomRealProvider,
 } from "./lib/live-room-real-provider.mjs"
 import { roomProviderBrowserFixture } from "./lib/room-provider-browser-fixture.mjs"
+import { roomCompanionClickFixture } from "./lib/room-companion-click-fixture.mjs"
 import { createDrillInterruption } from "./lib/drill-interruption.mjs"
 import { makeAvailablePorts, portIsAvailable } from "./lib/drill-runtime-helpers.mjs"
 import {
@@ -2013,6 +2014,7 @@ function scopedRelayToken({ subject, subjectKind, actions, userId = null }) {
 
 async function runCompanionIfConfigured({ environment, localNoticeIds, remoteNoticeIds, activityController }) {
   const noticePattern = roomActionNoticePattern
+  const companionFixture = roomCompanionClickFixture(realProviderOptions)
   const preparedProvider = realProviderOptions
     ? await prepareRoomRealProviderAgent({
       client,
@@ -2043,15 +2045,15 @@ async function runCompanionIfConfigured({ environment, localNoticeIds, remoteNot
     prepare: async () => {
       // The keyboard/clipboard drills navigate away from the original click page.
       // Give the Web companion a fresh physical page, not the last drill's form.
-      await sliceScreen(["open-url", `http://host.docker.internal:${fixture.port}/click`])
-      await waitForBrowserText("POINTER_CLICK_READY", 30_000, "Web companion fixture did not reset")
+      await sliceScreen(["open-url", `http://host.docker.internal:${fixture.port}${companionFixture.path}`])
+      await waitForBrowserText(companionFixture.readyMarker, 30_000, "Web companion fixture did not reset")
       resources.push(await resourceSnapshot("before-web-companion"))
     },
     ready: {
       ...(webKeyboardText ? { keyboardText: webKeyboardText } : {}),
       ...(webKeyboardReplacementText ? { keyboardReplacementText: webKeyboardReplacementText } : {}),
       ...(webPointerGestures ? { pointerGestures: true } : {}),
-      pointerClickExpectedCount: 1,
+      pointerClickExpectedCount: companionFixture.pointerClickExpectedCount,
       ...(realProviderOptions ? { realProvider: realProviderOptions, providerWorkspace: fixtureWorkspace } : {}),
       ...(providerAgent ? { providerAgent } : {}),
       kernelUrl: `ws://127.0.0.1:${kernelPort}/kernel`,
