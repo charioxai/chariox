@@ -711,10 +711,11 @@ mod tests {
     use super::*;
     use crate::agent::CreateAgentRequest;
     use crate::provider::LaunchProviderRequest;
-    use crate::session::CreateSessionRequest;
+    use crate::test_support::TestWorktree;
 
     #[test]
     fn durable_restore_keeps_sessions_bound_to_their_kernel_id() {
+        let worktree = TestWorktree::new("shared-kernel-state");
         let state_path = std::env::temp_dir().join("chariox-tests").join(format!(
             "shared-kernel-state-{}.db",
             crate::session::unix_epoch_ms()
@@ -725,7 +726,7 @@ mod tests {
         let session_id = {
             let mut app = DaemonApp::bootstrap(config_a.clone()).expect("kernel a should boot");
             let (session, _) = app
-                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .create_session(worktree.session_request())
                 .expect("session should create");
             session.id().to_string()
         };
@@ -840,6 +841,7 @@ mod tests {
 
     #[test]
     fn daemon_restart_restores_sessions_after_shutdown_cleanup() {
+        let worktree = TestWorktree::new("restart-preserves-sessions");
         let state_path = std::env::temp_dir().join("chariox-tests").join(format!(
             "restart-preserves-sessions-{}.db",
             crate::session::unix_epoch_ms()
@@ -850,7 +852,7 @@ mod tests {
         let session_id = {
             let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
             let (session, _) = app
-                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .create_session(worktree.session_request())
                 .expect("session should create");
             app.shutdown_cleanup()
                 .expect("shutdown should clean runtime without ending session");
@@ -873,6 +875,8 @@ mod tests {
 
     #[test]
     fn durable_restore_ignores_newer_snapshot_from_other_kernel_owner() {
+        let first_worktree = TestWorktree::new("shared-kernel-snapshot-owner-a");
+        let second_worktree = TestWorktree::new("shared-kernel-snapshot-owner-b");
         let state_path = std::env::temp_dir().join("chariox-tests").join(format!(
             "shared-kernel-snapshot-owner-{}.db",
             crate::session::unix_epoch_ms()
@@ -883,7 +887,7 @@ mod tests {
         let session_id = {
             let mut app = DaemonApp::bootstrap(config_a.clone()).expect("kernel a should boot");
             let (session, _) = app
-                .create_session(CreateSessionRequest::new("workspace-a", "worktree-a"))
+                .create_session(first_worktree.session_request())
                 .expect("session should create");
             session.id().to_string()
         };
@@ -893,7 +897,7 @@ mod tests {
         config_b.user_config.state.path = Some(state_path.display().to_string());
         {
             let mut app = DaemonApp::bootstrap(config_b).expect("kernel b should boot");
-            app.create_session(CreateSessionRequest::new("workspace-b", "worktree-b"))
+            app.create_session(second_worktree.session_request())
                 .expect("kernel b session should create");
             app.save_durable_state_snapshot()
                 .expect("kernel b should write latest snapshot");
@@ -911,6 +915,7 @@ mod tests {
 
     #[test]
     fn durable_restore_republishes_agent_runtime_profile_to_session_projection() {
+        let worktree = TestWorktree::new("restart-agent-projection");
         let state_path = std::env::temp_dir().join("chariox-tests").join(format!(
             "restart-agent-projection-{}.db",
             crate::session::unix_epoch_ms()
@@ -921,7 +926,7 @@ mod tests {
         let session_id = {
             let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
             let (session, agent) = app
-                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .create_session(worktree.session_request())
                 .expect("session should create");
             app.launch_provider(
                 LaunchProviderRequest::new(
@@ -955,6 +960,7 @@ mod tests {
 
     #[test]
     fn durable_restore_preserves_metaagent_event_inbox_state() {
+        let worktree = TestWorktree::new("restart-metaagent-events");
         let state_path = std::env::temp_dir().join("chariox-tests").join(format!(
             "restart-metaagent-events-{}.db",
             crate::session::unix_epoch_ms()
@@ -965,7 +971,7 @@ mod tests {
         let (metaagent_id, event_id, subscription_id) = {
             let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
             let (session, _default_agent) = app
-                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .create_session(worktree.session_request())
                 .expect("session should create");
             let worker = crate::app::KernelSessionService::new(&mut app)
                 .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"))
