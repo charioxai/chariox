@@ -1,6 +1,119 @@
 #![allow(unused_imports)]
 use super::support::*;
 
+#[tokio::test]
+async fn relay_event_store_recovers_both_subscription_scopes_after_append_failure() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-relay-event-store-recovery-test-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms(),
+    ));
+    let counter_path = root.join("event-counter.json");
+    let events_path = root.join("relay-events.jsonl");
+    let runtime = RelayEventRuntime::new(&counter_path)
+        .expect("persistent relay event runtime should initialize");
+    let session_stream = subscription_event_stream_id("session-a", "attachment-a");
+
+    std::fs::create_dir_all(&events_path).expect("event store path should become unwritable");
+    runtime
+        .event_log
+        .append(
+            session_stream.clone(),
+            KernelEvent::Heartbeat {
+                session_id: "session-a".to_string(),
+            },
+        )
+        .await
+        .expect_err("relay append failure must be visible before delivery");
+
+    std::fs::remove_dir(&events_path).expect("event store path should become writable again");
+    let session_first = runtime
+        .event_log
+        .append(
+            session_stream.clone(),
+            KernelEvent::Heartbeat {
+                session_id: "session-a".to_string(),
+            },
+        )
+        .await
+        .expect("session events should recover without a runtime restart");
+    let waiting_first = runtime
+        .event_log
+        .append(
+            WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+            KernelEvent::Heartbeat {
+                session_id: WAITING_ROOM_INVENTORY_SENTINEL_ID.to_string(),
+            },
+        )
+        .await
+        .expect("waiting-room events should recover without a runtime restart");
+    let session_second = runtime
+        .event_log
+        .append(
+            session_stream.clone(),
+            KernelEvent::Heartbeat {
+                session_id: "session-a".to_string(),
+            },
+        )
+        .await
+        .expect("later session events should preserve order");
+    let waiting_second = runtime
+        .event_log
+        .append(
+            WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+            KernelEvent::Heartbeat {
+                session_id: WAITING_ROOM_INVENTORY_SENTINEL_ID.to_string(),
+            },
+        )
+        .await
+        .expect("later waiting-room events should preserve order");
+    assert!(session_first.event_id < waiting_first.event_id);
+    assert!(waiting_first.event_id < session_second.event_id);
+    assert!(session_second.event_id < waiting_second.event_id);
+    drop(runtime);
+
+    let restarted = RelayEventRuntime::new(&counter_path)
+        .expect("recovered relay event runtime should restart");
+    match restarted
+        .event_log
+        .replay_after(&session_stream, session_first.event_id)
+        .await
+    {
+        ReplayOutcome::Replayed(events) => {
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].event_id, session_second.event_id);
+            assert!(matches!(
+                &events[0].event,
+                KernelEvent::Heartbeat { session_id } if session_id == "session-a"
+            ));
+        }
+        ReplayOutcome::Gap(gap) => panic!("session events should replay in order: {gap:?}"),
+    }
+    match restarted
+        .event_log
+        .replay_after(
+            WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+            waiting_first.event_id,
+        )
+        .await
+    {
+        ReplayOutcome::Replayed(events) => {
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].event_id, waiting_second.event_id);
+            assert!(matches!(
+                &events[0].event,
+                KernelEvent::Heartbeat { session_id }
+                    if session_id == WAITING_ROOM_INVENTORY_SENTINEL_ID
+            ));
+        }
+        ReplayOutcome::Gap(gap) => {
+            panic!("waiting-room events should replay in order: {gap:?}")
+        }
+    }
+    drop(restarted);
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn relay_waiting_room_subscription_sends_baseline_after_reload_and_observes_mutations() {
     let _relay_test_guard = relay_client_test_guard().await;

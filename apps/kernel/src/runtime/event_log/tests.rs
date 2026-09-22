@@ -182,6 +182,126 @@ async fn persistent_event_store_replays_after_restart() {
 }
 
 #[tokio::test]
+async fn persistent_event_store_recovers_after_transient_append_failure() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-event-store-recovery-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    let counter_path = root.join("counter.json");
+    let events_path = root.join("events.jsonl");
+    let log = EventLog::<String>::new_with_persistent_event_store(
+        16,
+        &counter_path,
+        &events_path,
+    )
+    .expect("persistent event store should initialize");
+
+    std::fs::create_dir_all(&events_path).expect("event store path should become unwritable");
+    log.append("session:a", "failed".to_string())
+        .await
+        .expect_err("append failure must be visible before an event can be delivered");
+
+    std::fs::remove_dir(&events_path).expect("event store path should become writable again");
+    let recovered = log
+        .append("session:a", "recovered".to_string())
+        .await
+        .expect("restored storage should recover without reconstructing the event log");
+    let later = log
+        .append("session:a", "later".to_string())
+        .await
+        .expect("later event should preserve durable order");
+    log.flush_persistence_for_tests()
+        .await
+        .expect("recovered events should be durable");
+
+    let restarted =
+        EventLog::<String>::new_with_persistent_event_store(16, &counter_path, &events_path)
+            .expect("persistent event store should restart after recovery");
+    match restarted.replay_after("session:a", 0).await {
+        ReplayOutcome::Gap(gap) => {
+            assert_eq!(gap.first_retained_event_id, Some(recovered.event_id));
+            assert_eq!(gap.latest_event_id, Some(later.event_id));
+        }
+        ReplayOutcome::Replayed(events) => panic!("failed event id should leave a gap: {events:?}"),
+    }
+    match restarted.replay_after("session:a", recovered.event_id).await {
+        ReplayOutcome::Replayed(events) => {
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].event_id, later.event_id);
+            assert_eq!(events[0].event, "later");
+        }
+        ReplayOutcome::Gap(gap) => panic!("recovered events should replay in order: {gap:?}"),
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn persistent_event_store_truncates_a_torn_tail_before_append() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-event-store-torn-tail-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    let counter_path = root.join("counter.json");
+    let events_path = root.join("events.jsonl");
+    std::fs::create_dir_all(&root).expect("event store root should create");
+    std::fs::write(&counter_path, r#"{"high_water_event_id":7}"#)
+        .expect("event counter should seed");
+    let first = LoggedEvent {
+        event_id: 7,
+        stream_id: "session:a".to_string(),
+        stream_seq: 1,
+        recorded_at_ms: super::unix_epoch_ms(),
+        event: "first".to_string(),
+    };
+    let mut payload = super::logged_event_jsonl_payload(&first).expect("first event should encode");
+    payload.extend_from_slice(br#"{"event_id":8,"stream_id":"session:a""#);
+    std::fs::write(&events_path, payload).expect("torn event store should seed");
+
+    let log = EventLog::<String>::new_with_persistent_event_store(
+        16,
+        &counter_path,
+        &events_path,
+    )
+    .expect("persistent event store should tolerate a torn tail");
+    let recovered = log
+        .append("session:a", "second".to_string())
+        .await
+        .expect("append should replace the torn tail with a complete record");
+    log.flush_persistence_for_tests()
+        .await
+        .expect("repaired event store should flush");
+
+    let stored = std::fs::read_to_string(&events_path).expect("event store should remain readable");
+    assert!(stored.ends_with('\n'));
+    assert_eq!(stored.lines().count(), 2);
+    for line in stored.lines() {
+        serde_json::from_str::<LoggedEvent<String>>(line)
+            .expect("every retained event record should be complete");
+    }
+
+    let restarted =
+        EventLog::<String>::new_with_persistent_event_store(16, &counter_path, &events_path)
+            .expect("repaired event store should restart");
+    match restarted.replay_after("session:a", first.event_id).await {
+        ReplayOutcome::Replayed(events) => {
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].event_id, recovered.event_id);
+            assert_eq!(events[0].event, "second");
+        }
+        ReplayOutcome::Gap(gap) => panic!("repaired event should replay: {gap:?}"),
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn persistent_event_store_skips_malformed_lines() {
     let root = std::env::temp_dir().join(format!(
         "chariox-event-store-malformed-test-{}-{}",
