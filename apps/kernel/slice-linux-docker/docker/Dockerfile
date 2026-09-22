@@ -228,9 +228,15 @@ RUN chmod +x /opt/chariox-slice/browser-cdp.mjs \
 
 ARG CHARIOX_RELAY_PEER_PROTOCOL_VERSION=unknown
 ARG CHARIOX_RUNTIME_SOURCE_REVISION=unknown
+ARG CHARIOX_SELKIES_VERSION=0.0.0.dev0
+ARG CHARIOX_SELKIES_REVISION=3f87241fcd6abc44e205b22f6596e78ef4946670
 LABEL io.chariox.relay-peer-protocol-version="${CHARIOX_RELAY_PEER_PROTOCOL_VERSION}"
 LABEL io.chariox.runtime-source-revision="${CHARIOX_RUNTIME_SOURCE_REVISION}"
 LABEL io.chariox.debian-snapshot="20260701T000000Z"
+LABEL io.chariox.selkies-version="${CHARIOX_SELKIES_VERSION}"
+LABEL io.chariox.selkies-source-revision="${CHARIOX_SELKIES_REVISION}"
+LABEL io.chariox.selkies-license="MPL-2.0"
+LABEL io.chariox.selkies-source="https://github.com/selkies-project/selkies/commit/${CHARIOX_SELKIES_REVISION}"
 
 RUN printf '%s\n' "${CHARIOX_RUNTIME_SOURCE_REVISION}" > /opt/chariox-slice/runtime-source-revision
 
