@@ -89,21 +89,27 @@ async fn managed_activity_reaches_zero_only_after_prompt_settlement_is_durable()
 
 #[test]
 fn workflow_prompt_completion_append_failure_retains_retry_ownership() {
-    assert_workflow_completion_failure_and_restart("workflow.runtime.updated");
+    assert_workflow_completion_failure_and_restart("workflow.runtime.updated", false);
 }
 
 #[test]
 fn workflow_prompt_state_append_failure_retains_retry_ownership() {
-    assert_workflow_completion_failure_and_restart("session.prompt_state.updated");
+    assert_workflow_completion_failure_and_restart("session.prompt_state.updated", false);
 }
 
-fn assert_workflow_completion_failure_and_restart(event_kind: &str) {
+#[test]
+fn codex_workflow_completion_retries_without_replaying_turn_completed() {
+    assert_workflow_completion_failure_and_restart("workflow.runtime.updated", true);
+}
+
+fn assert_workflow_completion_failure_and_restart(event_kind: &str, codex: bool) {
     let executor = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("test executor should start");
-    let (config, session_id, agent_id, _worktree) =
-        executor.block_on(assert_workflow_completion_failure_is_retryable(event_kind));
+    let (config, session_id, agent_id, _worktree) = executor.block_on(
+        assert_workflow_completion_failure_is_retryable(event_kind, codex),
+    );
     // Drop all first-kernel async owners without a shutdown cleanup that could
     // rewrite prompt state and hide a failed composite commit.
     drop(executor);
@@ -122,6 +128,7 @@ fn assert_workflow_completion_failure_and_restart(event_kind: &str) {
 
 async fn assert_workflow_completion_failure_is_retryable(
     event_kind: &str,
+    codex: bool,
 ) -> (
     crate::config::DaemonConfig,
     String,
@@ -134,8 +141,38 @@ async fn assert_workflow_completion_failure_is_retryable(
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .expect("session should be created");
-    let run = app
-        .launch_provider(
+    let run = if codex {
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "codex",
+            "codex",
+            "default",
+            "gpt-5.6",
+        )
+        .with_agent_id(agent.id());
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "provider-run-codex-completion-retry",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "test-codex-completion-retry".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("ws://test-codex-completion-retry".to_string()),
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.sessions
+            .set_active_provider_run(session.id(), Some(run.id().to_string()))
+            .expect("active provider run should be set");
+        run
+    } else {
+        app.launch_provider(
             crate::provider::LaunchProviderRequest::new(
                 session.id(),
                 "dev-stub",
@@ -145,7 +182,8 @@ async fn assert_workflow_completion_failure_is_retryable(
             )
             .with_agent_id(agent.id()),
         )
-        .expect("provider run should launch");
+        .expect("provider run should launch")
+    };
     app.update_provider_run_projection(run.clone());
     let workflow = app
         .sessions_mut()
@@ -242,7 +280,7 @@ async fn assert_workflow_completion_failure_is_retryable(
         .expect("workflow completion failure trigger should install");
 
     let error = runtime
-        .settle_owned_provider_prompt(session.id(), run.id(), true, false, true)
+        .settle_owned_provider_prompt(session.id(), run.id(), true, false, !codex)
         .await
         .expect_err("failed workflow append must reject provider settlement");
     assert!(
@@ -305,7 +343,7 @@ async fn assert_workflow_completion_failure_is_retryable(
         .execute_batch("DROP TRIGGER fail_workflow_prompt_completion;")
         .expect("workflow completion failure trigger should clear");
     let settled = runtime
-        .settle_owned_provider_prompt(session.id(), run.id(), true, false, true)
+        .settle_owned_provider_prompt(session.id(), run.id(), !codex, false, !codex)
         .await
         .expect("the retained completion should retry after storage recovery");
     assert!(settled.had_active_prompt);
