@@ -633,6 +633,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejected_event_enqueue_releases_session_guard_before_rollback() {
+        let (runtime, session_id, binding) = runtime_with_event_binding();
+        let mut session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("event session should exist");
+        session
+            .workflow_event_binding_mut(&binding.id)
+            .expect("event binding should exist")
+            .queue_ref = Some("removed-event-queue".to_string());
+        runtime.owned.session_store.restore_session(session);
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            let outcome = runtime.accept_workflow_event_delivery(delivery(
+                &binding,
+                "delivery-rejected-queue",
+            ));
+            assert_no_event_work(&runtime, &session_id);
+            result_tx.send(outcome).expect("test should receive rejection");
+        });
+        let outcome = result_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("rejected enqueue must return without re-locking its session guard");
+        worker.join().expect("rejected delivery worker should finish");
+        assert!(outcome.is_err(), "removed queue must reject event admission");
+    }
+
+    #[tokio::test]
     async fn failed_event_delivery_append_rolls_back_before_activity_capture_and_retries() {
         let (runtime, session_id, binding) = runtime_with_event_binding();
         runtime
