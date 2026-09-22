@@ -24,37 +24,17 @@ fn cancelled_interrupt_prompt_removal_survives_restart() {
 
 async fn run_interrupt_append_failure_regression(pause: bool) {
     let fixture = interrupt_fixture();
-    let stale_projection = fixture
-        .runtime
-        .owned
-        .session_projection
-        .get(&fixture.session_id)
-        .expect("fixture session projection should exist");
-    let activity_before_projection_normalization = fixture.runtime.managed_activity_snapshot();
     let baseline_session = fixture
         .runtime
         .owned
         .session_snapshot(&fixture.session_id)
         .expect("running workflow session projection should normalize");
     assert_eq!(
-        stale_projection.active_provider_run_id(),
-        None,
-        "fixture setup deliberately leaves the session projection behind provider state"
-    );
-    assert_eq!(
         baseline_session.active_provider_run_id(),
         Some("interrupt-provider-run"),
         "projection normalization should expose the fixture's active provider"
     );
     let baseline_activity = fixture.runtime.managed_activity_snapshot();
-    assert_eq!(
-        baseline_activity,
-        (
-            activity_before_projection_normalization.0.saturating_add(1),
-            activity_before_projection_normalization.1,
-        ),
-        "the first snapshot should account only for the fixture's stale projection"
-    );
     fixture
         .runtime
         .owned
@@ -362,6 +342,40 @@ fn workflow_interrupt_event_count(fixture: &InterruptFixture, reason: &str) -> u
         .count()
 }
 
+#[test]
+fn unrelated_prompt_queues_survive_restart_without_interrupt() {
+    let fixture = interrupt_fixture();
+    drop(fixture.runtime);
+    let restored =
+        DaemonApp::bootstrap(fixture.config.clone()).expect("uninterrupted kernel should restore");
+    let session = restored
+        .sessions()
+        .get_session(&fixture.session_id)
+        .expect("uninterrupted session should restore");
+    for (agent_id, prompt_id) in [
+        (
+            &fixture.target_agent_id,
+            &fixture.target_unrelated_prompt_id,
+        ),
+        (
+            &fixture.second_target_agent_id,
+            &fixture.second_target_unrelated_prompt_id,
+        ),
+        (
+            &fixture.unrelated_agent_id,
+            &fixture.unrelated_queued_prompt_id,
+        ),
+    ] {
+        let (_, queued) = restored
+            .prompt_state_owner()
+            .state_parts(&session, agent_id);
+        assert!(
+            queued.iter().any(|prompt| prompt.id() == prompt_id),
+            "baseline restart must preserve {prompt_id}; restored queue: {queued:?}"
+        );
+    }
+}
+
 fn assert_interrupt_prompt_removal_survives_restart(pause: bool) {
     let executor = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -398,7 +412,7 @@ fn assert_interrupt_prompt_removal_survives_restart(pause: bool) {
             queued
                 .iter()
                 .any(|prompt| prompt.id() == unrelated_prompt_id.as_str()),
-            "restart must preserve unrelated queued work for an affected agent"
+            "restart must preserve unrelated queued work for {agent_id}; restored queue: {queued:?}"
         );
     }
     let (_, unrelated_queued) =

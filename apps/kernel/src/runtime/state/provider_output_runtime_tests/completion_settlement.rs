@@ -281,6 +281,30 @@ async fn assert_workflow_completion_failure_is_retryable(
         .owned
         .session_snapshot(session.id())
         .expect("baseline projection should publish");
+    if verify_original_finish {
+        assert!(
+            !runtime
+                .reconcile_provider_run_exit(session.id(), run.id())
+                .await
+                .expect("provider liveness preflight should succeed"),
+            "fixture provider must remain live before authoritative completion"
+        );
+        let live_session = runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap();
+        let live_prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&live_session, agent.id())
+            .expect("liveness preflight must preserve the active prompt");
+        assert_eq!(live_prompt.id(), prompt.id());
+        assert!(
+            !live_prompt.delivery_pending(),
+            "liveness preflight must preserve delivery acknowledgement: {live_prompt:?}"
+        );
+    }
     let projection_sequence = runtime.owned.session_projection.change_sequence();
     let activity_sequence = runtime.managed_activity_change_sequence();
     let connection = rusqlite::Connection::open(runtime.owned.durable_state_store.path())
@@ -311,7 +335,13 @@ async fn assert_workflow_completion_failure_is_retryable(
                 },
             )
             .await
-            .expect_err("failed workflow append must reject the actual provider-end batch")
+            .expect_err(&format!(
+                "failed workflow append must reject the actual provider-end batch: prompt={:?}, turn={:?}, run={:?}",
+                runtime.owned.prompt_state_owner.active_prompt_for_agent(
+                    &runtime.owned.session_store.get_session(session.id()).unwrap(), agent.id()),
+                runtime.owned.active_turns.get(run.id()),
+                runtime.owned.provider_store.get_run(run.id()),
+            ))
     } else {
         runtime
             .settle_owned_provider_prompt(session.id(), run.id(), true, false, !codex)
