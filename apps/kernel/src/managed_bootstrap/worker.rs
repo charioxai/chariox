@@ -1218,19 +1218,11 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     impl WorkerCloudClient for RestartLoopCloud {
-        fn exchange(
-            &self,
-            _: &str,
-            _: &ExchangeRequest,
-        ) -> Result<ExchangeResponse, DaemonError> {
+        fn exchange(&self, _: &str, _: &ExchangeRequest) -> Result<ExchangeResponse, DaemonError> {
             panic!("a confirmed worker restart must not exchange credentials")
         }
 
-        fn confirm(
-            &self,
-            _: &str,
-            _: &ConfirmRequest,
-        ) -> Result<ConfirmResponse, DaemonError> {
+        fn confirm(&self, _: &str, _: &ConfirmRequest) -> Result<ConfirmResponse, DaemonError> {
             panic!("a confirmed worker restart must not confirm enrollment")
         }
     }
@@ -1339,7 +1331,10 @@ mod tests {
             "repository_root=/srv/worker-workspaces\n".to_string(),
             "topology=path1\n".to_string(),
             format!("provider_home={}\n", provider_home.display()),
-            format!("vault={}\n", chariox_home.join("vault/vault.json").display()),
+            format!(
+                "vault={}\n",
+                chariox_home.join("vault/vault.json").display()
+            ),
         ] {
             assert!(
                 observed.contains(&expected),
@@ -1453,7 +1448,9 @@ mod tests {
             command.env(name, "contaminated-shared-host-selector");
         }
         let mut driver = RestartLoopDriver(Some(
-            command.spawn().expect("restart-loop test driver should start"),
+            command
+                .spawn()
+                .expect("restart-loop test driver should start"),
         ));
         let second_capture = PathBuf::from(format!("{}.2", capture.display()));
         let deadline = Instant::now() + Duration::from_secs(8);

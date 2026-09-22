@@ -940,8 +940,8 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         provider_home: &std::path::Path,
         path_value: &str,
     ) {
-        let observed = std::fs::read_to_string(path)
-            .expect("confirmation child should record its boundary");
+        let observed =
+            std::fs::read_to_string(path).expect("confirmation child should record its boundary");
         for expected in [
             format!("home={}\n", process_home.display()),
             format!("path={path_value}\n"),
@@ -950,7 +950,10 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             "repository_root=/home/chariox\n".to_string(),
             "topology=path1\n".to_string(),
             format!("provider_home={}\n", provider_home.display()),
-            format!("vault={}\n", chariox_home.join("vault/vault.json").display()),
+            format!(
+                "vault={}\n",
+                chariox_home.join("vault/vault.json").display()
+            ),
         ] {
             assert!(
                 observed.contains(&expected),
@@ -1112,7 +1115,11 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
 
         drop(environment);
         let run = run.expect("Path-1 confirmation restart should complete");
-        assert!(run.status.success(), "replacement kernel failed: {}", run.status);
+        assert!(
+            run.status.success(),
+            "replacement kernel failed: {}",
+            run.status
+        );
         assert!(confirmation.is_none());
         for generation in [1, 2] {
             assert_path1_confirmation_capture(
