@@ -49,6 +49,7 @@ pub(crate) struct EnvironmentActionLedger {
     reservations: BTreeMap<InputTarget, String>,
     input_owners: BTreeMap<InputTarget, String>,
     pending_takeovers: BTreeMap<InputTarget, String>,
+    cancellation_reasons: BTreeMap<String, EnvironmentActionCancellationReason>,
     next_sequence: u64,
     terminal_capacity: usize,
     queue_capacity: usize,
@@ -66,6 +67,7 @@ impl EnvironmentActionLedger {
             reservations: BTreeMap::new(),
             input_owners: BTreeMap::new(),
             pending_takeovers: BTreeMap::new(),
+            cancellation_reasons: BTreeMap::new(),
             next_sequence: 1,
             terminal_capacity,
             queue_capacity,
@@ -318,26 +320,34 @@ impl EnvironmentActionLedger {
         terminal: EnvironmentActionTerminal,
     ) -> Result<ActionFinishEffect, EnvironmentError> {
         let state = terminal.into();
-        let action =
-            self.actions
-                .get_mut(action_id)
-                .ok_or_else(|| EnvironmentError::UnknownAction {
-                    action_id: action_id.to_string(),
-                })?;
-        let cancelling_queued = action.state == EnvironmentActionState::Queued
+        let current_state = self
+            .actions
+            .get(action_id)
+            .ok_or_else(|| EnvironmentError::UnknownAction {
+                action_id: action_id.to_string(),
+            })?
+            .state;
+        let cancelling_queued = current_state == EnvironmentActionState::Queued
             && terminal == EnvironmentActionTerminal::Cancelled;
-        if action.state == EnvironmentActionState::Queued && !cancelling_queued {
+        if current_state == EnvironmentActionState::Queued && !cancelling_queued {
             return Err(EnvironmentError::ActionNotRunning {
                 action_id: action_id.to_string(),
-                state: action.state,
+                state: current_state,
             });
         }
-        if action.state != EnvironmentActionState::Running && !cancelling_queued {
+        if current_state != EnvironmentActionState::Running && !cancelling_queued {
             return Err(EnvironmentError::ActionAlreadyTerminal {
                 action_id: action_id.to_string(),
-                state: action.state,
+                state: current_state,
             });
         }
+        let cancellation_reason = self.cancellation_reasons.remove(action_id);
+        let action = self
+            .actions
+            .get_mut(action_id)
+            .ok_or_else(|| EnvironmentError::UnknownAction {
+                action_id: action_id.to_string(),
+            })?;
         action.state = state;
         let finished_at_ms = next_action_timestamp(action);
         action.finished_at_ms = Some(finished_at_ms);
@@ -346,13 +356,14 @@ impl EnvironmentActionLedger {
             EnvironmentActionTerminal::Failed => EnvironmentActionOutcome::Failed {
                 code: EnvironmentActionFailureCode::ControllerFailure,
             },
-            EnvironmentActionTerminal::Cancelled if action.cancellation_requested => {
-                EnvironmentActionOutcome::Cancelled {
-                    reason: EnvironmentActionCancellationReason::Requested,
-                }
-            }
             EnvironmentActionTerminal::Cancelled => EnvironmentActionOutcome::Cancelled {
-                reason: EnvironmentActionCancellationReason::ControllerCancellation,
+                reason: cancellation_reason.unwrap_or_else(|| {
+                    if action.cancellation_requested {
+                        EnvironmentActionCancellationReason::Requested
+                    } else {
+                        EnvironmentActionCancellationReason::ControllerCancellation
+                    }
+                }),
             },
         });
         action.cancellation_requested = false;
@@ -437,6 +448,9 @@ impl EnvironmentActionLedger {
             .expect("running action should remain in the ledger");
         let action_changed = !action.cancellation_requested;
         action.cancellation_requested = true;
+        self.cancellation_reasons
+            .entry(action_id.to_string())
+            .or_insert(EnvironmentActionCancellationReason::Requested);
         self.sync_history_action(action_id);
         Ok(ActionCancellationEffect {
             outcome: ActionCancellationOutcome::CancellationRequested,
@@ -495,7 +509,8 @@ impl EnvironmentActionLedger {
                 cancellation_requested_action_ids,
             });
         }
-        let cancelled_action_ids = self.cancel_queued_agent_actions(&target, actors);
+        let cancelled_action_ids =
+            self.cancel_queued_actions_displaced_by_takeover(&target, actor_id);
         let action_ids = self.blocking_action_ids(&target, actors);
         let cancellation_requested_action_ids = self.request_action_cancellation(&action_ids);
         let outcome = if action_ids.is_empty() {
@@ -539,6 +554,7 @@ impl EnvironmentActionLedger {
         self.reservations.clear();
         self.input_owners.clear();
         self.pending_takeovers.clear();
+        self.cancellation_reasons.clear();
         let active_action_ids: Vec<_> = self
             .order
             .iter()
@@ -688,10 +704,10 @@ impl EnvironmentActionLedger {
             .collect()
     }
 
-    fn cancel_queued_agent_actions(
+    fn cancel_queued_actions_displaced_by_takeover(
         &mut self,
         target: &InputTarget,
-        actors: &BTreeMap<String, EnvironmentActor>,
+        takeover_actor_id: &str,
     ) -> Vec<String> {
         let action_ids: Vec<_> = self
             .order
@@ -700,9 +716,7 @@ impl EnvironmentActionLedger {
             .filter(|action| {
                 action.state == EnvironmentActionState::Queued
                     && action.targets.contains(target)
-                    && actors
-                        .get(&action.actor_id)
-                        .is_some_and(|actor| actor.kind == EnvironmentActorKind::Agent)
+                    && action.actor_id != takeover_actor_id
             })
             .map(|action| action.action_id.clone())
             .collect();
@@ -732,6 +746,9 @@ impl EnvironmentActionLedger {
                 action.cancellation_requested = true;
                 changed_action_ids.push(action_id.clone());
             }
+            self.cancellation_reasons
+                .entry(action_id.clone())
+                .or_insert(EnvironmentActionCancellationReason::HumanTakeover);
             self.sync_history_action(action_id);
         }
         changed_action_ids
@@ -816,11 +833,10 @@ impl EnvironmentActionLedger {
     }
 
     fn sync_history_action(&mut self, action_id: &str) {
-        let action = self
-            .actions
-            .get(action_id)
-            .expect("Action history must reference a hot Action")
-            .clone();
+        let Some(action) = self.actions.get(action_id).cloned() else {
+            debug_assert!(false, "Action history must reference a hot Action");
+            return;
+        };
         self.history_records.insert(action.sequence, action);
     }
 }
