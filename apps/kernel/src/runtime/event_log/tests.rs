@@ -203,12 +203,8 @@ async fn persistent_event_store_recovers_after_transient_append_failure() {
     ));
     let counter_path = root.join("counter.json");
     let events_path = root.join("events.jsonl");
-    let log = EventLog::<String>::new_with_persistent_event_store(
-        16,
-        &counter_path,
-        &events_path,
-    )
-    .expect("persistent event store should initialize");
+    let log = EventLog::<String>::new_with_persistent_event_store(16, &counter_path, &events_path)
+        .expect("persistent event store should initialize");
 
     std::fs::create_dir_all(&events_path).expect("event store path should become unwritable");
     log.append("session:a", "failed".to_string())
@@ -238,7 +234,10 @@ async fn persistent_event_store_recovers_after_transient_append_failure() {
         }
         ReplayOutcome::Replayed(events) => panic!("failed event id should leave a gap: {events:?}"),
     }
-    match restarted.replay_after("session:a", recovered.event_id).await {
+    match restarted
+        .replay_after("session:a", recovered.event_id)
+        .await
+    {
         ReplayOutcome::Replayed(events) => {
             assert_eq!(events.len(), 1);
             assert_eq!(events[0].event_id, later.event_id);
@@ -262,12 +261,8 @@ async fn persistent_event_store_failure_does_not_stall_replay_for_other_streams(
     let counter_path = root.join("counter.json");
     let events_path = root.join("events.jsonl");
     let log = std::sync::Arc::new(
-        EventLog::<String>::new_with_persistent_event_store(
-            16,
-            &counter_path,
-            &events_path,
-        )
-        .expect("persistent event store should initialize"),
+        EventLog::<String>::new_with_persistent_event_store(16, &counter_path, &events_path)
+            .expect("persistent event store should initialize"),
     );
     let stable = log
         .append("session:stable", "stable".to_string())
@@ -326,22 +321,15 @@ async fn persistent_event_store_cancelled_failed_append_is_never_replay_visible(
     let counter_path = root.join("counter.json");
     let events_path = root.join("events.jsonl");
     let log = std::sync::Arc::new(
-        EventLog::<String>::new_with_persistent_event_store(
-            16,
-            &counter_path,
-            &events_path,
-        )
-        .expect("persistent event store should initialize"),
+        EventLog::<String>::new_with_persistent_event_store(16, &counter_path, &events_path)
+            .expect("persistent event store should initialize"),
     );
     std::fs::create_dir_all(&events_path).expect("event store path should become unwritable");
 
     let gate = log.pause_next_persistent_append_for_tests();
     let append_task = {
         let log = std::sync::Arc::clone(&log);
-        tokio::spawn(async move {
-            log.append("session:a", "must-not-replay".to_string())
-                .await
-        })
+        tokio::spawn(async move { log.append("session:a", "must-not-replay".to_string()).await })
     };
     gate.wait_until_entered().await;
     assert!(matches!(
@@ -349,12 +337,10 @@ async fn persistent_event_store_cancelled_failed_append_is_never_replay_visible(
         ReplayOutcome::Replayed(events) if events.is_empty()
     ));
     append_task.abort();
-    assert!(
-        append_task
-            .await
-            .expect_err("append task should be cancelled")
-            .is_cancelled()
-    );
+    assert!(append_task
+        .await
+        .expect_err("append task should be cancelled")
+        .is_cancelled());
     gate.release();
     wait_for_persistent_write_settlement(&log).await;
 
@@ -396,12 +382,8 @@ async fn persistent_event_store_cancelled_successful_append_reconciles_in_memory
     let counter_path = root.join("counter.json");
     let events_path = root.join("events.jsonl");
     let log = std::sync::Arc::new(
-        EventLog::<String>::new_with_persistent_event_store(
-            16,
-            &counter_path,
-            &events_path,
-        )
-        .expect("persistent event store should initialize"),
+        EventLog::<String>::new_with_persistent_event_store(16, &counter_path, &events_path)
+            .expect("persistent event store should initialize"),
     );
     let anchor = log
         .append("session:a", "anchor".to_string())
@@ -418,12 +400,10 @@ async fn persistent_event_store_cancelled_successful_append_reconciles_in_memory
     };
     gate.wait_until_entered().await;
     append_task.abort();
-    assert!(
-        append_task
-            .await
-            .expect_err("append task should be cancelled")
-            .is_cancelled()
-    );
+    assert!(append_task
+        .await
+        .expect_err("append task should be cancelled")
+        .is_cancelled());
     gate.release();
     wait_for_persistent_write_settlement(&log).await;
 
@@ -473,12 +453,8 @@ async fn persistent_event_store_truncates_a_torn_tail_before_append() {
     payload.extend_from_slice(br#"{"event_id":8,"stream_id":"session:a""#);
     std::fs::write(&events_path, payload).expect("torn event store should seed");
 
-    let log = EventLog::<String>::new_with_persistent_event_store(
-        16,
-        &counter_path,
-        &events_path,
-    )
-    .expect("persistent event store should tolerate a torn tail");
+    let log = EventLog::<String>::new_with_persistent_event_store(16, &counter_path, &events_path)
+        .expect("persistent event store should tolerate a torn tail");
     let recovered = log
         .append("session:a", "second".to_string())
         .await

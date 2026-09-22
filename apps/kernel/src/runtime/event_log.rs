@@ -164,9 +164,7 @@ impl<E: Clone + Serialize> EventLog<E> {
         // writer acknowledgement, making that ordering cancellation-safe. The streams
         // mutex is deliberately released before persistence and bounded retries so
         // replay and unrelated stream inspection do not stall on storage failures.
-        let append_order_guard = Arc::clone(&persistence.append_order)
-            .lock_owned()
-            .await;
+        let append_order_guard = Arc::clone(&persistence.append_order).lock_owned().await;
         let write_permit = persistence
             .write_tx
             .reserve()
@@ -206,9 +204,7 @@ impl<E: Clone + Serialize> EventLog<E> {
                 // A stopped writer drops both its pending completion and order permit.
                 // Reacquiring the permit ensures the failed provisional event is ready
                 // to reconcile before it can be observed or followed by another append.
-                let append_order_guard = Arc::clone(&persistence.append_order)
-                    .lock_owned()
-                    .await;
+                let append_order_guard = Arc::clone(&persistence.append_order).lock_owned().await;
                 let mut streams = self.streams.lock().await;
                 persistence.reconcile_completed_events(&mut streams);
                 drop(streams);
@@ -305,8 +301,7 @@ impl<E: Clone + Serialize> EventLog<E> {
                 .retained
                 .iter()
                 .filter(|event| {
-                    event.event_id > cursor_event_id
-                        && Some(event.event_id) != pending_event_id
+                    event.event_id > cursor_event_id && Some(event.event_id) != pending_event_id
                 })
                 .cloned()
                 .collect(),
@@ -563,17 +558,13 @@ impl PersistentEventStore {
         };
 
         if let Some(pending) = completed {
-            let succeeded = pending.outcome.load(Ordering::Acquire)
-                == PERSISTENCE_OUTCOME_SUCCEEDED;
+            let succeeded =
+                pending.outcome.load(Ordering::Acquire) == PERSISTENCE_OUTCOME_SUCCEEDED;
             let mut remove_stream = false;
             if let Some(stream) = streams.get_mut(&pending.stream_id) {
                 if succeeded {
-                    stream.latest_event_id = Some(
-                        stream
-                            .latest_event_id
-                            .unwrap_or(0)
-                            .max(pending.event_id),
-                    );
+                    stream.latest_event_id =
+                        Some(stream.latest_event_id.unwrap_or(0).max(pending.event_id));
                     self.estimated_file_bytes
                         .fetch_add(pending.jsonl_bytes, Ordering::AcqRel);
                 } else if let Some(position) = stream
@@ -592,8 +583,7 @@ impl PersistentEventStore {
                     if stream.next_stream_seq == pending.stream_seq.saturating_add(1) {
                         stream.next_stream_seq = pending.stream_seq;
                     }
-                    remove_stream = stream.retained.is_empty()
-                        && stream.latest_event_id.is_none();
+                    remove_stream = stream.retained.is_empty() && stream.latest_event_id.is_none();
                 }
             }
             if remove_stream {
@@ -611,8 +601,7 @@ impl PersistentEventStore {
     }
 
     fn has_pending_events(&self) -> bool {
-        self
-            .pending_event
+        self.pending_event
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .is_some()
@@ -624,9 +613,7 @@ impl PersistentEventStore {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .as_ref()
-            .filter(|event| {
-                event.outcome.load(Ordering::Acquire) == PERSISTENCE_OUTCOME_PENDING
-            })
+            .filter(|event| event.outcome.load(Ordering::Acquire) == PERSISTENCE_OUTCOME_PENDING)
             .map(|_| 1)
             .unwrap_or(0)
     }
@@ -743,9 +730,8 @@ fn run_persistent_event_writer(
                 compact_jsonl,
                 reply_tx,
             } => {
-                let result = retry_persistent_write(|| {
-                    rewrite_logged_events_jsonl(&path, &compact_jsonl)
-                });
+                let result =
+                    retry_persistent_write(|| rewrite_logged_events_jsonl(&path, &compact_jsonl));
                 let _ = reply_tx.send(result);
             }
             #[cfg(test)]
@@ -763,8 +749,8 @@ fn retry_persistent_write(mut write: impl FnMut() -> io::Result<()>) -> io::Resu
         match write() {
             Ok(()) => return Ok(()),
             Err(_) if attempt < PERSISTENT_WRITE_MAX_ATTEMPTS => {
-                let retry_delay_ms = PERSISTENT_WRITE_RETRY_BASE_DELAY_MS
-                    .saturating_mul(1_u64 << (attempt - 1));
+                let retry_delay_ms =
+                    PERSISTENT_WRITE_RETRY_BASE_DELAY_MS.saturating_mul(1_u64 << (attempt - 1));
                 thread::sleep(Duration::from_millis(retry_delay_ms));
             }
             Err(error) => return Err(error),
