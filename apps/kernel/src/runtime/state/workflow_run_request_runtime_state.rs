@@ -344,13 +344,12 @@ impl KernelRuntimeState {
                     }
                 })
             }
-            Err(error) => Err(error),
+            Err(error) => return (Err(error), None),
         };
         let session = result
             .as_ref()
             .ok()
-            .and_then(workflow_response_session)
-            .or_else(|| owned.session_snapshot(&session_id).ok());
+            .and_then(workflow_response_session);
         (result, session)
     }
 

@@ -8,32 +8,41 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         workflow_run_ref: &str,
     ) -> Result<(crate::session::WorkflowRun, WorkflowPromptDispatches), DaemonError> {
-        let resumable_node_ids = self
-            .session_store
-            .read()
-            .resolve_workflow_run_ref(session_id, workflow_run_ref)?
-            .node_runs()
-            .iter()
-            .filter(|node_run| {
-                node_run.status() == crate::session::WorkflowNodeRunStatus::Stopped
-                    && node_run.completion().is_none()
-                    && node_run
-                        .turn_envelope()
-                        .and_then(|envelope| envelope.rendered_prompt())
-                        .is_some()
-            })
-            .map(|node_run| node_run.id().to_string())
-            .collect::<std::collections::BTreeSet<_>>();
         let activity_mutation = self.begin_managed_activity_mutation();
-        let workflow_run = self
-            .session_store
-            .write()
-            .resume_workflow_run(session_id, workflow_run_ref)?;
-        self.persist_workflow_runtime_session_with_activity_mutation(
-            session_id,
-            "workflow_run_resumed",
-            activity_mutation,
-        )?;
+        let durable_state_store = self.durable_state_store.clone();
+        let (workflow_run, resumable_node_ids) =
+            durable_state_store.with_workflow_runtime_transition_lock(|| {
+                let mut sessions = self.session_store.write();
+                let session_before_resume = sessions.get_session(session_id)?;
+                let resumable_node_ids = sessions
+                    .resolve_workflow_run_ref(session_id, workflow_run_ref)?
+                    .node_runs()
+                    .iter()
+                    .filter(|node_run| {
+                        node_run.status() == crate::session::WorkflowNodeRunStatus::Stopped
+                            && node_run.completion().is_none()
+                            && node_run
+                                .turn_envelope()
+                                .and_then(|envelope| envelope.rendered_prompt())
+                                .is_some()
+                    })
+                    .map(|node_run| node_run.id().to_string())
+                    .collect::<std::collections::BTreeSet<_>>();
+                let workflow_run = sessions.resume_workflow_run(session_id, workflow_run_ref)?;
+                let durable_session = sessions.get_session(session_id)?;
+                if let Err(error) = durable_state_store.persist_workflow_runtime_transition(
+                    &durable_session,
+                    "workflow_run_resumed",
+                ) {
+                    // Restore while the write guard still excludes unrelated session mutations.
+                    sessions.restore_session(session_before_resume);
+                    return Err(error);
+                }
+                Ok((workflow_run, resumable_node_ids))
+            })?;
+        activity_mutation.record();
+        // Prompt admission and provider dispatch must observe only a durably resumed run.
+        self.session_snapshot(session_id)?;
         let resumable = workflow_run
             .node_runs()
             .iter()
