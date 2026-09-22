@@ -477,30 +477,26 @@ impl KernelRuntimeState {
                 let metaagent_id = request.metaagent_id;
                 let task_updated = request.task_markdown.is_some();
                 let plan_updated = request.plan_markdown.is_some();
-                let activity_mutation = self.owned.begin_managed_activity_mutation();
-                {
-                    let mut sessions = self.owned.session_store.write();
-                    if let Some(task_markdown) = request.task_markdown {
-                        sessions.update_metaagent_task_markdown(
-                            &session_id,
-                            &metaagent_id,
-                            task_markdown,
-                        )?;
-                    } else {
-                        let _ = sessions.get_session(&session_id)?;
-                    }
-                    if let Some(plan_markdown) = request.plan_markdown {
-                        sessions.update_metaagent_plan_markdown(
-                            &session_id,
-                            &metaagent_id,
-                            plan_markdown,
-                        )?;
-                    }
-                }
-                self.persist_metaagent_task_session_update_with_activity_mutation(
+                self.mutate_metaagent_task_session(
                     &session_id,
                     "metaagent_task_updated",
-                    activity_mutation,
+                    |sessions| {
+                        if let Some(task_markdown) = request.task_markdown {
+                            sessions.update_metaagent_task_markdown(
+                                &session_id,
+                                &metaagent_id,
+                                task_markdown,
+                            )?;
+                        }
+                        if let Some(plan_markdown) = request.plan_markdown {
+                            sessions.update_metaagent_plan_markdown(
+                                &session_id,
+                                &metaagent_id,
+                                plan_markdown,
+                            )?;
+                        }
+                        sessions.get_session(&session_id)
+                    },
                 )?;
                 let notification = {
                     let session = self.owned.session_store.get_session(&session_id)?;
@@ -519,17 +515,16 @@ impl KernelRuntimeState {
             LocalDaemonRequest::PauseMetaagentTask(request) => {
                 let metaagent =
                     self.ensure_session_metaagent(&request.session_id, &request.metaagent_id)?;
-                let activity_mutation = self.owned.begin_managed_activity_mutation();
-                let session = self.owned.session_store.write().set_metaagent_task_status(
-                    &request.session_id,
-                    &request.metaagent_id,
-                    MetaagentTaskStatus::Paused,
-                )?;
-                drop(session);
-                self.persist_metaagent_task_session_update_with_activity_mutation(
+                self.mutate_metaagent_task_session(
                     &request.session_id,
                     "metaagent_task_paused",
-                    activity_mutation,
+                    |sessions| {
+                        sessions.set_metaagent_task_status(
+                            &request.session_id,
+                            &request.metaagent_id,
+                            MetaagentTaskStatus::Paused,
+                        )
+                    },
                 )?;
                 self.cancel_active_metaagent_prompt_if_any(
                     &request.session_id,
@@ -544,17 +539,16 @@ impl KernelRuntimeState {
             LocalDaemonRequest::ResumeMetaagentTask(request) => {
                 let metaagent =
                     self.ensure_session_metaagent(&request.session_id, &request.metaagent_id)?;
-                let activity_mutation = self.owned.begin_managed_activity_mutation();
-                let session = self.owned.session_store.write().set_metaagent_task_status(
-                    &request.session_id,
-                    &request.metaagent_id,
-                    MetaagentTaskStatus::Active,
-                )?;
-                drop(session);
-                self.persist_metaagent_task_session_update_with_activity_mutation(
+                self.mutate_metaagent_task_session(
                     &request.session_id,
                     "metaagent_task_resumed",
-                    activity_mutation,
+                    |sessions| {
+                        sessions.set_metaagent_task_status(
+                            &request.session_id,
+                            &request.metaagent_id,
+                            MetaagentTaskStatus::Active,
+                        )
+                    },
                 )?;
                 let queued_prompt = self.owned.prompt_state_owner.peek_next_queued_prompt(
                     &self.owned.session_store.get_session(&request.session_id)?,
@@ -625,17 +619,16 @@ impl KernelRuntimeState {
             LocalDaemonRequest::AbortMetaagentTask(request) => {
                 let metaagent =
                     self.ensure_session_metaagent(&request.session_id, &request.metaagent_id)?;
-                let activity_mutation = self.owned.begin_managed_activity_mutation();
-                let session = self.owned.session_store.write().abort_metaagent_task(
-                    &request.session_id,
-                    &request.metaagent_id,
-                    request.reason,
-                )?;
-                drop(session);
-                self.persist_metaagent_task_session_update_with_activity_mutation(
+                self.mutate_metaagent_task_session(
                     &request.session_id,
                     "metaagent_task_aborted",
-                    activity_mutation,
+                    |sessions| {
+                        sessions.abort_metaagent_task(
+                            &request.session_id,
+                            &request.metaagent_id,
+                            request.reason,
+                        )
+                    },
                 )?;
                 self.cancel_active_metaagent_prompt_if_any(
                     &request.session_id,
