@@ -178,6 +178,7 @@ export class BrowserControllerStdioServer {
 
   async run() {
     const actions = new Map();
+    const pendingRequestIds = new Set();
     let pending = Promise.resolve();
     let queued = 0;
     const lines = readline.createInterface({
@@ -206,24 +207,33 @@ export class BrowserControllerStdioServer {
         this.write(errorResponse(request?.id ?? null, "invalid_request", "request id must be a positive integer"));
         continue;
       }
+      if (pendingRequestIds.has(request.id)) {
+        this.write(errorResponse(request.id, "controller_busy", "controller queue is full or request id is already pending"));
+        continue;
+      }
       // Cancellation must be read while the serial browser operation is
       // pending. Its acknowledgement is not the action's terminal response.
       if (request.method === "browser.cancel") {
-        const target = request.params?.request_id;
-        if (!Number.isSafeInteger(target) || target <= 0) {
-          this.write(errorResponse(request.id, "invalid_request", "cancellation requires a positive request_id"));
-          continue;
+        pendingRequestIds.add(request.id);
+        try {
+          const target = request.params?.request_id;
+          if (!Number.isSafeInteger(target) || target <= 0) {
+            this.write(errorResponse(request.id, "invalid_request", "cancellation requires a positive request_id"));
+            continue;
+          }
+          const action = actions.get(target);
+          action?.controller.abort();
+          if (action) await action.stopped;
+          const accepted = Boolean(action) && (action.method !== "browser.cookies.import"
+            || action.response?.result?.status === "rolled_back"
+            || action.response?.error?.code === "browser_action_cancelled");
+          this.write(successResponse(request.id, { accepted }));
+        } finally {
+          pendingRequestIds.delete(request.id);
         }
-        const action = actions.get(target);
-        action?.controller.abort();
-        if (action) await action.stopped;
-        const accepted = Boolean(action) && (action.method !== "browser.cookies.import"
-          || action.response?.result?.status === "rolled_back"
-          || action.response?.error?.code === "browser_action_cancelled");
-        this.write(successResponse(request.id, { accepted }));
         continue;
       }
-      if (queued >= 64 || actions.has(request.id)) {
+      if (queued >= 64) {
         this.write(errorResponse(request.id, "controller_busy", "controller queue is full or request id is already pending"));
         continue;
       }
@@ -232,6 +242,7 @@ export class BrowserControllerStdioServer {
       const action = controller ? {controller,method:request.method,response:null,
         stopped:new Promise(resolve => { stopAction = resolve; })} : null;
       if (action) actions.set(request.id, action);
+      pendingRequestIds.add(request.id);
       queued += 1;
       pending = pending.then(async () => {
         try {
@@ -245,6 +256,7 @@ export class BrowserControllerStdioServer {
           this.write(response);
         } finally {
           actions.delete(request.id);
+          pendingRequestIds.delete(request.id);
           stopAction?.();
           queued -= 1;
         }

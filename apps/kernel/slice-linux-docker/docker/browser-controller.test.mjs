@@ -46,6 +46,67 @@ test("controller rejects invalid and unknown requests", async () => {
   );
 });
 
+test("stdio controller fences duplicate pending observation IDs", async (t) => {
+  const started = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const lines = readline.createInterface({ input: output, crlfDelay: Infinity });
+  const iterator = lines[Symbol.asyncIterator]();
+  const viewport = {
+    css_width: 1280,
+    css_height: 720,
+    device_scale_factor: 1,
+    desktop_pixel_width: 1280,
+    desktop_pixel_height: 720,
+  };
+  let reconcileCalls = 0;
+  const browser = {
+    reconcile: async (requestedViewport) => {
+      reconcileCalls += 1;
+      started.resolve();
+      await release.promise;
+      return {
+        tabs: [],
+        focused_target_id: null,
+        viewport: requestedViewport,
+        resource_inventory: { browser_ids: ["browser-1"], profile_ids: ["profile-1"] },
+      };
+    },
+    close: async () => {},
+  };
+  const server = new BrowserControllerStdioServer({ input, output, browser });
+  const running = server.run();
+  t.after(async () => {
+    release.resolve();
+    input.end();
+    await running;
+    lines.close();
+    output.end();
+  });
+
+  const request = { id: 7, method: "browser.reconcile", params: { viewport } };
+  input.write(`${JSON.stringify(request)}\n`);
+  await started.promise;
+  input.write(`${JSON.stringify(request)}\n`);
+
+  assert.deepEqual(JSON.parse((await iterator.next()).value), {
+    id: 7,
+    ok: false,
+    error: {
+      code: "controller_busy",
+      message: "controller queue is full or request id is already pending",
+    },
+  });
+  assert.equal(reconcileCalls, 1, "a colliding observation must not be dispatched");
+
+  release.resolve();
+  const terminal = JSON.parse((await iterator.next()).value);
+  assert.equal(terminal.id, 7);
+  assert.equal(terminal.ok, true);
+  assert.deepEqual(terminal.result.tabs, []);
+});
+
 test("stdio controller cancels the exact active cookie import and waits for rollback cleanup", async (t) => {
   resetCancellationFixture();
   const prior = process.env.CHARIOX_BROWSER_IMPORT_MODULE;
