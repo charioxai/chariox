@@ -5,9 +5,10 @@ impl KernelRuntimeOwnedState {
         &self,
         session: crate::session::RuntimeSession,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let activity_mutation = self.begin_managed_activity_mutation();
         let session_id = session.id().to_string();
         self.session_store.restore_session(session);
-        self.record_managed_activity_transition();
+        activity_mutation.record();
         let session = self.session_snapshot(&session_id)?;
         Ok(session)
     }

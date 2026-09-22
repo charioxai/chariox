@@ -454,6 +454,7 @@ impl KernelRuntimeOwnedState {
     }
 
     pub(super) fn clear_prompt_activity(&self, provider_run_id: &str) -> bool {
+        let activity_mutation = self.begin_managed_activity_mutation();
         self.provider_output_deadlines.clear(provider_run_id);
         let prompt_activity = self.prompt_activity.write().remove(provider_run_id);
         let active_turn = self.active_turns.get(provider_run_id);
@@ -472,7 +473,7 @@ impl KernelRuntimeOwnedState {
         // the reporter's barrier across that window, so publish a second change only after the
         // turn has been cleared by the completed settlement path.
         if active_turn.is_some() {
-            self.record_managed_activity_transition();
+            activity_mutation.record();
             self.runtime_projection_changes.record_change();
         }
         released_claim
@@ -489,7 +490,12 @@ impl KernelRuntimeOwnedState {
         for provider_run_id in provider_run_ids {
             let _ = self.clear_prompt_activity(&provider_run_id);
         }
-        self.active_turns.clear_session(session_id);
+        let activity_mutation = self.begin_managed_activity_mutation();
+        let cleared_active_turns = self.active_turns.clear_session(session_id);
+        if cleared_active_turns > 0 {
+            activity_mutation.record();
+            self.runtime_projection_changes.record_change();
+        }
         let _ = self
             .prompt_workspace_claims
             .remove_matching(|claim| claim.session_id == session_id);
@@ -508,7 +514,12 @@ impl KernelRuntimeOwnedState {
         for provider_run_id in provider_run_ids {
             let _ = self.clear_prompt_activity(&provider_run_id);
         }
-        self.active_turns.clear_agent(session_id, agent_id);
+        let activity_mutation = self.begin_managed_activity_mutation();
+        let cleared_active_turns = self.active_turns.clear_agent(session_id, agent_id);
+        if cleared_active_turns > 0 {
+            activity_mutation.record();
+            self.runtime_projection_changes.record_change();
+        }
     }
 
     pub(super) fn release_workflow_node_workspace_claim(
@@ -560,9 +571,11 @@ impl KernelRuntimeOwnedState {
                 )
             });
         if let Some(turn) = active_turn {
+            let activity_mutation = self.begin_managed_activity_mutation();
             self.active_turns.start(turn);
             self.active_turns
                 .mark_awaiting_first_output(provider_run_id);
+            activity_mutation.record();
             self.schedule_quiet_provider_recheck(provider_run_id);
         }
     }

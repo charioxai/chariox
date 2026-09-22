@@ -475,14 +475,16 @@ impl KernelRuntimeState {
                         message: "cannot complete the Meta task while a controlled agent or workflow still has active, queued, completing, or paused work; wait for it to settle or stop it first".to_string(),
                     });
                 }
+                let activity_mutation = self.owned.begin_managed_activity_mutation();
                 let updated = self.owned.session_store.write().complete_metaagent_task(
                     session.id(),
                     agent.id(),
                     args.summary,
                 )?;
-                self.persist_metaagent_task_session_update(
+                self.persist_metaagent_task_session_update_with_activity_mutation(
                     updated.id(),
                     "metaagent_task_completed",
+                    activity_mutation,
                 )?;
                 let projected = self
                     .deactivate_meta_mode_for_terminal_task(
@@ -509,12 +511,17 @@ impl KernelRuntimeState {
                         message: "cannot block the Meta task while a controlled agent or workflow still has active, queued, completing, or paused work; wait for it to settle or stop it first".to_string(),
                     });
                 }
+                let activity_mutation = self.owned.begin_managed_activity_mutation();
                 let updated = self.owned.session_store.write().block_metaagent_task(
                     session.id(),
                     agent.id(),
                     args.reason,
                 )?;
-                self.persist_metaagent_task_session_update(updated.id(), "metaagent_task_blocked")?;
+                self.persist_metaagent_task_session_update_with_activity_mutation(
+                    updated.id(),
+                    "metaagent_task_blocked",
+                    activity_mutation,
+                )?;
                 let projected = self
                     .deactivate_meta_mode_for_terminal_task(
                         updated.id(),

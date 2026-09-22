@@ -126,6 +126,7 @@ impl KernelRuntimeOwnedState {
         active_prompt: Option<crate::session::PromptQueueItem>,
         queued_prompts: std::collections::VecDeque<crate::session::PromptQueueItem>,
     ) -> Result<(), DaemonError> {
+        let activity_mutation = self.begin_managed_activity_mutation();
         let session = self.session_store.mirror_agent_prompt_state(
             session_id,
             agent_id,
@@ -133,8 +134,8 @@ impl KernelRuntimeOwnedState {
             queued_prompts,
         )?;
         self.persist_prompt_session_state(&session, agent_id)?;
+        activity_mutation.record();
         self.provider_process_projection.invalidate();
-        self.record_managed_activity_transition();
         let _ = self.session_snapshot(session_id)?;
         Ok(())
     }

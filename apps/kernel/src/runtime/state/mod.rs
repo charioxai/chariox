@@ -108,6 +108,17 @@ struct KernelRuntimeOwnedState {
     durable_state_store: DurableKernelStateStore,
     managed_activity_transitions:
         managed_activity_persistence::ManagedActivityTransitionState,
+    // Serializes local activity-bearing mutations with their durable observation. Callers must
+    // release this boundary before async or provider I/O.
+    managed_activity_mutation_lock: Arc<std::sync::Mutex<()>>,
+    #[cfg(test)]
+    managed_activity_before_record_pause: Arc<
+        std::sync::Mutex<Option<managed_activity_runtime_state::ManagedActivityRecordPause>>,
+    >,
+    #[cfg(test)]
+    managed_activity_next_lock_probe: Arc<
+        std::sync::Mutex<Option<managed_activity_runtime_state::ManagedActivityLockProbe>>,
+    >,
     legacy_workflow_history: crate::app::LegacyWorkflowHistoryStore,
     provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
     provider_login_processes: ProviderLoginProcessStore,
@@ -580,6 +591,11 @@ impl KernelRuntimeState {
                     ),
                 durable_state_store,
                 managed_activity_transitions,
+                managed_activity_mutation_lock: Arc::new(std::sync::Mutex::new(())),
+                #[cfg(test)]
+                managed_activity_before_record_pause: Arc::new(std::sync::Mutex::new(None)),
+                #[cfg(test)]
+                managed_activity_next_lock_probe: Arc::new(std::sync::Mutex::new(None)),
                 legacy_workflow_history,
                 provider_account_profiles,
                 provider_login_processes: ProviderLoginProcessStore::default(),

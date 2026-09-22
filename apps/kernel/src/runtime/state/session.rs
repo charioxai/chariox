@@ -377,11 +377,13 @@ impl KernelRuntimeOwnedState {
 
         if session.status() == crate::session::SessionStatus::Ended {
             self.remove_session_workflow_dispatch_claims(session_id);
+            let activity_mutation = self.begin_managed_activity_mutation();
             self.prompt_state_owner.remove_session(session_id);
             self.external_provider_sessions.detach_session(session_id);
             self.attached_provider_transcript_cursors
                 .detach_session(session_id);
             let ended = self.session_store.end_session(session_id)?;
+            activity_mutation.record();
             crate::provider::shutdown_provider_mcp_proxy_session(session_id);
             return Ok((ended, Vec::new()));
         }
@@ -415,12 +417,14 @@ impl KernelRuntimeOwnedState {
             .collect();
 
         self.remove_session_workflow_dispatch_claims(session_id);
+        let activity_mutation = self.begin_managed_activity_mutation();
         self.prompt_state_owner.remove_session(session_id);
         self.external_provider_sessions.detach_session(session_id);
         self.attached_provider_transcript_cursors
             .detach_session(session_id);
         let mut ended = self.session_store.end_session(session_id)?;
         ended.set_agents(removed_agents);
+        activity_mutation.record();
         crate::provider::shutdown_provider_mcp_proxy_session(session_id);
         crate::logging::info_with_fields(
             "daemon.session",
