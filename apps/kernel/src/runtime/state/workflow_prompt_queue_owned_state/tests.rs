@@ -288,6 +288,9 @@ fn automatic_queue_promotion_append_failure_rolls_back_and_retries_once() {
 
 fn assert_workflow_queue_promotion_append_failure_is_retryable(requested: bool) {
     let (runtime, session_id, workflow_id, endpoint_id, _test_root) = runtime_with_idle_workflow();
+    runtime
+        .ensure_managed_activity_tracking("workflow-queue-promotion-durability")
+        .expect("activity tracking should activate before creating queued work");
     let held_queue = runtime
         .owned
         .session_store
@@ -344,9 +347,6 @@ fn assert_workflow_queue_promotion_append_failure_is_retryable(requested: bool) 
         .owned
         .workflow_ensure_dispatchable_runtime_instance(&session_id)
         .expect("primary runtime instance should provision");
-    runtime
-        .ensure_managed_activity_tracking("workflow-queue-promotion-durability")
-        .expect("activity tracking should activate");
     let before = runtime
         .owned
         .session_snapshot(&session_id)
@@ -525,6 +525,9 @@ fn assert_workflow_queue_promotion_append_failure_is_retryable(requested: bool) 
 fn meta_queue_promotion_append_failure_rolls_back_and_retries_once() {
     let (runtime, session_id, _workflow_id, _endpoint_id, _test_root) =
         runtime_with_idle_workflow();
+    runtime
+        .ensure_managed_activity_tracking("meta-queue-promotion-durability")
+        .expect("activity tracking should activate before creating queued work");
     let metaagent_id = runtime
         .owned
         .agent_store
@@ -558,9 +561,6 @@ fn meta_queue_promotion_append_failure_rolls_back_and_retries_once() {
             Vec::new(),
         )
         .expect("unrelated Meta task should enqueue");
-    runtime
-        .ensure_managed_activity_tracking("meta-queue-promotion-durability")
-        .expect("activity tracking should activate");
     let before = runtime
         .owned
         .session_snapshot(&session_id)
