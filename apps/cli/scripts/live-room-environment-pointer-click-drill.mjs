@@ -205,7 +205,7 @@ let fixtureWorkspace = repoRoot
 
 const interruption = createDrillInterruption()
 await interruption.run(async () => {
-  await mkdir(evidenceRoot, { recursive: true })
+  await mkdir(evidenceRoot, { recursive: true, mode: 0o700 })
   await run()
 }, cleanup, (error) => { failure = error })
 
@@ -2863,7 +2863,7 @@ async function cleanup() {
     leakedEvidence = true
     failure ??= error
     await rm(evidenceRoot, { recursive: true, force: true })
-    await mkdir(evidenceRoot, { recursive: true })
+    await mkdir(evidenceRoot, { recursive: true, mode: 0o700 })
   }
   await rm(tempRoot, { recursive: true, force: true })
   const after = await resourceSnapshot("after").catch(() => ({ label: "after", at: new Date().toISOString() }))

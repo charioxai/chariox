@@ -54,3 +54,8 @@ test("room drill validates prebuilt identity before starting fixture or relay", 
   assert.match(source, /docker_image = \$\{JSON.stringify\(prebuiltSliceImageId\)\}/)
   assert.doesNotMatch(source, /JSON.stringify\(process.env.CHARIOX_ROOM_DRILL_IMAGE/)
 })
+
+test("room drill creates each generated evidence root owner-private", async () => {
+  const source = await readFile(new URL("../live-room-environment-pointer-click-drill.mjs", import.meta.url), "utf8")
+  assert.equal((source.match(/await mkdir\(evidenceRoot, \{ recursive: true, mode: 0o700 \}\)/g) ?? []).length, 2)
+})
