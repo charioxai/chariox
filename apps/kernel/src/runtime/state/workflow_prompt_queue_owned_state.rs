@@ -617,29 +617,43 @@ impl KernelRuntimeOwnedState {
         plan: crate::session::WorkflowWatchdogTickPlan,
     ) -> Result<WorkflowPromptDispatches, DaemonError> {
         self.workflow_reconcile_live_orphans(&plan.session_id);
+        if plan.enqueue_prompt {
+            self.workflow_admit_prompt_transaction(
+                &plan.session_id,
+                "workflow_watchdog_prompt_enqueued",
+                |sessions| {
+                    if !sessions
+                        .workflow_watchdog_can_start(&plan.session_id, &plan.watchdog_id)?
+                        || sessions.has_queued_workflow_prompt_for_watchdog(
+                            &plan.session_id,
+                            &plan.watchdog_id,
+                        )?
+                    {
+                        return Ok(None);
+                    }
+                    sessions.enqueue_workflow_prompt(
+                        &plan.session_id,
+                        &plan.workflow_id,
+                        &plan.endpoint_id,
+                        Some(plan.invocation_prompt.clone()),
+                        plan.queue_id.as_deref(),
+                        crate::session::WorkflowQueuedPromptSource::Scheduled,
+                        Some(plan.watchdog_id.clone()),
+                    )?;
+                    sessions.mark_workflow_watchdog_queued(
+                        &plan.session_id,
+                        &plan.watchdog_id,
+                    )?;
+                    Ok(Some(()))
+                },
+            )?;
+        }
         let should_start = self
             .session_store
             .read()
             .workflow_watchdog_can_start(&plan.session_id, &plan.watchdog_id)?;
         if !should_start {
             return Ok(WorkflowPromptDispatches::default());
-        }
-        if plan.enqueue_prompt {
-            let activity_mutation = self.begin_managed_activity_mutation();
-            self.session_store.write().enqueue_workflow_prompt(
-                &plan.session_id,
-                &plan.workflow_id,
-                &plan.endpoint_id,
-                Some(plan.invocation_prompt.clone()),
-                plan.queue_id.as_deref(),
-                crate::session::WorkflowQueuedPromptSource::Scheduled,
-                Some(plan.watchdog_id.clone()),
-            )?;
-            self.persist_workflow_runtime_session_with_activity_mutation(
-                &plan.session_id,
-                "workflow_watchdog_prompt_enqueued",
-                activity_mutation,
-            )?;
         }
         let (_outcome, dispatches) =
             self.workflow_start_next_queued_prompt_for_response(&plan.session_id)?;
@@ -654,6 +668,52 @@ impl KernelRuntimeOwnedState {
                 .mark_workflow_watchdog_queued(&plan.session_id, &plan.watchdog_id);
         }
         Ok(dispatches)
+    }
+
+    /// Admit a queued workflow prompt as one authoritative and durable mutation.
+    ///
+    /// The activity boundary serializes capture with the session mutation, while the
+    /// durable transition and session write locks prevent a failed append rollback
+    /// from erasing an unrelated successful session change. `None` is a no-op and
+    /// deliberately records neither activity nor a projection change.
+    fn workflow_admit_prompt_transaction<T>(
+        &self,
+        session_id: &str,
+        reason: &str,
+        admit: impl FnOnce(
+            &mut crate::session::SessionService,
+        ) -> Result<Option<T>, DaemonError>,
+    ) -> Result<Option<T>, DaemonError> {
+        let activity_mutation = self.begin_managed_activity_mutation();
+        let durable_state_store = self.durable_state_store.clone();
+        let admitted = durable_state_store.with_workflow_runtime_transition_lock(|| {
+            let mut sessions = self.session_store.write();
+            let session_before_admission = sessions.get_session(session_id)?;
+            let admitted = match admit(&mut sessions) {
+                Ok(admitted) => admitted,
+                Err(error) => {
+                    sessions.restore_session(session_before_admission);
+                    return Err(error);
+                }
+            };
+            let Some(admitted) = admitted else {
+                return Ok(None);
+            };
+            let durable_session = sessions.get_session(session_id)?;
+            if let Err(error) =
+                durable_state_store.persist_workflow_runtime_transition(&durable_session, reason)
+            {
+                sessions.restore_session(session_before_admission);
+                return Err(error);
+            }
+            Ok(Some(admitted))
+        })?;
+        if admitted.is_some() {
+            activity_mutation.record();
+            // Publication is deliberately after durable admission and activity capture.
+            self.session_snapshot(session_id)?;
+        }
+        Ok(admitted)
     }
 
     pub(super) fn workflow_enqueue_prompt_and_maybe_start(
@@ -682,36 +742,26 @@ impl KernelRuntimeOwnedState {
             endpoint_ref,
         )?;
         self.workflow_validate_agents(session_id, &workflow)?;
-        let activity_mutation = self.begin_managed_activity_mutation();
-        let durable_state_store = self.durable_state_store.clone();
-        let queued_prompt = durable_state_store.with_workflow_runtime_transition_lock(|| {
-            let mut sessions = self.session_store.write();
-            let session_before_enqueue = sessions.get_session(session_id)?;
-            let queued_prompt = sessions.enqueue_workflow_prompt_with_publication_invocation(
+        let queued_prompt = self
+            .workflow_admit_prompt_transaction(
                 session_id,
-                workflow.id(),
-                endpoint.id(),
-                prompt,
-                queue_ref,
-                crate::session::WorkflowQueuedPromptSource::Manual,
-                None,
-                publication_invocation,
-            )?;
-            let durable_session = sessions.get_session(session_id)?;
-            if let Err(error) = durable_state_store.persist_workflow_runtime_transition(
-                &durable_session,
                 "workflow_prompt_enqueued",
-            ) {
-                // The session write guard excludes concurrent unrelated session mutations, so
-                // restoring this exact pre-enqueue value cannot erase a later successful write.
-                sessions.restore_session(session_before_enqueue);
-                return Err(error);
-            }
-            Ok(queued_prompt)
-        })?;
-        activity_mutation.record();
-        // Publication is deliberately after durable admission and activity capture.
-        self.session_snapshot(session_id)?;
+                |sessions| {
+                    sessions
+                        .enqueue_workflow_prompt_with_publication_invocation(
+                            session_id,
+                            workflow.id(),
+                            endpoint.id(),
+                            prompt,
+                            queue_ref,
+                            crate::session::WorkflowQueuedPromptSource::Manual,
+                            None,
+                            publication_invocation,
+                        )
+                        .map(Some)
+                },
+            )?
+            .expect("manual workflow prompt admission must mutate the session");
         let (claimed, dispatches) =
             self.workflow_start_next_queued_prompt_for_response(session_id)?;
         let Some(claimed_outcome) = claimed else {
