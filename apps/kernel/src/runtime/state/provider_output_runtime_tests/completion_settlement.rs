@@ -89,8 +89,18 @@ async fn managed_activity_reaches_zero_only_after_prompt_settlement_is_durable()
 
 #[tokio::test]
 async fn workflow_prompt_completion_append_failure_retains_retry_ownership() {
+    assert_workflow_completion_failure_is_retryable("workflow.runtime.updated").await;
+}
+
+#[tokio::test]
+async fn workflow_prompt_state_append_failure_retains_retry_ownership() {
+    assert_workflow_completion_failure_is_retryable("session.prompt_state.updated").await;
+}
+
+async fn assert_workflow_completion_failure_is_retryable(event_kind: &str) {
     let worktree = crate::test_support::TestWorktree::new("workflow-settlement-append-retry");
-    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+    let config = crate::config::DaemonConfig::for_tests();
+    let mut app = DaemonApp::bootstrap(config.clone())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
@@ -178,6 +188,10 @@ async fn workflow_prompt_completion_append_failure_retains_retry_ownership() {
     let runtime = owned_runtime_state(&app).await;
     runtime
         .owned
+        .persist_workflow_runtime_session(session.id(), "completion_failure_test_baseline")
+        .expect("running workflow baseline should persist");
+    runtime
+        .owned
         .session_snapshot(session.id())
         .expect("baseline projection should publish");
     let projection_sequence = runtime.owned.session_projection.change_sequence();
@@ -185,15 +199,16 @@ async fn workflow_prompt_completion_append_failure_retains_retry_ownership() {
     let connection = rusqlite::Connection::open(runtime.owned.durable_state_store.path())
         .expect("durable database should open for failure injection");
     connection
-        .execute_batch(
+        .execute_batch(&format!(
             "CREATE TRIGGER fail_workflow_prompt_completion
              BEFORE INSERT ON durable_state_events
-             WHEN NEW.kind = 'workflow.runtime.updated'
-               AND json_extract(NEW.payload_json, '$.reason') = 'workflow_prompt_completed'
+             WHEN NEW.kind = '{event_kind}'
+               AND ('{event_kind}' = 'session.prompt_state.updated'
+                 OR json_extract(NEW.payload_json, '$.reason') = 'workflow_prompt_completed')
              BEGIN
                SELECT RAISE(FAIL, 'injected workflow prompt completion failure');
-             END;",
-        )
+             END;"
+        ))
         .expect("workflow completion failure trigger should install");
 
     let error = runtime
@@ -217,6 +232,16 @@ async fn workflow_prompt_completion_append_failure_retains_retry_ownership() {
         .active_prompt_for_agent(&retained, agent.id())
         .expect("failed completion must retain the active prompt");
     assert_eq!(retained_prompt.id(), prompt.id());
+    assert_eq!(retained_prompt.status(), prompt.status());
+    let durable_prompt_events = runtime.owned.durable_state_store
+        .load_events_by_kind(crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND)
+        .expect("durable prompt events should load");
+    assert_eq!(
+        durable_prompt_events.last().expect("delivered prompt should be durable")
+            .payload["active_prompt"]["id"],
+        prompt.id(),
+        "a rejected composite completion must retain its durable prompt ownership"
+    );
     assert_eq!(
         retained
             .workflow_run(workflow_run.id())
@@ -276,6 +301,16 @@ async fn workflow_prompt_completion_append_failure_retains_retry_ownership() {
         .filter(|event| event.payload["reason"] == "workflow_prompt_completed")
         .count();
     assert_eq!(completion_events, 1, "completion should commit exactly once");
+    drop(connection);
+    drop(runtime);
+    drop(app);
+    let restored = DaemonApp::bootstrap(config).expect("kernel state should restore");
+    let restored_session = restored.sessions().get_session(session.id())
+        .expect("session should restore");
+    assert!(
+        restored_session.active_prompt_for_agent(agent.id()).is_none(),
+        "restart must not resurrect the completed provider prompt"
+    );
 }
 
 #[tokio::test]
