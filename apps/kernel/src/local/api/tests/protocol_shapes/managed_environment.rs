@@ -440,9 +440,10 @@ fn local_daemon_reimage_preflight_shape_is_versioned_and_allowlisted() {
         .pointer("/1/ManagedEnvironmentReimagePreflight/preflight/retained/providerImageId")
         .is_none());
     let serialized = serde_json::to_string(&snapshot).expect("reimage preflight shape");
+    // Hash serde_json::Value's sorted object keys, not a JS insertion-order reconstruction.
     assert_eq!(
         format!("{:x}", Sha256::digest(serialized.as_bytes())),
-        "47785a4b77235798487a8ba59f6a7cf4072aa1f9a1c53754bb334aa559bc79c5"
+        "c9c26926c17a881930bfc262d29c55db1bee1450aa51eea49ea94aa98f623d5c"
     );
 }
 
