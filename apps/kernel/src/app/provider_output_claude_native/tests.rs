@@ -567,13 +567,11 @@ fn hook_permission_tombstone_only_consumes_matching_rendered_frame() {
 
 #[test]
 fn rendered_permission_resolution_does_not_reinject_native_prompt() {
+    let worktree = crate::test_support::TestWorktree::new("claude-native-permission");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-claude-permission",
-            "worktree-claude-permission",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -709,13 +707,11 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
 ) {
     use std::io::Write as _;
 
+    let worktree = crate::test_support::TestWorktree::new("claude-native-headless-stop");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-claude-headless-stop",
-            "worktree-claude-headless-stop",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -1209,13 +1205,11 @@ fn claude_headless_steering_dispatch_waits_for_provider_acknowledgement() {
 
 #[test]
 fn claude_headless_user_prompt_submit_acknowledges_matching_managed_dispatches() {
+    let worktree = crate::test_support::TestWorktree::new("claude-native-submit-ack");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-submit-wait-ack",
-            "worktree-submit-wait-ack",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -1386,13 +1380,11 @@ fn claude_headless_user_prompt_submit_acknowledges_matching_managed_dispatches()
 
 #[test]
 fn claude_workspace_trust_waits_for_approval_before_exactly_once_dispatch() {
+    let worktree = crate::test_support::TestWorktree::new("claude-native-trust-approval");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-startup-trust-approval",
-            "worktree-startup-trust-approval",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -1592,13 +1584,11 @@ fn claude_workspace_trust_waits_for_approval_before_exactly_once_dispatch() {
 
 #[test]
 fn claude_headless_early_exit_before_ack_has_bounded_diagnostic() {
+    let worktree = crate::test_support::TestWorktree::new("claude-native-early-exit");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-startup-early-exit",
-            "worktree-startup-early-exit",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let root = std::env::temp_dir().join(format!(
         "chariox-claude-startup-early-exit-{}-{}",
@@ -1664,6 +1654,7 @@ fn claude_headless_early_exit_before_ack_has_bounded_diagnostic() {
 
 #[test]
 fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
+    let worktree = crate::test_support::TestWorktree::new("claude-native-trust-rejection");
     let root = std::env::temp_dir().join(format!(
         "chariox-claude-startup-trust-rejection-{}-{}",
         std::process::id(),
@@ -1673,10 +1664,7 @@ fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-startup-trust-rejection",
-            "worktree-startup-trust-rejection",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -1819,13 +1807,11 @@ fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
 
 #[test]
 fn claude_headless_dispatch_observes_ask_user_question_queue_acknowledgement() {
+    let worktree = crate::test_support::TestWorktree::new("claude-native-ask-user");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-ask-user-question-ack",
-            "worktree-ask-user-question-ack",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -2195,13 +2181,11 @@ fn claude_transcript_drain_classifies_session_limit_without_success_completion()
 
 #[test]
 fn claude_transcript_session_limit_projects_error_and_preserves_diagnostic() {
+    let worktree = crate::test_support::TestWorktree::new("claude-native-transcript-limit");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-claude-transcript-limit",
-            "worktree-claude-transcript-limit",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
