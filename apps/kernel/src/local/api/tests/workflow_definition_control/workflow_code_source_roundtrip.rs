@@ -37,7 +37,7 @@ const worker = workflow.node({{
 }})
 workflow.queue({{
   handle: "pending",
-  alias: "pending",
+  alias: "default",
   priority: 0,
   enabled: {source_queue_enabled}
 }})
