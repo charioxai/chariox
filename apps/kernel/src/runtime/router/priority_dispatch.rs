@@ -70,7 +70,17 @@ impl CommandRouter {
         .await
     }
 
-    pub(super) async fn dispatch_normal_or_background(
+    pub(super) fn dispatch_normal_or_background(
+        &self,
+        command: KernelCommand,
+        request: LocalDaemonRequest,
+    ) -> impl std::future::Future<Output = Result<LocalDaemonResponse, DaemonError>> + '_ {
+        // Keep the large request-match future out of every caller's async state.
+        // Construct it in this synchronous frame, not in the caller's poll frame.
+        Box::pin(self.dispatch_normal_or_background_inner(command, request))
+    }
+
+    async fn dispatch_normal_or_background_inner(
         &self,
         command: KernelCommand,
         request: LocalDaemonRequest,
