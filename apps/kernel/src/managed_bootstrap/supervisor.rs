@@ -927,7 +927,7 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             "} > \"$record.tmp\"\n\
              /bin/mv \"$record.tmp\" \"$record\"\n\
              rm -f -- \"$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE\"\n\
-             if [ \"$generation\" = 1 ]; then /bin/sleep 30; fi\n",
+             if [ \"$generation\" = 1 ]; then exec /bin/sleep 30; fi\n",
         );
         script
     }
@@ -968,6 +968,40 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
     }
 
     #[cfg(target_os = "linux")]
+    struct ConfirmationFixtureRoot(std::path::PathBuf);
+
+    #[cfg(target_os = "linux")]
+    impl Drop for ConfirmationFixtureRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    struct Path1TestEnvironment(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+    #[cfg(target_os = "linux")]
+    impl Path1TestEnvironment {
+        fn capture(names: &[&'static str]) -> Self {
+            Self(
+                names
+                    .iter()
+                    .map(|name| (*name, std::env::var_os(name)))
+                    .collect(),
+            )
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Drop for Path1TestEnvironment {
+        fn drop(&mut self) {
+            for (name, value) in self.0.drain(..) {
+                restore_env(name, value);
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
     #[test]
     fn path1_confirmation_restart_reapplies_ordinary_boundary() {
         use std::os::unix::fs::PermissionsExt;
@@ -978,6 +1012,7 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));
+        let _fixture_root = ConfirmationFixtureRoot(root.clone());
         let process_home = root.join("home");
         let chariox_home = process_home.join(".chariox");
         let provider_home = root.join("provider-home");
@@ -1047,20 +1082,16 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             "{}/.local/bin:/usr/local/bin:/usr/bin:/bin",
             process_home.display()
         );
-        let mut saved_environment = PATH1_SHARED_HOST_SELECTOR_ENVS
-            .iter()
-            .map(|name| (*name, std::env::var_os(name)))
-            .collect::<Vec<_>>();
-        for name in [
+        let mut environment_names = PATH1_SHARED_HOST_SELECTOR_ENVS.to_vec();
+        environment_names.extend([
             "HOME",
             "PATH",
             "CHARIOX_TEST_PATH1_CONFIRM_CAPTURE",
             "CHARIOX_MANAGED_PROVIDER_HOME",
             "CHARIOX_MANAGED_VAULT_PATH",
             MANAGED_PROVIDER_TOPOLOGY_ENV,
-        ] {
-            saved_environment.push((name, std::env::var_os(name)));
-        }
+        ]);
+        let environment = Path1TestEnvironment::capture(&environment_names);
         for name in PATH1_SHARED_HOST_SELECTOR_ENVS {
             std::env::set_var(name, "contaminated-shared-host-selector");
         }
@@ -1079,9 +1110,7 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             ManagedProviderTopology::Path1,
         );
 
-        for (name, value) in saved_environment {
-            restore_env(name, value);
-        }
+        drop(environment);
         let run = run.expect("Path-1 confirmation restart should complete");
         assert!(run.status.success(), "replacement kernel failed: {}", run.status);
         assert!(confirmation.is_none());
@@ -1094,7 +1123,6 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
                 &path_value,
             );
         }
-        std::fs::remove_dir_all(root).expect("confirmation fixture should be removable");
     }
 
     fn bounded_stream(stream: &UnixStream) {

@@ -1317,7 +1317,7 @@ mod tests {
             "} > \"$record.tmp\"\n\
              /bin/mv \"$record.tmp\" \"$record\"\n\
              if [ \"$generation\" = 1 ]; then exit 23; fi\n\
-             /bin/sleep 30\n",
+             exec /bin/sleep 30\n",
         );
         script
     }
@@ -1357,6 +1357,44 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
+    struct RestartFixtureRoot(PathBuf);
+
+    #[cfg(target_os = "linux")]
+    impl Drop for RestartFixtureRoot {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    struct RestartLoopDriver(Option<Child>);
+
+    #[cfg(target_os = "linux")]
+    impl RestartLoopDriver {
+        fn child_mut(&mut self) -> &mut Child {
+            self.0.as_mut().expect("restart-loop driver is available")
+        }
+
+        fn stop(&mut self) {
+            let Some(mut child) = self.0.take() else {
+                return;
+            };
+            let process_group = -(child.id() as i32);
+            unsafe {
+                libc::kill(process_group, libc::SIGKILL);
+            }
+            let _ = child.wait();
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Drop for RestartLoopDriver {
+        fn drop(&mut self) {
+            self.stop();
+        }
+    }
+
+    #[cfg(target_os = "linux")]
     #[test]
     fn disposable_worker_restart_reapplies_path1_contract() {
         if env::var_os(RESTART_LOOP_DRIVER_ENV).is_some() {
@@ -1372,6 +1410,7 @@ mod tests {
             std::process::id(),
             rand::random::<u64>()
         ));
+        let _fixture_root = RestartFixtureRoot(root.clone());
         let process_home = root.join("home");
         let chariox_home = process_home.join(".chariox");
         let provider_home = root.join("provider-home");
@@ -1413,23 +1452,25 @@ mod tests {
         for name in PATH1_SHARED_HOST_SELECTOR_ENVS {
             command.env(name, "contaminated-shared-host-selector");
         }
-        let mut driver = command.spawn().expect("restart-loop test driver should start");
+        let mut driver = RestartLoopDriver(Some(
+            command.spawn().expect("restart-loop test driver should start"),
+        ));
         let second_capture = PathBuf::from(format!("{}.2", capture.display()));
         let deadline = Instant::now() + Duration::from_secs(8);
         let mut early_status = None;
         while !second_capture.is_file() && Instant::now() < deadline {
-            if let Some(status) = driver.try_wait().expect("inspect restart-loop driver") {
+            if let Some(status) = driver
+                .child_mut()
+                .try_wait()
+                .expect("inspect restart-loop driver")
+            {
                 early_status = Some(status);
                 break;
             }
             thread::sleep(Duration::from_millis(20));
         }
 
-        let process_group = -(driver.id() as i32);
-        unsafe {
-            libc::kill(process_group, libc::SIGKILL);
-        }
-        let _ = driver.wait();
+        driver.stop();
 
         assert!(
             early_status.is_none(),
@@ -1448,7 +1489,6 @@ mod tests {
                 &path_value,
             );
         }
-        fs::remove_dir_all(root).expect("restart-loop fixture should be removable");
     }
 
     #[cfg(unix)]
