@@ -1065,10 +1065,11 @@ mod relay_native_provider_launch_tests {
                     pty_args: Vec::new(),
                     pty_env: std::collections::BTreeMap::new(),
                     pty_env_remove: Vec::new(),
-                    working_directory: None,
+                    working_directory: self.matching_request.working_directory.clone(),
                     structured_endpoint: None,
                 },
             );
+            assert!(self.matching_request.matches_existing_run_selection(&run));
             run.mark_running();
             self.state
                 .owned
