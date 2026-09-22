@@ -22,6 +22,7 @@ import {
   runBrowserComputerFaultGuard,
 } from "./lib/browser-computer-drill-guard.mjs"
 import {
+  loadReviewedManagedParityAdapterModule,
   parseManagedBrowserComputerParityArgs,
   readPrivateManagedParityConfig,
 } from "./lib/managed-browser-computer-parity-cli.mjs"
@@ -49,6 +50,7 @@ export async function runManagedBrowserComputerParityLive({
   resourceCaps = null,
   collectResourceSnapshot = null,
   dockerPreconditions = null,
+  adapterVerification = null,
   now = () => new Date(),
   secretValues = [],
 } = {}) {
@@ -448,6 +450,9 @@ export async function runManagedBrowserComputerParityLive({
   }
   const finalReport = redactBrowserComputerEvidence({
     ...baseReport,
+    adapter: adapterVerification
+      ? { identity: adapterVerification.identity, sha256: adapterVerification.sha256 }
+      : null,
     status: failed ? "failed" : baseReport.status,
     ...(failed ? { acceptanceBackend: null, failure } : {}),
     browserComputerGuard: {
@@ -606,7 +611,10 @@ async function main() {
   try {
     const options = parseManagedBrowserComputerParityArgs(process.argv.slice(2), { repoRoot })
     const config = await readPrivateManagedParityConfig(options.configPath)
-    const imported = await import(pathToFileURL(options.transportModulePath).href)
+    const { imported, verification: adapterVerification } = await loadReviewedManagedParityAdapterModule(
+      options.transportModulePath,
+      config.adapter,
+    )
     if (typeof imported.createManagedBrowserComputerParityTransport !== "function") {
       throw new Error("transport module must export createManagedBrowserComputerParityTransport")
     }
@@ -626,6 +634,7 @@ async function main() {
       transport,
       evidenceRoot: runDir,
       signal: interruption.signal,
+      adapterVerification,
     })
     const resultPath = path.join(runDir, "managed-browser-computer-parity.json")
     const artifactIndexPath = path.join(runDir, "chariox-drill-artifacts.json")

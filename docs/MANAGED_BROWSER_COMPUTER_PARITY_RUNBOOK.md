@@ -30,14 +30,17 @@ Browser, Computer, prompt, provider, Git, or vault payloads.
    entry. The adapter receives only fixture name `synthetic-vault-marker-v1`,
    never its value.
 8. A reviewed adapter module exporting
-   `createManagedBrowserComputerParityTransport`. Construction must be
-   side-effect free. Its steps must use the released BrowserKernelClient, local
-   IPC, and remote relay paths—not Cloud runtime APIs or another authority—and
-   return authoritative kernel, machine, Room, environment, and backend IDs.
-   The factory receives only the external evidence directory. Preflight must
-   independently inspect the installed image/source/protocol/target rather than
-   echo expected config values; expected identity is supplied only to bound
-   product and cleanup steps.
+   `MANAGED_BROWSER_COMPUTER_PARITY_ADAPTER_IDENTITY` and
+   `createManagedBrowserComputerParityTransport`. Its exact regular-file bytes
+   are SHA-256 pinned in the private config and verified before import; a
+   missing, symlinked, hash-mismatched, or self-asserted module fails closed.
+   Construction must be side-effect free. Its steps must use the released
+   BrowserKernelClient, local IPC, and remote relay paths—not Cloud runtime APIs
+   or another authority—and return authoritative kernel, machine, Room,
+   environment, and backend IDs. The factory receives only the external
+   evidence directory. Preflight must independently inspect the installed
+   image/source/protocol/target rather than echo expected config values;
+   expected identity is supplied only to bound product and cleanup steps.
 9. Conservative ceilings for RSS, CPU, free memory/disk, heartbeat age, and
    post-cleanup RSS/disk deltas, with enough reserve to complete cleanup.
 
@@ -49,6 +52,10 @@ contains no credential or secret value:
   "runId": "cha-16-YYYYMMDD-HHMMSS",
   "ossSha": "<40 lowercase hex>",
   "cloudSha": "<40 lowercase hex>",
+  "adapter": {
+    "identity": "<reviewed adapter identity>",
+    "sha256": "sha256:<64 lowercase hex>"
+  },
   "image": {
     "digest": "sha256:<64 lowercase hex>",
     "signature": "<exact base64 Ed25519 release signature>",
