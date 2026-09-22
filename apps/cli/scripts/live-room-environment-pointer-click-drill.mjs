@@ -62,7 +62,10 @@ import { roomDrillRelayToken } from "./lib/room-drill-relay-token.mjs"
 import {
   assertRoomRootlessWorkspaceFixture,
   assertRoomRootlessWorkspaceFixtureRemoved,
+  createRoomDirectDockerWorkspaceFixture,
   managedRoomFixtureSliceRoot,
+  removeRoomDirectDockerWorkspaceFixture,
+  roomDirectDockerWorkspaceRootEnvironment,
 } from "./lib/room-rootless-workspace-fixture.mjs"
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
@@ -239,6 +242,24 @@ async function run() {
     // namespace. Only this empty workspace is shared; its mkdtemp parent stays
     // private, and no repository permissions or host account data are changed.
     await chmod(fixtureWorkspace, 0o777)
+  } else {
+    const directWorkspaceRoot = process.env[roomDirectDockerWorkspaceRootEnvironment]?.trim()
+    const brokerSocket = process.env.CHARIOX_SLICE_DOCKER_BROKER_SOCKET?.trim()
+    if (directWorkspaceRoot && brokerSocket) {
+      throw new Error(`${roomDirectDockerWorkspaceRootEnvironment} cannot be combined with a slice Docker broker`)
+    }
+    if (directWorkspaceRoot) {
+      fixtureWorkspaceLease = await createRoomDirectDockerWorkspaceFixture({
+        workspaceRoot: directWorkspaceRoot,
+        forbiddenRoots: [repoRoot, os.homedir()],
+        verifyEngineAccess: verifyDirectDockerEngineAccess,
+      })
+      fixtureWorkspace = fixtureWorkspaceLease.workspace
+    } else if (!brokerSocket) {
+      throw new Error(
+        `provider-free Room drill requires an actual slice Docker broker or explicit ${roomDirectDockerWorkspaceRootEnvironment}`,
+      )
+    }
   }
   await assertDockerReady()
   const kernelBinary = await resolveRuntimeBinary("chariox-kernel")
@@ -327,7 +348,7 @@ async function run() {
     backend: "local_docker",
     displayMode: "headed",
     displayBackend: "selkies",
-    ...(realProviderOptions
+    ...(realProviderOptions || fixtureWorkspaceLease?.kind === "direct"
       ? { workspaceMount: fixtureWorkspace }
       : { developmentSetup: { kind: "empty" } }),
     workerKernelRef: `${runId}-worker`,
@@ -368,7 +389,7 @@ async function run() {
   assert.equal(limits.memorySwapBytes, limits.memoryBytes)
   assert.equal(limits.nanoCpus, 1_000_000_000)
   assert.equal(limits.pidsLimit, 1024)
-  if (!realProviderOptions) {
+  if (!realProviderOptions && fixtureWorkspaceLease == null) {
     const configuredSliceRoot = process.env.CHARIOX_SLICE_ROOT?.trim()
     const allowedSliceRoot = process.env.CHARIOX_SLICE_DOCKER_BROKER_SOCKET?.trim()
       ? managedRoomFixtureSliceRoot
@@ -2804,6 +2825,15 @@ async function assertDockerReady() {
   await docker(["info", "--format", "{{json .ServerVersion}}"], 20_000)
 }
 
+async function verifyDirectDockerEngineAccess(target, { writable }) {
+  for (const flag of writable ? ["-x", "-w"] : ["-x"]) {
+    const result = await runCommand("runuser", ["-u", "chariox-docker", "--", "test", flag, target], 10_000)
+    if (result.code !== 0) {
+      throw new Error(`rootless Docker engine user cannot ${writable ? "write or traverse" : "traverse"} the selected fixture root`)
+    }
+  }
+}
+
 async function docker(args, timeoutMs = 120_000) {
   const result = await runCommand("docker", args, timeoutMs)
   if (result.code !== 0) throw new Error(`docker ${args.join(" ")} failed\n${result.stdout}${result.stderr}`)
@@ -2928,7 +2958,11 @@ async function cleanup() {
   let fixtureWorkspaceRemoved = fixtureWorkspaceLease == null
   if (fixtureWorkspaceLease) {
     try {
-      await assertRoomRootlessWorkspaceFixtureRemoved(fixtureWorkspaceLease)
+      if (fixtureWorkspaceLease.kind === "direct") {
+        await removeRoomDirectDockerWorkspaceFixture(fixtureWorkspaceLease)
+      } else {
+        await assertRoomRootlessWorkspaceFixtureRemoved(fixtureWorkspaceLease)
+      }
       fixtureWorkspaceRemoved = true
     } catch (error) {
       failure ??= error
