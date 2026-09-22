@@ -279,6 +279,44 @@ mod tests {
     }
 
     #[test]
+    fn failed_activity_append_preserves_idle_timestamp_across_restart() {
+        let state_path = test_state_path("failed-append-restart");
+        let store = DurableKernelStateStore::open(state_path.clone()).expect("open store");
+        let state = ManagedActivityTransitionState::new(
+            store.clone(),
+            Some("kernel-failed-append".to_string()),
+        );
+        state.record_transition(0, 0, 1_000).expect("initial idle");
+        let database = rusqlite::Connection::open(&state_path).expect("open failure injector");
+        database.execute_batch(
+            "CREATE TRIGGER fail_activity BEFORE INSERT ON durable_state_events
+             WHEN NEW.kind = 'managed_kernel.activity.changed'
+             BEGIN SELECT RAISE(FAIL, 'injected activity append failure'); END;",
+        ).expect("install failure");
+        state.record_transition(1, 1, 2_000).expect_err("busy append fails");
+        state.record_transition(2, 0, 3_000).expect_err("idle append fails");
+        drop(state);
+        drop(store);
+        database.execute_batch("DROP TRIGGER fail_activity;").expect("recover storage");
+        drop(database);
+
+        let store = DurableKernelStateStore::open(state_path.clone()).expect("reopen store");
+        let state = ManagedActivityTransitionState::new(
+            store.clone(),
+            Some("kernel-failed-append".to_string()),
+        );
+        assert_eq!(state.current_observation(0).expect("recover original idle"),
+            ManagedActivityObservation { running_agent_count: 0, changed_at_ms: 3_000 });
+        let events = store.load_subject_events_by_kind(
+            "kernel-failed-append", MANAGED_ACTIVITY_EVENT_KIND, 10,
+        ).expect("read transitions");
+        assert_eq!(events.len(), 3, "retain both transitions from the busy/idle cycle");
+        drop(state);
+        drop(store);
+        remove_test_state(&state_path);
+    }
+
+    #[test]
     fn idle_transition_survives_reporter_and_kernel_state_restart() {
         let state_path = test_state_path("restart");
         {
