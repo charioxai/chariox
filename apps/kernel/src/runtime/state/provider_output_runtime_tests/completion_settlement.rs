@@ -88,6 +88,197 @@ async fn managed_activity_reaches_zero_only_after_prompt_settlement_is_durable()
 }
 
 #[tokio::test]
+async fn workflow_prompt_completion_append_failure_retains_retry_ownership() {
+    let worktree = crate::test_support::TestWorktree::new("workflow-settlement-append-retry");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider run should launch");
+    app.update_provider_run_projection(run.clone());
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(session.id(), Some("settlement retry".to_string()))
+        .expect("workflow should be created");
+    let node = app
+        .sessions_mut()
+        .add_workflow_node(session.id(), workflow.id(), agent.id())
+        .expect("workflow node should be added");
+    let endpoint = app
+        .sessions_mut()
+        .create_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            node.id(),
+            Some("entry".to_string()),
+        )
+        .expect("workflow endpoint should be created");
+    let workflow_run = app
+        .sessions_mut()
+        .invoke_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            Some("finish durably".to_string()),
+        )
+        .expect("workflow run should be created");
+    let node_run_id = workflow_run.node_runs()[0].id().to_string();
+    app.sessions_mut()
+        .prepare_workflow_turn(
+            session.id(),
+            workflow_run.id(),
+            &node_run_id,
+            format!("workflow-ack:{node_run_id}"),
+            "finish durably".to_string(),
+            None,
+            None,
+        )
+        .expect("workflow turn should prepare");
+    app.sessions_mut()
+        .start_workflow_node_run(session.id(), workflow_run.id(), &node_run_id)
+        .expect("workflow node should start");
+    let prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),
+        agent.id(),
+        "finish durably".to_string(),
+        crate::session::PromptStatus::Queued,
+    )
+    .with_workflow_context(workflow_run.id(), &node_run_id);
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("workflow prompt should start")
+    else {
+        panic!("workflow prompt should start immediately");
+    };
+    app.mark_active_prompt_delivery(
+        session.id(),
+        agent.id(),
+        prompt.id(),
+        crate::session::DurablePromptDeliveryPhase::Delivered,
+        Some(run.id().to_string()),
+        run.provider_session_id().map(str::to_string),
+    )
+    .expect("workflow prompt should be delivered");
+    crate::transport::flow_control::note_prompt_started(&mut app, run.id());
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("baseline projection should publish");
+    let projection_sequence = runtime.owned.session_projection.change_sequence();
+    let activity_sequence = runtime.managed_activity_change_sequence();
+    let connection = rusqlite::Connection::open(runtime.owned.durable_state_store.path())
+        .expect("durable database should open for failure injection");
+    connection
+        .execute_batch(
+            "CREATE TRIGGER fail_workflow_prompt_completion
+             BEFORE INSERT ON durable_state_events
+             WHEN NEW.kind = 'workflow.runtime.updated'
+               AND json_extract(NEW.payload_json, '$.reason') = 'workflow_prompt_completed'
+             BEGIN
+               SELECT RAISE(FAIL, 'injected workflow prompt completion failure');
+             END;",
+        )
+        .expect("workflow completion failure trigger should install");
+
+    let error = runtime
+        .settle_owned_provider_prompt(session.id(), run.id(), true, false, true)
+        .await
+        .expect_err("failed workflow append must reject provider settlement");
+    assert!(
+        error
+            .to_string()
+            .contains("injected workflow prompt completion failure"),
+        "{error}"
+    );
+    let retained = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("session should remain available");
+    let retained_prompt = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&retained, agent.id())
+        .expect("failed completion must retain the active prompt");
+    assert_eq!(retained_prompt.id(), prompt.id());
+    assert_eq!(
+        retained
+            .workflow_run(workflow_run.id())
+            .expect("workflow run should remain retryable")
+            .node_runs()[0]
+            .status(),
+        crate::session::WorkflowNodeRunStatus::Running
+    );
+    assert_eq!(runtime.managed_running_agent_count(), 1);
+    assert_eq!(runtime.managed_activity_change_sequence(), activity_sequence);
+    assert_eq!(
+        runtime.owned.session_projection.change_sequence(),
+        projection_sequence,
+        "a rejected completion must not publish a terminal projection"
+    );
+    assert!(runtime
+        .owned
+        .operational_history_store
+        .load_prompt_settlement_event(session.id(), agent.id(), prompt.id())
+        .expect("settlement history should load")
+        .is_none());
+
+    connection
+        .execute_batch("DROP TRIGGER fail_workflow_prompt_completion;")
+        .expect("workflow completion failure trigger should clear");
+    let settled = runtime
+        .settle_owned_provider_prompt(session.id(), run.id(), true, false, true)
+        .await
+        .expect("the retained completion should retry after storage recovery");
+    assert!(settled.had_active_prompt);
+    assert!(!settled.started_next_prompt);
+    assert!(runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(
+            &runtime
+                .owned
+                .session_store
+                .get_session(session.id())
+                .expect("session should remain available"),
+            agent.id(),
+        )
+        .is_none());
+    assert_eq!(runtime.managed_running_agent_count(), 0);
+    assert!(runtime
+        .owned
+        .operational_history_store
+        .load_prompt_settlement_event(session.id(), agent.id(), prompt.id())
+        .expect("settlement history should load")
+        .is_some());
+    let completion_events = runtime
+        .owned
+        .durable_state_store
+        .load_events_by_kind("workflow.runtime.updated")
+        .expect("workflow events should load")
+        .into_iter()
+        .filter(|event| event.payload["reason"] == "workflow_prompt_completed")
+        .count();
+    assert_eq!(completion_events, 1, "completion should commit exactly once");
+}
+
+#[tokio::test]
 async fn provider_settlement_starts_metaagent_task_queued_behind_completed_turn() {
     let worktree = crate::test_support::TestWorktree::new("output-settlement-metaagent");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
