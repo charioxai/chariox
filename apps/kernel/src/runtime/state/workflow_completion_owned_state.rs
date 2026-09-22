@@ -59,12 +59,41 @@ impl KernelRuntimeOwnedState {
         reason: &str,
         activity_mutation: super::managed_activity_runtime_state::ManagedActivityMutation<'_>,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        self.persist_workflow_runtime_session_with_activity_mutation_and_rollback(
+            session_id,
+            reason,
+            activity_mutation,
+            || {},
+        )
+    }
+
+    /// Restores a caller-owned mutation before releasing the activity boundary when the
+    /// authoritative snapshot or its durable append fails.
+    pub(super) fn persist_workflow_runtime_session_with_activity_mutation_and_rollback(
+        &self,
+        session_id: &str,
+        reason: &str,
+        activity_mutation: super::managed_activity_runtime_state::ManagedActivityMutation<'_>,
+        rollback: impl FnOnce(),
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let mut rollback = Some(rollback);
         let (session, hot_session) = self
             .durable_state_store
             .with_workflow_runtime_transition_lock(|| {
-                let session = self.session_snapshot_without_projection_update(session_id)?;
-                self.durable_state_store
-                    .persist_workflow_runtime_transition(&session, reason)?;
+                let session = match self.session_snapshot_without_projection_update(session_id) {
+                    Ok(session) => session,
+                    Err(error) => {
+                        rollback.take().expect("workflow rollback should run once")();
+                        return Err(error);
+                    }
+                };
+                if let Err(error) = self
+                    .durable_state_store
+                    .persist_workflow_runtime_transition(&session, reason)
+                {
+                    rollback.take().expect("workflow rollback should run once")();
+                    return Err(error);
+                }
                 let archived = self
                     .session_store
                     .write()
