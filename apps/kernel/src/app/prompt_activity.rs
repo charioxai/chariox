@@ -127,6 +127,11 @@ pub(crate) struct ActiveTurnState {
     pub(crate) started_at_ms: u64,
     pub(crate) phase: ActiveTurnPhase,
     pub(crate) settlement_requested: bool,
+    // A durable completion failed after authoritative completion was accepted.
+    // Unlike assistant-message completion, this allows retry without another
+    // provider end event. It belongs to this exact prompt and provider run.
+    pub(crate) completion_retry_observed_at_ms: Option<u64>,
+    completion_retry_attempt: u32,
 }
 
 impl ActiveTurnState {
@@ -149,6 +154,8 @@ impl ActiveTurnState {
             started_at_ms: crate::session::unix_epoch_ms(),
             phase: ActiveTurnPhase::Accepted,
             settlement_requested: false,
+            completion_retry_observed_at_ms: None,
+            completion_retry_attempt: 0,
         }
     }
 
@@ -241,6 +248,28 @@ impl ActiveTurnStore {
             turn.settlement_requested = true;
             record_active_turn_event(turn, "active_turn_mark_settling", true);
         }
+    }
+
+    pub(crate) fn mark_completion_retry(
+        &self,
+        provider_run_id: &str,
+        prompt_id: &str,
+        observed_at_ms: u64,
+    ) -> Option<u64> {
+        let mut turns = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let turn = turns.get_mut(provider_run_id)?;
+        if turn.prompt_id != prompt_id {
+            return None;
+        }
+        turn.completion_retry_observed_at_ms
+            .get_or_insert(observed_at_ms);
+        turn.completion_retry_attempt = turn.completion_retry_attempt.saturating_add(1);
+        Some(crate::durable_state::durable_settlement_retry_delay_ms(
+            turn.completion_retry_attempt,
+        ))
     }
 
     fn advance_phase(&self, provider_run_id: &str, phase: ActiveTurnPhase, event: &str) {
@@ -370,6 +399,10 @@ fn merge_active_turn_start(
             incoming.external_observed_id = existing.external_observed_id.clone();
         }
         incoming.settlement_requested |= existing.settlement_requested;
+        if existing.completion_retry_observed_at_ms.is_some() {
+            incoming.completion_retry_observed_at_ms = existing.completion_retry_observed_at_ms;
+            incoming.completion_retry_attempt = existing.completion_retry_attempt;
+        }
         if incoming.settlement_requested && incoming.phase.rank() < ActiveTurnPhase::Settling.rank()
         {
             incoming.phase = ActiveTurnPhase::Settling;
@@ -510,6 +543,48 @@ mod tests {
 
         assert_eq!(turn.prompt_origin, None);
         assert_eq!(turn.external_observed_id, None);
+    }
+
+    #[test]
+    fn completion_retry_is_prompt_bound_preserves_time_and_backs_off() {
+        let turns = ActiveTurnStore::default();
+        let turn = || {
+            ActiveTurnState::new(
+                "session".to_string(),
+                "agent".to_string(),
+                "prompt".to_string(),
+                "run".to_string(),
+            )
+        };
+        turns.start(turn());
+        assert_eq!(turns.mark_completion_retry("run", "other", 10), None);
+        assert_eq!(turns.mark_completion_retry("run", "prompt", 10), Some(100));
+        turns.start(turn());
+        assert_eq!(turns.mark_completion_retry("run", "prompt", 20), Some(200));
+        assert_eq!(
+            turns.get("run").unwrap().completion_retry_observed_at_ms,
+            Some(10)
+        );
+        for _ in 0..20 {
+            assert!(turns.mark_completion_retry("run", "prompt", 30).unwrap() <= 5_000);
+        }
+        turns.start(ActiveTurnState::new(
+            "session".to_string(),
+            "agent".to_string(),
+            "replacement".to_string(),
+            "run".to_string(),
+        ));
+        assert_eq!(
+            turns.get("run").unwrap().completion_retry_observed_at_ms,
+            None
+        );
+        assert_eq!(turns.mark_completion_retry("run", "prompt", 40), None);
+        assert_eq!(
+            turns.mark_completion_retry("run", "replacement", 50),
+            Some(100)
+        );
+        turns.clear("run");
+        assert_eq!(turns.mark_completion_retry("run", "replacement", 60), None);
     }
 
     #[test]

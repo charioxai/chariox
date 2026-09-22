@@ -141,8 +141,17 @@ impl KernelRuntimeState {
         }
         let completion_recorded = owned.prompt_completion_recorded(provider_run_id);
         let settlement_pending = owned.prompt_completion_settlement_pending(provider_run_id);
+        let completion_retry_observed_at_ms = owned
+            .active_turns
+            .get(provider_run_id)
+            .filter(|turn| turn.prompt_id == active_prompt.id())
+            .and_then(|turn| turn.completion_retry_observed_at_ms);
         let codex_provider = provider_run.adapter_key() == "codex";
-        if !force && codex_provider && !prompt_completed {
+        if !force
+            && codex_provider
+            && !prompt_completed
+            && completion_retry_observed_at_ms.is_none()
+        {
             owned.schedule_provider_output_check_after(
                 provider_run_id,
                 STRUCTURED_PROMPT_SETTLE_QUIET_FOR,
@@ -405,7 +414,8 @@ impl KernelRuntimeState {
                 .write()
                 .mark_workflow_run_settling(session_id, workflow_run_id)?;
         }
-        let settlement_observed_at_ms = crate::session::unix_epoch_ms();
+        let settlement_observed_at_ms =
+            completion_retry_observed_at_ms.unwrap_or_else(crate::session::unix_epoch_ms);
         let (completion, workflow_dispatches) = if is_workflow_prompt {
             let activity_mutation = owned.begin_managed_activity_mutation();
             let reservation = owned.reserve_local_workflow_prompt_completion_if_matches(
@@ -474,6 +484,19 @@ impl KernelRuntimeState {
                             .session_store
                             .write()
                             .clear_workflow_run_settling(session_id, workflow_run_id)?;
+                    }
+                    if crate::durable_state::is_retryable_durable_write_error(&error) {
+                        if let Some(delay_ms) = owned.active_turns.mark_completion_retry(
+                            provider_run_id,
+                            active_prompt.id(),
+                            settlement_observed_at_ms,
+                        ) {
+                            owned.note_prompt_settlement_requested(provider_run_id);
+                            owned.schedule_provider_output_check_after(
+                                provider_run_id,
+                                std::time::Duration::from_millis(delay_ms),
+                            );
+                        }
                     }
                     return Err(error);
                 }
