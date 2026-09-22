@@ -102,13 +102,26 @@ fn codex_workflow_completion_retries_without_replaying_turn_completed() {
     assert_workflow_completion_failure_and_restart("workflow.runtime.updated", true);
 }
 
+#[test]
+fn authoritative_provider_finish_survives_delayed_workflow_completion_retry() {
+    let executor = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test executor should start");
+    executor.block_on(assert_workflow_completion_failure_is_retryable(
+        "workflow.runtime.updated",
+        true,
+        true,
+    ));
+}
+
 fn assert_workflow_completion_failure_and_restart(event_kind: &str, codex: bool) {
     let executor = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("test executor should start");
     let (config, session_id, agent_id, _worktree) = executor.block_on(
-        assert_workflow_completion_failure_is_retryable(event_kind, codex),
+        assert_workflow_completion_failure_is_retryable(event_kind, codex, false),
     );
     // Drop all first-kernel async owners without a shutdown cleanup that could
     // rewrite prompt state and hide a failed composite commit.
@@ -129,6 +142,7 @@ fn assert_workflow_completion_failure_and_restart(event_kind: &str, codex: bool)
 async fn assert_workflow_completion_failure_is_retryable(
     event_kind: &str,
     codex: bool,
+    verify_original_finish: bool,
 ) -> (
     crate::config::DaemonConfig,
     String,
@@ -254,6 +268,11 @@ async fn assert_workflow_completion_failure_is_retryable(
 
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
+    if verify_original_finish {
+        runtime
+            .ensure_managed_activity_tracking("completion-original-finish")
+            .expect("activity tracking should activate before runtime mutations");
+    }
     runtime
         .owned
         .persist_workflow_runtime_session(session.id(), "completion_failure_test_baseline")
@@ -279,10 +298,27 @@ async fn assert_workflow_completion_failure_is_retryable(
         ))
         .expect("workflow completion failure trigger should install");
 
-    let error = runtime
-        .settle_owned_provider_prompt(session.id(), run.id(), true, false, !codex)
-        .await
-        .expect_err("failed workflow append must reject provider settlement");
+    let finish_observed_from_ms = crate::session::unix_epoch_ms();
+    let error = if verify_original_finish {
+        runtime
+            .apply_owned_structured_output_batch(
+                session.id(),
+                run.id(),
+                Vec::new(),
+                crate::provider::ProviderPromptSignalBatch {
+                    prompt_completed: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect_err("failed workflow append must reject the actual provider-end batch")
+    } else {
+        runtime
+            .settle_owned_provider_prompt(session.id(), run.id(), true, false, !codex)
+            .await
+            .expect_err("failed workflow append must reject provider settlement")
+    };
+    let finish_observed_by_ms = crate::session::unix_epoch_ms();
     assert!(
         error
             .to_string()
@@ -342,6 +378,11 @@ async fn assert_workflow_completion_failure_is_retryable(
     connection
         .execute_batch("DROP TRIGGER fail_workflow_prompt_completion;")
         .expect("workflow completion failure trigger should clear");
+    if verify_original_finish {
+        // Separate the first authoritative end from the later durable commit.
+        // This delay is part of the failure scenario, not a provider quiet-time signal.
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+    }
     let settled = runtime
         .settle_owned_provider_prompt(session.id(), run.id(), !codex, false, !codex)
         .await
@@ -361,6 +402,19 @@ async fn assert_workflow_completion_failure_is_retryable(
         )
         .is_none());
     assert_eq!(runtime.managed_running_agent_count(), 0);
+    if verify_original_finish {
+        let (_, idle) = runtime
+            .managed_activity_report_snapshot()
+            .expect("idle must have a durable activity observation");
+        assert_eq!(idle.running_agent_count, 0);
+        assert!(
+            (finish_observed_from_ms..=finish_observed_by_ms).contains(&idle.changed_at_ms),
+            "idle time {} must retain the authoritative finish observation {}..={}, not the retry commit time",
+            idle.changed_at_ms,
+            finish_observed_from_ms,
+            finish_observed_by_ms,
+        );
+    }
     assert!(runtime
         .owned
         .operational_history_store
