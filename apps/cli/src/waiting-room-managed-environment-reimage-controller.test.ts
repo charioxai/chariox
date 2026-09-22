@@ -61,6 +61,97 @@ test("reimage cancellation is mutation-free before explicit confirmation", async
   )
 })
 
+test("reimage snapshots caller context and authoritative preflight before old-kernel observation", async () => {
+  const harness = reimageHarness()
+  const callerContext = sourceContextInput()
+  const authorizedContext = structuredClone(callerContext)
+  harness.environment = readyEnvironment({ contextPlan: contextPlanFromInput(authorizedContext) })
+  const servicePreflight = harness.preflight
+  const observation = deferred<void>()
+  harness.observationGate = observation.promise
+
+  const preparing = harness.controller.prepare(
+    "environment-1",
+    callerContext,
+    harness.attempt,
+  )
+  await waitUntil(() => harness.observations === 1)
+
+  ;(callerContext as { sourceTargetId: string | null }).sourceTargetId = "source-mutated"
+  ;(callerContext.providerAccounts as {
+    kind: "selected"
+    accounts: Array<{ provider: string; accountProfile: string }>
+  }).accounts[0]!.accountProfile = "mutated"
+  ;(servicePreflight.retained as { providerServerId: string }).providerServerId = "server-mutated"
+  ;(servicePreflight.desiredRelease as { providerImageId: string }).providerImageId = "image-mutated"
+  observation.resolve()
+
+  const prepared = await preparing
+  assert.equal(prepared.confirmation.providerServerId, "server-1")
+  assert.equal(prepared.confirmation.providerImageId, "image-2")
+  await harness.controller.confirm("environment-1", harness.attempt)
+
+  assert.deepEqual(harness.serializedRequests, [{
+    environmentId: "environment-1",
+    expectedGeneration: 3,
+    expectedProviderServerId: "server-1",
+    expectedProviderImageId: "image-2",
+    expectedProviderProfileId: "path1",
+    expectedProviderProfileDigest: "sha256:profile",
+    expectedRuntimeReleaseDigest: "sha256:new-release",
+    expectedRuntimeSourceCommit: "1".repeat(40),
+    expectedRuntimeSourceTree: "2".repeat(40),
+    contextPlan: authorizedContext,
+    idempotencyKey: "reimage-key-1",
+  }])
+})
+
+test("reimage keeps the same serialized context after prepare and across a lost-response retry", async () => {
+  const harness = reimageHarness()
+  const callerContext = sourceContextInput()
+  const authorizedContext = structuredClone(callerContext)
+  harness.environment = readyEnvironment({ contextPlan: contextPlanFromInput(authorizedContext) })
+  harness.requestFailures = 1
+  await harness.controller.prepare("environment-1", callerContext, harness.attempt)
+
+  ;(callerContext as { kernelContext: "empty" | "source_kernel" }).kernelContext = "empty"
+  ;(callerContext.developmentSetup as {
+    kind: "source_project"
+    projectId: string
+  }).projectId = "project-mutated-before-request"
+  await assert.rejects(
+    harness.controller.confirm("environment-1", harness.attempt),
+    /response was lost/,
+  )
+
+  ;(callerContext as { sourceTargetId: string | null }).sourceTargetId = "source-mutated-before-retry"
+  ;(callerContext.gitCredentials as {
+    kind: "selected"
+    credentialIds: string[]
+  }).credentialIds.push("credential-mutated")
+  await harness.controller.confirm("environment-1", harness.attempt)
+
+  assert.equal(harness.serializedRequests.length, 2)
+  assert.deepEqual(harness.serializedRequests[0]?.contextPlan, authorizedContext)
+  assert.deepEqual(harness.serializedRequests[1]?.contextPlan, authorizedContext)
+  assert.deepEqual(harness.serializedRequests[1], harness.serializedRequests[0])
+})
+
+test("repeated preparation refuses a changed context instead of reusing the pending request", async () => {
+  const harness = reimageHarness()
+  await harness.controller.prepare("environment-1", sourceContextInput(), harness.attempt)
+  const changed = sourceContextInput()
+  ;(changed as { sourceTargetId: string | null }).sourceTargetId = "source-2"
+
+  await assert.rejects(
+    harness.controller.prepare("environment-1", changed, harness.attempt),
+    /selected reimage context changed/,
+  )
+
+  assert.equal(harness.observations, 1)
+  assert.equal(harness.requests.length, 0)
+})
+
 test("accepted reimage retries the exact immutable request and cannot pretend to cancel", async () => {
   const harness = reimageHarness()
   harness.requestFailures = 1
@@ -136,6 +227,7 @@ function reimageHarness() {
     WaitingRoomManagedEnvironmentReimageControllerDeps["requestReimage"]
   >[0]
   const requests: ReimageRequest[] = []
+  const serializedRequests: ReimageRequest[] = []
   const progress: string[] = []
   const state = {
     preflight: preflight(),
@@ -146,6 +238,7 @@ function reimageHarness() {
     environment: readyEnvironment(),
     launches: 0,
     launchGate: Promise.resolve(),
+    observationGate: Promise.resolve(),
   }
   const attempt: ManagedEnvironmentReimageAttempt = {
     assertActive: () => {},
@@ -155,6 +248,7 @@ function reimageHarness() {
     getPreflight: async () => state.preflight,
     observePreviousKernel: async () => {
       state.observations += 1
+      await state.observationGate
       return {
         environmentId: "environment-1",
         generation: state.observationGeneration,
@@ -162,7 +256,8 @@ function reimageHarness() {
       }
     },
     requestReimage: async (input) => {
-      requests.push(structuredClone(input))
+      requests.push(input)
+      serializedRequests.push(structuredClone(input))
       if (state.requestFailures > 0) {
         state.requestFailures -= 1
         throw new Error("response was lost")
@@ -179,7 +274,13 @@ function reimageHarness() {
     nowMs: () => 1,
   }
   const controller = new WaitingRoomManagedEnvironmentReimageController(deps)
-  return Object.assign(state, { controller, attempt, requests, progress })
+  return Object.assign(state, {
+    controller,
+    attempt,
+    requests,
+    serializedRequests,
+    progress,
+  })
 }
 
 function preflight(overrides: {
@@ -220,6 +321,60 @@ function emptyContextInput(): ManagedEnvironmentContextPlanInput {
     providerAccounts: { kind: "none" },
     gitCredentials: { kind: "none" },
   }
+}
+
+function sourceContextInput(): ManagedEnvironmentContextPlanInput {
+  return {
+    sourceTargetId: "source-1",
+    kernelContext: "source_kernel",
+    developmentSetup: {
+      kind: "source_project",
+      projectId: "project-1",
+      repositories: [{ role: "primary", workspaceId: "workspace-1", worktreeId: null }],
+    },
+    providerAccounts: {
+      kind: "selected",
+      accounts: [{ provider: "codex", accountProfile: "default" }],
+    },
+    gitCredentials: { kind: "selected", credentialIds: ["github"] },
+  }
+}
+
+function contextPlanFromInput(
+  input: ManagedEnvironmentContextPlanInput,
+): ManagedEnvironmentSummary["contextPlan"] {
+  return {
+    schemaVersion: 1,
+    contextId: "context-new",
+    planDigest: "sha256:context",
+    source: input.sourceTargetId
+      ? {
+          sourceTargetId: input.sourceTargetId,
+          relayRealmId: "realm-source",
+          machineId: "machine-source",
+          kernelId: "kernel-source",
+          keyThumbprint: "sha256:source-key",
+        }
+      : null,
+    kernelContext: input.kernelContext,
+    developmentSetup: input.developmentSetup,
+    providerAccounts: input.providerAccounts,
+    gitCredentials: input.gitCredentials,
+  }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>((nextResolve) => { resolve = nextResolve })
+  return { promise, resolve }
+}
+
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (predicate()) return
+    await new Promise<void>((resolve) => setImmediate(resolve))
+  }
+  throw new Error("timed out waiting for the deterministic reimage test boundary")
 }
 
 function readyEnvironment(overrides: Partial<ManagedEnvironmentSummary> = {}): ManagedEnvironmentSummary {

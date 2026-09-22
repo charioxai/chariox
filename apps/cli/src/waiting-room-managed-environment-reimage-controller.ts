@@ -86,9 +86,10 @@ export class WaitingRoomManagedEnvironmentReimageController {
     contextPlan: ManagedEnvironmentContextPlanInput,
     attempt: ManagedEnvironmentReimageAttempt,
   ): Promise<ManagedEnvironmentReimagePreparation> {
+    const authorizedContextPlan = snapshotContextPlan(contextPlan)
     const existing = this.pending.get(environmentId)
     if (existing) {
-      if (!contextPlanMatchesInput(existing.request.contextPlan, contextPlan)) {
+      if (!contextPlanMatchesInput(existing.request.contextPlan, authorizedContextPlan)) {
         throw new Error("The selected reimage context changed; cancel the pending reimage before preparing another one.")
       }
       return {
@@ -99,7 +100,9 @@ export class WaitingRoomManagedEnvironmentReimageController {
 
     attempt.assertActive()
     attempt.progress("Reading the server-authoritative managed reimage preflight.")
-    const preflight = validatePreflight(await this.deps.getPreflight(environmentId), environmentId)
+    const preflight = snapshotPreflight(
+      validatePreflight(await this.deps.getPreflight(environmentId), environmentId),
+    )
     attempt.assertActive()
     attempt.progress("Observing the old managed kernel before reimage.")
     const acknowledgement = await this.deps.observePreviousKernel({
@@ -118,7 +121,7 @@ export class WaitingRoomManagedEnvironmentReimageController {
       confirmation,
       request: requestFromPreflight(
         preflight,
-        contextPlan,
+        authorizedContextPlan,
         this.deps.createIdempotencyKey(),
       ),
     })
@@ -168,7 +171,7 @@ export class WaitingRoomManagedEnvironmentReimageController {
     while (true) {
       attempt.progress("Requesting the destructive managed-machine reimage.")
       const result = validateReimageResult(
-        await this.deps.requestReimage(pending.request),
+        await this.deps.requestReimage(snapshotReimageRequest(pending.request)),
         pending,
       )
       if (result.operation.status === "failed" || result.receipt.status === "failed_closed") {
@@ -199,6 +202,22 @@ export class WaitingRoomManagedEnvironmentReimageController {
       await this.deps.delay(1_500)
     }
   }
+}
+
+function snapshotContextPlan(
+  contextPlan: ManagedEnvironmentContextPlanInput,
+): ManagedEnvironmentContextPlanInput {
+  return structuredClone(contextPlan)
+}
+
+function snapshotPreflight(
+  preflight: ManagedEnvironmentReimagePreflight,
+): ManagedEnvironmentReimagePreflight {
+  return structuredClone(preflight)
+}
+
+function snapshotReimageRequest(request: ImmutableReimageRequest): ImmutableReimageRequest {
+  return structuredClone(request)
 }
 
 function validatePreflight(
