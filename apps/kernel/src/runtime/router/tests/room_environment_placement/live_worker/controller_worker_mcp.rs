@@ -88,10 +88,6 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         }
     }
     let _environment = ScopedEnvironment::set([
-        (
-            "CHARIOX_HOME",
-            fixture.home_state.root.as_os_str().to_os_string(),
-        ),
         ("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT", "1".into()),
         ("CHARIOX_REMOTE_ROOM_COMPUTER_SECRET", SECRET.into()),
         (
@@ -881,7 +877,7 @@ pub(super) async fn check(fixture: &LiveWorker, placement: Value) {
         json!({"SpawnAgent": {
             "session_id":room,
             "provider":"managed-dev-stub",
-            "model":"default",
+            "model":"runtime-mcp-idle",
             "slice_ref":"desktop",
             "worktree_placement":placement
         }}),
@@ -1041,6 +1037,18 @@ pub(super) async fn check(fixture: &LiveWorker, placement: Value) {
             .as_str()
             .is_some_and(|action_id| !action_id.is_empty()));
         assert_eq!(result.payload["browser"]["url"], url);
+        {
+            let app = fixture.worker.app.lock().await;
+            let run = app
+                .providers()
+                .get_run(&worker_provider_run_id)
+                .expect("worker provider run remains available after navigation");
+            assert_eq!(
+                run.state(),
+                crate::provider::ProviderRunState::Running,
+                "runtime MCP keepalive must retain the worker provider through navigation"
+            );
+        }
 
         let status = fixture
             .worker

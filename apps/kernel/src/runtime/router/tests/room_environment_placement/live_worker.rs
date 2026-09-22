@@ -77,7 +77,7 @@ impl LiveWorker {
             home_vault_backend,
             managed_slice_worker,
             "environment-worker".to_string(),
-            false,
+            true,
         )
         .await
     }
@@ -181,8 +181,12 @@ impl LiveWorker {
             "desktop-worker".to_string()
         });
         worker_state.config.host_machine_id = "slice:slice-1".to_string();
-        let home_persistence_environment = isolate_home_persistence
-            .then(|| HomePersistenceEnvironment::set("CHARIOX_HOME", home_state.root.as_os_str()));
+        let home_persistence_environment = isolate_home_persistence.then(|| {
+            let ambient_home = home_state.root.join("ambient-home");
+            std::fs::create_dir_all(&ambient_home)
+                .expect("Room environment ambient home should exist");
+            HomePersistenceEnvironment::set("CHARIOX_HOME", ambient_home.as_os_str())
+        });
         let (home, rooms) = home_state.router();
         let home = Arc::new(home);
         if browser_controller {

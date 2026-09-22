@@ -1,5 +1,7 @@
 use super::*;
 use crate::slice::{SliceHostRuntimeState, SliceOperationStatus, SliceStatus};
+use crate::test_support::TestWorktree;
+use fs2::FileExt;
 use serde_json::{json, Value};
 
 mod execution;
@@ -9,6 +11,7 @@ fn run_test<F: std::future::Future<Output = ()> + 'static>(test: fn() -> F) {
     std::thread::Builder::new()
         .stack_size(64 * 1024 * 1024)
         .spawn(move || {
+            let _env_guard = crate::env_lock::lock();
             tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
                 .thread_stack_size(64 * 1024 * 1024)
@@ -25,6 +28,7 @@ fn run_test<F: std::future::Future<Output = ()> + 'static>(test: fn() -> F) {
 struct TestState {
     root: std::path::PathBuf,
     config: DaemonConfig,
+    worktree: TestWorktree,
 }
 
 impl TestState {
@@ -43,7 +47,15 @@ impl TestState {
             Some(root.join("artifacts").display().to_string());
         config.user_config.artifacts.operational.index_path =
             Some(root.join("artifacts.db").display().to_string());
-        Self { root, config }
+        Self {
+            root,
+            config,
+            worktree: TestWorktree::new("room-environment-placement"),
+        }
+    }
+
+    fn session_request(&self) -> CreateSessionRequest {
+        self.worktree.session_request()
     }
 
     fn router(&self) -> (CommandRouter, Vec<String>) {
@@ -51,7 +63,7 @@ impl TestState {
         let rooms = (0..2)
             .map(|_| {
                 crate::app::KernelSessionService::new(&mut app)
-                    .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                    .create_session(self.session_request())
                     .expect("create Room")
                     .0
                     .id()
@@ -82,6 +94,34 @@ async fn dispatch_json(router: &CommandRouter, request: Value) -> Result<Value, 
         .map(|response| serde_json::to_value(response).expect("public response"))
 }
 
+async fn wait_for_durable_owner_release(path: &std::path::Path) {
+    let mut lock_path = path.as_os_str().to_os_string();
+    lock_path.push(".owner.lock");
+    let lock_file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .expect("durable owner lock should exist after first kernel bootstrap");
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match lock_file.try_lock_exclusive() {
+            Ok(()) => {
+                fs2::FileExt::unlock(&lock_file)
+                    .expect("durable owner probe should release its lock");
+                return;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "first kernel durable owner must release before restart"
+                );
+                tokio::task::yield_now().await;
+            }
+            Err(error) => panic!("durable owner probe failed: {error}"),
+        }
+    }
+}
+
 #[test]
 fn room_environment_placement_survives_restart_for_two_separate_rooms() {
     run_test(survives_restart_for_two_separate_rooms);
@@ -95,14 +135,15 @@ async fn survives_restart_for_two_separate_rooms() {
         let rooms: Vec<String> = (0..2)
             .map(|_| {
                 crate::app::KernelSessionService::new(&mut app)
-                    .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                    .create_session(state.session_request())
                     .expect("create Room")
                     .0
                     .id()
                     .to_string()
             })
             .collect();
-        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
         let mut bindings = Vec::new();
         for (index, room) in rooms.iter().enumerate() {
             let name = format!("room-desktop-{index}");
@@ -151,6 +192,22 @@ async fn survives_restart_for_two_separate_rooms() {
             );
             bindings.push(binding);
         }
+        router
+            .shutdown_cleanup()
+            .await
+            .expect("first kernel shutdown cleanup");
+        drop(router);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while Arc::strong_count(&app) > 1 && tokio::time::Instant::now() < deadline {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            Arc::strong_count(&app),
+            1,
+            "all first-kernel runtime lanes must release their app owner before restart"
+        );
+        drop(app);
+        wait_for_durable_owner_release(&config.durable_state_path()).await;
         (rooms, bindings)
     };
     let app = DaemonApp::bootstrap(config).expect("restart kernel from durable state");
