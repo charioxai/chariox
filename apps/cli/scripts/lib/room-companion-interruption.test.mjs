@@ -1,17 +1,17 @@
 import assert from "node:assert/strict"
 import { EventEmitter } from "node:events"
 import { spawn } from "node:child_process"
-import { access, mkdtemp, rm } from "node:fs/promises"
-import os from "node:os"
+import { access, rm } from "node:fs/promises"
 import path from "node:path"
 import test from "node:test"
 
 import { createDrillInterruption } from "./drill-interruption.mjs"
 import { runRoomEnvironmentCompanion } from "./live-room-environment-companion-verifier.mjs"
+import { makePrivateTestDirectory } from "./room-companion-test-fixture.mjs"
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
 test(`${signal} during a waiting Web companion promptly enters protected cleanup`, async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-companion-interruption-"))
+  const root = await makePrivateTestDirectory("chariox-companion-interruption-")
   const signals = new EventEmitter()
   const interruption = createDrillInterruption(signals)
   let failure
@@ -51,7 +51,7 @@ test(`${signal} during a waiting Web companion promptly enters protected cleanup
 })
 
 test(`real waiting companion cleans up on ${signal} without waiting for its deadline`, async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-companion-process-"))
+  const root = await makePrivateTestDirectory("chariox-companion-process-")
   const child = spawn(process.execPath, ["--input-type=module", "-e", `
     import { rm } from "node:fs/promises";
     import { createDrillInterruption } from ${JSON.stringify(new URL("./drill-interruption.mjs", import.meta.url).href)};

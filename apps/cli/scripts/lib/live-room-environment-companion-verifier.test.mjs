@@ -1,21 +1,56 @@
 import assert from "node:assert/strict"
-import { access, mkdtemp, rm, writeFile } from "node:fs/promises"
-import os from "node:os"
+import { access, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 import test from "node:test"
+import { setTimeout as sleep } from "node:timers/promises"
 
 import { runRoomEnvironmentCompanion } from "./live-room-environment-companion-verifier.mjs"
+import { makePrivateTestDirectory } from "./room-companion-test-fixture.mjs"
+
+function startResultWriter(root, writeResult, { timeoutMs = 1_000, pollIntervalMs = 5 } = {}) {
+  const controller = new AbortController()
+  const readyPath = path.join(root, "ready.json")
+  const promise = (async () => {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      try {
+        controller.signal.throwIfAborted()
+        await access(readyPath)
+        controller.signal.throwIfAborted()
+        await writeResult(controller.signal)
+        return
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error
+        await sleep(pollIntervalMs, undefined, { signal: controller.signal })
+      }
+    }
+    throw new Error(`timed out waiting for Room companion readiness at ${readyPath}`)
+  })()
+  promise.catch(() => undefined)
+  return {
+    promise,
+    async cancelAndWait() {
+      controller.abort()
+      await promise.catch(() => undefined)
+    },
+  }
+}
 
 for (const hours of [8, 24]) {
 test(`Room companion accepts a ${hours}-hour soak budget before preparation`, async () => {
   const prepared = new Error("prepared")
-  await assert.rejects(runRoomEnvironmentCompanion({
-    env: {
-      CHARIOX_ROOM_DRILL_COORDINATION_DIR: path.join(os.tmpdir(), "unused-chariox-soak-probe"),
-      CHARIOX_ROOM_DRILL_COMPANION_TIMEOUT_MS: String((hours * 3600 + 600) * 1000),
-    },
-    prepare: () => { throw prepared },
-  }), error => error === prepared)
+  const root = await makePrivateTestDirectory("chariox-room-soak-probe-")
+  try {
+    await assert.rejects(runRoomEnvironmentCompanion({
+      env: {
+        CHARIOX_ROOM_DRILL_COORDINATION_DIR: root,
+        CHARIOX_ROOM_DRILL_COMPANION_TIMEOUT_MS: String((hours * 3600 + 600) * 1000),
+      },
+      prepare: () => { throw prepared },
+    }), error => error === prepared)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
 }
 
@@ -30,7 +65,7 @@ test(`Room companion verifier uses stable TUI baselines, provider scenario=${sce
   let prepared = false
   let preparedAtReady = false
   let tuiRolled = false
-  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-room-companion-verifier-"))
+  const root = await makePrivateTestDirectory("chariox-room-companion-verifier-")
   const localNoticeIds = [1]
   const remoteNoticeIds = [2]
   const action = {
@@ -55,18 +90,9 @@ test(`Room companion verifier uses stable TUI baselines, provider scenario=${sce
   const scrollAction = { ...action, action_id: "action-scroll", kind: "pointer_scroll", sequence: 12 }
   const noticed = { local: [], remote: [] }
   const physical = []
-  const resultWriter = (async () => {
-    const readyPath = path.join(root, "ready.json")
-    while (true) {
-      try {
-        await access(readyPath)
-        break
-      } catch {
-        await new Promise((resolve) => setTimeout(resolve, 5))
-      }
-    }
+  const resultWriter = startResultWriter(root, async (signal) => {
     preparedAtReady = prepared
-    if (scenario === "tui-rollover") await new Promise(resolve => setTimeout(resolve, 40))
+    if (scenario === "tui-rollover") await sleep(40, undefined, { signal })
     tuiRolled = true
     await writeFile(path.join(root, "result.json"), JSON.stringify({
       schema: "chariox.room_environment.companion_result.v1",
@@ -94,7 +120,7 @@ test(`Room companion verifier uses stable TUI baselines, provider scenario=${sce
       client: "production-local-web-view",
       screenshot: path.join(root, "web-room-tui-shared.png"),
     }))
-  })()
+  })
 
   try {
     const verified = await runRoomEnvironmentCompanion({
@@ -182,40 +208,38 @@ test(`Room companion verifier uses stable TUI baselines, provider scenario=${sce
     assert.equal(preparedAtReady, true, "physical fixture must be reset before Web receives its handoff")
     assert.equal(verified.client, "production-local-web-view")
     assert.equal(verified.screenshot, path.join(root, "web-room-tui-shared.png"))
-    await resultWriter
+    await resultWriter.promise
   } finally {
+    await resultWriter.cancelAndWait()
     await rm(root, { recursive: true, force: true })
   }
 })
 }
 
 test("real-provider opt-in rejects a stub-only Web result", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-room-provider-required-"))
-  const writer = (async () => {
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      try { await access(path.join(root, "ready.json")); break } catch { await new Promise((resolve) => setTimeout(resolve, 5)) }
-    }
+  const root = await makePrivateTestDirectory("chariox-room-provider-required-")
+  const writer = startResultWriter(root, async () => {
     await writeFile(path.join(root, "result.json"), JSON.stringify({
       schema: "chariox.room_environment.companion_result.v1", status: "passed",
       sessionId: "session-1", environmentId: "environment-1", actionId: "web", actorId: "user:local",
       client: "production-local-web-view", physicalEffect: "POINTER_CLICK_COUNT=1", screenshot: path.join(root, "web.png"),
     }))
-  })()
+  })
   try {
     await assert.rejects(runRoomEnvironmentCompanion({
       env: { CHARIOX_ROOM_DRILL_COORDINATION_DIR: root, CHARIOX_ROOM_DRILL_COMPANION_TIMEOUT_MS: "1000" },
       ready: { sessionId: "session-1", environmentId: "environment-1", realProvider: { provider: "codex", model: "gpt-5.4" } },
     }), /provider-agent metadata/)
-    await writer
-  } finally { await rm(root, { recursive: true, force: true }) }
+    await writer.promise
+  } finally {
+    await writer.cancelAndWait()
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test("real-provider opt-in rejects provider-agent identity mismatches", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-room-provider-mismatch-"))
-  const writer = (async () => {
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      try { await access(path.join(root, "ready.json")); break } catch { await new Promise((resolve) => setTimeout(resolve, 5)) }
-    }
+  const root = await makePrivateTestDirectory("chariox-room-provider-mismatch-")
+  const writer = startResultWriter(root, async () => {
     await writeFile(path.join(root, "result.json"), JSON.stringify({
       schema: "chariox.room_environment.companion_result.v1", status: "passed",
       sessionId: "session-1", environmentId: "environment-1", actionId: "web", actorId: "user:local",
@@ -227,7 +251,7 @@ test("real-provider opt-in rejects provider-agent identity mismatches", async ()
         actionId: "provider", webObserved: true, screenshot: path.join(root, "provider.png"),
       },
     }))
-  })()
+  })
   try {
     await assert.rejects(runRoomEnvironmentCompanion({
       env: { CHARIOX_ROOM_DRILL_COORDINATION_DIR: root, CHARIOX_ROOM_DRILL_COMPANION_TIMEOUT_MS: "1000" },
@@ -241,22 +265,16 @@ test("real-provider opt-in rejects provider-agent identity mismatches", async ()
         },
       },
     }), /provider mismatch/)
-    await writer
-  } finally { await rm(root, { recursive: true, force: true }) }
+    await writer.promise
+  } finally {
+    await writer.cancelAndWait()
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test("Room companion verifier rejects incomplete evidence metadata", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-room-companion-verifier-"))
-  const resultWriter = (async () => {
-    const readyPath = path.join(root, "ready.json")
-    while (true) {
-      try {
-        await access(readyPath)
-        break
-      } catch {
-        await new Promise((resolve) => setTimeout(resolve, 5))
-      }
-    }
+  const root = await makePrivateTestDirectory("chariox-room-companion-verifier-")
+  const resultWriter = startResultWriter(root, async () => {
     await writeFile(path.join(root, "result.json"), JSON.stringify({
       schema: "chariox.room_environment.companion_result.v1",
       status: "passed",
@@ -266,7 +284,7 @@ test("Room companion verifier rejects incomplete evidence metadata", async () =>
       actorId: "user:local",
       physicalEffect: "POINTER_CLICK_COUNT=2",
     }))
-  })()
+  })
 
   try {
     await assert.rejects(runRoomEnvironmentCompanion({
@@ -281,8 +299,9 @@ test("Room companion verifier rejects incomplete evidence metadata", async () =>
       },
       waitForPhysicalEffect: async () => undefined,
     }), /companion client/i)
-    await resultWriter
+    await resultWriter.promise
   } finally {
+    await resultWriter.cancelAndWait()
     await rm(root, { recursive: true, force: true })
   }
 })
