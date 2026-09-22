@@ -894,6 +894,10 @@ mod task_notification_tests {
 }
 
 #[cfg(test)]
+#[path = "metaagent_task_durability_tests.rs"]
+mod durability_tests;
+
+#[cfg(test)]
 mod tests {
     use super::parse_meta_slash_command;
 
