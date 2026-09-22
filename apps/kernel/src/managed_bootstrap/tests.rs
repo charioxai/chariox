@@ -11,8 +11,9 @@ use sha2::{Digest, Sha256};
 
 use super::cloud::{
     BootstrapCloudClient, ConfirmRequest, ConfirmResponse, ExchangeRequest, ExchangeResponse,
-    ManagedCloudRelayProfile,
+    ManagedCloudRelayProfile, RuntimeIdentityReportResponse,
 };
+use super::freshness::ManagedKernelRuntimeIdentityReport;
 use super::prepare_managed_kernel;
 use super::release::verify_release;
 use super::state::{BootstrapConfig, BootstrapReceipt, BootstrapReceiptStatus};
@@ -100,6 +101,19 @@ impl BootstrapCloudClient for FakeCloud {
             confirmed: true,
             observed_state: "awaiting_context".to_string(),
             managed_repository_root: self.exchange_response.managed_repository_root.clone(),
+        })
+    }
+
+    fn report_runtime_identity(
+        &self,
+        _api_url: &str,
+        request: &ManagedKernelRuntimeIdentityReport,
+    ) -> Result<RuntimeIdentityReportResponse, DaemonError> {
+        Ok(RuntimeIdentityReportResponse {
+            accepted: true,
+            environment_id: request.environment_id.clone(),
+            generation: request.generation,
+            observed_at: request.observed_at.clone(),
         })
     }
 }

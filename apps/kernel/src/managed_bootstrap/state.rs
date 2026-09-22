@@ -12,6 +12,9 @@ use crate::error::DaemonError;
 
 use super::cloud::{DisposableWorkerEnrollmentReceipt, ManagedCloudRelayProfile};
 use super::context_plan::ManagedKernelContextPlan;
+use super::freshness::{
+    valid_provider_rebuild_action_id, validate_freshness_evidence, ManagedKernelFreshnessEvidence,
+};
 
 const MAX_STATE_BYTES: u64 = 96 * 1024;
 pub(super) const DEFAULT_MANAGED_REPOSITORY_ROOT: &str = "/home/chariox";
@@ -48,6 +51,8 @@ pub(super) struct ManagedBootstrapEnvelope {
     pub(super) runtime_release_digest: String,
     #[serde(default)]
     pub(super) managed_repository_root: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) provider_rebuild_action_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,6 +105,10 @@ pub(super) struct BootstrapReceipt {
     pub(super) confirmed_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) context_plan: Option<ManagedKernelContextPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) provider_rebuild_action_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) freshness_evidence: Option<ManagedKernelFreshnessEvidence>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -261,6 +270,10 @@ impl ManagedBootstrapEnvelope {
                 self.managed_repository_root.as_deref(),
             )
             .is_err()
+            || self
+                .provider_rebuild_action_id
+                .as_deref()
+                .is_some_and(|value| !valid_provider_rebuild_action_id(value))
         {
             return Err(state_error("managed bootstrap envelope is invalid"));
         }
@@ -362,6 +375,14 @@ impl BootstrapReceipt {
                 .context_plan
                 .as_ref()
                 .is_some_and(|plan| plan.validate().is_err())
+            || self
+                .provider_rebuild_action_id
+                .as_deref()
+                .is_some_and(|value| !valid_provider_rebuild_action_id(value))
+            || self.freshness_evidence.as_ref().is_some_and(|evidence| {
+                self.provider_rebuild_action_id.is_none()
+                    || validate_freshness_evidence(evidence, &self.runtime_release_digest).is_err()
+            })
             || !confirmation_is_valid
         {
             return Err(state_error("managed bootstrap receipt is invalid"));

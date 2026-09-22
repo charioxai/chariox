@@ -13,7 +13,15 @@ const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 const MAX_KEY_BYTES: u64 = 1024;
 const MAX_SIGNATURE_BYTES: u64 = 1024;
 const MAX_ATTESTATION_BYTES: u64 = 16 * 1024;
+const MAX_SERVICE_UNIT_BYTES: u64 = 32 * 1024;
 const MANAGED_BOOTSTRAP_PATH: &str = "/usr/local/bin/chariox-managed-bootstrap";
+const MANAGED_BOOTSTRAP_SERVICE_PATH: &str =
+    "/etc/systemd/system/chariox-managed-bootstrap.service";
+const RETIRED_SERVICE_NAMES: &[&str] = &[
+    "chariox-disposable-worker-bootstrap.service",
+    "chariox-kernel.service",
+    "chariox-relay.service",
+];
 const BUILD_ATTESTATION_PATH: &str = "/usr/lib/chariox/build-attestation.json";
 const BUILD_ATTESTATION_SIGNATURE_PATH: &str = "/usr/lib/chariox/build-attestation.sig";
 const BUILDER_PUBLIC_KEY_PATH: &str = "/usr/lib/chariox/builder-public-key";
@@ -285,6 +293,78 @@ pub(super) fn verify_release_evidence(
         manifest_digest_verified: true,
         kernel_artifact_verified: true,
     })
+}
+
+pub(super) fn verify_managed_bootstrap_service_binding(
+    release: &VerifiedReleaseEvidence,
+    service_unit_path: &Path,
+    service_wants_path: &Path,
+) -> Result<(), DaemonError> {
+    let manifest_path = release
+        .active_release_path
+        .join("usr/lib/chariox/release-manifest.json");
+    let manifest_bytes =
+        read_bounded_regular_file(&manifest_path, MAX_MANIFEST_BYTES, "release manifest")?;
+    let manifest: ReleaseManifest = serde_json::from_slice(&manifest_bytes)
+        .map_err(|_| release_error("release manifest is invalid"))?;
+    let service = read_pinned_release_artifact(
+        &manifest,
+        "chariox-managed-bootstrap.service",
+        MANAGED_BOOTSTRAP_SERVICE_PATH,
+        &release.active_release_path,
+    )?;
+    let service_bytes = read_bounded_regular_file(
+        &service,
+        MAX_SERVICE_UNIT_BYTES,
+        "managed bootstrap service",
+    )?;
+    let service_text = std::str::from_utf8(&service_bytes)
+        .map_err(|_| release_error("managed bootstrap service is not UTF-8"))?;
+    if !service_text
+        .lines()
+        .any(|line| line.trim() == "ExecStart=/usr/local/bin/chariox-managed-bootstrap")
+        || service_text.lines().any(|line| {
+            line.trim() == "ExecStart=/usr/local/bin/chariox-managed-bootstrap --disposable-worker"
+        })
+    {
+        return Err(release_error(
+            "managed bootstrap service is not bound to the managed bootstrap binary",
+        ));
+    }
+    require_release_symlink(service_unit_path, &service)?;
+    require_release_symlink(service_wants_path, &service)?;
+    let service_dir = service_unit_path
+        .parent()
+        .ok_or_else(|| release_error("managed bootstrap service path has no directory"))?;
+    let wants_dir = service_wants_path
+        .parent()
+        .ok_or_else(|| release_error("managed bootstrap wants path has no directory"))?;
+    for name in RETIRED_SERVICE_NAMES {
+        for path in [service_dir.join(name), wants_dir.join(name)] {
+            if fs::symlink_metadata(&path).is_ok() {
+                return Err(release_error("retired Chariox service residue is present"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn require_release_symlink(path: &Path, expected: &Path) -> Result<(), DaemonError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| release_io_error("managed bootstrap service binding", error))?;
+    if !metadata.file_type().is_symlink() {
+        return Err(release_error(
+            "managed bootstrap service binding is not a release symlink",
+        ));
+    }
+    let actual = fs::canonicalize(path)
+        .map_err(|error| release_io_error("managed bootstrap service binding", error))?;
+    if actual != expected {
+        return Err(release_error(
+            "managed bootstrap service is not bound to the active release",
+        ));
+    }
+    Ok(())
 }
 
 struct ResolvedReleasePaths {

@@ -724,6 +724,8 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             managed_repository_root: Some("/srv/managed workspaces".to_string()),
             confirmed_at: Some("2026-09-20T20:00:00Z".to_string()),
             context_plan: None,
+            provider_rebuild_action_id: None,
+            freshness_evidence: None,
         }
         .persist(&config.receipt_path)
         .expect("managed receipt should persist");

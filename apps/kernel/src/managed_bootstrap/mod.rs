@@ -1,5 +1,6 @@
 mod cloud;
 mod context_plan;
+mod freshness;
 mod release;
 mod state;
 mod supervisor;
@@ -22,6 +23,11 @@ use cloud::{
     ManagedCloudRelayProfile,
 };
 pub use context_plan::ManagedKernelContextPlan;
+use freshness::{
+    capture_freshness_evidence, capture_old_generation_runtime_identity_report,
+    validate_freshness_evidence, ManagedKernelFreshnessEvidence,
+    ManagedKernelRuntimeIdentityReport,
+};
 use release::{verify_release, verify_release_evidence, VerifiedRelease};
 use state::{
     default_managed_bootstrap_receipt_path, remove_envelope, valid_identifier, valid_secret,
@@ -313,15 +319,20 @@ fn prepare_managed_kernel(
                 if value.environment_id != receipt.environment_id
                     || value.runtime_release_digest != receipt.runtime_release_digest
                     || envelope_repository_root != receipt_repository_root
+                    || value.provider_rebuild_action_id.is_some()
+                        && receipt.provider_rebuild_action_id.as_deref()
+                            != value.provider_rebuild_action_id.as_deref()
                 {
                     return Err(bootstrap_error(
                         "managed bootstrap envelope conflicts with its receipt",
                     ));
                 }
             }
-            resume_registration(config, envelope.as_ref(), receipt, &identity)?
+            resume_registration(config, envelope.as_ref(), receipt, &identity, &release)?
         }
-        (None, Some(envelope)) => begin_registration(config, cloud, now, &envelope, &identity)?,
+        (None, Some(envelope)) => {
+            begin_registration(config, cloud, now, &envelope, &identity, &release)?
+        }
         (None, None) => {
             return Err(bootstrap_error(
                 "managed bootstrap envelope and receipt are both missing",
@@ -344,12 +355,14 @@ fn begin_registration(
     now: DateTime<Utc>,
     envelope: &ManagedBootstrapEnvelope,
     identity: &ManagedRuntimeIdentity,
+    release: &VerifiedRelease,
 ) -> Result<Option<PendingConfirmation>, DaemonError> {
     if envelope.expires_at()? <= now {
         return Err(bootstrap_error(
             "managed bootstrap token expired before exchange",
         ));
     }
+    let freshness_evidence = capture_rebuild_freshness_evidence(config, release, envelope)?;
     let exchanged = cloud.exchange(
         &normalized_api_url(&envelope.cloud_api_url),
         &ExchangeRequest {
@@ -376,6 +389,8 @@ fn begin_registration(
         managed_repository_root: (envelope.schema_version == 2).then_some(managed_repository_root),
         confirmed_at: None,
         context_plan: Some(exchanged.context_plan),
+        provider_rebuild_action_id: envelope.provider_rebuild_action_id.clone(),
+        freshness_evidence,
     };
     receipt.persist(&config.receipt_path)?;
     Ok(Some(PendingConfirmation {
@@ -390,11 +405,13 @@ fn resume_registration(
     envelope: Option<&ManagedBootstrapEnvelope>,
     receipt: BootstrapReceipt,
     identity: &ManagedRuntimeIdentity,
+    release: &VerifiedRelease,
 ) -> Result<Option<PendingConfirmation>, DaemonError> {
     validate_receipt_identity(&receipt, identity)?;
     let profile = load_managed_cloud_relay_profile()
         .ok_or_else(|| bootstrap_error("managed Cloud profile is missing after exchange"))?;
     validate_profile(&profile, &receipt)?;
+    let receipt = ensure_rebuild_freshness_evidence(config, envelope, receipt, release)?;
     match receipt.status {
         BootstrapReceiptStatus::Confirmed => {
             if config.envelope_path.exists() {
@@ -441,6 +458,38 @@ fn confirm_registration(
     mut receipt: BootstrapReceipt,
     profile: &PersistedCloudRelayProfile,
 ) -> Result<(), DaemonError> {
+    let freshness_evidence = match receipt.provider_rebuild_action_id.as_deref() {
+        Some(_action_id) => {
+            let evidence = receipt
+                .freshness_evidence
+                .as_ref()
+                .ok_or_else(|| bootstrap_error("managed reimage freshness evidence is missing"))?;
+            validate_freshness_evidence(evidence, &receipt.runtime_release_digest)?;
+            let verified = verify_release_evidence(
+                &config.manifest_path,
+                &config.signature_path,
+                &config.public_key_path,
+                &receipt.runtime_release_digest,
+                &config.kernel_binary,
+            )?;
+            if evidence.runtime_source_commit != verified.source_commit
+                || evidence.runtime_source_tree != verified.source_tree
+            {
+                return Err(bootstrap_error(
+                    "managed reimage source identity does not match the signed release",
+                ));
+            }
+            Some(evidence.clone())
+        }
+        None => {
+            if receipt.freshness_evidence.is_some() {
+                return Err(bootstrap_error(
+                    "managed freshness evidence has no rebuild action binding",
+                ));
+            }
+            None
+        }
+    };
     let confirmed = cloud.confirm(
         &normalized_api_url(&envelope.cloud_api_url),
         &ConfirmRequest {
@@ -451,6 +500,7 @@ fn confirm_registration(
                 .machine_credential
                 .clone()
                 .ok_or_else(|| bootstrap_error("managed machine credential is missing"))?,
+            freshness_evidence,
         },
     )?;
     if !confirmed.confirmed || confirmed.observed_state != "awaiting_context" {
@@ -469,8 +519,136 @@ fn confirm_registration(
     }
     receipt.status = BootstrapReceiptStatus::Confirmed;
     receipt.confirmed_at = Some(now.to_rfc3339());
+    receipt.provider_rebuild_action_id = None;
+    receipt.freshness_evidence = None;
     receipt.persist(&config.receipt_path)?;
     remove_envelope(&config.envelope_path)
+}
+
+pub(super) fn report_pre_reimage_runtime_identity(
+    config: &BootstrapConfig,
+    cloud: &impl BootstrapCloudClient,
+    api_url: &str,
+    environment_id: &str,
+    machine_id: &str,
+    kernel_id: &str,
+    generation: u64,
+    profile: &PersistedCloudRelayProfile,
+    release: &VerifiedRelease,
+    observed_at: DateTime<Utc>,
+) -> Result<ManagedKernelRuntimeIdentityReport, DaemonError> {
+    if profile.machine_id.as_deref() != Some(machine_id) {
+        return Err(bootstrap_error(
+            "managed pre-reimage report machine identity does not match the current Cloud profile",
+        ));
+    }
+    let machine_credential = profile
+        .machine_credential
+        .as_deref()
+        .ok_or_else(|| bootstrap_error("managed machine credential is missing"))?;
+    let verified = verify_release_evidence(
+        &config.manifest_path,
+        &config.signature_path,
+        &config.public_key_path,
+        &release.digest,
+        &config.kernel_binary,
+    )?;
+    let report = capture_old_generation_runtime_identity_report(
+        environment_id,
+        machine_id,
+        kernel_id,
+        generation,
+        machine_credential,
+        &verified,
+        observed_at,
+    )?;
+    let response = cloud.report_runtime_identity(&normalized_api_url(api_url), &report)?;
+    if !response.accepted
+        || response.environment_id != report.environment_id
+        || response.generation != report.generation
+        || response.observed_at != report.observed_at
+    {
+        return Err(bootstrap_error(
+            "Cloud did not accept the managed pre-reimage runtime identity",
+        ));
+    }
+    Ok(report)
+}
+
+fn capture_rebuild_freshness_evidence(
+    config: &BootstrapConfig,
+    release: &VerifiedRelease,
+    envelope: &ManagedBootstrapEnvelope,
+) -> Result<Option<ManagedKernelFreshnessEvidence>, DaemonError> {
+    let Some(_action_id) = envelope.provider_rebuild_action_id.as_deref() else {
+        return Ok(None);
+    };
+    let verified = verify_release_evidence(
+        &config.manifest_path,
+        &config.signature_path,
+        &config.public_key_path,
+        &release.digest,
+        &config.kernel_binary,
+    )?;
+    Ok(Some(capture_freshness_evidence(config, &verified)?))
+}
+
+fn ensure_rebuild_freshness_evidence(
+    config: &BootstrapConfig,
+    envelope: Option<&ManagedBootstrapEnvelope>,
+    mut receipt: BootstrapReceipt,
+    release: &VerifiedRelease,
+) -> Result<BootstrapReceipt, DaemonError> {
+    let envelope_action_id = envelope.and_then(|value| value.provider_rebuild_action_id.as_deref());
+    if envelope_action_id.is_some()
+        && receipt
+            .provider_rebuild_action_id
+            .as_deref()
+            .is_some_and(|value| Some(value) != envelope_action_id)
+    {
+        return Err(bootstrap_error(
+            "managed rebuild action ID conflicts with its receipt",
+        ));
+    }
+    let action_id = envelope_action_id.or(receipt.provider_rebuild_action_id.as_deref());
+    let Some(action_id) = action_id else {
+        if receipt.freshness_evidence.is_some() {
+            return Err(bootstrap_error(
+                "managed freshness evidence is not bound to a rebuild operation",
+            ));
+        }
+        return Ok(receipt);
+    };
+    receipt.provider_rebuild_action_id = Some(action_id.to_string());
+    let verified = verify_release_evidence(
+        &config.manifest_path,
+        &config.signature_path,
+        &config.public_key_path,
+        &release.digest,
+        &config.kernel_binary,
+    )?;
+    if receipt.status == BootstrapReceiptStatus::Confirmed {
+        let evidence = receipt.freshness_evidence.as_ref().ok_or_else(|| {
+            bootstrap_error("managed confirmed reimage freshness evidence is missing")
+        })?;
+        validate_freshness_evidence(evidence, &verified.digest)?;
+        if evidence.runtime_source_commit != verified.source_commit
+            || evidence.runtime_source_tree != verified.source_tree
+        {
+            return Err(bootstrap_error(
+                "managed confirmed reimage source identity does not match the signed release",
+            ));
+        }
+        return Ok(receipt);
+    }
+    if envelope_action_id.is_none() {
+        return Err(bootstrap_error(
+            "managed reimage confirmation envelope is missing",
+        ));
+    }
+    receipt.freshness_evidence = Some(capture_freshness_evidence(config, &verified)?);
+    receipt.persist(&config.receipt_path)?;
+    Ok(receipt)
 }
 
 fn validate_exchange_response(
