@@ -1,6 +1,10 @@
 //! Runtime request handlers for workflow run invoke, cancel, and resume operations.
 
 use super::workflow_request_runtime_state::workflow_response_session;
+#[cfg(test)]
+#[path = "workflow_interrupt_durability_tests.rs"]
+mod workflow_interrupt_durability_tests;
+
 use super::*;
 
 impl KernelRuntimeState {

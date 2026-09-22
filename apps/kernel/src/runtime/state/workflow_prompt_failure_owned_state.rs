@@ -176,6 +176,18 @@ mod tests {
         }
     }
 
+    struct WorkflowFailureFixture {
+        runtime: KernelRuntimeState,
+        session_id: String,
+        host_daemon_id: String,
+        attachment_id: String,
+        workflow_run_id: String,
+        workflow_node_run_id: String,
+        prompt: PromptQueueItem,
+        claim_id: String,
+        _worktree: TestWorktree,
+    }
+
     async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
         let (
             config_projection,
@@ -246,6 +258,386 @@ mod tests {
             metaagent_events,
             workspace_coordinator,
         )
+    }
+
+    async fn running_workflow_fixture(label: &str) -> WorkflowFailureFixture {
+        let worktree = TestWorktree(std::env::temp_dir().join(format!(
+            "chariox-workflow-{label}-{}-{:032x}",
+            std::process::id(),
+            rand::random::<u128>()
+        )));
+        std::fs::create_dir_all(&worktree.0).expect("workflow test worktree should exist");
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                format!("workspace-{label}"),
+                worktree.0.to_string_lossy(),
+            ))
+            .expect("session should create");
+        let attachment = KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                format!("client-{label}"),
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("test client should attach");
+        let workflow = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some(format!("workflow-{label}")))
+            .expect("workflow should create");
+        let node = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), workflow.id(), agent.id())
+            .expect("node should create");
+        let endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                node.id(),
+                Some("entry".to_string()),
+            )
+            .expect("endpoint should create");
+        let workflow_run = app
+            .sessions_mut()
+            .invoke_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some(format!("run {label}")),
+            )
+            .expect("workflow run should create");
+        let workflow_node_run_id = workflow_run.node_runs()[0].id().to_string();
+        app.sessions_mut()
+            .prepare_workflow_turn(
+                session.id(),
+                workflow_run.id(),
+                &workflow_node_run_id,
+                format!("workflow-ack:{workflow_node_run_id}"),
+                format!("run {label}"),
+                None,
+                None,
+            )
+            .expect("workflow turn should prepare");
+        app.sessions_mut()
+            .start_workflow_node_run(
+                session.id(),
+                workflow_run.id(),
+                &workflow_node_run_id,
+            )
+            .expect("workflow node should start");
+        let prompt = PromptQueueItem::new(
+            format!("prompt-{label}"),
+            attachment.id(),
+            agent.id(),
+            format!("run {label}"),
+            PromptStatus::Running,
+        )
+        .with_workflow_context(workflow_run.id(), &workflow_node_run_id);
+        let session_id = session.id().to_string();
+        let host_daemon_id = session.host_daemon_id().to_string();
+        let agent_id = agent.id().to_string();
+        let attachment_id = attachment.id().to_string();
+        let workflow_run_id = workflow_run.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let claim_id = runtime.owned.workflow_dispatch_claim_id(
+            &session_id,
+            &workflow_run_id,
+            &workflow_node_run_id,
+        );
+        runtime
+            .owned
+            .acquire_workflow_node_workspace_claim(
+                &session_id,
+                &claim_id,
+                &agent_id,
+                &workflow_run_id,
+                &workflow_node_run_id,
+            )
+            .expect("workflow node should own its workspace claim");
+        runtime
+            .ensure_managed_activity_tracking(&format!("kernel-{label}"))
+            .expect("managed activity tracking should activate");
+        runtime
+            .owned
+            .session_snapshot(&session_id)
+            .expect("running workflow should publish a baseline projection");
+        WorkflowFailureFixture {
+            runtime,
+            session_id,
+            host_daemon_id,
+            attachment_id,
+            workflow_run_id,
+            workflow_node_run_id,
+            prompt,
+            claim_id,
+            _worktree: worktree,
+        }
+    }
+
+    fn install_workflow_append_failure(
+        fixture: &WorkflowFailureFixture,
+        reason: &str,
+    ) -> rusqlite::Connection {
+        let connection = rusqlite::Connection::open(
+            fixture.runtime.owned.durable_state_store.path(),
+        )
+        .expect("durable database should open for failure injection");
+        connection
+            .execute_batch(&format!(
+                "CREATE TRIGGER fail_workflow_prompt_failure_append
+                 BEFORE INSERT ON durable_state_events
+                 WHEN NEW.kind = 'workflow.runtime.updated'
+                   AND json_extract(NEW.payload_json, '$.reason') = '{reason}'
+                 BEGIN
+                   SELECT RAISE(FAIL, 'injected workflow prompt failure append');
+                 END;"
+            ))
+            .expect("workflow prompt failure trigger should install");
+        connection
+    }
+
+    fn assert_failed_transition_remains_retryable(
+        fixture: &WorkflowFailureFixture,
+        projection_sequence: u64,
+        activity_sequence: u64,
+        notice_count: usize,
+    ) {
+        let session = fixture
+            .runtime
+            .owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .expect("session should remain available");
+        let workflow_run = session
+            .workflow_run(&fixture.workflow_run_id)
+            .expect("failed append must retain the workflow run");
+        assert_eq!(workflow_run.status(), crate::session::WorkflowRunStatus::Running);
+        assert_eq!(
+            workflow_run
+                .node_runs()
+                .iter()
+                .find(|node| node.id() == fixture.workflow_node_run_id.as_str())
+                .expect("workflow node should remain available")
+                .status(),
+            crate::session::WorkflowNodeRunStatus::Running
+        );
+        assert!(workflow_run.failure_events().is_empty());
+        assert!(fixture
+            .runtime
+            .owned
+            .prompt_workspace_claims
+            .contains(&fixture.claim_id));
+        assert_eq!(
+            fixture.runtime.owned.session_projection.change_sequence(),
+            projection_sequence,
+            "a rejected workflow transition must not publish a terminal projection"
+        );
+        assert_eq!(
+            fixture
+                .runtime
+                .owned
+                .session_projection
+                .get(&fixture.session_id)
+                .expect("baseline projection should remain available")
+                .workflow_run(&fixture.workflow_run_id)
+                .expect("projected workflow should remain active")
+                .status(),
+            crate::session::WorkflowRunStatus::Running
+        );
+        assert_eq!(
+            fixture.runtime.managed_activity_change_sequence(),
+            activity_sequence,
+            "a rejected workflow transition must not publish activity"
+        );
+        assert_eq!(
+            fixture.runtime.owned.terminal_stream.notice_records().len(),
+            notice_count,
+            "a rejected workflow transition must not emit its failure notice"
+        );
+        let later_projection = fixture
+            .runtime
+            .owned
+            .session_snapshot(&fixture.session_id)
+            .expect("a later session projection should succeed");
+        assert_eq!(
+            later_projection
+                .workflow_run(&fixture.workflow_run_id)
+                .expect("later projection should retain the workflow run")
+                .status(),
+            crate::session::WorkflowRunStatus::Running,
+            "a later snapshot must not leak the rejected terminal transition"
+        );
+        assert_eq!(
+            fixture.runtime.owned.session_projection.change_sequence(),
+            projection_sequence
+        );
+    }
+
+    fn committed_workflow_event_count(fixture: &WorkflowFailureFixture, reason: &str) -> usize {
+        fixture
+            .runtime
+            .owned
+            .durable_state_store
+            .load_events_by_kind("workflow.runtime.updated")
+            .expect("workflow events should load")
+            .into_iter()
+            .filter(|event| event.payload["reason"] == reason)
+            .count()
+    }
+
+    #[tokio::test]
+    async fn workflow_cancellation_append_failure_retains_run_claim_and_notice_for_retry() {
+        let fixture = running_workflow_fixture("cancel-append-retry").await;
+        let projection_sequence = fixture.runtime.owned.session_projection.change_sequence();
+        let activity_sequence = fixture.runtime.managed_activity_change_sequence();
+        let notice_count = fixture.runtime.owned.terminal_stream.notice_records().len();
+        let connection = install_workflow_append_failure(&fixture, "workflow_prompt_cancelled");
+
+        let error = fixture
+            .runtime
+            .owned
+            .workflow_cancel_prompt(&fixture.session_id, &fixture.prompt)
+            .expect_err("failed append must reject workflow cancellation");
+        assert!(
+            error
+                .to_string()
+                .contains("injected workflow prompt failure append"),
+            "{error}"
+        );
+        assert_failed_transition_remains_retryable(
+            &fixture,
+            projection_sequence,
+            activity_sequence,
+            notice_count,
+        );
+        assert!(fixture
+            .runtime
+            .owned
+            .terminal_stream
+            .drain_workflow_run_updates(&fixture.session_id, &fixture.attachment_id)
+            .is_empty());
+        assert_eq!(
+            committed_workflow_event_count(&fixture, "workflow_prompt_cancelled"),
+            0
+        );
+
+        connection
+            .execute_batch("DROP TRIGGER fail_workflow_prompt_failure_append;")
+            .expect("failure trigger should clear");
+        fixture
+            .runtime
+            .owned
+            .workflow_cancel_prompt(&fixture.session_id, &fixture.prompt)
+            .expect("retained cancellation should retry after storage recovery");
+        assert!(!fixture
+            .runtime
+            .owned
+            .prompt_workspace_claims
+            .contains(&fixture.claim_id));
+        assert_eq!(
+            fixture.runtime.owned.terminal_stream.notice_records().len(),
+            notice_count + 1
+        );
+        assert_eq!(
+            committed_workflow_event_count(&fixture, "workflow_prompt_cancelled"),
+            1
+        );
+        let durable_run = fixture
+            .runtime
+            .owned
+            .durable_state_store
+            .resolve_workflow_run(
+                &fixture.host_daemon_id,
+                &fixture.session_id,
+                &fixture.workflow_run_id,
+            )
+            .expect("durable workflow run should load")
+            .expect("durable workflow run should exist");
+        assert_eq!(durable_run.status(), crate::session::WorkflowRunStatus::Stopped);
+    }
+
+    #[tokio::test]
+    async fn workflow_provider_failure_append_failure_retains_run_claim_and_notice_for_retry() {
+        let fixture = running_workflow_fixture("provider-failure-append-retry").await;
+        let projection_sequence = fixture.runtime.owned.session_projection.change_sequence();
+        let activity_sequence = fixture.runtime.managed_activity_change_sequence();
+        let notice_count = fixture.runtime.owned.terminal_stream.notice_records().len();
+        let connection =
+            install_workflow_append_failure(&fixture, "workflow_provider_prompt_failed");
+
+        let error = fixture
+            .runtime
+            .owned
+            .workflow_fail_provider_prompt_without_queue_advance(
+                &fixture.session_id,
+                &fixture.prompt,
+                None,
+                "provider unavailable",
+            )
+            .expect_err("failed append must reject workflow provider failure");
+        assert!(
+            error
+                .to_string()
+                .contains("injected workflow prompt failure append"),
+            "{error}"
+        );
+        assert_failed_transition_remains_retryable(
+            &fixture,
+            projection_sequence,
+            activity_sequence,
+            notice_count,
+        );
+        assert!(fixture
+            .runtime
+            .owned
+            .terminal_stream
+            .drain_workflow_run_updates(&fixture.session_id, &fixture.attachment_id)
+            .is_empty());
+        assert_eq!(
+            committed_workflow_event_count(&fixture, "workflow_provider_prompt_failed"),
+            0
+        );
+
+        connection
+            .execute_batch("DROP TRIGGER fail_workflow_prompt_failure_append;")
+            .expect("failure trigger should clear");
+        assert!(fixture
+            .runtime
+            .owned
+            .workflow_fail_provider_prompt_without_queue_advance(
+                &fixture.session_id,
+                &fixture.prompt,
+                None,
+                "provider unavailable",
+            )
+            .expect("retained provider failure should retry after storage recovery"));
+        assert!(!fixture
+            .runtime
+            .owned
+            .prompt_workspace_claims
+            .contains(&fixture.claim_id));
+        assert_eq!(
+            fixture.runtime.owned.terminal_stream.notice_records().len(),
+            notice_count + 1
+        );
+        assert_eq!(
+            committed_workflow_event_count(&fixture, "workflow_provider_prompt_failed"),
+            1
+        );
+        let durable_run = fixture
+            .runtime
+            .owned
+            .durable_state_store
+            .resolve_workflow_run(
+                &fixture.host_daemon_id,
+                &fixture.session_id,
+                &fixture.workflow_run_id,
+            )
+            .expect("durable workflow run should load")
+            .expect("durable workflow run should exist");
+        assert_eq!(durable_run.status(), crate::session::WorkflowRunStatus::Failed);
     }
 
     #[tokio::test]
