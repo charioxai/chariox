@@ -191,10 +191,21 @@ Run the real-Chrome controller request tests before the live provider drill:
 PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs pnpm run test:browser-controller-browser
 ```
 
+Omit `CHARIOX_TEST_CHROMIUM` to keep the default Playwright
+`channel: "chrome"` launch. When that channel is unavailable, set the opt-in
+override to an already-installed absolute executable:
+
+```sh
+PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs \
+CHARIOX_TEST_CHROMIUM=/absolute/path/to/chromium \
+pnpm run test:browser-controller-browser
+```
+
 This uses the normal controller request dispatcher and persistent CDP client,
 not a mocked browser connection. Each case creates and removes its own temporary
 Chrome profile outside the repository, closes the controller and browser, and
-requires an already-installed Chrome. It tests replacement of a field in the
+requires an already-installed Chrome or explicitly selected Chromium executable.
+It tests replacement of a field in the
 top page, two nested frames and an open shadow root; top-page navigation; and
 child-frame navigation with an unchanged top document. Loopback HTTP fixtures
 also exercise cross-site frames in a verified isolated renderer target and
