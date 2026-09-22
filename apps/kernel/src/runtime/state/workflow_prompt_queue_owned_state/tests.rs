@@ -276,6 +276,388 @@ fn scheduled_watchdog_append_failure_rolls_back_before_snapshot_and_retries_once
     assert_eq!(durable_watchdog.last_status(), Some("queued_running"));
 }
 
+#[test]
+fn requested_queue_promotion_append_failure_rolls_back_and_retries_once() {
+    assert_workflow_queue_promotion_append_failure_is_retryable(true);
+}
+
+#[test]
+fn automatic_queue_promotion_append_failure_rolls_back_and_retries_once() {
+    assert_workflow_queue_promotion_append_failure_is_retryable(false);
+}
+
+fn assert_workflow_queue_promotion_append_failure_is_retryable(requested: bool) {
+    let (runtime, session_id, workflow_id, endpoint_id, _test_root) = runtime_with_idle_workflow();
+    let held_queue = runtime
+        .owned
+        .session_store
+        .write()
+        .create_workflow_prompt_queue(
+            &session_id,
+            &workflow_id,
+            "held".to_string(),
+            -10,
+        )
+        .expect("held queue should create");
+    runtime
+        .owned
+        .session_store
+        .write()
+        .update_workflow_prompt_queue(
+            &session_id,
+            &workflow_id,
+            held_queue.id(),
+            None,
+            None,
+            Some(false),
+        )
+        .expect("held queue should disable");
+    let promoted = runtime
+        .owned
+        .session_store
+        .write()
+        .enqueue_workflow_prompt(
+            &session_id,
+            &workflow_id,
+            &endpoint_id,
+            Some("promote exactly once".to_string()),
+            None,
+            crate::session::WorkflowQueuedPromptSource::Manual,
+            None,
+        )
+        .expect("dispatchable prompt should enqueue");
+    let unrelated = runtime
+        .owned
+        .session_store
+        .write()
+        .enqueue_workflow_prompt(
+            &session_id,
+            &workflow_id,
+            &endpoint_id,
+            Some("remain held".to_string()),
+            Some(held_queue.id()),
+            crate::session::WorkflowQueuedPromptSource::Manual,
+            None,
+        )
+        .expect("unrelated held prompt should enqueue");
+    runtime
+        .owned
+        .workflow_ensure_dispatchable_runtime_instance(&session_id)
+        .expect("primary runtime instance should provision");
+    runtime
+        .ensure_managed_activity_tracking("workflow-queue-promotion-durability")
+        .expect("activity tracking should activate");
+    let before = runtime
+        .owned
+        .session_snapshot(&session_id)
+        .expect("baseline should project");
+    let activity_sequence = runtime.managed_activity_change_sequence();
+    let projection_sequence = runtime.owned.session_projection.change_sequence();
+    let connection = rusqlite::Connection::open(runtime.owned.durable_state_store.path())
+        .expect("durable database should open for promotion failure injection");
+    connection
+        .execute_batch(
+            r#"CREATE TRIGGER fail_workflow_queue_promotion_append
+             BEFORE INSERT ON durable_state_events
+             WHEN NEW.kind = 'workflow.runtime.updated'
+               AND instr(
+                   NEW.payload_json,
+                   '"reason":"workflow_queued_prompt_promoted"'
+               ) > 0
+             BEGIN
+               SELECT RAISE(FAIL, 'injected workflow queue promotion append failure');
+             END;"#,
+        )
+        .expect("promotion append failure trigger should install");
+
+    if requested {
+        let error = runtime
+            .owned
+            .workflow_start_next_queued_prompt_for_response(&session_id)
+            .expect_err("failed append must reject requested promotion");
+        assert!(
+            error
+                .to_string()
+                .contains("injected workflow queue promotion append failure"),
+            "{error}"
+        );
+    } else {
+        let dispatches = runtime
+            .owned
+            .workflow_maybe_start_next_queued_prompt(&session_id);
+        assert!(
+            dispatches.is_empty(),
+            "failed automatic promotion must not dispatch work"
+        );
+    }
+    let rolled_back = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .expect("rolled-back session should remain available");
+    assert_eq!(
+        rolled_back.workflow_queued_prompts(),
+        before.workflow_queued_prompts(),
+        "rejected promotion must restore both queued prompts"
+    );
+    assert!(rolled_back.workflow_runs().is_empty());
+    assert_eq!(
+        runtime.managed_activity_change_sequence(),
+        activity_sequence
+    );
+    assert_eq!(
+        runtime.owned.session_projection.change_sequence(),
+        projection_sequence
+    );
+    let later = runtime
+        .owned
+        .session_snapshot(&session_id)
+        .expect("later snapshot should remain available");
+    assert_eq!(later.workflow_queued_prompts(), before.workflow_queued_prompts());
+    assert!(later.workflow_runs().is_empty());
+    assert_eq!(
+        runtime.managed_activity_change_sequence(),
+        activity_sequence
+    );
+    assert_eq!(
+        runtime.owned.session_projection.change_sequence(),
+        projection_sequence
+    );
+
+    connection
+        .execute_batch("DROP TRIGGER fail_workflow_queue_promotion_append;")
+        .expect("promotion append failure trigger should be removed");
+    if requested {
+        let (outcome, _) = runtime
+            .owned
+            .workflow_start_next_queued_prompt_for_response(&session_id)
+            .expect("requested promotion retry should succeed");
+        let outcome = outcome.expect("retry should own one promoted run");
+        let workflow_run = match outcome {
+            crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
+                workflow_run,
+                ..
+            } => workflow_run,
+            crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued { .. } => {
+                panic!("retry must report the promoted prompt's run")
+            }
+        };
+        assert_eq!(workflow_run.queue_item_id(), Some(promoted.id()));
+    } else {
+        let _ = runtime
+            .owned
+            .workflow_maybe_start_next_queued_prompt(&session_id);
+    }
+    let retried = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .expect("retried session should remain available");
+    assert_eq!(retried.workflow_runs().len(), 1);
+    assert_eq!(
+        retried.workflow_runs()[0].queue_item_id(),
+        Some(promoted.id())
+    );
+    assert_eq!(
+        retried
+            .workflow_queued_prompts()
+            .iter()
+            .map(|prompt| prompt.id())
+            .collect::<Vec<_>>(),
+        vec![unrelated.id()],
+        "retry must leave unrelated disabled work queued"
+    );
+    assert!(
+        !retried
+            .workflow_prompt_queues()
+            .iter()
+            .find(|queue| queue.id() == held_queue.id())
+            .expect("held queue should remain available")
+            .enabled(),
+        "queue promotion must preserve disabled-queue policy"
+    );
+    let events = runtime
+        .owned
+        .durable_state_store
+        .load_events_by_kind("workflow.runtime.updated")
+        .expect("workflow runtime events should load");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.payload["reason"] == "workflow_queued_prompt_promoted")
+            .count(),
+        1,
+        "retry must durably promote exactly one prompt"
+    );
+    let owner_id = retried.host_daemon_id().to_string();
+    let durable_hot_state = runtime
+        .owned
+        .durable_state_store
+        .load_workflow_hot_states(&owner_id)
+        .expect("durable workflow hot state should load")
+        .into_iter()
+        .find_map(|(candidate_session_id, state)| {
+            (candidate_session_id == session_id).then_some(state)
+        })
+        .expect("retried session should have durable workflow hot state");
+    assert_eq!(
+        durable_hot_state
+            .workflow_queued_prompts
+            .iter()
+            .map(|prompt| prompt.id())
+            .collect::<Vec<_>>(),
+        vec![unrelated.id()]
+    );
+    let durable_runs = runtime
+        .owned
+        .durable_state_store
+        .list_workflow_runs_page(&owner_id, &session_id, Some(&workflow_id), None, 10)
+        .expect("durable workflow runs should load");
+    assert_eq!(durable_runs.workflow_runs.len(), 1);
+    assert_eq!(
+        durable_runs.workflow_runs[0].queue_item_id(),
+        Some(promoted.id())
+    );
+}
+
+#[test]
+fn meta_queue_promotion_append_failure_rolls_back_and_retries_once() {
+    let (runtime, session_id, _workflow_id, _endpoint_id, _test_root) =
+        runtime_with_idle_workflow();
+    let metaagent_id = runtime
+        .owned
+        .agent_store
+        .get_session_agents(&session_id)
+        .into_iter()
+        .find(|agent| agent.alias() == Some("owned-workflow-agent"))
+        .expect("queued Meta target should exist")
+        .id()
+        .to_string();
+    let promoted = runtime
+        .owned
+        .session_store
+        .write()
+        .enqueue_metaagent_task(
+            &session_id,
+            &metaagent_id,
+            "meta-attachment",
+            "promote Meta task",
+            Vec::new(),
+        )
+        .expect("first Meta task should enqueue");
+    let unrelated = runtime
+        .owned
+        .session_store
+        .write()
+        .enqueue_metaagent_task(
+            &session_id,
+            &metaagent_id,
+            "meta-attachment",
+            "remain queued",
+            Vec::new(),
+        )
+        .expect("unrelated Meta task should enqueue");
+    runtime
+        .ensure_managed_activity_tracking("meta-queue-promotion-durability")
+        .expect("activity tracking should activate");
+    let before = runtime
+        .owned
+        .session_snapshot(&session_id)
+        .expect("baseline should project");
+    let activity_sequence = runtime.managed_activity_change_sequence();
+    let projection_sequence = runtime.owned.session_projection.change_sequence();
+    let connection = rusqlite::Connection::open(runtime.owned.durable_state_store.path())
+        .expect("durable database should open for Meta promotion failure injection");
+    connection
+        .execute_batch(
+            r#"CREATE TRIGGER fail_meta_queue_promotion_append
+             BEFORE INSERT ON durable_state_events
+             WHEN NEW.kind = 'session.updated'
+               AND instr(
+                   NEW.payload_json,
+                   '"reason":"metaagent_queued_task_promoted"'
+               ) > 0
+             BEGIN
+               SELECT RAISE(FAIL, 'injected Meta queue promotion append failure');
+             END;"#,
+        )
+        .expect("Meta promotion append failure trigger should install");
+
+    let failed = runtime
+        .owned
+        .workflow_maybe_start_next_queued_prompt(&session_id);
+    assert!(failed.is_empty());
+    let rolled_back = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .expect("rolled-back session should remain available");
+    assert_eq!(
+        rolled_back.queued_metaagent_tasks(),
+        before.queued_metaagent_tasks(),
+        "rejected promotion must restore all queued Meta work"
+    );
+    assert_eq!(
+        runtime.managed_activity_change_sequence(),
+        activity_sequence
+    );
+    assert_eq!(
+        runtime.owned.session_projection.change_sequence(),
+        projection_sequence
+    );
+    let later = runtime
+        .owned
+        .session_snapshot(&session_id)
+        .expect("later snapshot should remain available");
+    assert_eq!(later.queued_metaagent_tasks(), before.queued_metaagent_tasks());
+    assert_eq!(
+        runtime.managed_activity_change_sequence(),
+        activity_sequence
+    );
+    assert_eq!(
+        runtime.owned.session_projection.change_sequence(),
+        projection_sequence
+    );
+
+    connection
+        .execute_batch("DROP TRIGGER fail_meta_queue_promotion_append;")
+        .expect("Meta promotion append failure trigger should be removed");
+    let retried_dispatches = runtime
+        .owned
+        .workflow_maybe_start_next_queued_prompt(&session_id);
+    assert_eq!(retried_dispatches.starting_metaagent_tasks.len(), 1);
+    assert_eq!(retried_dispatches.starting_metaagent_tasks[0], promoted);
+    let retried = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .expect("retried session should remain available");
+    assert_eq!(
+        retried.queued_metaagent_tasks().iter().collect::<Vec<_>>(),
+        vec![&unrelated],
+        "retry must leave unrelated Meta work queued"
+    );
+    let events = runtime
+        .owned
+        .durable_state_store
+        .load_events_by_kind("session.updated")
+        .expect("session events should load");
+    let promoted_events = events
+        .iter()
+        .filter(|event| event.payload["reason"] == "metaagent_queued_task_promoted")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        promoted_events.len(),
+        1,
+        "retry must durably promote exactly one Meta task"
+    );
+    let durable_queue = promoted_events[0].payload["session"]["queued_metaagent_tasks"]
+        .as_array()
+        .expect("durable session should contain the remaining Meta queue");
+    assert_eq!(durable_queue.len(), 1);
+    assert_eq!(durable_queue[0]["id"].as_str(), Some(unrelated.id()));
+}
+
 fn run_single_run_admission_scenario(iteration: usize) {
     const INVOCATION_COUNT: usize = 32;
 
