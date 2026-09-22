@@ -32,6 +32,248 @@ fn meta_runtime() -> (KernelRuntimeState, DaemonConfig, String, String) {
     )
 }
 
+#[test]
+fn enqueue_metaagent_task_append_failure_rolls_back_and_retries_once() {
+    let (runtime, _, session_id, agent_id) = meta_runtime();
+    runtime
+        .ensure_managed_activity_tracking("meta-enqueue-durability")
+        .expect("activity tracking should activate");
+    let before = runtime
+        .owned
+        .session_snapshot(&session_id)
+        .expect("baseline should project");
+    let activity_sequence = runtime.managed_activity_change_sequence();
+    let projection_sequence = runtime.owned.session_projection.change_sequence();
+    let connection = rusqlite::Connection::open(runtime.owned.durable_state_store.path())
+        .expect("failure injection connection should open");
+    connection
+        .execute_batch(
+            "CREATE TRIGGER fail_meta_enqueue_append BEFORE INSERT ON durable_state_events
+         WHEN NEW.kind = 'session.updated'
+         BEGIN SELECT RAISE(FAIL, 'injected meta enqueue append failure'); END;",
+        )
+        .expect("append failure should install");
+
+    let error = runtime
+        .enqueue_metaagent_task(
+            &session_id,
+            &agent_id,
+            "attachment-queued",
+            "Queued task",
+            Vec::new(),
+        )
+        .expect_err("failed append must reject queued meta work");
+    assert!(
+        error
+            .to_string()
+            .contains("injected meta enqueue append failure"),
+        "{error}"
+    );
+    let raw = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .expect("session should exist");
+    assert_eq!(
+        raw.queued_metaagent_tasks(),
+        before.queued_metaagent_tasks(),
+        "rejected queued work must not survive in authoritative memory"
+    );
+    assert_eq!(
+        runtime.managed_activity_change_sequence(),
+        activity_sequence
+    );
+    assert_eq!(
+        runtime.owned.session_projection.change_sequence(),
+        projection_sequence
+    );
+    let projected = runtime
+        .owned
+        .session_snapshot(&session_id)
+        .expect("later snapshot should work");
+    assert_eq!(
+        projected.queued_metaagent_tasks(),
+        before.queued_metaagent_tasks(),
+        "later snapshots must not leak rejected queued work"
+    );
+    assert_eq!(
+        runtime.managed_activity_change_sequence(),
+        activity_sequence
+    );
+    assert_eq!(
+        runtime.owned.session_projection.change_sequence(),
+        projection_sequence
+    );
+
+    connection
+        .execute_batch("DROP TRIGGER fail_meta_enqueue_append;")
+        .expect("failure should clear");
+    let (task, session) = runtime
+        .enqueue_metaagent_task(
+            &session_id,
+            &agent_id,
+            "attachment-queued",
+            "Queued task",
+            Vec::new(),
+        )
+        .expect("same queued work should retry successfully");
+    assert_eq!(session.queued_metaagent_tasks().len(), 1);
+    assert_eq!(session.queued_metaagent_tasks().front(), Some(&task));
+    let events = runtime
+        .owned
+        .durable_state_store
+        .load_events_by_kind("session.updated")
+        .expect("committed events should load");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.payload["reason"] == "metaagent_task_queued")
+            .count(),
+        1,
+        "retry should queue and commit the task exactly once"
+    );
+}
+
+#[test]
+fn start_metaagent_task_append_failure_rolls_back_retries_once_and_preserves_noop() {
+    let (runtime, _, session_id, agent_id) = meta_runtime();
+    runtime
+        .owned
+        .session_store
+        .write()
+        .set_metaagent_task_status(&session_id, &agent_id, MetaagentTaskStatus::Completed)
+        .expect("start fixture should be terminal");
+    runtime
+        .ensure_managed_activity_tracking("meta-start-durability")
+        .expect("activity tracking should activate");
+    let before = runtime
+        .owned
+        .session_snapshot(&session_id)
+        .expect("baseline should project");
+    let before_task = before
+        .metaagent_task(&agent_id)
+        .cloned()
+        .expect("terminal task should exist");
+    let activity_sequence = runtime.managed_activity_change_sequence();
+    let projection_sequence = runtime.owned.session_projection.change_sequence();
+    let connection = rusqlite::Connection::open(runtime.owned.durable_state_store.path())
+        .expect("failure injection connection should open");
+    connection
+        .execute_batch(
+            "CREATE TRIGGER fail_meta_start_append BEFORE INSERT ON durable_state_events
+         WHEN NEW.kind = 'session.updated'
+         BEGIN SELECT RAISE(FAIL, 'injected meta start append failure'); END;",
+        )
+        .expect("append failure should install");
+
+    let error = runtime
+        .start_metaagent_task_for_prompt(&session_id, &agent_id, "Restarted task")
+        .expect_err("failed append must reject started meta work");
+    assert!(
+        error
+            .to_string()
+            .contains("injected meta start append failure"),
+        "{error}"
+    );
+    let raw = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .expect("session should exist");
+    assert_eq!(
+        raw.metaagent_task(&agent_id),
+        Some(&before_task),
+        "rejected started work must not survive in authoritative memory"
+    );
+    assert_eq!(
+        runtime.managed_activity_change_sequence(),
+        activity_sequence
+    );
+    assert_eq!(
+        runtime.owned.session_projection.change_sequence(),
+        projection_sequence
+    );
+    let projected = runtime
+        .owned
+        .session_snapshot(&session_id)
+        .expect("later snapshot should work");
+    assert_eq!(
+        projected.metaagent_task(&agent_id),
+        Some(&before_task),
+        "later snapshots must not leak rejected started work"
+    );
+    assert_eq!(
+        runtime.managed_activity_change_sequence(),
+        activity_sequence
+    );
+    assert_eq!(
+        runtime.owned.session_projection.change_sequence(),
+        projection_sequence
+    );
+
+    connection
+        .execute_batch("DROP TRIGGER fail_meta_start_append;")
+        .expect("failure should clear");
+    let session = runtime
+        .start_metaagent_task_for_prompt(&session_id, &agent_id, "Restarted task")
+        .expect("same start should retry successfully")
+        .expect("terminal task should restart");
+    let started_task = session
+        .metaagent_task(&agent_id)
+        .cloned()
+        .expect("started task should exist");
+    assert_eq!(started_task.status(), MetaagentTaskStatus::Active);
+    assert_eq!(started_task.task_markdown(), "Restarted task");
+    assert_eq!(started_task.revision(), before_task.revision() + 1);
+    let events = runtime
+        .owned
+        .durable_state_store
+        .load_events_by_kind("session.updated")
+        .expect("committed events should load");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.payload["reason"] == "metaagent_task_started")
+            .count(),
+        1,
+        "retry should start and commit the task exactly once"
+    );
+
+    let noop_activity_sequence = runtime.managed_activity_change_sequence();
+    let noop_projection_sequence = runtime.owned.session_projection.change_sequence();
+    assert!(runtime
+        .start_metaagent_task_for_prompt(&session_id, &agent_id, "Ignored replacement")
+        .expect("active task start should remain a no-op")
+        .is_none());
+    let after_noop = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .expect("session should exist");
+    assert_eq!(after_noop.metaagent_task(&agent_id), Some(&started_task));
+    assert_eq!(
+        runtime.managed_activity_change_sequence(),
+        noop_activity_sequence
+    );
+    assert_eq!(
+        runtime.owned.session_projection.change_sequence(),
+        noop_projection_sequence
+    );
+    let events = runtime
+        .owned
+        .durable_state_store
+        .load_events_by_kind("session.updated")
+        .expect("committed events should load");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.payload["reason"] == "metaagent_task_started")
+            .count(),
+        1,
+        "no-op start must not append another transition"
+    );
+}
+
 #[tokio::test]
 async fn meta_update_task_tool_survives_restart() {
     let (runtime, config, session_id, agent_id) = meta_runtime();
