@@ -753,6 +753,58 @@ mod tests {
     }
 
     #[test]
+    fn path1_provider_home_child_uses_ordinary_cwd_contract() {
+        let _env = crate::env_lock::lock();
+        let root = plain_temp_directory("path1-provider-home");
+        let provider_home = root.join("provider-home");
+        let selected = provider_home.join("selected-repository");
+        let sibling = root.join("sibling-repository");
+        let vault = provider_home.join("vault.json");
+        std::fs::create_dir_all(&selected).expect("selected repository should exist");
+        std::fs::create_dir_all(&sibling).expect("sibling repository should exist");
+
+        let prior_topology = std::env::var_os("CHARIOX_MANAGED_PROVIDER_TOPOLOGY");
+        let prior_isolation = std::env::var_os("CHARIOX_MANAGED_PROVIDER_ISOLATION");
+        let prior_provider_home = std::env::var_os("CHARIOX_MANAGED_PROVIDER_HOME");
+        let prior_vault = std::env::var_os("CHARIOX_MANAGED_VAULT_PATH");
+        std::env::remove_var("CHARIOX_MANAGED_PROVIDER_TOPOLOGY");
+        std::env::remove_var("CHARIOX_MANAGED_PROVIDER_ISOLATION");
+        std::env::remove_var("CHARIOX_MANAGED_PROVIDER_HOME");
+        std::env::set_var("CHARIOX_MANAGED_VAULT_PATH", &vault);
+
+        let ordinary = preflight_working_directory(&selected, "ordinary.cwd", false, &[])
+            .expect("ordinary provider-home child should be usable");
+
+        std::env::set_var("CHARIOX_MANAGED_PROVIDER_TOPOLOGY", "path1");
+        std::env::set_var("CHARIOX_MANAGED_PROVIDER_HOME", &provider_home);
+        let path1 = preflight_working_directory(&selected, "path1.cwd", false, &[])
+            .expect("Path-1 must preserve the ordinary provider-home child cwd contract");
+        assert_eq!(path1.canonical_path, ordinary.canonical_path);
+        preflight_working_directory(&sibling, "path1.sibling.cwd", false, &[])
+            .expect("an unrelated sibling must remain usable");
+        let vault_error = preflight_working_directory(&vault, "path1.vault.cwd", true, &[])
+            .expect_err("the exact managed vault path must remain protected");
+        assert!(vault_error
+            .to_string()
+            .contains("protected Chariox control path"));
+
+        std::env::set_var("CHARIOX_MANAGED_PROVIDER_TOPOLOGY", "shared_host");
+        std::env::set_var("CHARIOX_MANAGED_PROVIDER_ISOLATION", "1");
+        let shared_host_error =
+            preflight_working_directory(&selected, "shared-host.cwd", false, &[])
+                .expect_err("shared-host provider isolation must keep its provider-home boundary");
+        assert!(shared_host_error
+            .to_string()
+            .contains("protected Chariox service state"));
+
+        restore_env("CHARIOX_MANAGED_PROVIDER_TOPOLOGY", prior_topology);
+        restore_env("CHARIOX_MANAGED_PROVIDER_ISOLATION", prior_isolation);
+        restore_env("CHARIOX_MANAGED_PROVIDER_HOME", prior_provider_home);
+        restore_env("CHARIOX_MANAGED_VAULT_PATH", prior_vault);
+        std::fs::remove_dir_all(root).expect("provider-home fixture should be removable");
+    }
+
+    #[test]
     fn chariox_home_authorizes_only_kernel_workflow_runtime_instance_children() {
         let _env = crate::env_lock::lock();
         let root = plain_temp_directory("workflow-runtime-auth");
