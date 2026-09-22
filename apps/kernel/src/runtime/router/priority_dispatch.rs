@@ -74,7 +74,9 @@ impl CommandRouter {
         &self,
         command: KernelCommand,
         request: LocalDaemonRequest,
-    ) -> impl std::future::Future<Output = Result<LocalDaemonResponse, DaemonError>> + '_ {
+    ) -> std::pin::Pin<
+        Box<impl std::future::Future<Output = Result<LocalDaemonResponse, DaemonError>> + '_>,
+    > {
         // Keep the large request-match future out of every caller's async state.
         // Construct it in this synchronous frame, not in the caller's poll frame.
         Box::pin(self.dispatch_normal_or_background_inner(command, request))

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{future::Future, pin::Pin, sync::Arc};
 
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
@@ -18,13 +18,16 @@ use crate::runtime::user_config_executor::execute_user_config_request;
 use super::CommandRouter;
 
 impl CommandRouter {
-    pub(super) async fn dispatch_refresh_tracked(
+    pub(super) fn dispatch_refresh_tracked(
         &self,
         command: KernelCommand,
         request: LocalDaemonRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
+    ) -> Pin<Box<dyn Future<Output = Result<LocalDaemonResponse, DaemonError>> + Send + '_>> {
+        // Select before polling: an async match retains every handler's stack
+        // temporaries while polling its selected child. The normal dispatcher
+        // can then overflow an ordinary thread even when its future is boxed.
         match request {
-            request @ LocalDaemonRequest::ConfigureRelay(_) => {
+            request @ LocalDaemonRequest::ConfigureRelay(_) => Box::pin(async move {
                 execute_relay_config_request(
                     &self.runtime_state,
                     Arc::clone(&self.relay_state),
@@ -33,7 +36,7 @@ impl CommandRouter {
                     request,
                 )
                 .await
-            }
+            }),
             request @ (LocalDaemonRequest::CloudRelayStatus(_)
             | LocalDaemonRequest::StartCloudRelayLogin(_)
             | LocalDaemonRequest::PollCloudRelayLogin(_)
@@ -48,7 +51,7 @@ impl CommandRouter {
             | LocalDaemonRequest::AcceptCloudSessionInvite(_)
             | LocalDaemonRequest::RevokeCloudSessionInvite(_)
             | LocalDaemonRequest::ListCloudSessionMembers(_)
-            | LocalDaemonRequest::ListCloudCollaborators(_)) => {
+            | LocalDaemonRequest::ListCloudCollaborators(_)) => Box::pin(async move {
                 execute_cloud_relay_request(
                     &self.runtime_state,
                     &self.config_projection,
@@ -58,7 +61,7 @@ impl CommandRouter {
                     request,
                 )
                 .await
-            }
+            }),
             request @ (LocalDaemonRequest::GetUserConfig(_)
             | LocalDaemonRequest::GetUserConfigSchema(_)
             | LocalDaemonRequest::SetUserConfigValue(_)
@@ -69,7 +72,7 @@ impl CommandRouter {
             | LocalDaemonRequest::SetProviderAccountCredential(_)
             | LocalDaemonRequest::GetCredentialVaultStatus(_)
             | LocalDaemonRequest::LockCredentialVault(_)
-            | LocalDaemonRequest::ManageCredentialVault(_)) => {
+            | LocalDaemonRequest::ManageCredentialVault(_)) => Box::pin(async move {
                 execute_user_config_request(
                     &self.config_projection,
                     &self.runtime_state,
@@ -77,14 +80,14 @@ impl CommandRouter {
                     request,
                 )
                 .await
-            }
+            }),
             request @ (LocalDaemonRequest::ListPromptSettings(_)
             | LocalDaemonRequest::GetPromptSetting(_)
             | LocalDaemonRequest::UpdatePromptSetting(_)
             | LocalDaemonRequest::PreviewPromptSetting(_)
             | LocalDaemonRequest::ResetPromptSetting(_)
             | LocalDaemonRequest::ResetAllPromptSettings(_)) => {
-                execute_prompt_settings_request(&command, request).await
+                Box::pin(async move { execute_prompt_settings_request(&command, request).await })
             }
             request @ (LocalDaemonRequest::ListSlices(_)
             | LocalDaemonRequest::CreateSlice(_)
@@ -102,7 +105,7 @@ impl CommandRouter {
             | LocalDaemonRequest::GetSliceStateStatus(_)
             | LocalDaemonRequest::ResetSliceState(_)
             | LocalDaemonRequest::CreateSliceBackup(_)
-            | LocalDaemonRequest::RestoreSliceBackup(_)) => {
+            | LocalDaemonRequest::RestoreSliceBackup(_)) => Box::pin(async move {
                 execute_slice_request(
                     &self.runtime_state,
                     &self.config_projection,
@@ -112,18 +115,18 @@ impl CommandRouter {
                     request,
                 )
                 .await
-            }
-            request @ LocalDaemonRequest::DeleteKernel(_) => {
+            }),
+            request @ LocalDaemonRequest::DeleteKernel(_) => Box::pin(async move {
                 execute_kernel_lifecycle_request(
                     &self.config_projection,
                     &self.runtime_state,
                     request,
                 )
                 .await
-            }
+            }),
             request @ (LocalDaemonRequest::ApproveRemoteMachine(_)
             | LocalDaemonRequest::ForgetRemoteMachine(_)
-            | LocalDaemonRequest::RenameRemoteMachine(_)) => {
+            | LocalDaemonRequest::RenameRemoteMachine(_)) => Box::pin(async move {
                 execute_remote_machine_registry_request(
                     &self.app,
                     &self.config_projection,
@@ -132,7 +135,7 @@ impl CommandRouter {
                     request,
                 )
                 .await
-            }
+            }),
             request @ (LocalDaemonRequest::ListSessionMembers(_)
             | LocalDaemonRequest::CreateSessionInvite(_)
             | LocalDaemonRequest::JoinSessionInvite(_)
@@ -142,7 +145,7 @@ impl CommandRouter {
             | LocalDaemonRequest::ShowWorkspaceLink(_)
             | LocalDaemonRequest::AttachWorkspaceLink(_)
             | LocalDaemonRequest::DetachWorkspaceLink(_)
-            | LocalDaemonRequest::GetWorkspaceLiveSyncStatus(_)) => {
+            | LocalDaemonRequest::GetWorkspaceLiveSyncStatus(_)) => Box::pin(async move {
                 execute_session_collaboration_request(
                     &self.runtime_state,
                     &self.config_projection,
@@ -150,7 +153,7 @@ impl CommandRouter {
                     request,
                 )
                 .await
-            }
+            }),
             request @ (LocalDaemonRequest::CreatePairingInvite(_)
             | LocalDaemonRequest::JoinPairingInvite(_)
             | LocalDaemonRequest::CreateTerminalPairingLink(_)
@@ -158,7 +161,7 @@ impl CommandRouter {
             | LocalDaemonRequest::ListTerminals(_)
             | LocalDaemonRequest::ListPairedClients(_)
             | LocalDaemonRequest::RecordPairedClient(_)
-            | LocalDaemonRequest::RevokePairedClient(_)) => {
+            | LocalDaemonRequest::RevokePairedClient(_)) => Box::pin(async move {
                 execute_pairing_request(
                     &self.runtime_state,
                     &self.config_projection,
@@ -166,14 +169,14 @@ impl CommandRouter {
                     request,
                 )
                 .await
-            }
+            }),
             request @ (LocalDaemonRequest::GetSessionHistoryOutline(_)
             | LocalDaemonRequest::GetSessionHistoryBlobContent(_)
             | LocalDaemonRequest::GetPromptInputHistory(_)
             | LocalDaemonRequest::RecordPromptInputHistory(_)
             | LocalDaemonRequest::QueryRecall(_)
             | LocalDaemonRequest::SearchRecall(_)
-            | LocalDaemonRequest::SemanticSearchRecall(_)) => {
+            | LocalDaemonRequest::SemanticSearchRecall(_)) => Box::pin(async move {
                 execute_history_request(
                     self.history_store.clone(),
                     self.operational_history_store.clone(),
@@ -182,11 +185,11 @@ impl CommandRouter {
                     request,
                 )
                 .await
-            }
+            }),
             LocalDaemonRequest::PumpTerminalOutput(request) => {
-                self.terminal_output_executor.execute(request).await
+                Box::pin(async move { self.terminal_output_executor.execute(request).await })
             }
-            request @ LocalDaemonRequest::TeardownProviderProcesses(_) => {
+            request @ LocalDaemonRequest::TeardownProviderProcesses(_) => Box::pin(async move {
                 let caller_user_id = crate::runtime::command::command_caller_user_id(&command);
                 execute_provider_process_request(
                     &self.runtime_state,
@@ -198,13 +201,13 @@ impl CommandRouter {
                     request,
                 )
                 .await
-            }
+            }),
             request => match command.priority {
                 KernelCommandPriority::Interactive => {
-                    self.dispatch_interactive(command, request).await
+                    Box::pin(self.dispatch_interactive(command, request))
                 }
                 KernelCommandPriority::Normal | KernelCommandPriority::Background => {
-                    self.dispatch_normal_or_background(command, request).await
+                    self.dispatch_normal_or_background(command, request)
                 }
             },
         }

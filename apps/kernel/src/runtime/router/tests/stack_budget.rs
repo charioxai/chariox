@@ -17,6 +17,17 @@ async fn normal_dispatch_keeps_the_request_match_out_of_its_callers_future() {
         .await
         .expect("the normal dispatch path should still execute");
 
+    let request = LocalDaemonRequest::GetTerminalCommandCatalog(
+        crate::local::GetTerminalCommandCatalogRequest,
+    );
+    let command = KernelCommand::from_local_request("refresh-stack-budget", None, None, &request);
+    let future = router.dispatch_refresh_tracked(command, request);
+    assert!(
+        std::mem::size_of_val(&future) <= 1_024,
+        "refresh dispatch must select its handler before constructing the caller's future"
+    );
+    future.await.expect("refresh dispatch should execute");
+
     // Exercise the surrounding public dispatch/refresh chain on the ordinary
     // test-thread stack too, without a custom runtime stack or RUST_MIN_STACK.
     let request = LocalDaemonRequest::GetTerminalCommandCatalog(
