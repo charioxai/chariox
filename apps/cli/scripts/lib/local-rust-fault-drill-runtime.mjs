@@ -37,6 +37,10 @@ export async function runLocalRustFaultDrill({
     schema,
     startedAt: new Date().toISOString(),
     status: options.dryRun ? "dry-run" : "running",
+    execution: executionMetadata(
+      null,
+      options.dryRun ? "not-run" : "not-started",
+    ),
     caseIds,
     source: { commit: (await run("git", ["rev-parse", "HEAD"], { timeoutMs: 10_000 })).stdout.trim() },
     command: {
@@ -46,6 +50,7 @@ export async function runLocalRustFaultDrill({
     },
     evidenceRoot: path.dirname(reportPath),
     resources: [],
+    output: emptyOutputTails(),
     cleanup: null,
   }
   if (options.dryRun) {
@@ -60,30 +65,41 @@ export async function runLocalRustFaultDrill({
   let cargoPid = null
   try {
     if (interrupted) throw new Error(`${name} interrupted by ${interrupted}`)
-    report.resources.push(await resourceSnapshot(run, "before"))
+    report.resources.push(await resourceSnapshot(run, "before", null, repoRoot))
     if (interrupted) throw new Error(`${name} interrupted by ${interrupted}`)
     const execution = run("cargo", cargoArgs, {
       env: { ...process.env, CARGO_BUILD_JOBS: "1", CARGO_TARGET_DIR: cargoTarget },
       onSpawn: (child) => { cargoPid = child.pid },
     })
     await new Promise((resolve) => setTimeout(resolve, 100))
-    report.resources.push(await resourceSnapshot(run, "during", cargoPid))
+    report.resources.push(await resourceSnapshot(run, "during", cargoPid, repoRoot))
     const result = await execution
+    report.execution = executionMetadata(result, "passed")
+    report.output = outputTails(result)
     report.probe = parseProbe(`${result.stdout}\n${result.stderr}`)
-    report.output = { stdoutTail: bounded(result.stdout), stderrTail: bounded(result.stderr) }
     report.status = "passed"
   } catch (error) {
     failure = error
     report.status = "failed"
+    const result = error?.result ?? null
+    if (result) {
+      report.execution = executionMetadata(result, "failed")
+      report.output = outputTails(result)
+    } else if (report.execution.status === "passed") {
+      report.execution = { ...report.execution, status: "failed", failureStage: "probe" }
+    } else {
+      report.execution = { ...report.execution, status: "failed", failureStage: "setup" }
+    }
     report.failure = bounded(error instanceof Error ? error.message : error)
   } finally {
     const remaining = processNeedle ? await matchingProcesses(run, processNeedle) : []
     report.cleanup = { ownedProcessesAbsent: remaining.length === 0, remaining }
-    report.resources.push(await resourceSnapshot(run, "after-cleanup"))
+    report.resources.push(await resourceSnapshot(run, "after-cleanup", null, repoRoot))
     report.completedAt = new Date().toISOString()
     if (remaining.length > 0 && !failure) {
       failure = new Error(`${name} left owned processes running`)
       report.status = "failed"
+      report.execution = { ...report.execution, status: "failed", failureStage: "cleanup" }
       report.failure = failure.message
     }
     await writeReport(reportPath, report)
@@ -176,8 +192,16 @@ function createRunner({ repoRoot, children }) {
           stdout: Buffer.concat(stdout).toString("utf8"),
           stderr: Buffer.concat(stderr).toString("utf8"),
         }
+        result.timedOut = timedOut
         if (allowFailure || code === 0) resolve(result)
-        else reject(new Error(`${command} exited with ${timedOut ? "timeout" : signal ?? code}: ${bounded(result.stderr)}`))
+        else {
+          const error = new Error(
+            `${command} exited with ${timedOut ? "timeout" : signal ? `signal ${signal}` : `code ${code}`}`,
+          )
+          error.command = command
+          error.result = result
+          reject(error)
+        }
       })
     })
   )
@@ -192,14 +216,16 @@ function terminateGroup(child, signal) {
   }
 }
 
-async function resourceSnapshot(run, label, childPid = null) {
+async function resourceSnapshot(run, label, childPid = null, diskRoot = process.cwd()) {
+  const diskPath = diskProbePath(process.platform, diskRoot)
   const [memory, disk, processState] = await Promise.all([
     run("memory_pressure", ["-Q"], { timeoutMs: 10_000, allowFailure: true }).catch(() => null),
-    run("df", ["-k", "/System/Volumes/Data"], { timeoutMs: 10_000, allowFailure: true }).catch(() => null),
+    run("df", ["-kP", diskPath], { timeoutMs: 10_000, allowFailure: true }).catch(() => null),
     childPid
       ? run("ps", ["-p", String(childPid), "-o", "pid=,rss=,%cpu=,etime="], { timeoutMs: 10_000, allowFailure: true }).catch(() => null)
       : null,
   ])
+  const diskUsage = parseDiskUsage(disk?.code === 0 ? disk.stdout : null, diskPath)
   return {
     label,
     at: new Date().toISOString(),
@@ -207,6 +233,9 @@ async function resourceSnapshot(run, label, childPid = null) {
     loadAverage: os.loadavg(),
     memoryPressure: memory?.code === 0 ? bounded(memory.stdout, 1_000).trim() : null,
     disk: disk?.code === 0 ? disk.stdout.trim().split("\n").at(-1) : null,
+    diskPath,
+    diskAvailableBytes: diskUsage?.availableBytes ?? null,
+    diskTotalBytes: diskUsage?.totalBytes ?? null,
     childProcess: processState?.code === 0 ? processState.stdout.trim() : null,
   }
 }
@@ -225,4 +254,60 @@ async function writeReport(reportPath, report) {
 export function bounded(value, limit = 4_000) {
   const text = String(value ?? "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "")
   return text.length <= limit ? text : text.slice(-limit)
+}
+
+function diskProbePath(platform = process.platform, diskRoot = process.cwd()) {
+  return platform === "darwin" ? "/System/Volumes/Data" : diskRoot
+}
+
+function parseDiskUsage(output, mountPath = diskProbePath()) {
+  const line = String(output ?? "")
+    .split("\n")
+    .map((candidate) => candidate.trim())
+    .filter(Boolean)
+    .findLast((candidate) => /\s\d+%\s/.test(`${candidate} `))
+  if (!line) return null
+  const fields = line.split(/\s+/)
+  const capacityIndex = fields.findIndex((field) => /^\d+%$/.test(field))
+  if (capacityIndex < 3) return null
+  const totalBlocks = Number(fields[1])
+  const usedBlocks = Number(fields[capacityIndex - 2])
+  const availableBlocks = Number(fields[capacityIndex - 1])
+  if (![totalBlocks, usedBlocks, availableBlocks].every(Number.isSafeInteger)) return null
+  return {
+    mountPath,
+    totalBytes: totalBlocks * 1024,
+    usedBytes: usedBlocks * 1024,
+    availableBytes: availableBlocks * 1024,
+    capacityPercent: Number(fields[capacityIndex].slice(0, -1)),
+  }
+}
+
+function executionMetadata(result, status) {
+  return {
+    status,
+    exitCode: Number.isSafeInteger(result?.code) ? result.code : null,
+    signal: typeof result?.signal === "string" ? result.signal : null,
+    timedOut: result?.timedOut === true,
+    stdoutBytes: Buffer.byteLength(result?.stdout ?? ""),
+    stderrBytes: Buffer.byteLength(result?.stderr ?? ""),
+    failureLine: firstFailureLine(result),
+  }
+}
+
+function outputTails(result) {
+  return {
+    stdoutTail: bounded(result?.stdout),
+    stderrTail: bounded(result?.stderr),
+  }
+}
+
+function emptyOutputTails() {
+  return { stdoutTail: "", stderrTail: "" }
+}
+
+function firstFailureLine(result) {
+  const lines = `${result?.stderr ?? ""}\n${result?.stdout ?? ""}`.split(/\r?\n/)
+  const diagnostic = lines.find((line) => /(?:^|\s)(?:error(?:\[[^\]]+\])?:|fatal:|failed\b|could not compile|no space left|disk full)/i.test(line))
+  return diagnostic ? bounded(diagnostic.trim(), 1_000) : null
 }
