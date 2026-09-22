@@ -118,6 +118,7 @@ impl CommandRouter {
             }
             request @ (LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
             | LocalDaemonRequest::GetManagedEnvironment(_)
+            | LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(_)
             | LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(_)
             | LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(_)
             | LocalDaemonRequest::CreateManagedEnvironment(_)

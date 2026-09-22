@@ -12,6 +12,12 @@ pub struct GetManagedEnvironmentRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetManagedEnvironmentReimagePreflightRequest {
+    pub environment_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PrepareManagedEnvironmentContextTransferRequest {
     pub environment_id: String,
 }
@@ -374,4 +380,43 @@ pub struct ManagedEnvironmentReimageResult {
     pub environment: ManagedEnvironmentSummary,
     pub operation: ManagedEnvironmentOperationSummary,
     pub receipt: ManagedEnvironmentReimageReceipt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedEnvironmentReimagePreflight {
+    pub environment_id: String,
+    pub retained: ManagedEnvironmentReimagePreflightRetained,
+    pub desired_release: ManagedEnvironmentReimagePreflightDesiredRelease,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedEnvironmentReimagePreflightRetained {
+    pub provider_server_id: String,
+    pub generation: u64,
+    pub desired_revision: u64,
+    pub observed_revision: u64,
+    pub runtime_machine_id: String,
+    pub runtime_kernel_id: String,
+    pub runtime_relay_realm_id: String,
+    pub runtime_release_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedEnvironmentReimagePreflightDesiredRelease {
+    pub provider_id: ManagedEnvironmentReimageProviderId,
+    pub provider_image_id: String,
+    pub provider_profile_id: String,
+    pub provider_profile_digest: String,
+    pub runtime_release_digest: String,
+    pub runtime_source_commit: String,
+    pub runtime_source_tree: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedEnvironmentReimageProviderId {
+    Hetzner,
 }

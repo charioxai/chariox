@@ -7,6 +7,7 @@ import {
   getManagedContextLaunchTarget,
   getManagedContextTransferStatus,
   getManagedEnvironment,
+  getManagedEnvironmentReimagePreflight,
   listManagedEnvironmentCatalog,
   observeManagedEnvironmentPreReimage,
   prepareManagedEnvironmentContextTransfer,
@@ -20,6 +21,7 @@ test("managed environment API uses only shared LocalDaemon request variants", as
   const responses = [
     { ManagedEnvironmentCatalog: { catalog: { computeClasses: [], contextSources: [], environments: [] } } },
     { ManagedEnvironment: { environment: { environmentId: "environment-1" } } },
+    { ManagedEnvironmentReimagePreflight: { preflight: reimagePreflight() } },
     { ManagedEnvironmentCreated: { result: { environment: { environmentId: "environment-1" }, operation: { environmentId: "environment-1" } } } },
     { ManagedEnvironmentLifecycleRequested: { result: { environment: { environmentId: "environment-1" }, operation: { environmentId: "environment-1" } } } },
     { ManagedEnvironmentReimageRequested: { result: reimageResult() } },
@@ -46,6 +48,7 @@ test("managed environment API uses only shared LocalDaemon request variants", as
 
   await listManagedEnvironmentCatalog(client)
   await getManagedEnvironment(client, "environment-1")
+  await getManagedEnvironmentReimagePreflight(client, "environment-1")
   await createManagedEnvironment(client, {
     clientRequestId: "create-1",
     name: "Managed build",
@@ -104,6 +107,7 @@ test("managed environment API uses only shared LocalDaemon request variants", as
   assert.deepEqual(requests, [
     { ListManagedEnvironmentCatalog: null },
     { GetManagedEnvironment: { environmentId: "environment-1" } },
+    { GetManagedEnvironmentReimagePreflight: { environmentId: "environment-1" } },
     {
       CreateManagedEnvironment: {
         clientRequestId: "create-1",
@@ -208,6 +212,34 @@ test("managed environment API rejects responses for another environment", async 
   await assert.rejects(
     getManagedEnvironment(client, "environment-1"),
     /different managed environment/,
+  )
+})
+
+test("managed environment API rejects reimage preflight for another environment", async () => {
+  const client = {
+    send: async () => ({
+      ManagedEnvironmentReimagePreflight: {
+        preflight: { ...reimagePreflight(), environmentId: "environment-other" },
+      },
+    }),
+  } as unknown as LocalIpcClient
+
+  await assert.rejects(
+    getManagedEnvironmentReimagePreflight(client, "environment-1"),
+    /reimage preflight for a different managed environment/,
+  )
+})
+
+test("managed environment API reports the reimage preflight protocol minimum", async () => {
+  const client = {
+    send: async () => {
+      throw new Error("unknown variant `GetManagedEnvironmentReimagePreflight`")
+    },
+  } as unknown as LocalIpcClient
+
+  await assert.rejects(
+    getManagedEnvironmentReimagePreflight(client, "environment-1"),
+    /Managed environment reimage preflight requires kernel protocol 341 or newer/,
   )
 })
 
@@ -337,6 +369,31 @@ function reimageResult() {
         runtimeSourceCommit: "c".repeat(40),
         runtimeSourceTree: "d".repeat(40),
       },
+    },
+  }
+}
+
+function reimagePreflight() {
+  return {
+    environmentId: "environment-1",
+    retained: {
+      providerServerId: "123456789",
+      generation: 3,
+      desiredRevision: 7,
+      observedRevision: 7,
+      runtimeMachineId: "managed-machine-3",
+      runtimeKernelId: "managed-kernel-3",
+      runtimeRelayRealmId: "managed-realm-3",
+      runtimeReleaseDigest: `sha256:${"a".repeat(64)}`,
+    },
+    desiredRelease: {
+      providerId: "hetzner" as const,
+      providerImageId: "987654321",
+      providerProfileId: "hetzner-path1",
+      providerProfileDigest: `sha256:${"b".repeat(64)}`,
+      runtimeReleaseDigest: `sha256:${"c".repeat(64)}`,
+      runtimeSourceCommit: "d".repeat(40),
+      runtimeSourceTree: "e".repeat(40),
     },
   }
 }

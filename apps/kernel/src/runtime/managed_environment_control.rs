@@ -3,7 +3,8 @@ use crate::error::DaemonError;
 use crate::local::{
     LocalDaemonRequest, LocalDaemonResponse, ManagedEnvironmentCatalog,
     ManagedEnvironmentOperationKind, ManagedEnvironmentProviderAccounts,
-    ManagedEnvironmentReimageResult, RequestManagedEnvironmentReimageRequest,
+    ManagedEnvironmentReimagePreflight, ManagedEnvironmentReimageResult,
+    RequestManagedEnvironmentReimageRequest,
 };
 use crate::runtime::cloud_api_client::{
     cloud_url_component, get_cloud_json_authenticated, post_cloud_json_authenticated,
@@ -84,6 +85,24 @@ pub(crate) async fn execute_managed_environment_control_request(
             Ok(LocalDaemonResponse::ManagedEnvironment {
                 environment: response.environment.into(),
             })
+        }
+        LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(request) => {
+            let path = format!(
+                "/managed-environments/{}/reimage/preflight?{account_query}",
+                cloud_url_component(&request.environment_id),
+            );
+            let preflight = get_cloud_json_authenticated::<ManagedEnvironmentReimagePreflight>(
+                cloud.api_url.clone(),
+                path,
+                token.to_string(),
+            )
+            .await?;
+            if preflight.environment_id != request.environment_id {
+                return Err(control_error(
+                    "Cloud returned reimage preflight for another managed environment",
+                ));
+            }
+            Ok(LocalDaemonResponse::ManagedEnvironmentReimagePreflight { preflight })
         }
         LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(request) => {
             let path = format!(
@@ -447,8 +466,9 @@ fn validate_git_credential_enrollment_ticket(
 mod tests {
     use super::*;
     use crate::local::{
-        CreateManagedEnvironmentRequest, GetManagedEnvironmentRequest,
-        ListManagedEnvironmentCatalogRequest, ManagedEnvironmentAutoStopPolicy,
+        CreateManagedEnvironmentRequest, GetManagedEnvironmentReimagePreflightRequest,
+        GetManagedEnvironmentRequest, ListManagedEnvironmentCatalogRequest,
+        ManagedEnvironmentAutoStopPolicy,
         ManagedEnvironmentContextPlanInput, ManagedEnvironmentDevelopmentSetup,
         ManagedEnvironmentGitCredentials, ManagedEnvironmentKernelContextSelection,
         ManagedEnvironmentLifecycleAction, ManagedEnvironmentProviderAccountSelection,
@@ -523,6 +543,65 @@ mod tests {
         authorized_cloud_profile(&config, "cloud-user-1").expect("Cloud owner");
         assert!(authorized_cloud_profile(&config, crate::session::DEFAULT_LOCAL_USER_ID).is_err());
         assert!(authorized_cloud_profile(&config, "cloud-user-2").is_err());
+    }
+
+    #[tokio::test]
+    async fn managed_environment_reimage_preflight_requires_the_owner_cloud_session() {
+        let server = ManagedEnvironmentCloudFixture::start(
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+        );
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = Some(PersistedCloudRelayProfile {
+            account_id: "account-1".to_string(),
+            user_id: "owner-1".to_string(),
+            cloud_session_token: Some("session-secret".to_string()),
+            machine_credential: Some(format!("mcred_{}", "a".repeat(40))),
+            api_url: server.url(),
+            ..PersistedCloudRelayProfile::default()
+        });
+        let provider_account_profiles =
+            crate::account_profile::ProviderAccountProfileRegistry::open(
+                config.account_profile_registry_path(),
+            )
+            .expect("provider account registry");
+        let request = LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(
+            GetManagedEnvironmentReimagePreflightRequest {
+                environment_id: "environment-1".to_string(),
+            },
+        );
+
+        let wrong_owner = execute_managed_environment_control_request(
+            config.clone(),
+            provider_account_profiles.clone(),
+            crate::managed_context::outbound_service::ManagedContextOutboundOperationStore::default(
+            ),
+            "other-user",
+            request.clone(),
+        )
+        .await
+        .expect_err("another Cloud user must not read reimage preflight");
+        assert!(wrong_owner.to_string().contains("belongs to another Cloud user"));
+
+        config
+            .cloud_relay
+            .as_mut()
+            .expect("Cloud profile")
+            .cloud_session_token = None;
+        let missing_session = execute_managed_environment_control_request(
+            config,
+            provider_account_profiles,
+            crate::managed_context::outbound_service::ManagedContextOutboundOperationStore::default(
+            ),
+            "owner-1",
+            request,
+        )
+        .await
+        .expect_err("machine identity must not authorize preflight");
+        assert!(missing_session
+            .to_string()
+            .contains("Cloud session is unavailable"));
+        assert!(server.requests().is_empty());
     }
 
     #[test]
@@ -821,6 +900,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn managed_environment_reimage_preflight_rejects_another_environment() {
+        let server = ManagedEnvironmentCloudFixture::start_with_preflight_environment(
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            "environment-other",
+        );
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = Some(PersistedCloudRelayProfile {
+            account_id: "account-1".to_string(),
+            user_id: "cloud-user-1".to_string(),
+            cloud_session_token: Some("session-secret".to_string()),
+            api_url: server.url(),
+            ..PersistedCloudRelayProfile::default()
+        });
+        let provider_account_profiles =
+            crate::account_profile::ProviderAccountProfileRegistry::open(
+                config.account_profile_registry_path(),
+            )
+            .expect("provider account registry");
+
+        let error = execute_managed_environment_control_request(
+            config,
+            provider_account_profiles,
+            crate::managed_context::outbound_service::ManagedContextOutboundOperationStore::default(
+            ),
+            "cloud-user-1",
+            LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(
+                GetManagedEnvironmentReimagePreflightRequest {
+                    environment_id: "environment-1".to_string(),
+                },
+            ),
+        )
+        .await
+        .expect_err("preflight for another environment must fail closed");
+
+        assert!(error
+            .to_string()
+            .contains("preflight for another managed environment"));
+        assert_eq!(server.requests().len(), 1);
+    }
+
+    #[tokio::test]
     async fn managed_environment_control_uses_authenticated_cloud_profile_for_all_operations() {
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
@@ -958,6 +1079,32 @@ mod tests {
             LocalDaemonResponse::ManagedEnvironment { .. }
         ));
 
+        let preflight = execute_managed_environment_control_request(
+            config.clone(),
+            provider_account_profiles.clone(),
+            outbound_store.clone(),
+            "cloud-user-1",
+            LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(
+                GetManagedEnvironmentReimagePreflightRequest {
+                    environment_id: "environment / one".to_string(),
+                },
+            ),
+        )
+        .await
+        .expect("reimage preflight request");
+        let LocalDaemonResponse::ManagedEnvironmentReimagePreflight { preflight } = preflight
+        else {
+            panic!("unexpected reimage preflight response");
+        };
+        assert_eq!(preflight.environment_id, "environment / one");
+        assert_eq!(preflight.retained.provider_server_id, "123456789");
+        assert_eq!(preflight.retained.generation, 1);
+        assert_eq!(preflight.desired_release.provider_image_id, "222222222");
+        assert_eq!(
+            preflight.desired_release.provider_id,
+            crate::local::ManagedEnvironmentReimageProviderId::Hetzner
+        );
+
         let prepared = execute_managed_environment_control_request(
             config.clone(),
             provider_account_profiles.clone(),
@@ -1039,7 +1186,7 @@ mod tests {
         ));
 
         let requests = server.requests();
-        assert_eq!(requests.len(), 8);
+        assert_eq!(requests.len(), 9);
         assert!(requests.iter().all(|request| request
             .to_ascii_lowercase()
             .contains("authorization: bearer session-secret")));
@@ -1051,6 +1198,16 @@ mod tests {
         assert!(requests.iter().any(|request| request.starts_with(
             "GET /managed-environments/environment%20%2F%20one?accountId=account%20%2F%20one HTTP/1.1"
         )));
+        let preflight_request = requests
+            .iter()
+            .find(|request| request.starts_with(
+                "GET /managed-environments/environment%20%2F%20one/reimage/preflight?accountId=account%20%2F%20one HTTP/1.1"
+            ))
+            .expect("reimage preflight HTTP request");
+        assert_eq!(
+            preflight_request.split_once("\r\n\r\n").map(|(_, body)| body),
+            Some("")
+        );
         assert!(requests.iter().any(|request| request.starts_with(
             "GET /managed-environments/environment%20%2F%20one/context-transfer?accountId=account%20%2F%20one HTTP/1.1"
         )));
@@ -1135,6 +1292,18 @@ mod tests {
             context_transfer_ticket: serde_json::Value,
             git_enrollment_ticket: serde_json::Value,
         ) -> Self {
+            Self::start_with_preflight_environment(
+                context_transfer_ticket,
+                git_enrollment_ticket,
+                "environment / one",
+            )
+        }
+
+        fn start_with_preflight_environment(
+            context_transfer_ticket: serde_json::Value,
+            git_enrollment_ticket: serde_json::Value,
+            preflight_environment_id: &str,
+        ) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").expect("bind Cloud fixture");
             listener.set_nonblocking(true).expect("nonblocking fixture");
             let address = listener.local_addr().expect("fixture address");
@@ -1142,6 +1311,7 @@ mod tests {
             let requests = Arc::new(Mutex::new(Vec::new()));
             let thread_stop = Arc::clone(&stop);
             let thread_requests = Arc::clone(&requests);
+            let preflight_environment_id = preflight_environment_id.to_string();
             let thread = std::thread::spawn(move || {
                 while !thread_stop.load(Ordering::Relaxed) {
                     match listener.accept() {
@@ -1154,6 +1324,7 @@ mod tests {
                                 &request,
                                 &context_transfer_ticket,
                                 &git_enrollment_ticket,
+                                &preflight_environment_id,
                             );
                             thread_requests.lock().expect("requests lock").push(request);
                             write_http_response(&mut stream, &response);
@@ -1244,6 +1415,7 @@ mod tests {
         request: &str,
         context_transfer_ticket: &serde_json::Value,
         git_enrollment_ticket: &serde_json::Value,
+        preflight_environment_id: &str,
     ) -> serde_json::Value {
         if request.starts_with("GET /managed-environments/options?") {
             return serde_json::json!({
@@ -1270,6 +1442,9 @@ mod tests {
         }
         if request.contains("/git-credential-enrollment ") {
             return git_enrollment_ticket.clone();
+        }
+        if request.contains("/reimage/preflight?") {
+            return reimage_preflight_json(preflight_environment_id);
         }
         if request.contains("/reimage HTTP/1.1") {
             return serde_json::json!({
@@ -1329,6 +1504,31 @@ mod tests {
             "createdAt": "2026-08-21T00:00:00.000Z",
             "updatedAt": "2026-08-21T00:00:00.000Z",
             "futureEnvironmentField": true
+        })
+    }
+
+    fn reimage_preflight_json(environment_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "environmentId": environment_id,
+            "retained": {
+                "providerServerId": "123456789",
+                "generation": 1,
+                "desiredRevision": 7,
+                "observedRevision": 7,
+                "runtimeMachineId": "managed-machine-1",
+                "runtimeKernelId": "managed-kernel-1",
+                "runtimeRelayRealmId": "managed-realm-1",
+                "runtimeReleaseDigest": format!("sha256:{}", "a".repeat(64)),
+            },
+            "desiredRelease": {
+                "providerId": "hetzner",
+                "providerImageId": "222222222",
+                "providerProfileId": "hetzner-path1-v2",
+                "providerProfileDigest": format!("sha256:{}", "b".repeat(64)),
+                "runtimeReleaseDigest": format!("sha256:{}", "c".repeat(64)),
+                "runtimeSourceCommit": "d".repeat(40),
+                "runtimeSourceTree": "e".repeat(40),
+            },
         })
     }
 

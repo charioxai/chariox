@@ -150,6 +150,7 @@ pub enum LocalDaemonRequest {
     ManageCredentialVault(ManageCredentialVaultRequest),
     ListManagedEnvironmentCatalog(ListManagedEnvironmentCatalogRequest),
     GetManagedEnvironment(GetManagedEnvironmentRequest),
+    GetManagedEnvironmentReimagePreflight(GetManagedEnvironmentReimagePreflightRequest),
     PrepareManagedEnvironmentContextTransfer(PrepareManagedEnvironmentContextTransferRequest),
     PrepareManagedEnvironmentGitCredentialEnrollment(
         PrepareManagedEnvironmentGitCredentialEnrollmentRequest,

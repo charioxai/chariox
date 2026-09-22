@@ -21,6 +21,8 @@ export type ManagedEnvironmentReimageReceiptStatus =
   | "fresh_equivalent"
   | "failed_closed"
 
+export const managedEnvironmentReimagePreflightMinimumProtocolVersion = 341
+
 export type ManagedEnvironmentAutoStopPolicy = {
   readonly minimumRuntimeSeconds: number
   readonly idleDelaySeconds: number | null
@@ -180,6 +182,29 @@ export type ManagedEnvironmentReimageResult = ManagedEnvironmentResult & {
   readonly receipt: ManagedEnvironmentReimageReceipt
 }
 
+export type ManagedEnvironmentReimagePreflight = {
+  readonly environmentId: string
+  readonly retained: {
+    readonly providerServerId: string
+    readonly generation: number
+    readonly desiredRevision: number
+    readonly observedRevision: number
+    readonly runtimeMachineId: string
+    readonly runtimeKernelId: string
+    readonly runtimeRelayRealmId: string
+    readonly runtimeReleaseDigest: string
+  }
+  readonly desiredRelease: {
+    readonly providerId: "hetzner"
+    readonly providerImageId: string
+    readonly providerProfileId: string
+    readonly providerProfileDigest: string
+    readonly runtimeReleaseDigest: string
+    readonly runtimeSourceCommit: string
+    readonly runtimeSourceTree: string
+  }
+}
+
 export type ManagedEnvironmentPreReimageObservationAcknowledgement = {
   readonly environmentId: string
   readonly generation: number
@@ -210,6 +235,10 @@ export function listManagedEnvironmentCatalogRequest() {
 
 export function getManagedEnvironmentRequest(environmentId: string) {
   return { GetManagedEnvironment: { environmentId } } as const
+}
+
+export function getManagedEnvironmentReimagePreflightRequest(environmentId: string) {
+  return { GetManagedEnvironmentReimagePreflight: { environmentId } } as const
 }
 
 export function prepareManagedEnvironmentContextTransferRequest(environmentId: string) {

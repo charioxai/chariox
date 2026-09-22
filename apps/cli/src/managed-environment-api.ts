@@ -2,15 +2,17 @@ import type {
   ManagedContextLaunchTarget,
   ManagedContextTransferStatus,
 } from "@chariox/kernel-client/ipc-managed-context-requests"
-import type {
-  ManagedContextTransferTicket,
-  ManagedEnvironmentCatalog,
-  ManagedEnvironmentContextPlanInput,
-  ManagedEnvironmentLifecycleAction,
-  ManagedEnvironmentPreReimageObservationAcknowledgement,
-  ManagedEnvironmentReimageResult,
-  ManagedEnvironmentResult,
-  ManagedEnvironmentSummary,
+import {
+  managedEnvironmentReimagePreflightMinimumProtocolVersion,
+  type ManagedContextTransferTicket,
+  type ManagedEnvironmentCatalog,
+  type ManagedEnvironmentContextPlanInput,
+  type ManagedEnvironmentLifecycleAction,
+  type ManagedEnvironmentPreReimageObservationAcknowledgement,
+  type ManagedEnvironmentReimagePreflight,
+  type ManagedEnvironmentReimageResult,
+  type ManagedEnvironmentResult,
+  type ManagedEnvironmentSummary,
 } from "@chariox/kernel-client/ipc-managed-environment-requests"
 import type { LocalIpcClient } from "./ipc.js"
 import {
@@ -18,6 +20,7 @@ import {
   getManagedContextLaunchTargetRequest,
   getManagedContextTransferStatusRequest,
   getManagedEnvironmentRequest,
+  getManagedEnvironmentReimagePreflightRequest,
   listManagedEnvironmentCatalogRequest,
   observeManagedEnvironmentPreReimageRequest,
   prepareManagedEnvironmentContextTransferRequest,
@@ -26,6 +29,7 @@ import {
   startManagedContextTransferRequest,
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
+import { sendWithProtocolMinimum } from "./protocol-minimum-diagnostic.js"
 
 export async function listManagedEnvironmentCatalog(
   client: LocalIpcClient,
@@ -50,6 +54,29 @@ export async function getManagedEnvironment(
     throw new Error("kernel returned a different managed environment")
   }
   return environment
+}
+
+export async function getManagedEnvironmentReimagePreflight(
+  client: LocalIpcClient,
+  environmentId: string,
+): Promise<ManagedEnvironmentReimagePreflight> {
+  const response = await sendWithProtocolMinimum<Record<string, unknown>>(
+    client.send.bind(client),
+    getManagedEnvironmentReimagePreflightRequest(environmentId),
+    {
+      capability: "Managed environment reimage preflight",
+      requestVariant: "GetManagedEnvironmentReimagePreflight",
+      minimumProtocolVersion: managedEnvironmentReimagePreflightMinimumProtocolVersion,
+    },
+  )
+  const preflight = expectVariant<{ preflight: ManagedEnvironmentReimagePreflight }>(
+    response,
+    "ManagedEnvironmentReimagePreflight",
+  ).preflight
+  if (preflight.environmentId !== environmentId) {
+    throw new Error("kernel returned reimage preflight for a different managed environment")
+  }
+  return preflight
 }
 
 export async function createManagedEnvironment(

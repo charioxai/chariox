@@ -3,20 +3,27 @@ import test from "node:test"
 
 import {
   createManagedEnvironmentRequest,
+  getManagedEnvironmentReimagePreflightRequest,
   getManagedEnvironmentRequest,
   listManagedEnvironmentCatalogRequest,
+  managedEnvironmentReimagePreflightMinimumProtocolVersion,
   observeManagedEnvironmentPreReimageRequest,
   prepareManagedEnvironmentContextTransferRequest,
   prepareManagedEnvironmentGitCredentialEnrollmentRequest,
   requestManagedEnvironmentLifecycleRequest,
   requestManagedEnvironmentReimageRequest,
+  type ManagedEnvironmentReimagePreflight,
   type ManagedEnvironmentSummary,
 } from "./ipc-managed-environment-requests.js"
+import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
 test("managed environment requests use the shared local daemon shape", () => {
   assert.deepEqual(listManagedEnvironmentCatalogRequest(), { ListManagedEnvironmentCatalog: null })
   assert.deepEqual(getManagedEnvironmentRequest("environment-1"), {
     GetManagedEnvironment: { environmentId: "environment-1" },
+  })
+  assert.deepEqual(getManagedEnvironmentReimagePreflightRequest("environment-1"), {
+    GetManagedEnvironmentReimagePreflight: { environmentId: "environment-1" },
   })
   assert.deepEqual(prepareManagedEnvironmentContextTransferRequest("environment-1"), {
     PrepareManagedEnvironmentContextTransfer: { environmentId: "environment-1" },
@@ -171,6 +178,37 @@ test("managed environment requests use the shared local daemon shape", () => {
       expectedGeneration: 3,
     },
   })
+})
+
+test("managed environment reimage preflight exposes only retained identity and desired release", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 341)
+  assert.equal(managedEnvironmentReimagePreflightMinimumProtocolVersion, 341)
+  const preflight: ManagedEnvironmentReimagePreflight = {
+    environmentId: "environment-1",
+    retained: {
+      providerServerId: "123456789",
+      generation: 3,
+      desiredRevision: 7,
+      observedRevision: 7,
+      runtimeMachineId: "managed-machine-3",
+      runtimeKernelId: "managed-kernel-3",
+      runtimeRelayRealmId: "managed-realm-3",
+      runtimeReleaseDigest: `sha256:${"a".repeat(64)}`,
+    },
+    desiredRelease: {
+      providerId: "hetzner",
+      providerImageId: "987654321",
+      providerProfileId: "hetzner-path1",
+      providerProfileDigest: `sha256:${"b".repeat(64)}`,
+      runtimeReleaseDigest: `sha256:${"c".repeat(64)}`,
+      runtimeSourceCommit: "d".repeat(40),
+      runtimeSourceTree: "e".repeat(40),
+    },
+  }
+
+  assert.equal(preflight.retained.providerServerId, "123456789")
+  assert.equal(preflight.desiredRelease.providerImageId, "987654321")
+  assert.equal("providerImageId" in preflight.retained, false)
 })
 
 test("managed environment summaries bind the runtime machine and kernel", () => {

@@ -3,7 +3,7 @@ use crate::local::*;
 
 #[test]
 fn local_daemon_managed_environment_control_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 340);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 341);
     let policy = ManagedEnvironmentAutoStopPolicy {
         minimum_runtime_seconds: 0,
         idle_delay_seconds: Some(900),
@@ -385,8 +385,70 @@ fn local_daemon_reimage_request_rejects_missing_context_plan() {
 }
 
 #[test]
+fn local_daemon_reimage_preflight_shape_is_versioned_and_allowlisted() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 341);
+    let preflight = ManagedEnvironmentReimagePreflight {
+        environment_id: "environment-1".to_string(),
+        retained: ManagedEnvironmentReimagePreflightRetained {
+            provider_server_id: "123456789".to_string(),
+            generation: 3,
+            desired_revision: 7,
+            observed_revision: 7,
+            runtime_machine_id: "managed-machine-3".to_string(),
+            runtime_kernel_id: "managed-kernel-3".to_string(),
+            runtime_relay_realm_id: "managed-realm-3".to_string(),
+            runtime_release_digest: format!("sha256:{}", "a".repeat(64)),
+        },
+        desired_release: ManagedEnvironmentReimagePreflightDesiredRelease {
+            provider_id: ManagedEnvironmentReimageProviderId::Hetzner,
+            provider_image_id: "987654321".to_string(),
+            provider_profile_id: "hetzner-path1".to_string(),
+            provider_profile_digest: format!("sha256:{}", "b".repeat(64)),
+            runtime_release_digest: format!("sha256:{}", "c".repeat(64)),
+            runtime_source_commit: "d".repeat(40),
+            runtime_source_tree: "e".repeat(40),
+        },
+    };
+    let snapshot = serde_json::json!([
+        LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(
+            GetManagedEnvironmentReimagePreflightRequest {
+                environment_id: "environment-1".to_string(),
+            },
+        ),
+        LocalDaemonResponse::ManagedEnvironmentReimagePreflight {
+            preflight: preflight.clone(),
+        },
+    ]);
+
+    assert_eq!(
+        snapshot.pointer("/0/GetManagedEnvironmentReimagePreflight/environmentId"),
+        Some(&serde_json::json!("environment-1"))
+    );
+    assert_eq!(
+        snapshot.pointer(
+            "/1/ManagedEnvironmentReimagePreflight/preflight/retained/providerServerId"
+        ),
+        Some(&serde_json::json!("123456789"))
+    );
+    assert_eq!(
+        snapshot.pointer(
+            "/1/ManagedEnvironmentReimagePreflight/preflight/desiredRelease/providerImageId"
+        ),
+        Some(&serde_json::json!("987654321"))
+    );
+    assert!(snapshot
+        .pointer("/1/ManagedEnvironmentReimagePreflight/preflight/retained/providerImageId")
+        .is_none());
+    let serialized = serde_json::to_string(&snapshot).expect("reimage preflight shape");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serialized.as_bytes())),
+        "47785a4b77235798487a8ba59f6a7cf4072aa1f9a1c53754bb334aa559bc79c5"
+    );
+}
+
+#[test]
 fn local_daemon_pre_reimage_observation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 340);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 341);
     let snapshot = serde_json::json!([
         LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(
             ObserveManagedEnvironmentPreReimageRequest {

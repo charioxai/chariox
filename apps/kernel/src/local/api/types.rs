@@ -96,4 +96,5 @@ pub use workspace::*;
 /// Version 338 adds deliberate, generation-bound pre-reimage observation reporting.
 /// Version 339 requires a fresh managed-context selection for every reimage request.
 /// Version 340 coordinates the signed managed-activity transition-time contract.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 340;
+/// Version 341 adds the authenticated managed-environment reimage preflight read.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 341;
