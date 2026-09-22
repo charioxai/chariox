@@ -11,6 +11,7 @@ test("browser state cleanup accepts a fully released drill", () => {
     volumeGone: true,
     savedImageGone: true,
     backupImagesGone: true,
+    fixtureWorkspaceRemoved: true,
     tempRootRemoved: true,
     listenersReleased: true,
     occupiedPorts: [],
@@ -25,6 +26,7 @@ test("browser state cleanup names every leaked resource", () => {
     volumeGone: false,
     savedImageGone: false,
     backupImagesGone: false,
+    fixtureWorkspaceRemoved: false,
     tempRootRemoved: false,
     listenersReleased: false,
     occupiedPorts: [55100, 55101],
@@ -36,6 +38,7 @@ test("browser state cleanup names every leaked resource", () => {
   assert.match(failure?.message ?? "", /volume/)
   assert.match(failure?.message ?? "", /saved image/)
   assert.match(failure?.message ?? "", /backup images/)
+  assert.match(failure?.message ?? "", /fixture workspace/)
   assert.match(failure?.message ?? "", /runtime root/)
   assert.match(failure?.message ?? "", /ports 55100, 55101/)
 })

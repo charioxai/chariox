@@ -17,6 +17,12 @@ import { finalizeDrillArtifacts } from "./lib/drill-artifacts.mjs"
 import { resolveBuiltBinary } from "./lib/drill-runtime-helpers.mjs"
 import { completeBrowserStateEditorHandoff, createBrowserStateEditorDrill } from "./lib/browser-state-drill-editor.mjs"
 import { createDrillInterruption } from "./lib/drill-interruption.mjs"
+import {
+  browserStateDrillWorkspaceSliceOptions,
+  cleanupBrowserStateDrillWorkspace,
+  finalizeBrowserStateDrillWorkspace,
+  prepareBrowserStateDrillWorkspace,
+} from "./lib/browser-state-drill-workspace.mjs"
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
@@ -75,6 +81,7 @@ let cleanupResult = null
 let sourceIdentity = null
 let stateImagesBefore = new Set()
 let rollbackImagesBefore = new Set()
+let workspaceFixture = null
 let fixtureSidecarGone = true
 const sliceRuntime = {}
 const persistenceIdentity = {}
@@ -122,6 +129,12 @@ if (failure) {
 }
 
 async function run() {
+  workspaceFixture = await prepareBrowserStateDrillWorkspace({
+    env: process.env,
+    repositoryRoot: repoRoot,
+    homeRoot: os.homedir(),
+    verifyEngineAccess: verifyBrowserStateDockerEngineAccess,
+  })
   log("checking Docker")
   await assertDockerReady()
   stateImagesBefore = new Set(await listDockerImageRefs(`chariox-slice-state:${sliceName}-*`))
@@ -185,12 +198,17 @@ async function run() {
     backend: "local_docker",
     displayMode: "headed",
     displayBackend: "selkies",
-    workspaceMount: repoRoot,
+    ...browserStateDrillWorkspaceSliceOptions(workspaceFixture),
     workerKernelRef: `m20-worker-${process.pid}`,
   })), "SliceCreated").slice
   log("starting slice")
   await client.send(requests.startSliceRequest(slice.id))
   slice = await waitForSliceRunning(slice.id)
+  workspaceFixture = await finalizeBrowserStateDrillWorkspace({
+    fixture: workspaceFixture,
+    slice,
+    repositoryRoot: repoRoot,
+  })
   const initialSlicePorts = structuredClone(slice.local_docker_ports)
   const initialDisplayUrl = slice.display_endpoint?.url
   assert.ok(initialSlicePorts?.novnc, "slice must retain its allocated display port")
@@ -413,7 +431,7 @@ async function seedConfig() {
 }
 
 async function startFixture() {
-  if (process.env.M20_SLICE_IMAGE !== undefined) {
+  if (workspaceFixture.kind === "direct") {
     assert.ok(process.env.M20_SLICE_IMAGE?.trim(),
       "direct-rootless M20 fixture requires the exact M20_SLICE_IMAGE used by its slice")
     return await startBrowserStateFixtureSidecar({
@@ -848,6 +866,17 @@ async function assertDockerReady() {
   if (result.code !== 0) throw new Error(`Docker is required for M20 drill.\n${result.stdout}${result.stderr}`)
 }
 
+async function verifyBrowserStateDockerEngineAccess(target, { writable }) {
+  for (const flag of writable ? ["-x", "-w"] : ["-x"]) {
+    const result = await runCommand("runuser", ["-u", "chariox-docker", "--", "test", flag, target], {
+      timeoutMs: 10_000,
+    })
+    if (result.code !== 0) {
+      throw new Error(`rootless Docker engine user cannot ${writable ? "write or traverse" : "traverse"} the selected persistence fixture root`)
+    }
+  }
+}
+
 function start(label, command, args, options = {}) {
   const child = spawn(command, args, {
     cwd: options.cwd ?? repoRoot,
@@ -957,6 +986,7 @@ async function runCommand(command, args, options = {}) {
 }
 
 async function cleanup() {
+  let workspaceCleanupError = null
   if (client && requests && slice) {
     if (savedState) {
       await client.send(requests.resetSliceStateRequest(slice.id)).catch(() => undefined)
@@ -981,6 +1011,15 @@ async function cleanup() {
   await closeFixtureServer()
   for (const child of children.toReversed()) {
     await terminateChild(child)
+  }
+  let fixtureWorkspaceRemoved = workspaceFixture == null
+  if (workspaceFixture) {
+    try {
+      await cleanupBrowserStateDrillWorkspace(workspaceFixture)
+      fixtureWorkspaceRemoved = true
+    } catch (error) {
+      workspaceCleanupError = error
+    }
   }
   await rm(tempRoot, { recursive: true, force: true })
 
@@ -1010,6 +1049,7 @@ async function cleanup() {
     backupImagesGone,
     stateImageLeaks,
     rollbackImageLeaks,
+    fixtureWorkspaceRemoved,
     tempRootRemoved: await access(tempRoot).then(() => false).catch(() => true),
     listenersReleased: occupiedPorts.length === 0,
     occupiedPorts,
@@ -1020,6 +1060,7 @@ async function cleanup() {
   cleanupResult = result
   await writeFile(path.join(artifactDir, "cleanup.json"), `${JSON.stringify(result, null, 2)}\n`)
   const cleanupFailure = browserStateCleanupFailure(result)
+  if (workspaceCleanupError) throw workspaceCleanupError
   if (cleanupFailure) throw cleanupFailure
   return result
 }
