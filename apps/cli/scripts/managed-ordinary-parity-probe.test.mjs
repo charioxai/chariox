@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -57,6 +57,111 @@ test("repo-owned probe executes its real command path and binds its file to the 
   assert.equal(payload.result.probe_file, "apps/cli/scripts/managed-ordinary-parity-probe.mjs")
   assert.match(payload.result.probe_file_git_blob, /^[0-9a-f]{40}$/)
   assert.match(payload.result.probe_file_sha256, /^sha256:[0-9a-f]{64}$/)
+})
+
+test("exact-path probe honors a workspace cwd distinct from the reviewed source checkout", async (context) => {
+  const root = await mkdtemp(join(os.tmpdir(), "chariox-managed-ordinary-parity-exact-cwd-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const destination = join(root, "apps/cli/scripts/managed-ordinary-parity-probe.mjs")
+  const matrixDestination = join(root, "apps/cli/scripts/managed-ordinary-parity-matrix.mjs")
+  const workspace = join(root, "workspace-created-in-fixture")
+  await mkdir(dirname(destination), { recursive: true })
+  await mkdir(workspace, { recursive: true })
+  await writeFile(destination, await readFile(probeSource))
+  await writeFile(matrixDestination, await readFile(matrixSource))
+  await git(root, ["init", "--quiet"])
+  await git(root, ["config", "user.name", "parity-probe-test"])
+  await git(root, ["config", "user.email", "parity-probe-test@example.invalid"])
+  await git(root, ["add", "apps/cli/scripts/managed-ordinary-parity-probe.mjs", "apps/cli/scripts/managed-ordinary-parity-matrix.mjs"])
+  await git(root, ["commit", "--quiet", "-m", "probe fixture"])
+  const reviewedCommit = await git(root, ["rev-parse", "HEAD"])
+  const output = await execFileAsync(process.execPath, [
+    destination,
+    "--source-root", root,
+    "--reviewed-commit", reviewedCommit,
+    "--parity-row", "MP-02",
+    "--parity-check", "exact_path_entry",
+    "--topology", "ordinary",
+    "--expected-cwd", workspace,
+    "--json",
+    "--home-path", "/home",
+    "--tmp-path", "/tmp",
+    "--nested-path", join(os.tmpdir(), `chariox-parity-nested-${process.pid}`),
+    "--new-directory", join(os.tmpdir(), `chariox-parity-created-${process.pid}`),
+  ], { cwd: workspace, encoding: "utf8" })
+  const payload = JSON.parse(output.stdout)
+  assert.equal(payload.ok, true)
+  assert.equal(payload.result.exact_path_accessible, true)
+  assert.equal(payload.result.cwd_matches_requested, true)
+  assert.equal(payload.result.cwd_fingerprint, payload.result.requested_cwd_fingerprint)
+})
+
+test("control-file protection requires its parent to remain writable as a workspace", {
+  skip: process.getuid?.() === 0,
+}, async (context) => {
+  const root = await mkdtemp(join(os.tmpdir(), "chariox-managed-ordinary-parity-control-parent-"))
+  const controlParent = join(root, "workspace")
+  const destination = join(root, "apps/cli/scripts/managed-ordinary-parity-probe.mjs")
+  const matrixDestination = join(root, "apps/cli/scripts/managed-ordinary-parity-matrix.mjs")
+  await mkdir(dirname(destination), { recursive: true })
+  await mkdir(controlParent, { recursive: true })
+  const controlFile = join(controlParent, "managed-control.json")
+  const sibling = join(controlParent, "sibling-workspace-file")
+  await writeFile(controlFile, "control fixture\n", { mode: 0o600 })
+  await writeFile(sibling, "sibling fixture\n", { mode: 0o600 })
+  await writeFile(destination, await readFile(probeSource))
+  await writeFile(matrixDestination, await readFile(matrixSource))
+  await git(root, ["init", "--quiet"])
+  await git(root, ["config", "user.name", "parity-probe-test"])
+  await git(root, ["config", "user.email", "parity-probe-test@example.invalid"])
+  await git(root, [
+    "add",
+    "apps/cli/scripts/managed-ordinary-parity-probe.mjs",
+    "apps/cli/scripts/managed-ordinary-parity-matrix.mjs",
+    "workspace/managed-control.json",
+    "workspace/sibling-workspace-file",
+  ])
+  await git(root, ["commit", "--quiet", "-m", "probe fixture"])
+  const reviewedCommit = await git(root, ["rev-parse", "HEAD"])
+  await chmod(controlParent, 0o555)
+  context.after(async () => {
+    await chmod(controlParent, 0o755)
+    await rm(root, { recursive: true, force: true })
+  })
+  const result = await execFileAsync(process.execPath, [
+    destination,
+    "--source-root", root,
+    "--reviewed-commit", reviewedCommit,
+    "--parity-row", "MP-03",
+    "--parity-check", "control_file_protection",
+    "--topology", "ordinary",
+    "--json",
+    "--home-path", "/home",
+    "--tmp-path", "/tmp",
+    "--nested-path", join(os.tmpdir(), `chariox-parity-nested-${process.pid}`),
+    "--new-directory", join(os.tmpdir(), `chariox-parity-created-${process.pid}`),
+  ], {
+    cwd: root,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      CHARIOX_PARITY_CONTROL_FILE: controlFile,
+      CHARIOX_PARITY_CONTROL_SIBLING: sibling,
+      CHARIOX_PARITY_CONTROL_PROTECTION_EVIDENCE_JSON: JSON.stringify({
+        observed: true,
+        control_file_denied: true,
+        evidence_id: "fixture-control-protection",
+      }),
+    },
+  }).then(({ stdout, stderr }) => ({ code: 0, stdout, stderr })).catch((error) => ({
+    code: error.code,
+    stdout: String(error.stdout ?? ""),
+    stderr: String(error.stderr ?? error.message ?? ""),
+  }))
+  assert.equal(result.code, 1, result.stdout || result.stderr)
+  const payload = JSON.parse(result.stdout)
+  assert.equal(payload.ok, false)
+  assert.match(payload.error, /parent workspace/)
 })
 
 test("probe fails closed when a required product observation is absent", async (context) => {

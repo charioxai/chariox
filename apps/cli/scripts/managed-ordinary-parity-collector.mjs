@@ -225,6 +225,9 @@ function normalizeGenericResult(result, rowId, checkId) {
   for (const key of required) {
     expectedBoolean(result, key, rowId, checkId, true)
   }
+  if (rowId === "MP-03" && checkId === "control_file_protection") {
+    expectedBoolean(result, "parent_workspace_accessible", rowId, checkId, true)
+  }
   const normalized = { observed: true }
   for (const key of required) normalized[key] = result[key]
   if (rowId === "MP-01" && checkId === "privilege_state") {
@@ -456,6 +459,9 @@ function validateOptions(options, processApi) {
   for (const [key, label] of [["kernelBinary", "kernel binary"], ["kernelReleaseRoot", "kernel release root"], ["kernelReleasePublicKey", "kernel release public key"]]) {
     if (!isAbsolute(options[key])) throw new CollectorError("path_invalid", `${label} must be an absolute path`)
   }
+  if (options.expectedCwd !== undefined && !isAbsolute(options.expectedCwd)) {
+    throw new CollectorError("path_invalid", "expected provider working directory must be absolute")
+  }
   if (!DIGEST.test(options.kernelReleaseDigest)) throw new CollectorError("kernel_release_digest_invalid", "kernel release digest must be a sha256 digest")
   if (!options.signingKey || (typeof options.signingKey !== "string" && !Buffer.isBuffer(options.signingKey))) {
     throw new CollectorError("signing_key_missing", "a signing key is required")
@@ -542,7 +548,7 @@ export function createParityCollector({
   }
 
   function probeArgs(ctx, rowId, checkId) {
-    return [
+    const args = [
       "--source-root", ctx.sourceRoot,
       "--reviewed-commit", ctx.reviewedCommit,
       "--parity-row", rowId,
@@ -554,10 +560,26 @@ export function createParityCollector({
       "--nested-path", ctx.nestedPath,
       "--new-directory", ctx.newDirectory,
     ]
+    if (rowId === "MP-02" && checkId === "exact_path_entry") {
+      args.push("--expected-cwd", ctx.expectedCwd)
+    }
+    return args
   }
 
   async function runProbe(ctx, rowId, checkId, normalizer) {
-    const { result, stepResult } = await runJson(ctx, rowId, checkId, "probe", process.execPath, [ctx.probePath, ...probeArgs(ctx, rowId, checkId)], { cwd: ctx.sourceRoot })
+    const probeCwd = rowId === "MP-02" && checkId === "exact_path_entry"
+      ? ctx.expectedCwd
+      : ctx.sourceRoot
+    const probeArguments = [ctx.probePath, ...probeArgs(ctx, rowId, checkId)]
+    const { result, stepResult } = await runJson(
+      ctx,
+      rowId,
+      checkId,
+      "probe",
+      process.execPath,
+      probeArguments,
+      { cwd: probeCwd },
+    )
     if (result.probe_identity_verified !== true
       || result.probe_source_commit !== ctx.reviewedCommit
       || result.probe_file !== PROBE_RELATIVE_PATH
@@ -577,9 +599,37 @@ export function createParityCollector({
     for (const [key, label] of [["kernelBinary", "kernel binary"], ["kernelReleaseRoot", "kernel release root"], ["kernelReleasePublicKey", "kernel release public key"]]) {
       if (nonEmptyString(options[key]) && !isAbsolute(options[key])) throw new CollectorError("path_invalid", `${label} must be an absolute path`)
     }
+    if (
+      options.expectedCwd !== undefined
+      && (!nonEmptyString(options.expectedCwd) || !isAbsolute(options.expectedCwd))
+    ) {
+      throw new CollectorError("path_invalid", "expected provider working directory must be absolute")
+    }
+    const sourceRoot = resolve(options.sourceRoot ?? (typeof processApi.cwd === "function" ? processApi.cwd() : process.cwd()))
+    let expectedCwd = sourceRoot
+    if (options.expectedCwd !== undefined) {
+      const actualInvocationCwd = typeof processApi.cwd === "function" ? processApi.cwd() : process.cwd()
+      let actualCanonicalCwd
+      let expectedCanonicalCwd
+      try {
+        const canonicalPaths = await Promise.all([
+          filesystem.realpath(resolve(actualInvocationCwd)),
+          filesystem.realpath(resolve(options.expectedCwd)),
+        ])
+        actualCanonicalCwd = canonicalPaths[0]
+        expectedCanonicalCwd = canonicalPaths[1]
+      } catch (error) {
+        throw new CollectorError("cwd_unavailable", "expected provider working directory is not accessible", { cause: error })
+      }
+      if (actualCanonicalCwd !== expectedCanonicalCwd) {
+        throw new CollectorError("cwd_mismatch", "collector was not invoked from the expected provider working directory")
+      }
+      expectedCwd = expectedCanonicalCwd
+    }
     const normalizedOptions = {
       ...options,
-      sourceRoot: resolve(options.sourceRoot ?? (typeof processApi.cwd === "function" ? processApi.cwd() : process.cwd())),
+      sourceRoot,
+      expectedCwd,
       outputPath: options.outputPath ? resolve(options.outputPath) : "",
       evidenceDir: resolve(options.evidenceDir ?? `${options.outputPath}.evidence`),
       kernelBinary: options.kernelBinary ? resolve(options.kernelBinary) : "",
@@ -773,7 +823,7 @@ function parseArgs(argv) {
     "topology", "reviewed-commit", "build-id", "kernel-protocol", "relay-protocol", "provider",
     "provider-command", "kernel-binary", "kernel-release-root", "kernel-release-digest",
     "kernel-release-public-key", "boundary", "output", "evidence-dir", "source-root",
-    "relay-protocol-file", "signing-key-env", "timeout-ms", "help",
+    "expected-cwd", "relay-protocol-file", "signing-key-env", "timeout-ms", "help",
   ])
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]
@@ -792,13 +842,16 @@ function parseArgs(argv) {
 
 export function usage() {
   return [
-    "node apps/cli/scripts/managed-ordinary-parity-collector.mjs capture \\",
+    "node <reviewed-checkout>/apps/cli/scripts/managed-ordinary-parity-collector.mjs capture \\",
     "  --topology ordinary|path1 --reviewed-commit <40-hex> --build-id <kernel-version> \\",
     "  --kernel-protocol <n> --relay-protocol <n> --provider codex|claude|opencode \\",
     "  --provider-command <official-provider> --kernel-binary <chariox-kernel> \\",
     "  --kernel-release-root <verified-rootfs> --kernel-release-digest <sha256:digest> \\",
     "  --kernel-release-public-key <trusted-public-key> --boundary official-provider-turn|remote-command \\",
-    "  --output <manifest.json> --signing-key-env CHARIOX_PARITY_SIGNING_KEY",
+    "  --source-root <reviewed-checkout> --expected-cwd <provider-working-directory> \\",
+    "  --output <manifest.json> \\",
+    "  --signing-key-env CHARIOX_PARITY_SIGNING_KEY",
+    "  For target-path capture, run this command from that same provider working directory.",
   ].join("\n")
 }
 
@@ -853,6 +906,7 @@ export async function runCli(argv = process.argv.slice(2), {
       outputPath: values.output,
       evidenceDir: values.evidence_dir,
       sourceRoot: values.source_root,
+      expectedCwd: values.expected_cwd,
       relayProtocolFile: values.relay_protocol_file,
       signingKey,
       timeoutMs: values.timeout_ms ? Number(values.timeout_ms) : DEFAULT_TIMEOUT_MS,

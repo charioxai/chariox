@@ -29,7 +29,7 @@ const KERNEL_RELEASE_PUBLIC_KEY = "/release/trusted-release-public-key"
 
 function memoryFilesystem() {
   const files = new Map()
-  const directories = new Set()
+  const directories = new Set(["/repo"])
   return {
     files,
     directories,
@@ -39,6 +39,7 @@ function memoryFilesystem() {
       return files.get(file)
     },
     async realpath(file) {
+      if (directories.has(file)) return file
       if (file !== KERNEL_BINARY && file !== `${KERNEL_RELEASE_ROOT}/usr/local/bin/chariox-kernel`) {
         throw Object.assign(new Error(`missing fixture path ${file}`), { code: "ENOENT" })
       }
@@ -122,7 +123,7 @@ function genericResult(rowId, checkId, topology) {
     "MP-02/directory_creation": { created_and_accessible: true },
     "MP-02/home_access": { accessible: true },
     "MP-02/tmp_access": { accessible: true },
-    "MP-03/control_file_protection": { control_file_denied: true, sibling_accessible: true },
+    "MP-03/control_file_protection": { control_file_denied: true, parent_workspace_accessible: true, sibling_accessible: true },
     "MP-03/filesystem_permissions": { permissions_match_ordinary: true },
     "MP-04/provider_environment": { home_matches_ordinary: true, chariox_home_matches_ordinary: true, cwd_matches_requested: true, ordinary_user: true },
     "MP-05/empty_workspace": { workspace_created: true, control_state_separate: true },
@@ -153,6 +154,8 @@ function genericResult(rowId, checkId, topology) {
 
 function makeHarness(topology, overrides = {}) {
   const filesystem = memoryFilesystem()
+  const processCwd = overrides.processCwd ?? "/repo"
+  filesystem.directories.add(processCwd)
   filesystem.files.set(`${KERNEL_RELEASE_ROOT}/usr/lib/chariox/release-manifest.json`, JSON.stringify({
     schemaVersion: 2,
     sourceCommit: REVIEWED_COMMIT,
@@ -193,8 +196,8 @@ function makeHarness(topology, overrides = {}) {
     }
     throw Object.assign(new Error(`unexpected command ${command}`), { code: "ENOENT" })
   }
-  const runCommand = async (command, args) => {
-    calls.push([command, [...args]])
+  const runCommand = async (command, args, options = {}) => {
+    calls.push([command, [...args], options])
     const overridden = overrides.command ? await overrides.command(command, args, defaultCommand) : undefined
     return overridden ?? defaultCommand(command, args)
   }
@@ -202,7 +205,7 @@ function makeHarness(topology, overrides = {}) {
     filesystem,
     runCommand,
     clock,
-    processApi: { platform: "linux", pid: 77, cwd: () => "/repo" },
+    processApi: { platform: "linux", pid: 77, cwd: () => processCwd },
   })
   const options = {
     topology,
@@ -258,6 +261,30 @@ test("collects a fresh Path-1 managed snapshot and the comparator accepts ordina
   assert.equal(path1.manifest.rows["MP-09"].checks.shutdown_idle_15m.result.managed_policy, true)
 })
 
+test("exact-path collector capture binds the target to its invocation cwd and probe cwd", async () => {
+  const target = "/tmp/chariox-parity-target/workspace"
+  const harness = makeHarness("ordinary", { processCwd: target })
+  harness.options.expectedCwd = target
+  const manifest = await harness.collector.collect(harness.options)
+  const [command, args, options] = harness.calls.find(([command, args]) =>
+    command === process.execPath
+      && args[0].endsWith("managed-ordinary-parity-probe.mjs")
+      && args.includes("exact_path_entry"),
+  )
+  assert.equal(command, process.execPath)
+  assert.equal(args[args.indexOf("--expected-cwd") + 1], target)
+  assert.equal(options.cwd, target)
+  assert.equal(manifest.rows["MP-02"].checks.exact_path_entry.result.cwd_matches_requested, true)
+
+  const mismatch = makeHarness("ordinary")
+  mismatch.filesystem.directories.add(target)
+  mismatch.options.expectedCwd = target
+  await assert.rejects(() => mismatch.collector.collect(mismatch.options), (error) => {
+    assert.equal(error.code, "cwd_mismatch")
+    return true
+  })
+})
+
 test("collector rejects arbitrary shutdown outcomes and premature deadlines", async () => {
   const wrongOutcome = makeHarness("path1", {
     results: {
@@ -298,6 +325,25 @@ test("denied child enumeration still records a valid exact-path result", async (
   })
   const result = manifest.rows["MP-02"].checks.directory_discovery.result
   assert.deepEqual(result, { observed: true, exact_path_accessible: true, child_enumeration_denied: true })
+})
+
+test("collector rejects control-file evidence that leaves its parent unavailable as a workspace", async () => {
+  const harness = makeHarness("path1", {
+    results: {
+      "MP-03/control_file_protection": {
+        observed: true,
+        control_file_denied: true,
+        parent_workspace_accessible: false,
+        sibling_accessible: true,
+      },
+    },
+  })
+  await assert.rejects(() => harness.collector.collect(harness.options), (error) => {
+    assert.equal(error.code, "probe_assertion_failed")
+    assert.equal(error.rowId, "MP-03")
+    assert.equal(error.key, "parent_workspace_accessible")
+    return true
+  })
 })
 
 test("missing command fails closed and retains a redacted evidence record", async () => {

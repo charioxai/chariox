@@ -91,6 +91,9 @@ function parseArgs(argv) {
   for (const key of ["source_root", "reviewed_commit", "parity_row", "parity_check", "topology", "home_path", "tmp_path", "nested_path", "new_directory"]) {
     if (typeof values[key] !== "string" || values[key].trim() === "") throw new ProbeError(`missing required argument: --${key.replaceAll("_", "-")}`)
   }
+  if (values.expected_cwd !== undefined && !isAbsolute(values.expected_cwd)) {
+    throw new ProbeError("expected cwd must be absolute")
+  }
   if (!REVIEWED_COMMIT.test(values.reviewed_commit)) throw new ProbeError("reviewed commit must be a full Git commit ID")
   if (!TOPOLOGIES.has(values.topology)) throw new ProbeError("topology must be ordinary or path1")
   if (!CHECKS.has(values.parity_row) || !CHECKS.get(values.parity_row).has(values.parity_check)) {
@@ -333,11 +336,11 @@ async function observeDirectoryCheck(identity, values, checkId) {
     return identityResult(identity, { exact_path_accessible: exactPathAccessible, child_enumeration_denied: childEnumerationDenied })
   }
   if (checkId === "exact_path_entry") {
-    const sourceRoot = resolve(values.source_root)
+    const expectedCwd = values.expected_cwd ?? values.source_root
     const current = await pathFingerprint(process.cwd(), "current directory")
-    const requested = await pathFingerprint(sourceRoot, "requested source root")
+    const requested = await pathFingerprint(expectedCwd, "requested working directory")
     return identityResult(identity, {
-      exact_path_accessible: await accessible(sourceRoot),
+      exact_path_accessible: await accessible(expectedCwd),
       cwd_matches_requested: current.resolved_path === requested.resolved_path,
       cwd_fingerprint: current.path_fingerprint,
       requested_cwd_fingerprint: requested.path_fingerprint,
@@ -695,14 +698,34 @@ async function observeControlFileProtection(identity) {
     if (error?.code !== "EACCES" && error?.code !== "EPERM") throw error
     controlDenied = true
   }
-  const siblingAccessible = await accessible(sibling, constants.R_OK)
   if (!controlDenied) {
     const productEvidence = requireObservedEvidence(parseJsonEnv("CHARIOX_PARITY_CONTROL_PROTECTION_EVIDENCE_JSON"), "control file protection")
     controlDenied = productEvidence.control_file_denied === true
   }
-  if (!controlDenied || !siblingAccessible) throw new ProbeError("control file protection was not observed")
+  const parentWorkspace = dirname(resolve(controlFile))
+  let parentWorkspaceAccessible = false
+  try {
+    await accessible(parentWorkspace, constants.R_OK | constants.W_OK | constants.X_OK)
+    parentWorkspaceAccessible = true
+  } catch (error) {
+    if (error?.code !== "EACCES" && error?.code !== "EPERM") throw error
+  }
+  const siblingMetadata = await stat(sibling)
+  const siblingAccessMode = constants.R_OK | constants.W_OK
+    | (siblingMetadata.isDirectory() ? constants.X_OK : 0)
+  let siblingAccessible = false
+  try {
+    await accessible(sibling, siblingAccessMode)
+    siblingAccessible = true
+  } catch (error) {
+    if (error?.code !== "EACCES" && error?.code !== "EPERM") throw error
+  }
+  if (!controlDenied) throw new ProbeError("exact control file protection was not observed")
+  if (!parentWorkspaceAccessible) throw new ProbeError("control file parent workspace is not accessible for workspace operations")
+  if (!siblingAccessible) throw new ProbeError("control file sibling workspace is not accessible for workspace operations")
   return identityResult(identity, {
     control_file_denied: true,
+    parent_workspace_accessible: true,
     sibling_accessible: true,
     control_path_fingerprint: fingerprint(resolve(controlFile)),
     sibling_path_fingerprint: fingerprint(await realpath(sibling)),
