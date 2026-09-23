@@ -75,7 +75,6 @@ let cleanupResult = null
 let sourceIdentity = null
 let stateImagesBefore = new Set()
 let rollbackImagesBefore = new Set()
-let workspaceFixture = null
 let fixtureSidecarGone = true
 const sliceRuntime = {}
 const persistenceIdentity = {}
@@ -414,7 +413,7 @@ async function seedConfig() {
 }
 
 async function startFixture() {
-  if (workspaceFixture.kind === "direct") {
+  if (process.env.M20_SLICE_IMAGE !== undefined) {
     assert.ok(process.env.M20_SLICE_IMAGE?.trim(),
       "direct-rootless M20 fixture requires the exact M20_SLICE_IMAGE used by its slice")
     return await startBrowserStateFixtureSidecar({
