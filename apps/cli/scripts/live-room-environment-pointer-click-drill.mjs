@@ -18,6 +18,7 @@ import { captureRoomStreamerDiagnostics } from "./lib/room-streamer-diagnostics.
 import { captureRoomKernelDiagnostics } from "./lib/room-kernel-diagnostics.mjs"
 import { startRoomSliceWithForwarding } from "./lib/room-colima-forwarding.mjs"
 import {
+  importRoomNativeProviderAccount,
   prepareRoomRealProviderAgent,
   roomProviderAgentReadyMetadata,
   roomRealProviderOptions,
@@ -75,7 +76,7 @@ const sliceMemoryMb = Number(process.env.CHARIOX_ROOM_DRILL_MEMORY_MB ?? 2048)
 assert.ok(Number.isSafeInteger(sliceMemoryMb) && sliceMemoryMb > 0 && sliceMemoryMb <= 0xffff_ffff,
   "CHARIOX_ROOM_DRILL_MEMORY_MB must be a positive u32 number of MiB")
 const companionOnly = process.env.CHARIOX_ROOM_DRILL_FOCUS === "web-companion"
-const realProviderOptions = roomRealProviderOptions(process.env)
+let realProviderOptions = roomRealProviderOptions(process.env)
 if (companionOnly && !process.env.CHARIOX_ROOM_DRILL_COORDINATION_DIR?.trim()) {
   throw new Error("web-companion focus requires CHARIOX_ROOM_DRILL_COORDINATION_DIR")
 }
@@ -343,6 +344,10 @@ async function run() {
     }
   }, 60_000, "kernel did not accept local connections")
   observerClient = interruption.guardClient(new LocalIpcClient(`ws://127.0.0.1:${kernelPort}/kernel`))
+
+  if (realProviderOptions) {
+    realProviderOptions = await importRoomNativeProviderAccount({ client, requests, options: realProviderOptions })
+  }
 
   const createSliceResponse = await withTimeout(client.send(requests.createSliceRequest({
     name: runId,

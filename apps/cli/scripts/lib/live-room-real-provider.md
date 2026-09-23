@@ -12,6 +12,13 @@ omitted. Preparation verifies the kernel's actual account and effort before
 any prompt, and includes the selection in Web companion evidence. The drill
 does not silently substitute another account or effort.
 
+The disposable drill kernel starts with an empty account registry. It first
+imports the host's native default account through the public kernel request,
+then matches the selected label or profile ID and uses the returned profile ID
+for slice transfer. For example, `codex-1` is a label, not the profile ID.
+Selecting a different account fails before slice creation; this drill does not
+copy credentials or silently fall back to a different profile.
+
 Use `CARGO_TARGET_DIR` for the existing matching binaries and
 `CHARIOX_ROOM_DRILL_IMAGE` for an existing exact-source image. The latter disables
 automatic image builds. The fixture enforces one 2-GiB, one-CPU headed slice and

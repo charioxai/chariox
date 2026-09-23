@@ -37,6 +37,23 @@ export function roomRealProviderOptions(env) {
     ...(browserMutation ? { browserMutation } : {}), accountProfile, effort, importFirst: env.CHARIOX_ROOM_DRILL_IMPORT_FIRST === "1" }
 }
 
+// The drill kernel has a fresh CHARIOX_HOME. Register the host's native
+// account through the public kernel request before spawning its slice agent.
+export async function importRoomNativeProviderAccount({ client, requests, options }) {
+  const requestedAccountProfile = options.accountProfile ?? "default"
+  const profile = unwrap(await client.send(
+    requests.importNativeProviderAccountProfileRequest(options.provider),
+  ), "ProviderAccountProfile").profile
+  assert.ok(profile?.provider === options.provider && profile.is_default
+    && typeof profile.profile_id === "string" && profile.profile_id.length > 0,
+  "kernel did not register the selected native provider account")
+  assert.ok(requestedAccountProfile === "default"
+    || requestedAccountProfile === profile.profile_id
+    || requestedAccountProfile === profile.label,
+  `selected account ${requestedAccountProfile} does not match the imported native ${options.provider} account`)
+  return { ...options, requestedAccountProfile, accountProfile: profile.profile_id }
+}
+
 // Prepare only the provider identity that a later companion may reuse. This
 // intentionally stops before AttachToSession and SubmitPrompt; the Cloud
 // companion owns its own attachment and prompt submission after it verifies
