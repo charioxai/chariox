@@ -356,6 +356,18 @@ async function run() {
     base: "clean",
   })), 15_000, "CreateSlice response")
   slice = unwrap(createSliceResponse, "SliceCreated").slice
+  const session = unwrap(
+    await client.send(requests.createSessionRequest(fixtureWorkspace, fixtureWorkspace, runId)),
+    "SessionCreated",
+  ).session
+  sessionId = session.id
+  // The worker loads its home/Room binding at boot, so bind before provisioning.
+  const binding = unwrap(
+    await client.send(requests.bindRoomEnvironmentSliceRequest(sessionId, slice.id)),
+    "RoomEnvironmentSlice",
+  ).binding
+  assert.equal(binding.session_id, sessionId)
+  assert.equal(binding.slice_id, slice.id)
   localForwarding = await startRoomSliceWithForwarding({
     sshConfig: process.env.CHARIOX_ROOM_DRILL_COLIMA_SSH_CONFIG,
     slice,
@@ -403,11 +415,6 @@ async function run() {
     fixtureWorkspace = fixtureWorkspaceLease.workspace
   }
 
-  const session = unwrap(
-    await client.send(requests.createSessionRequest(fixtureWorkspace, fixtureWorkspace, runId)),
-    "SessionCreated",
-  ).session
-  sessionId = session.id
   remoteAutomation = await startRemoteTui({ tempRoot })
   const attachedRemoteTui = await waitForAutomationSnapshot(
     remoteAutomation,
@@ -424,13 +431,6 @@ async function run() {
     30_000,
   )
   assert.equal(attachedLocalTui.session?.id, sessionId)
-  const binding = unwrap(
-    await client.send(requests.bindRoomEnvironmentSliceRequest(sessionId, slice.id)),
-    "RoomEnvironmentSlice",
-  ).binding
-  assert.equal(binding.session_id, sessionId)
-  assert.equal(binding.slice_id, slice.id)
-
   await waitForBrowserReady(60_000)
   const fixtureProbe = JSON.parse((await docker([
     "exec", containerName,
