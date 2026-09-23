@@ -6,7 +6,7 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 if [ "$#" -ne 4 ] && [ "$#" -ne 5 ]; then
-  echo "usage: upgrade-image.sh <managed-kernel-rootfs> <expected-current-release-digest> <expected-new-release-digest> <current-trusted-public-key> [next-trusted-public-key]" >&2
+  echo "usage: CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1|shared_host upgrade-image.sh <managed-kernel-rootfs> <expected-current-release-digest> <expected-new-release-digest> <current-trusted-public-key> [next-trusted-public-key]" >&2
   exit 1
 fi
 
@@ -21,11 +21,15 @@ managed_home=$install_root/home/chariox
 managed_state=$managed_home/.chariox
 legacy_home=$state_root/home
 script_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-managed_provider_topology=${CHARIOX_MANAGED_PROVIDER_TOPOLOGY:-shared_host}
+managed_provider_topology=${CHARIOX_MANAGED_PROVIDER_TOPOLOGY-}
 case "$managed_provider_topology" in
   path1|shared_host) ;;
+  '')
+    echo "CHARIOX_MANAGED_PROVIDER_TOPOLOGY must be explicitly set to path1 or shared_host" >&2
+    exit 1
+    ;;
   *)
-    echo "managed provider topology must be path1 or shared_host" >&2
+    echo "CHARIOX_MANAGED_PROVIDER_TOPOLOGY must be path1 or shared_host" >&2
     exit 1
     ;;
 esac

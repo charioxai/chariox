@@ -30,6 +30,38 @@ const upgradeState = join(repositoryRoot, "deploy/managed-kernel/managed-kernel-
 const managedService = join(repositoryRoot, "deploy/managed-kernel/chariox-managed-bootstrap.service")
 const serviceName = "chariox-managed-bootstrap.service"
 
+test("managed kernel upgrade requires an explicit valid provider topology before reading the image", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-upgrade-topology-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const bin = join(root, "bin")
+  await put(join(bin, "id"), "#!/bin/sh\nprintf '0\\n'\n", 0o755)
+  const env = {
+    ...process.env,
+    PATH: `${bin}:${process.env.PATH}`,
+    CHARIOX_MANAGED_UPGRADE_ROOT: join(root, "host"),
+  }
+  const args = ["missing-image", "wrong-current", "wrong-next", "missing-key"]
+  for (const topology of [undefined, "", "unexpected"]) {
+    const candidateEnv = { ...env }
+    if (topology === undefined) delete candidateEnv.CHARIOX_MANAGED_PROVIDER_TOPOLOGY
+    else candidateEnv.CHARIOX_MANAGED_PROVIDER_TOPOLOGY = topology
+    const result = spawnSync(upgrade, args, { encoding: "utf8", env: candidateEnv })
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, topology === "unexpected"
+      ? /CHARIOX_MANAGED_PROVIDER_TOPOLOGY must be path1 or shared_host/
+      : /CHARIOX_MANAGED_PROVIDER_TOPOLOGY must be explicitly set to path1 or shared_host/)
+    assert.doesNotMatch(result.stderr, /release digest|image root/)
+  }
+  for (const topology of ["path1", "shared_host"]) {
+    const result = spawnSync(upgrade, args, {
+      encoding: "utf8",
+      env: { ...env, CHARIOX_MANAGED_PROVIDER_TOPOLOGY: topology },
+    })
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /managed release digest is invalid/)
+  }
+})
+
 test("repository release policy permits deployed protocol 325 and intermediates 326 through 332 to 333 upgrade and rollback", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-release-policy-"))
   context.after(() => rm(root, { recursive: true, force: true }))
@@ -482,6 +514,7 @@ exec /usr/bin/stat "$@"
     MANAGED_TRUSTED_KEY: trustedKey,
     MANAGED_RECEIPT_DIRECTORY: dirname(receiptPath),
     CHARIOX_MANAGED_UPGRADE_ROOT: installRoot,
+    CHARIOX_MANAGED_PROVIDER_TOPOLOGY: "shared_host",
     CHARIOX_MANAGED_UPGRADE_LOCK: join(state, "upgrade.lock"),
     CHARIOX_MANAGED_UPGRADE_HEALTH_HOST: "127.0.0.1",
     CHARIOX_MANAGED_UPGRADE_HEALTH_PORT: String(port),
@@ -1453,7 +1486,7 @@ test("managed kernel upgrade remains a dedicated offline release operation", asy
   assert.doesNotMatch(contents, /installation[_-]origin|CHARIOX_INSTALLATION/)
   assert.doesNotMatch(contents, /\.arroba/)
   assert.match(contents, /CHARIOX_MANAGED_UPGRADE_HEALTH_TIMEOUT_MS:-120000/)
-  assert.match(contents, /managed_provider_topology=\$\{CHARIOX_MANAGED_PROVIDER_TOPOLOGY:-shared_host\}/)
+  assert.match(contents, /managed_provider_topology=\$\{CHARIOX_MANAGED_PROVIDER_TOPOLOGY-\}/)
   assert.match(contents, /service_name=chariox-path1-managed-bootstrap\.service/)
   assert.match(contents, /select_supervisor_service\(\)/)
   assert.match(contents, /verify_selected_release\(\)/)
