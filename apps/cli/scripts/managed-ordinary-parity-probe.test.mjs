@@ -164,6 +164,62 @@ test("control-file protection requires its parent to remain writable as a worksp
   assert.match(payload.error, /parent workspace/)
 })
 
+test("control-file protection rejects an accessible file outside the control workspace", async (context) => {
+  const root = await mkdtemp(join(os.tmpdir(), "chariox-managed-ordinary-parity-control-sibling-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const destination = join(root, "apps/cli/scripts/managed-ordinary-parity-probe.mjs")
+  const matrixDestination = join(root, "apps/cli/scripts/managed-ordinary-parity-matrix.mjs")
+  const controlFile = join(root, "workspace/managed-control.json")
+  const unrelatedFile = join(root, "elsewhere/unrelated-file")
+  await mkdir(dirname(destination), { recursive: true })
+  await mkdir(dirname(controlFile), { recursive: true })
+  await mkdir(dirname(unrelatedFile), { recursive: true })
+  await writeFile(controlFile, "control fixture\n")
+  await writeFile(unrelatedFile, "unrelated fixture\n")
+  await writeFile(destination, await readFile(probeSource))
+  await writeFile(matrixDestination, await readFile(matrixSource))
+  await git(root, ["init", "--quiet"])
+  await git(root, ["config", "user.name", "parity-probe-test"])
+  await git(root, ["config", "user.email", "parity-probe-test@example.invalid"])
+  await git(root, ["add", "apps/cli/scripts/managed-ordinary-parity-probe.mjs", "apps/cli/scripts/managed-ordinary-parity-matrix.mjs", "workspace/managed-control.json", "elsewhere/unrelated-file"])
+  await git(root, ["commit", "--quiet", "-m", "probe fixture"])
+  const reviewedCommit = await git(root, ["rev-parse", "HEAD"])
+  const result = await execFileAsync(process.execPath, [
+    destination,
+    "--source-root", root,
+    "--reviewed-commit", reviewedCommit,
+    "--parity-row", "MP-03",
+    "--parity-check", "control_file_protection",
+    "--topology", "ordinary",
+    "--json",
+    "--home-path", "/home",
+    "--tmp-path", "/tmp",
+    "--nested-path", join(os.tmpdir(), `chariox-parity-nested-${process.pid}`),
+    "--new-directory", join(os.tmpdir(), `chariox-parity-created-${process.pid}`),
+  ], {
+    cwd: root,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      CHARIOX_PARITY_CONTROL_FILE: controlFile,
+      CHARIOX_PARITY_CONTROL_SIBLING: unrelatedFile,
+      CHARIOX_PARITY_CONTROL_PROTECTION_EVIDENCE_JSON: JSON.stringify({
+        observed: true,
+        control_file_denied: true,
+        evidence_id: "fixture-control-protection",
+      }),
+    },
+  }).then(({ stdout, stderr }) => ({ code: 0, stdout, stderr })).catch((error) => ({
+    code: error.code,
+    stdout: String(error.stdout ?? ""),
+    stderr: String(error.stderr ?? error.message ?? ""),
+  }))
+  assert.equal(result.code, 1, result.stdout || result.stderr)
+  const payload = JSON.parse(result.stdout)
+  assert.equal(payload.ok, false)
+  assert.match(payload.error, /same parent/)
+})
+
 test("probe fails closed when a required product observation is absent", async (context) => {
   const root = await mkdtemp(join(os.tmpdir(), "chariox-managed-ordinary-parity-missing-observation-"))
   context.after(() => rm(root, { recursive: true, force: true }))

@@ -150,8 +150,8 @@ function parseTreeBlob(text) {
 
 async function verifyProbeIdentity(values) {
   const sourceRoot = resolve(values.source_root)
-  const ownPath = resolve(fileURLToPath(import.meta.url))
-  const expectedPath = resolve(sourceRoot, PROBE_RELATIVE_PATH)
+  const ownPath = await realpath(fileURLToPath(import.meta.url))
+  const expectedPath = await realpath(resolve(sourceRoot, PROBE_RELATIVE_PATH))
   if (ownPath !== expectedPath) throw new ProbeError("probe was not executed from the repo-owned path")
   const actualCommit = await runGit(sourceRoot, ["rev-parse", "HEAD"])
   if (actualCommit !== values.reviewed_commit) throw new ProbeError("probe source commit does not match reviewed commit")
@@ -703,6 +703,11 @@ async function observeControlFileProtection(identity) {
     controlDenied = productEvidence.control_file_denied === true
   }
   const parentWorkspace = dirname(resolve(controlFile))
+  const siblingPath = await realpath(sibling)
+  if (dirname(siblingPath) !== await realpath(parentWorkspace)
+    || siblingPath === await realpath(controlFile)) {
+    throw new ProbeError("control file sibling must have the same parent workspace")
+  }
   let parentWorkspaceAccessible = false
   try {
     await accessible(parentWorkspace, constants.R_OK | constants.W_OK | constants.X_OK)
@@ -728,7 +733,7 @@ async function observeControlFileProtection(identity) {
     parent_workspace_accessible: true,
     sibling_accessible: true,
     control_path_fingerprint: fingerprint(resolve(controlFile)),
-    sibling_path_fingerprint: fingerprint(await realpath(sibling)),
+    sibling_path_fingerprint: fingerprint(siblingPath),
   })
 }
 
@@ -901,6 +906,9 @@ async function main(argv = process.argv.slice(2)) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) process.exitCode = await main()
+if (process.argv[1]
+  && await realpath(process.argv[1]).catch(() => null) === await realpath(fileURLToPath(import.meta.url))) {
+  process.exitCode = await main()
+}
 
 export { main, observe, parseArgs, verifyProbeIdentity }
