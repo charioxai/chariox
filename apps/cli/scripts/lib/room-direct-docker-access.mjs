@@ -1,18 +1,20 @@
 import assert from "node:assert/strict"
 
-export async function verifyDirectDockerEngineAccess({ target, writable, platform, imageId, runCommand }) {
+export async function verifyDirectDockerEngineAccess({ target, writable, platform, managedRootlessEngine = false, imageId, runCommand }) {
   assert.ok(typeof target === "string" && target.startsWith("/"), "direct-Docker fixture path must be absolute")
   assert.equal(typeof runCommand, "function", "direct-Docker command runner is required")
-  if (platform === "linux") {
+  if (platform === "linux" && managedRootlessEngine) {
     for (const flag of writable ? ["-x", "-w"] : ["-x"]) {
       const result = await runCommand("runuser", ["-u", "chariox-docker", "--", "test", flag, target], 10_000)
       if (result.code !== 0) throw new Error("rootless Docker engine user cannot access the selected fixture root")
     }
     return
   }
-  if (platform !== "darwin") throw new Error(`direct-Docker fixture access is unsupported on ${platform}`)
+  if (platform !== "darwin" && platform !== "linux") {
+    throw new Error(`direct-Docker fixture access is unsupported on ${platform}`)
+  }
   assert.ok(typeof imageId === "string" && imageId.startsWith("sha256:"),
-    "macOS direct-Docker drill requires an exact prebuilt slice image")
+    "direct-Docker engine mount probe requires an exact prebuilt slice image")
   const mount = `type=bind,source=${target},target=/chariox-drill-access${writable ? "" : ",readonly"}`
   const result = await runCommand("docker", [
     "run", "--rm", "--pull", "never", "--network", "none", "--read-only",

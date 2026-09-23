@@ -2881,7 +2881,11 @@ async function assertDockerReady() {
 }
 
 async function verifyDirectDockerEngineAccess(target, { writable }) {
-  await verifyDirectDockerAccess({ target, writable, platform: process.platform, imageId: prebuiltSliceImageId, runCommand })
+  await verifyDirectDockerAccess({
+    target, writable, platform: process.platform,
+    managedRootlessEngine: process.env.DOCKER_HOST === "unix:///run/chariox-docker/docker.sock",
+    imageId: prebuiltSliceImageId, runCommand,
+  })
 }
 
 async function docker(args, timeoutMs = 120_000) {

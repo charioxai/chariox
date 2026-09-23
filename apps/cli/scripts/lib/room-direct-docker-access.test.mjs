@@ -49,11 +49,22 @@ test("macOS fails closed without an exact image or when the engine cannot bind t
 test("Linux retains the managed rootless Docker user checks", async () => {
   const calls = []
   await verifyDirectDockerEngineAccess({
-    target: "/var/tmp/fixture", writable: true, platform: "linux", imageId: null,
+    target: "/var/tmp/fixture", writable: true, platform: "linux", managedRootlessEngine: true, imageId: null,
     runCommand: async (...args) => { calls.push(args); return { code: 0 } },
   })
   assert.deepEqual(calls, [
     ["runuser", ["-u", "chariox-docker", "--", "test", "-x", "/var/tmp/fixture"], 10_000],
     ["runuser", ["-u", "chariox-docker", "--", "test", "-w", "/var/tmp/fixture"], 10_000],
   ])
+})
+
+test("Linux local Docker checks the bind in the engine without a managed service user", async () => {
+  const calls = []
+  await verifyDirectDockerEngineAccess({
+    target: "/private/var/tmp/fixture", writable: true, platform: "linux", imageId,
+    runCommand: async (...args) => { calls.push(args); return { code: 0, stderr: "" } },
+  })
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0][0], "docker")
+  assert.ok(calls[0][1].includes("type=bind,source=/private/var/tmp/fixture,target=/chariox-drill-access"))
 })
