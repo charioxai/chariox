@@ -2015,11 +2015,23 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
 
     let utility_prompt_deadline = Instant::now() + Duration::from_secs(3);
     while !provider_fixture.diagnostics().contains("prompt_async") {
-        assert!(
-            Instant::now() < utility_prompt_deadline,
-            "worker did not reach the gated utility request; provider trace: {}",
-            provider_fixture.diagnostics()
-        );
+        if Instant::now() >= utility_prompt_deadline {
+            let status = runtime
+                .execute_project_environment_setup_request(
+                    LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
+                        GetProjectEnvironmentSetupStatusRequest {
+                            operation_id: repair_operation_id.to_string(),
+                        },
+                    ),
+                    "user-1",
+                )
+                .await
+                .map(response_status);
+            panic!(
+                "worker did not reach the gated utility request; status: {status:?}; provider trace: {}",
+                provider_fixture.diagnostics()
+            );
+        }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     let immediate_repair_status = runtime
