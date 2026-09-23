@@ -218,7 +218,7 @@ pub(crate) async fn execute_managed_environment_control_request(
                 &request.context_plan.provider_accounts,
             )?;
             let path = format!(
-                "/v1/managed-environments/{}/reimage",
+                "/managed-environments/{}/reimage",
                 cloud_url_component(&request.environment_id),
             );
             let body = serde_json::json!({
@@ -1244,7 +1244,7 @@ mod tests {
         let reimage_request = requests
             .iter()
             .find(|request| {
-                request.contains("/v1/managed-environments/environment-1/reimage HTTP/1.1")
+                request.contains("/managed-environments/environment-1/reimage HTTP/1.1")
             })
             .expect("reimage HTTP request");
         let reimage_body = reimage_request
