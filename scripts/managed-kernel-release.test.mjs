@@ -1296,8 +1296,16 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
   await rm(`${currentLink}.new`)
 
   await writeFile(join(deterministicRelease, "usr/local/bin/chariox-kernel"), "corrupt release\n")
-  const repairedRelease = spawnSync(installer, args, { encoding: "utf8", env })
-  assert.equal(repairedRelease.status, 0, repairedRelease.stderr)
+  const corruptRelease = spawnSync(installer, args, { encoding: "utf8", env })
+  assert.equal(corruptRelease.status, 1)
+  assert.match(corruptRelease.stderr, /existing digest-named managed release is invalid; refusing to replace immutable release/)
+  assert.equal(
+    await readFile(join(deterministicRelease, "usr/local/bin/chariox-kernel"), "utf8"),
+    "corrupt release\n",
+  )
+  await rm(deterministicRelease, { recursive: true })
+  const operatorClearedRelease = spawnSync(installer, args, { encoding: "utf8", env })
+  assert.equal(operatorClearedRelease.status, 0, operatorClearedRelease.stderr)
   assert.equal(
     await readFile(join(deterministicRelease, "usr/local/bin/chariox-kernel"), "utf8"),
     "kernel fixture\n",
@@ -1306,8 +1314,13 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
 
   await rm(deterministicRelease, { recursive: true, force: true })
   await writeFile(deterministicRelease, "interrupted regular-file publication\n")
-  const repairedObstruction = spawnSync(installer, args, { encoding: "utf8", env })
-  assert.equal(repairedObstruction.status, 0, repairedObstruction.stderr)
+  const obstructedPublication = spawnSync(installer, args, { encoding: "utf8", env })
+  assert.equal(obstructedPublication.status, 1)
+  assert.match(obstructedPublication.stderr, /existing digest-named managed release is invalid; refusing to replace immutable release/)
+  assert.equal(await readFile(deterministicRelease, "utf8"), "interrupted regular-file publication\n")
+  await rm(deterministicRelease)
+  const operatorClearedObstruction = spawnSync(installer, args, { encoding: "utf8", env })
+  assert.equal(operatorClearedObstruction.status, 0, operatorClearedObstruction.stderr)
   assert.equal((await stat(deterministicRelease)).isDirectory(), true)
   assert.equal((await lstat(currentLink)).ino, firstCurrentInode)
   assert.equal(await readFile(join(harness.installRoot, "usr/local/bin/chariox-kernel"), "utf8"), "kernel fixture\n")
