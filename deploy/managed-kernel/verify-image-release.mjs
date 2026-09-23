@@ -14,6 +14,10 @@ const EXPECTED_ARTIFACTS = new Map([
     { path: "/etc/systemd/system/chariox-managed-bootstrap.service", type: "file" },
   ],
   [
+    "chariox-path1-managed-bootstrap.service",
+    { path: "/etc/systemd/system/chariox-path1-managed-bootstrap.service", type: "file" },
+  ],
+  [
     "chariox-disposable-worker-bootstrap.service",
     { path: "/etc/systemd/system/chariox-disposable-worker-bootstrap.service", type: "file" },
   ],
@@ -122,8 +126,11 @@ function validateObjectKeys(value, expected, label) {
   }
 }
 
-async function verifyImageRelease(rootfs, expectedDigest, trustedKeyPath) {
+async function verifyImageRelease(rootfs, expectedDigest, trustedKeyPath, selectedTopology) {
   if (!/^sha256:[a-f0-9]{64}$/.test(expectedDigest)) fail("expected release digest is invalid")
+  if (selectedTopology !== undefined && !["path1", "shared_host"].includes(selectedTopology)) {
+    fail("selected managed provider topology must be path1 or shared_host")
+  }
   const rootfsMetadata = await lstat(rootfs).catch((error) => fail(`image root cannot be read: ${error.message}`))
   if (rootfsMetadata.isSymbolicLink() || !rootfsMetadata.isDirectory()) {
     fail("image root must be a directory, not a symlink")
@@ -188,13 +195,17 @@ async function verifyImageRelease(rootfs, expectedDigest, trustedKeyPath) {
   ) {
     fail("release manifest schema is unsupported")
   }
-  // Schema 2 releases predating disposable workers have the same signed base
-  // artifacts but no worker service. They must remain verifiable during upgrade
-  // and rollback. If declared, the worker service is checked like every artifact.
+  // Older schema 2 releases predate the worker and Path-1 home units. Keep them
+  // verifiable for shared-host rollback, but never select an undeclared unit.
   const hasWorkerService = manifest.artifacts.some(
     (artifact) => artifact?.name === "chariox-disposable-worker-bootstrap.service",
   )
-  const expectedArtifactCount = EXPECTED_ARTIFACTS.size - (hasWorkerService ? 0 : 1)
+  const hasPath1Service = manifest.artifacts.some(
+    (artifact) => artifact?.name === "chariox-path1-managed-bootstrap.service",
+  )
+  const expectedArtifactCount = EXPECTED_ARTIFACTS.size
+    - (hasWorkerService ? 0 : 1)
+    - (hasPath1Service ? 0 : 1)
   if (!hasWorkerService) {
     const workerPath = artifactPath(rootfs, EXPECTED_ARTIFACTS.get("chariox-disposable-worker-bootstrap.service").path)
     const workerExists = await lstat(workerPath).then(() => true, (error) => {
@@ -202,6 +213,14 @@ async function verifyImageRelease(rootfs, expectedDigest, trustedKeyPath) {
       return false
     })
     if (workerExists) fail("release contains an undeclared worker service")
+  }
+  if (!hasPath1Service) {
+    const path1Path = artifactPath(rootfs, EXPECTED_ARTIFACTS.get("chariox-path1-managed-bootstrap.service").path)
+    const path1Exists = await lstat(path1Path).then(() => true, (error) => {
+      if (error.code !== "ENOENT") throw error
+      return false
+    })
+    if (path1Exists) fail("release contains an undeclared Path-1 managed-home service")
   }
   if (manifest.artifacts.length !== expectedArtifactCount) {
     fail("release manifest does not contain the exact image artifacts")
@@ -222,13 +241,90 @@ async function verifyImageRelease(rootfs, expectedDigest, trustedKeyPath) {
     if (actualDigest !== artifact.sha256) fail(`release artifact ${artifact.name} is corrupted`)
     seen.add(artifact.name)
   }
+
+  if (selectedTopology !== undefined) {
+    const selectedService = selectedTopology === "path1"
+      ? "chariox-path1-managed-bootstrap.service"
+      : "chariox-managed-bootstrap.service"
+    if (!seen.has(selectedService)) {
+      fail(`release does not declare the selected ${selectedTopology} managed bootstrap service`)
+    }
+    const servicePath = artifactPath(rootfs, EXPECTED_ARTIFACTS.get(selectedService).path)
+    const service = (await readRegularFile(servicePath, `${selectedTopology} managed bootstrap service`, 64 * 1024))
+      .toString("utf8")
+    const lines = service.split(/\r?\n/)
+    const execStarts = lines.filter((line) => line.startsWith("ExecStart="))
+    if (execStarts.length !== 1 || execStarts[0] !== "ExecStart=/usr/local/bin/chariox-managed-bootstrap") {
+      fail(`selected ${selectedTopology} managed bootstrap service has an incompatible ExecStart`)
+    }
+    if (selectedTopology === "path1") {
+      for (const [name, required] of [
+        ["CHARIOX_MANAGED_PROVIDER_TOPOLOGY", "Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1"],
+        ["CHARIOX_MANAGED_BOOTSTRAP_PATH", "Environment=CHARIOX_MANAGED_BOOTSTRAP_PATH=/var/lib/chariox/managed-bootstrap.json"],
+        ["HOME", "Environment=HOME=/home/chariox"],
+        ["CHARIOX_HOME", "Environment=CHARIOX_HOME=/home/chariox/.chariox"],
+      ]) {
+        const assignments = lines.filter((line) => line.startsWith(`Environment=${name}=`))
+        if (assignments.length !== 1 || assignments[0] !== required) {
+          fail(`selected Path-1 managed bootstrap service is missing or overrides ${required}`)
+        }
+      }
+      for (const forbidden of [
+        "CHARIOX_MANAGED_PROVIDER_ISOLATION",
+        "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+        "CHARIOX_MANAGED_PROVIDER_BWRAP",
+        "CHARIOX_MANAGED_PROVIDER_HOME",
+        "CHARIOX_MANAGED_SLICE_SERVICE_ROOT",
+        "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT",
+        "CHARIOX_SLICE_ROOT",
+        "CHARIOX_SLICE_DOCKER_BROKER",
+        "bwrap",
+        "--disposable-worker",
+        "NoNewPrivileges=",
+        "PrivateTmp=",
+        "PrivateUsers=",
+        "PrivateDevices=",
+        "PrivateNetwork=",
+        "ProtectSystem=",
+        "ProtectHome=",
+        "ProtectKernel",
+        "ProtectControlGroups=",
+        "RestrictNamespaces=",
+        "RestrictAddressFamilies=",
+        "RestrictSUIDSGID=",
+        "ReadWritePaths=",
+        "ReadOnlyPaths=",
+        "InaccessiblePaths=",
+        "BindPaths=",
+        "BindReadOnlyPaths=",
+        "RootDirectory=",
+        "RootImage=",
+        "SystemCallFilter=",
+        "CapabilityBoundingSet=",
+        "UMask=",
+        "ExecStartPre=",
+        "StateDirectory=",
+        "SupplementaryGroups=",
+      ]) {
+        if (service.includes(forbidden)) fail(`selected Path-1 managed bootstrap service contains ${forbidden}`)
+      }
+    } else if (service.includes("Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1")
+      || service.includes("--disposable-worker")) {
+      fail("selected shared-host managed bootstrap service has a mismatched topology")
+    }
+  }
 }
 
 try {
-  if (process.argv.length !== 5) {
-    fail("usage: verify-image-release <rootfs> <expected-release-digest> <trusted-public-key>")
+  if (process.argv.length !== 5 && process.argv.length !== 6) {
+    fail("usage: verify-image-release <rootfs> <expected-release-digest> <trusted-public-key> [path1|shared_host]")
   }
-  await verifyImageRelease(resolve(process.argv[2]), process.argv[3], resolve(process.argv[4]))
+  await verifyImageRelease(
+    resolve(process.argv[2]),
+    process.argv[3],
+    resolve(process.argv[4]),
+    process.argv[5],
+  )
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error)
   process.stderr.write(`${basename(process.argv[1])}: ${message}\n`)

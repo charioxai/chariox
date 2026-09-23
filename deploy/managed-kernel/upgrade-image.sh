@@ -21,7 +21,19 @@ managed_home=$install_root/home/chariox
 managed_state=$managed_home/.chariox
 legacy_home=$state_root/home
 script_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-service_name=chariox-managed-bootstrap.service
+managed_provider_topology=${CHARIOX_MANAGED_PROVIDER_TOPOLOGY:-shared_host}
+case "$managed_provider_topology" in
+  path1|shared_host) ;;
+  *)
+    echo "managed provider topology must be path1 or shared_host" >&2
+    exit 1
+    ;;
+esac
+if [ "$managed_provider_topology" = path1 ]; then
+  service_name=chariox-path1-managed-bootstrap.service
+else
+  service_name=chariox-managed-bootstrap.service
+fi
 chariox_root=$install_root/usr/lib/chariox
 releases_root=$chariox_root/releases
 current_link=$chariox_root/current
@@ -91,6 +103,23 @@ select_receipt_path() {
     receipt_path=${selected_receipt:-$default_managed_receipt}
   fi
   release_override_path=${CHARIOX_MANAGED_UPGRADE_RELEASE_OVERRIDE:-${receipt_path%/*}/release-override.json}
+}
+
+select_supervisor_service() {
+  service_name=$(node "$script_root/managed-kernel-upgrade-state.mjs" \
+    supervisor-service "$receipt_path" "$release_override_path") || return 1
+  if [ "$managed_provider_topology" = path1 ] \
+    && [ "$service_name" = chariox-managed-bootstrap.service ]; then
+    service_name=chariox-path1-managed-bootstrap.service
+  fi
+}
+
+verify_selected_release() {
+  if [ "$service_name" = chariox-disposable-worker-bootstrap.service ]; then
+    node "$script_root/verify-image-release.mjs" "$@"
+  else
+    node "$script_root/verify-image-release.mjs" "$@" "$managed_provider_topology"
+  fi
 }
 
 require_regular_file() {
@@ -303,8 +332,7 @@ resume_home_migration() {
   select_receipt_path
   require_private_regular_file "$receipt_path" "managed bootstrap receipt"
   require_safe_ancestor_chain "$receipt_path" "managed bootstrap receipt"
-  service_name=$(node "$script_root/managed-kernel-upgrade-state.mjs" \
-    supervisor-service "$receipt_path" "$release_override_path") || return 1
+  select_supervisor_service || return 1
   if [ "$service_name" != "$previous_service_name" ]; then
     echo "managed kernel service identity changed during home migration" >&2
     return 1
@@ -577,12 +605,12 @@ require_root_owned_ancestor_chain "$chariox_root" "managed kernel upgrade author
 require_root_owned_directory "$releases_root"
 require_private_regular_file "$receipt_path" "managed bootstrap receipt"
 require_safe_ancestor_chain "$receipt_path" "managed bootstrap receipt"
-service_name=$(node "$script_root/managed-kernel-upgrade-state.mjs" supervisor-service "$receipt_path" "$release_override_path")
+select_supervisor_service
 recover_transaction
 select_receipt_path
 require_private_regular_file "$receipt_path" "managed bootstrap receipt"
 require_safe_ancestor_chain "$receipt_path" "managed bootstrap receipt"
-service_name=$(node "$script_root/managed-kernel-upgrade-state.mjs" supervisor-service "$receipt_path" "$release_override_path")
+select_supervisor_service
 
 if [ ! -L "$current_link" ]; then
   echo "registered managed kernel current release link is missing" >&2
@@ -604,9 +632,9 @@ require_private_regular_file "$receipt_path" "managed bootstrap receipt"
 node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt \
   "$receipt_path" "$expected_current_digest" "$release_override_path"
 require_root_owned_directory "$releases_root/${expected_current_digest#sha256:}"
-node "$script_root/verify-image-release.mjs" \
+verify_selected_release \
   "$releases_root/${expected_current_digest#sha256:}" "$expected_current_digest" "$trusted_public_key"
-node "$script_root/verify-image-release.mjs" "$image_root" "$expected_new_digest" "$next_trusted_public_key"
+verify_selected_release "$image_root" "$expected_new_digest" "$next_trusted_public_key"
 
 current_protocol=$(protocol_version "$current_link/usr/local/bin/chariox-kernel")
 target_protocol=$(protocol_version "$image_root/usr/local/bin/chariox-kernel")
@@ -618,7 +646,7 @@ published_release=$releases_root/$release_name
 if [ -e "$published_release" ] || [ -L "$published_release" ]; then
   require_directory "$published_release"
   require_root_owned_directory "$published_release"
-  node "$script_root/verify-image-release.mjs" "$published_release" "$expected_new_digest" "$next_trusted_public_key"
+  verify_selected_release "$published_release" "$expected_new_digest" "$next_trusted_public_key"
 else
   pending_release=$(mktemp -d "$releases_root/.new-$release_name.XXXXXX")
   chmod 0755 "$pending_release"
@@ -634,12 +662,16 @@ else
   for unit in chariox-managed-bootstrap.service chariox-rootless-docker.service chariox-slice-broker.service; do
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/$unit" "$pending_release/etc/systemd/system/$unit"
   done
+  path1_unit=chariox-path1-managed-bootstrap.service
+  if [ -f "$image_root/etc/systemd/system/$path1_unit" ]; then
+    install -o root -g root -m 0644 "$image_root/etc/systemd/system/$path1_unit" "$pending_release/etc/systemd/system/$path1_unit"
+  fi
   worker_unit=chariox-disposable-worker-bootstrap.service
   if [ -f "$image_root/etc/systemd/system/$worker_unit" ]; then
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/$worker_unit" "$pending_release/etc/systemd/system/$worker_unit"
   fi
   (umask 000; cp -RP "$image_root/usr/lib/chariox/slice-build-context" "$pending_release/usr/lib/chariox/slice-build-context")
-  node "$script_root/verify-image-release.mjs" "$pending_release" "$expected_new_digest" "$next_trusted_public_key"
+  verify_selected_release "$pending_release" "$expected_new_digest" "$next_trusted_public_key"
   node "$script_root/managed-kernel-upgrade-state.mjs" sync-tree "$pending_release"
   mv "$pending_release" "$published_release"
   node "$script_root/managed-kernel-upgrade-state.mjs" sync-directory "$releases_root"

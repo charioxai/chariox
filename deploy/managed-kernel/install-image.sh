@@ -5,14 +5,23 @@ if [ "$(id -u)" -ne 0 ]; then
   echo "install-image.sh must run as root" >&2
   exit 1
 fi
-if [ "$#" -ne 3 ]; then
-  echo "usage: install-image.sh <managed-kernel-rootfs> <expected-release-digest> <trusted-public-key>" >&2
+if [ "$#" -ne 3 ] && [ "$#" -ne 4 ]; then
+  echo "usage: install-image.sh <managed-kernel-rootfs> <expected-release-digest> <trusted-public-key> [path1|shared_host]" >&2
   exit 1
 fi
 
 image_root=$1
 expected_release_digest=$2
 trusted_public_key=$3
+managed_provider_topology=${4:-shared_host}
+case "$managed_provider_topology" in
+  path1) selected_bootstrap_service=chariox-path1-managed-bootstrap.service ;;
+  shared_host) selected_bootstrap_service=chariox-managed-bootstrap.service ;;
+  *)
+    echo "managed provider topology must be path1 or shared_host" >&2
+    exit 1
+    ;;
+esac
 install_root=${CHARIOX_IMAGE_INSTALL_ROOT:-}
 state_root=$install_root/var/lib/chariox
 managed_home=$install_root/home/chariox
@@ -68,7 +77,8 @@ require_directory() {
 }
 
 require_regular_file "$trusted_public_key"
-node "$script_root/verify-image-release.mjs" "$image_root" "$expected_release_digest" "$trusted_public_key"
+node "$script_root/verify-image-release.mjs" \
+  "$image_root" "$expected_release_digest" "$trusted_public_key" "$managed_provider_topology"
 
 require_regular_file "$image_root/usr/local/bin/chariox-kernel"
 require_regular_file "$image_root/usr/local/bin/chariox-managed-bootstrap"
@@ -79,6 +89,10 @@ require_regular_file "$image_root/usr/lib/chariox/build-attestation.json"
 require_regular_file "$image_root/usr/lib/chariox/build-attestation.sig"
 require_regular_file "$image_root/usr/lib/chariox/builder-public-key"
 require_regular_file "$image_root/etc/systemd/system/chariox-managed-bootstrap.service"
+if [ -e "$image_root/etc/systemd/system/chariox-path1-managed-bootstrap.service" ] \
+  || [ -L "$image_root/etc/systemd/system/chariox-path1-managed-bootstrap.service" ]; then
+  require_regular_file "$image_root/etc/systemd/system/chariox-path1-managed-bootstrap.service"
+fi
 require_regular_file "$image_root/etc/systemd/system/chariox-disposable-worker-bootstrap.service"
 require_regular_file "$image_root/etc/systemd/system/chariox-rootless-docker.service"
 require_regular_file "$image_root/etc/systemd/system/chariox-slice-broker.service"
@@ -436,11 +450,15 @@ if [ ! -e "$published_release" ]; then
   install -o root -g root -m 0644 "$image_root/usr/lib/chariox/build-attestation.sig" "$pending_release/usr/lib/chariox/build-attestation.sig"
   install -o root -g root -m 0644 "$image_root/usr/lib/chariox/builder-public-key" "$pending_release/usr/lib/chariox/builder-public-key"
   install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-managed-bootstrap.service" "$pending_release/etc/systemd/system/chariox-managed-bootstrap.service"
+  if path_exists "$image_root/etc/systemd/system/chariox-path1-managed-bootstrap.service"; then
+    install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-path1-managed-bootstrap.service" "$pending_release/etc/systemd/system/chariox-path1-managed-bootstrap.service"
+  fi
   install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-disposable-worker-bootstrap.service" "$pending_release/etc/systemd/system/chariox-disposable-worker-bootstrap.service"
   install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-rootless-docker.service" "$pending_release/etc/systemd/system/chariox-rootless-docker.service"
   install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-slice-broker.service" "$pending_release/etc/systemd/system/chariox-slice-broker.service"
   (umask 000; cp -RP "$image_root/usr/lib/chariox/slice-build-context" "$pending_release/usr/lib/chariox/slice-build-context")
-  node "$script_root/verify-image-release.mjs" "$pending_release" "$expected_release_digest" "$trusted_public_key"
+  node "$script_root/verify-image-release.mjs" \
+    "$pending_release" "$expected_release_digest" "$trusted_public_key" "$managed_provider_topology"
   node "$script_root/managed-kernel-upgrade-state.mjs" sync-tree "$pending_release"
   mv "$pending_release" "$published_release"
   node "$script_root/managed-kernel-upgrade-state.mjs" sync-directory "$releases_root"
@@ -449,6 +467,12 @@ fi
 atomic_symlink "../../../usr/lib/chariox/current/usr/local/bin/chariox-kernel" "$install_root/usr/local/bin/chariox-kernel"
 atomic_symlink "../../../usr/lib/chariox/current/usr/local/bin/chariox-managed-bootstrap" "$install_root/usr/local/bin/chariox-managed-bootstrap"
 atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-managed-bootstrap.service" "$install_root/etc/systemd/system/chariox-managed-bootstrap.service"
+if path_exists "$image_root/etc/systemd/system/chariox-path1-managed-bootstrap.service"; then
+  atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-path1-managed-bootstrap.service" "$install_root/etc/systemd/system/chariox-path1-managed-bootstrap.service"
+elif path_exists "$install_root/etc/systemd/system/chariox-path1-managed-bootstrap.service"; then
+  echo "Path-1 managed-home service link is present but the signed release does not declare that service" >&2
+  exit 1
+fi
 atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-disposable-worker-bootstrap.service" "$install_root/etc/systemd/system/chariox-disposable-worker-bootstrap.service"
 atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-rootless-docker.service" "$install_root/etc/systemd/system/chariox-rootless-docker.service"
 atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-slice-broker.service" "$install_root/etc/systemd/system/chariox-slice-broker.service"
@@ -488,7 +512,7 @@ if ! rm -f -- "$install_root/etc/systemd/system/multi-user.target.wants/chariox-
   || ! systemctl daemon-reload \
   || ! loginctl enable-linger chariox-docker \
   || ! systemctl enable chariox-rootless-docker.service \
-  || ! systemctl enable chariox-managed-bootstrap.service; then
+  || ! systemctl enable "$selected_bootstrap_service"; then
   if restore_previous_current; then
     systemctl daemon-reload >/dev/null 2>&1 || true
     echo "managed release activation failed; restored previous current release" >&2

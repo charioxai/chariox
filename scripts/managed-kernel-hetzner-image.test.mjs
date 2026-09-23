@@ -32,6 +32,7 @@ const sliceToolchainLockUrl = new URL("../apps/kernel/slice-linux-docker/toolcha
 const runbookUrl = new URL("../docs/MANAGED_REMOTE_KERNEL_IMAGE.md", import.meta.url)
 const bootstrapEntrypointUrl = new URL("../apps/kernel/src/bin/chariox-managed-bootstrap.rs", import.meta.url)
 const managedServiceUrl = new URL("../deploy/managed-kernel/chariox-managed-bootstrap.service", import.meta.url)
+const path1ManagedServiceUrl = new URL("../deploy/managed-kernel/chariox-path1-managed-bootstrap.service", import.meta.url)
 const workerServiceUrl = new URL("../deploy/managed-kernel/chariox-disposable-worker-bootstrap.service", import.meta.url)
 const rootlessServiceUrl = new URL("../deploy/managed-kernel/chariox-rootless-docker.service", import.meta.url)
 const brokerServiceUrl = new URL("../deploy/managed-kernel/chariox-slice-broker.service", import.meta.url)
@@ -72,9 +73,9 @@ test("Hetzner image preparation is pinned, guarded, and leaves no runtime identi
   assert.match(script, /provider_toolchain_source=\/usr\/lib\/chariox\/slice-build-context\/apps\/kernel\/slice-linux-docker\/toolchain/)
   assert.match(script, /npm ci --omit=dev/)
   assert.doesNotMatch(script, /npm install -g/)
-  assert.match(script, /"\$script_root\/install-image\.sh" "\$release_rootfs" "\$release_digest" "\$trusted_public_key"/)
-  assert.match(script, /systemctl is-enabled --quiet chariox-managed-bootstrap\.service/)
-  assert.match(script, /systemctl is-active --quiet chariox-managed-bootstrap\.service/)
+  assert.match(script, /"\$script_root\/install-image\.sh" \\\s*"\$release_rootfs" "\$release_digest" "\$trusted_public_key" "\$managed_provider_topology"/)
+  assert.match(script, /systemctl is-enabled --quiet "\$managed_bootstrap_service"/)
+  assert.match(script, /systemctl is-active --quiet "\$managed_bootstrap_service"/)
   assert.match(script, /managed runtime state entered the image/)
   assert.match(script, /rootless Docker state entered the image/)
   assert.match(script, /managed slice state entered the image/)
@@ -537,10 +538,11 @@ test("managed Docker authority and publication access remain narrowly separated"
 })
 
 test("managed image validation requires an explicit topology and preserves both paths", async () => {
-  const [preparation, providerLaunchProbe, runbook] = await Promise.all([
+  const [preparation, providerLaunchProbe, runbook, path1ManagedService] = await Promise.all([
     readFile(scriptUrl, "utf8"),
     readFile(providerLaunchProbeUrl, "utf8"),
     readFile(runbookUrl, "utf8"),
+    readFile(path1ManagedServiceUrl, "utf8"),
   ])
 
   assert.match(
@@ -560,6 +562,27 @@ test("managed image validation requires an explicit topology and preserves both 
     preparation,
     /if \[ "\$managed_provider_topology" = shared_host \]; then[\s\S]*verify-provider-runtime-bind\.sh/,
   )
+  assert.match(preparation, /path1[\s\S]*managed_bootstrap_service=chariox-path1-managed-bootstrap\.service/)
+  assert.match(preparation, /shared_host[\s\S]*managed_bootstrap_service=chariox-managed-bootstrap\.service/)
+  assert.match(preparation, /other_managed_bootstrap_service/)
+  assert.match(path1ManagedService, /Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1/)
+  assert.match(path1ManagedService, /Environment=CHARIOX_MANAGED_BOOTSTRAP_PATH=\/var\/lib\/chariox\/managed-bootstrap\.json/)
+  assert.match(path1ManagedService, /Environment=HOME=\/home\/chariox/)
+  assert.match(path1ManagedService, /Environment=CHARIOX_HOME=\/home\/chariox\/\.chariox/)
+  assert.match(path1ManagedService, /ExecStart=\/usr\/local\/bin\/chariox-managed-bootstrap\n/)
+  assert.doesNotMatch(path1ManagedService, /^UMask=/m, "Path-1 must use systemd's ordinary system-unit umask")
+  for (const forbidden of [
+    "CHARIOX_MANAGED_PROVIDER_ISOLATION",
+    "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+    "CHARIOX_MANAGED_PROVIDER_BWRAP",
+    "bwrap",
+    "NoNewPrivileges=",
+    "PrivateTmp=",
+    "ProtectSystem=",
+    "ProtectHome=",
+  ]) {
+    assert.doesNotMatch(path1ManagedService, new RegExp(forbidden))
+  }
   assert.match(
     providerLaunchProbe,
     /provider launch A\/B probe skipped: Path 1 uses the ordinary VM kernel\/provider boundary/,

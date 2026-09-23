@@ -14,6 +14,7 @@ const builder = join(repositoryRoot, "scripts/build-managed-kernel-release.mjs")
 const installer = join(repositoryRoot, "deploy/managed-kernel/install-image.sh")
 const verifier = join(repositoryRoot, "deploy/managed-kernel/verify-image-release.mjs")
 const service = join(repositoryRoot, "deploy/managed-kernel/chariox-managed-bootstrap.service")
+const path1Service = join(repositoryRoot, "deploy/managed-kernel/chariox-path1-managed-bootstrap.service")
 const workerService = join(repositoryRoot, "deploy/managed-kernel/chariox-disposable-worker-bootstrap.service")
 const rootlessDockerService = join(repositoryRoot, "deploy/managed-kernel/chariox-rootless-docker.service")
 const sliceBrokerService = join(repositoryRoot, "deploy/managed-kernel/chariox-slice-broker.service")
@@ -147,8 +148,12 @@ function runPackager(options, umask = "022", extraEnvironment = {}) {
   )
 }
 
-function runVerifier(rootfs, digest, trustedPublicKey) {
-  return spawnSync(process.execPath, [verifier, rootfs, digest, trustedPublicKey], { encoding: "utf8" })
+function runVerifier(rootfs, digest, trustedPublicKey, topology) {
+  return spawnSync(
+    process.execPath,
+    [verifier, rootfs, digest, trustedPublicKey, ...(topology ? [topology] : [])],
+    { encoding: "utf8" },
+  )
 }
 
 async function snapshotTree(root, current = root) {
@@ -233,6 +238,7 @@ async function makeFixture(root, variant = "") {
     ["apps/kernel/src/transport/relay_peer.rs", "pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 1;\n"],
     ["apps/relay/Cargo.toml", "[package]\nname = \"relay-fixture\"\n"],
     ["deploy/managed-kernel/chariox-managed-bootstrap.service", await readFile(service)],
+    ["deploy/managed-kernel/chariox-path1-managed-bootstrap.service", await readFile(path1Service)],
     ["deploy/managed-kernel/chariox-disposable-worker-bootstrap.service", await readFile(workerService)],
     ["deploy/managed-kernel/chariox-rootless-docker.service", await readFile(rootlessDockerService)],
     ["deploy/managed-kernel/chariox-slice-broker.service", await readFile(sliceBrokerService)],
@@ -306,10 +312,12 @@ async function makeFixture(root, variant = "") {
     builderPublicKey: builderKeys.publicKey,
     builderPrivateKey: builderKeys.privateKey,
     publicKey,
+    releasePrivateKey: privateKey,
     sourceRepository,
     sourceCommit,
     sourceTree,
     serviceBytes: sourceFiles.get("deploy/managed-kernel/chariox-managed-bootstrap.service"),
+    path1ServiceBytes: sourceFiles.get("deploy/managed-kernel/chariox-path1-managed-bootstrap.service"),
     workerServiceBytes: sourceFiles.get("deploy/managed-kernel/chariox-disposable-worker-bootstrap.service"),
     rootlessDockerServiceBytes: sourceFiles.get("deploy/managed-kernel/chariox-rootless-docker.service"),
     sliceBrokerServiceBytes: sourceFiles.get("deploy/managed-kernel/chariox-slice-broker.service"),
@@ -343,6 +351,7 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
   const packagedPaths = snapshot.filter((entry) => entry.type === "file").map((entry) => entry.path)
   for (const requiredPath of [
     "etc/systemd/system/chariox-managed-bootstrap.service",
+    "etc/systemd/system/chariox-path1-managed-bootstrap.service",
     "etc/systemd/system/chariox-disposable-worker-bootstrap.service",
     "etc/systemd/system/chariox-rootless-docker.service",
     "etc/systemd/system/chariox-slice-broker.service",
@@ -388,6 +397,11 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
         name: "chariox-managed-bootstrap.service",
         path: "/etc/systemd/system/chariox-managed-bootstrap.service",
         sha256: digest(fixture.serviceBytes),
+      },
+      {
+        name: "chariox-path1-managed-bootstrap.service",
+        path: "/etc/systemd/system/chariox-path1-managed-bootstrap.service",
+        sha256: digest(fixture.path1ServiceBytes),
       },
       {
         name: "chariox-disposable-worker-bootstrap.service",
@@ -437,6 +451,10 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
   assert.deepEqual(
     await readFile(join(releaseRoot, "etc/systemd/system/chariox-managed-bootstrap.service")),
     fixture.serviceBytes,
+  )
+  assert.deepEqual(
+    await readFile(join(releaseRoot, "etc/systemd/system/chariox-path1-managed-bootstrap.service")),
+    fixture.path1ServiceBytes,
   )
   assert.deepEqual(
     await readFile(join(releaseRoot, "etc/systemd/system/chariox-disposable-worker-bootstrap.service")),
@@ -501,6 +519,168 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
   const rerun = runPackager({ ...fixture, output: firstOutput })
   assert.equal(rerun.status, 1)
   assert.match(rerun.stderr, /output directory must be empty/)
+})
+
+test("Path-1 managed-home bootstrap is signed and selected by image install", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-path1-managed-home-install-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const fixture = await makeFixture(root)
+  const output = join(root, "release")
+  const packaged = runPackager({ ...fixture, output })
+  assert.equal(packaged.status, 0, packaged.stderr)
+
+  const path1UnitPath = join(output, "rootfs/etc/systemd/system/chariox-path1-managed-bootstrap.service")
+  const path1UnitExists = await lstat(path1UnitPath).then(() => true, () => false)
+  assert.equal(path1UnitExists, true, "signed release must contain the dedicated Path-1 unit")
+  const path1Unit = await readFile(path1UnitPath, "utf8")
+  assert.doesNotMatch(path1Unit, /^UMask=/m, "Path-1 must inherit systemd's ordinary system-unit umask")
+  for (const required of [
+    "Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1",
+    "Environment=CHARIOX_MANAGED_BOOTSTRAP_PATH=/var/lib/chariox/managed-bootstrap.json",
+    "Environment=HOME=/home/chariox",
+    "Environment=CHARIOX_HOME=/home/chariox/.chariox",
+    "ExecStart=/usr/local/bin/chariox-managed-bootstrap",
+  ]) {
+    assert.ok(path1Unit.includes(required), `Path-1 unit is missing ${required}`)
+  }
+  for (const forbidden of [
+    "CHARIOX_MANAGED_PROVIDER_ISOLATION",
+    "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+    "CHARIOX_MANAGED_PROVIDER_BWRAP",
+    "CHARIOX_MANAGED_PROVIDER_HOME",
+    "CHARIOX_MANAGED_SLICE_SERVICE_ROOT",
+    "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT",
+    "CHARIOX_SLICE_ROOT",
+    "CHARIOX_SLICE_DOCKER_BROKER",
+    "bwrap",
+    "--disposable-worker",
+    "NoNewPrivileges=",
+    "PrivateTmp=",
+    "PrivateUsers=",
+    "PrivateDevices=",
+    "PrivateNetwork=",
+    "ProtectSystem=",
+    "ProtectHome=",
+    "ProtectKernel",
+    "RestrictNamespaces=",
+    "RestrictAddressFamilies=",
+    "RestrictSUIDSGID=",
+    "ReadWritePaths=",
+    "ReadOnlyPaths=",
+    "InaccessiblePaths=",
+    "BindPaths=",
+    "BindReadOnlyPaths=",
+    "RootDirectory=",
+    "RootImage=",
+    "SystemCallFilter=",
+    "CapabilityBoundingSet=",
+    "ExecStartPre=",
+    "StateDirectory=",
+    "SupplementaryGroups=",
+  ]) {
+    assert.ok(!path1Unit.includes(forbidden), `Path-1 unit must not contain ${forbidden}`)
+  }
+
+  const releaseRoot = join(output, "rootfs")
+  assert.equal(runVerifier(releaseRoot, packaged.stdout.trim(), fixture.trustedPublicKey, "path1").status, 0)
+  const manifestPath = join(releaseRoot, "usr/lib/chariox/release-manifest.json")
+  const signaturePath = join(releaseRoot, "usr/lib/chariox/release-manifest.sig")
+  const originalManifestBytes = await readFile(manifestPath)
+  const originalSignature = await readFile(signaturePath)
+  const mismatchedManifestObject = JSON.parse(originalManifestBytes)
+  mismatchedManifestObject.artifacts = mismatchedManifestObject.artifacts.filter(
+    (artifact) => artifact.name !== "chariox-path1-managed-bootstrap.service",
+  )
+  await rm(path1UnitPath)
+  const mismatchedManifestBytes = Buffer.from(JSON.stringify(mismatchedManifestObject))
+  await writeFile(manifestPath, mismatchedManifestBytes)
+  await writeFile(
+    signaturePath,
+    sign(null, mismatchedManifestBytes, fixture.releasePrivateKey).toString("base64"),
+  )
+  const mismatchedDigest = `sha256:${createHash("sha256").update(mismatchedManifestBytes).digest("hex")}`
+  const mismatched = runVerifier(releaseRoot, mismatchedDigest, fixture.trustedPublicKey, "path1")
+  assert.equal(mismatched.status, 1)
+  assert.match(mismatched.stderr, /does not declare the selected path1 managed bootstrap service/)
+  await writeFile(path1UnitPath, path1Unit)
+  await writeFile(manifestPath, originalManifestBytes)
+  await writeFile(signaturePath, originalSignature)
+
+  const wrongTopologyService = path1Unit.replace(
+    "Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1",
+    "Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=shared_host",
+  )
+  await writeFile(path1UnitPath, wrongTopologyService)
+  const wrongTopologyManifestObject = JSON.parse(originalManifestBytes)
+  const path1Artifact = wrongTopologyManifestObject.artifacts.find(
+    (artifact) => artifact.name === "chariox-path1-managed-bootstrap.service",
+  )
+  path1Artifact.sha256 = `sha256:${createHash("sha256").update(wrongTopologyService).digest("hex")}`
+  const wrongTopologyManifestBytes = Buffer.from(JSON.stringify(wrongTopologyManifestObject))
+  await writeFile(manifestPath, wrongTopologyManifestBytes)
+  await writeFile(
+    signaturePath,
+    sign(null, wrongTopologyManifestBytes, fixture.releasePrivateKey).toString("base64"),
+  )
+  const wrongTopologyDigest = `sha256:${createHash("sha256").update(wrongTopologyManifestBytes).digest("hex")}`
+  const wrongTopology = runVerifier(releaseRoot, wrongTopologyDigest, fixture.trustedPublicKey, "path1")
+  assert.equal(wrongTopology.status, 1)
+  assert.match(wrongTopology.stderr, /missing or overrides Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1/)
+  await writeFile(path1UnitPath, path1Unit)
+  await writeFile(manifestPath, originalManifestBytes)
+  await writeFile(signaturePath, originalSignature)
+
+  const restrictedUmaskService = path1Unit.replace(
+    "KillMode=control-group",
+    "KillMode=control-group\nUMask=0007",
+  )
+  await writeFile(path1UnitPath, restrictedUmaskService)
+  const restrictedUmaskManifestObject = JSON.parse(originalManifestBytes)
+  const restrictedUmaskArtifact = restrictedUmaskManifestObject.artifacts.find(
+    (artifact) => artifact.name === "chariox-path1-managed-bootstrap.service",
+  )
+  restrictedUmaskArtifact.sha256 = `sha256:${createHash("sha256").update(restrictedUmaskService).digest("hex")}`
+  const restrictedUmaskManifestBytes = Buffer.from(JSON.stringify(restrictedUmaskManifestObject))
+  await writeFile(manifestPath, restrictedUmaskManifestBytes)
+  await writeFile(
+    signaturePath,
+    sign(null, restrictedUmaskManifestBytes, fixture.releasePrivateKey).toString("base64"),
+  )
+  const restrictedUmaskDigest = `sha256:${createHash("sha256").update(restrictedUmaskManifestBytes).digest("hex")}`
+  const restrictedUmask = runVerifier(releaseRoot, restrictedUmaskDigest, fixture.trustedPublicKey, "path1")
+  assert.equal(restrictedUmask.status, 1)
+  assert.match(restrictedUmask.stderr, /contains UMask=/)
+  await writeFile(path1UnitPath, path1Unit)
+  await writeFile(manifestPath, originalManifestBytes)
+  await writeFile(signaturePath, originalSignature)
+
+  if (process.platform !== "linux" || process.getuid?.() !== 0) {
+    context.diagnostic("signed release and topology checks passed; installer execution requires Linux root ownership")
+    return
+  }
+
+  const harness = await createInstallerHarness(root)
+  const env = {
+    ...process.env,
+    PATH: `${harness.bin}:${process.env.PATH}`,
+    HARNESS_STATE: harness.state,
+    CHARIOX_IMAGE_INSTALL_ROOT: harness.installRoot,
+    CHARIOX_IMAGE_INSTALL_LOCK: join(harness.state, "install.lock"),
+  }
+  const installed = spawnSync(installer, [
+    join(output, "rootfs"),
+    packaged.stdout.trim(),
+    fixture.trustedPublicKey,
+    "path1",
+  ], { encoding: "utf8", env })
+  assert.equal(installed.status, 0, installed.stderr)
+  assert.equal(
+    await readFile(join(harness.installRoot, "etc/systemd/system/chariox-path1-managed-bootstrap.service"), "utf8"),
+    path1Unit,
+  )
+  const systemctlCalls = await readFile(join(harness.state, "systemctl"), "utf8")
+  assert.match(systemctlCalls, /enable chariox-path1-managed-bootstrap\.service/)
+  assert.doesNotMatch(systemctlCalls, /enable chariox-managed-bootstrap\.service/)
 })
 
 test("release identity rejects unattested binaries and verifier rejects tampering", async (context) => {
@@ -1613,7 +1793,9 @@ test("managed image installer has no runtime start or network path", async () =>
   assert.match(contents, /useradd --system --gid chariox --home-dir \/home\/chariox/)
   assert.match(contents, /useradd --system --gid chariox-docker --home-dir \/var\/lib\/chariox-docker\/home/)
   assert.match(contents, /systemctl daemon-reload/)
-  assert.match(contents, /systemctl enable chariox-managed-bootstrap\.service/)
+  assert.match(contents, /path1\) selected_bootstrap_service=chariox-path1-managed-bootstrap\.service/)
+  assert.match(contents, /shared_host\) selected_bootstrap_service=chariox-managed-bootstrap\.service/)
+  assert.match(contents, /systemctl enable "\$selected_bootstrap_service"/)
   const lockIndex = contents.indexOf("flock 9")
   for (const mutation of ["state_entry=$(find", "groupadd --system", "useradd --system", "usermod --append", "\ninstall -d", "releases_root="]) {
     assert.ok(lockIndex >= 0 && lockIndex < contents.indexOf(mutation), `${mutation} must remain behind the install lock`)

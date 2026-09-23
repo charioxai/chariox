@@ -27,8 +27,16 @@ script_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 provider_versions=$script_root/provider-versions.env
 
 case "${CHARIOX_MANAGED_PROVIDER_TOPOLOGY-}" in
-  path1) managed_provider_topology=path1 ;;
-  shared_host|legacy_shared_host) managed_provider_topology=shared_host ;;
+  path1)
+    managed_provider_topology=path1
+    managed_bootstrap_service=chariox-path1-managed-bootstrap.service
+    other_managed_bootstrap_service=chariox-managed-bootstrap.service
+    ;;
+  shared_host|legacy_shared_host)
+    managed_provider_topology=shared_host
+    managed_bootstrap_service=chariox-managed-bootstrap.service
+    other_managed_bootstrap_service=chariox-path1-managed-bootstrap.service
+    ;;
   '') fail "CHARIOX_MANAGED_PROVIDER_TOPOLOGY must be explicitly set to path1 or shared_host" ;;
   *) fail "CHARIOX_MANAGED_PROVIDER_TOPOLOGY must be path1 or shared_host" ;;
 esac
@@ -112,7 +120,8 @@ docker_socket_state=$(systemctl is-active docker.socket || true)
 node_major=$(node -p 'Number(process.versions.node.split(".")[0])')
 [ "$node_major" -eq 22 ] || fail "Ubuntu image did not provide the required Node.js 22 runtime"
 
-"$script_root/install-image.sh" "$release_rootfs" "$release_digest" "$trusted_public_key"
+"$script_root/install-image.sh" \
+  "$release_rootfs" "$release_digest" "$trusted_public_key" "$managed_provider_topology"
 provider_toolchain_source=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/toolchain
 provider_toolchain_root=/opt/chariox-provider-toolchain
 for toolchain_file in package.json package-lock.json; do
@@ -255,9 +264,12 @@ systemctl is-enabled --quiet chariox-rootless-docker.service \
 if systemctl is-enabled --quiet chariox-slice-broker.service; then
   fail "slice Docker broker must be published only by managed bootstrap prestart"
 fi
-systemctl is-enabled --quiet chariox-managed-bootstrap.service \
+systemctl is-enabled --quiet "$managed_bootstrap_service" \
   || fail "managed bootstrap service was not enabled"
-if systemctl is-active --quiet chariox-managed-bootstrap.service; then
+if systemctl is-enabled --quiet "$other_managed_bootstrap_service"; then
+  fail "a non-selected managed bootstrap service was also enabled"
+fi
+if systemctl is-active --quiet "$managed_bootstrap_service"; then
   fail "managed bootstrap service started while the image was being built"
 fi
 
