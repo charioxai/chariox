@@ -58,6 +58,39 @@ test("Browser handoff restores the same window after editor work and captures OC
   assert.ok(at("screenshot-ocr") < at("browser-bounds"))
 })
 
+test("Browser handoff keeps the primary window when a transient Chromium popup closes", async () => {
+  const events = []
+  const dependencies = handoffDependencies(events)
+  let windowQueryCount = 0
+  dependencies.browserWindowIds = async () => {
+    events.push(`browser-windows-${++windowQueryCount}`)
+    return windowQueryCount === 1 ? ["42", "99"] : ["42"]
+  }
+  dependencies.browserWindowBounds = async (windowId) => {
+    events.push(`browser-bounds-${windowId}`)
+    return windowId === "42"
+      ? { x: 0, y: 40, width: 1280, height: 726 }
+      : { x: 650, y: 96, width: 320, height: 420 }
+  }
+
+  const result = await completeBrowserStateEditorHandoff(dependencies)
+  assert.equal(result.windowId, "42")
+  assert.ok(events.includes("browser-bounds-99"))
+  assert.ok(events.includes("screenshot-ocr"))
+})
+
+test("Browser handoff refuses two equally sized browser windows", async () => {
+  const events = []
+  const dependencies = handoffDependencies(events)
+  dependencies.browserWindowIds = async () => ["42", "99"]
+  dependencies.browserWindowBounds = async () => ({ x: 0, y: 40, width: 1280, height: 726 })
+  await assert.rejects(
+    completeBrowserStateEditorHandoff(dependencies),
+    /cannot distinguish multiple full-size Chromium windows/,
+  )
+  assert.ok(!events.includes("editor-closed"))
+})
+
 test("Browser handoff rejects a screenshot with no visible fixture text", async () => {
   const events = []
   await assert.rejects(

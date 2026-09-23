@@ -17,13 +17,25 @@ export async function completeBrowserStateEditorHandoff({
   expectedVisibleText,
 }) {
   const originalWindowIds = await browserWindowIds()
-  assert.equal(originalWindowIds.length, 1, "the Browser handoff requires the existing single Chromium window")
-  const browserWindowId = originalWindowIds[0]
-  assert.match(browserWindowId, /^\d+$/, "Chromium window identity must be numeric")
+  assert.ok(originalWindowIds.length > 0, "the Browser handoff requires an existing Chromium window")
+  assert.ok(originalWindowIds.every((id) => /^\d+$/.test(id)), "Chromium window identities must be numeric")
+  let browserWindowId = originalWindowIds[0]
+  if (originalWindowIds.length > 1) {
+    const candidates = await Promise.all(originalWindowIds.map(async (id) => {
+      const bounds = await browserWindowBounds(id)
+      const area = bounds.width * bounds.height
+      assert.ok(Number.isFinite(area) && area > 0, "Chromium window geometry is invalid")
+      return { id, area }
+    }))
+    const largestArea = Math.max(...candidates.map(({ area }) => area))
+    const primary = candidates.filter(({ area }) => area === largestArea)
+    assert.equal(primary.length, 1, "the Browser handoff cannot distinguish multiple full-size Chromium windows")
+    browserWindowId = primary[0].id
+  }
 
   await finishDesktopWork()
   const windowIds = await browserWindowIds()
-  assert.deepEqual(windowIds, originalWindowIds,
+  assert.ok(windowIds.includes(browserWindowId),
     "desktop editor work replaced the Chromium window selected before the phase")
 
   const visibleBefore = await visibleBrowserWindowIds()
@@ -52,7 +64,7 @@ export async function completeBrowserStateEditorHandoff({
   // Navigation runs only after the desktop editor phase has ended and the
   // Browser task is restored. The next screenshot is therefore desktop proof.
   await prepareBrowser()
-  assert.deepEqual(await browserWindowIds(), windowIds,
+  assert.ok((await browserWindowIds()).includes(browserWindowId),
     "Browser preparation replaced the Chromium window selected at handoff")
   await waitFor(async () => {
     const [visible, active] = await Promise.all([visibleBrowserWindowIds(), activeWindowId()])
