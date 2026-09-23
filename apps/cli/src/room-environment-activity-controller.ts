@@ -289,12 +289,16 @@ function formatActionNotice(
 ): string {
   if (!action) return `Room action: ${changed.action_id} · ${formatActionState(changed.state, changed.outcome)}`
   const actor = environment.actors.find((candidate) => candidate.actor_id === action.actor_id)
+  const targets = action.targets.map((target) => target.kind === "browser_tab"
+    ? `tab ${target.id}`
+    : "desktop")
   return [
     `Room action #${action.sequence}:`,
     actor?.display_label ?? actorLabel(action.actor_id),
     "·",
     action.mode,
     action.kind,
+    ...(targets.length ? ["·", targets.join(", ")] : []),
     "·",
     formatActionState(changed.state, changed.outcome ?? action.outcome),
   ].join(" ")

@@ -33,7 +33,7 @@ test("a reset/current-state summary cannot replace a retained action at the same
   await harness.controller.synchronize()
   await harness.controller.synchronize()
   const retained = retainRoomActivityNotices([], harness.entries, "session-1")
-  assert.ok(retained.some(entry => entry.text === "Room action #1: Mara · computer pointer_click · completed"))
+  assert.ok(retained.some(entry => entry.text === "Room action #1: Mara · computer pointer_click · desktop · completed"))
   assert.equal(new Set(harness.entries.map(e => e.mergeKey)).size, 4)
 })
 
@@ -136,7 +136,7 @@ test("Room activity projects actor, tab, input, and action outcome events withou
     "Room actors: Mara (present), Miguel (present)",
     "Room tab: Docs — https://example.test/docs",
     "Room input: Miguel controls desktop",
-    "Room action #1: Mara · browser navigate · completed",
+    "Room action #1: Mara · browser navigate · tab tab-1 · completed",
   ])
   assert.deepEqual(harness.activity, ["room_environment_events"])
   assert.equal(harness.requests.length, 3, "one state refresh should serve the complete event batch")
@@ -190,9 +190,83 @@ test("Room activity keeps consecutive same-kind Actions distinct by sequence", a
   await harness.controller.synchronize()
 
   assert.deepEqual(harness.notices, [
-    "Room action #1: Mara · computer pointer_click · completed",
-    "Room action #2: Mara · computer pointer_click · completed",
+    "Room action #1: Mara · computer pointer_click · desktop · completed",
+    "Room action #2: Mara · computer pointer_click · desktop · completed",
   ])
+})
+
+test("Room action completion and cancellation notices include authoritative targets once", async () => {
+  const completed: RoomEnvironmentSnapshot["actions"][number] = {
+    action_id: "action-tab",
+    sequence: 1,
+    idempotency_key: "private-idempotency-marker",
+    actor_id: "agent:agent-1",
+    runtime_generation: 2,
+    mode: "browser",
+    kind: "navigate",
+    targets: [{ kind: "browser_tab", id: "tab-1" }],
+    state: "completed",
+    cancellation_requested: false,
+    submitted_at_ms: 10,
+    started_at_ms: 11,
+    finished_at_ms: 12,
+    outcome: { status: "completed" },
+  }
+  const cancelled: RoomEnvironmentSnapshot["actions"][number] = {
+    action_id: "action-desktop",
+    sequence: 2,
+    idempotency_key: null,
+    actor_id: "agent:agent-1",
+    runtime_generation: 2,
+    mode: "computer",
+    kind: "pointer_click",
+    targets: [{ kind: "desktop" }],
+    state: "cancelled",
+    cancellation_requested: true,
+    submitted_at_ms: 20,
+    started_at_ms: 21,
+    finished_at_ms: 22,
+    outcome: { status: "cancelled", reason: "human_takeover" },
+  }
+  const actionEvent = (eventId: number, action: typeof completed | typeof cancelled) => roomEvent(
+    eventId,
+    {
+      ActionChanged: {
+        action_id: action.action_id,
+        state: action.state,
+        cancellation_requested: action.cancellation_requested,
+        submitted_at_ms: action.submitted_at_ms,
+        started_at_ms: action.started_at_ms,
+        finished_at_ms: action.finished_at_ms,
+        outcome: action.outcome,
+      },
+    },
+  )
+  const actions = [completed, cancelled]
+  const snapshot = roomEnvironment({ eventCursor: 8, actions })
+  const harness = activityHarness([
+    { RoomEnvironmentState: { environment: roomEnvironment() } },
+    { RoomEnvironmentEvents: { replay: { Events: {
+      events: [
+        actionEvent(5, completed),
+        actionEvent(6, completed),
+        actionEvent(7, cancelled),
+        actionEvent(8, cancelled),
+      ],
+      next_cursor: 8,
+    } } } },
+    { RoomEnvironmentState: { environment: snapshot } },
+  ])
+
+  await harness.controller.synchronize()
+  harness.notices.length = 0
+  await harness.controller.synchronize()
+
+  assert.deepEqual(harness.notices, [
+    "Room action #1: Mara · browser navigate · tab tab-1 · completed",
+    "Room action #2: Mara · computer pointer_click · desktop · cancelled (human_takeover)",
+  ])
+  assert.equal(harness.notices.some((notice) => notice.includes("private-idempotency-marker")), false)
 })
 
 test("Room activity applies a replay-gap snapshot directly", async () => {
