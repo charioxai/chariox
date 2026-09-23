@@ -500,6 +500,120 @@ mod tests {
         assert_eq!(results, vec!["/home"]);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn exact_path_discovery_accepts_home_tmp_nested_and_post_enrollment_repo() {
+        let _env = crate::env_lock::lock();
+        let root = unique_test_dir("workspace-search-path1-exact-paths");
+        let home = root.join("user-home");
+        let chariox_home = home.join(".chariox");
+        create_test_dir(chariox_home.clone());
+
+        let previous_home = std::env::var_os("HOME");
+        let previous_chariox_home = std::env::var_os("CHARIOX_HOME");
+        let previous_isolation = std::env::var_os("CHARIOX_MANAGED_PROVIDER_ISOLATION");
+        let previous_topology = std::env::var_os("CHARIOX_MANAGED_PROVIDER_TOPOLOGY");
+        let protected_names = [
+            "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+            "CHARIOX_MANAGED_SLICE_SERVICE_ROOT",
+            "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT",
+            "CHARIOX_MANAGED_PROVIDER_HOME",
+            "CHARIOX_MANAGED_VAULT_PATH",
+            "CHARIOX_SLICE_DOCKER_BROKER_SOCKET",
+            "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE",
+            "CHARIOX_MANAGED_BOOTSTRAP_PATH",
+            "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
+            "CHARIOX_DISPOSABLE_WORKER_BOOTSTRAP_PATH",
+            "CHARIOX_DISPOSABLE_WORKER_RECEIPT",
+            "CHARIOX_DAEMON_SOCKET",
+        ];
+        let previous_protected = protected_names
+            .iter()
+            .map(|name| (*name, std::env::var_os(name)))
+            .collect::<Vec<_>>();
+        std::env::set_var("HOME", &home);
+        std::env::set_var("CHARIOX_HOME", &chariox_home);
+        std::env::remove_var("CHARIOX_MANAGED_PROVIDER_ISOLATION");
+        std::env::remove_var("CHARIOX_MANAGED_PROVIDER_TOPOLOGY");
+        for name in protected_names {
+            std::env::remove_var(name);
+        }
+
+        // Treat the configured user/kernel homes as the enrolled state, then
+        // create ordinary nested directories and a repository afterward.
+        let nested = home.join("projects").join("nested").join("new-directory");
+        create_test_dir(nested.clone());
+        let repository = home.join("projects").join("post-enrollment-repository");
+        create_test_dir(repository.clone());
+        let output = std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&repository)
+            .output()
+            .expect("test Git repository should initialize");
+        assert!(
+            output.status.success(),
+            "test Git initialization failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        for (mode, topology) in [("ordinary", None), ("path1", Some("path1"))] {
+            if let Some(topology) = topology {
+                std::env::set_var("CHARIOX_MANAGED_PROVIDER_TOPOLOGY", topology);
+            } else {
+                std::env::remove_var("CHARIOX_MANAGED_PROVIDER_TOPOLOGY");
+            }
+
+            for system_path in [PathBuf::from("/home"), PathBuf::from("/tmp")] {
+                if !system_path.is_dir() {
+                    continue;
+                }
+                let exact = system_path.display().to_string();
+                let results = search_workspace_directories(&exact, 32, None)
+                    .expect("system exact-path discovery should succeed");
+                assert!(
+                    results.contains(&exact),
+                    "{mode} discovery should retain {exact}: {results:?}"
+                );
+            }
+
+            for path in [&nested, &repository] {
+                let exact = path.display().to_string();
+                let results = search_workspace_directories(&exact, 32, None)
+                    .expect("nested exact-path discovery should succeed");
+                assert!(
+                    results.contains(&exact),
+                    "{mode} discovery should retain post-enrollment path {exact}: {results:?}"
+                );
+            }
+
+            let created = home
+                .join("projects")
+                .join(format!("{mode}-created-after-enrollment"))
+                .join("nested");
+            let created_path = created.display().to_string();
+            assert_eq!(
+                super::create_workspace_directory(&created_path)
+                    .expect("ordinary workspace directory creation should succeed"),
+                created_path
+            );
+            let results = search_workspace_directories(&created_path, 32, None)
+                .expect("created exact-path discovery should succeed");
+            assert!(
+                results.contains(&created_path),
+                "{mode} discovery should retain a newly created path: {results:?}"
+            );
+        }
+
+        restore_env("HOME", previous_home);
+        restore_env("CHARIOX_HOME", previous_chariox_home);
+        restore_env("CHARIOX_MANAGED_PROVIDER_ISOLATION", previous_isolation);
+        restore_env("CHARIOX_MANAGED_PROVIDER_TOPOLOGY", previous_topology);
+        for (name, value) in previous_protected {
+            restore_env(name, value);
+        }
+        remove_test_dir(&root);
+    }
+
     #[test]
     fn empty_query_filters_protected_workspace_children() {
         let _guard = crate::env_lock::lock();

@@ -717,12 +717,28 @@ mod tests {
 
     #[test]
     fn ordinary_and_path1_inputs_share_the_same_access_contract() {
+        let _env = crate::env_lock::lock();
         let root = plain_temp_directory("common-preflight");
-        let nested = root.join("nested").join("new");
+        let home = root.join("user-home");
+        let chariox_home = home.join(".chariox");
+        std::fs::create_dir_all(&chariox_home).expect("test Chariox state should exist");
+        let previous_home = std::env::var_os("HOME");
+        let previous_chariox_home = std::env::var_os("CHARIOX_HOME");
+        let previous_isolation = std::env::var_os("CHARIOX_MANAGED_PROVIDER_ISOLATION");
+        let previous_topology = std::env::var_os("CHARIOX_MANAGED_PROVIDER_TOPOLOGY");
+        std::env::set_var("HOME", &home);
+        std::env::set_var("CHARIOX_HOME", &chariox_home);
+        std::env::remove_var("CHARIOX_MANAGED_PROVIDER_ISOLATION");
+        std::env::remove_var("CHARIOX_MANAGED_PROVIDER_TOPOLOGY");
+
+        // The user home and Chariox state boundary model an enrolled worker;
+        // create these user-owned workspace paths afterward.
+        let nested = home.join("projects").join("nested").join("new");
         std::fs::create_dir_all(&nested).expect("nested directory should exist");
-        let post_enrollment_repository = root.join("repository-created-after-enrollment");
+        let post_enrollment_repository = home.join("projects").join("created-after-enrollment");
         std::fs::create_dir_all(&post_enrollment_repository)
             .expect("post-enrollment repository should exist");
+        run_test_git(&post_enrollment_repository, &["init", "-b", "main"]);
         let existing = [
             PathBuf::from("/"),
             PathBuf::from("/home"),
@@ -737,8 +753,10 @@ mod tests {
             if !path.is_dir() {
                 continue;
             }
+            std::env::remove_var("CHARIOX_MANAGED_PROVIDER_TOPOLOGY");
             let ordinary = preflight_working_directory(&path, "ordinary.cwd", false, &[])
                 .expect("ordinary path should pass its access contract");
+            std::env::set_var("CHARIOX_MANAGED_PROVIDER_TOPOLOGY", "path1");
             let path1 = preflight_working_directory(&path, "path1.cwd", false, &[])
                 .expect("Path-1 path should pass the same access contract");
             assert_eq!(ordinary.canonical_path, path1.canonical_path);
@@ -746,18 +764,27 @@ mod tests {
         }
 
         let missing = root.join("created-after-preflight");
+        std::env::remove_var("CHARIOX_MANAGED_PROVIDER_TOPOLOGY");
         let planned = preflight_working_directory(&missing, "ordinary.create", true, &[])
             .expect("newly-created directory should be admissible before creation");
         assert!(!planned.exists);
         std::fs::create_dir_all(&missing).expect("planned directory should be created");
+        let ordinary = preflight_working_directory(&missing, "ordinary.created", false, &[])
+            .expect("ordinary kernel should accept a directory after it is created");
+        std::env::set_var("CHARIOX_MANAGED_PROVIDER_TOPOLOGY", "path1");
         let path1 = preflight_working_directory(&missing, "path1.cwd", false, &[])
             .expect("Path-1 should accept the newly-created directory");
+        assert_eq!(ordinary.canonical_path, path1.canonical_path);
         assert_eq!(path1.canonical_path, missing.canonicalize().unwrap());
 
         let missing_error =
             preflight_working_directory(&root.join("does-not-exist"), "path1.cwd", false, &[])
                 .expect_err("missing working directories must fail closed");
         assert!(missing_error.to_string().contains("does not exist"));
+        restore_env("HOME", previous_home);
+        restore_env("CHARIOX_HOME", previous_chariox_home);
+        restore_env("CHARIOX_MANAGED_PROVIDER_ISOLATION", previous_isolation);
+        restore_env("CHARIOX_MANAGED_PROVIDER_TOPOLOGY", previous_topology);
         std::fs::remove_dir_all(root).expect("preflight fixture should be removable");
     }
 
@@ -786,6 +813,8 @@ mod tests {
 
         std::env::set_var("CHARIOX_MANAGED_PROVIDER_TOPOLOGY", "path1");
         std::env::set_var("CHARIOX_MANAGED_PROVIDER_HOME", &provider_home);
+        preflight_working_directory(&provider_home, "path1.provider-home.parent", false, &[])
+            .expect("the parent of an exact protected file must remain usable");
         let path1 = preflight_working_directory(&selected, "path1.cwd", false, &[])
             .expect("Path-1 must preserve the ordinary provider-home child cwd contract");
         assert_eq!(path1.canonical_path, ordinary.canonical_path);
