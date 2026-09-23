@@ -364,6 +364,10 @@ function validateAfter(after, reviewed, before, rebuild) {
   }
   const newServices = identity.serviceInstances.map((item, index) => identityPair(item, `after service ${index}`, ["unit", "invocationId"]))
   uniqueStrings(newServices.map(({ unit }) => unit), "after service units")
+  if (!newServices.some(({ unit }) => unit === "chariox-disposable-worker-bootstrap.service")
+    || newServices.some(({ unit }) => unit === "chariox-managed-bootstrap.service")) {
+    fail("path1_service_topology", "rebuilt Path-1 worker must run the disposable-worker service, not the shared-host service")
+  }
   const oldServiceIds = new Set(before.services.map(({ invocationId }) => invocationId))
   if (newServices.some(({ invocationId }) => oldServiceIds.has(invocationId))) {
     fail("identity_not_rotated", "new systemd service list contains an old invocation identity")
