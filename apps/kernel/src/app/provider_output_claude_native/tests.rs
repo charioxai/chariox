@@ -497,6 +497,7 @@ fn hook_permission_suppresses_post_stop_stale_rendered_permission_fallback() {
             &run,
             &ClaudeNativePromptInjection {
                 id: "prompt-1",
+                origin_prompt_id: "prompt-1",
                 prompt: "do the work",
                 hidden_system_context: "",
                 attachments: &attachments,

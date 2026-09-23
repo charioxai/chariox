@@ -980,7 +980,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
     assert_ne!(projected_provider_run_id, local_provider_run_id);
 
     if direct_message_only {
-        {
+        let sender_prompt_id = {
             let mut app = app_home.lock().await;
             let sender_id = app
                 .providers()
@@ -996,12 +996,14 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                 "sender task",
                 crate::session::PromptStatus::Queued,
             );
-            assert!(matches!(
-                app.prompt_owner_submit_prepared_prompt(&session_id, sender_prompt, false)
-                    .expect("home sender turn should start"),
-                crate::session::PromptSubmissionOutcome::Started { .. }
-            ));
-        }
+            let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+                .prompt_owner_submit_prepared_prompt(&session_id, sender_prompt, false)
+                .expect("home sender turn should start")
+            else {
+                panic!("home sender turn must start");
+            };
+            prompt.id().to_string()
+        };
         let sender_token = app_home
             .lock()
             .await
@@ -1014,6 +1016,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
         let direct_message_args = serde_json::json!({
             "agent": remote_agent_id,
             "message": "REMOTE_AGENT_MESSAGE_DIRECT",
+            "origin_prompt_id": sender_prompt_id,
             "idempotency_key": "remote-direct-message",
         });
         let direct_message = router

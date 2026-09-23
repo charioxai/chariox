@@ -116,6 +116,31 @@ impl KernelRuntimeState {
                 &workspace_context,
             )));
         }
+        let mut forwarded_arguments = arguments.clone();
+        if crate::transport::runtime_tools::canonical_agent_messaging_tool_name(tool_name)
+            == Some(crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL)
+        {
+            let worker_origin = arguments
+                .get("origin_prompt_id")
+                .and_then(serde_json::Value::as_str);
+            let origin_is_current = match provider_run.agent_instance_id().zip(worker_origin) {
+                Some((agent_id, prompt_id)) => self.agent_message_sender_prompt_is_running(
+                    provider_run.session_id(),
+                    agent_id,
+                    prompt_id,
+                )?,
+                None => false,
+            };
+            let Some(home_prompt_id) = remote_context.home_prompt_id.as_deref() else {
+                return Ok(Some(agent_message_origin_rejected()));
+            };
+            if !origin_is_current {
+                return Ok(Some(agent_message_origin_rejected()));
+            }
+            // The worker and home allocate different prompt IDs. Validate the
+            // worker's turn before translating it to the leased home turn.
+            forwarded_arguments["origin_prompt_id"] = serde_json::json!(home_prompt_id);
+        }
         let response = self
             .with_app_side_effect(|app| {
                 app.block_on_relay_future(
@@ -128,7 +153,7 @@ impl KernelRuntimeState {
                         RelayPeerRequest::ForwardCapabilityRuntimeTool {
                             context: remote_context.clone(),
                             tool_name: tool_name.to_string(),
-                            arguments: arguments.clone(),
+                            arguments: forwarded_arguments.clone(),
                         },
                     ),
                 )
@@ -337,5 +362,14 @@ impl KernelRuntimeState {
                 message: format!("unknown capability runtime tool `{tool_name}`"),
             }),
         }
+    }
+}
+
+fn agent_message_origin_rejected() -> crate::transport::runtime_tools::RuntimeToolResult {
+    crate::transport::runtime_tools::RuntimeToolResult {
+        ok: false,
+        payload: serde_json::json!({
+            "error": "agent message belongs to a different sender turn; message was not sent"
+        }),
     }
 }

@@ -225,6 +225,7 @@ impl ProviderProcessService {
         provider_run_id: String,
         agent_id: String,
         prompt_id: String,
+        origin_prompt_id: &str,
         run: &RuntimeProviderRun,
         prompt: &str,
         hidden_system_context: &str,
@@ -251,11 +252,15 @@ impl ProviderProcessService {
         } else {
             PromptAssemblyMode::NativeTuiProviderTurn
         };
+        let hidden_system_context = format!(
+            "{hidden_system_context}\n\n{}",
+            crate::prompt_assembly::agent_message_origin_context(origin_prompt_id)
+        );
         let envelope = PromptAssemblyService::from_env()?
             .assemble_provider_turn(
                 run,
                 prompt,
-                Some(hidden_system_context),
+                Some(&hidden_system_context),
                 attachments.to_vec(),
                 mode,
             )?
