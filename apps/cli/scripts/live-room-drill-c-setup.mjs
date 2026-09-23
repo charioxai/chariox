@@ -139,7 +139,9 @@ export function assertModeOptions(options) {
 }
 
 export function requiresDirectDockerAccess(mode) {
-  return mode === "isolated_local"
+  // Drill C validates an ordinary Path-1 kernel, not the legacy shared-host
+  // broker. Check same-user Docker access before creating a durable slice.
+  return mode === "isolated_local" || mode === "existing_kernel"
 }
 
 export function assertRootlessWorkspaceRoot({ workspaceRoot, homeDir = os.homedir(), repositoryRoot = repoRoot }) {

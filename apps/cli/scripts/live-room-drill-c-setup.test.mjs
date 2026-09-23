@@ -150,7 +150,7 @@ test("Drill C setup modes require loopback endpoints and explicit existing-kerne
     "--expected-machine-id", "machine-1",
   ], existingEnv)
   assert.equal(existing.mode, "existing_kernel")
-  assert.equal(requiresDirectDockerAccess(existing.mode), false)
+  assert.equal(requiresDirectDockerAccess(existing.mode), true)
   assert.match(existing.rootDir, /^\/home\/test\/\.chariox\/dev\/browser-computer-use\/drill-c-existing-kernel-/)
   assert.equal(existing.manifestPath, `${existing.rootDir}/setup-manifest.json`)
   assert.equal(existing.relayUrl, null)
