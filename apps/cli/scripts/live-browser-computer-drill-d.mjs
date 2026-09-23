@@ -11,7 +11,7 @@ const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, mil
 const maxHistoryActions = 4096
 const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
 
-export function assertDrillDComputerAction(action, { actionId, agentId, baselineSequence }) {
+function assertDrillDComputerAction(action, { actionId, agentId, baselineSequence }) {
   const valid = action?.action_id === actionId
     && Number.isSafeInteger(action.sequence) && action.sequence > baselineSequence
     && action.actor_id === `agent:${agentId}`
@@ -25,7 +25,7 @@ export function assertDrillDComputerAction(action, { actionId, agentId, baseline
   return action
 }
 
-export function assertDrillDPreBrowserActions(actions, { baselineSequence, firstBrowserSequence, agentId }) {
+function assertDrillDPreBrowserActions(actions, { baselineSequence, firstBrowserSequence, agentId }) {
   const actorId = `agent:${agentId}`
   const beforeBrowser = actions
     .filter((action) => action.sequence > baselineSequence && action.sequence < firstBrowserSequence)
@@ -56,7 +56,7 @@ function validateObservedComputerActions(actions, agentId) {
   }
 }
 
-export function browserStateProjection(environment, sessionId) {
+function browserStateProjection(environment, sessionId) {
   assert.equal(environment?.session_id, sessionId, "Room Environment belongs to a different session")
   assert.equal(environment.lifecycle, "ready", "Room Environment is not ready")
   assert.ok(typeof environment.environment_id === "string" && environment.environment_id.length > 0,
@@ -150,19 +150,20 @@ export async function runDrillDAcceptance(options, dependencies = {}) {
       editor: desktopTransition.editorScreenshot,
       final: finalScreenshot,
     }
-    const proof = await verifyOfficeProof({
+    const proof = assertDrillDAcceptanceProof({
       options,
       office: finalOffice.office,
       phase: finalOffice.phase,
       history,
       baseline,
+      preBrowserProjection: desktopTransition.preBrowserProjection,
       firstBrowser: desktopTransition.action,
       editorScreenshot: desktopTransition.editorScreenshot,
       baselineScreenshot: baseline.screenshot,
       finalScreenshot,
       finalProjection,
     })
-    const evidence = {
+    evidence = {
       schemaVersion: 1,
       drill: "browser-computer-drill-d",
       startedAt,
@@ -258,6 +259,7 @@ async function waitForFirstBrowserAction(client, requests, options, baseline, at
   const deadline = Date.now() + options.timeoutMs
   let polls = 0
   let editorScreenshot = null
+  let preBrowserProjection = null
   while (Date.now() < deadline) {
     polls += 1
     const historyBeforeState = await readActionHistory(client, requests, options.sessionId)
@@ -266,7 +268,7 @@ async function waitForFirstBrowserAction(client, requests, options, baseline, at
       assert.ok(editorScreenshot, "Browser work began before the editor UI evidence was captured")
       assert.equal(existing.actor_id, `agent:${options.agentId}`, "first Browser action is not attributed to the expected agent")
       baseline.polls = polls
-      return { action: existing, editorScreenshot }
+      return { action: existing, editorScreenshot, preBrowserProjection }
     }
 
     const environment = await readEnvironment(client, requests, options.sessionId)
@@ -275,6 +277,7 @@ async function waitForFirstBrowserAction(client, requests, options, baseline, at
     assert.equal(projection.runtimeGeneration, baseline.projection.runtimeGeneration, "Room runtime generation changed before Browser work")
     assert.deepEqual(projection, baseline.projection,
       "Room browser focus or tab state changed before an explicit Browser action")
+    preBrowserProjection = projection
 
     const historyAfterState = await readActionHistory(client, requests, options.sessionId)
     const appeared = firstPostBaselineBrowser(historyAfterState, baseline.sequence)
@@ -284,7 +287,7 @@ async function waitForFirstBrowserAction(client, requests, options, baseline, at
         "Room browser state changed in the interval before its first Browser action could be ordered")
       assert.equal(appeared.actor_id, `agent:${options.agentId}`, "first Browser action is not attributed to the expected agent")
       baseline.polls = polls
-      return { action: appeared, editorScreenshot }
+      return { action: appeared, editorScreenshot, preBrowserProjection: projection }
     }
     const observedComputerActions = historyAfterState.filter((action) => action.sequence > baseline.sequence)
     if (observedComputerActions.length) {
@@ -396,12 +399,22 @@ async function readCheckpoint(reportPath) {
   }
 }
 
-async function verifyOfficeProof({
+export function assertDrillDAcceptanceProof({
   options, office, phase, history, baseline, firstBrowser, baselineScreenshot,
-  editorScreenshot, finalScreenshot, finalProjection,
+  preBrowserProjection, editorScreenshot, finalScreenshot, finalProjection,
 }) {
   const actorId = `agent:${options.agentId}`
   assert.equal(phase, "passed", "live office drill did not finish successfully")
+  assert.equal(baseline.projection.sessionId, options.sessionId, "baseline Room identity differs from the requested session")
+  assert.equal(preBrowserProjection?.sessionId, options.sessionId,
+    "pre-Browser Room identity differs from the requested session")
+  assert.deepEqual(preBrowserProjection, baseline.projection,
+    "Room browser state changed before the first explicit Browser action")
+  assert.equal(finalProjection.sessionId, options.sessionId, "final Room identity differs from the requested session")
+  assert.equal(finalProjection.environmentId, baseline.projection.environmentId,
+    "Room Environment identity changed during Drill D")
+  assert.equal(finalProjection.runtimeGeneration, baseline.projection.runtimeGeneration,
+    "Room runtime generation changed during Drill D")
   assert.equal(office?.agentId, options.agentId, "live office report belongs to a different agent")
   assert.equal(office?.fixtureClosed, true, "live office fixture cleanup was not reported")
   assert.equal(office?.edit?.exactDocument, true, "live office UI did not verify the saved document")
@@ -431,7 +444,9 @@ async function verifyOfficeProof({
   assertScreenshotMatchesRoom(editorScreenshot, baseline.projection, "saved editor")
   assertScreenshotMatchesRoom(finalScreenshot, finalProjection, "final Browser")
   const actionById = new Map(history.map((action) => [action.action_id, action]))
-  const typed = assertDrillDComputerAction(actionById.get(office.edit.typedActionId), {
+  const typedAction = actionById.get(office.edit.typedActionId)
+  assert.ok(typedAction, "kernel history omitted the reported Computer edit action")
+  const typed = assertDrillDComputerAction(typedAction, {
     actionId: office.edit.typedActionId,
     agentId: options.agentId,
     baselineSequence: baseline.sequence,
