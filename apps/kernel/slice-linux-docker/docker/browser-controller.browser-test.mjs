@@ -481,6 +481,34 @@ test("isolated-frame navigation rejects old references and preserves the parent 
   });
 });
 
+for (const transitionEvent of ["input", "change"]) {
+  test(`secret fill rejects and remasks when a real ${transitionEvent} handler unmasks the field`, { timeout: 15_000 }, async () => {
+    await withController(async ({ page, request }) => {
+      await page.setContent('<label>Sample<input type="password"></label>');
+      const field = page.getByLabel("Sample");
+      await field.evaluate((input, eventType) => {
+        input.addEventListener(eventType, () => { input.type = "text"; });
+      }, transitionEvent);
+      const target = (await request("browser.reconcile", { viewport })).result.tabs[0];
+      const snapshot = await request("browser.snapshot", target);
+      const result = await request("browser.action", {
+        ...target,
+        node_ref: fieldReference(snapshot),
+        action: {
+          kind: "fill",
+          text: "browser-fixture-secret-canary",
+          expected_document_url: page.url(),
+        },
+      });
+
+      assert.equal(result.ok, false);
+      assert.equal(result.error.code, "browser_secret_target_not_masked");
+      assert.equal(JSON.stringify(result).includes("browser-fixture-secret-canary"), false);
+      assert.equal(await field.getAttribute("type"), "password");
+    });
+  });
+}
+
 test("same-site cross-origin frame actions use top-viewport coordinates", async () => {
   await withCrossOriginFixture(async (url) => {
     await withController(async ({ page, request, context }) => {
