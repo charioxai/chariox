@@ -19,16 +19,21 @@ for slice transfer. For example, `codex-1` is a label, not the profile ID.
 Selecting a different account fails before slice creation; this drill does not
 copy credentials or silently fall back to a different profile.
 
+Real-provider runs request the provisioner's provider-sandbox compatibility
+boundary and its early Bubblewrap probe. Relaxing seccomp alone is insufficient
+for an official provider inside the Docker slice. If the local Docker host
+cannot create that boundary, the run fails before a provider turn and is not
+acceptance evidence; use a compatible managed Linux host for that gate.
+
 Use `CARGO_TARGET_DIR` for the existing matching binaries and
 `CHARIOX_ROOM_DRILL_IMAGE` for an existing exact-source image. The latter disables
 automatic image builds. The fixture enforces one 2-GiB, one-CPU headed slice and
 always cleans up its container, volume, temporary state, and listeners.
 
 The real-provider mode explicitly enables the existing
-`slices.linux.allow_unconfined_seccomp` option for this disposable local slice.
-This permits the production Bubblewrap launcher to create its inner provider
-namespace. The provider still runs with the inner seccomp filter, filesystem
-isolation and dropped capabilities. Ordinary fixture modes and user settings
+`slices.linux.allow_provider_sandbox_compatibility` option for this disposable
+local slice. The provider still runs inside the inner Bubblewrap filesystem
+isolation with dropped capabilities. Ordinary fixture modes and user settings
 are unchanged. Do not use this local drill setting as managed-host acceptance;
 managed hosts additionally require the dedicated rootless Docker boundary.
 

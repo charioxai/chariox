@@ -1,7 +1,14 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { importRoomNativeProviderAccount } from "./live-room-real-provider.mjs"
+import { importRoomNativeProviderAccount, roomProviderSandboxConfigLines } from "./live-room-real-provider.mjs"
+
+test("real-provider Room slices request the nested provider sandbox boundary", () => {
+  assert.deepEqual(roomProviderSandboxConfigLines({ provider: "codex" }), [
+    "allow_provider_sandbox_compatibility = true",
+  ])
+  assert.deepEqual(roomProviderSandboxConfigLines(null), [])
+})
 
 test("fresh Room drill imports the selected native account through the kernel", async () => {
   const calls = []

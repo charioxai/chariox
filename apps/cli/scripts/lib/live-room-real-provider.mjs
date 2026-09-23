@@ -54,6 +54,10 @@ export async function importRoomNativeProviderAccount({ client, requests, option
   return { ...options, requestedAccountProfile, accountProfile: profile.profile_id }
 }
 
+export function roomProviderSandboxConfigLines(options) {
+  return options ? ["allow_provider_sandbox_compatibility = true"] : []
+}
+
 // Prepare only the provider identity that a later companion may reuse. This
 // intentionally stops before AttachToSession and SubmitPrompt; the Cloud
 // companion owns its own attachment and prompt submission after it verifies
