@@ -123,6 +123,10 @@ export function assertModeOptions(options) {
   assert.equal(options.expectedMachineId, null, "--expected-machine-id requires --existing-kernel")
 }
 
+export function requiresDirectDockerAccess(mode) {
+  return mode === "isolated_local"
+}
+
 export function assertLoopbackUrl(value, label, protocols) {
   let url
   try {
@@ -564,7 +568,7 @@ async function main() {
     kernelUrl = `ws://127.0.0.1:${ports.kernel}/kernel`
   }
   await assertKernelClientBuilt()
-  await assertDockerReady()
+  if (requiresDirectDockerAccess(options.mode)) await assertDockerReady()
 
   const stamp = `${process.pid}-${Date.now()}`
   const sliceName = `drill-c-${stamp}`

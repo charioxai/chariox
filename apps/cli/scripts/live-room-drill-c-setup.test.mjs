@@ -12,6 +12,7 @@ import {
   buildRoomBaseline,
   buildSetupManifest,
   parseArgs,
+  requiresDirectDockerAccess,
 } from "./live-room-drill-c-setup.mjs"
 
 const workspace = "/home/test/.chariox/dev/browser-computer-use/drill-c/workspace"
@@ -115,6 +116,7 @@ test("Drill C setup modes require loopback endpoints and explicit existing-kerne
   const isolated = parseArgs([], { HOME: "/home/test" })
   assert.equal(isolated.mode, "isolated_local")
   assert.doesNotThrow(() => assertModeOptions(isolated))
+  assert.equal(requiresDirectDockerAccess(isolated.mode), true)
 
   const existingEnv = {
     HOME: "/home/test",
@@ -127,6 +129,7 @@ test("Drill C setup modes require loopback endpoints and explicit existing-kerne
     "--expected-machine-id", "machine-1",
   ], existingEnv)
   assert.equal(existing.mode, "existing_kernel")
+  assert.equal(requiresDirectDockerAccess(existing.mode), false)
   assert.match(existing.rootDir, /^\/home\/test\/\.chariox\/dev\/browser-computer-use\/drill-c-existing-kernel-/)
   assert.equal(existing.manifestPath, `${existing.rootDir}/setup-manifest.json`)
   assert.equal(existing.relayUrl, null)
