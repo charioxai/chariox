@@ -81,6 +81,20 @@ const SETUP_TRANSPORT_RECOVERY_REALM: &str = "realm-transport-recovery";
 const SETUP_TRANSPORT_RECOVERY_RELAY_REQUEST_TIMEOUT_MS: u64 = 500;
 
 #[cfg(unix)]
+struct WorkerCommandGateCleanup {
+    setup_release: PathBuf,
+    validation_release: PathBuf,
+}
+
+#[cfg(unix)]
+impl Drop for WorkerCommandGateCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::write(&self.setup_release, b"");
+        let _ = std::fs::write(&self.validation_release, b"");
+    }
+}
+
+#[cfg(unix)]
 #[tokio::test]
 async fn public_setup_lifecycle_validates_supplied_definition_through_worker_boundary() {
     exercise_public_setup_lifecycle(DefinitionScenario::Supplied).await;
@@ -1801,10 +1815,16 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     repairable_definition.source = ProjectEnvironmentDefinitionSource::Devcontainer;
     repairable_definition.source_path = Some(repair_recipe_path.to_string());
     repairable_definition.inputs.clear();
-    repairable_definition.setup_steps[0].command =
-        "touch remote-repair-complete; command -v sh".to_string();
+    repairable_definition.setup_steps[0].command = concat!(
+        "touch remote-setup-started; ",
+        "while [ ! -f remote-setup-release ]; do sleep 0.01; done; ",
+        "command -v sh"
+    )
+    .to_string();
     repairable_definition.validation_commands = vec![format!(
-        "command -v sh; test -f {repair_recipe_path}; test -f {repair_lockfile_path}"
+        "touch remote-validation-started; \
+         while [ ! -f remote-validation-release ]; do sleep 0.01; done; \
+         command -v sh; test -f {repair_recipe_path}; test -f {repair_lockfile_path}"
     )];
     let mut repaired_definition = repairable_definition.clone();
     repaired_definition.inputs = vec![
@@ -2001,7 +2021,41 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         "repairable worker status must remain non-terminal before utility completion: {immediate_repair_status:?}"
     );
 
+    // Hold commands in the relay-connected target worker. Ready must come
+    // from the worker after both command barriers are released.
     release_utility.store(true, Ordering::Release);
+    let setup_started = workspace.join("remote-setup-started");
+    let setup_release = workspace.join("remote-setup-release");
+    let validation_started = workspace.join("remote-validation-started");
+    let validation_release = workspace.join("remote-validation-release");
+    let _gate_cleanup = WorkerCommandGateCleanup {
+        setup_release: setup_release.clone(),
+        validation_release: validation_release.clone(),
+    };
+    let held_setup = wait_for_connected_worker_setup_phase(
+        &runtime,
+        repair_operation_id,
+        ProjectEnvironmentSetupPhase::Preparing,
+        &setup_started,
+        "setup",
+    )
+    .await;
+    assert_eq!(held_setup.phase, ProjectEnvironmentSetupPhase::Preparing);
+    assert!(!validation_started.exists());
+    std::fs::write(&setup_release, b"").unwrap();
+
+    let held_validation = wait_for_connected_worker_setup_phase(
+        &runtime,
+        repair_operation_id,
+        ProjectEnvironmentSetupPhase::Validating,
+        &validation_started,
+        "validation",
+    )
+    .await;
+    assert_eq!(held_validation.phase, ProjectEnvironmentSetupPhase::Validating);
+    assert!(!validation_release.exists());
+    std::fs::write(&validation_release, b"").unwrap();
+
     let repair_ready_deadline = Instant::now() + Duration::from_secs(10);
     let repair_ready = loop {
         let observation = runtime
@@ -2058,16 +2112,25 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         Some(repaired_definition.digest().as_str()),
         "Ready must carry the utility-repaired definition identity"
     );
+    let repair_validation = repair_ready
+        .validation
+        .as_ref()
+        .expect("Ready must carry target-worker validation");
     assert!(
-        repair_ready
-            .validation
-            .as_ref()
-            .is_some_and(ProjectEnvironmentValidation::passed),
+        repair_validation.passed(),
         "Ready must carry passing target-worker validation"
     );
+    assert_eq!(repair_validation.worker_id, config_worker.host_machine_id);
+    assert_eq!(repair_validation.platform, target_platform);
+    assert_eq!(repair_validation.commands.len(), 1);
+    assert_eq!(repair_validation.commands[0].exit_code, 0);
     assert!(
-        workspace.join("remote-repair-complete").exists(),
+        setup_started.exists() && setup_release.exists(),
         "the worker must execute the repaired repeatable setup steps"
+    );
+    assert!(
+        validation_started.exists() && validation_release.exists(),
+        "Ready requires the gated worker validation command to complete"
     );
     assert_eq!(
         std::fs::read(workspace.join(repair_recipe_path)).unwrap(),
@@ -4195,6 +4258,48 @@ async fn get_setup_status(
                 "public setup status should be available during {phase} (operation {operation_id}, caller {caller_user_id}): {error}"
             )
         })
+}
+
+#[cfg(unix)]
+async fn wait_for_connected_worker_setup_phase(
+    runtime: &crate::runtime::state::KernelRuntimeState,
+    operation_id: &str,
+    expected_phase: ProjectEnvironmentSetupPhase,
+    command_started: &std::path::Path,
+    command_name: &str,
+) -> ProjectEnvironmentSetupStatus {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let status = response_status(
+            get_setup_status(
+                runtime,
+                operation_id,
+                "user-1",
+                "connected worker setup readiness barrier",
+            )
+            .await,
+        );
+        if status.phase == expected_phase && command_started.exists() {
+            return status;
+        }
+        assert_ne!(
+            status.phase,
+            ProjectEnvironmentSetupPhase::Ready,
+            "connected target worker became Ready before its {command_name} command passed"
+        );
+        assert!(
+            !matches!(
+                status.phase,
+                ProjectEnvironmentSetupPhase::Failed | ProjectEnvironmentSetupPhase::Cancelled
+            ),
+            "connected worker setup terminated before the {command_name} barrier: {status:?}"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "connected worker did not reach the {command_name} barrier: {status:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 #[cfg(unix)]
