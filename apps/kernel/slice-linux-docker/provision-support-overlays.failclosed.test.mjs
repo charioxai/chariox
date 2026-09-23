@@ -11,6 +11,11 @@ const requiredOverlayDestinations = [
   ["runtime launcher", "/opt/chariox-slice/start-runtime.sh"],
   ["provider launcher", "/opt/chariox-slice/start-providers.sh"],
   ["screen launcher", "/opt/chariox-slice/slice-screen.sh"],
+  ["screen text finder", "/opt/chariox-slice/slice-text-finder.py"],
+  ["provider bridge", "/opt/chariox-slice/provider-port-bridge.mjs"],
+  ["provider isolation probe", "/opt/chariox-slice/managed-provider-isolation-probe.mjs"],
+  ["provider isolation wrapper", "/opt/chariox-slice/managed-provider-isolation-probe-wrapper.sh"],
+  ["screen validator", "/opt/chariox-slice/validate-screen.sh"],
   ["browser CDP helper", "/opt/chariox-slice/browser-cdp.mjs"],
   ["Selkies lifecycle", "/opt/chariox-slice/slice-selkies.py"],
   ["Selkies streaming", "/opt/chariox-slice/slice-selkies-stream.py"],
@@ -48,7 +53,8 @@ test("each required overlay remains wired to a fail-closed refresh", async () =>
   for (const [label, destination] of requiredOverlayDestinations) {
     const filename = destination.slice(destination.lastIndexOf("/") + 1);
     assert.ok(refresh.includes(filename), `${label} must remain in the support refresh`);
-    if (label.startsWith("Browser Controller")) {
+    if (label.startsWith("Browser Controller") || ["screen text finder", "provider bridge",
+      "provider isolation probe", "provider isolation wrapper", "screen validator"].includes(label)) {
       const lines = refresh.split("\n");
       const commandIndex = lines.findIndex(line => line.includes(filename)
         && (line.includes("copy_required_slice_overlay") || line.includes("docker cp")));
@@ -62,6 +68,11 @@ test("each required overlay remains wired to a fail-closed refresh", async () =>
     "start-runtime.sh",
     "start-providers.sh",
     "slice-screen.sh",
+    "slice-text-finder.py",
+    "provider-port-bridge.mjs",
+    "managed-provider-isolation-probe.mjs",
+    "managed-provider-isolation-probe-wrapper.sh",
+    "validate-screen.sh",
     "browser-cdp.mjs",
     "slice-selkies.py",
     "slice-selkies-stream.py",
@@ -88,6 +99,7 @@ test("recovery fails closed on representative required overlay errors before sta
     await writeFakeDocker(root);
     const rejectedDestinations = [
       ["runtime launcher", "/opt/chariox-slice/start-runtime.sh"],
+      ["provider bridge", "/opt/chariox-slice/provider-port-bridge.mjs"],
       ["Selkies lifecycle", "/opt/chariox-slice/slice-selkies.py"],
       ["Browser Controller entrypoint", "/opt/chariox-slice/browser-controller.mjs"],
       ["browser import controller", "/opt/chariox-slice/browser-session-import/controller-cookie-import.mjs"],

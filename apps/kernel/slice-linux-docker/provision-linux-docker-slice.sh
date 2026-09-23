@@ -397,8 +397,7 @@ refresh_slice_support_files() {
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-screen.sh" "$SLICE_NAME:/opt/chariox-slice/slice-screen.sh" "screen launcher"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/tint2rc" "$SLICE_NAME:/opt/chariox-slice/tint2rc" \
     || log "applications taskbar configuration refresh unavailable; continuing"
-  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-text-finder.py" "$SLICE_NAME:/opt/chariox-slice/slice-text-finder.py" \
-    || log "screen text finder overlay refresh unavailable; continuing"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-text-finder.py" "$SLICE_NAME:/opt/chariox-slice/slice-text-finder.py" "screen text finder"
   if [[ "$SLICE_VIEWER_BACKEND" == "selkies" ]]; then
     copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-selkies.py" "$SLICE_NAME:/opt/chariox-slice/slice-selkies.py" "Selkies lifecycle"
     copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-selkies-stream.py" "$SLICE_NAME:/opt/chariox-slice/slice-selkies-stream.py" "Selkies streaming"
@@ -443,14 +442,10 @@ refresh_slice_support_files() {
     run_with_timeout 30 docker cp "$REPO_ROOT/apps/browser-session-import/$browser_import_module" "$SLICE_NAME:/opt/chariox-slice/browser-session-import/$browser_import_module" \
       || fail "failed to refresh required slice support overlay: browser import module $browser_import_module"
   done
-  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/managed-provider-isolation-probe.mjs" "$SLICE_NAME:/opt/chariox-slice/managed-provider-isolation-probe.mjs" \
-    || log "provider isolation probe overlay refresh unavailable; continuing"
-  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/managed-provider-isolation-probe-wrapper.sh" "$SLICE_NAME:/opt/chariox-slice/managed-provider-isolation-probe-wrapper.sh" \
-    || log "provider isolation probe wrapper refresh unavailable; continuing"
-  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/provider-port-bridge.mjs" "$SLICE_NAME:/opt/chariox-slice/provider-port-bridge.mjs" \
-    || log "provider bridge overlay refresh unavailable; continuing"
-  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/validate-screen.sh" "$SLICE_NAME:/opt/chariox-slice/validate-screen.sh" \
-    || log "screen validator overlay refresh unavailable; continuing"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/managed-provider-isolation-probe.mjs" "$SLICE_NAME:/opt/chariox-slice/managed-provider-isolation-probe.mjs" "provider isolation probe"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/managed-provider-isolation-probe-wrapper.sh" "$SLICE_NAME:/opt/chariox-slice/managed-provider-isolation-probe-wrapper.sh" "provider isolation wrapper"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/provider-port-bridge.mjs" "$SLICE_NAME:/opt/chariox-slice/provider-port-bridge.mjs" "provider bridge"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/validate-screen.sh" "$SLICE_NAME:/opt/chariox-slice/validate-screen.sh" "screen validator"
   run_with_timeout 30 docker exec -u root "$SLICE_NAME" chmod +x \
     /opt/chariox-slice/start-runtime.sh \
     /opt/chariox-slice/start-providers.sh \
@@ -469,13 +464,11 @@ refresh_slice_support_files() {
     /opt/chariox-slice/browser-controller-permissions.mjs \
     /opt/chariox-slice/browser-controller-snapshot.mjs \
     /opt/chariox-slice/browser-controller.mjs \
-    || fail "failed to set permissions on required slice support overlays"
-  run_with_timeout 30 docker exec -u root "$SLICE_NAME" chmod +x \
     /opt/chariox-slice/managed-provider-isolation-probe.mjs \
     /opt/chariox-slice/managed-provider-isolation-probe-wrapper.sh \
     /opt/chariox-slice/provider-port-bridge.mjs \
     /opt/chariox-slice/validate-screen.sh \
-    || log "script permission refresh unavailable; continuing"
+    || fail "failed to set permissions on required slice support overlays"
 }
 
 wait_for_container_running() {
