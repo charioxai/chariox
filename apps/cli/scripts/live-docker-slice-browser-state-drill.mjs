@@ -11,6 +11,7 @@ import { browserStateCleanupFailure } from "./lib/browser-state-drill-cleanup.mj
 import { browserStateDrillImageConfig } from "./lib/browser-state-drill-image.mjs"
 import { resolveBrowserStateDrillPaths } from "./lib/browser-state-drill-paths.mjs"
 import { startBrowserComputerFixture } from "./lib/browser-computer-fixture.mjs"
+import { startBrowserStateFixtureSidecar } from "./lib/browser-state-drill-fixture-sidecar.mjs"
 import { startBrowserStateFixtureProxy } from "./lib/browser-state-fixture-proxy.mjs"
 import { finalizeDrillArtifacts } from "./lib/drill-artifacts.mjs"
 import { resolveBuiltBinary } from "./lib/drill-runtime-helpers.mjs"
@@ -73,6 +74,8 @@ let cleanupResult = null
 let sourceIdentity = null
 let stateImagesBefore = new Set()
 let rollbackImagesBefore = new Set()
+let workspaceFixture = null
+let fixtureSidecarGone = true
 const sliceRuntime = {}
 const persistenceIdentity = {}
 const externalServiceReauthentication = {}
@@ -274,9 +277,10 @@ async function run() {
   await runWebmailPhase("second", markers.secondSubject, { expectAuthenticated: true })
   await screenshot("02-after-restore-second-send")
 
-  assert.equal(fixture.messages.filter((message) => message.subject === markers.firstSubject).length, 1)
-  assert.equal(fixture.messages.filter((message) => message.subject === markers.secondSubject).length, 1)
-  await writeFile(path.join(artifactDir, "fixture-messages.json"), JSON.stringify(fixture.messages, null, 2))
+  const firstMessages = await fixture.readMessages()
+  assert.equal(firstMessages.filter((message) => message.subject === markers.firstSubject).length, 1)
+  assert.equal(firstMessages.filter((message) => message.subject === markers.secondSubject).length, 1)
+  await writeFile(path.join(artifactDir, "fixture-messages.json"), JSON.stringify(firstMessages, null, 2))
 
   log("creating immutable named browser-state backup")
   const namedBackupResult = unwrap(
@@ -297,7 +301,7 @@ async function run() {
     "browser did not resume after live backup capture",
   )
   assert.equal(
-    fixture.messages.filter((message) => message.subject === markers.secondSubject).length,
+    (await fixture.readMessages()).filter((message) => message.subject === markers.secondSubject).length,
     1,
     "browser resume must not repeat the mail POST",
   )
@@ -409,12 +413,43 @@ async function seedConfig() {
 }
 
 async function startFixture() {
-  return await startBrowserComputerFixture({
+  if (workspaceFixture.kind === "direct") {
+    assert.ok(process.env.M20_SLICE_IMAGE?.trim(),
+      "direct-rootless M20 fixture requires the exact M20_SLICE_IMAGE used by its slice")
+    return await startBrowserStateFixtureSidecar({
+      docker, dockerText, runCommand,
+      image: process.env.M20_SLICE_IMAGE,
+      runId, port: fixturePort, account: email, password,
+    })
+  }
+  const hosted = await startBrowserComputerFixture({
     host: "0.0.0.0",
     port: fixturePort,
     account: email,
     password,
   })
+  let closed = false
+  return {
+    origin: hosted.origin,
+    health: async () => {
+      const response = await fetch(`http://127.0.0.1:${fixturePort}/mail/login`, {
+        signal: AbortSignal.timeout(2_000),
+      })
+      assert.ok(response.ok, `fixture health returned HTTP ${response.status}`)
+    },
+    readMessages: async () => hosted.messages,
+    invalidateSessions: async () => hosted.invalidateSessions(),
+    close: async () => {
+      if (closed) return
+      await hosted.close()
+      closed = true
+    },
+    cleanup: async () => {
+      if (closed) return
+      await hosted.close()
+      closed = true
+    },
+  }
 }
 
 async function runLocalBrowserStatePhase(label) {
@@ -473,7 +508,7 @@ async function runWebmailPhase(label, subject, options = {}) {
 }
 
 async function verifyExternalServiceReauthentication() {
-  externalServiceReauthentication.invalidatedSessionCount = fixture.invalidateSessions()
+  externalServiceReauthentication.invalidatedSessionCount = await fixture.invalidateSessions()
   assert.equal(
     externalServiceReauthentication.invalidatedSessionCount,
     1,
@@ -495,12 +530,12 @@ async function verifyExternalServiceReauthentication() {
 
   await runWebmailPhase("external-reauth", markers.reauthSubject)
   assert.equal(
-    fixture.messages.filter((message) => message.subject === markers.reauthSubject).length,
+    (await fixture.readMessages()).filter((message) => message.subject === markers.reauthSubject).length,
     1,
     "the product should remain usable after external service reauthentication",
   )
   externalServiceReauthentication.recovered = true
-  await writeFile(path.join(artifactDir, "fixture-messages.json"), JSON.stringify(fixture.messages, null, 2))
+  await writeFile(path.join(artifactDir, "fixture-messages.json"), JSON.stringify(await fixture.readMessages(), null, 2))
 }
 
 async function seedUserPersistenceMarkers() {
@@ -670,10 +705,7 @@ async function listDockerImageRefs(reference) {
 }
 
 async function assertFixtureAlive() {
-  const response = await fetch(`http://127.0.0.1:${fixturePort}/mail/login`, {
-    signal: AbortSignal.timeout(2_000),
-  })
-  assert.ok(response.ok, `fixture health returned HTTP ${response.status}`)
+  await fixture.health()
 }
 
 async function removeContainerAndHomeVolume() {
@@ -913,6 +945,7 @@ async function cleanup() {
   const result = {
     dockerAvailable,
     containerGone,
+    fixtureSidecarGone,
     volumeGone,
     savedImageGone,
     backupImagesGone,
@@ -975,7 +1008,13 @@ async function writeManifest(ok, error = null) {
 }
 
 async function closeFixtureServer() {
-  await fixture?.close?.()
+  try { await fixture?.close?.() } finally {
+    await fixture?.cleanup?.()
+    if (fixture?.containerId) {
+      const remaining = await runCommand("docker", ["container", "inspect", fixture.containerId], { timeoutMs: 10_000 })
+      fixtureSidecarGone = remaining.code !== 0
+    }
+  }
 }
 
 async function terminateChild(child) {

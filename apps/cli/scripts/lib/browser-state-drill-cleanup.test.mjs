@@ -7,6 +7,7 @@ test("browser state cleanup accepts a fully released drill", () => {
   assert.equal(browserStateCleanupFailure({
     dockerAvailable: true,
     containerGone: true,
+    fixtureSidecarGone: true,
     volumeGone: true,
     savedImageGone: true,
     backupImagesGone: true,
@@ -20,6 +21,7 @@ test("browser state cleanup names every leaked resource", () => {
   const failure = browserStateCleanupFailure({
     dockerAvailable: false,
     containerGone: false,
+    fixtureSidecarGone: false,
     volumeGone: false,
     savedImageGone: false,
     backupImagesGone: false,
@@ -29,6 +31,7 @@ test("browser state cleanup names every leaked resource", () => {
   })
 
   assert.match(failure?.message ?? "", /container/)
+  assert.match(failure?.message ?? "", /fixture sidecar/)
   assert.match(failure?.message ?? "", /Docker verification/)
   assert.match(failure?.message ?? "", /volume/)
   assert.match(failure?.message ?? "", /saved image/)

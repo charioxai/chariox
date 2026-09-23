@@ -2,6 +2,7 @@ export function browserStateCleanupFailure(result) {
   const leaks = []
   if (!result.dockerAvailable) leaks.push("Docker verification unavailable")
   if (!result.containerGone) leaks.push("container")
+  if (result.fixtureSidecarGone === false) leaks.push("fixture sidecar")
   if (!result.volumeGone) leaks.push("volume")
   if (!result.savedImageGone) leaks.push("saved image")
   if (result.backupImagesGone === false) leaks.push("backup images")
