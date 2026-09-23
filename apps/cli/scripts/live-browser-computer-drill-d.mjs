@@ -482,6 +482,12 @@ export function assertDrillDAcceptanceProof({
   const activation = requireAction(actionById, office.mail.activationActionId, actorId, "browser", "browser_tab_activate")
   const upload = requireAction(actionById, office.mail.uploadActionId, actorId, "browser", "upload")
   const submit = requireAction(actionById, office.mail.submitActionId, actorId, "browser", "submit")
+  assert.deepEqual(
+    allPostBaseline.filter((action) => action.mode === "browser" && action.kind === "submit")
+      .map((action) => action.action_id),
+    [submit.action_id],
+    "kernel action history contains an unexpected duplicate or missing attachment submission",
+  )
   assert.ok(firstBrowser.sequence <= activation.sequence && activation.sequence < upload.sequence && upload.sequence < submit.sequence,
     "explicit Browser actions are absent or out of order")
   const uploadTab = requireBrowserTabTarget(upload)

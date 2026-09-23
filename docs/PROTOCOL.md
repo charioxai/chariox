@@ -1657,6 +1657,10 @@ Workflow trigger and deployment direction:
   the bound home agent, leased agent, and worker provider run. Calls carrying a
   settled home prompt ID cannot message another agent. The local
   client shape is unchanged, so web and native minimum versions do not change.
+- relay peer protocol 57 requires a worker capable of supplying the originating
+  turn for `chariox.send_agent_message`. A new home kernel rejects a v56 worker
+  at peer binding before provider dispatch rather than failing on a missing
+  tool field mid-turn. The local daemon shape and client minimums do not change.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

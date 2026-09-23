@@ -99,6 +99,12 @@ test("rejects a saved attachment whose byte count differs from the attributed ed
   assert.throws(() => assertDrillDAcceptanceProof(input), /byte count differs/)
 })
 
+test("rejects duplicate attachment submissions absent from the office report", () => {
+  const input = proofInput()
+  input.history.push({ ...input.history[4], action_id: "browser-submit-duplicate", sequence: 16 })
+  assert.throws(() => assertDrillDAcceptanceProof(input), /unexpected duplicate or missing attachment submission/)
+})
+
 test("rejects screenshot evidence whose bytes do not match the kernel SHA-256", () => {
   const input = proofInput()
   input.editorScreenshot.sha256 = "b".repeat(64)
