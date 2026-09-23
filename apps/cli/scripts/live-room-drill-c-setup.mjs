@@ -29,11 +29,18 @@ export function parseArgs(argv, env = process.env) {
     : path.join(repoRoot, "target")
   const stamp = new Date().toISOString().replace(/[:.]/g, "-")
   const options = {
+    existingKernelUrl: null,
+    expectedDaemonId: env.CHARIOX_EXPECTED_DAEMON_ID ?? null,
+    expectedMachineId: env.CHARIOX_EXPECTED_MACHINE_ID ?? null,
     rootDir: path.join(taskDevRoot, `drill-c-same-host-${stamp}`),
+    rootDirProvided: false,
     manifestPath: null,
+    manifestPathProvided: false,
     localCloudUrl: env.CHARIOX_LOCAL_CLOUD_URL ?? defaultLocalCloudUrl,
-    relayUrl: env.CHARIOX_LOCAL_RELAY_URL ?? null,
-    relayToken: env.CHARIOX_LOCAL_RELAY_TOKEN ?? defaultLocalRelayToken,
+    relayUrl: null,
+    relayToken: null,
+    relayUrlArgumentProvided: false,
+    relayTokenArgumentProvided: false,
     activeKernelRegistryDir: env.CHARIOX_ACTIVE_KERNEL_REGISTRY_DIR
       ?? (env.XDG_CONFIG_HOME?.trim()
         ? path.join(path.resolve(env.XDG_CONFIG_HOME), "chariox", "kernels", "active")
@@ -49,11 +56,26 @@ export function parseArgs(argv, env = process.env) {
       index += 1
       return value
     }
-    if (arg === "--root-dir") options.rootDir = path.resolve(next())
-    else if (arg === "--manifest") options.manifestPath = path.resolve(next())
+    if (arg === "--root-dir") {
+      options.rootDir = path.resolve(next())
+      options.rootDirProvided = true
+    }
+    else if (arg === "--manifest") {
+      options.manifestPath = path.resolve(next())
+      options.manifestPathProvided = true
+    }
+    else if (arg === "--existing-kernel") options.existingKernelUrl = next()
+    else if (arg === "--expected-daemon-id") options.expectedDaemonId = next()
+    else if (arg === "--expected-machine-id") options.expectedMachineId = next()
     else if (arg === "--local-cloud-url") options.localCloudUrl = next()
-    else if (arg === "--relay-url") options.relayUrl = next()
-    else if (arg === "--relay-token") options.relayToken = next()
+    else if (arg === "--relay-url") {
+      options.relayUrl = next()
+      options.relayUrlArgumentProvided = true
+    }
+    else if (arg === "--relay-token") {
+      options.relayToken = next()
+      options.relayTokenArgumentProvided = true
+    }
     else if (arg === "--active-kernel-registry-dir") options.activeKernelRegistryDir = path.resolve(next())
     else if (arg === "--kernel-binary") options.kernelBinary = path.resolve(next())
     else if (arg === "--relay-binary") options.relayBinary = path.resolve(next())
@@ -66,7 +88,39 @@ export function parseArgs(argv, env = process.env) {
   options.activeKernelRegistryDir = path.resolve(options.activeKernelRegistryDir)
   options.kernelBinary = path.resolve(options.kernelBinary)
   options.relayBinary = path.resolve(options.relayBinary)
+  options.mode = options.existingKernelUrl ? "existing_kernel" : "isolated_local"
+  if (options.mode === "isolated_local") {
+    if (!options.relayUrlArgumentProvided) options.relayUrl = env.CHARIOX_LOCAL_RELAY_URL ?? null
+    if (!options.relayTokenArgumentProvided) {
+      options.relayToken = env.CHARIOX_LOCAL_RELAY_TOKEN ?? defaultLocalRelayToken
+    }
+  } else {
+    options.relayUrl = null
+    options.relayToken = null
+  }
+  if (options.mode === "existing_kernel" && !options.rootDirProvided) {
+    options.rootDir = path.join(taskDevRoot, `drill-c-existing-kernel-${stamp}`)
+    if (!options.manifestPathProvided) options.manifestPath = path.join(options.rootDir, "setup-manifest.json")
+  }
+  options.manifestPath = path.resolve(options.manifestPath)
   return options
+}
+
+export function assertModeOptions(options) {
+  if (options.mode === "existing_kernel") {
+    const endpoint = assertLoopbackUrl(options.existingKernelUrl, "--existing-kernel", ["ws:"])
+    assert.ok(["", "/", "/kernel"].includes(endpoint.pathname),
+      "--existing-kernel must address the local kernel WebSocket endpoint")
+    assert.ok(options.expectedDaemonId?.trim(), "--existing-kernel requires --expected-daemon-id")
+    if (options.expectedMachineId != null) {
+      assert.ok(options.expectedMachineId.trim(), "--expected-machine-id must not be empty")
+    }
+    assert.equal(options.relayUrlArgumentProvided, false, "--existing-kernel cannot be combined with --relay-url")
+    assert.equal(options.relayTokenArgumentProvided, false, "--existing-kernel does not accept a relay token")
+    return
+  }
+  assert.equal(options.expectedDaemonId, null, "--expected-daemon-id requires --existing-kernel")
+  assert.equal(options.expectedMachineId, null, "--expected-machine-id requires --existing-kernel")
 }
 
 export function assertLoopbackUrl(value, label, protocols) {
@@ -103,7 +157,143 @@ export function assertCloudRelayBootstrap({ bootstrap, relayUrl, relayToken, dae
   }
 }
 
+export function assertExistingKernelSnapshot({ sessions, slices, expectedDaemonId, expectedMachineId = null }) {
+  assert.ok(Array.isArray(sessions), "existing kernel returned a malformed session inventory")
+  assert.ok(Array.isArray(slices), "existing kernel returned a malformed slice inventory")
+  const sessionIds = uniqueIds(sessions, "session")
+  const sliceIds = uniqueIds(slices, "slice")
+  const machineIds = new Set()
+  for (const session of sessions) {
+    assert.equal(session.host_daemon_id, expectedDaemonId,
+      `existing kernel session ${session.id} belongs to a different daemon`)
+    assert.ok(typeof session.host_machine_id === "string" && session.host_machine_id.length > 0,
+      `existing kernel session ${session.id} omitted its machine identity`)
+    machineIds.add(session.host_machine_id)
+  }
+  for (const slice of slices) {
+    assert.equal(slice.owner_kernel_id, expectedDaemonId,
+      `existing kernel slice ${slice.id} belongs to a different daemon`)
+    assert.ok(typeof slice.owner_machine_id === "string" && slice.owner_machine_id.length > 0,
+      `existing kernel slice ${slice.id} omitted its machine identity`)
+    machineIds.add(slice.owner_machine_id)
+  }
+  assert.ok(sessionIds.length + sliceIds.length > 0,
+    "cannot verify existing kernel identity before mutation: ListSessions and ListSlices returned no identity records")
+  assert.equal(machineIds.size, 1, "existing kernel inventories disagree about machine identity")
+  const machineId = [...machineIds][0]
+  if (expectedMachineId != null) {
+    assert.equal(machineId, expectedMachineId, "existing kernel belongs to a different machine")
+  }
+  return {
+    sessionIds,
+    sliceIds,
+    sessionCount: sessionIds.length,
+    sliceCount: sliceIds.length,
+    machineId,
+  }
+}
+
+export function assertNewSliceIdentity({
+  slice,
+  expectedDaemonId,
+  expectedMachineId,
+  workspace,
+  priorSliceIds,
+  requireDisplayPorts = false,
+}) {
+  assertNewId(slice?.id, priorSliceIds, "slice")
+  assert.equal(slice.owner_kernel_id, expectedDaemonId, "new slice belongs to a different daemon")
+  assert.equal(slice.owner_machine_id, expectedMachineId, "new slice belongs to a different machine")
+  assert.equal(slice.workspace_id, workspace, "new slice retained a different workspace identity")
+  assert.equal(slice.worktree_id, workspace, "new slice retained a different worktree identity")
+  assert.equal(slice.workspace_mount, workspace, "new slice retained a different workspace mount")
+  assert.equal(slice.backend, "local_docker", "new slice must use the local Docker backend")
+  assert.equal(slice.display_mode, "headed", "new slice must use a headed display")
+  assert.equal(slice.display_endpoint?.kind, "selkies", "new slice must use Selkies")
+  if (requireDisplayPorts) {
+    assert.ok(slice.local_docker_ports && typeof slice.local_docker_ports === "object",
+      "running slice omitted its local Docker display ports")
+    assert.ok(Number.isInteger(slice.local_docker_ports.novnc)
+      && slice.local_docker_ports.novnc > 0 && slice.local_docker_ports.novnc <= 65_535,
+    "running slice omitted its assigned Selkies display port")
+  }
+  return slice
+}
+
+export function assertNewSessionIdentity({ session, expectedDaemonId, expectedMachineId, workspace, worktree, priorSessionIds }) {
+  assertNewId(session?.id, priorSessionIds, "session")
+  assert.equal(session.host_daemon_id, expectedDaemonId, "new Room belongs to a different daemon")
+  assert.equal(session.host_machine_id, expectedMachineId, "new Room belongs to a different machine")
+  assert.equal(session.workspace_id, workspace, "new Room retained a different workspace identity")
+  assert.equal(session.worktree_id, worktree, "new Room retained a different worktree identity")
+  assert.equal(session.active_provider_run_id, null, "new Room unexpectedly has an active provider run")
+  assert.ok(Array.isArray(session.agents), "new Room omitted its agent inventory")
+  assert.deepEqual(session.agents, [], "new Room unexpectedly contains existing agents")
+  return session
+}
+
+export function assertRoomSliceBinding(binding, { sessionId, slice, daemonId }) {
+  assert.equal(binding?.session_id, sessionId, "Room is bound to a different session")
+  assert.equal(binding?.slice_id, slice.id, "Room is bound to a different slice")
+  assert.equal(binding?.owner_kernel_id, daemonId, "Room is owned by a different daemon")
+  assert.equal(binding?.worker_kernel_ref, slice.worker_kernel_ref, "Room binding points to a different worker kernel")
+  return binding
+}
+
+export function buildRoomBaseline({ sessionId, sliceId, environment, resourceInventory, actionHistory, capturedAt }) {
+  assert.equal(environment?.session_id, sessionId, "baseline environment belongs to a different Room")
+  assert.equal(environment?.lifecycle, "ready", "baseline Room environment is not ready")
+  assert.equal(resourceInventory?.session_id, sessionId, "baseline inventory belongs to a different Room")
+  assert.equal(resourceInventory?.slice_id, sliceId, "baseline inventory belongs to a different slice")
+  assert.equal(resourceInventory?.environment_id, environment.environment_id,
+    "baseline inventory belongs to a different environment")
+  assert.ok(Array.isArray(actionHistory?.actions), "baseline omitted kernel action history")
+  assert.deepEqual(actionHistory.actions, [], "new Room action history is not empty at the baseline checkpoint")
+  assert.equal(actionHistory.next_before_sequence, null, "baseline action history has an unexpected continuation cursor")
+  assert.ok(Array.isArray(environment.actions), "baseline omitted the Room snapshot action list")
+  assert.deepEqual(environment.actions, [], "new Room snapshot already contains actions at the baseline checkpoint")
+  assert.ok(Array.isArray(environment.tabs), "baseline omitted the Room tab inventory")
+  const focusedTab = environment.tabs?.find((tab) => tab.tab_id === environment.focused_tab_id)
+  assert.ok(focusedTab, "baseline requires the kernel focused tab record")
+  assert.ok(Array.isArray(resourceInventory.browser_ids) && resourceInventory.browser_ids.length > 0
+    && resourceInventory.browser_ids.every((id) => typeof id === "string" && id.length > 0),
+    "baseline requires a live browser identity")
+  assert.ok(Array.isArray(resourceInventory.profile_ids) && resourceInventory.profile_ids.length > 0
+    && resourceInventory.profile_ids.every((id) => typeof id === "string" && id.length > 0),
+    "baseline requires a live browser profile identity")
+  return {
+    capturedAt,
+    source: "kernel public Room and resource inventory requests",
+    sessionId,
+    sliceId,
+    environmentId: environment.environment_id,
+    runtimeGeneration: environment.runtime_generation,
+    lifecycle: environment.lifecycle,
+    focusedTabId: environment.focused_tab_id,
+    viewport: environment.viewport,
+    tabs: environment.tabs,
+    browserIds: [...resourceInventory.browser_ids],
+    profileIds: [...resourceInventory.profile_ids],
+    actionHistory: [...actionHistory.actions],
+    environmentActions: [...(environment.actions ?? [])],
+  }
+}
+
+function uniqueIds(records, kind) {
+  const ids = records.map((record) => record?.id)
+  assert.ok(ids.every((id) => typeof id === "string" && id.length > 0),
+    `existing kernel returned a ${kind} without an id`)
+  assert.equal(new Set(ids).size, ids.length, `existing kernel returned duplicate ${kind} ids`)
+  return ids
+}
+
+function assertNewId(id, priorIds, kind) {
+  assert.ok(typeof id === "string" && id.length > 0, `kernel did not return a ${kind} id`)
+  assert.ok(!priorIds.includes(id), `new ${kind} id collides with an existing ${kind}`)
+}
+
 export function buildSetupManifest({
+  mode = "isolated_local",
   createdAt,
   sourceCommit,
   rootDir,
@@ -123,6 +313,8 @@ export function buildSetupManifest({
   workspace,
   worktree,
   transport,
+  baseline,
+  priorKernelState,
 }) {
   for (const [name, value] of Object.entries({
     sourceCommit,
@@ -130,20 +322,29 @@ export function buildSetupManifest({
     manifestPath,
     cloudUrl,
     kernelUrl,
-    relayUrl,
     daemonId,
     machineId,
     sessionId: session?.id,
     sliceId: slice?.id,
     environmentId: environment?.environment_id,
   })) assert.ok(typeof value === "string" && value.length > 0, `setup manifest requires ${name}`)
+  if (mode === "isolated_local") {
+    assert.ok(typeof relayUrl === "string" && relayUrl.length > 0, "isolated setup manifest requires its local relay URL")
+    assert.equal(transport?.status, "verified", "isolated setup manifest requires verified local Cloud relay visibility")
+    assert.equal(transport?.relayUrl, relayUrl, "setup manifest Cloud transport selected a different relay")
+    assert.equal(transport?.targetDaemonId, daemonId, "setup manifest Cloud transport selected a different kernel")
+    assert.equal(transport?.targetMachineId, machineId, "setup manifest Cloud transport selected a different machine")
+    assert.equal(transport?.sessionVisible, true, "setup manifest Cloud transport did not observe the Room session")
+  } else {
+    assert.equal(mode, "existing_kernel", "setup manifest has an unknown mode")
+    assert.equal(relayUrl, null, "existing-kernel mode must not invent or claim a relay URL")
+    assert.equal(transport?.status, "not_observed", "existing-kernel mode must leave Cloud relay transport unobserved")
+    assert.equal(transport?.sessionVisible, null, "existing-kernel mode must not claim the Room is visible to Cloud")
+    assert.equal(transport?.relayUrl ?? null, null, "existing-kernel mode must not claim Cloud selected a relay")
+  }
   assert.ok(path.isAbsolute(rootDir) && path.isAbsolute(manifestPath), "setup manifest paths must be absolute")
   assert.ok(path.isAbsolute(workspace) && path.isAbsolute(worktree), "Room workspace and worktree must be absolute")
-  assert.equal(binding?.session_id, session.id, "setup manifest slice binding Room mismatch")
-  assert.equal(binding?.slice_id, slice.id, "setup manifest slice binding mismatch")
-  assert.equal(binding?.owner_kernel_id, daemonId, "setup manifest Room is owned by a different kernel")
-  assert.equal(binding?.worker_kernel_ref, slice.worker_kernel_ref,
-    "setup manifest Room binding has a different worker kernel")
+  assertRoomSliceBinding(binding, { sessionId: session.id, slice, daemonId })
   assert.equal(environment?.session_id, session.id, "setup manifest environment Room mismatch")
   assert.equal(environment?.lifecycle, "ready", "setup manifest Room environment is not ready")
   assert.equal(resourceInventory?.environment_id, environment.environment_id, "setup manifest inventory Environment mismatch")
@@ -157,17 +358,31 @@ export function buildSetupManifest({
     "headed slice omitted the live display endpoint")
   assert.ok(slice.local_docker_ports && typeof slice.local_docker_ports === "object",
     "setup manifest requires the local Docker display port identity")
+  assert.ok(Number.isInteger(slice.local_docker_ports.novnc)
+    && slice.local_docker_ports.novnc > 0 && slice.local_docker_ports.novnc <= 65_535,
+  "setup manifest requires the assigned Selkies display port")
   assert.ok(Array.isArray(resourceInventory?.browser_ids) && resourceInventory.browser_ids.length > 0,
     "setup manifest requires live browser identities")
   assert.ok(Array.isArray(resourceInventory?.profile_ids) && resourceInventory.profile_ids.length > 0,
     "setup manifest requires live browser profile identities")
   const focusedTab = environment.tabs?.find((tab) => tab.tab_id === environment.focused_tab_id)
   assert.ok(focusedTab, "setup manifest requires the kernel focused tab record")
-  assert.equal(transport?.status, "verified", "setup manifest requires verified local Cloud relay visibility")
-  assert.equal(transport?.relayUrl, relayUrl, "setup manifest Cloud transport selected a different relay")
-  assert.equal(transport?.targetDaemonId, daemonId, "setup manifest Cloud transport selected a different kernel")
-  assert.equal(transport?.targetMachineId, machineId, "setup manifest Cloud transport selected a different machine")
-  assert.equal(transport?.sessionVisible, true, "setup manifest Cloud transport did not observe the Room session")
+  assert.equal(baseline?.sessionId, session.id, "setup manifest baseline belongs to a different Room")
+  assert.equal(baseline?.sliceId, slice.id, "setup manifest baseline belongs to a different slice")
+  assert.equal(baseline?.environmentId, environment.environment_id,
+    "setup manifest baseline belongs to a different environment")
+  assert.equal(baseline?.lifecycle, "ready", "setup manifest baseline Room is not ready")
+  assert.equal(baseline?.runtimeGeneration, environment.runtime_generation,
+    "setup manifest baseline belongs to a different runtime generation")
+  assert.equal(baseline?.focusedTabId, environment.focused_tab_id,
+    "setup manifest baseline focused tab does not match the kernel snapshot")
+  assert.deepEqual(baseline?.browserIds, resourceInventory.browser_ids,
+    "setup manifest baseline browser inventory does not match the kernel inventory")
+  assert.deepEqual(baseline?.profileIds, resourceInventory.profile_ids,
+    "setup manifest baseline profile inventory does not match the kernel inventory")
+  assert.deepEqual(baseline?.actionHistory, [], "setup manifest baseline contains unobserved Room actions")
+  assert.ok(priorKernelState && Number.isInteger(priorKernelState.sessionCount)
+    && Number.isInteger(priorKernelState.sliceCount), "setup manifest requires the read-only pre-setup kernel inventory")
 
   const tuiManifestPath = path.join(rootDir, "tui-observer", "manifest.json")
   const webObservationPath = path.join(rootDir, "evidence", "drill-c-live-observation.json")
@@ -185,6 +400,7 @@ export function buildSetupManifest({
   return {
     schema: "chariox.drill_c.same_host_setup.v1",
     status: "ready_for_observers",
+    setupMode: mode,
     createdAt,
     sourceCommit,
     rootDir,
@@ -229,18 +445,30 @@ export function buildSetupManifest({
       browserIds: [...resourceInventory.browser_ids],
       profileIds: [...resourceInventory.profile_ids],
     },
-    localCloudTransport: {
-      status: transport.status,
-      relayUrl: transport.relayUrl,
-      targetDaemonId: transport.targetDaemonId,
-      targetMachineId: transport.targetMachineId,
-      sessionVisible: transport.sessionVisible,
-      verifiedAt: transport.verifiedAt,
-      cloudApiUrl: transport.cloudApiUrl,
-    },
+    baseline,
+    priorKernelState,
+    localCloudTransport: mode === "isolated_local"
+      ? {
+          status: transport.status,
+          relayUrl: transport.relayUrl,
+          targetDaemonId: transport.targetDaemonId,
+          targetMachineId: transport.targetMachineId,
+          sessionVisible: transport.sessionVisible,
+          verifiedAt: transport.verifiedAt,
+          cloudApiUrl: transport.cloudApiUrl,
+        }
+      : {
+          status: "not_observed",
+          relayUrl: null,
+          expectedDaemonId: daemonId,
+          expectedMachineId: machineId,
+          sessionVisible: null,
+          verificationRequiredFrom: "Mac local Cloud frontend",
+          reason: "Room was created through the existing kernel local API; Cloud and Web visibility were not checked from this host.",
+        },
     webObserver: {
       client: "production-local-web-view",
-      openUrl: `${cloudUrl.replace(/\/$/, "")}/waiting-room`,
+      openUrl: cloudUrl ? `${cloudUrl.replace(/\/$/, "")}/waiting-room` : null,
       targetDaemonId: daemonId,
       sessionId: session.id,
       relayUrl,
@@ -253,6 +481,8 @@ export function buildSetupManifest({
         "actions.computer and actions.webTakeover with actionId, actorId, sequence, mode, kind, state",
       ],
       evidenceStatus: "not_observed",
+      transportStatus: mode === "existing_kernel" ? "not_observed" : "verified",
+      verificationRequiredFrom: mode === "existing_kernel" ? "Mac local Cloud frontend" : null,
     },
     tuiObserver: {
       executable: "node",
@@ -267,7 +497,9 @@ export function buildSetupManifest({
         ],
       },
     },
-    cleanup: "Ctrl+C stops the Room environment, deletes the drill slice and session, then stops this harness's kernel and relay.",
+    cleanup: mode === "isolated_local"
+      ? "Ctrl+C stops the Room environment, deletes the drill slice and session, then stops this harness's kernel and relay."
+      : "Ctrl+C stops and deletes only this harness's Room and slice, removes its workspace, and leaves the selected kernel and its relay running.",
   }
 }
 
@@ -278,6 +510,9 @@ function printHelp() {
     "Options:",
     "  --root-dir PATH",
     "  --manifest PATH",
+    "  --existing-kernel URL              use the already-running local kernel; do not start or stop it",
+    "  --expected-daemon-id ID             required with --existing-kernel",
+    "  --expected-machine-id ID            optional additional identity check",
     "  --local-cloud-url URL             default: http://127.0.0.1:4321",
     "  --relay-url URL                   must match local Cloud relay bootstrap",
     "  --relay-token TOKEN               defaults to the local browser relay token",
@@ -286,7 +521,8 @@ function printHelp() {
     "  --relay-binary PATH               prebuilt binary; this script never builds",
     "",
     "The script waits after setup so the attach-only TUI and Web observers can run.",
-    "Ctrl+C tears down only the Room, slice, kernel, and relay created by this run.",
+    "Existing-kernel mode requires a loopback ws:// URL and leaves Cloud/Web transport unobserved.",
+    "Ctrl+C removes only this run's Room, slice, and workspace; existing kernel processes remain running.",
   ].join("\n"))
 }
 
@@ -296,36 +532,46 @@ async function main() {
     printHelp()
     return
   }
+  assertModeOptions(options)
   assertSetupPaths(options)
   assertLoopbackUrl(options.localCloudUrl, "--local-cloud-url", ["http:"])
-  assert.ok(path.isAbsolute(options.activeKernelRegistryDir), "active kernel registry directory must be absolute")
 
-  const cloud = await connectLocalCloud(options.localCloudUrl)
-  const initialDashboard = await cloud.dashboard()
-  const relayUrl = selectLocalRelayUrl(initialDashboard, options.relayUrl)
-  const relayEndpoint = assertLoopbackUrl(relayUrl, "local Cloud relay URL", ["ws:"])
-  assert.ok(relayEndpoint.pathname === "/", "local Cloud relay URL must not contain a path")
-  const relayPort = Number(relayEndpoint.port || "80")
-  const relayHost = relayEndpoint.hostname.replace(/^\[|\]$/g, "")
-  assert.ok(await portIsAvailable(relayPort, relayHost),
-    `isolated relay port ${relayPort} is already in use; stop its owner or configure the local Cloud frontend and rerun with a free matching relay URL`)
-  const ports = await allocateKernelPorts([relayPort])
-  await assertExecutable(options.kernelBinary, "prebuilt chariox-kernel")
-  await assertExecutable(options.relayBinary, "prebuilt chariox-relay")
+  const existingKernel = options.mode === "existing_kernel"
+  const cloud = existingKernel ? null : await connectLocalCloud(options.localCloudUrl)
+  let relayUrl = null
+  let ports = null
+  let kernelUrl = options.existingKernelUrl
+  let daemonId = options.expectedDaemonId
+  let daemonAlias = null
+  let machineId = null
+  let machineAlias = null
+  if (!existingKernel) {
+    const initialDashboard = await cloud.dashboard()
+    relayUrl = selectLocalRelayUrl(initialDashboard, options.relayUrl)
+    const relayEndpoint = assertLoopbackUrl(relayUrl, "local Cloud relay URL", ["ws:"])
+    assert.ok(relayEndpoint.pathname === "/", "local Cloud relay URL must not contain a path")
+    const relayPort = Number(relayEndpoint.port || "80")
+    const relayHost = relayEndpoint.hostname.replace(/^\[|\]$/g, "")
+    assert.ok(await portIsAvailable(relayPort, relayHost),
+      `isolated relay port ${relayPort} is already in use; stop its owner or configure the local Cloud frontend and rerun with a free matching relay URL`)
+    ports = await allocateKernelPorts([relayPort])
+    await assertExecutable(options.kernelBinary, "prebuilt chariox-kernel")
+    await assertExecutable(options.relayBinary, "prebuilt chariox-relay")
+    daemonId = `drill-c-home-${process.pid}-${Date.now()}`
+    daemonAlias = daemonId
+    machineId = `drill-c-machine-${process.pid}-${Date.now()}`
+    machineAlias = machineId
+    kernelUrl = `ws://127.0.0.1:${ports.kernel}/kernel`
+  }
   await assertKernelClientBuilt()
   await assertDockerReady()
 
   const stamp = `${process.pid}-${Date.now()}`
-  const daemonId = `drill-c-home-${stamp}`
-  const daemonAlias = daemonId
-  const machineId = `drill-c-machine-${stamp}`
-  const machineAlias = machineId
   const sliceName = `drill-c-${stamp}`
   const workerKernelRef = `drill-c-worker-${stamp}`
   const kernelHome = path.join(options.rootDir, "kernel-home")
   const workspace = path.join(options.rootDir, "workspace")
   const worktree = workspace
-  const kernelUrl = `ws://127.0.0.1:${ports.kernel}/kernel`
   const logDir = path.join(options.rootDir, "logs")
   const clientModule = await import(pathToFileURL(path.join(kernelClientRoot, "dist", "ipc.js")).href)
   const requests = await import(pathToFileURL(path.join(kernelClientRoot, "dist", "ipc-requests.js")).href)
@@ -337,7 +583,7 @@ async function main() {
     sliceId: null,
     workspace,
     workspaceOwned: false,
-    presenceRecordPath: path.join(options.activeKernelRegistryDir, `${daemonId}.json`),
+    presenceRecordPath: existingKernel ? null : path.join(options.activeKernelRegistryDir, `${daemonId}.json`),
     manifest: null,
     manifestPath: options.manifestPath,
   }
@@ -358,38 +604,57 @@ async function main() {
     await mkdir(devRoot, { recursive: true, mode: 0o700 })
     await mkdir(options.rootDir, { recursive: false, mode: 0o700 })
     await mkdir(workspace, { recursive: false, mode: 0o700 })
-    await chmod(workspace, 0o777)
     state.workspaceOwned = true
+    await chmod(workspace, 0o777)
     await mkdir(logDir, { recursive: true, mode: 0o700 })
-    await mkdir(path.dirname(options.activeKernelRegistryDir), { recursive: true, mode: 0o700 })
-    await mkdir(options.activeKernelRegistryDir, { recursive: true, mode: 0o700 })
-    const isolatedRegistryLink = path.join(kernelHome, "kernels", "active")
-    await mkdir(path.dirname(isolatedRegistryLink), { recursive: true, mode: 0o700 })
-    await symlink(options.activeKernelRegistryDir, isolatedRegistryLink, "dir")
+    if (!existingKernel) {
+      await mkdir(path.dirname(options.activeKernelRegistryDir), { recursive: true, mode: 0o700 })
+      await mkdir(options.activeKernelRegistryDir, { recursive: true, mode: 0o700 })
+      const isolatedRegistryLink = path.join(kernelHome, "kernels", "active")
+      await mkdir(path.dirname(isolatedRegistryLink), { recursive: true, mode: 0o700 })
+      await symlink(options.activeKernelRegistryDir, isolatedRegistryLink, "dir")
 
-    children.push(spawnLogged("relay", options.relayBinary, {
-      ...relayProcessEnvironment(relayUrl, relayHost, relayPort, options.relayToken),
-    }, logDir))
-    await waitForTcp(relayHost, relayPort, 15_000, children[0])
+      const relayEndpoint = new URL(relayUrl)
+      const relayHost = relayEndpoint.hostname.replace(/^\[|\]$/g, "")
+      const relayPort = Number(relayEndpoint.port || "80")
+      children.push(spawnLogged("relay", options.relayBinary,
+        relayProcessEnvironment(relayUrl, relayHost, relayPort, options.relayToken), logDir))
+      await waitForTcp(relayHost, relayPort, 15_000, children[0])
 
-    children.push(spawnLogged("kernel", options.kernelBinary, kernelProcessEnvironment({
-      daemonId,
-      daemonAlias,
-      machineId,
-      machineAlias,
-      kernelHome,
-      kernelPort: ports.kernel,
-      mcpPort: ports.mcp,
-      codexPort: ports.codex,
-      opencodePort: ports.opencode,
-      relayUrl,
-      relayToken: options.relayToken,
-      logDir: path.join(logDir, "kernel-runtime"),
-      sliceRoot: path.join(options.rootDir, "slices"),
-    }), logDir))
+      children.push(spawnLogged("kernel", options.kernelBinary, kernelProcessEnvironment({
+        daemonId,
+        daemonAlias,
+        machineId,
+        machineAlias,
+        kernelHome,
+        kernelPort: ports.kernel,
+        mcpPort: ports.mcp,
+        codexPort: ports.codex,
+        opencodePort: ports.opencode,
+        relayUrl,
+        relayToken: options.relayToken,
+        logDir: path.join(logDir, "kernel-runtime"),
+        sliceRoot: path.join(options.rootDir, "slices"),
+      }), logDir))
+    }
     state.client = await connectKernel(LocalIpcClient, requests, kernelUrl, children)
 
-    let slice = unwrap(await state.client.send(requests.createSliceRequest({
+    const inventory = await readKernelInventory(state.client, requests)
+    let priorKernelState
+    if (existingKernel) {
+      priorKernelState = assertExistingKernelSnapshot({
+        ...inventory,
+        expectedDaemonId: daemonId,
+        expectedMachineId: options.expectedMachineId,
+      })
+      machineId = priorKernelState.machineId
+    } else {
+      assert.deepEqual(inventory.sessions, [], "new isolated kernel unexpectedly has existing Rooms")
+      assert.deepEqual(inventory.slices, [], "new isolated kernel unexpectedly has existing slices")
+      priorKernelState = { sessionCount: 0, sliceCount: 0 }
+    }
+
+    const createdSlice = unwrap(await state.client.send(requests.createSliceRequest({
       name: sliceName,
       backend: "local_docker",
       displayMode: "headed",
@@ -400,26 +665,44 @@ async function main() {
       workerKernelRef,
       base: "clean",
     })), "SliceCreated").slice
-    state.sliceId = slice?.id
-    assert.ok(state.sliceId, "kernel did not return a slice id")
-    assert.equal(slice.workspace_mount, workspace, "local Docker slice did not retain the owned workspace mount")
-    assert.equal(slice.display_mode, "headed", "slice is not headed")
-    assert.equal(slice.display_endpoint?.kind, "selkies", "slice display backend is not Selkies")
-    await state.client.send(requests.startSliceRequest(slice.id))
-    slice = await waitForSliceRunning(state.client, requests, slice.id, children)
+    assertNewId(createdSlice?.id, priorKernelState.sliceIds ?? [], "slice")
+    state.sliceId = createdSlice.id
+    let slice = assertNewSliceIdentity({
+      slice: createdSlice,
+      expectedDaemonId: daemonId,
+      expectedMachineId: machineId,
+      workspace,
+      priorSliceIds: priorKernelState.sliceIds ?? [],
+    })
+    await state.client.send(requests.startSliceRequest(state.sliceId))
+    slice = await waitForSliceRunning(state.client, requests, state.sliceId, children)
+    slice = assertNewSliceIdentity({
+      slice,
+      expectedDaemonId: daemonId,
+      expectedMachineId: machineId,
+      workspace,
+      priorSliceIds: priorKernelState.sliceIds ?? [],
+      requireDisplayPorts: true,
+    })
 
     const session = unwrap(await state.client.send(requests.createSessionRequest(
       workspace,
       worktree,
       `Drill C same-host ${stamp}`,
     )), "SessionCreated").session
-    state.sessionId = session?.id
-    assert.ok(state.sessionId, "kernel did not return a Room session id")
-    const binding = unwrap(await state.client.send(requests.bindRoomEnvironmentSliceRequest(state.sessionId, slice.id)),
+    assertNewId(session?.id, priorKernelState.sessionIds ?? [], "session")
+    state.sessionId = session.id
+    assertNewSessionIdentity({
+      session,
+      expectedDaemonId: daemonId,
+      expectedMachineId: machineId,
+      workspace,
+      worktree,
+      priorSessionIds: priorKernelState.sessionIds ?? [],
+    })
+    const binding = unwrap(await state.client.send(requests.bindRoomEnvironmentSliceRequest(state.sessionId, state.sliceId)),
       "RoomEnvironmentSlice").binding
-    assert.equal(binding?.session_id, state.sessionId, "kernel bound a different Room session")
-    assert.equal(binding?.slice_id, slice.id, "kernel bound a different slice")
-    assert.equal(binding?.worker_kernel_ref, workerKernelRef, "kernel binding returned a different worker kernel")
+    assertRoomSliceBinding(binding, { sessionId: state.sessionId, slice, daemonId })
 
     unwrap(await state.client.send(requests.startRoomEnvironmentRequest(state.sessionId, {
       css_width: 1280,
@@ -428,28 +711,40 @@ async function main() {
       desktop_pixel_width: 1280,
       desktop_pixel_height: 800,
     })), "RoomEnvironmentUpdated")
-    const { environment, resourceInventory } = await waitForRoomReady(
+    const { environment, resourceInventory, actionHistory } = await waitForRoomReady(
       state.client,
       requests,
       state.sessionId,
-      slice.id,
+      slice,
+      daemonId,
       children,
     )
 
-    const bootstrap = await waitForCloudBootstrap({
-      cloud,
-      daemonId,
-      machineId,
-      relayUrl,
-      relayToken: options.relayToken,
+    const baseline = buildRoomBaseline({
       sessionId: state.sessionId,
-      LocalIpcClient,
-      requests,
-      timeoutMs: 45_000,
-      children,
+      sliceId: state.sliceId,
+      environment,
+      resourceInventory,
+      actionHistory,
+      capturedAt: new Date().toISOString(),
     })
+    const transport = existingKernel
+      ? { status: "not_observed", sessionVisible: null }
+      : await waitForCloudBootstrap({
+          cloud,
+          daemonId,
+          machineId,
+          relayUrl,
+          relayToken: options.relayToken,
+          sessionId: state.sessionId,
+          LocalIpcClient,
+          requests,
+          timeoutMs: 45_000,
+          children,
+        })
     const sourceCommit = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repoRoot })).stdout.trim()
     state.manifest = buildSetupManifest({
+      mode: options.mode,
       createdAt: new Date().toISOString(),
       sourceCommit,
       rootDir: options.rootDir,
@@ -468,7 +763,12 @@ async function main() {
       resourceInventory,
       workspace,
       worktree,
-      transport: bootstrap,
+      transport,
+      baseline,
+      priorKernelState: {
+        sessionCount: priorKernelState.sessionCount,
+        sliceCount: priorKernelState.sliceCount,
+      },
     })
     await mkdir(path.dirname(options.manifestPath), { recursive: true, mode: 0o700 })
     await writeFile(options.manifestPath, `${JSON.stringify(state.manifest, null, 2)}\n`, {
@@ -477,9 +777,17 @@ async function main() {
       flag: "wx",
     })
     console.log(`[drill-c-setup] ready-for-observers manifest: ${options.manifestPath}`)
-    console.log(`[drill-c-setup] local Cloud transport verified for Room ${state.sessionId} via target ${daemonId}`)
+    if (existingKernel) {
+      console.log(`[drill-c-setup] Room ${state.sessionId} created on verified existing kernel ${daemonId}`)
+      console.log("[drill-c-setup] Cloud/Web transport remains not observed; root must verify it from the Mac local Cloud frontend")
+      console.log(`[drill-c-setup] Mac-side Cloud URL hint (not probed here): ${state.manifest.webObserver.openUrl}`)
+    } else {
+      console.log(`[drill-c-setup] local Cloud transport verified for Room ${state.sessionId} via target ${daemonId}`)
+    }
     console.log(`[drill-c-setup] TUI observer args: ${JSON.stringify(state.manifest.tuiObserver.args)}`)
-    console.log(`[drill-c-setup] open ${state.manifest.webObserver.openUrl}; use the Web observer contract in the manifest`)
+    if (!existingKernel) {
+      console.log(`[drill-c-setup] open ${state.manifest.webObserver.openUrl}; use the Web observer contract in the manifest`)
+    }
     console.log("[drill-c-setup] run the manifest verify command after Web takeover, then press Ctrl+C to clean up")
     await stopRequested
   } catch (error) {
@@ -501,8 +809,10 @@ function assertSetupPaths(options) {
   assert.ok(isWithin(options.rootDir, devRoot), "--root-dir must be under ~/.chariox/dev/browser-computer-use")
   assert.ok(!isWithin(options.rootDir, repoRoot), "setup state must be outside the repository")
   assert.ok(isWithin(options.manifestPath, options.rootDir), "--manifest must be inside --root-dir")
-  assert.ok(!isWithin(options.activeKernelRegistryDir, repoRoot), "active kernel registry must be outside the repository")
-  assert.ok(options.relayToken.trim().length > 0, "local relay token must not be empty")
+  if (options.mode === "isolated_local") {
+    assert.ok(!isWithin(options.activeKernelRegistryDir, repoRoot), "active kernel registry must be outside the repository")
+    assert.ok(options.relayToken.trim().length > 0, "local relay token must not be empty")
+  }
 }
 
 function isWithin(candidate, parent) {
@@ -718,6 +1028,12 @@ async function waitForTcp(host, port, timeoutMs, child) {
   }, timeoutMs, `relay did not listen on ${host}:${port}`)
 }
 
+async function readKernelInventory(client, requests) {
+  const sessions = unwrap(await client.send(requests.listSessionsRequest()), "SessionsListed").sessions
+  const slices = unwrap(await client.send(requests.listSlicesRequest()), "SlicesListed").slices
+  return { sessions, slices }
+}
+
 async function connectKernel(LocalIpcClient, requests, kernelUrl, children) {
   let lastError = null
   const deadline = Date.now() + 60_000
@@ -747,7 +1063,7 @@ async function waitForSliceRunning(client, requests, sliceId, children) {
   }, 300_000, `headed local Docker slice ${sliceId} did not become running`)
 }
 
-async function waitForRoomReady(client, requests, sessionId, sliceId, children) {
+async function waitForRoomReady(client, requests, sessionId, slice, daemonId, children) {
   return await waitFor(async () => {
     children.forEach(assertChildAlive)
     const environment = unwrap(await client.send(requests.getRoomEnvironmentStateRequest(sessionId)), "RoomEnvironmentState").environment
@@ -755,14 +1071,27 @@ async function waitForRoomReady(client, requests, sessionId, sliceId, children) 
       throw new Error(`Room environment entered ${environment.lifecycle}: ${environment.error ?? "no diagnostic"}`)
     }
     if (environment.lifecycle !== "ready" || !environment.focused_tab_id) return false
+    assert.equal(environment.session_id, sessionId, "Room environment belongs to a different session")
     const binding = unwrap(await client.send(requests.getRoomEnvironmentSliceRequest(sessionId)), "RoomEnvironmentSlice").binding
-    assert.equal(binding?.slice_id, sliceId, "Room environment is bound to a different slice")
+    assertRoomSliceBinding(binding, { sessionId, slice, daemonId })
     const resourceInventory = unwrap(await client.send(
-      requests.getRoomEnvironmentResourceInventoryRequest(sessionId, sliceId),
+      requests.getRoomEnvironmentResourceInventoryRequest(sessionId, slice.id),
     ), "RoomEnvironmentResourceInventory").inventory
-    if (!resourceInventory.browser_ids?.length || !resourceInventory.profile_ids?.length) return false
+    assert.equal(resourceInventory?.session_id, sessionId, "Room inventory belongs to a different session")
+    assert.equal(resourceInventory?.slice_id, slice.id, "Room inventory belongs to a different slice")
+    assert.ok(Array.isArray(resourceInventory?.browser_ids), "kernel omitted Room browser identities")
+    assert.ok(Array.isArray(resourceInventory?.profile_ids), "kernel omitted Room profile identities")
+    assert.ok(Array.isArray(environment.actions), "kernel omitted Room snapshot actions")
+    if (!resourceInventory.browser_ids.length || !resourceInventory.profile_ids.length) return false
     if (!environment.tabs?.some((tab) => tab.tab_id === environment.focused_tab_id)) return false
-    return { environment, resourceInventory }
+    const actionHistory = unwrap(await client.send(
+      requests.listRoomEnvironmentActionHistoryRequest(sessionId),
+    ), "RoomEnvironmentActionHistoryListed").page
+    if (!Array.isArray(actionHistory?.actions)) throw new Error("kernel omitted Room action history at baseline")
+    if (actionHistory.actions.length > 0 || environment.actions?.length > 0) {
+      throw new Error("new Room action baseline already contains actions")
+    }
+    return { environment, resourceInventory, actionHistory }
   }, protocolClientRoomReadyTimeoutMs, "headed Room did not publish a ready browser, tab, and display inventory")
 }
 
@@ -824,7 +1153,7 @@ async function waitFor(observe, timeoutMs, message) {
     } catch (error) {
       lastError = error
       if (error?.fatal === true) throw error
-      if (/entered (?:failed|error)|different slice|mismatch|exited before setup completed|failed to start/.test(error?.message ?? "")) throw error
+      if (/entered (?:failed|error)|different (?:slice|session|daemon|machine|worker kernel)|mismatch|baseline|exited before setup completed|failed to start/.test(error?.message ?? "")) throw error
     }
     await sleep(250)
   }
