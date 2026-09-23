@@ -1761,11 +1761,23 @@ async function exerciseComputerSecretInput() {
     (interaction) => String(interaction.title ?? "").includes("Unlock Chariox Vault"),
     "vault unlock interaction",
   )
+  assert.equal(unlockInteraction.custom_choice?.id, "passphrase")
+  assert.equal(unlockInteraction.custom_choice?.input_kind, "secret")
   await client.send(requests.respondToInteractionRequest(
     sessionId,
     unlockInteraction.id,
-    "unlock_default_ttl",
+    unlockInteraction.custom_choice.id,
     vaultPassphrase,
+  ))
+  const leaseInteraction = await waitForRuntimeInteraction(
+    (interaction) => interaction.title === "Choose Vault Unlock Duration",
+    "vault unlock duration interaction",
+  )
+  assert.ok(leaseInteraction.choices.some((choice) => choice.id === "unlock_default_ttl"))
+  await client.send(requests.respondToInteractionRequest(
+    sessionId,
+    leaseInteraction.id,
+    "unlock_default_ttl",
   ))
   const secretInteraction = await waitForRuntimeInteraction(
     (interaction) => interaction.title === "Room Computer credential drill",
