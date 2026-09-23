@@ -283,7 +283,7 @@ export function assertNewSliceIdentity({
   return slice
 }
 
-export function assertNewSessionIdentity({ session, expectedDaemonId, expectedMachineId, workspace, worktree, priorSessionIds }) {
+export function assertNewSessionIdentity({ session, createdAgent, expectedDaemonId, expectedMachineId, workspace, worktree, priorSessionIds }) {
   assertNewId(session?.id, priorSessionIds, "session")
   assert.equal(session.host_daemon_id, expectedDaemonId, "new Room belongs to a different daemon")
   assert.equal(session.host_machine_id, expectedMachineId, "new Room belongs to a different machine")
@@ -291,7 +291,11 @@ export function assertNewSessionIdentity({ session, expectedDaemonId, expectedMa
   assert.equal(session.worktree_id, worktree, "new Room retained a different worktree identity")
   assert.equal(session.active_provider_run_id, null, "new Room unexpectedly has an active provider run")
   assert.ok(Array.isArray(session.agents), "new Room omitted its agent inventory")
-  assert.deepEqual(session.agents, [], "new Room unexpectedly contains existing agents")
+  assert.equal(session.agents.length, 1, "new Room unexpectedly contains extra agents")
+  assert.ok(createdAgent?.id, "new Room omitted its default agent")
+  assert.equal(createdAgent.session_id, session.id, "new Room default agent belongs to a different Room")
+  assert.equal(createdAgent.worktree_id, worktree, "new Room default agent belongs to a different worktree")
+  assert.equal(session.agents[0].id, createdAgent.id, "new Room default agent mismatch")
   return session
 }
 
@@ -766,15 +770,17 @@ async function main() {
     })
 
     state.sessionCreateAttempted = true
-    const session = unwrap(await state.client.send(requests.createSessionRequest(
+    const created = unwrap(await state.client.send(requests.createSessionRequest(
       workspace,
       worktree,
       `Drill C same-host ${stamp}`,
-    )), "SessionCreated").session
+    )), "SessionCreated")
+    const { session, agent: createdAgent } = created
     assertNewId(session?.id, priorKernelState.sessionIds ?? [], "session")
     state.sessionId = session.id
     assertNewSessionIdentity({
       session,
+      createdAgent,
       expectedDaemonId: daemonId,
       expectedMachineId: machineId,
       workspace,

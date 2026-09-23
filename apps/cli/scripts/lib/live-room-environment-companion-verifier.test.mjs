@@ -272,6 +272,77 @@ test("real-provider opt-in rejects provider-agent identity mismatches", async ()
   }
 })
 
+test("rejects a Web takeover attributed to the Browser agent instead of a human Room user", async () => {
+  const root = await makePrivateTestDirectory("chariox-room-agent-takeover-")
+  const browserAction = {
+    sequence: 1, action_id: "browser-agent-action", actor_id: "agent:agent-real",
+    mode: "browser", kind: "click", state: "completed",
+    targets: [{ kind: "browser_tab", id: "tab-1" }],
+  }
+  const takeoverAction = {
+    sequence: 2, action_id: "web-takeover-action", actor_id: "agent:agent-real",
+    mode: "computer", kind: "pointer_click", state: "completed",
+  }
+  const writer = startResultWriter(root, async () => {
+    await writeFile(path.join(root, "result.json"), JSON.stringify({
+      schema: "chariox.room_environment.companion_result.v1",
+      status: "passed",
+      sessionId: "session-1",
+      environmentId: "environment-1",
+      actionId: takeoverAction.action_id,
+      actorId: takeoverAction.actor_id,
+      physicalEffect: "POINTER_CLICK_COUNT=1",
+      client: "production-local-web-view",
+      screenshot: path.join(root, "web.png"),
+      provider: {
+        provider: "codex", model: "gpt-5.4", accountProfile: "default",
+        mode: "browser", browserTask: "click", agentId: "agent-real",
+        actorId: browserAction.actor_id, actionId: browserAction.action_id,
+        webObserved: true, screenshot: path.join(root, "provider.png"),
+      },
+    }))
+  })
+
+  try {
+    await assert.rejects(runRoomEnvironmentCompanion({
+      env: {
+        CHARIOX_ROOM_DRILL_COORDINATION_DIR: root,
+        CHARIOX_ROOM_DRILL_COMPANION_TIMEOUT_MS: "1000",
+      },
+      ready: {
+        sessionId: "session-1", sliceId: "slice-1", environmentId: "environment-1",
+        realProvider: { provider: "codex", model: "gpt-5.4", mode: "browser", browserTask: "click" },
+        providerAgent: {
+          contract: "chariox.room_environment.official_provider_agent.v1",
+          agentId: "agent-real", sessionId: "session-1", sliceId: "slice-1",
+          provider: "codex", model: "gpt-5.4", accountProfile: "default",
+          mode: "browser", task: "click",
+        },
+      },
+      client: {
+        send: async () => ({ RoomEnvironmentActionHistoryListed: { page: { actions: [takeoverAction, browserAction] } } }),
+      },
+      observerClient: {
+        send: async () => ({ RoomEnvironmentState: { environment: { input_ownership: [] } } }),
+      },
+      requests: {
+        listRoomEnvironmentActionHistoryRequest: () => ({}),
+        getRoomEnvironmentStateRequest: () => ({}),
+      },
+      activityController: { synchronize: async () => true },
+      localNoticeIds: [],
+      remoteNoticeIds: [],
+      waitForPhysicalEffect: async () => undefined,
+      waitForLocalActionNotice: async () => undefined,
+      waitForRemoteActionNotice: async () => undefined,
+    }), /human Room user/)
+    await writer.promise
+  } finally {
+    await writer.cancelAndWait()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("Room companion verifier rejects incomplete evidence metadata", async () => {
   const root = await makePrivateTestDirectory("chariox-room-companion-verifier-")
   const resultWriter = startResultWriter(root, async () => {

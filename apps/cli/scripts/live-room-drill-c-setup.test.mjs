@@ -34,7 +34,7 @@ const setup = {
     workspace_id: workspace,
     worktree_id: workspace,
     active_provider_run_id: null,
-    agents: [],
+    agents: [{ id: "agent-1", session_id: "room-1", worktree_id: workspace }],
   },
   slice: {
     id: "slice-1",
@@ -458,6 +458,7 @@ test("new Room and slice IDs must be unique and match the selected kernel", () =
 
   assert.equal(assertNewSessionIdentity({
     session: setup.session,
+    createdAgent: setup.session.agents[0],
     expectedDaemonId: "kernel-1",
     expectedMachineId: "machine-1",
     workspace,
@@ -466,6 +467,7 @@ test("new Room and slice IDs must be unique and match the selected kernel", () =
   }), setup.session)
   assert.throws(() => assertNewSessionIdentity({
     session: { ...setup.session, host_daemon_id: "wrong-kernel" },
+    createdAgent: setup.session.agents[0],
     expectedDaemonId: "kernel-1",
     expectedMachineId: "machine-1",
     workspace,
@@ -474,6 +476,7 @@ test("new Room and slice IDs must be unique and match the selected kernel", () =
   }), /different daemon/)
   assert.throws(() => assertNewSessionIdentity({
     session: setup.session,
+    createdAgent: setup.session.agents[0],
     expectedDaemonId: "kernel-1",
     expectedMachineId: "machine-1",
     workspace,
@@ -481,13 +484,23 @@ test("new Room and slice IDs must be unique and match the selected kernel", () =
     priorSessionIds: ["room-1"],
   }), /collides with an existing session/)
   assert.throws(() => assertNewSessionIdentity({
-    session: { ...setup.session, agents: [{ id: "unexpected-agent" }] },
+    session: { ...setup.session, agents: [...setup.session.agents, { id: "unexpected-agent" }] },
+    createdAgent: setup.session.agents[0],
     expectedDaemonId: "kernel-1",
     expectedMachineId: "machine-1",
     workspace,
     worktree: workspace,
     priorSessionIds: [],
-  }), /unexpectedly contains existing agents/)
+  }), /unexpectedly contains extra agents/)
+  assert.throws(() => assertNewSessionIdentity({
+    session: setup.session,
+    createdAgent: { ...setup.session.agents[0], id: "other-agent" },
+    expectedDaemonId: "kernel-1",
+    expectedMachineId: "machine-1",
+    workspace,
+    worktree: workspace,
+    priorSessionIds: [],
+  }), /default agent mismatch/)
   assert.throws(() => assertRoomSliceBinding(setup.binding, {
     sessionId: "another-room",
     slice: setup.slice,

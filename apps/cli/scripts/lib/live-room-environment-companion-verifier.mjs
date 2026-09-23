@@ -129,6 +129,7 @@ export async function runRoomEnvironmentCompanion(input) {
   ).page)
   const webAction = history.find((action) => action.action_id === companion.actionId)
   assert.ok(webAction, `Web companion action ${companion.actionId} was absent from kernel history`)
+  assert.match(webAction.actor_id, /^user:.+$/, 'Web takeover action must be attributed to a human Room user')
   assert.equal(webAction.actor_id, companion.actorId)
   assert.equal(webAction.kind, "pointer_click")
   assert.equal(webAction.state, "completed")
