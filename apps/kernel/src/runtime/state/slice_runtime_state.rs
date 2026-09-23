@@ -397,9 +397,10 @@ impl KernelRuntimeState {
                 provider_session_id: manifest.provider_session_id.clone(),
                 native_tui: true,
             };
-            let _ = self
+            let response = self
                 .launch_remote_native_provider_run(&request, &manifest.owner_user_id)
                 .await?;
+            validate_slice_agent_relaunch_response(&manifest, response)?;
         }
         Ok(())
     }
@@ -1129,6 +1130,65 @@ fn busy_slice_agents_message(operation: &'static str, agent_ids: &[String]) -> S
     )
 }
 
+fn validate_slice_agent_relaunch_response(
+    manifest: &SliceAgentRelaunchManifest,
+    response: Option<crate::local::LocalDaemonResponse>,
+) -> Result<(), DaemonError> {
+    let provider_run = match response {
+        Some(crate::local::LocalDaemonResponse::ProviderRunLaunched { provider_run }) => {
+            provider_run
+        }
+        Some(_) => {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.agent.relaunch",
+                message: format!(
+                    "provider launch for slice agent `{}` returned no provider run",
+                    manifest.agent_id
+                ),
+            });
+        }
+        None => {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.agent.relaunch",
+                message: format!(
+                    "provider launch returned no run for slice agent `{}`",
+                    manifest.agent_id
+                ),
+            });
+        }
+    };
+    if provider_run.agent_instance_id() != Some(manifest.agent_id.as_str()) {
+        return Err(DaemonError::LocalTransport {
+            operation: "slice.agent.relaunch",
+            message: format!(
+                "provider launch for slice agent `{}` returned a run for a different agent",
+                manifest.agent_id
+            ),
+        });
+    }
+    let Some(expected_provider_session_id) = manifest.provider_session_id.as_deref() else {
+        return Ok(());
+    };
+    let actual_provider_session_id = provider_run
+        .provider_session_id()
+        .or_else(|| {
+            provider_run
+                .resume_state()
+                .provider_session_id(&manifest.adapter_key)
+        });
+    if actual_provider_session_id != Some(expected_provider_session_id) {
+        return Err(DaemonError::LocalTransport {
+            operation: "slice.agent.relaunch",
+            message: format!(
+                "provider resume for slice agent `{}` expected session `{expected_provider_session_id}` but launch returned `{}`; refusing to accept a blank or different provider thread",
+                manifest.agent_id,
+                actual_provider_session_id.unwrap_or("none")
+            ),
+        });
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1334,6 +1394,91 @@ mod tests {
                 .is_none(),
             "busy-save rejection must not create partial saved state"
         );
+    }
+
+    #[test]
+    fn resumed_slice_agent_launch_must_keep_the_captured_provider_session() {
+        let manifest = SliceAgentRelaunchManifest {
+            session_id: "session-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            owner_user_id: "user-1".to_string(),
+            source_remote_execution: crate::agent::RemoteAgentBinding {
+                worker_kernel_id: "worker-1".to_string(),
+                worker_machine_id: "slice:slice-1".to_string(),
+                execution_lease_id: "lease-1".to_string(),
+                leased_agent_id: "leased-agent-1".to_string(),
+                active_worker_provider_run_id: None,
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
+            },
+            adapter_key: "opencode".to_string(),
+            provider: "opencode".to_string(),
+            account_profile: "work".to_string(),
+            model: "opencode/gpt-5.6-sol".to_string(),
+            variant: None,
+            execution_mode: crate::provider::AgentExecutionMode::Build,
+            permission_level: crate::provider::AgentPermissionLevel::Yolo,
+            structured_endpoint: None,
+            provider_session_id: Some("session-before-save".to_string()),
+            existing_provider_run_id: None,
+        };
+
+        let response = |provider_session_id: Option<&str>| {
+            let request = crate::provider::LaunchProviderRequest::new(
+                &manifest.session_id,
+                &manifest.adapter_key,
+                &manifest.provider,
+                &manifest.account_profile,
+                &manifest.model,
+            )
+            .with_agent_id(&manifest.agent_id)
+            .with_resume_state(match provider_session_id {
+                Some(provider_session_id) => {
+                    crate::provider::ProviderResumeState::from_opencode_session_id(
+                        provider_session_id,
+                    )
+                }
+                None => crate::provider::ProviderResumeState::default(),
+            });
+            let provider_run = crate::provider::RuntimeProviderRun::new(
+                "provider-run-1",
+                &request,
+                crate::provider::ProviderLaunchResult {
+                    endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                    process_label: "opencode-test".to_string(),
+                    pty_target: None,
+                    pty_program: None,
+                    pty_args: Vec::new(),
+                    pty_env: Default::default(),
+                    pty_env_remove: Vec::new(),
+                    working_directory: Some(std::path::PathBuf::from("/workspace")),
+                    structured_endpoint: Some("http://worker.invalid".to_string()),
+                },
+            );
+            crate::local::LocalDaemonResponse::ProviderRunLaunched { provider_run }
+        };
+
+        assert!(
+            validate_slice_agent_relaunch_response(
+                &manifest,
+                Some(response(Some("session-before-save")))
+            )
+            .is_ok()
+        );
+        for result in [response(None), response(Some("different-session"))] {
+            let error = validate_slice_agent_relaunch_response(&manifest, Some(result))
+                .expect_err("blank or changed provider session must not count as resumed");
+            assert!(error
+                .to_string()
+                .contains("refusing to accept a blank or different provider thread"));
+            assert!(error.to_string().contains("session-before-save"));
+        }
+        let error = validate_slice_agent_relaunch_response(&manifest, None)
+            .expect_err("missing provider launch response must not count as a relaunch");
+        assert!(error.to_string().contains("provider launch returned no run"));
     }
 
     #[tokio::test]

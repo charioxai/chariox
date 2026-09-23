@@ -173,7 +173,9 @@ pub(super) async fn execute_save_slice_state_request(
         match runtime_state.slice_agent_relaunch_manifests(&slice, "slice.state.save") {
             Ok(manifests) => manifests,
             Err(error) => {
-                let _ = runtime_state.mark_slice_state_save_failed(&request.slice_ref, &error);
+                if !is_slice_save_busy_admission_error(&error) {
+                    let _ = runtime_state.mark_slice_state_save_failed(&request.slice_ref, &error);
+                }
                 let _ = runtime_state.record_slice_audit_event(
                     &slice,
                     "state.save",
@@ -297,6 +299,16 @@ pub(super) async fn execute_save_slice_state_request(
             state,
         })
     }
+}
+
+fn is_slice_save_busy_admission_error(error: &DaemonError) -> bool {
+    matches!(
+        error,
+        DaemonError::LocalTransport {
+            operation: "slice.state.save",
+            message,
+        } if message.starts_with("cannot save slice while agents are running;")
+    )
 }
 
 pub(super) async fn execute_get_slice_state_status_request(

@@ -1,5 +1,7 @@
 mod display_endpoint;
 mod lifecycle;
+#[cfg(test)]
+mod local_api_tests;
 mod provider_auth;
 mod worker_discovery;
 
