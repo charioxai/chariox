@@ -132,6 +132,7 @@ const CONTROL_ENVIRONMENT_NAMES: &[&str] = &[
     "CHARIOX_MANAGED_PROVIDER_BWRAP",
     "CHARIOX_MANAGED_PROVIDER_HOME",
     "CHARIOX_MANAGED_PROVIDER_ISOLATION",
+    MANAGED_PROVIDER_ISOLATION_MARKER_ENV,
     "CHARIOX_MANAGED_VAULT_PATH",
     "CHARIOX_DAEMON_SOCKET",
     "CHARIOX_SLICE_ROOT",
@@ -4279,6 +4280,7 @@ mod tests {
             "CHARIOX_REMOTE_LEASE_CAPACITY",
             "CHARIOX_LEASE_WORKER_HOME_CALLER",
             "CHARIOX_MANAGED_PROVIDER_TOPOLOGY",
+            MANAGED_PROVIDER_ISOLATION_MARKER_ENV,
             "CHARIOX_MANAGED_RELEASE_MANIFEST",
             "CHARIOX_MANAGED_KERNEL_BINARY",
         ] {
@@ -5169,6 +5171,10 @@ printf 'managed account environment probe passed\n'
                     String::from("1"),
                 ),
                 (
+                    MANAGED_PROVIDER_ISOLATION_MARKER_ENV.to_string(),
+                    String::from("1"),
+                ),
+                (
                     String::from("CHARIOX_MANAGED_PROVIDER_BWRAP"),
                     String::from("/usr/bin/bwrap"),
                 ),
@@ -5217,6 +5223,7 @@ printf 'managed account environment probe passed\n'
         );
         for name in [
             "CHARIOX_MANAGED_PROVIDER_ISOLATION",
+            MANAGED_PROVIDER_ISOLATION_MARKER_ENV,
             "CHARIOX_MANAGED_PROVIDER_BWRAP",
             "CHARIOX_MANAGED_PROVIDER_HOME",
             "CHARIOX_CAPABILITY_ISOLATION_ROOT",
@@ -5725,6 +5732,7 @@ printf 'managed account environment probe passed\n'
             "CHARIOX_REMOTE_LEASE_CAPACITY",
             "CHARIOX_LEASE_WORKER_HOME_CALLER",
             "CHARIOX_MANAGED_PROVIDER_TOPOLOGY",
+            MANAGED_PROVIDER_ISOLATION_MARKER_ENV,
             "CHARIOX_MANAGED_RELEASE_MANIFEST",
             "CHARIOX_MANAGED_KERNEL_BINARY",
         ];
