@@ -2083,6 +2083,28 @@ function scopedRelayToken({ subject, subjectKind, actions, userId = null }) {
 async function runCompanionIfConfigured({ environment, localNoticeIds, remoteNoticeIds, activityController }) {
   const noticePattern = roomActionNoticePattern
   const companionFixture = roomCompanionClickFixture(realProviderOptions)
+  if (!realProviderOptions) {
+    // Web View selects a headed slice through an attached Room agent. Keep the
+    // browser-only companion deterministic without claiming a real provider run.
+    const agent = unwrap(await client.send(requests.spawnAgentRequest(
+      sessionId,
+      "dev-stub",
+      "room-web-fixture-agent",
+      "native-tui-idle",
+      fixtureWorkspace,
+      "low",
+      "build",
+      "yolo",
+      undefined,
+      undefined,
+      slice.id,
+    )), "AgentSpawned").agent
+    assert.ok(agent?.id, "Web companion fixture agent was not created")
+    await waitFor(async () => {
+      const slices = unwrap(await client.send(requests.listSlicesRequest()), "SlicesListed").slices
+      return slices.some((item) => item.id === slice.id && item.agent_ids?.includes(agent.id))
+    }, 10_000, "Web companion fixture agent was not attached to the headed slice")
+  }
   const preparedProvider = realProviderOptions
     ? await prepareRoomRealProviderAgent({
       client,
