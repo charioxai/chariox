@@ -1856,8 +1856,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
                 ),
             ]),
         );
-    {
-        let mut app = app_worker.lock().await;
+    let provider_run = {
         let launch_request = LaunchProviderRequest::new(
             &backing_session_id,
             "opencode",
@@ -1902,13 +1901,89 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
             crate::provider::ProviderRunState::Running,
             "the prepared worker provider context must remain live for replay"
         );
-        app.providers_mut().insert_run_for_test(provider_run);
-    }
+        provider_run
+    };
     let worker_router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
         Arc::clone(&app_worker),
         1,
     ));
     let worker_runtime = worker_router.runtime_state();
+    let expected_worker_workspace_id = workspace.display().to_string();
+    let setup_target = {
+        let mut app = app_worker.lock().await;
+        crate::app::RemoteLeaseRuntime::new(&mut app)
+            .project_environment_setup_target(
+                &leased_agent_id,
+                &session_id,
+                &agent_id,
+                Some(&expected_worker_workspace_id),
+            )
+            .expect("relay setup target must resolve the seeded worker lease identities")
+    };
+    assert_eq!(setup_target.backing_session_id, backing_session_id);
+    assert_eq!(setup_target.backing_agent_id, backing_agent_id);
+    assert_eq!(setup_target.workspace_id, expected_worker_workspace_id);
+    // Seed through the same provider store instance used by the worker's
+    // agent_utility_provider_run lookup after relay dispatch.
+    worker_runtime
+        .owned
+        .provider_store
+        .write()
+        .insert_run_for_test(provider_run.clone());
+    let backing_session = worker_runtime
+        .owned
+        .session_store
+        .get_session(&backing_session_id)
+        .expect("leased backing session must be visible to the worker runtime");
+    let backing_agent = worker_runtime
+        .owned
+        .agent_store
+        .get_session_agents(&backing_session_id)
+        .into_iter()
+        .find(|agent| agent.id() == backing_agent_id.as_str())
+        .expect("leased backing agent must belong to the worker session");
+    assert_eq!(backing_agent.session_id(), backing_session.id());
+    assert!(
+        backing_agent.remote_execution().is_none(),
+        "worker utility lookup must resolve the local backing agent, not its home remote agent"
+    );
+    assert!(
+        worker_runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&backing_session, &backing_agent_id)
+            .is_none(),
+        "worker backing agent must not already have an active prompt"
+    );
+    let seeded_provider_run = worker_runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(&backing_session_id, &backing_agent_id)
+        .expect("managed provider run must be indexed under the leased backing identity");
+    assert_eq!(seeded_provider_run.session_id(), backing_session_id.as_str());
+    assert_eq!(
+        seeded_provider_run.agent_instance_id(),
+        Some(backing_agent_id.as_str())
+    );
+    assert_eq!(seeded_provider_run.owner_user_id(), "user-1");
+    assert_eq!(
+        seeded_provider_run.state(),
+        crate::provider::ProviderRunState::Running
+    );
+    let (resolved_backing_agent, resolved_provider_run) = worker_runtime
+        .agent_utility_provider_run(
+            &backing_session_id,
+            &backing_agent_id,
+            "project environment setup fixture preflight",
+        )
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "worker utility lookup should resolve its seeded backing agent and provider run: {error}"
+            )
+        });
+    assert_eq!(resolved_backing_agent.id(), backing_agent_id.as_str());
+    assert_eq!(resolved_provider_run.id(), seeded_provider_run.id());
     let worker_execution = super::SetupExecution {
         owner_user_id: "user-1".to_string(),
         operation_id: "setup-transport-recovery".to_string(),
@@ -1981,6 +2056,36 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
             registry_snapshot.daemon_count(),
         );
     }
+    let provider_run_after_relay_registration = worker_runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(&backing_session_id, &backing_agent_id)
+        .expect("relay registration must retain the worker backing provider run");
+    assert_eq!(
+        provider_run_after_relay_registration.id(),
+        resolved_provider_run.id()
+    );
+    assert_eq!(
+        provider_run_after_relay_registration.state(),
+        crate::provider::ProviderRunState::Running,
+        "the managed worker fixture must remain running through relay registration"
+    );
+    let (_, utility_run_after_relay_registration) = worker_runtime
+        .agent_utility_provider_run(
+            &backing_session_id,
+            &backing_agent_id,
+            "project environment setup relay fixture preflight",
+        )
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "relay-connected worker utility lookup should resolve its seeded run: {error}"
+            )
+        });
+    assert_eq!(
+        utility_run_after_relay_registration.id(),
+        provider_run_after_relay_registration.id()
+    );
 
     let home_router = CommandRouter::with_interactive_capacity_from_app(Arc::clone(&app_home), 1);
     let runtime = home_router.runtime_state();
