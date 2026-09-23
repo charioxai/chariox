@@ -545,10 +545,10 @@ async function run() {
   )), "RoomEnvironmentActionSubmitted")
   assert.equal(actionState(click.environment, click.action_id), "completed")
   assert.equal(await activityController.synchronize(), true)
-  assert.match(activityNotices.at(-1), /^Room action #\d+: Local user · computer pointer_click · completed$/)
+  assert.match(activityNotices.at(-1), /^Room action #\d+: Local user · computer pointer_click · desktop(?:, tab [^ ·]+)? · completed$/)
   await Promise.all([
-    waitForLocalNotice(/^Room action #\d+: Local user · computer pointer_click · completed$/),
-    waitForRemoteNotice(/^Room action #\d+: Local user · computer pointer_click · completed$/),
+    waitForLocalNotice(/^Room action #\d+: Local user · computer pointer_click · desktop(?:, tab [^ ·]+)? · completed$/),
+    waitForRemoteNotice(/^Room action #\d+: Local user · computer pointer_click · desktop(?:, tab [^ ·]+)? · completed$/),
   ])
   await waitForBrowserText("POINTER_CLICK_COUNT=1", 20_000, "physical click did not reach the fixture")
   await screenshot("after-click")
@@ -936,7 +936,7 @@ async function executeAgentPointerAction({
     (candidate) => candidate.action_id === response.content?.action_id,
   )
   validate(action, response.content?.actor_id)
-  const noticePattern = new RegExp(`^Room action #\\d+: .+ · computer ${expectedKind} · completed$`)
+  const noticePattern = new RegExp(`^Room action #\\d+: .+ · computer ${expectedKind} · desktop(?:, tab [^ ·]+)? · completed$`)
   assert.equal(await activityController.synchronize(), true)
   assert.match(activityNotices.at(-1), noticePattern)
   await Promise.all([
@@ -1396,7 +1396,7 @@ async function exerciseCancellableKeyboardInput({
     `${label} continued physical typing after terminal cancellation`,
   )
   assert.equal(await activityController.synchronize(), true)
-  const noticePattern = /^Room action #\d+: .+ · computer keyboard_text · cancelled \(requested\)$/
+  const noticePattern = /^Room action #\d+: .+ · computer keyboard_text · desktop(?:, tab [^ ·]+)? · cancelled \(requested\)$/
   assert.ok(activityNotices.some((notice) => noticePattern.test(notice)))
   await Promise.all([
     waitForTuiNoticeAfter(localAutomation, "local", noticePattern, localNoticeBaseline, 20_000),
@@ -1520,7 +1520,7 @@ async function executeAgentKeyboardAction({
     (candidate) => candidate.action_id === response.content?.action_id,
   )
   validate(action, response.content?.actor_id)
-  const noticePattern = new RegExp(`^Room action #\\d+: .+ · computer ${expectedKind} · completed$`)
+  const noticePattern = new RegExp(`^Room action #\\d+: .+ · computer ${expectedKind} · desktop(?:, tab [^ ·]+)? · completed$`)
   assert.equal(await activityController.synchronize(), true)
   assert.match(activityNotices.at(-1), noticePattern)
   await Promise.all([
@@ -1571,7 +1571,7 @@ async function exerciseRoomClipboard(activityController, activityNotices) {
     actorId: agentWrite.content?.actor_id,
     clipboardText: agentClipboardText,
   })
-  const noticePattern = /^Room action #\d+: .+ · computer clipboard_write · completed$/
+  const noticePattern = /^Room action #\d+: .+ · computer clipboard_write · desktop(?:, tab [^ ·]+)? · completed$/
   assert.equal(await activityController.synchronize(), true)
   assert.match(activityNotices.at(-1), noticePattern)
   await Promise.all([
@@ -1838,7 +1838,7 @@ async function exerciseComputerSecretInput() {
   assert.ok(secretActions.every((action) => action.state === "completed"))
   assert.ok(secretActions.every((action) => action.actor_id === userPaste.content.actor_id))
 
-  const noticePattern = /^Room action #\d+: .+ · computer secret_input · completed$/
+  const noticePattern = /^Room action #\d+: .+ · computer secret_input · desktop(?:, tab [^ ·]+)? · completed$/
   const [localNotice, remoteNotice] = await Promise.all([
     waitForTuiNoticeAfter(localAutomation, "local", noticePattern, localNoticeBaseline, 20_000),
     waitForTuiNoticeAfter(remoteAutomation, "remote", noticePattern, remoteNoticeBaseline, 20_000),
