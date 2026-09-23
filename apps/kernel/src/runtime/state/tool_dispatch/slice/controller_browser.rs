@@ -19,8 +19,8 @@ impl KernelRuntimeState {
         agent_id: &str,
         args: crate::transport::runtime_tools::PasteSecretToSliceArgs,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        let status = capture_controller_browser_status(self, session_id, slice_id, agent_id, None)
-            .await?;
+        let status =
+            capture_controller_browser_status(self, session_id, slice_id, agent_id, None).await?;
         let browser =
             status
                 .result
@@ -1018,33 +1018,34 @@ pub(super) async fn run_controller_browser_find_tool(
         Some("browser_find"),
     )
     .await?;
-    let result = (|| {
-        let browser_status = capture
-            .result
-            .payload
-            .get("browser")
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "runtime_tool_slice_browser_find",
-                message: "controller-backed browser status omitted its compatibility projection"
-                    .to_string(),
+    let result =
+        (|| {
+            let browser_status = capture.result.payload.get("browser").ok_or_else(|| {
+                DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_find",
+                    message:
+                        "controller-backed browser status omitted its compatibility projection"
+                            .to_string(),
+                }
             })?;
-        let browser = controller_browser_find(browser_status, query, kind).map_err(|message| {
-            DaemonError::LocalTransport {
-                operation: "runtime_tool_slice_browser_find",
-                message,
-            }
-        })?;
-        Ok(crate::transport::runtime_tools::RuntimeToolResult {
-            ok: true,
-            payload: serde_json::json!({
-                "source": "browser_controller",
-                "slice_id": slice_id,
-                "agent_id": agent_id,
-                "session_id": session_id,
-                "browser": browser,
-            }),
-        })
-    })();
+            let browser =
+                controller_browser_find(browser_status, query, kind).map_err(|message| {
+                    DaemonError::LocalTransport {
+                        operation: "runtime_tool_slice_browser_find",
+                        message,
+                    }
+                })?;
+            Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({
+                    "source": "browser_controller",
+                    "slice_id": slice_id,
+                    "agent_id": agent_id,
+                    "session_id": session_id,
+                    "browser": browser,
+                }),
+            })
+        })();
     match result {
         Ok(result) => {
             finish_captured_browser_observation(

@@ -1,10 +1,10 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { captureDrillEFromClient } from "./live-browser-computer-drill-e.mjs"
+import { captureDrillEFromClient, verifyDrillE } from "./live-browser-computer-drill-e.mjs"
 
 function action({ id, sequence, actor, tab, state, submitted, started = null, finished = null,
-  cancellationRequested = false, outcome = null }) {
+  cancellationRequested = false, outcome = null, kind = "click" }) {
   return {
     action_id: id,
     sequence,
@@ -12,7 +12,7 @@ function action({ id, sequence, actor, tab, state, submitted, started = null, fi
     actor_id: actor,
     runtime_generation: 4,
     mode: "browser",
-    kind: "click",
+    kind,
     targets: [{ kind: "browser_tab", id: tab }],
     state,
     cancellation_requested: cancellationRequested,
@@ -159,8 +159,8 @@ test("public LocalDaemon snapshot and Action history cannot claim tab reads when
 
   const report = captured.report
   assert.equal(report.status, "incomplete")
-  assert.equal(report.checks.twoAgentTabReads.status, "unproven")
-  assert.match(report.checks.twoAgentTabReads.reason, /read-only|observation/i)
+  assert.equal(report.checks.twoAgentTabReads.status, "incomplete")
+  assert.match(report.checks.twoAgentTabReads.reason, /status\/find observation/i)
   assert.equal(report.checks.sameTabSerialization.status, "passed")
   assert.equal(report.checks.independentTabConcurrency.status, "passed")
   assert.equal(report.checks.humanTakeover.status, "passed")
@@ -172,4 +172,47 @@ test("public LocalDaemon snapshot and Action history cannot claim tab reads when
     "ListRoomEnvironmentActionHistory",
     "GetRoomEnvironmentState",
   ])
+})
+
+test("two same-tab agent observations and third-tab work require matching completed kernel history", () => {
+  const first = action({
+    id: "action:read-a", sequence: 1, actor: "agent:a", tab: "tab:one",
+    kind: "browser_status", state: "running", submitted: 100, started: 101,
+  })
+  const second = action({
+    id: "action:read-b", sequence: 2, actor: "agent:b", tab: "tab:one",
+    kind: "browser_find", state: "running", submitted: 102, started: 103,
+  })
+  const third = action({
+    id: "action:other", sequence: 3, actor: "agent:c", tab: "tab:two",
+    state: "running", submitted: 104, started: 105,
+  })
+  const observed = environment({ actions: [first, second, third] })
+  const completed = [first, second, third].map((entry) => ({
+    ...entry, state: "completed", finished_at_ms: 120, outcome: { status: "completed" },
+  }))
+  const finalEnvironment = environment({ actions: completed })
+  const input = {
+    sessionId: "session-live",
+    snapshots: [{ observed_at_ms: 110, environment: observed }],
+    finalEnvironment,
+    actions: completed,
+    baselineActionSequence: 0,
+  }
+  const report = verifyDrillE(input)
+  assert.equal(report.checks.twoAgentTabReads.status, "passed")
+  assert.deepEqual(report.checks.twoAgentTabReads.readActionIds, ["action:read-a", "action:read-b"])
+  assert.equal(report.checks.twoAgentTabReads.thirdAgentActionId, "action:other")
+  assert.equal(report.status, "incomplete", "mutation and takeover gates still require evidence")
+
+  const wrongKind = completed.map((entry) => entry.action_id === "action:read-b"
+    ? { ...entry, kind: "click" } : entry)
+  assert.equal(verifyDrillE({ ...input, actions: wrongKind }).checks.twoAgentTabReads.status, "incomplete")
+  const wrongActor = completed.map((entry) => entry.action_id === "action:read-b"
+    ? { ...entry, actor_id: "agent:a" } : entry)
+  assert.equal(verifyDrillE({ ...input, actions: wrongActor }).checks.twoAgentTabReads.status, "incomplete")
+  const missingThird = environment({ actions: [first, second] })
+  assert.equal(verifyDrillE({
+    ...input, snapshots: [{ observed_at_ms: 110, environment: missingThird }],
+  }).checks.twoAgentTabReads.status, "incomplete")
 })

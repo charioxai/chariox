@@ -128,8 +128,6 @@ function assertEnvironment(environment, sessionId, expectedIdentity = null) {
 }
 
 function tabTarget(action) {
-  // In the current runtime, agent Browser Actions entering this ledger are
-  // mutations; browser status/find observations bypass it entirely.
   if (action?.mode !== "browser" || !Array.isArray(action.targets) || action.targets.length !== 1) return null
   const target = action.targets[0]
   return target?.kind === "browser_tab" && typeof target.id === "string" && target.id
@@ -192,8 +190,50 @@ function sameActionIdentity(projected, recorded) {
     && projected.actor_id === recorded.actor_id
     && projected.runtime_generation === recorded.runtime_generation
     && projected.mode === recorded.mode
+    && projected.kind === recorded.kind
     && projected.submitted_at_ms === recorded.submitted_at_ms
     && JSON.stringify(projected.targets) === JSON.stringify(recorded.targets)
+}
+
+function findConcurrentReads(snapshots, finalEnvironment, actionsById) {
+  const finalTabIds = new Set(finalEnvironment.tabs.map((tab) => tab.tab_id))
+  for (const sample of snapshots) {
+    const environment = sample.environment
+    const actors = actorKinds(environment)
+    const running = environment.actions.filter((action) =>
+      action?.state === "running" && ["browser_status", "browser_find"].includes(action.kind)
+      && isAgentAction(action, actors, environment.runtime_generation)
+      && finalTabIds.has(tabTarget(action)))
+    for (const first of running) {
+      for (const second of running) {
+        if (first.action_id === second.action_id || first.actor_id === second.actor_id
+          || tabTarget(first) !== tabTarget(second)) continue
+        const recordedFirst = actionsById.get(first.action_id)
+        const recordedSecond = actionsById.get(second.action_id)
+        if (![recordedFirst, recordedSecond].every((action) => action
+          && validActionTiming(action) && action.state === "completed"
+          && actionOutcome(action)?.status === "completed"
+          && safeInteger(action.started_at_ms) && safeInteger(action.finished_at_ms))
+          || !sameActionIdentity(first, recordedFirst)
+          || !sameActionIdentity(second, recordedSecond)) continue
+        const started = Math.max(recordedFirst.started_at_ms, recordedSecond.started_at_ms)
+        const finished = Math.min(recordedFirst.finished_at_ms, recordedSecond.finished_at_ms)
+        if (started > finished) continue
+        const third = environment.actions.find((action) =>
+          action?.state === "running" && isAgentAction(action, actors, environment.runtime_generation)
+          && action.actor_id !== first.actor_id && action.actor_id !== second.actor_id
+          && tabTarget(action) !== tabTarget(first))
+        const recordedThird = third && actionsById.get(third.action_id)
+        if (!recordedThird || !validActionTiming(recordedThird)
+          || !sameActionIdentity(third, recordedThird)
+          || !safeInteger(recordedThird.started_at_ms) || !safeInteger(recordedThird.finished_at_ms)
+          || Math.max(started, recordedThird.started_at_ms)
+            > Math.min(finished, recordedThird.finished_at_ms)) continue
+        return { first, second, third, tabId: tabTarget(first), intervalMs: [started, finished] }
+      }
+    }
+  }
+  return null
 }
 
 function findQueuePair(snapshots, finalEnvironment, actionsById) {
@@ -330,15 +370,22 @@ export function verifyDrillE({ sessionId, snapshots, finalEnvironment, actions, 
     action.sequence > baselineActionSequence
     && action.runtime_generation === identity.runtimeGeneration)
   const actionsById = historyIndex(postBaselineActions, finalEnvironment)
+  const reads = findConcurrentReads(snapshots, finalEnvironment, actionsById)
   const serializedPair = findQueuePair(snapshots, finalEnvironment, actionsById)
   const independent = findIndependentTabWork(serializedPair, snapshots, actionsById)
   const takeover = findTakeover(serializedPair, snapshots, finalEnvironment)
 
   const checks = {
-    twoAgentTabReads: {
-      status: "unproven",
-      reason: "The current public Tab projection has no reader identity or read timestamp, and browser status/find observations are not recorded in Room Action history.",
-      evidence: [],
+    twoAgentTabReads: reads ? {
+      status: "passed",
+      tabId: reads.tabId,
+      readActionIds: [reads.first.action_id, reads.second.action_id],
+      readerActorIds: [reads.first.actor_id, reads.second.actor_id],
+      thirdAgentActionId: reads.third.action_id,
+      overlappingIntervalMs: reads.intervalMs,
+    } : {
+      status: "incomplete",
+      reason: "No same-snapshot, completed and overlapping status/find observations by two agents on one tab were recorded alongside third-agent work on another tab.",
     },
     sameTabSerialization: serializedPair ? {
       status: "passed",
