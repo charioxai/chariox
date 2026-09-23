@@ -384,6 +384,7 @@ atomic_symlink() {
   fi
   rm -f -- "$temporary_link"
   if [ -L "$link_path" ] && [ "$(readlink "$link_path")" = "$target_path" ]; then
+    node "$script_root/managed-kernel-upgrade-state.mjs" sync-directory "$(dirname "$link_path")"
     return
   fi
   ln -s "$target_path" "$temporary_link"
@@ -392,6 +393,7 @@ const { renameSync } = require("node:fs")
 const [source, destination] = process.argv.slice(2)
 renameSync(source, destination)
 NODE
+  node "$script_root/managed-kernel-upgrade-state.mjs" sync-directory "$(dirname "$link_path")"
 }
 
 releases_root=$install_root/usr/lib/chariox/releases
@@ -408,8 +410,11 @@ install -d -o root -g root -m 0755 \
 rm -rf -- "$pending_release"
 if [ -e "$published_release" ] || [ -L "$published_release" ]; then
   if ! node "$script_root/verify-image-release.mjs" "$published_release" "$expected_release_digest" "$trusted_public_key"; then
-    rm -rf -- "$published_release"
+    echo "existing digest-named managed release is invalid; refusing to replace immutable release: $published_release" >&2
+    exit 1
   fi
+  node "$script_root/managed-kernel-upgrade-state.mjs" sync-tree "$published_release"
+  node "$script_root/managed-kernel-upgrade-state.mjs" sync-directory "$releases_root"
 fi
 if [ ! -e "$published_release" ]; then
   install -d -o root -g root -m 0755 \
@@ -436,7 +441,9 @@ if [ ! -e "$published_release" ]; then
   install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-slice-broker.service" "$pending_release/etc/systemd/system/chariox-slice-broker.service"
   (umask 000; cp -RP "$image_root/usr/lib/chariox/slice-build-context" "$pending_release/usr/lib/chariox/slice-build-context")
   node "$script_root/verify-image-release.mjs" "$pending_release" "$expected_release_digest" "$trusted_public_key"
+  node "$script_root/managed-kernel-upgrade-state.mjs" sync-tree "$pending_release"
   mv "$pending_release" "$published_release"
+  node "$script_root/managed-kernel-upgrade-state.mjs" sync-directory "$releases_root"
 fi
 
 atomic_symlink "../../../usr/lib/chariox/current/usr/local/bin/chariox-kernel" "$install_root/usr/local/bin/chariox-kernel"
@@ -458,19 +465,35 @@ previous_current_target=
 if [ -L "$install_root/usr/lib/chariox/current" ]; then
   previous_current_target=$(readlink "$install_root/usr/lib/chariox/current")
 fi
-atomic_symlink "releases/$release_name" "$install_root/usr/lib/chariox/current"
+restore_previous_current() {
+  if [ -n "$previous_current_target" ]; then
+    atomic_symlink "$previous_current_target" "$install_root/usr/lib/chariox/current" || return 1
+  else
+    rm -f -- "$install_root/usr/lib/chariox/current" || return 1
+    node "$script_root/managed-kernel-upgrade-state.mjs" sync-directory "$install_root/usr/lib/chariox" || return 1
+  fi
+}
+
+if ! atomic_symlink "releases/$release_name" "$install_root/usr/lib/chariox/current"; then
+  if restore_previous_current; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    echo "managed release current-link activation failed; restored previous current release" >&2
+  else
+    echo "managed release current-link activation failed; previous current restoration remains incomplete" >&2
+  fi
+  exit 1
+fi
 
 if ! rm -f -- "$install_root/etc/systemd/system/multi-user.target.wants/chariox-slice-broker.service" \
   || ! systemctl daemon-reload \
   || ! loginctl enable-linger chariox-docker \
   || ! systemctl enable chariox-rootless-docker.service \
   || ! systemctl enable chariox-managed-bootstrap.service; then
-  if [ -n "$previous_current_target" ]; then
-    atomic_symlink "$previous_current_target" "$install_root/usr/lib/chariox/current"
+  if restore_previous_current; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    echo "managed release activation failed; restored previous current release" >&2
   else
-    rm -f -- "$install_root/usr/lib/chariox/current"
+    echo "managed release activation failed; previous current restoration remains incomplete" >&2
   fi
-  systemctl daemon-reload >/dev/null 2>&1 || true
-  echo "managed release activation failed; restored previous current release" >&2
   exit 1
 fi
