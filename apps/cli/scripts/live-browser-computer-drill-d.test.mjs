@@ -56,6 +56,13 @@ function proofInput() {
   }
 }
 
+test("accepts one attributed desktop edit followed by explicit Browser attachment work", () => {
+  const proof = assertDrillDAcceptanceProof(proofInput())
+  assert.equal(proof.editor.typedActionId, "computer-type")
+  assert.equal(proof.browser.uploadActionId, "browser-upload")
+  assert.equal(proof.document.sizeBytes, 42)
+})
+
 test("rejects a stale or wrong Room identity in public acceptance evidence", () => {
   const stale = proofInput()
   stale.preBrowserProjection.sessionId = "session-old"
