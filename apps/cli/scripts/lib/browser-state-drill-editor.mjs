@@ -2,6 +2,95 @@ import assert from "node:assert/strict"
 import { fileURLToPath } from "node:url"
 import { verifyRoomDesktopHealth } from "./live-room-desktop-health.mjs"
 
+export async function completeBrowserStateEditorHandoff({
+  finishDesktopWork,
+  browserWindowIds,
+  visibleBrowserWindowIds,
+  activeWindowId,
+  taskbarBounds,
+  pointerClick,
+  prepareBrowser,
+  waitFor,
+  screenshot,
+  findText,
+  browserWindowBounds,
+  expectedVisibleText,
+}) {
+  const originalWindowIds = await browserWindowIds()
+  assert.equal(originalWindowIds.length, 1, "the Browser handoff requires the existing single Chromium window")
+  const browserWindowId = originalWindowIds[0]
+  assert.match(browserWindowId, /^\d+$/, "Chromium window identity must be numeric")
+
+  await finishDesktopWork()
+  const windowIds = await browserWindowIds()
+  assert.deepEqual(windowIds, originalWindowIds,
+    "desktop editor work replaced the Chromium window selected before the phase")
+
+  const visibleBefore = await visibleBrowserWindowIds()
+  const activeBefore = await activeWindowId()
+  let activation = "already-active"
+  if (activeBefore !== browserWindowId || !visibleBefore.includes(browserWindowId)) {
+    const panel = await taskbarBounds()
+    assert.ok(Number.isFinite(panel.x) && Number.isFinite(panel.y)
+      && Number.isFinite(panel.width) && Number.isFinite(panel.height)
+      && panel.width > 12 && panel.height > 0, "Chariox taskbar geometry is invalid")
+    // The editor has closed, leaving one Browser task button. The first task
+    // starts after tint2's six-pixel left padding and is capped at 240 pixels.
+    const taskButtonWidth = Math.min(240, panel.width - 12)
+    await pointerClick(
+      Math.round(panel.x + 6 + taskButtonWidth / 2),
+      Math.round(panel.y + panel.height / 2),
+    )
+    activation = "taskbar-pointer"
+  }
+
+  await waitFor(async () => {
+    const [visible, active] = await Promise.all([visibleBrowserWindowIds(), activeWindowId()])
+    return visible.includes(browserWindowId) && active === browserWindowId
+  }, 15_000, "the same Chromium window did not become visible and active")
+
+  // Navigation runs only after the desktop editor phase has ended and the
+  // Browser task is restored. The next screenshot is therefore desktop proof.
+  await prepareBrowser()
+  assert.deepEqual(await browserWindowIds(), windowIds,
+    "Browser preparation replaced the Chromium window selected at handoff")
+  await waitFor(async () => {
+    const [visible, active] = await Promise.all([visibleBrowserWindowIds(), activeWindowId()])
+    return visible.includes(browserWindowId) && active === browserWindowId
+  }, 15_000, "Chromium lost desktop visibility before screenshot capture")
+
+  const image = await screenshot()
+  assert.ok(image?.inside && image?.path, "Browser handoff screenshot paths are missing")
+  assert.ok(typeof expectedVisibleText === "string" && expectedVisibleText.trim(),
+    "Browser handoff needs expected visible text")
+  const matches = await findText(expectedVisibleText, image.inside)
+  assert.ok(Array.isArray(matches) && matches.length > 0,
+    `the screenshot OCR did not find visible Browser content: ${expectedVisibleText}`)
+  const bounds = await browserWindowBounds(browserWindowId)
+  const normalizedText = expectedVisibleText.toLocaleLowerCase().replace(/\s+/g, " ").trim()
+  const visualMatch = matches.find((match) => typeof match.text === "string"
+    && match.text.toLocaleLowerCase().replace(/\s+/g, " ").includes(normalizedText)
+    && Number.isFinite(match.center_x)
+    && Number.isFinite(match.center_y)
+    && match.center_x >= bounds.x && match.center_x < bounds.x + bounds.width
+    && match.center_y >= bounds.y && match.center_y < bounds.y + bounds.height)
+  assert.ok(visualMatch,
+    `OCR text was not inside the same Chromium window: ${expectedVisibleText}`)
+  const [visibleAfterImage, activeAfterImage] = await Promise.all([visibleBrowserWindowIds(), activeWindowId()])
+  assert.ok(visibleAfterImage.includes(browserWindowId),
+    "the Chromium window was no longer visible after screenshot and OCR")
+  assert.equal(activeAfterImage, browserWindowId,
+    "the Browser screenshot or visual check changed desktop focus")
+
+  return {
+    windowId: browserWindowId,
+    activation,
+    screenshot: image.path,
+    visibleText: expectedVisibleText,
+    visualMatch,
+  }
+}
+
 // A real application, not an executable/file marker standing in for one.
 export function createBrowserStateEditorDrill({ containerName, runId, dockerText, dockerResult, sliceScreenWithStdin, screenshot, waitFor }) {
   const document = "/home/slice/Documents/chariox-browser-state-editor.txt"

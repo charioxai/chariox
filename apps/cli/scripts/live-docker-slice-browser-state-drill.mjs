@@ -15,7 +15,7 @@ import { startBrowserStateFixtureSidecar } from "./lib/browser-state-drill-fixtu
 import { startBrowserStateFixtureProxy } from "./lib/browser-state-fixture-proxy.mjs"
 import { finalizeDrillArtifacts } from "./lib/drill-artifacts.mjs"
 import { resolveBuiltBinary } from "./lib/drill-runtime-helpers.mjs"
-import { createBrowserStateEditorDrill } from "./lib/browser-state-drill-editor.mjs"
+import { completeBrowserStateEditorHandoff, createBrowserStateEditorDrill } from "./lib/browser-state-drill-editor.mjs"
 import { createDrillInterruption } from "./lib/drill-interruption.mjs"
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
@@ -62,6 +62,7 @@ const markers = {
   reauthSubject: `M20 reauth ${process.pid}`,
 }
 const screenshots = {}
+const browserHandoffs = []
 const children = []
 let client = null
 let requests = null
@@ -539,10 +540,8 @@ async function verifyExternalServiceReauthentication() {
 }
 
 async function seedUserPersistenceMarkers() {
-  await editor.seed()
-
-  await sliceScreen(["open-url", fixtureUrl("/interactions")])
-  await waitForBrowserText("Fixture interactions", 30_000, "download fixture did not open")
+  const phase = editor.report.phases.length + 1
+  browserHandoffs.push(await handoffEditorToVisibleBrowser(() => editor.seed(), phase))
   await sliceScreen(["browser-click", "#download"])
   const downloaded = await waitFor(
     async () => await readSliceFile("/home/slice/Downloads/chariox-fixture.txt").catch(() => false),
@@ -558,7 +557,29 @@ async function verifyUserPersistenceMarkers() {
     markers.downloadedFile,
     "browser download should survive saved-state restore",
   )
-  await editor.verify()
+  const phase = editor.report.phases.length + 1
+  browserHandoffs.push(await handoffEditorToVisibleBrowser(() => editor.verify(), phase))
+}
+
+async function handoffEditorToVisibleBrowser(finishDesktopWork, phase) {
+  return await completeBrowserStateEditorHandoff({
+    finishDesktopWork,
+    browserWindowIds: async () => await chromiumWindowIds(false),
+    visibleBrowserWindowIds: async () => await chromiumWindowIds(true),
+    activeWindowId: async () => (await desktopXdotool(["getactivewindow"])).trim(),
+    taskbarBounds: async () => await desktopWindowBounds("^Chariox applications$"),
+    pointerClick: async (x, y) => await sliceScreen(["pointer-click", String(x), String(y), "left", "1"]),
+    prepareBrowser: async () => {
+      await sliceScreen(["open-url", fixtureUrl("/interactions")])
+      await waitForBrowserText("Fixture interactions", 30_000, "Browser handoff fixture page did not load")
+    },
+    waitFor,
+    screenshot: async () => await screenshot(`browser-visible-handoff-${phase}`),
+    findText: async (text, imagePath) => (await sliceScreen(["find-text", text, imagePath]))
+      .trim().split("\n").filter((line) => line.startsWith("{")).map((line) => JSON.parse(line)),
+    browserWindowBounds: async (windowId) => await desktopWindowBounds(windowId),
+    expectedVisibleText: "Fixture interactions",
+  })
 }
 
 async function readSliceFile(filePath) {
@@ -607,6 +628,7 @@ async function inspectPersistenceIdentity() {
     machineId: machineId.trim(),
     dbusMachineId: dbusMachineId.trim(),
     displayMode: display.mode,
+    display: display.display,
     screen: display.screen,
     displayBackend: displayBackend.trim(),
     viewerUrl: display.viewer,
@@ -656,6 +678,7 @@ async function screenshot(name) {
   const outside = path.join(artifactDir, `${name}.png`)
   await docker(["cp", `${containerName}:${inside}`, outside])
   screenshots[name] = outside
+  return { inside, path: outside }
 }
 
 async function waitForBrowserText(needle, timeoutMs, message) {
@@ -842,6 +865,43 @@ async function sliceScreen(args) {
   return await dockerText(["exec", "-u", "slice", containerName, "/opt/chariox-slice/slice-screen.sh", ...args])
 }
 
+async function desktopXdotool(args) {
+  const result = await desktopXdotoolResult(args)
+  if (result.code !== 0) {
+    throw new Error(`xdotool ${args.join(" ")} failed\n${result.stdout}\n${result.stderr}`)
+  }
+  return `${result.stdout}${result.stderr}`
+}
+
+async function desktopXdotoolResult(args) {
+  const display = persistenceIdentity.restored?.display ?? persistenceIdentity.initial?.display
+  assert.ok(display, "the slice display identity must be known before desktop handoff")
+  return await runCommand("docker", ["exec", "-u", "slice", containerName, "env", `DISPLAY=${display}`, "xdotool", ...args],
+    { timeoutMs: 15_000 })
+}
+
+async function chromiumWindowIds(onlyVisible) {
+  const args = ["search", ...(onlyVisible ? ["--onlyvisible"] : []), "--class", "^chromium$"]
+  const response = await desktopXdotoolResult(args)
+  assert.ok(response.code === 0 || (response.code === 1 && !response.stdout.trim() && !response.stderr.trim()),
+    `xdotool ${args.join(" ")} failed\n${response.stdout}\n${response.stderr}`)
+  const result = response.stdout.trim()
+  return result ? result.split(/\s+/) : []
+}
+
+async function desktopWindowBounds(identity) {
+  let windowId = identity
+  if (!/^\d+$/.test(windowId)) {
+    const result = (await desktopXdotool(["search", "--onlyvisible", "--name", identity])).trim()
+    const matches = result ? result.split(/\s+/) : []
+    assert.equal(matches.length, 1, `expected one visible desktop window named ${identity}`)
+    windowId = matches[0]
+  }
+  const values = Object.fromEntries((await desktopXdotool(["getwindowgeometry", "--shell", windowId]))
+    .trim().split("\n").map((line) => line.split("=")))
+  return { x: Number(values.X), y: Number(values.Y), width: Number(values.WIDTH), height: Number(values.HEIGHT) }
+}
+
 async function sliceScreenWithStdin(args, stdin) {
   return await dockerText(["exec", "-i", "-u", "slice", containerName, "/opt/chariox-slice/slice-screen.sh", ...args], { stdin })
 }
@@ -977,6 +1037,7 @@ async function writeManifest(ok, error = null) {
     source: sourceIdentity,
     sliceRuntime,
     persistenceIdentity,
+    browserHandoffs,
     sliceName,
     containerName,
     homeVolume,
@@ -991,6 +1052,7 @@ async function writeManifest(ok, error = null) {
       "installed Mousepad binary and desktop launcher survived committed-image restore",
       "browser download, real editor preference, and GUI-edited Unicode document survived",
       "restored editor displayed its document and accepted Computer input without focusing Chromium",
+      "after each editor phase the same Chromium window was restored through the screen taskbar and its fixture content was OCR-located inside that window in the captured desktop image",
       "editor launched through Openbox with its normal session bus, default settings backend and working accessibility service",
       "durable slice port assignments and the projected Selkies endpoint remained stable",
       "machine id, hostname, user, UID/GID, home, display, browser profile, and password-store policy remained stable",
