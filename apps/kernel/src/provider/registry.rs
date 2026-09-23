@@ -365,10 +365,8 @@ mod tests {
     #[test]
     fn ordinary_opencode_adapter_scrubs_path1_supervisor_controls_only() {
         let _guard = crate::env_lock::lock();
-        let root = std::env::temp_dir().join(format!(
-            "chariox-registry-path1-env-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("chariox-registry-path1-env-{}", std::process::id()));
         fs::create_dir_all(&root).expect("adapter fixture root should exist");
         let executable = root.join("opencode");
         fs::write(&executable, "#!/bin/sh\n").expect("fixture executable should exist");
