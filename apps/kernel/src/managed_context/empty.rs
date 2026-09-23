@@ -540,7 +540,6 @@ mod tests {
         assert!(!workspace
             .to_string_lossy()
             .contains("MANAGED_PROVIDER_HOME"));
-        fs::remove_dir_all(root).expect("remove test root");
     }
 
     #[test]
