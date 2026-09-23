@@ -2182,12 +2182,12 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     let held_setup = wait_for_connected_worker_setup_phase(
         &runtime,
         repair_operation_id,
-        ProjectEnvironmentSetupPhase::Preparing,
+        ProjectEnvironmentSetupPhase::Validating,
         &setup_started,
         "setup",
     )
     .await;
-    assert_eq!(held_setup.phase, ProjectEnvironmentSetupPhase::Preparing);
+    assert_eq!(held_setup.phase, ProjectEnvironmentSetupPhase::Validating);
     assert!(!validation_started.exists());
     std::fs::write(&setup_release, b"").unwrap();
 
@@ -4452,7 +4452,8 @@ async fn wait_for_connected_worker_setup_phase(
         );
         assert!(
             Instant::now() < deadline,
-            "connected worker did not reach the {command_name} barrier: {status:?}"
+            "connected worker did not reach the {command_name} barrier (marker present: {}): {status:?}",
+            command_started.exists()
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
