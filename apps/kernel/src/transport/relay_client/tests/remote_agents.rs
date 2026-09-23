@@ -766,7 +766,10 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
     let (session_id, attachment_id, steering_attachment_id, local_provider_run_id) = {
         let mut app_home = app_home.lock().await;
         let (session, local_agent) = crate::app::KernelSessionService::new(&mut app_home)
-            .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
+            .create_session(CreateSessionRequest::new(
+                "workspace-home",
+                std::env::temp_dir().to_string_lossy(),
+            ))
             .expect("home session should be created");
         let local_provider_run = app_home
             .launch_provider(
@@ -977,6 +980,28 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
     assert_ne!(projected_provider_run_id, local_provider_run_id);
 
     if direct_message_only {
+        {
+            let mut app = app_home.lock().await;
+            let sender_id = app
+                .providers()
+                .get_run(&local_provider_run_id)
+                .expect("home sender run should remain available")
+                .agent_instance_id()
+                .expect("home sender run should have an agent")
+                .to_string();
+            let sender_prompt = crate::session::PromptQueueItem::new(
+                app.sessions_mut().reserve_prompt_id(),
+                &attachment_id,
+                &sender_id,
+                "sender task",
+                crate::session::PromptStatus::Queued,
+            );
+            assert!(matches!(
+                app.prompt_owner_submit_prepared_prompt(&session_id, sender_prompt, false)
+                    .expect("home sender turn should start"),
+                crate::session::PromptSubmissionOutcome::Started { .. }
+            ));
+        }
         let sender_token = app_home
             .lock()
             .await

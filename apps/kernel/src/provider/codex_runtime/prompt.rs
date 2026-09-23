@@ -25,6 +25,16 @@ pub fn submit_codex_prompt(
     state: &mut CodexRuntimeState,
     envelope: &PromptEnvelope,
 ) -> Result<(), DaemonError> {
+    // A steering command can wait in the provider actor mailbox while the
+    // original turn is cancelled or completes. Never reinterpret it as a new
+    // turn once that target has gone away.
+    if envelope.steering && state.active_turn_id.is_none() {
+        return Err(DaemonError::ProviderProtocol {
+            provider_run_id: run.id().to_string(),
+            operation: "turn/steer",
+            message: "active Codex turn settled before steering delivery".to_string(),
+        });
+    }
     let client = codex_client_for_run(run, state.endpoint(), None)?;
     let client = if state.read_only_discovery_permissions() || run.read_only_discovery() {
         client.with_read_only_discovery_permissions()
@@ -57,10 +67,12 @@ pub fn submit_codex_prompt(
     );
     let input = codex_input(&turn_input_prompt, &envelope.attachments);
     let thread_id = state.thread_id().to_string();
-    let active_steering_turn_id = envelope
-        .steering
-        .then(|| state.active_turn_id.clone())
-        .flatten();
+    let active_steering_turn_id = envelope.steering.then(|| {
+        state
+            .active_turn_id
+            .clone()
+            .expect("steering requires an active turn")
+    });
     let response_result = match active_steering_turn_id.as_deref() {
         Some(active_turn_id) => client.turn_steer(
             &mut state.socket,
@@ -274,6 +286,62 @@ mod prompt_tests {
         assert!(!codex_active_steering_preserves_thread(true, true, false));
         assert!(!codex_active_steering_preserves_thread(true, false, true));
         assert!(!codex_active_steering_preserves_thread(false, true, true));
+    }
+
+    #[test]
+    fn late_steering_cannot_start_a_new_codex_turn() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fixture");
+        let address = listener.local_addr().expect("fixture address");
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept fixture client");
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_millis(500)))
+                .expect("bound fixture read");
+            let mut socket = accept(stream).expect("upgrade fixture client");
+            socket.read().ok()
+        });
+        let endpoint = format!("ws://{address}");
+        let (socket, _) = connect(&endpoint).expect("connect fixture");
+        let request = LaunchProviderRequest::new(
+            "session-late-steer",
+            "codex",
+            "codex",
+            "default",
+            "default",
+        )
+        .with_agent_id("agent-late-steer");
+        let run = RuntimeProviderRun::new(
+            "provider-run-late-steer",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "codex-test".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        let mut state = super::super::state::CodexRuntimeState::new(
+            endpoint,
+            "thread-settled".to_string(),
+            socket,
+            1,
+        );
+        let error = super::submit_codex_prompt(
+            &run,
+            &mut state,
+            &PromptEnvelope::new("late message", "", Vec::new(), PromptManifest::current())
+                .with_steering(true),
+        )
+        .expect_err("steering after cancellation must fail closed");
+        assert!(error.to_string().contains("active Codex turn settled"));
+        assert!(state.active_turn_id.is_none());
+        drop(state);
+        assert!(server.join().expect("join fixture").is_none());
     }
 
     #[test]

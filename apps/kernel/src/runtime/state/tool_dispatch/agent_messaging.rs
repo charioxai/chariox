@@ -97,6 +97,15 @@ impl KernelRuntimeState {
                 "send_agent_message requires a different target agent",
             ));
         }
+        // Provider-run credentials outlive individual turns. A tool call that
+        // arrives after its sender has settled must not start another agent.
+        let Some(sender_prompt_id) =
+            self.running_agent_message_sender_prompt(session.id(), sender.id())?
+        else {
+            return Ok(agent_message_failure(
+                "sender turn is no longer running; agent message was not sent",
+            ));
+        };
         let durable_identity = idempotency_key.map(|key| {
             let operation_id = format!(
                 "agent-message:{}:{:x}",
@@ -177,6 +186,15 @@ impl KernelRuntimeState {
                 .provider_runtime_lanes
                 .acquire(&dispatch.provider_run_id)
                 .await;
+            if !self.agent_message_sender_prompt_is_running(
+                session.id(),
+                sender.id(),
+                &sender_prompt_id,
+            )? {
+                return Ok(agent_message_failure(
+                    "sender turn is no longer running; agent message was not sent",
+                ));
+            }
             self.enqueue_prompt_dispatch(&dispatch).await?;
             if let Some(active_prompt_id) = dispatch.target_active_prompt_id.as_deref() {
                 if let Err(error) = self.owned.append_steering_prompt_history(
@@ -236,6 +254,15 @@ impl KernelRuntimeState {
             }
             return Ok(result);
         }
+        if !self.agent_message_sender_prompt_is_running(
+            session.id(),
+            sender.id(),
+            &sender_prompt_id,
+        )? {
+            return Ok(agent_message_failure(
+                "sender turn is no longer running; agent message was not sent",
+            ));
+        }
         if let Some(provider_run_id) = self
             .steer_remote_agent_message(session.id(), &prompt)
             .await?
@@ -259,6 +286,15 @@ impl KernelRuntimeState {
                 store.record(operation_id, fingerprint, result.clone());
             }
             return Ok(result);
+        }
+        if !self.agent_message_sender_prompt_is_running(
+            session.id(),
+            sender.id(),
+            &sender_prompt_id,
+        )? {
+            return Ok(agent_message_failure(
+                "sender turn is no longer running; agent message was not sent",
+            ));
         }
         let mut submission = self
             .submit_prepared_prompt_with_queue_policy(
@@ -340,6 +376,12 @@ impl KernelRuntimeState {
         else {
             return Ok(None);
         };
+        if active_prompt.status() != crate::session::PromptStatus::Running {
+            return Err(DaemonError::LocalTransport {
+                operation: "steer agent message",
+                message: "target agent is stopping; message was not delivered".to_string(),
+            });
+        }
         if active_prompt.is_external() {
             return Err(DaemonError::LocalTransport {
                 operation: "steer agent message",
@@ -403,6 +445,31 @@ impl KernelRuntimeState {
                 sender.owner_user_id(),
             ))?;
         Ok(attachment.id().to_string())
+    }
+
+    fn running_agent_message_sender_prompt(
+        &self,
+        session_id: &str,
+        sender_id: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        let session = self.owned.session_store.get_session(session_id)?;
+        Ok(self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, sender_id)
+            .filter(|prompt| prompt.status() == crate::session::PromptStatus::Running)
+            .map(|prompt| prompt.id().to_string()))
+    }
+
+    fn agent_message_sender_prompt_is_running(
+        &self,
+        session_id: &str,
+        sender_id: &str,
+        prompt_id: &str,
+    ) -> Result<bool, DaemonError> {
+        Ok(self
+            .running_agent_message_sender_prompt(session_id, sender_id)?
+            .is_some_and(|active_id| active_id == prompt_id))
     }
 }
 

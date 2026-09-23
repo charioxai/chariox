@@ -147,9 +147,38 @@ impl KernelRuntimeState {
             .filter(|turn| turn.prompt_id == active_prompt.id())
             .and_then(|turn| turn.completion_retry_observed_at_ms);
         let codex_provider = provider_run.adapter_key() == "codex";
+        // A provider can report turn completion while an MCP HTTP request from
+        // that turn is still executing. Keep the prompt (and its origin) live
+        // until the handler returns; its guard schedules the next output check.
+        if !force
+            && active_prompt.status() != crate::session::PromptStatus::Cancelling
+            && owned
+                .runtime_tool_call_activity
+                .active_count(provider_run_id)
+                > 0
+        {
+            owned.note_prompt_settlement_requested(provider_run_id);
+            crate::logging::debug_with_fields(
+                "daemon.provider",
+                "provider completion awaits in-flight runtime tools",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "provider_run_id": provider_run_id,
+                    "agent_id": agent_id,
+                    "prompt_id": active_prompt.id(),
+                    "in_flight_tool_calls": owned.runtime_tool_call_activity.active_count(provider_run_id),
+                }),
+            );
+            return Ok(crate::app::ProviderRunExitSessionSummary {
+                had_active_prompt: true,
+                cancelled_prompt: false,
+                started_next_prompt: false,
+            });
+        }
         if !force
             && codex_provider
             && !prompt_completed
+            && !completion_recorded
             && completion_retry_observed_at_ms.is_none()
         {
             owned.schedule_provider_output_check_after(

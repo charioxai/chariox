@@ -1002,6 +1002,10 @@ async fn provider_completed_signal_settles_matching_active_prompt_after_quiet_in
 
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
+    let in_flight_tool = runtime.owned.runtime_tool_call_activity.begin(
+        [run.id().to_string()],
+        runtime.owned.provider_output_deadlines.clone(),
+    );
     let first_settlement = runtime
         .settle_owned_provider_prompt(session.id(), run.id(), true, false, false)
         .await
@@ -1017,6 +1021,20 @@ async fn provider_completed_signal_settles_matching_active_prompt_after_quiet_in
         .is_some());
 
     tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+    let blocked = runtime
+        .settle_owned_provider_prompt(session.id(), run.id(), false, false, false)
+        .await
+        .expect("in-flight MCP request must not settle its originating prompt");
+    assert!(blocked.had_active_prompt);
+    assert!(runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("session should exist")
+        .active_prompt_for_agent(agent.id())
+        .is_some());
+    drop(in_flight_tool);
+    assert!(runtime.owned.provider_output_deadlines.contains(run.id()));
     let settled = runtime
         .settle_owned_provider_prompt(session.id(), run.id(), false, false, false)
         .await
@@ -1045,6 +1063,125 @@ async fn provider_completed_signal_settles_matching_active_prompt_after_quiet_in
         .expect("authoritative prompt settlement should be persisted");
     assert_eq!(settlement.prompt_id.as_deref(), Some("prompt-1"));
     assert_eq!(settlement.content, None, "settlement marker stays hidden");
+}
+
+#[tokio::test]
+async fn stopped_sender_cannot_finish_an_already_admitted_agent_message() {
+    let worktree = crate::test_support::TestWorktree::new("agent-message-stop-race");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, sender) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let recipient = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(crate::agent::CreateAgentRequest::new(
+            session.id(),
+            "dev-stub",
+        ))
+        .expect("recipient should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-stop-race",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("sender should attach");
+    let sender_run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "sender-model",
+            )
+            .with_agent_id(sender.id()),
+        )
+        .expect("sender run should launch");
+    app.update_provider_run_projection(sender_run.clone());
+    let recipient_run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "recipient-model",
+            )
+            .with_agent_id(recipient.id()),
+        )
+        .expect("recipient run should launch");
+    app.update_provider_run_projection(recipient_run);
+    let crate::session::PromptSubmissionOutcome::Started { .. } = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(sender.id()),
+            "sender task",
+            Vec::new(),
+        )
+        .expect("sender prompt should start")
+    else {
+        panic!("sender prompt must start immediately");
+    };
+    let auth_token = sender_run
+        .runtime_mcp_auth_token()
+        .expect("sender should have MCP auth")
+        .to_string();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let idempotency_gate = runtime.owned.agent_message_idempotency.lock().await;
+    let runtime_for_call = runtime.clone();
+    let recipient_id = recipient.id().to_string();
+    let call = tokio::spawn(async move {
+        runtime_for_call
+            .dispatch_authenticated_runtime_tool_call(
+                &auth_token,
+                crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
+                serde_json::json!({
+                    "agent": recipient_id,
+                    "message": "must not arrive after stop",
+                    "idempotency_key": "stop-race",
+                }),
+            )
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while runtime
+            .owned
+            .runtime_tool_call_activity
+            .active_count(sender_run.id())
+            == 0
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("runtime MCP handler should be in flight");
+
+    runtime
+        .settle_owned_provider_prompt(session.id(), sender_run.id(), false, false, true)
+        .await
+        .expect("forced sender settlement should complete");
+    drop(idempotency_gate);
+    let result = call
+        .await
+        .expect("MCP handler should finish")
+        .expect("MCP transport should respond");
+    assert!(
+        !result.ok,
+        "stopped sender must not deliver: {:?}",
+        result.payload
+    );
+    let snapshot = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("session should remain");
+    assert!(snapshot.active_prompt_for_agent(recipient.id()).is_none());
+    assert!(snapshot
+        .queued_prompts_for_agent(recipient.id())
+        .is_none_or(|queued| queued.is_empty()));
 }
 
 #[tokio::test]

@@ -24,6 +24,12 @@ impl KernelRuntimeState {
         else {
             return Ok(None);
         };
+        if active_prompt.status() != crate::session::PromptStatus::Running {
+            return Err(DaemonError::LocalTransport {
+                operation: "steer agent message",
+                message: "target agent is stopping; message was not delivered".to_string(),
+            });
+        }
         if active_prompt.is_external() {
             return Err(DaemonError::LocalTransport {
                 operation: "steer agent message",
@@ -86,6 +92,7 @@ impl KernelRuntimeState {
                     session_id: session_id.to_string(),
                 })?;
             if current_active.id() != payload.target_home_prompt_id
+                || current_active.status() != crate::session::PromptStatus::Running
                 || remote_execution.active_worker_provider_run_id.as_deref()
                     != Some(worker_provider_run_id.as_str())
             {

@@ -175,6 +175,10 @@ impl KernelRuntimeState {
                     message: "invalid runtime MCP auth token".to_string(),
                 });
             }
+            let _runtime_tool_call = owned.runtime_tool_call_activity.begin(
+                provider_runs.iter().map(|run| run.id().to_string()),
+                owned.provider_output_deadlines.clone(),
+            );
             let is_metaagent_auth_token =
                 self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token);
             let is_meta_tool =

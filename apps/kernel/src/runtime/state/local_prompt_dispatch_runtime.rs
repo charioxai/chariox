@@ -88,7 +88,10 @@ impl KernelRuntimeOwnedState {
                 return dispatch
                     .target_active_prompt_id
                     .as_deref()
-                    .is_some_and(|target_prompt_id| target_prompt_id == prompt.id());
+                    .is_some_and(|target_prompt_id| {
+                        target_prompt_id == prompt.id()
+                            && prompt.status() == crate::session::PromptStatus::Running
+                    });
             }
             prompt.id() == dispatch.prompt_id
         };

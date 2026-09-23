@@ -61,6 +61,8 @@ mod room_display;
 mod room_environment_placement;
 mod room_environment_state;
 mod room_screenshot;
+mod runtime_tool_call_activity;
+use runtime_tool_call_activity::RuntimeToolCallActivity;
 
 #[derive(Clone)]
 pub(crate) struct KernelRuntimeState {
@@ -156,6 +158,7 @@ struct KernelRuntimeOwnedState {
         Arc<Mutex<BTreeMap<String, Vec<RemoteHomeExtensionInflightInvocation>>>>,
     remote_extension_manifest_retry_counts: Arc<Mutex<BTreeMap<String, u32>>>,
     agent_message_idempotency: Arc<Mutex<AgentMessageIdempotencyStore>>,
+    runtime_tool_call_activity: RuntimeToolCallActivity,
     next_provider_process_gc_at_ms: Arc<AtomicU64>,
     relay_state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
     remote_prompt_projection_drains:
@@ -639,6 +642,7 @@ impl KernelRuntimeState {
                 agent_message_idempotency: Arc::new(Mutex::new(
                     AgentMessageIdempotencyStore::default(),
                 )),
+                runtime_tool_call_activity: RuntimeToolCallActivity::default(),
                 next_provider_process_gc_at_ms: Arc::new(AtomicU64::new(0)),
                 relay_state,
                 remote_prompt_projection_drains: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
