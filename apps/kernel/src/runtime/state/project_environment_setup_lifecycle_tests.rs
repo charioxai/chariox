@@ -1930,6 +1930,12 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         .provider_store
         .write()
         .insert_run_for_test(provider_run.clone());
+    {
+        let mut app = app_worker.lock().await;
+        crate::app::ProviderLaunchProcessRuntime::new(&mut app)
+            .spawn_for_launch(&provider_run)
+            .expect("managed worker fixture must have a live provider process");
+    }
     let backing_session = worker_runtime
         .owned
         .session_store
@@ -1960,7 +1966,10 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         .provider_store
         .get_run_for_agent(&backing_session_id, &backing_agent_id)
         .expect("managed provider run must be indexed under the leased backing identity");
-    assert_eq!(seeded_provider_run.session_id(), backing_session_id.as_str());
+    assert_eq!(
+        seeded_provider_run.session_id(),
+        backing_session_id.as_str()
+    );
     assert_eq!(
         seeded_provider_run.agent_instance_id(),
         Some(backing_agent_id.as_str())
@@ -2078,9 +2087,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         )
         .await
         .unwrap_or_else(|error| {
-            panic!(
-                "relay-connected worker utility lookup should resolve its seeded run: {error}"
-            )
+            panic!("relay-connected worker utility lookup should resolve its seeded run: {error}")
         });
     assert_eq!(
         utility_run_after_relay_registration.id(),
@@ -2192,7 +2199,10 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         "validation",
     )
     .await;
-    assert_eq!(held_validation.phase, ProjectEnvironmentSetupPhase::Validating);
+    assert_eq!(
+        held_validation.phase,
+        ProjectEnvironmentSetupPhase::Validating
+    );
     assert!(!validation_release.exists());
     std::fs::write(&validation_release, b"").unwrap();
 
@@ -3159,6 +3169,12 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     // The connector is gone, but its router and app still hold the durable
     // state owner. Release every original worker handle before accepting the
     // home Retry and reopening the same durable state path.
+    {
+        let mut app = app_worker.lock().await;
+        crate::app::ProviderLaunchProcessRuntime::new(&mut app)
+            .remove_run(provider_run.id())
+            .expect("original managed provider fixture process should stop");
+    }
     drop(worker_runtime);
     drop(worker_router);
     drop(app_worker);
