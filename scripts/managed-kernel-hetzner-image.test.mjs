@@ -34,6 +34,7 @@ const bootstrapEntrypointUrl = new URL("../apps/kernel/src/bin/chariox-managed-b
 const managedServiceUrl = new URL("../deploy/managed-kernel/chariox-managed-bootstrap.service", import.meta.url)
 const path1ManagedServiceUrl = new URL("../deploy/managed-kernel/chariox-path1-managed-bootstrap.service", import.meta.url)
 const workerServiceUrl = new URL("../deploy/managed-kernel/chariox-disposable-worker-bootstrap.service", import.meta.url)
+const workerKernelSourceUrl = new URL("../apps/kernel/src/managed_bootstrap/worker.rs", import.meta.url)
 const rootlessServiceUrl = new URL("../deploy/managed-kernel/chariox-rootless-docker.service", import.meta.url)
 const brokerServiceUrl = new URL("../deploy/managed-kernel/chariox-slice-broker.service", import.meta.url)
 const installerUrl = new URL("../deploy/managed-kernel/install-image.sh", import.meta.url)
@@ -398,6 +399,7 @@ test("managed Docker authority and publication access remain narrowly separated"
   const bootstrapEntrypoint = await readFile(bootstrapEntrypointUrl, "utf8")
   const managed = await readFile(managedServiceUrl, "utf8")
   const worker = await readFile(workerServiceUrl, "utf8")
+  const workerKernel = await readFile(workerKernelSourceUrl, "utf8")
   const providerLaunchProbe = await readFile(providerLaunchProbeUrl, "utf8")
   const rootless = await readFile(rootlessServiceUrl, "utf8")
   const broker = await readFile(brokerServiceUrl, "utf8")
@@ -446,6 +448,11 @@ test("managed Docker authority and publication access remain narrowly separated"
   assert.match(worker, /Environment=CHARIOX_DISPOSABLE_WORKER_RECEIPT=\/var\/lib\/chariox\/disposable-worker\/bootstrap-receipt\.json/)
   assert.match(worker, /Environment=CHARIOX_MANAGED_PROVIDER_HOME=\/var\/lib\/chariox\/provider-home/)
   assert.match(worker, /Environment=CHARIOX_MANAGED_VAULT_PATH=\/home\/chariox\/\.chariox\/vault\/vault\.json/)
+  // The supervisor needs this endpoint to claim the one-shot broker. Its
+  // child kernel receives only the scoped lease FD, never the socket path.
+  assert.match(worker, /^Environment=CHARIOX_SLICE_DOCKER_BROKER_SOCKET=\/var\/lib\/chariox-slice-share\/\.broker-private\/control\/control\.sock$/m)
+  assert.match(workerKernel, /for name in PATH1_SHARED_HOST_SELECTOR_ENVS\s*\{\s*command\.env_remove\(name\);/)
+  assert.match(workerKernel, /super::supervisor::spawn_with_broker_lease\(&mut command\)/)
   for (const sharedHostSelector of [
     "CHARIOX_CAPABILITY_ISOLATION_ROOT=",
     "CHARIOX_MANAGED_PROVIDER_ISOLATION=",
@@ -453,7 +460,6 @@ test("managed Docker authority and publication access remain narrowly separated"
     "CHARIOX_MANAGED_SLICE_SERVICE_ROOT=",
     "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT=",
     "CHARIOX_SLICE_ROOT=",
-    "CHARIOX_SLICE_DOCKER_BROKER_SOCKET=",
     "CHARIOX_SLICE_DOCKER_BROKER_FD=",
     "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED=",
   ]) {
