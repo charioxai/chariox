@@ -60,6 +60,21 @@ test("terminal cancelled Action clears its request and records requested outcome
   })
 })
 
+test("human takeover retains a distinct cancellation reason", () => {
+  assertRoomComputerActionCancelled({
+    ...runningAction,
+    state: "cancelled",
+    finished_at_ms: 120,
+    outcome: { status: "cancelled", reason: "human_takeover" },
+  }, {
+    actionId: "action-17",
+    actorId: "agent:agent-2",
+    kind: "keyboard_text",
+    focusedTabId: "tab-1",
+    reason: "human_takeover",
+  })
+})
+
 test("cancellation latency uses the authoritative terminal timestamp", () => {
   assert.equal(roomComputerCancellationLatencyMs({ finished_at_ms: 1_450 }, 1_000), 450)
   assert.throws(
@@ -128,7 +143,7 @@ test("human takeover remains pending until the blocking Action is cancelled", ()
       ...runningAction,
       state: "cancelled",
       finished_at_ms: 120,
-      outcome: { status: "cancelled", reason: "requested" },
+      outcome: { status: "cancelled", reason: "human_takeover" },
     }],
     input_ownership: [{ target: { kind: "desktop" }, actor_id: "user:local" }],
     pending_input_takeovers: [],

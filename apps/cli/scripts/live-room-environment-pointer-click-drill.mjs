@@ -1129,6 +1129,7 @@ async function exerciseRoomComputerCancellation(activityController, activityNoti
       )
     },
     assertSettlement: assertCancelledHumanActionSettlement,
+    reason: "requested",
     activityController,
     activityNotices,
     label: "local TUI explicit human cancellation",
@@ -1172,6 +1173,7 @@ async function exerciseRoomComputerCancellation(activityController, activityNoti
       )
     },
     assertSettlement: assertCancelledAgentToolSettlement,
+    reason: "human_takeover",
     activityController,
     activityNotices,
     label: "remote TUI human takeover cancellation",
@@ -1252,6 +1254,7 @@ async function exerciseRoomComputerCancellation(activityController, activityNoti
         actorId: cancellation.actorId,
         kind: "keyboard_text",
         focusedTabId: cancellation.focusedTabId,
+        reason: cancellation.reason,
       },
     )
   }
@@ -1301,6 +1304,7 @@ async function exerciseCancellableKeyboardInput({
   start,
   cancel,
   assertSettlement,
+  reason,
   activityController,
   activityNotices,
   label,
@@ -1375,6 +1379,7 @@ async function exerciseCancellableKeyboardInput({
     actorId,
     kind: "keyboard_text",
     focusedTabId: baseline.focused_tab_id,
+    reason,
   })
   const cancellationTimings = roomComputerCancellationTimings(terminal, {
     initiatedAtMs: cancelStartedAt,
@@ -1396,7 +1401,7 @@ async function exerciseCancellableKeyboardInput({
     `${label} continued physical typing after terminal cancellation`,
   )
   assert.equal(await activityController.synchronize(), true)
-  const noticePattern = /^Room action #\d+: .+ · computer keyboard_text · desktop(?:, tab [^ ·]+)? · cancelled \(requested\)$/
+  const noticePattern = new RegExp(`^Room action #\\d+: .+ · computer keyboard_text · desktop(?:, tab [^ ·]+)? · cancelled \\(${reason}\\)$`)
   assert.ok(activityNotices.some((notice) => noticePattern.test(notice)))
   await Promise.all([
     waitForTuiNoticeAfter(localAutomation, "local", noticePattern, localNoticeBaseline, 20_000),
@@ -1406,6 +1411,7 @@ async function exerciseCancellableKeyboardInput({
     actionId: started.action.action_id,
     actorId,
     focusedTabId: baseline.focused_tab_id,
+    reason,
     countBeforeCancellation: started.count,
     countAfterCancellation: stoppedCount,
     cancellationLatencyMs: cancellationTimings.endToEndLatencyMs,

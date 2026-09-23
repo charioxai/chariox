@@ -35,7 +35,7 @@ export function assertCancellationRequestedResponse(response, { actionId }) {
 
 export function assertRoomComputerActionCancelled(
   action,
-  { actionId, actorId, kind, focusedTabId },
+  { actionId, actorId, kind, focusedTabId, reason = "requested" },
 ) {
   assert.ok(action, `Room Action ${actionId} must exist`)
   assert.equal(action.action_id, actionId, "Room Action identity")
@@ -50,7 +50,7 @@ export function assertRoomComputerActionCancelled(
   assert.ok(action.finished_at_ms >= action.started_at_ms, "Room Action timestamp order")
   assert.deepEqual(
     action.outcome,
-    { status: "cancelled", reason: "requested" },
+    { status: "cancelled", reason },
     "Room Action cancellation outcome",
   )
 }
@@ -113,7 +113,7 @@ export function assertHumanDesktopTakeoverCompleted(
   const action = environment.actions.find((candidate) => candidate.action_id === actionId)
   assert.equal(action?.state, "cancelled", "blocking Action must be cancelled before takeover")
   assert.equal(action?.cancellation_requested, false, "terminal cancellation flag")
-  assert.deepEqual(action?.outcome, { status: "cancelled", reason: "requested" })
+  assert.deepEqual(action?.outcome, { status: "cancelled", reason: "human_takeover" })
   assert.ok(environment.input_ownership.some((entry) => (
     entry.target?.kind === "desktop" && entry.actor_id === humanActorId
   )), "human must own desktop after cancellation and reset")
