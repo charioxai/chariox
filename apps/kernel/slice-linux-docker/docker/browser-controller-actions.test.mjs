@@ -351,11 +351,79 @@ test("secret fill rejects a password field that becomes unmasked while focusing"
   );
   assert.equal(
     secureFill.params.functionDeclaration.match(/reason: "target_not_masked"/g)?.length,
-    2,
-    "the operation must verify masking both before and after focus handlers run",
+    4,
+    "the operation must check masking before focus and after focus, input, and change handlers",
   );
   assert.equal(connection.calls.some((call) => call.method === "Input.insertText"), false);
 });
+
+for (const transitionEvent of ["input", "change"]) {
+test(`secret fill rejects and remasks a password field unmasked by ${transitionEvent} handlers`, async () => {
+  const connection = new FakeActionConnection([
+    { state: "ready", x: 40, y: 20, width: 200, height: 24, editable: true },
+    { state: "ready", x: 40, y: 20, width: 200, height: 24, editable: true },
+  ]);
+  const attributes = new Map([["type", "password"]]);
+  class Element {
+    getAttribute(name) { return attributes.get(name) ?? null; }
+    hasAttribute(name) { return attributes.has(name); }
+  }
+  class HTMLInputElement extends Element {
+    get type() { return attributes.get("type") ?? "text"; }
+    set type(value) { attributes.set("type", value); }
+    get value() { return this.valueContents ?? ""; }
+    set value(value) { this.valueContents = value; }
+    matches(selector) { return selector === "textarea" ? false : selector === "input"; }
+    focus() { this.ownerDocument.activeElement = this; }
+    getRootNode() { return this.ownerDocument; }
+    contains() { return false; }
+    dispatchEvent(event) {
+      if (event.type === transitionEvent) this.type = "text";
+      return true;
+    }
+  }
+  const ownerWindow = {
+    Element,
+    HTMLInputElement,
+    Event: class { constructor(type) { this.type = type; } },
+    location: { href: "https://example.test/login" },
+  };
+  const field = new HTMLInputElement();
+  field.ownerDocument = { defaultView: ownerWindow, activeElement: null };
+  const send = connection.send.bind(connection);
+  connection.send = async (method, params = {}, sessionId) => {
+    if (method === "Runtime.callFunctionOn" && params.functionDeclaration.includes("expectedDocumentUrl")) {
+      connection.calls.push({ method, params, sessionId });
+      const operation = new Function(`return (${params.functionDeclaration})`)();
+      return { result: { value: operation.apply(field, params.arguments.map((arg) => arg.value)) } };
+    }
+    return send(method, params, sessionId);
+  };
+
+  await assert.rejects(performBrowserAction({
+    connection,
+    sessionId: "session-a",
+    targetId: "target-a",
+    documentId: "loader-a",
+    nodeRef: "backend:104",
+    action: {
+      kind: "fill",
+      text: "event-handler-canary",
+      append: false,
+      submit: false,
+      expected_document_url: "https://example.test/login",
+    },
+    timeoutMs: 500,
+    sleep: async () => {},
+  }), (error) => {
+    assert.equal(`${error.name}:${error.code}:${error.message}`.includes("event-handler-canary"), false);
+    return error instanceof BrowserActionError && error.code === "browser_secret_target_not_masked";
+  });
+
+  assert.equal(field.type, "password", "the field must be remasked before the CDP operation returns");
+  assert.equal(connection.calls.some((call) => call.method === "Input.insertText"), false);
+});
+}
 
 for (const dialogEventType of ["mousePressed", "mouseReleased"]) {
   test(`click returns when ${dialogEventType} opens a dialog without waiting for its blocked response`, async () => {

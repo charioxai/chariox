@@ -412,6 +412,23 @@ async function secureFillElement(connection, sessionId, objectId, action) {
             String(getAttribute.call(this, "aria-disabled") || "false").toLowerCase() !== "true" &&
             String(getAttribute.call(this, "aria-readonly") || "false").toLowerCase() !== "true";
         };
+        const restoreMaskAfterHandler = () => {
+          if (isMaskedEditableInput()) return true;
+          const inputPrototype = ownerWindow.HTMLInputElement?.prototype;
+          const elementPrototype = ownerWindow.Element?.prototype;
+          const getAttribute = elementPrototype?.getAttribute;
+          const typeSetter = inputPrototype && Object.getOwnPropertyDescriptor(inputPrototype, "type")?.set;
+          if (
+            inputPrototype &&
+            Object.prototype.isPrototypeOf.call(inputPrototype, this) &&
+            typeof getAttribute === "function" &&
+            typeof typeSetter === "function" &&
+            String(getAttribute.call(this, "type") || "text").toLowerCase() !== "password"
+          ) {
+            typeSetter.call(this, "password");
+          }
+          return false;
+        };
         if (!isMaskedEditableInput()) {
           return { ok: false, reason: "target_not_masked" };
         }
@@ -443,7 +460,9 @@ async function secureFillElement(connection, sessionId, objectId, action) {
           setter.call(this, nextValue);
         }
         this.dispatchEvent(new ownerWindow.Event("input", { bubbles: true, composed: true }));
+        if (!restoreMaskAfterHandler()) return { ok: false, reason: "target_not_masked" };
         this.dispatchEvent(new ownerWindow.Event("change", { bubbles: true }));
+        if (!restoreMaskAfterHandler()) return { ok: false, reason: "target_not_masked" };
         if (submit) {
           const form = this.form || this.closest?.("form");
           if (!form) return { ok: false, reason: "form_not_found" };
