@@ -152,6 +152,110 @@ test("repeated preparation refuses a changed context instead of reusing the pend
   assert.equal(harness.requests.length, 0)
 })
 
+test("repeated preparation accepts Cloud-equivalent context ordering without replacing the immutable request", async () => {
+  const harness = reimageHarness()
+  const authorizedContext = selectionRichContextInput()
+  const cloudNormalizedContext = reorderedEquivalentContextInput()
+  harness.environment = readyEnvironment({
+    contextPlan: contextPlanFromInput(cloudNormalizedContext),
+  })
+
+  const first = await harness.controller.prepare(
+    "environment-1",
+    authorizedContext,
+    harness.attempt,
+  )
+  const repeated = await harness.controller.prepare(
+    "environment-1",
+    cloudNormalizedContext,
+    harness.attempt,
+  )
+  await harness.controller.confirm("environment-1", harness.attempt)
+
+  assert.deepEqual(repeated, first)
+  assert.equal(harness.observations, 1)
+  assert.equal(harness.serializedRequests.length, 1)
+  assert.deepEqual(harness.serializedRequests[0]?.contextPlan, authorizedContext)
+  assert.equal(harness.serializedRequests[0]?.idempotencyKey, "reimage-key-1")
+  assert.equal(harness.launches, 1)
+})
+
+test("repeated preparation rejects genuine context bindings and ordered repository changes", async () => {
+  const baseline = selectionRichContextInput()
+  const changedContexts: Array<{ label: string; context: ManagedEnvironmentContextPlanInput }> = [
+    {
+      label: "source target",
+      context: { ...baseline, sourceTargetId: "source-2" },
+    },
+    {
+      label: "kernel context",
+      context: { ...baseline, kernelContext: "empty" },
+    },
+    {
+      label: "project identity",
+      context: {
+        ...baseline,
+        developmentSetup: { ...baseline.developmentSetup, projectId: "project-2" },
+      },
+    },
+    {
+      label: "repository identity",
+      context: {
+        ...baseline,
+        developmentSetup: {
+          ...baseline.developmentSetup,
+          repositories: baseline.developmentSetup.repositories.map((repository, index) => (
+            index === 0 ? { ...repository, worktreeId: "worktree-2" } : repository
+          )),
+        },
+      },
+    },
+    {
+      label: "repository order",
+      context: {
+        ...baseline,
+        developmentSetup: {
+          ...baseline.developmentSetup,
+          repositories: [...baseline.developmentSetup.repositories].reverse(),
+        },
+      },
+    },
+    {
+      label: "provider account",
+      context: {
+        ...baseline,
+        providerAccounts: {
+          kind: "selected",
+          accounts: [
+            baseline.providerAccounts.accounts[0]!,
+            { provider: "codex", accountProfile: "other" },
+          ],
+        },
+      },
+    },
+    {
+      label: "Git credential",
+      context: {
+        ...baseline,
+        gitCredentials: { kind: "selected", credentialIds: ["github", "other"] },
+      },
+    },
+  ]
+
+  for (const { label, context } of changedContexts) {
+    const harness = reimageHarness()
+    await harness.controller.prepare("environment-1", baseline, harness.attempt)
+
+    await assert.rejects(
+      harness.controller.prepare("environment-1", context, harness.attempt),
+      /selected reimage context changed/,
+      label,
+    )
+    assert.equal(harness.observations, 1, label)
+    assert.equal(harness.requests.length, 0, label)
+  }
+})
+
 test("accepted reimage retries the exact immutable request and cannot pretend to cancel", async () => {
   const harness = reimageHarness()
   harness.requestFailures = 1
@@ -337,6 +441,67 @@ function sourceContextInput(): ManagedEnvironmentContextPlanInput {
       accounts: [{ provider: "codex", accountProfile: "default" }],
     },
     gitCredentials: { kind: "selected", credentialIds: ["github"] },
+  }
+}
+
+type SelectionRichContextInput = ManagedEnvironmentContextPlanInput & {
+  readonly developmentSetup: Extract<
+    ManagedEnvironmentContextPlanInput["developmentSetup"],
+    { readonly kind: "source_project" }
+  >
+  readonly providerAccounts: Extract<
+    ManagedEnvironmentContextPlanInput["providerAccounts"],
+    { readonly kind: "selected" }
+  >
+  readonly gitCredentials: Extract<
+    ManagedEnvironmentContextPlanInput["gitCredentials"],
+    { readonly kind: "selected" }
+  >
+}
+
+function selectionRichContextInput(): SelectionRichContextInput {
+  return {
+    sourceTargetId: "source-1",
+    kernelContext: "source_kernel",
+    developmentSetup: {
+      kind: "source_project",
+      projectId: "project-1",
+      repositories: [
+        { role: "primary", workspaceId: "workspace-1", worktreeId: "worktree-1" },
+        { role: "supporting", workspaceId: "workspace-2", worktreeId: null },
+      ],
+    },
+    providerAccounts: {
+      kind: "selected",
+      accounts: [
+        { provider: "opencode", accountProfile: "work" },
+        { provider: "codex", accountProfile: "default" },
+      ],
+    },
+    gitCredentials: { kind: "selected", credentialIds: ["work", "github"] },
+  }
+}
+
+function reorderedEquivalentContextInput(): SelectionRichContextInput {
+  return {
+    gitCredentials: { credentialIds: ["github", "work"], kind: "selected" },
+    providerAccounts: {
+      accounts: [
+        { accountProfile: "default", provider: "codex" },
+        { accountProfile: "work", provider: "opencode" },
+      ],
+      kind: "selected",
+    },
+    developmentSetup: {
+      repositories: [
+        { worktreeId: "worktree-1", workspaceId: "workspace-1", role: "primary" },
+        { worktreeId: null, workspaceId: "workspace-2", role: "supporting" },
+      ],
+      projectId: "project-1",
+      kind: "source_project",
+    },
+    kernelContext: "source_kernel",
+    sourceTargetId: "source-1",
   }
 }
 

@@ -1631,6 +1631,15 @@ Workflow trigger and deployment direction:
   field before protocol-340 kernels are rolled out; producer and receiver must
   not be deployed independently. Existing web/native minimum protocol versions
   do not change because clients do not consume this kernel-to-Cloud field.
+- protocol 341 adds the authenticated, read-only
+  `GetManagedEnvironmentReimagePreflight` request and
+  `ManagedEnvironmentReimagePreflight` response. The response pins the retained
+  provider server, generation, runtime identity, and the desired immutable
+  image/profile/release/source evidence before a client observes the old kernel
+  or asks for destructive confirmation. This read neither authorizes nor starts
+  reimage, but clients depend on its new response shape, so it requires the
+  normal local-daemon protocol bump; the protocol-339 mutation remains the sole
+  reimage admission request.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

@@ -377,5 +377,64 @@ function contextPlanMatchesInput(
   left: ManagedEnvironmentContextPlanInput,
   right: ManagedEnvironmentContextPlanInput,
 ): boolean {
-  return JSON.stringify(left) === JSON.stringify(right)
+  return left.sourceTargetId === right.sourceTargetId
+    && left.kernelContext === right.kernelContext
+    && developmentSetupMatches(left.developmentSetup, right.developmentSetup)
+    && providerAccountsMatch(left.providerAccounts, right.providerAccounts)
+    && gitCredentialsMatch(left.gitCredentials, right.gitCredentials)
+}
+
+function developmentSetupMatches(
+  left: ManagedEnvironmentContextPlanInput["developmentSetup"],
+  right: ManagedEnvironmentContextPlanInput["developmentSetup"],
+): boolean {
+  if (left.kind !== right.kind) return false
+  if (left.kind === "empty" || right.kind === "empty") return true
+  return left.projectId === right.projectId
+    && left.repositories.length === right.repositories.length
+    && left.repositories.every((repository, index) => {
+      const candidate = right.repositories[index]
+      return repository.role === candidate?.role
+        && repository.workspaceId === candidate.workspaceId
+        && repository.worktreeId === candidate.worktreeId
+    })
+}
+
+function providerAccountsMatch(
+  left: ManagedEnvironmentContextPlanInput["providerAccounts"],
+  right: ManagedEnvironmentContextPlanInput["providerAccounts"],
+): boolean {
+  if (left.kind !== right.kind) return false
+  if (left.kind === "none" || right.kind === "none") return true
+  const orderedLeft = [...left.accounts].sort(compareProviderAccounts)
+  const orderedRight = [...right.accounts].sort(compareProviderAccounts)
+  return orderedLeft.length === orderedRight.length
+    && orderedLeft.every((account, index) => (
+      account.provider === orderedRight[index]?.provider
+      && account.accountProfile === orderedRight[index]?.accountProfile
+    ))
+}
+
+function compareProviderAccounts(
+  left: { readonly provider: string; readonly accountProfile: string },
+  right: { readonly provider: string; readonly accountProfile: string },
+): number {
+  return compareStrings(left.provider, right.provider)
+    || compareStrings(left.accountProfile, right.accountProfile)
+}
+
+function gitCredentialsMatch(
+  left: ManagedEnvironmentContextPlanInput["gitCredentials"],
+  right: ManagedEnvironmentContextPlanInput["gitCredentials"],
+): boolean {
+  if (left.kind !== right.kind) return false
+  if (left.kind === "none" || right.kind === "none") return true
+  const orderedLeft = [...left.credentialIds].sort(compareStrings)
+  const orderedRight = [...right.credentialIds].sort(compareStrings)
+  return orderedLeft.length === orderedRight.length
+    && orderedLeft.every((credentialId, index) => credentialId === orderedRight[index])
+}
+
+function compareStrings(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0
 }
