@@ -423,7 +423,7 @@ install -d -o root -g root -m 0755 \
   "$releases_root"
 rm -rf -- "$pending_release"
 if [ -e "$published_release" ] || [ -L "$published_release" ]; then
-  if ! node "$script_root/verify-image-release.mjs" "$published_release" "$expected_release_digest" "$trusted_public_key"; then
+  if ! node "$script_root/verify-image-release.mjs" "$published_release" "$expected_release_digest" "$trusted_public_key" "$managed_provider_topology"; then
     echo "existing digest-named managed release is invalid; refusing to replace immutable release: $published_release" >&2
     exit 1
   fi

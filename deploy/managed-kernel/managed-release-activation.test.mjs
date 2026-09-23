@@ -26,7 +26,8 @@ test("install refuses to replace an invalid digest-named release", () => {
 test("install names releases from the validated manifest digest", () => {
   assert.ok(installSource.includes("release_name=${expected_release_digest#sha256:}"))
   assert.ok(installSource.includes("published_release=$releases_root/$release_name"))
-  assert.ok(installSource.includes('node "$script_root/verify-image-release.mjs" "$image_root" "$expected_release_digest" "$trusted_public_key"'))
+  assert.ok(installSource.includes('"$image_root" "$expected_release_digest" "$trusted_public_key" "$managed_provider_topology"'))
+  assert.ok(installSource.includes('"$published_release" "$expected_release_digest" "$trusted_public_key" "$managed_provider_topology"'))
 })
 
 test("install durably publishes the verified release before activating current", () => {
