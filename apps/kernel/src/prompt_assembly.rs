@@ -126,6 +126,12 @@ impl PromptEnvelope {
     }
 }
 
+pub(crate) fn agent_message_origin_context(prompt_id: &str) -> String {
+    format!(
+        "<chariox-agent-message-origin>For chariox.send_agent_message in this turn, set origin_prompt_id to `{prompt_id}`. Never reuse an origin_prompt_id from another turn.</chariox-agent-message-origin>"
+    )
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PromptManifest {
     pub(crate) version: String,

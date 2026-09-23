@@ -184,6 +184,7 @@ impl<'a> ProviderPromptDispatcher<'a> {
                 provider_run_id.to_string(),
                 agent_id,
                 prompt_id.to_string(),
+                prompt_id,
                 &provider_run,
                 prompt,
                 hidden_system_context,

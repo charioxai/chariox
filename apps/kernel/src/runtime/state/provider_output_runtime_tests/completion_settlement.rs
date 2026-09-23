@@ -1112,7 +1112,7 @@ async fn stopped_sender_cannot_finish_an_already_admitted_agent_message() {
         )
         .expect("recipient run should launch");
     app.update_provider_run_projection(recipient_run);
-    let crate::session::PromptSubmissionOutcome::Started { .. } = app
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
         .submit_prompt(
             session.id(),
             attachment.id(),
@@ -1124,6 +1124,7 @@ async fn stopped_sender_cannot_finish_an_already_admitted_agent_message() {
     else {
         panic!("sender prompt must start immediately");
     };
+    let origin_prompt_id = prompt.id().to_string();
     let auth_token = sender_run
         .runtime_mcp_auth_token()
         .expect("sender should have MCP auth")
@@ -1141,6 +1142,7 @@ async fn stopped_sender_cannot_finish_an_already_admitted_agent_message() {
                 serde_json::json!({
                     "agent": recipient_id,
                     "message": "must not arrive after stop",
+                    "origin_prompt_id": origin_prompt_id,
                     "idempotency_key": "stop-race",
                 }),
             )

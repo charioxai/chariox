@@ -22,7 +22,11 @@ where
         .unwrap_or_else(|error| std::panic::resume_unwind(error));
 }
 
-fn start_agent_message_sender_turn(app: &mut DaemonApp, session_id: &str, sender_id: &str) {
+fn start_agent_message_sender_turn(
+    app: &mut DaemonApp,
+    session_id: &str,
+    sender_id: &str,
+) -> String {
     let attachment = crate::app::KernelSessionService::new(app)
         .attach(crate::attachment::AttachRequest::new(
             session_id,
@@ -37,11 +41,13 @@ fn start_agent_message_sender_turn(app: &mut DaemonApp, session_id: &str, sender
         "sender task",
         crate::session::PromptStatus::Queued,
     );
-    assert!(matches!(
-        app.prompt_owner_submit_prepared_prompt(session_id, prompt, false)
-            .expect("sender turn should start"),
-        crate::session::PromptSubmissionOutcome::Started { .. }
-    ));
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .prompt_owner_submit_prepared_prompt(session_id, prompt, false)
+        .expect("sender turn should start")
+    else {
+        panic!("sender turn must start");
+    };
+    prompt.id().to_string()
 }
 
 #[test]
@@ -80,7 +86,7 @@ async fn runtime_mcp_agents_can_message_and_steer_each_other_by_unique_alias_inn
         "dev-stub",
         "reviewer-model",
     );
-    start_agent_message_sender_turn(&mut app, session.id(), sender.id());
+    let sender_prompt_id = start_agent_message_sender_turn(&mut app, session.id(), sender.id());
     let sender_token = sender_run
         .runtime_mcp_auth_token()
         .expect("sender run should expose runtime MCP auth")
@@ -145,6 +151,7 @@ async fn runtime_mcp_agents_can_message_and_steer_each_other_by_unique_alias_inn
             serde_json::json!({
                 "agent": "@REVIEWER",
                 "message": "Inspect package.json and report the package name.",
+                "origin_prompt_id": sender_prompt_id,
                 "attachments": [{
                     "url": "data:image/png;base64,aGVsbG8=",
                     "mime": "image/png",
@@ -160,6 +167,16 @@ async fn runtime_mcp_agents_can_message_and_steer_each_other_by_unique_alias_inn
     assert_eq!(first.payload["status"], "started");
     assert_eq!(first.payload["target_agent_id"], reviewer.id());
     assert_eq!(first.payload["attachment_count"], 1);
+    let reviewer_prompt_id = {
+        let guard = app.lock().await;
+        let session = guard.sessions().get_session(session.id()).unwrap();
+        guard
+            .prompt_state_owner()
+            .active_prompt_for_agent(&session, reviewer.id())
+            .expect("reviewer message should be active")
+            .id()
+            .to_string()
+    };
 
     let retried = router
         .runtime_state
@@ -169,6 +186,7 @@ async fn runtime_mcp_agents_can_message_and_steer_each_other_by_unique_alias_inn
             serde_json::json!({
                 "agent": "@REVIEWER",
                 "message": "Inspect package.json and report the package name.",
+                "origin_prompt_id": sender_prompt_id,
                 "attachments": [{
                     "url": "data:image/png;base64,aGVsbG8=",
                     "mime": "image/png",
@@ -190,7 +208,8 @@ async fn runtime_mcp_agents_can_message_and_steer_each_other_by_unique_alias_inn
             crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
             serde_json::json!({
                 "agent": reviewer.agent_ref(),
-                "message": "Then report whether the package is private."
+                "message": "Then report whether the package is private.",
+                "origin_prompt_id": sender_prompt_id,
             }),
         )
         .await
@@ -232,7 +251,8 @@ async fn runtime_mcp_agents_can_message_and_steer_each_other_by_unique_alias_inn
             crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
             serde_json::json!({
                 "agent": "router",
-                "message": "The review has started."
+                "message": "The review has started.",
+                "origin_prompt_id": reviewer_prompt_id,
             }),
         )
         .await
@@ -316,7 +336,7 @@ fn agent_message_can_start_a_human_stopped_target() {
             "dev-stub",
             "target-model",
         );
-        start_agent_message_sender_turn(&mut app, session.id(), sender.id());
+        let sender_prompt_id = start_agent_message_sender_turn(&mut app, session.id(), sender.id());
         let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
                 session.id(),
@@ -348,7 +368,11 @@ fn agent_message_can_start_a_human_stopped_target() {
             .dispatch_authenticated_runtime_tool_call(
                 &sender_token,
                 crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
-                serde_json::json!({"agent": target.id(), "message": "resume automatically"}),
+                serde_json::json!({
+                    "agent": target.id(),
+                    "message": "resume automatically",
+                    "origin_prompt_id": sender_prompt_id,
+                }),
             )
             .await
             .expect("stopped target should accept a legitimate message");
@@ -397,7 +421,7 @@ fn settled_sender_cannot_start_a_new_agent_turn_with_old_tool_credentials() {
             "dev-stub",
             "target-model",
         );
-        start_agent_message_sender_turn(&mut app, session.id(), sender.id());
+        let sender_prompt_id = start_agent_message_sender_turn(&mut app, session.id(), sender.id());
         app.prompt_owner_complete_active_prompt_only(session.id(), sender.id())
             .expect("sender turn should finish");
         let sender_token = sender_run
@@ -410,7 +434,11 @@ fn settled_sender_cannot_start_a_new_agent_turn_with_old_tool_credentials() {
             .dispatch_authenticated_runtime_tool_call(
                 &sender_token,
                 crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
-                serde_json::json!({"agent": target.id(), "message": "late tool call"}),
+                serde_json::json!({
+                    "agent": target.id(),
+                    "message": "late tool call",
+                    "origin_prompt_id": sender_prompt_id,
+                }),
             )
             .await
             .expect("late call should return a clear rejection");
@@ -432,6 +460,132 @@ fn settled_sender_cannot_start_a_new_agent_turn_with_old_tool_credentials() {
                 .unwrap_or(0),
             0,
         );
+    });
+}
+
+#[test]
+fn message_from_previous_turn_cannot_start_a_target_during_successor_turn() {
+    run_agent_message_test_with_large_stack("agent-message-previous-turn", || async {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, sender) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "message-previous-turn",
+                std::env::temp_dir().to_string_lossy(),
+            ))
+            .expect("session should create");
+        let target = spawn_test_agent(&mut app, session.id(), "target", "dev-stub");
+        let sender_run = launch_test_provider(
+            &mut app,
+            session.id(),
+            sender.id(),
+            "dev-stub",
+            "dev-stub",
+            "sender-model",
+        );
+        launch_test_provider(
+            &mut app,
+            session.id(),
+            target.id(),
+            "dev-stub",
+            "dev-stub",
+            "target-model",
+        );
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "message-previous-turn-client",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("client should attach");
+        let first = crate::session::PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            attachment.id(),
+            sender.id(),
+            "first turn",
+            crate::session::PromptStatus::Queued,
+        );
+        let crate::session::PromptSubmissionOutcome::Started { prompt: first } = app
+            .prompt_owner_submit_prepared_prompt(session.id(), first, false)
+            .expect("first turn should start")
+        else {
+            panic!("first turn must start");
+        };
+        let first_id = first.id().to_string();
+        app.prompt_owner_complete_active_prompt_only(session.id(), sender.id())
+            .expect("first turn should finish");
+        let second = crate::session::PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            attachment.id(),
+            sender.id(),
+            "second turn",
+            crate::session::PromptStatus::Queued,
+        );
+        let crate::session::PromptSubmissionOutcome::Started { prompt: second } = app
+            .prompt_owner_submit_prepared_prompt(session.id(), second, false)
+            .expect("second turn should start")
+        else {
+            panic!("second turn must start");
+        };
+        let second_id = second.id().to_string();
+        let target_prompt = crate::session::PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            attachment.id(),
+            target.id(),
+            "target work",
+            crate::session::PromptStatus::Queued,
+        );
+        assert!(matches!(
+            app.prompt_owner_submit_prepared_prompt(session.id(), target_prompt, false)
+                .expect("target should start"),
+            crate::session::PromptSubmissionOutcome::Started { .. }
+        ));
+        app.prompt_owner_cancel_active_prompt_only(session.id(), target.id())
+            .expect("human should stop target");
+        let sender_token = sender_run
+            .runtime_mcp_auth_token()
+            .expect("sender needs runtime MCP auth")
+            .to_string();
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+        let stale = router
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(
+                &sender_token,
+                crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
+                serde_json::json!({
+                    "agent": target.id(),
+                    "message": "old turn must not restart target",
+                    "origin_prompt_id": first_id,
+                }),
+            )
+            .await
+            .expect("late T1 call should return a rejection");
+        assert!(
+            !stale.ok,
+            "late T1 call started target: {:?}",
+            stale.payload
+        );
+        let snapshot = router
+            .runtime_state
+            .session_snapshot(session.id())
+            .await
+            .expect("session should remain");
+        assert!(snapshot.active_prompt_for_agent(target.id()).is_none());
+
+        let current = router
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(
+                &sender_token,
+                crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
+                serde_json::json!({
+                    "agent": target.id(),
+                    "message": "current turn may restart target",
+                    "origin_prompt_id": second_id,
+                }),
+            )
+            .await
+            .expect("current T2 call should dispatch");
+        assert!(current.ok, "{:?}", current.payload);
+        assert_eq!(current.payload["status"], "started");
     });
 }
 
@@ -467,7 +621,7 @@ async fn agent_message_to_busy_provider_does_not_queue_a_user_prompt_inner() {
         "dev-stub",
         "target-model",
     );
-    start_agent_message_sender_turn(&mut app, session.id(), sender.id());
+    let sender_prompt_id = start_agent_message_sender_turn(&mut app, session.id(), sender.id());
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
             session.id(),
@@ -497,7 +651,11 @@ async fn agent_message_to_busy_provider_does_not_queue_a_user_prompt_inner() {
         .dispatch_authenticated_runtime_tool_call(
             token,
             crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
-            serde_json::json!({ "agent": target.id(), "message": "new information" }),
+            serde_json::json!({
+                "agent": target.id(),
+                "message": "new information",
+                "origin_prompt_id": sender_prompt_id,
+            }),
         )
         .await
         .expect("agent message should dispatch");
@@ -550,7 +708,7 @@ async fn agent_message_during_provider_startup_does_not_enter_the_user_queue() {
         "dev-stub",
         "sender-model",
     );
-    start_agent_message_sender_turn(&mut app, session.id(), sender.id());
+    let sender_prompt_id = start_agent_message_sender_turn(&mut app, session.id(), sender.id());
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
             session.id(),
@@ -580,7 +738,11 @@ async fn agent_message_during_provider_startup_does_not_enter_the_user_queue() {
         .dispatch_authenticated_runtime_tool_call(
             token,
             crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
-            serde_json::json!({ "agent": target.id(), "message": "new information" }),
+            serde_json::json!({
+                "agent": target.id(),
+                "message": "new information",
+                "origin_prompt_id": sender_prompt_id,
+            }),
         )
         .await;
     let snapshot = router
@@ -630,7 +792,7 @@ async fn failed_local_agent_message_delivery_can_retry_the_same_idempotency_key_
         "dev-stub",
         "target-model",
     );
-    start_agent_message_sender_turn(&mut app, session.id(), sender.id());
+    let sender_prompt_id = start_agent_message_sender_turn(&mut app, session.id(), sender.id());
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
             session.id(),
@@ -666,6 +828,7 @@ async fn failed_local_agent_message_delivery_can_retry_the_same_idempotency_key_
     let args = serde_json::json!({
         "agent": target_id,
         "message": "MESSAGE_RETRY_PROOF",
+        "origin_prompt_id": sender_prompt_id,
         "idempotency_key": "retry-after-superseded-turn",
     });
     let runtime = router.runtime_state.clone();
@@ -842,7 +1005,7 @@ async fn runtime_mcp_agent_message_rejects_reused_idempotency_key_for_different_
         "dev-stub",
         "target-model",
     );
-    start_agent_message_sender_turn(&mut app, session.id(), sender.id());
+    let sender_prompt_id = start_agent_message_sender_turn(&mut app, session.id(), sender.id());
     let auth_token = sender_run
         .runtime_mcp_auth_token()
         .expect("sender run should expose runtime MCP auth")
@@ -858,6 +1021,7 @@ async fn runtime_mcp_agent_message_rejects_reused_idempotency_key_for_different_
             serde_json::json!({
                 "agent": "target",
                 "message": "First message.",
+                "origin_prompt_id": sender_prompt_id,
                 "idempotency_key": "shared-send"
             }),
         )
@@ -873,6 +1037,7 @@ async fn runtime_mcp_agent_message_rejects_reused_idempotency_key_for_different_
             serde_json::json!({
                 "agent": "target",
                 "message": "Different message.",
+                "origin_prompt_id": sender_prompt_id,
                 "idempotency_key": "shared-send"
             }),
         )
@@ -916,7 +1081,8 @@ async fn runtime_mcp_agent_message_rejects_unknown_and_self_targets_without_prom
                 crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
                 serde_json::json!({
                     "agent": agent,
-                    "message": "Do not dispatch this."
+                    "message": "Do not dispatch this.",
+                    "origin_prompt_id": "prompt-without-a-running-turn",
                 }),
             )
             .await
@@ -980,7 +1146,7 @@ async fn runtime_mcp_metaagent_can_message_an_existing_session_agent() {
         "dev-stub",
         "worker-model",
     );
-    start_agent_message_sender_turn(&mut app, session.id(), metaagent.id());
+    let meta_prompt_id = start_agent_message_sender_turn(&mut app, session.id(), metaagent.id());
     let auth_token = meta_run
         .runtime_mcp_auth_token()
         .expect("meta run should expose runtime MCP auth")
@@ -1000,7 +1166,8 @@ async fn runtime_mcp_metaagent_can_message_an_existing_session_agent() {
             crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
             serde_json::json!({
                 "agent": "worker",
-                "message": "Perform the delegated check."
+                "message": "Perform the delegated check.",
+                "origin_prompt_id": meta_prompt_id,
             }),
         )
         .await

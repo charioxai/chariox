@@ -72,6 +72,7 @@ const CLAUDE_SUBMIT_DELAY_MS: u64 = 250;
 
 struct ClaudeNativePromptInjection<'a> {
     id: &'a str,
+    origin_prompt_id: &'a str,
     prompt: &'a str,
     hidden_system_context: &'a str,
     attachments: &'a [PromptAttachment],
@@ -1180,6 +1181,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         }
         let prompt = ClaudeNativePromptInjection {
             id: &dispatch.prompt_id,
+            origin_prompt_id: dispatch
+                .target_active_prompt_id
+                .as_deref()
+                .unwrap_or(&dispatch.prompt_id),
             prompt: &dispatch.prompt,
             hidden_system_context: &dispatch.hidden_system_context,
             attachments: &dispatch.attachments,
@@ -1285,6 +1290,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         }
         let prompt = ClaudeNativePromptInjection {
             id: prompt.id(),
+            origin_prompt_id: prompt.id(),
             prompt: prompt.prompt(),
             hidden_system_context: prompt.hidden_system_context(),
             attachments: prompt.attachments(),
@@ -1533,6 +1539,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             .to_string();
         let native_hidden = extract_native_hidden_instructions(prompt.prompt);
         let attachment_context = format_claude_attachment_context(prompt.attachments, context_file);
+        let origin_context =
+            crate::prompt_assembly::agent_message_origin_context(prompt.origin_prompt_id);
         let hidden_context = if provider_run.provider() == "claude-headless" {
             let envelope = crate::prompt_assembly::PromptAssemblyService::from_env()?
                 .assemble_provider_turn(
@@ -1546,6 +1554,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 self.claude_native_prompt_context(session_id, agent_id, &visible)?;
             join_claude_context([
                 envelope.hidden_system_context,
+                origin_context,
                 skill_context,
                 native_hidden,
                 attachment_context,
@@ -1553,7 +1562,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         } else {
             let scheduled_hidden =
                 crate::prompt_assembly::strip_prompt_manifest_entries(prompt.hidden_system_context);
-            join_claude_context([scheduled_hidden, native_hidden, attachment_context])
+            join_claude_context([
+                scheduled_hidden,
+                origin_context,
+                native_hidden,
+                attachment_context,
+            ])
         };
         crate::provider::ensure_claude_native_hidden_context_fits(
             provider_run_id,

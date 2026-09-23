@@ -85,13 +85,12 @@ impl KernelRuntimeOwnedState {
                 return false;
             }
             if dispatch.steering {
-                return dispatch
-                    .target_active_prompt_id
-                    .as_deref()
-                    .is_some_and(|target_prompt_id| {
+                return dispatch.target_active_prompt_id.as_deref().is_some_and(
+                    |target_prompt_id| {
                         target_prompt_id == prompt.id()
                             && prompt.status() == crate::session::PromptStatus::Running
-                    });
+                    },
+                );
             }
             prompt.id() == dispatch.prompt_id
         };
@@ -2758,6 +2757,10 @@ impl KernelRuntimeState {
                 dispatch.provider_run_id.clone(),
                 dispatch.agent_id.clone(),
                 dispatch.prompt_id.clone(),
+                dispatch
+                    .target_active_prompt_id
+                    .as_deref()
+                    .unwrap_or(&dispatch.prompt_id),
                 &provider_run,
                 &prompt_with_handoff,
                 &hidden_system_context,

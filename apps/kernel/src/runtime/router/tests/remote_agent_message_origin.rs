@@ -85,7 +85,11 @@ async fn forwarded_agent_message_requires_current_home_sender_prompt() {
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
     let tool = crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL.to_string();
-    let args = serde_json::json!({"agent": target.id(), "message": "Check the task."});
+    let args = serde_json::json!({
+        "agent": target.id(),
+        "message": "Check the task.",
+        "origin_prompt_id": home_prompt_id,
+    });
 
     for stale in [
         context.clone(),
@@ -132,7 +136,7 @@ async fn forwarded_agent_message_requires_current_home_sender_prompt() {
         .contains("sender prompt or leased worker binding is no longer current"));
 
     let valid_context = crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext {
-        home_prompt_id: Some(home_prompt_id),
+        home_prompt_id: Some(home_prompt_id.clone()),
         ..context
     };
     let valid = router
@@ -157,7 +161,11 @@ async fn forwarded_agent_message_requires_current_home_sender_prompt() {
         .dispatch_forwarded_capability_runtime_tool_call(
             valid_context,
             tool,
-            serde_json::json!({"agent": late_target.id(), "message": "Late message."}),
+            serde_json::json!({
+                "agent": late_target.id(),
+                "message": "Late message.",
+                "origin_prompt_id": home_prompt_id,
+            }),
         )
         .await
         .expect_err("a settled sender turn must not restart an idle agent");

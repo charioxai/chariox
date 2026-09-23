@@ -106,10 +106,16 @@ impl KernelRuntimeState {
                 "sender turn is no longer running; agent message was not sent",
             ));
         };
+        if args.origin_prompt_id != sender_prompt_id {
+            return Ok(agent_message_failure(
+                "agent message belongs to a different sender turn; message was not sent",
+            ));
+        }
         let durable_identity = idempotency_key.map(|key| {
             let operation_id = format!(
-                "agent-message:{}:{:x}",
+                "agent-message:{}:{}:{:x}",
                 sender.id(),
+                sender_prompt_id,
                 Sha256::digest(key.as_bytes())
             );
             let fingerprint = serde_json::to_vec(&serde_json::json!({
@@ -461,7 +467,7 @@ impl KernelRuntimeState {
             .map(|prompt| prompt.id().to_string()))
     }
 
-    fn agent_message_sender_prompt_is_running(
+    pub(super) fn agent_message_sender_prompt_is_running(
         &self,
         session_id: &str,
         sender_id: &str,
