@@ -14,6 +14,7 @@ import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
 import { runRoomEnvironmentCompanion } from "./lib/live-room-environment-companion-verifier.mjs"
+import { verifyDirectDockerEngineAccess as verifyDirectDockerAccess } from "./lib/room-direct-docker-access.mjs"
 import { captureRoomStreamerDiagnostics } from "./lib/room-streamer-diagnostics.mjs"
 import { captureRoomKernelDiagnostics } from "./lib/room-kernel-diagnostics.mjs"
 import { startRoomSliceWithForwarding } from "./lib/room-colima-forwarding.mjs"
@@ -237,6 +238,12 @@ if (failure) {
 
 async function run() {
   const tempRoot = await tempRootPromise
+  await assertDockerReady()
+  const kernelBinary = await resolveRuntimeBinary("chariox-kernel")
+  const relayBinary = await resolveRuntimeBinary("chariox-relay")
+  sourceIdentity = await captureSourceIdentity(kernelBinary, relayBinary)
+  prebuiltSliceImageId = await validatePrebuiltSliceImage(process.env.CHARIOX_ROOM_DRILL_IMAGE, sourceIdentity,
+    async image => JSON.parse((await docker(["image", "inspect", image])).stdout))
   if (realProviderOptions) {
     assert.equal((await stat(tempRoot)).mode & 0o777, 0o700, "provider workspace parent must remain private")
     fixtureWorkspace = path.join(tempRoot, "provider-workspace")
@@ -264,12 +271,6 @@ async function run() {
       )
     }
   }
-  await assertDockerReady()
-  const kernelBinary = await resolveRuntimeBinary("chariox-kernel")
-  const relayBinary = await resolveRuntimeBinary("chariox-relay")
-  sourceIdentity = await captureSourceIdentity(kernelBinary, relayBinary)
-  prebuiltSliceImageId = await validatePrebuiltSliceImage(process.env.CHARIOX_ROOM_DRILL_IMAGE, sourceIdentity,
-    async image => JSON.parse((await docker(["image", "inspect", image])).stdout))
   resources.push(await resourceSnapshot("before"))
   fixture = await startFixture()
   await seedConfig(tempRoot)
@@ -2880,12 +2881,7 @@ async function assertDockerReady() {
 }
 
 async function verifyDirectDockerEngineAccess(target, { writable }) {
-  for (const flag of writable ? ["-x", "-w"] : ["-x"]) {
-    const result = await runCommand("runuser", ["-u", "chariox-docker", "--", "test", flag, target], 10_000)
-    if (result.code !== 0) {
-      throw new Error(`rootless Docker engine user cannot ${writable ? "write or traverse" : "traverse"} the selected fixture root`)
-    }
-  }
+  await verifyDirectDockerAccess({ target, writable, platform: process.platform, imageId: prebuiltSliceImageId, runCommand })
 }
 
 async function docker(args, timeoutMs = 120_000) {

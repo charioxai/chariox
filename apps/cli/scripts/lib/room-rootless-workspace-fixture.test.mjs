@@ -212,7 +212,7 @@ test("room drill selects explicit direct mode or the configured broker contract"
   assert.match(source, /developmentSetup: \{ kind: "empty" \}/)
   assert.match(source, /CHARIOX_SLICE_DOCKER_BROKER_SOCKET/)
   assert.match(source, /roomDirectDockerWorkspaceRootEnvironment/)
-  assert.match(source, /runCommand\("runuser", \["-u", "chariox-docker"/)
+  assert.match(source, /verifyDirectDockerAccess\(\{ target, writable, platform: process\.platform/)
   const deleteSlice = source.indexOf("requests.deleteSliceRequest(slice.id)")
   const stopProducers = source.indexOf("for (const child of children.toReversed()) await terminateChild(child)")
   const verifyRemoved = source.indexOf("await assertRoomRootlessWorkspaceFixtureRemoved(fixtureWorkspaceLease)")
