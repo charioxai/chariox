@@ -12,7 +12,7 @@ export function roomActionNoticePattern(action) {
   } else if (action.state !== undefined && action.state !== "completed") {
     throw new Error("Room notice requires a completed or failed action")
   }
-  return new RegExp(`^Room action #${action.sequence}: .+ · ${action.mode} ${action.kind} · ${outcome}$`)
+  return new RegExp(`^Room action #${action.sequence}: .+ · ${action.mode} ${action.kind}(?: · (?:desktop(?:, tab [^ ·]+)?|tab [^ ·]+))? · ${outcome}$`)
 }
 
 export function automationNoticeTexts(snapshot) {

@@ -24,6 +24,8 @@ test("companion TUI matcher uses the kernel action mode and exact sequence", () 
   assert.doesNotMatch("Room action #3: real-codex · browser click · completed", pattern)
   assert.match("Room action #4: Local user · computer pointer_click · completed",
     roomActionNoticePattern({ sequence: 4, mode: "computer", kind: "pointer_click" }))
+  assert.match("Room action #4: Local user · computer pointer_click · desktop, tab tab-1 · completed",
+    roomActionNoticePattern({ sequence: 4, mode: "computer", kind: "pointer_click" }))
   assert.throws(() => roomActionNoticePattern({ sequence: 2, mode: "browser", kind: ".*" }))
 })
 
