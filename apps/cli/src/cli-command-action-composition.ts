@@ -574,7 +574,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     setWorkspaceLiveSyncMode: (sessionId, mode) => setWorkspaceLiveSyncMode(client, sessionId, mode),
     unsetUserConfigValue: (path) => unsetUserConfigValue(client, path),
     refreshWaitingRoomData,
-    reimageManagedEnvironment,
+    ...(reimageManagedEnvironment ? { reimageManagedEnvironment } : {}),
     getRemoteMachines: remoteMachinesState,
     setRemoteMachines: setRemoteMachinesState,
     reconcileWaitingRoom: () => reconcileWaitingRoom(),
