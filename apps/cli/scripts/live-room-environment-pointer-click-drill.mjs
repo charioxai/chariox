@@ -121,9 +121,9 @@ const pointerMatrix = Object.freeze({
   doubleClick: { x: 940, y: 220, button: "left", clickCount: 2 },
   textSelection: {
     fromX: 220,
-    fromY: 450,
+    fromY: 393,
     toX: 900,
-    toY: 450,
+    toY: 393,
     button: "left",
   },
   scroll: {
