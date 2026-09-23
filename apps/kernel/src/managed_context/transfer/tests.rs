@@ -428,6 +428,7 @@ fn credential_only_import_is_consumed_without_publishing_a_launch_target() {
 
 #[test]
 fn schema_v4_empty_launch_target_gains_a_durable_workspace_on_upgrade() {
+    let _lock = crate::env_lock::lock();
     let root = test_root("schema-v4-empty-workspace");
     fs::create_dir_all(&root).expect("create transfer root");
     let plan_digest = format!("sha256:{}", "a".repeat(64));

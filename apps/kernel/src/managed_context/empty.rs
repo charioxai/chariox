@@ -141,21 +141,10 @@ impl EmptyManagedContextCompletion {
 }
 
 pub(crate) fn empty_managed_context_workspace_path(
-    config: &DaemonConfig,
+    _config: &DaemonConfig,
     context_id: &str,
 ) -> Result<PathBuf, DaemonError> {
-    if managed_control_workspace_parent(config).is_some() {
-        return managed_user_empty_context_workspace_path(context_id);
-    }
-    let state_root = config
-        .durable_state_path()
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| empty_context_error("durable state path has no parent directory"))?;
-    Ok(state_root
-        .join("managed-context-empty-workspaces")
-        .join(format!("{:x}", Sha256::digest(context_id.as_bytes())))
-        .join("workspace"))
+    managed_user_empty_context_workspace_path(context_id)
 }
 
 pub(crate) fn managed_user_empty_context_workspace_path(
@@ -171,13 +160,6 @@ pub(crate) fn managed_user_workspace_root() -> Result<PathBuf, DaemonError> {
     crate::managed_bootstrap::managed_repository_root_from_env()
 }
 
-pub(crate) fn managed_control_workspace_parent(config: &DaemonConfig) -> Option<PathBuf> {
-    config
-        .publication_control_state_root
-        .as_ref()
-        .map(|root| root.join("managed-context-workspaces"))
-}
-
 pub(crate) fn ensure_empty_managed_context_workspace(
     config: &DaemonConfig,
     context_id: &str,
@@ -188,43 +170,19 @@ pub(crate) fn ensure_empty_managed_context_workspace(
         .parent()
         .ok_or_else(|| empty_context_error("durable state path has no parent directory"))?;
     ensure_real_private_directory(state_root)?;
-    if managed_control_workspace_parent(config).is_some() {
-        let user_root = managed_user_workspace_root()?;
-        let canonical_user_root =
-            ensure_existing_real_directory(&user_root, "managed repository root")?;
-        ensure_real_private_directory(&workspace)?;
-        let canonical_workspace = fs::canonicalize(&workspace)
-            .map_err(|error| empty_context_io_error("resolve empty managed workspace", error))?;
-        if !canonical_workspace.starts_with(&canonical_user_root)
-            || canonical_workspace.starts_with(
-                &fs::canonicalize(state_root)
-                    .map_err(|error| empty_context_io_error("resolve managed state root", error))?,
-            )
-        {
-            return Err(empty_context_error(
-                "empty managed workspace must remain separate from managed control state",
-            ));
-        }
-        return Ok(canonical_workspace);
-    }
-    let workspace_root = workspace
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| empty_context_error("empty workspace path has no managed root"))?;
-    ensure_real_private_directory(workspace_root)?;
-    ensure_real_private_directory(
-        workspace
-            .parent()
-            .ok_or_else(|| empty_context_error("empty workspace path has no context root"))?,
-    )?;
+    let user_root = managed_user_workspace_root()?;
+    let canonical_user_root =
+        ensure_existing_real_directory(&user_root, "managed repository root")?;
     ensure_real_private_directory(&workspace)?;
-    let canonical_state_root = fs::canonicalize(state_root)
-        .map_err(|error| empty_context_io_error("resolve managed state root", error))?;
     let canonical_workspace = fs::canonicalize(&workspace)
         .map_err(|error| empty_context_io_error("resolve empty managed workspace", error))?;
-    if !canonical_workspace.starts_with(&canonical_state_root) {
+    let canonical_state_root = fs::canonicalize(state_root)
+        .map_err(|error| empty_context_io_error("resolve managed state root", error))?;
+    if !canonical_workspace.starts_with(&canonical_user_root)
+        || canonical_workspace.starts_with(&canonical_state_root)
+    {
         return Err(empty_context_error(
-            "empty managed workspace escapes the managed state root",
+            "empty managed workspace must remain separate from managed control state",
         ));
     }
     Ok(canonical_workspace)
@@ -571,6 +529,7 @@ mod tests {
 
     #[test]
     fn managed_empty_workspace_path_keeps_user_workspace_separate_from_control_state() {
+        let _lock = crate::env_lock::lock();
         let root = test_root("managed-user-workspace");
         let mut config = test_config(&root, "machine-empty", "kernel-empty", "http://127.0.0.1:9");
         config.publication_control_state_root = Some(root.join("control"));
