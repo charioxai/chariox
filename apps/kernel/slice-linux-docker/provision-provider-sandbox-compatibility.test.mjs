@@ -101,6 +101,8 @@ throw new Error("unexpected Docker operation: " + JSON.stringify(args));
     assert.ok(probe.includes("setpriv"))
     assert.ok(probe.includes("--no-new-privs"))
     assert.ok(probe.includes("--unshare-user"))
+    assert.ok(probe.includes("--disable-userns"), "probe must exercise the provider launch namespace restriction")
+    assert.ok(probe.includes("--cap-drop"), "probe must exercise provider capability dropping")
     assert.ok(probe.includes("--ro-bind"))
     assert.equal(
       calls.some((args) => args.at(-1) === "/opt/chariox-slice/start-runtime.sh"),

@@ -772,7 +772,9 @@ probe_provider_sandbox_compatibility() {
       --die-with-parent \
       --new-session \
       --unshare-user \
+      --disable-userns \
       --unshare-pid \
+      --cap-drop ALL \
       --ro-bind / / \
       --proc /proc \
       --dev /dev \
