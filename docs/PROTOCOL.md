@@ -1640,6 +1640,17 @@ Workflow trigger and deployment direction:
   reimage, but clients depend on its new response shape, so it requires the
   normal local-daemon protocol bump; the protocol-339 mutation remains the sole
   reimage admission request.
+- protocol 342 adds optional `managedRepositoryRoot` to managed-environment
+  creation and returns Cloud's validated, persisted value in every managed
+  environment summary. Omission keeps the ordinary `/home/chariox` default.
+  The value is create-only: selecting an existing environment displays its
+  summary value, and reimage, session, browser, and worker requests do not
+  accept overrides. Clients that send a custom root require kernel protocol
+  342; older callers that omit it retain the previous create request shape.
+  Cloud validates and persists the selected root before the kernel projects it
+  back to the Waiting Room. The v342 protocol snapshot covers omitted and
+  custom create values plus default and custom summary projections; the focused
+  managed API drill covers request serialization and authoritative projection.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

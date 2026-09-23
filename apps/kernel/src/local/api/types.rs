@@ -97,4 +97,6 @@ pub use workspace::*;
 /// Version 339 requires a fresh managed-context selection for every reimage request.
 /// Version 340 coordinates the signed managed-activity transition-time contract.
 /// Version 341 adds the authenticated managed-environment reimage preflight read.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 341;
+/// Version 342 carries the create-selected trusted managed repository root and
+/// returns the persisted root in managed-environment summaries.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 342;

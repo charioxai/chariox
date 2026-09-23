@@ -614,6 +614,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       deps.setWaitingRoomState({
         ...deps.waitingRoomState(),
         selectedMachineRef: expectedMachineRef,
+        managedRepositoryRoot: environment.managedRepositoryRoot,
         ...(environment.runtimeKernelId ? { selectedKernelRef: environment.runtimeKernelId } : {}),
       })
       expectedOwnershipRevision = deps.waitingRoomLaunchOwnershipRevision()

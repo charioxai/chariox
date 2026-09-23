@@ -3,6 +3,7 @@ import type {
   ManagedContextTransferStatus,
 } from "@chariox/kernel-client/ipc-managed-context-requests"
 import {
+  managedEnvironmentCreateMinimumProtocolVersion,
   managedEnvironmentReimagePreflightMinimumProtocolVersion,
   type ManagedContextTransferTicket,
   type ManagedEnvironmentCatalog,
@@ -86,11 +87,24 @@ export async function createManagedEnvironment(
     name: string
     region: string
     computeClass: string
+    managedRepositoryRoot?: string
     autoStopPolicy: { minimumRuntimeSeconds: number; idleDelaySeconds: number | null }
     contextPlan: ManagedEnvironmentContextPlanInput
   },
 ): Promise<ManagedEnvironmentResult> {
-  const response = await client.send<Record<string, unknown>>(createManagedEnvironmentRequest(input))
+  const request = createManagedEnvironmentRequest(input)
+  const response = input.managedRepositoryRoot === undefined
+    ? await client.send<Record<string, unknown>>(request)
+    : await sendWithProtocolMinimum<Record<string, unknown>>(
+        client.send.bind(client),
+        request,
+        {
+          capability: "Custom managed repository root",
+          requestVariant: "CreateManagedEnvironment",
+          unknownField: "managedRepositoryRoot",
+          minimumProtocolVersion: managedEnvironmentCreateMinimumProtocolVersion,
+        },
+      )
   const result = expectVariant<{ result: ManagedEnvironmentResult }>(
     response,
     "ManagedEnvironmentCreated",

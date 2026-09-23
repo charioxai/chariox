@@ -22,6 +22,7 @@ export type ManagedEnvironmentReimageReceiptStatus =
   | "failed_closed"
 
 export const managedEnvironmentReimagePreflightMinimumProtocolVersion = 341
+export const managedEnvironmentCreateMinimumProtocolVersion = 342
 
 export type ManagedEnvironmentAutoStopPolicy = {
   readonly minimumRuntimeSeconds: number
@@ -96,6 +97,7 @@ export type ManagedEnvironmentSummary = {
   readonly name: string
   readonly region: string
   readonly computeClass: string
+  readonly managedRepositoryRoot: string
   readonly desiredState: ManagedEnvironmentDesiredState
   readonly observedState: ManagedEnvironmentObservedState
   readonly desiredRevision: number
@@ -258,6 +260,7 @@ export function createManagedEnvironmentRequest(input: {
   readonly name: string
   readonly region: string
   readonly computeClass: string
+  readonly managedRepositoryRoot?: string
   readonly autoStopPolicy: ManagedEnvironmentAutoStopPolicy
   readonly contextPlan: ManagedEnvironmentContextPlanInput
 }) {

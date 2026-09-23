@@ -49,6 +49,7 @@ export type WaitingRoomManagedEnvironmentLaunchControllerDeps = {
     name: string
     region: string
     computeClass: string
+    managedRepositoryRoot: string
     autoStopPolicy: { minimumRuntimeSeconds: number; idleDelaySeconds: number | null }
     contextPlan: Extract<ManagedEnvironmentLaunchSelection, { kind: "new" }>["contextPlan"]
   }): Promise<ManagedEnvironmentResult>
@@ -104,6 +105,7 @@ export class WaitingRoomManagedEnvironmentLaunchController {
       name: this.deps.environmentName(),
       region: selection.region,
       computeClass: selection.computeClass,
+      managedRepositoryRoot: selection.managedRepositoryRoot,
       autoStopPolicy: selection.autoStopPolicy,
       contextPlan: selection.contextPlan,
     }

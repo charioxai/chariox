@@ -215,6 +215,76 @@ test("managed environment API rejects responses for another environment", async 
   )
 })
 
+test("managed environment create sends the selected root and returns the authoritative summary", async () => {
+  const requests: unknown[] = []
+  const client = {
+    send: async (request: unknown) => {
+      requests.push(request)
+      return {
+        ManagedEnvironmentCreated: {
+          result: {
+            environment: {
+              environmentId: "environment-1",
+              managedRepositoryRoot: "/srv/chariox/repos",
+            },
+            operation: { environmentId: "environment-1" },
+          },
+        },
+      }
+    },
+  } as unknown as LocalIpcClient
+
+  const result = await createManagedEnvironment(client, {
+    clientRequestId: "create-root-1",
+    name: "Managed build",
+    region: "hel1",
+    computeClass: "agent-small",
+    managedRepositoryRoot: "/srv/chariox/repos",
+    autoStopPolicy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 },
+    contextPlan: {
+      sourceTargetId: null,
+      kernelContext: "empty",
+      developmentSetup: { kind: "empty" },
+      providerAccounts: { kind: "none" },
+      gitCredentials: { kind: "none" },
+    },
+  })
+
+  assert.equal(
+    (requests[0] as { CreateManagedEnvironment: { managedRepositoryRoot: string } })
+      .CreateManagedEnvironment.managedRepositoryRoot,
+    "/srv/chariox/repos",
+  )
+  assert.equal(result.environment.managedRepositoryRoot, "/srv/chariox/repos")
+})
+
+test("managed environment create explains an unsupported custom-root request", async () => {
+  const client = {
+    send: async () => {
+      throw new Error("unknown field `managedRepositoryRoot`, expected `contextPlan`")
+    },
+  } as unknown as LocalIpcClient
+
+  await assert.rejects(
+    createManagedEnvironment(client, {
+      clientRequestId: "create-root-2",
+      name: "Managed build",
+      region: "hel1",
+      computeClass: "agent-small",
+      managedRepositoryRoot: "/srv/chariox/repos",
+      autoStopPolicy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 },
+      contextPlan: {
+        sourceTargetId: null,
+        kernelContext: "empty",
+        developmentSetup: { kind: "empty" },
+        providerAccounts: { kind: "none" },
+        gitCredentials: { kind: "none" },
+      },
+    }),
+    /Custom managed repository root requires kernel protocol 342 or newer/,
+  )
+})
+
 test("managed environment API rejects reimage preflight for another environment", async () => {
   const client = {
     send: async () => ({

@@ -581,6 +581,7 @@ function environment(overrides: Partial<ManagedEnvironmentSummary> = {}): Manage
     name: "Managed agent",
     region: "hel1",
     computeClass: "agent-small",
+    managedRepositoryRoot: "/home/chariox",
     desiredState: "running",
     observedState: "ready",
     desiredRevision: 8,

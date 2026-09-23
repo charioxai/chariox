@@ -37,6 +37,8 @@ pub struct CreateManagedEnvironmentRequest {
     pub name: String,
     pub region: String,
     pub compute_class: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_repository_root: Option<String>,
     pub auto_stop_policy: ManagedEnvironmentAutoStopPolicy,
     pub context_plan: ManagedEnvironmentContextPlanInput,
 }
@@ -209,6 +211,7 @@ pub struct ManagedEnvironmentSummary {
     pub name: String,
     pub region: String,
     pub compute_class: String,
+    pub managed_repository_root: String,
     pub desired_state: ManagedEnvironmentDesiredState,
     pub observed_state: ManagedEnvironmentObservedState,
     pub desired_revision: u64,

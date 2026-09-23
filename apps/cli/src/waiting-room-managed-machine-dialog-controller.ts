@@ -57,6 +57,12 @@ export function createWaitingRoomManagedMachineDialogController(
   const handleKey = (event: WaitingRoomManagedMachineDialogKeyEvent): boolean => {
     if (!deps.isOpen()) return false
     if (event.eventType === "release") return true
+    const state = deps.state()
+    if (state.focus === "managed-repository-root" && event.ctrl && event.name === "u") {
+      deps.setState({ ...state, managedRepositoryRoot: "" })
+      deps.renderOverlay()
+      return true
+    }
     if (event.ctrl || event.meta || event.alt || event.super) return true
     if (event.name === "return" || event.name === "enter") {
       deps.closeOverlay()
@@ -81,6 +87,25 @@ export function createWaitingRoomManagedMachineDialogController(
         deps.remote(),
       ))
       deps.renderOverlay()
+      return true
+    }
+    if (state.focus === "managed-repository-root") {
+      if (event.name === "backspace") {
+        deps.setState({
+          ...state,
+          managedRepositoryRoot: (state.managedRepositoryRoot ?? "").slice(0, -1),
+        })
+        deps.renderOverlay()
+        return true
+      }
+      const text = event.name === "space" ? " " : event.name
+      if ([...text].length === 1 && !/[\u0000-\u001f\u007f]/u.test(text)) {
+        deps.setState({
+          ...state,
+          managedRepositoryRoot: `${state.managedRepositoryRoot ?? ""}${text}`,
+        })
+        deps.renderOverlay()
+      }
       return true
     }
     return true

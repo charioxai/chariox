@@ -3,7 +3,7 @@ use crate::local::*;
 
 #[test]
 fn local_daemon_managed_environment_control_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 341);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 342);
     let policy = ManagedEnvironmentAutoStopPolicy {
         minimum_runtime_seconds: 0,
         idle_delay_seconds: Some(900),
@@ -46,6 +46,7 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
     let environment = managed_environment_summary(policy.clone(), context_input.clone());
     let mut source_environment =
         managed_environment_summary(policy.clone(), source_context_input.clone());
+    source_environment.managed_repository_root = "/srv/chariox/repos".to_string();
     source_environment.context_plan.source = Some(ManagedEnvironmentContextSource {
         source_target_id: "source-target-1".to_string(),
         relay_realm_id: "realm-1".to_string(),
@@ -160,6 +161,7 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
             name: "Managed agent".to_string(),
             region: "hel1".to_string(),
             compute_class: "agent-small".to_string(),
+            managed_repository_root: None,
             auto_stop_policy: policy.clone(),
             context_plan: context_input.clone(),
         }),
@@ -168,6 +170,7 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
             name: "Managed source agent".to_string(),
             region: "fsn1".to_string(),
             compute_class: "agent-medium".to_string(),
+            managed_repository_root: Some("/srv/chariox/repos".to_string()),
             auto_stop_policy: ManagedEnvironmentAutoStopPolicy {
                 minimum_runtime_seconds: 300,
                 idle_delay_seconds: None,
@@ -309,6 +312,13 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
         snapshot.pointer("/1/CreateManagedEnvironment/contextPlan/kernelContext"),
         Some(&serde_json::json!("empty"))
     );
+    assert!(snapshot
+        .pointer("/1/CreateManagedEnvironment/managedRepositoryRoot")
+        .is_none(), "omitted roots preserve the Cloud default");
+    assert_eq!(
+        snapshot.pointer("/2/CreateManagedEnvironment/managedRepositoryRoot"),
+        Some(&serde_json::json!("/srv/chariox/repos"))
+    );
     assert_eq!(
         snapshot.pointer(
             "/2/CreateManagedEnvironment/contextPlan/developmentSetup/repositories/1/role"
@@ -346,6 +356,18 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
         Some(&serde_json::json!("managed-kernel-1"))
     );
     assert_eq!(
+        snapshot.pointer(
+            "/10/ManagedEnvironmentCatalog/catalog/environments/0/managedRepositoryRoot"
+        ),
+        Some(&serde_json::json!("/home/chariox"))
+    );
+    assert_eq!(
+        snapshot.pointer(
+            "/10/ManagedEnvironmentCatalog/catalog/environments/1/managedRepositoryRoot"
+        ),
+        Some(&serde_json::json!("/srv/chariox/repos"))
+    );
+    assert_eq!(
         snapshot.pointer("/12/ManagedEnvironmentContextTransferPrepared/ticket/target/kernelId"),
         Some(&serde_json::json!("managed-kernel-1"))
     );
@@ -355,10 +377,29 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
         ),
         Some(&serde_json::json!("github-work"))
     );
-    let serialized = serde_json::to_string(&snapshot).expect("managed environment shape");
+    let mut previous_shape = snapshot.clone();
+    remove_managed_repository_root_fields(&mut previous_shape);
+    let previous_serialized = serde_json::to_string(&previous_shape)
+        .expect("managed environment shape without the protocol 342 addition");
     assert_eq!(
-        format!("{:x}", Sha256::digest(serialized.as_bytes())),
+        format!("{:x}", Sha256::digest(previous_serialized.as_bytes())),
         "53f9fb27de875d36256fc9c44092350d6e69dfbbe6b0b2649a2d850d6bc9c46d"
+    );
+    let root_projection = serde_json::json!({
+        "omittedCreateRoot": snapshot.pointer("/1/CreateManagedEnvironment/managedRepositoryRoot"),
+        "customCreateRoot": snapshot.pointer("/2/CreateManagedEnvironment/managedRepositoryRoot"),
+        "defaultSummaryRoot": snapshot.pointer(
+            "/10/ManagedEnvironmentCatalog/catalog/environments/0/managedRepositoryRoot"
+        ),
+        "customSummaryRoot": snapshot.pointer(
+            "/10/ManagedEnvironmentCatalog/catalog/environments/1/managedRepositoryRoot"
+        ),
+    });
+    let root_serialized = serde_json::to_string(&root_projection)
+        .expect("managed repository root protocol shape");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(root_serialized.as_bytes())),
+        "5d6eccb89e50875e842c507c6147a78c938014c77feeee063bb584c00be69404"
     );
 }
 
@@ -385,8 +426,38 @@ fn local_daemon_reimage_request_rejects_missing_context_plan() {
 }
 
 #[test]
+fn local_daemon_reimage_request_rejects_repository_root_override() {
+    let request = serde_json::json!({
+        "RequestManagedEnvironmentReimage": {
+            "environmentId": "environment-1",
+            "expectedGeneration": 1,
+            "expectedProviderServerId": "123456789",
+            "expectedProviderImageId": "987654321",
+            "expectedProviderProfileId": "hetzner-path1",
+            "expectedProviderProfileDigest": format!("sha256:{}", "b".repeat(64)),
+            "expectedRuntimeReleaseDigest": format!("sha256:{}", "e".repeat(64)),
+            "expectedRuntimeSourceCommit": "c".repeat(40),
+            "expectedRuntimeSourceTree": "d".repeat(40),
+            "contextPlan": {
+                "sourceTargetId": null,
+                "kernelContext": "empty",
+                "developmentSetup": { "kind": "empty" },
+                "providerAccounts": { "kind": "none" },
+                "gitCredentials": { "kind": "none" },
+            },
+            "managedRepositoryRoot": "/tmp/override",
+            "idempotencyKey": "reimage-1",
+        }
+    });
+
+    let error = serde_json::from_value::<LocalDaemonRequest>(request)
+        .expect_err("reimage must not accept a repository-root override");
+    assert!(error.to_string().contains("managedRepositoryRoot"));
+}
+
+#[test]
 fn local_daemon_reimage_preflight_shape_is_versioned_and_allowlisted() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 341);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 342);
     let preflight = ManagedEnvironmentReimagePreflight {
         environment_id: "environment-1".to_string(),
         retained: ManagedEnvironmentReimagePreflightRetained {
@@ -449,7 +520,7 @@ fn local_daemon_reimage_preflight_shape_is_versioned_and_allowlisted() {
 
 #[test]
 fn local_daemon_pre_reimage_observation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 341);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 342);
     let snapshot = serde_json::json!([
         LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(
             ObserveManagedEnvironmentPreReimageRequest {
@@ -493,6 +564,7 @@ fn managed_environment_summary(
         name: "Managed agent".to_string(),
         region: "hel1".to_string(),
         compute_class: "agent-small".to_string(),
+        managed_repository_root: "/home/chariox".to_string(),
         desired_state: ManagedEnvironmentDesiredState::Running,
         observed_state: ManagedEnvironmentObservedState::Requested,
         desired_revision: 1,
@@ -516,5 +588,22 @@ fn managed_environment_summary(
         last_error_message: None,
         created_at: "2026-08-21T00:00:00.000Z".to_string(),
         updated_at: "2026-08-21T00:00:00.000Z".to_string(),
+    }
+}
+
+fn remove_managed_repository_root_fields(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                remove_managed_repository_root_fields(item);
+            }
+        }
+        serde_json::Value::Object(fields) => {
+            fields.remove("managedRepositoryRoot");
+            for item in fields.values_mut() {
+                remove_managed_repository_root_fields(item);
+            }
+        }
+        _ => {}
     }
 }

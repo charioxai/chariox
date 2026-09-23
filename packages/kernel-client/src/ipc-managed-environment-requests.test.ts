@@ -6,6 +6,7 @@ import {
   getManagedEnvironmentReimagePreflightRequest,
   getManagedEnvironmentRequest,
   listManagedEnvironmentCatalogRequest,
+  managedEnvironmentCreateMinimumProtocolVersion,
   managedEnvironmentReimagePreflightMinimumProtocolVersion,
   observeManagedEnvironmentPreReimageRequest,
   prepareManagedEnvironmentContextTransferRequest,
@@ -58,6 +59,37 @@ test("managed environment requests use the shared local daemon shape", () => {
       name: "My machine",
       region: "hel1",
       computeClass: "agent-small",
+      autoStopPolicy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 },
+      contextPlan: {
+        sourceTargetId: null,
+        kernelContext: "empty",
+        developmentSetup: { kind: "empty" },
+        providerAccounts: { kind: "none" },
+        gitCredentials: { kind: "none" },
+      },
+    },
+  })
+  assert.deepEqual(createManagedEnvironmentRequest({
+    clientRequestId: "request-root-1",
+    name: "Rooted machine",
+    region: "hel1",
+    computeClass: "agent-small",
+    managedRepositoryRoot: "/srv/chariox/repos",
+    autoStopPolicy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 },
+    contextPlan: {
+      sourceTargetId: null,
+      kernelContext: "empty",
+      developmentSetup: { kind: "empty" },
+      providerAccounts: { kind: "none" },
+      gitCredentials: { kind: "none" },
+    },
+  }), {
+    CreateManagedEnvironment: {
+      clientRequestId: "request-root-1",
+      name: "Rooted machine",
+      region: "hel1",
+      computeClass: "agent-small",
+      managedRepositoryRoot: "/srv/chariox/repos",
       autoStopPolicy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 },
       contextPlan: {
         sourceTargetId: null,
@@ -181,8 +213,9 @@ test("managed environment requests use the shared local daemon shape", () => {
 })
 
 test("managed environment reimage preflight exposes only retained identity and desired release", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 341)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 342)
   assert.equal(managedEnvironmentReimagePreflightMinimumProtocolVersion, 341)
+  assert.equal(managedEnvironmentCreateMinimumProtocolVersion, 342)
   const preflight: ManagedEnvironmentReimagePreflight = {
     environmentId: "environment-1",
     retained: {
@@ -219,6 +252,7 @@ test("managed environment summaries bind the runtime machine and kernel", () => 
     name: "Managed agent",
     region: "hel1",
     computeClass: "agent-small",
+    managedRepositoryRoot: "/home/chariox",
     desiredState: "running",
     observedState: "ready",
     desiredRevision: 1,

@@ -468,11 +468,11 @@ mod tests {
     use crate::local::{
         CreateManagedEnvironmentRequest, GetManagedEnvironmentReimagePreflightRequest,
         GetManagedEnvironmentRequest, ListManagedEnvironmentCatalogRequest,
-        ManagedEnvironmentAutoStopPolicy,
-        ManagedEnvironmentContextPlanInput, ManagedEnvironmentDevelopmentSetup,
-        ManagedEnvironmentGitCredentials, ManagedEnvironmentKernelContextSelection,
-        ManagedEnvironmentLifecycleAction, ManagedEnvironmentProviderAccountSelection,
-        ManagedEnvironmentProviderAccounts, PrepareManagedEnvironmentContextTransferRequest,
+        ManagedEnvironmentAutoStopPolicy, ManagedEnvironmentContextPlanInput,
+        ManagedEnvironmentDevelopmentSetup, ManagedEnvironmentGitCredentials,
+        ManagedEnvironmentKernelContextSelection, ManagedEnvironmentLifecycleAction,
+        ManagedEnvironmentProviderAccountSelection, ManagedEnvironmentProviderAccounts,
+        PrepareManagedEnvironmentContextTransferRequest,
         PrepareManagedEnvironmentGitCredentialEnrollmentRequest,
         RequestManagedEnvironmentLifecycleRequest, RequestManagedEnvironmentReimageRequest,
     };
@@ -547,10 +547,8 @@ mod tests {
 
     #[tokio::test]
     async fn managed_environment_reimage_preflight_requires_the_owner_cloud_session() {
-        let server = ManagedEnvironmentCloudFixture::start(
-            serde_json::Value::Null,
-            serde_json::Value::Null,
-        );
+        let server =
+            ManagedEnvironmentCloudFixture::start(serde_json::Value::Null, serde_json::Value::Null);
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
             account_id: "account-1".to_string(),
@@ -581,7 +579,9 @@ mod tests {
         )
         .await
         .expect_err("another Cloud user must not read reimage preflight");
-        assert!(wrong_owner.to_string().contains("belongs to another Cloud user"));
+        assert!(wrong_owner
+            .to_string()
+            .contains("belongs to another Cloud user"));
 
         config
             .cloud_relay
@@ -788,9 +788,9 @@ mod tests {
             crate::managed_context::outbound_service::ManagedContextOutboundOperationStore::default(
             ),
             "owner-1",
-            LocalDaemonRequest::RequestManagedEnvironmentReimage(
-                reimage_request(empty_context_plan()),
-            ),
+            LocalDaemonRequest::RequestManagedEnvironmentReimage(reimage_request(
+                empty_context_plan(),
+            )),
         )
         .await
         .expect_err("machine credential must not authorize reimage");
@@ -799,10 +799,8 @@ mod tests {
 
     #[tokio::test]
     async fn managed_environment_reimage_forwards_selected_fresh_context() {
-        let server = ManagedEnvironmentCloudFixture::start(
-            serde_json::Value::Null,
-            serde_json::Value::Null,
-        );
+        let server =
+            ManagedEnvironmentCloudFixture::start(serde_json::Value::Null, serde_json::Value::Null);
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
             account_id: "account-1".to_string(),
@@ -858,10 +856,8 @@ mod tests {
 
     #[tokio::test]
     async fn managed_environment_reimage_rejects_unexportable_accounts_before_cloud() {
-        let server = ManagedEnvironmentCloudFixture::start(
-            serde_json::Value::Null,
-            serde_json::Value::Null,
-        );
+        let server =
+            ManagedEnvironmentCloudFixture::start(serde_json::Value::Null, serde_json::Value::Null);
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
             account_id: "account-1".to_string(),
@@ -1043,6 +1039,7 @@ mod tests {
                 name: "Managed agent".to_string(),
                 region: "hel1".to_string(),
                 compute_class: "agent-small".to_string(),
+                managed_repository_root: Some("/srv/chariox/repos".to_string()),
                 auto_stop_policy: ManagedEnvironmentAutoStopPolicy {
                     minimum_runtime_seconds: 0,
                     idle_delay_seconds: Some(900),
@@ -1058,10 +1055,23 @@ mod tests {
         )
         .await
         .expect("create request");
-        assert!(matches!(
-            create,
-            LocalDaemonResponse::ManagedEnvironmentCreated { .. }
-        ));
+        let LocalDaemonResponse::ManagedEnvironmentCreated { result } = create else {
+            panic!("unexpected create response");
+        };
+        assert_eq!(result.environment.managed_repository_root, "/home/chariox");
+        let create_request = server
+            .requests()
+            .into_iter()
+            .find(|request| request.starts_with("POST /managed-environments"))
+            .expect("Cloud create request");
+        let create_body = create_request
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| serde_json::from_str::<serde_json::Value>(body).expect("JSON body"))
+            .expect("request body");
+        assert_eq!(
+            create_body.get("managedRepositoryRoot"),
+            Some(&serde_json::json!("/srv/chariox/repos"))
+        );
 
         let get = execute_managed_environment_control_request(
             config.clone(),
@@ -1152,9 +1162,9 @@ mod tests {
             provider_account_profiles.clone(),
             outbound_store.clone(),
             "cloud-user-1",
-            LocalDaemonRequest::RequestManagedEnvironmentReimage(
-                reimage_request(empty_context_plan()),
-            ),
+            LocalDaemonRequest::RequestManagedEnvironmentReimage(reimage_request(
+                empty_context_plan(),
+            )),
         )
         .await
         .expect("reimage request");
@@ -1205,7 +1215,9 @@ mod tests {
             ))
             .expect("reimage preflight HTTP request");
         assert_eq!(
-            preflight_request.split_once("\r\n\r\n").map(|(_, body)| body),
+            preflight_request
+                .split_once("\r\n\r\n")
+                .map(|(_, body)| body),
             Some("")
         );
         assert!(requests.iter().any(|request| request.starts_with(
@@ -1479,6 +1491,7 @@ mod tests {
             "name": "Managed agent",
             "region": "hel1",
             "computeClass": "agent-small",
+            "managedRepositoryRoot": "/home/chariox",
             "desiredState": "running",
             "observedState": "ready",
             "desiredRevision": 1,

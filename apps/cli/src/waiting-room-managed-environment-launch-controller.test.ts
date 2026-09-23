@@ -33,6 +33,7 @@ test("managed TUI launch creates Empty context and returns the target workspace"
 
   assert.equal(harness.createdInputs.length, 1)
   assert.equal(harness.createdInputs[0]?.clientRequestId, "key-1")
+  assert.equal(harness.createdInputs[0]?.managedRepositoryRoot, "/home/chariox")
   assert.deepEqual(harness.connectedKernels, [{ machineId: "machine-managed", kernelId: "kernel-managed" }])
   assert.equal(prepared.workspacePath, "/managed/empty/context-1")
   assert.equal(prepared.worktreePath, "/managed/empty/context-1")
@@ -223,6 +224,28 @@ test("managed TUI launch keeps the create idempotency key after a lost response"
   assert.deepEqual(harness.createdInputs.map((input) => input.clientRequestId), ["key-1", "key-1"])
 })
 
+test("managed TUI launch changes create idempotency when the trusted root changes", async () => {
+  const harness = createHarness({
+    createErrors: [new Error("response lost")],
+    createResults: [result(environment("ready"))],
+  })
+
+  await assert.rejects(
+    harness.controller.prepare(newSelection(emptyPlan()), harness.attempt),
+    /response lost/,
+  )
+  await harness.controller.prepare({
+    ...newSelection(emptyPlan()),
+    managedRepositoryRoot: "/srv/chariox/repos",
+  }, harness.attempt)
+
+  assert.deepEqual(harness.createdInputs.map((input) => input.clientRequestId), ["key-1", "key-2"])
+  assert.deepEqual(harness.createdInputs.map((input) => input.managedRepositoryRoot), [
+    "/home/chariox",
+    "/srv/chariox/repos",
+  ])
+})
+
 test("managed TUI launch stops before pivot after sticky cancellation", async () => {
   let releaseCreate = () => {}
   const createGate = new Promise<void>((resolve) => {
@@ -285,7 +308,7 @@ function createHarness(options: HarnessOptions) {
   let now = 0
   let keySequence = 0
   let existing = options.existing
-  const createdInputs: Array<{ clientRequestId: string }> = []
+  const createdInputs: Array<{ clientRequestId: string; managedRepositoryRoot: string }> = []
   const lifecycleRequests: Array<{
     environmentId: string
     action: "start"
@@ -469,6 +492,7 @@ function newSelection(contextPlan: ManagedEnvironmentContextPlan) {
     kind: "new" as const,
     computeClass: "agent-small",
     region: "hel1",
+    managedRepositoryRoot: "/home/chariox",
     autoStopPolicy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 },
     contextPlan: {
       sourceTargetId: contextPlan.source?.sourceTargetId ?? null,
@@ -492,6 +516,7 @@ function environment(
     name: "Managed agent",
     region: "hel1",
     computeClass: "agent-small",
+    managedRepositoryRoot: "/home/chariox",
     desiredState: "running",
     observedState,
     desiredRevision: 1,
