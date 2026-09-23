@@ -106,6 +106,16 @@ const AMBIENT_PROVIDER_CREDENTIAL_ENVIRONMENT: &[&str] = &[
 
 const CONTROL_ENVIRONMENT_NAMES: &[&str] = &[
     "CHARIOX_HOME",
+    "CHARIOX_MANAGED_REPOSITORY_ROOT",
+    "CHARIOX_KERNEL_HOST",
+    "CHARIOX_KERNEL_PORT",
+    "CHARIOX_ACCEPT_REMOTE_LEASES",
+    "CHARIOX_KERNEL_RUNTIME_ROLE",
+    "CHARIOX_REMOTE_LEASE_CAPACITY",
+    "CHARIOX_LEASE_WORKER_HOME_CALLER",
+    "CHARIOX_MANAGED_PROVIDER_TOPOLOGY",
+    "CHARIOX_MANAGED_RELEASE_MANIFEST",
+    "CHARIOX_MANAGED_KERNEL_BINARY",
     "CHARIOX_CAPABILITY_ISOLATION_ROOT",
     "CHARIOX_RELAY_TOKEN",
     "CHARIOX_CLOUD_RELAY_CONFIG_JSON",
@@ -4257,6 +4267,34 @@ mod tests {
         }
     }
 
+    #[test]
+    fn provider_control_environment_scrubs_path1_supervisor_names_only() {
+        let removed = managed_provider_control_env_remove();
+        for name in [
+            "CHARIOX_MANAGED_REPOSITORY_ROOT",
+            "CHARIOX_KERNEL_HOST",
+            "CHARIOX_KERNEL_PORT",
+            "CHARIOX_ACCEPT_REMOTE_LEASES",
+            "CHARIOX_KERNEL_RUNTIME_ROLE",
+            "CHARIOX_REMOTE_LEASE_CAPACITY",
+            "CHARIOX_LEASE_WORKER_HOME_CALLER",
+            "CHARIOX_MANAGED_PROVIDER_TOPOLOGY",
+            "CHARIOX_MANAGED_RELEASE_MANIFEST",
+            "CHARIOX_MANAGED_KERNEL_BINARY",
+        ] {
+            assert!(
+                removed.iter().any(|removed| removed == name),
+                "provider child environment must scrub supervisor control {name}"
+            );
+        }
+        for name in ["HOME", "PATH", "CHARIOX_PROVIDER_ENV_TEST"] {
+            assert!(
+                !removed.iter().any(|removed| removed == name),
+                "provider child control scrub must leave ordinary setting {name} alone"
+            );
+        }
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn managed_provider_isolation_environment_scrubs_account_paths() {
@@ -5672,6 +5710,69 @@ printf 'managed account environment probe passed\n'
             .status()
             .expect("managed utility credential probe should run");
         assert!(status.success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ordinary_account_utility_child_scrubs_path1_controls_and_preserves_provider_env() {
+        let _env = crate::env_lock::lock();
+        let controls = [
+            "CHARIOX_MANAGED_REPOSITORY_ROOT",
+            "CHARIOX_KERNEL_HOST",
+            "CHARIOX_KERNEL_PORT",
+            "CHARIOX_ACCEPT_REMOTE_LEASES",
+            "CHARIOX_KERNEL_RUNTIME_ROLE",
+            "CHARIOX_REMOTE_LEASE_CAPACITY",
+            "CHARIOX_LEASE_WORKER_HOME_CALLER",
+            "CHARIOX_MANAGED_PROVIDER_TOPOLOGY",
+            "CHARIOX_MANAGED_RELEASE_MANIFEST",
+            "CHARIOX_MANAGED_KERNEL_BINARY",
+        ];
+        let mut names = controls.to_vec();
+        names.push(MANAGED_PROVIDER_ISOLATION_ENV);
+        let previous = names
+            .iter()
+            .map(|name| (*name, std::env::var_os(name)))
+            .collect::<Vec<_>>();
+        for name in controls {
+            std::env::set_var(name, "supervisor-only-value");
+        }
+        std::env::remove_var(MANAGED_PROVIDER_ISOLATION_ENV);
+
+        let absent_checks = controls
+            .iter()
+            .map(|name| format!("test \"${{{name}+present}}\" != present"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let script = format!(
+            "set -eu\n{absent_checks}\ntest \"$HOME\" = preserved-home\ntest \"$PATH\" = preserved-path\ntest \"$CHARIOX_PROVIDER_ENV_TEST\" = preserved-provider-value"
+        );
+        let mut environment = BTreeMap::from([
+            ("HOME".to_string(), "preserved-home".to_string()),
+            ("PATH".to_string(), "preserved-path".to_string()),
+            (
+                "CHARIOX_PROVIDER_ENV_TEST".to_string(),
+                "preserved-provider-value".to_string(),
+            ),
+        ]);
+        for name in controls {
+            environment.insert(name.to_string(), "provider-supplied-control".into());
+        }
+        let result = managed_isolated_utility_command(
+            "/bin/sh",
+            vec!["-c".to_string(), script],
+            environment,
+            None,
+            "path1-account-utility-environment-regression",
+        )
+        .map_err(|error| error.to_string())
+        .and_then(|mut command| command.status().map_err(|error| error.to_string()));
+
+        for (name, value) in previous {
+            restore_env(name, value);
+        }
+        let status = result.expect("ordinary account utility child should run");
+        assert!(status.success(), "provider child environment checks failed");
     }
 
     fn restore_env(name: &str, previous: Option<std::ffi::OsString>) {

@@ -363,6 +363,103 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_opencode_adapter_scrubs_path1_supervisor_controls_only() {
+        let _guard = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-registry-path1-env-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("adapter fixture root should exist");
+        let executable = root.join("opencode");
+        fs::write(&executable, "#!/bin/sh\n").expect("fixture executable should exist");
+
+        let controls = [
+            "CHARIOX_MANAGED_REPOSITORY_ROOT",
+            "CHARIOX_KERNEL_HOST",
+            "CHARIOX_KERNEL_PORT",
+            "CHARIOX_ACCEPT_REMOTE_LEASES",
+            "CHARIOX_KERNEL_RUNTIME_ROLE",
+            "CHARIOX_REMOTE_LEASE_CAPACITY",
+            "CHARIOX_LEASE_WORKER_HOME_CALLER",
+            "CHARIOX_MANAGED_PROVIDER_TOPOLOGY",
+            "CHARIOX_MANAGED_RELEASE_MANIFEST",
+            "CHARIOX_MANAGED_KERNEL_BINARY",
+        ];
+        let mut names = controls.to_vec();
+        names.extend([
+            "CHARIOX_MANAGED_PROVIDER_ISOLATION",
+            "CHARIOX_OPENCODE_BIN",
+            "CHARIOX_OPENCODE_PORT",
+        ]);
+        let previous = names
+            .iter()
+            .map(|name| (*name, std::env::var_os(name)))
+            .collect::<Vec<_>>();
+        for name in controls {
+            std::env::set_var(name, "supervisor-only-value");
+        }
+        std::env::remove_var("CHARIOX_MANAGED_PROVIDER_ISOLATION");
+        std::env::set_var("CHARIOX_OPENCODE_BIN", &executable);
+        std::env::set_var("CHARIOX_OPENCODE_PORT", "43112");
+        let expected_program = executable.display().to_string();
+
+        let mut provider_environment = std::collections::BTreeMap::from([(
+            "CHARIOX_PROVIDER_ENV_TEST".to_string(),
+            "preserved-provider-value".to_string(),
+        )]);
+        for name in controls {
+            provider_environment.insert(name.to_string(), "provider-supplied-control".into());
+        }
+        let request = LaunchProviderRequest::new(
+            "session-path1-environment",
+            "opencode",
+            "opencode",
+            "default",
+            "anthropic/claude-sonnet-4",
+        )
+        .with_provider_account_env(provider_environment);
+        let result = ProviderRegistry::new()
+            .resolve("opencode")
+            .expect("opencode adapter should exist")
+            .connect(&request);
+
+        for (name, value) in previous {
+            restore_env(name, value);
+        }
+        let _ = fs::remove_dir_all(root);
+        let launch = result.expect("ordinary Path-1 adapter launch should resolve");
+        assert_eq!(
+            launch.pty_program.as_deref(),
+            Some(expected_program.as_str()),
+            "ordinary Path-1 must keep the provider executable as the child program"
+        );
+
+        for name in controls {
+            assert!(
+                launch.pty_env_remove.iter().any(|removed| removed == name),
+                "ordinary provider adapter must remove inherited control {name}"
+            );
+            assert!(
+                !launch.pty_env.contains_key(name),
+                "ordinary provider adapter must discard explicit control {name}"
+            );
+        }
+        for name in ["HOME", "PATH", "CHARIOX_PROVIDER_ENV_TEST"] {
+            assert!(
+                !launch.pty_env_remove.iter().any(|removed| removed == name),
+                "ordinary provider adapter must preserve environment {name}"
+            );
+        }
+        assert_eq!(
+            launch
+                .pty_env
+                .get("CHARIOX_PROVIDER_ENV_TEST")
+                .map(String::as_str),
+            Some("preserved-provider-value")
+        );
+    }
+
+    #[test]
     fn ordinary_provider_adapter_does_not_reexpose_live_sync_roots() {
         let _guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
