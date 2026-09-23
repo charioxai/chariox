@@ -10,8 +10,8 @@ use super::{
     LocalDockerSliceOptions,
 };
 use crate::slice::model::{
-    SliceBackendKind, SliceBackupRecord, SliceBackupRestoreTransactionRecord, SliceDisplayMode,
-    SliceRecord, SliceSavedStateRecord,
+    SliceBackendKind, SliceBackupRecord, SliceBackupRestoreTransactionRecord, SliceRecord,
+    SliceSavedStateRecord,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -786,9 +786,7 @@ fn stop_local_docker_container_if_running(record: &SliceRecord) -> Result<(), Da
         return Ok(());
     }
     let container = local_docker_container_name(record);
-    if record.display_mode == SliceDisplayMode::Headed {
-        run_local_docker_slice_screen(record, "stop", "slice.state.stop_desktop")?;
-    }
+    run_local_docker_slice_screen(record, "stop", "slice.state.stop_desktop")?;
     let _ = docker_command()
         .args([
             "exec",
@@ -860,14 +858,11 @@ fn stop_local_docker_slice_desktop_for_snapshot(
     if !local_docker_container_is_running(record) {
         return super::snapshot_pause::begin(record, options, false);
     }
-    let restart_desktop = record.display_mode == SliceDisplayMode::Headed;
     // Publish the resume obligation durably before stopping the desktop or
     // freezing the worker. Startup can finish it even after SIGKILL here.
     super::snapshot_pause::begin(record, options, true)?;
     let paused = (|| {
-        if restart_desktop {
-            run_local_docker_slice_screen(record, "stop", "slice.screen.stop_for_snapshot")?;
-        }
+        run_local_docker_slice_screen(record, "stop", "slice.screen.stop_for_snapshot")?;
         let container = local_docker_container_name(record);
         let status = docker_command()
             .args(["pause", &container])

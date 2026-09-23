@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use crate::error::DaemonError;
-use crate::slice::{SliceBackendKind, SliceDisplayMode, SliceRecord};
+use crate::slice::{SliceBackendKind, SliceRecord};
 
 use super::{
     docker_command, local_docker_container_name, run_local_docker_slice_screen,
@@ -109,7 +109,7 @@ pub(super) fn begin(
         version: 1,
         slice_id: record.id.clone(),
         container: local_docker_container_name(record),
-        restart_desktop: resume_container && record.display_mode == SliceDisplayMode::Headed,
+        restart_desktop: resume_container,
         resume_container,
         helpers: Vec::new(),
     };

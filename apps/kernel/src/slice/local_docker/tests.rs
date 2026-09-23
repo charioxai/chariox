@@ -342,10 +342,14 @@ exit 0
 
     let mut options = test_options();
     options.root = root.clone();
-    let record = test_record();
+    let mut record = test_record();
+    record.display_mode = SliceDisplayMode::Headless;
     let rejection = state::save_local_docker_slice_state_live(&record, &options)
         .expect_err("low Docker capacity must reject the real live-save path");
     let pressured_calls = std::fs::read_to_string(&log).expect("Docker log should read");
+    let screen_stop = pressured_calls
+        .find("/opt/chariox-slice/slice-screen.sh stop")
+        .expect("headless desktop must stop before live snapshot");
     let pause = pressured_calls
         .find("pause chariox-slice-dev")
         .expect("source container must pause");
@@ -355,6 +359,10 @@ exit 0
     let unpause = pressured_calls
         .rfind("unpause chariox-slice-dev")
         .expect("rejected snapshot must resume the source container");
+    let screen_restart = pressured_calls
+        .rfind("/opt/chariox-slice/slice-screen.sh start")
+        .expect("headless desktop must restart after live snapshot rejection");
+    assert!(screen_stop < pause && unpause < screen_restart);
     assert!(pause < measurement && measurement < unpause);
     assert!(rejection
         .to_string()
@@ -405,6 +413,176 @@ exit 0
         })
     );
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn public_headless_slice_save_gracefully_quiesces_before_capture_and_fails_closed() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _environment = crate::env_lock::lock();
+    let root = test_root("headless-save-quiescence");
+    let bin = root.join("bin");
+    let docker = bin.join("docker");
+    let log = root.join("docker.log");
+    let running = root.join("running");
+    std::fs::create_dir_all(&bin).expect("fake Docker directory should create");
+    std::fs::write(&running, b"running").expect("container should start running");
+    std::fs::write(
+        &docker,
+        r##"#!/bin/sh
+printf '%s\n' "$*" >> "$DOCKER_LOG"
+case "$*" in
+  "ps --format {{.Names}}")
+    if [ -f "$DOCKER_RUNNING" ]; then printf 'chariox-slice-dev\n'; fi
+    exit 0
+    ;;
+  "container inspect chariox-slice-dev") exit 0 ;;
+  *"State.Running"*chariox-slice-dev)
+    if [ -f "$DOCKER_RUNNING" ]; then printf 'true running\n'; else printf 'false exited\n'; fi
+    exit 0
+    ;;
+  "info --format {{.DockerRootDir}}") printf '/tmp\n'; exit 0 ;;
+  *"inspect --size --format {{.SizeRw}} chariox-slice-dev") printf '1048576\n'; exit 0 ;;
+  *" du -sb /home-src") printf '1048576 /home-src\n'; exit 0 ;;
+  *" find /home-src -printf . | wc -c") printf '1\n'; exit 0 ;;
+  *" df -B1 --output=avail /tmp") printf '107374182400\n'; exit 0 ;;
+  *"slice-screen.sh stop"*)
+    if [ "${DOCKER_FAIL_SCREEN_STOP:-0}" = 1 ]; then
+      printf 'fixture rejected graceful screen stop\n' >&2
+      exit 17
+    fi
+    exit 0
+    ;;
+  "stop chariox-slice-dev") rm -f "$DOCKER_RUNNING"; exit 0 ;;
+  cp\ *)
+    destination=
+    for argument in "$@"; do destination=$argument; done
+    printf 'fixture home archive' > "$destination"
+    exit 0
+    ;;
+esac
+exit 0
+"##,
+    )
+    .expect("fake Docker should write");
+    std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700))
+        .expect("fake Docker should become executable");
+
+    struct RestoreEnvironment {
+        path: Option<std::ffi::OsString>,
+        docker_log: Option<std::ffi::OsString>,
+        docker_running: Option<std::ffi::OsString>,
+        fail_screen_stop: Option<std::ffi::OsString>,
+        root: std::path::PathBuf,
+    }
+    impl Drop for RestoreEnvironment {
+        fn drop(&mut self) {
+            for (name, value) in [
+                ("PATH", self.path.take()),
+                ("DOCKER_LOG", self.docker_log.take()),
+                ("DOCKER_RUNNING", self.docker_running.take()),
+                ("DOCKER_FAIL_SCREEN_STOP", self.fail_screen_stop.take()),
+            ] {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+    let previous_path = std::env::var_os("PATH");
+    let mut paths = vec![bin];
+    if let Some(path) = &previous_path {
+        paths.extend(std::env::split_paths(path));
+    }
+    let _restore = RestoreEnvironment {
+        path: previous_path,
+        docker_log: std::env::var_os("DOCKER_LOG"),
+        docker_running: std::env::var_os("DOCKER_RUNNING"),
+        fail_screen_stop: std::env::var_os("DOCKER_FAIL_SCREEN_STOP"),
+        root: root.clone(),
+    };
+    std::env::set_var(
+        "PATH",
+        std::env::join_paths(paths).expect("fake Docker PATH should join"),
+    );
+    std::env::set_var("DOCKER_LOG", &log);
+    std::env::set_var("DOCKER_RUNNING", &running);
+    std::env::set_var("DOCKER_FAIL_SCREEN_STOP", "1");
+
+    let mut record = test_record();
+    record.display_mode = crate::slice::SliceDisplayMode::Headless;
+    let mut options = test_options();
+    options.root = root.clone();
+
+    let error = state::save_local_docker_slice_state(&record, &options)
+        .expect_err("a failed graceful screen stop must reject public state save");
+    assert!(error.to_string().contains("slice screen `stop`"));
+    let failed_calls = std::fs::read_to_string(&log).expect("failed-call log should read");
+    assert!(failed_calls.contains("/opt/chariox-slice/slice-screen.sh stop"));
+    assert!(!failed_calls
+        .lines()
+        .any(|call| call == "stop chariox-slice-dev"));
+    assert!(!failed_calls
+        .lines()
+        .any(|call| call.starts_with("commit chariox-slice-dev ")));
+
+    std::env::set_var("DOCKER_FAIL_SCREEN_STOP", "0");
+    let state = state::save_local_docker_slice_state(&record, &options)
+        .expect("public headless save should capture after graceful shutdown");
+    assert!(state.home_archive_path.contains("states/dev/home-"));
+    assert!(state.home_archive_path.ends_with(".tar.zst"));
+    assert!(
+        !running.exists(),
+        "successful state save must leave the source stopped"
+    );
+    let calls = std::fs::read_to_string(&log).expect("successful-call log should read");
+    let screen_stop = calls
+        .rfind("/opt/chariox-slice/slice-screen.sh stop")
+        .expect("screen stop should be called for a headless browser slice");
+    assert!(calls.contains("CHARIOX_SLICE_DISPLAY_MODE=headless"));
+    let kernel_shutdown = calls
+        .rfind("screen -S chariox-slice-kernel -X quit")
+        .expect("kernel shutdown should follow desktop quiescence");
+    let container_stop = calls
+        .rfind("stop chariox-slice-dev")
+        .expect("container should stop after graceful process cleanup");
+    let image_capture = calls
+        .rfind("commit chariox-slice-dev ")
+        .expect("image capture should occur after container stop");
+    let home_capture = calls
+        .rfind("tar --zstd -cf /tmp/home.tar.zst .")
+        .expect("home archive should be captured");
+    assert!(screen_stop < kernel_shutdown);
+    assert!(kernel_shutdown < container_stop);
+    assert!(container_stop < image_capture);
+    assert!(image_capture < home_capture);
+    assert!(calls.lines().any(|call| {
+        call.starts_with("create --name chariox-slice-dev-home-archive-")
+            && call.contains("chariox-slice-dev-home:/home-src:ro")
+    }));
+
+    let screen = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("slice-linux-docker/docker/slice-screen.sh"),
+    )
+    .expect("slice screen script should be readable");
+    assert!(screen.contains("slice_selkies stop >/dev/null"));
+    assert!(screen.contains("node \"$ROOT/browser-cdp.mjs\" close-browser"));
+    assert!(screen.contains("stop_process_pattern \"websockify.*$NOVNC_PORT\""));
+    assert!(screen.contains("$HOME/.chariox/browser/chromium"));
+
+    std::fs::write(&log, "").expect("stopped-slice log should reset");
+    std::env::set_var("DOCKER_FAIL_SCREEN_STOP", "1");
+    state::save_local_docker_slice_state(&record, &options)
+        .expect("already-stopped slices must remain saveable without screen startup");
+    let stopped_calls = std::fs::read_to_string(&log).expect("stopped-slice log should read");
+    assert!(!stopped_calls.contains("slice-screen.sh stop"));
+    assert!(!stopped_calls
+        .lines()
+        .any(|call| call == "stop chariox-slice-dev"));
+    assert!(!running.exists());
 }
 
 fn saved_state(manifest_path: String) -> SliceSavedStateRecord {
