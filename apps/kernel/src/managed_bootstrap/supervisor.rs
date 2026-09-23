@@ -242,6 +242,9 @@ fn spawn_kernel_with_handoff(
         for name in PATH1_SHARED_HOST_SELECTOR_ENVS {
             command.env_remove(name);
         }
+        if let Some(slice_root) = path1_managed_slice_root_from_broker_socket() {
+            command.env("CHARIOX_SLICE_ROOT", slice_root);
+        }
     }
     if let Some(service_root) = service_root.as_ref() {
         command.env(
@@ -259,10 +262,7 @@ fn spawn_kernel_with_handoff(
     } else {
         command.env_remove(crate::provider::MANAGED_SLICE_PUBLICATION_ROOT_ENV);
     }
-    let spawn_result = match topology {
-        ManagedProviderTopology::Path1 => command.spawn().map(|child| (child, None)),
-        ManagedProviderTopology::SharedHost => spawn_with_broker_lease(&mut command),
-    };
+    let spawn_result = spawn_with_broker_lease(&mut command);
     let (mut child, handed_off_fd) = match spawn_result {
         Ok(child) => child,
         Err(error) => {
@@ -301,6 +301,33 @@ fn broker_share_root_from_socket() -> Option<std::path::PathBuf> {
         .parent()?
         .parent()
         .map(std::path::Path::to_path_buf)
+}
+
+pub(super) fn path1_managed_slice_root_from_broker_socket() -> Option<std::path::PathBuf> {
+    let socket = std::env::var_os(BROKER_SOCKET_ENV)
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)?;
+    if !socket.is_absolute()
+        || socket.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
+        || socket.file_name() != Some(std::ffi::OsStr::new("control.sock"))
+    {
+        return None;
+    }
+    let control = socket.parent()?;
+    let private = control.parent()?;
+    let share_root = private.parent()?;
+    if control.file_name() != Some(std::ffi::OsStr::new("control"))
+        || private.file_name() != Some(std::ffi::OsStr::new(".broker-private"))
+        || share_root == std::path::Path::new("/")
+    {
+        return None;
+    }
+    Some(share_root.join("slices/development"))
 }
 
 fn managed_slice_boundaries_for_kernel(
@@ -435,7 +462,9 @@ fn wait_for_local_auth_consumption(
     ))
 }
 
-fn spawn_with_broker_lease(command: &mut Command) -> std::io::Result<(Child, Option<i32>)> {
+pub(super) fn spawn_with_broker_lease(
+    command: &mut Command,
+) -> std::io::Result<(Child, Option<i32>)> {
     #[cfg(unix)]
     {
         let lease = BROKER_LEASE.get_or_init(|| Mutex::new(None));
@@ -483,6 +512,27 @@ fn spawn_with_broker_lease(command: &mut Command) -> std::io::Result<(Child, Opt
         .env_remove(BROKER_FD_ENV)
         .env(BROKER_REQUIRED_ENV, "1");
     command.spawn().map(|child| (child, None))
+}
+
+#[cfg(all(test, unix))]
+pub(super) fn install_test_broker_lease(stream: UnixStream) -> io::Result<()> {
+    let reader = stream.try_clone()?;
+    let lease = BROKER_LEASE.get_or_init(|| Mutex::new(None));
+    *lease
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(BrokerLease {
+        reader: BufReader::new(reader),
+        writer: stream,
+    });
+    Ok(())
+}
+
+#[cfg(all(test, unix))]
+pub(super) fn clear_test_broker_lease() {
+    let lease = BROKER_LEASE.get_or_init(|| Mutex::new(None));
+    *lease
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
 }
 
 #[cfg(unix)]
@@ -654,6 +704,7 @@ mod broker_proxy_tests {
   printf 'socket=%s\n' "${CHARIOX_SLICE_DOCKER_BROKER_SOCKET-<unset>}"
   printf 'fd=%s\n' "${CHARIOX_SLICE_DOCKER_BROKER_FD-<unset>}"
   printf 'required=%s\n' "${CHARIOX_SLICE_DOCKER_BROKER_REQUIRED-<unset>}"
+  printf 'slice_root=%s\n' "${CHARIOX_SLICE_ROOT-<unset>}"
 } > "$CHARIOX_ENV_RECORD"
 rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
 "##;
@@ -788,8 +839,9 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         assert!(fd.contains("required=<unset>\n"));
         *lease.lock().expect("broker lease") = None;
 
-        // A Path-1 launch must ignore inherited shared-host selectors and must
-        // not turn a stale broker lease/configuration into a child requirement.
+        // A Path-1 launch ignores shared-host isolation selectors. Without an
+        // accepted broker lease it strips the socket and requires the broker,
+        // so slice operations cannot fall back to a Docker CLI.
         std::env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "path1");
         std::env::set_var(
             "CHARIOX_CAPABILITY_ISOLATION_ROOT",
@@ -834,7 +886,42 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
         assert!(path1.contains("publication=<unset>\n"));
         assert!(path1.contains("socket=<unset>\n"));
         assert!(path1.contains("fd=<unset>\n"));
-        assert!(path1.contains("required=<unset>\n"));
+        assert!(path1.contains("required=1\n"));
+        assert!(path1.contains("slice_root=<unset>\n"));
+
+        // With the broker lease present, Path 1 receives only the proxy FD;
+        // its slice root is derived from the broker's private socket layout.
+        let (path1_backend, path1_broker_peer) = UnixStream::pair().expect("Path-1 broker pair");
+        let path1_reader = path1_backend
+            .try_clone()
+            .expect("Path-1 broker reader clone");
+        *lease.lock().expect("broker lease") = Some(BrokerLease {
+            reader: BufReader::new(path1_reader),
+            writer: path1_backend,
+        });
+        std::env::set_var(
+            BROKER_SOCKET_ENV,
+            "/var/lib/chariox-slice-share/.broker-private/control/control.sock",
+        );
+        std::env::remove_var(BROKER_FD_ENV);
+        std::env::remove_var(BROKER_REQUIRED_ENV);
+        let (mut child, path1_fd) =
+            spawn_kernel_with_handoff(&config, &release, ManagedProviderTopology::Path1)
+                .expect("Path-1 kernel should receive its broker FD");
+        child.wait().expect("Path-1 broker kernel should exit");
+        let path1_fd = path1_fd.expect("Path-1 broker lease should hand off an FD");
+        let path1_broker = std::fs::read_to_string(&path1_record)
+            .expect("Path-1 broker env record should exist");
+        assert!(path1_broker.contains("service=<unset>\n"));
+        assert!(path1_broker.contains("publication=<unset>\n"));
+        assert!(path1_broker.contains("socket=<unset>\n"));
+        assert!(path1_broker.contains(&format!("fd={path1_fd}\n")));
+        assert!(path1_broker.contains("required=<unset>\n"));
+        assert!(path1_broker.contains(
+            "slice_root=/var/lib/chariox-slice-share/slices/development\n"
+        ));
+        *lease.lock().expect("broker lease") = None;
+        drop(path1_broker_peer);
 
         restore_env(
             crate::provider::MANAGED_SLICE_SERVICE_ROOT_ENV,

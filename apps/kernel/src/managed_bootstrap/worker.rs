@@ -282,6 +282,7 @@ pub fn run_from_env() -> Result<(), DaemonError> {
             "disposable worker bootstrap requires path1 topology",
         ));
     }
+    super::supervisor::initialize_managed_docker_broker();
     let cloud = HttpBootstrapCloudClient::default();
     let mut delay = MIN_RETRY;
     loop {
@@ -556,6 +557,9 @@ fn spawn_kernel(
     for name in PATH1_SHARED_HOST_SELECTOR_ENVS {
         command.env_remove(name);
     }
+    if let Some(slice_root) = super::supervisor::path1_managed_slice_root_from_broker_socket() {
+        command.env("CHARIOX_SLICE_ROOT", slice_root);
+    }
     #[cfg(target_os = "linux")]
     {
         let provider_home = prepare_disposable_worker_provider_home(config)?;
@@ -566,8 +570,8 @@ fn spawn_kernel(
                 config.chariox_home.join("vault").join("vault.json"),
             );
     }
-    command
-        .spawn()
+    super::supervisor::spawn_with_broker_lease(&mut command)
+        .map(|(child, _)| child)
         .map_err(|error| worker_error(format!("start worker kernel: {error}")))
 }
 
@@ -1049,8 +1053,10 @@ mod tests {
     #[test]
     fn disposable_worker_spawn_uses_ordinary_kernel_and_scrubs_parent_state() {
         use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::net::UnixStream;
 
         let _lock = crate::env_lock::lock();
+        super::super::supervisor::clear_test_broker_lease();
         let fixture = super::super::tests::Fixture::new("worker-isolation-topology");
         let config = WorkerConfig {
             process_home: fixture.config.process_home.clone(),
@@ -1076,7 +1082,7 @@ mod tests {
             .expect("worker fixture should have a parent")
             .join("provider-home");
         let capability_root = config.chariox_home.join("managed-context/kernel");
-        let kernel_script = b"#!/bin/sh\nset -eu\nmarker=\"${CHARIOX_WORKER_ISOLATION_PROBE_MARKER:?}\"\nprintf 'home=%s\\n' \"${HOME-<unset>}\" > \"$marker\"\nprintf 'chariox_home=%s\\n' \"${CHARIOX_HOME-<unset>}\" >> \"$marker\"\nprintf 'repository_root=%s\\n' \"${CHARIOX_MANAGED_REPOSITORY_ROOT-<unset>}\" >> \"$marker\"\nprintf 'topology=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_TOPOLOGY-<unset>}\" >> \"$marker\"\nprintf 'cwd=%s\\n' \"$(pwd)\" >> \"$marker\"\nprintf 'isolation=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_ISOLATION-<unset>}\" >> \"$marker\"\nprintf 'provider_home=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_HOME-<unset>}\" >> \"$marker\"\nprintf 'capability_root=%s\\n' \"${CHARIOX_CAPABILITY_ISOLATION_ROOT-<unset>}\" >> \"$marker\"\nprintf 'provider_isolation_active=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE-<unset>}\" >> \"$marker\"\nprintf 'vault=%s\\n' \"${CHARIOX_MANAGED_VAULT_PATH-<unset>}\" >> \"$marker\"\nprintf 'daemon_socket=%s\\n' \"${CHARIOX_DAEMON_SOCKET-<unset>}\" >> \"$marker\"\nprintf 'broker_socket=%s\\n' \"${CHARIOX_SLICE_DOCKER_BROKER_SOCKET-<unset>}\" >> \"$marker\"\nprintf 'slice_root=%s\\n' \"${CHARIOX_SLICE_ROOT-<unset>}\" >> \"$marker\"\nprintf 'relay_token=%s\\n' \"${CHARIOX_RELAY_TOKEN-<unset>}\" >> \"$marker\"\nprintf 'daemon_id=%s\\n' \"${CHARIOX_DAEMON_ID-<unset>}\" >> \"$marker\"\nprintf 'machine_id=%s\\n' \"${CHARIOX_MACHINE_ID-<unset>}\" >> \"$marker\"\nprintf 'bootstrap_path=%s\\n' \"${CHARIOX_MANAGED_BOOTSTRAP_PATH-<unset>}\" >> \"$marker\"\nprintf ordinary > \"$HOME/ordinary-worker-write\"\n";
+        let kernel_script = b"#!/bin/sh\nset -eu\nmarker=\"${CHARIOX_WORKER_ISOLATION_PROBE_MARKER:?}\"\nprintf 'home=%s\\n' \"${HOME-<unset>}\" > \"$marker\"\nprintf 'chariox_home=%s\\n' \"${CHARIOX_HOME-<unset>}\" >> \"$marker\"\nprintf 'repository_root=%s\\n' \"${CHARIOX_MANAGED_REPOSITORY_ROOT-<unset>}\" >> \"$marker\"\nprintf 'topology=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_TOPOLOGY-<unset>}\" >> \"$marker\"\nprintf 'cwd=%s\\n' \"$(pwd)\" >> \"$marker\"\nprintf 'isolation=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_ISOLATION-<unset>}\" >> \"$marker\"\nprintf 'provider_home=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_HOME-<unset>}\" >> \"$marker\"\nprintf 'capability_root=%s\\n' \"${CHARIOX_CAPABILITY_ISOLATION_ROOT-<unset>}\" >> \"$marker\"\nprintf 'provider_isolation_active=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE-<unset>}\" >> \"$marker\"\nprintf 'vault=%s\\n' \"${CHARIOX_MANAGED_VAULT_PATH-<unset>}\" >> \"$marker\"\nprintf 'daemon_socket=%s\\n' \"${CHARIOX_DAEMON_SOCKET-<unset>}\" >> \"$marker\"\nprintf 'broker_socket=%s\\n' \"${CHARIOX_SLICE_DOCKER_BROKER_SOCKET-<unset>}\" >> \"$marker\"\nprintf 'broker_fd=%s\\n' \"${CHARIOX_SLICE_DOCKER_BROKER_FD-<unset>}\" >> \"$marker\"\nprintf 'broker_required=%s\\n' \"${CHARIOX_SLICE_DOCKER_BROKER_REQUIRED-<unset>}\" >> \"$marker\"\nprintf 'slice_root=%s\\n' \"${CHARIOX_SLICE_ROOT-<unset>}\" >> \"$marker\"\nprintf 'relay_token=%s\\n' \"${CHARIOX_RELAY_TOKEN-<unset>}\" >> \"$marker\"\nprintf 'daemon_id=%s\\n' \"${CHARIOX_DAEMON_ID-<unset>}\" >> \"$marker\"\nprintf 'machine_id=%s\\n' \"${CHARIOX_MACHINE_ID-<unset>}\" >> \"$marker\"\nprintf 'bootstrap_path=%s\\n' \"${CHARIOX_MANAGED_BOOTSTRAP_PATH-<unset>}\" >> \"$marker\"\nprintf ordinary > \"$HOME/ordinary-worker-write\"\n";
         let kernel_script = [
             kernel_script.as_slice(),
             b"printf 'provider_bwrap=%s\\n' \"${CHARIOX_MANAGED_PROVIDER_BWRAP-<unset>}\" >> \"$marker\"\nprintf 'slice_service=%s\\n' \"${CHARIOX_MANAGED_SLICE_SERVICE_ROOT-<unset>}\" >> \"$marker\"\nprintf 'slice_publication=%s\\n' \"${CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT-<unset>}\" >> \"$marker\"\n"
@@ -1099,6 +1105,8 @@ mod tests {
             "CHARIOX_MANAGED_VAULT_PATH",
             "CHARIOX_DAEMON_SOCKET",
             "CHARIOX_SLICE_DOCKER_BROKER_SOCKET",
+            "CHARIOX_SLICE_DOCKER_BROKER_FD",
+            "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED",
             "CHARIOX_MANAGED_SLICE_SERVICE_ROOT",
             "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT",
             "CHARIOX_SLICE_ROOT",
@@ -1127,6 +1135,8 @@ mod tests {
             "CHARIOX_SLICE_DOCKER_BROKER_SOCKET",
             "/run/chariox/broker.sock",
         );
+        env::set_var("CHARIOX_SLICE_DOCKER_BROKER_FD", "99");
+        env::set_var("CHARIOX_SLICE_DOCKER_BROKER_REQUIRED", "1");
         env::set_var(
             "CHARIOX_MANAGED_SLICE_SERVICE_ROOT",
             "/var/lib/chariox-slice-share",
@@ -1203,6 +1213,39 @@ mod tests {
                 "worker provider must not inherit {name}: {observed}"
             );
         }
+        assert!(observed.contains("broker_required=1\n"));
+
+        // With the one-shot broker already leased by the bootstrap parent,
+        // the disposable kernel receives only the scoped proxy FD and the
+        // Docker-visible slice root. It never receives the broker socket.
+        let (broker_backend, broker_peer) = UnixStream::pair().expect("broker lease pair");
+        super::super::supervisor::install_test_broker_lease(broker_backend)
+            .expect("install broker lease for kernel handoff");
+        env::set_var(
+            "CHARIOX_SLICE_DOCKER_BROKER_SOCKET",
+            "/var/lib/chariox-slice-share/.broker-private/control/control.sock",
+        );
+        env::remove_var("CHARIOX_SLICE_DOCKER_BROKER_FD");
+        env::remove_var("CHARIOX_SLICE_DOCKER_BROKER_REQUIRED");
+        let mut child = spawn_kernel(&config, &release, &receipt, ManagedProviderTopology::Path1)
+            .expect("disposable worker kernel should receive the broker lease");
+        let status = child.wait().expect("broker probe kernel should exit");
+        assert!(status.success(), "broker probe kernel failed: {status}");
+        let broker_observed = fs::read_to_string(&marker).expect("broker probe environment");
+        assert!(broker_observed.contains("broker_socket=<unset>\n"));
+        let handed_off_fd = broker_observed
+            .lines()
+            .find_map(|line| line.strip_prefix("broker_fd="))
+            .and_then(|value| value.parse::<i32>().ok())
+            .expect("broker FD should be present in kernel environment");
+        assert!(handed_off_fd >= 0);
+        assert!(broker_observed.contains("broker_required=<unset>\n"));
+        assert!(broker_observed.contains(
+            "slice_root=/var/lib/chariox-slice-share/slices/development\n"
+        ));
+        super::super::supervisor::clear_test_broker_lease();
+        drop(broker_peer);
+
         assert!(config.process_home.join("ordinary-worker-write").is_file());
         let provider_mode = fs::metadata(&provider_home)
             .expect("managed provider HOME should be prepared")
