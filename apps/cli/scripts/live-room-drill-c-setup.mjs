@@ -3,12 +3,17 @@
 import assert from "node:assert/strict"
 import { spawn, execFile } from "node:child_process"
 import { constants as fsConstants, createWriteStream } from "node:fs"
-import { access, chmod, mkdir, rm, symlink } from "node:fs/promises"
+import { access, chmod, mkdir, open, rm, symlink, unlink, writeFile } from "node:fs/promises"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { promisify } from "node:util"
 import { fileURLToPath, pathToFileURL } from "node:url"
+import {
+  createRoomDirectDockerWorkspaceFixture,
+  removeRoomDirectDockerWorkspaceFixture,
+  roomDirectDockerWorkspaceRootEnvironment,
+} from "./lib/room-rootless-workspace-fixture.mjs"
 
 const execFileAsync = promisify(execFile)
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
@@ -30,6 +35,10 @@ export function parseArgs(argv, env = process.env) {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-")
   const options = {
     existingKernelUrl: null,
+    rootlessWorkspaceRoot: env[roomDirectDockerWorkspaceRootEnvironment]?.trim()
+      ? path.resolve(env[roomDirectDockerWorkspaceRootEnvironment].trim())
+      : null,
+    homeDir,
     expectedDaemonId: env.CHARIOX_EXPECTED_DAEMON_ID ?? null,
     expectedMachineId: env.CHARIOX_EXPECTED_MACHINE_ID ?? null,
     rootDir: path.join(taskDevRoot, `drill-c-same-host-${stamp}`),
@@ -65,6 +74,7 @@ export function parseArgs(argv, env = process.env) {
       options.manifestPathProvided = true
     }
     else if (arg === "--existing-kernel") options.existingKernelUrl = next()
+    else if (arg === "--rootless-workspace-root") options.rootlessWorkspaceRoot = path.resolve(next())
     else if (arg === "--expected-daemon-id") options.expectedDaemonId = next()
     else if (arg === "--expected-machine-id") options.expectedMachineId = next()
     else if (arg === "--local-cloud-url") options.localCloudUrl = next()
@@ -112,6 +122,11 @@ export function assertModeOptions(options) {
     assert.ok(["", "/", "/kernel"].includes(endpoint.pathname),
       "--existing-kernel must address the local kernel WebSocket endpoint")
     assert.ok(options.expectedDaemonId?.trim(), "--existing-kernel requires --expected-daemon-id")
+    assertRootlessWorkspaceRoot({
+      workspaceRoot: options.rootlessWorkspaceRoot,
+      homeDir: options.homeDir,
+      repositoryRoot: repoRoot,
+    })
     if (options.expectedMachineId != null) {
       assert.ok(options.expectedMachineId.trim(), "--expected-machine-id must not be empty")
     }
@@ -125,6 +140,48 @@ export function assertModeOptions(options) {
 
 export function requiresDirectDockerAccess(mode) {
   return mode === "isolated_local"
+}
+
+export function assertRootlessWorkspaceRoot({ workspaceRoot, homeDir = os.homedir(), repositoryRoot = repoRoot }) {
+  assert.ok(typeof workspaceRoot === "string" && workspaceRoot.length > 0,
+    `existing-kernel mode requires --rootless-workspace-root or ${roomDirectDockerWorkspaceRootEnvironment}`)
+  assert.ok(path.isAbsolute(workspaceRoot), "rootless workspace root must be absolute")
+  const selectedRoot = path.resolve(workspaceRoot)
+  assert.ok(isWithin(selectedRoot, "/var/tmp"), "rootless workspace root must be under explicit engine-visible /var/tmp")
+  assert.ok(!pathsOverlap(selectedRoot, homeDir), "rootless workspace root must be outside the invoking user's home")
+  assert.ok(!pathsOverlap(selectedRoot, repositoryRoot), "rootless workspace root must be outside the source repository")
+  return selectedRoot
+}
+
+export async function createExistingKernelWorkspaceFixture({
+  workspaceRoot,
+  homeDir = os.homedir(),
+  repositoryRoot = repoRoot,
+}) {
+  const selectedRoot = assertRootlessWorkspaceRoot({ workspaceRoot, homeDir, repositoryRoot })
+  return await createRoomDirectDockerWorkspaceFixture({
+    workspaceRoot: selectedRoot,
+    forbiddenRoots: [repositoryRoot, homeDir],
+    // This proves only the invoking user's traversal and write access. The real rootless
+    // engine mount check is CreateSlice followed by StartSlice through the selected kernel.
+    verifyEngineAccess: probeInvokingUserWorkspaceAccess,
+  })
+}
+
+async function probeInvokingUserWorkspaceAccess(target, { writable }) {
+  const accessMode = fsConstants.R_OK | fsConstants.X_OK | (writable ? fsConstants.W_OK : 0)
+  await access(target, accessMode)
+  if (!writable) return
+
+  const probePath = path.join(target, `.drill-c-write-probe-${process.pid}`)
+  const probe = await open(probePath, "wx", 0o600)
+  try {
+    await probe.writeFile("workspace write probe")
+    await probe.sync()
+  } finally {
+    await probe.close()
+    await unlink(probePath)
+  }
 }
 
 export function assertLoopbackUrl(value, label, protocols) {
@@ -503,7 +560,7 @@ export function buildSetupManifest({
     },
     cleanup: mode === "isolated_local"
       ? "Ctrl+C stops the Room environment, deletes the drill slice and session, then stops this harness's kernel and relay."
-      : "Ctrl+C stops and deletes only this harness's Room and slice, removes its workspace, and leaves the selected kernel and its relay running.",
+      : "Ctrl+C stops and deletes only this harness's Room and slice, then removes its inode-guarded workspace after matching cleanup acknowledgements; the selected kernel and relay remain running.",
   }
 }
 
@@ -515,6 +572,7 @@ function printHelp() {
     "  --root-dir PATH",
     "  --manifest PATH",
     "  --existing-kernel URL              use the already-running local kernel; do not start or stop it",
+    "  --rootless-workspace-root PATH     required for existing-kernel; safe root under /var/tmp",
     "  --expected-daemon-id ID             required with --existing-kernel",
     "  --expected-machine-id ID            optional additional identity check",
     "  --local-cloud-url URL             default: http://127.0.0.1:4321",
@@ -525,8 +583,8 @@ function printHelp() {
     "  --relay-binary PATH               prebuilt binary; this script never builds",
     "",
     "The script waits after setup so the attach-only TUI and Web observers can run.",
-    "Existing-kernel mode requires a loopback ws:// URL and leaves Cloud/Web transport unobserved.",
-    "Ctrl+C removes only this run's Room, slice, and workspace; existing kernel processes remain running.",
+    `Existing-kernel mode requires a loopback ws:// URL and an explicit --rootless-workspace-root (or ${roomDirectDockerWorkspaceRootEnvironment}); Cloud/Web transport stays unobserved.`,
+    "Ctrl+C cleans up only this run's Room and slice; its workspace is removed only after matching cleanup acknowledgements.",
   ].join("\n"))
 }
 
@@ -574,8 +632,8 @@ async function main() {
   const sliceName = `drill-c-${stamp}`
   const workerKernelRef = `drill-c-worker-${stamp}`
   const kernelHome = path.join(options.rootDir, "kernel-home")
-  const workspace = path.join(options.rootDir, "workspace")
-  const worktree = workspace
+  let workspace = path.join(options.rootDir, "workspace")
+  let worktree = workspace
   const logDir = path.join(options.rootDir, "logs")
   const clientModule = await import(pathToFileURL(path.join(kernelClientRoot, "dist", "ipc.js")).href)
   const requests = await import(pathToFileURL(path.join(kernelClientRoot, "dist", "ipc-requests.js")).href)
@@ -587,6 +645,10 @@ async function main() {
     sliceId: null,
     workspace,
     workspaceOwned: false,
+    rootlessWorkspaceFixture: null,
+    sliceCreateAttempted: false,
+    sessionCreateAttempted: false,
+    roomEnvironmentStartAttempted: false,
     presenceRecordPath: existingKernel ? null : path.join(options.activeKernelRegistryDir, `${daemonId}.json`),
     manifest: null,
     manifestPath: options.manifestPath,
@@ -607,9 +669,20 @@ async function main() {
   try {
     await mkdir(devRoot, { recursive: true, mode: 0o700 })
     await mkdir(options.rootDir, { recursive: false, mode: 0o700 })
-    await mkdir(workspace, { recursive: false, mode: 0o700 })
-    state.workspaceOwned = true
-    await chmod(workspace, 0o777)
+    if (existingKernel) {
+      state.rootlessWorkspaceFixture = await createExistingKernelWorkspaceFixture({
+        workspaceRoot: options.rootlessWorkspaceRoot,
+        homeDir: options.homeDir,
+        repositoryRoot: repoRoot,
+      })
+      workspace = state.rootlessWorkspaceFixture.workspace
+      worktree = workspace
+      state.workspace = workspace
+    } else {
+      await mkdir(workspace, { recursive: false, mode: 0o700 })
+      state.workspaceOwned = true
+      await chmod(workspace, 0o777)
+    }
     await mkdir(logDir, { recursive: true, mode: 0o700 })
     if (!existingKernel) {
       await mkdir(path.dirname(options.activeKernelRegistryDir), { recursive: true, mode: 0o700 })
@@ -658,6 +731,7 @@ async function main() {
       priorKernelState = { sessionCount: 0, sliceCount: 0 }
     }
 
+    state.sliceCreateAttempted = true
     const createdSlice = unwrap(await state.client.send(requests.createSliceRequest({
       name: sliceName,
       backend: "local_docker",
@@ -689,6 +763,7 @@ async function main() {
       requireDisplayPorts: true,
     })
 
+    state.sessionCreateAttempted = true
     const session = unwrap(await state.client.send(requests.createSessionRequest(
       workspace,
       worktree,
@@ -708,6 +783,7 @@ async function main() {
       "RoomEnvironmentSlice").binding
     assertRoomSliceBinding(binding, { sessionId: state.sessionId, slice, daemonId })
 
+    state.roomEnvironmentStartAttempted = true
     unwrap(await state.client.send(requests.startRoomEnvironmentRequest(state.sessionId, {
       css_width: 1280,
       css_height: 800,
@@ -802,7 +878,11 @@ async function main() {
     for (const message of cleanupErrors) console.error(`[drill-c-setup] cleanup: ${message}`)
     if (cleanupErrors.length > 0) process.exitCode = 1
     if (state.manifest && stopSignal) {
-      state.manifest = { ...state.manifest, status: "stopped", stoppedAt: new Date().toISOString() }
+      state.manifest = {
+        ...state.manifest,
+        status: cleanupErrors.length === 0 ? "stopped" : "cleanup_incomplete",
+        stoppedAt: new Date().toISOString(),
+      }
       await writeFile(options.manifestPath, `${JSON.stringify(state.manifest, null, 2)}\n`, { encoding: "utf8", mode: 0o600 })
       console.log(`[drill-c-setup] stopped after ${stopSignal}`)
     }
@@ -822,6 +902,10 @@ function assertSetupPaths(options) {
 function isWithin(candidate, parent) {
   const relative = path.relative(parent, candidate)
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))
+}
+
+function pathsOverlap(left, right) {
+  return isWithin(left, right) || isWithin(right, left)
 }
 
 function selectLocalRelayUrl(dashboard, configuredRelayUrl) {
@@ -1171,33 +1255,100 @@ function assertChildAlive(child) {
   }
 }
 
-async function cleanupOwnedResources({ state, requests, children }) {
+export async function cleanupOwnedResources({
+  state,
+  requests,
+  children,
+  removeWorkspaceFixture = removeRoomDirectDockerWorkspaceFixture,
+}) {
   const errors = []
+  let sessionCleanupVerified = !state.sessionCreateAttempted && !state.sessionId
+  let sliceCleanupVerified = !state.sliceCreateAttempted && !state.sliceId
   if (state.client) {
     if (state.sessionId) {
-      for (const [label, request] of [
-        ["Room environment", requests.stopRoomEnvironmentRequest?.(state.sessionId)],
-        ["session", requests.endSessionRequest?.(state.sessionId)],
-      ]) {
-        if (!request) continue
-        try { await state.client.send(request) } catch (error) { errors.push(`${label} cleanup failed: ${error.message}`) }
+      sessionCleanupVerified = true
+      if (state.roomEnvironmentStartAttempted) {
+        sessionCleanupVerified = await verifyCleanupAck({
+          state,
+          errors,
+          label: "Room environment",
+          request: requests.stopRoomEnvironmentRequest?.(state.sessionId),
+          responseVariant: "RoomEnvironmentUpdated",
+          recordId: (response) => response.environment?.session_id,
+          expectedId: state.sessionId,
+        }) && sessionCleanupVerified
       }
+      sessionCleanupVerified = await verifyCleanupAck({
+        state,
+        errors,
+        label: "session",
+        request: requests.endSessionRequest?.(state.sessionId),
+        responseVariant: "SessionEnded",
+        recordId: (response) => response.session?.id,
+        expectedId: state.sessionId,
+      }) && sessionCleanupVerified
+    } else if (state.sessionCreateAttempted) {
+      errors.push("session creation was attempted but no unique Room identity was confirmed")
+      sessionCleanupVerified = false
     }
     if (state.sliceId) {
-      try { await state.client.send(requests.stopSliceRequest(state.sliceId)) } catch (error) { errors.push(`slice stop failed: ${error.message}`) }
-      try { await state.client.send(requests.deleteSliceRequest(state.sliceId)) } catch (error) { errors.push(`slice deletion failed: ${error.message}`) }
+      sliceCleanupVerified = await verifyCleanupAck({
+        state,
+        errors,
+        label: "slice stop",
+        request: requests.stopSliceRequest(state.sliceId),
+        responseVariant: "SliceStopped",
+        recordId: (response) => response.slice?.id,
+        expectedId: state.sliceId,
+      })
+      sliceCleanupVerified = await verifyCleanupAck({
+        state,
+        errors,
+        label: "slice deletion",
+        request: requests.deleteSliceRequest(state.sliceId),
+        responseVariant: "SliceDeleted",
+        recordId: (response) => response.slice?.id,
+        expectedId: state.sliceId,
+      }) && sliceCleanupVerified
+    } else if (state.sliceCreateAttempted) {
+      errors.push("slice creation was attempted but no unique slice identity was confirmed")
+      sliceCleanupVerified = false
     }
     await state.client.close?.().catch((error) => errors.push(`kernel client close failed: ${error.message}`))
+  } else if (state.sessionCreateAttempted || state.sliceCreateAttempted) {
+    if (state.sessionCreateAttempted) {
+      errors.push("cannot verify Room cleanup because the kernel client is unavailable")
+      sessionCleanupVerified = false
+    }
+    if (state.sliceCreateAttempted) {
+      errors.push("cannot verify slice cleanup because the kernel client is unavailable")
+      sliceCleanupVerified = false
+    }
   }
-  if (state.workspaceOwned && state.workspace) {
+  let childrenStopped = true
+  for (const child of [...children].reverse()) {
+    try { await terminateChild(child) } catch (error) {
+      childrenStopped = false
+      errors.push(`${child.setupLabel} stop failed: ${error.message}`)
+    }
+  }
+  if (state.rootlessWorkspaceFixture) {
+    const resourcesVerified = sessionCleanupVerified && sliceCleanupVerified && childrenStopped
+    if (!resourcesVerified) {
+      errors.push("refusing rootless workspace removal because Room or slice producers were not confirmed stopped and deleted")
+    } else {
+      try {
+        await removeWorkspaceFixture(state.rootlessWorkspaceFixture)
+      } catch (error) {
+        errors.push(`rootless workspace removal failed: ${error.message}`)
+      }
+    }
+  } else if (state.workspaceOwned && state.workspace) {
     try {
       await rm(state.workspace, { recursive: true, force: true })
     } catch (error) {
       errors.push(`workspace removal failed: ${error.message}`)
     }
-  }
-  for (const child of [...children].reverse()) {
-    try { await terminateChild(child) } catch (error) { errors.push(`${child.setupLabel} stop failed: ${error.message}`) }
   }
   if (state.presenceRecordPath) {
     try {
@@ -1208,6 +1359,21 @@ async function cleanupOwnedResources({ state, requests, children }) {
     }
   }
   return errors
+}
+
+async function verifyCleanupAck({ state, errors, label, request, responseVariant, recordId, expectedId }) {
+  if (!request) {
+    errors.push(`${label} cleanup request is unavailable`)
+    return false
+  }
+  try {
+    const response = unwrap(await state.client.send(request), responseVariant)
+    assert.equal(recordId(response), expectedId, `${label} cleanup acknowledged a different resource`)
+    return true
+  } catch (error) {
+    errors.push(`${label} cleanup failed: ${error.message}`)
+    return false
+  }
 }
 
 async function terminateChild(child) {

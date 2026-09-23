@@ -1,19 +1,25 @@
 import assert from "node:assert/strict"
 import test from "node:test"
+import { access, mkdir, mkdtemp, readdir, rename, rm } from "node:fs/promises"
+import path from "node:path"
 
 import {
   assertCloudRelayBootstrap,
   assertExistingKernelSnapshot,
   assertLoopbackUrl,
   assertModeOptions,
+  assertRootlessWorkspaceRoot,
   assertNewSessionIdentity,
   assertNewSliceIdentity,
   assertRoomSliceBinding,
   buildRoomBaseline,
   buildSetupManifest,
+  cleanupOwnedResources,
+  createExistingKernelWorkspaceFixture,
   parseArgs,
   requiresDirectDockerAccess,
 } from "./live-room-drill-c-setup.mjs"
+import { removeRoomDirectDockerWorkspaceFixture } from "./lib/room-rootless-workspace-fixture.mjs"
 
 const workspace = "/home/test/.chariox/dev/browser-computer-use/drill-c/workspace"
 
@@ -108,6 +114,16 @@ function manifestInput(overrides = {}) {
   }
 }
 
+async function rootlessWorkspaceTree(t) {
+  const root = await mkdtemp(path.join("/var/tmp", "drill-c-rootless-workspace-test-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const homeDir = path.join(root, "private-home")
+  const repositoryRoot = path.join(root, "source-repository")
+  const workspaceRoot = path.join(root, "engine-visible")
+  await Promise.all([mkdir(homeDir), mkdir(repositoryRoot), mkdir(workspaceRoot)])
+  return { root, homeDir, repositoryRoot, workspaceRoot }
+}
+
 test("Drill C setup modes require loopback endpoints and explicit existing-kernel identity", () => {
   assert.throws(() => assertLoopbackUrl("https://cloud.example.test", "local Cloud URL", ["http:", "https:"]), /loopback host/)
   assert.throws(() => assertLoopbackUrl("wss://relay.example.test", "local relay URL", ["ws:"]), /must use ws:/)
@@ -120,11 +136,13 @@ test("Drill C setup modes require loopback endpoints and explicit existing-kerne
 
   const existingEnv = {
     HOME: "/home/test",
+    CHARIOX_ROOM_DRILL_FIXTURE_WORKSPACE_ROOT: "/var/tmp",
     get CHARIOX_LOCAL_RELAY_URL() { throw new Error("existing mode read the local relay URL") },
     get CHARIOX_LOCAL_RELAY_TOKEN() { throw new Error("existing mode read a relay token") },
   }
   const existing = parseArgs([
     "--existing-kernel", "ws://127.0.0.1:52001/kernel",
+    "--rootless-workspace-root", "/var/tmp",
     "--expected-daemon-id", "kernel-1",
     "--expected-machine-id", "machine-1",
   ], existingEnv)
@@ -135,18 +153,195 @@ test("Drill C setup modes require loopback endpoints and explicit existing-kerne
   assert.equal(existing.relayUrl, null)
   assert.equal(existing.relayToken, null)
   assert.doesNotThrow(() => assertModeOptions(existing))
+  const existingFromExplicitRootEnvironment = parseArgs([
+    "--existing-kernel", "ws://127.0.0.1:52001/kernel",
+    "--expected-daemon-id", "kernel-1",
+  ], existingEnv)
+  assert.equal(existingFromExplicitRootEnvironment.rootlessWorkspaceRoot, "/var/tmp")
+  assert.doesNotThrow(() => assertModeOptions(existingFromExplicitRootEnvironment))
   assert.throws(() => assertModeOptions(parseArgs([
     "--existing-kernel", "ws://127.0.0.1:52001/kernel",
   ], { HOME: "/home/test" })), /requires --expected-daemon-id/)
   assert.throws(() => assertModeOptions(parseArgs([
     "--existing-kernel", "ws://kernel.example.test:52001/kernel",
     "--expected-daemon-id", "kernel-1",
+    "--rootless-workspace-root", "/var/tmp",
   ], { HOME: "/home/test" })), /loopback host/)
   assert.throws(() => assertModeOptions(parseArgs([
     "--existing-kernel", "ws://127.0.0.1:52001/kernel",
     "--expected-daemon-id", "kernel-1",
+    "--rootless-workspace-root", "/var/tmp",
     "--relay-url", "ws://127.0.0.1:47000",
   ], { HOME: "/home/test" })), /cannot be combined/)
+  assert.throws(() => assertModeOptions(parseArgs([
+    "--existing-kernel", "ws://127.0.0.1:52001/kernel",
+    "--expected-daemon-id", "kernel-1",
+  ], { HOME: "/home/test" })), /requires --rootless-workspace-root/)
+  assert.throws(() => assertModeOptions(parseArgs([
+    "--existing-kernel", "ws://127.0.0.1:52001/kernel",
+    "--expected-daemon-id", "kernel-1",
+    "--rootless-workspace-root", "/var/tmp/private-home/.chariox/dev/workspaces",
+  ], { HOME: "/var/tmp/private-home" })), /outside the invoking user's home/)
+  assert.throws(() => assertRootlessWorkspaceRoot({
+    workspaceRoot: "/home/test/.chariox/dev/workspaces",
+    homeDir: "/home/test",
+    repositoryRoot: "/home/test/source",
+  }), /under explicit engine-visible \/var\/tmp/)
+  assert.throws(() => assertRootlessWorkspaceRoot({
+    workspaceRoot: "/var/tmp",
+    homeDir: "/home/test",
+    repositoryRoot: "/var/tmp",
+  }), /outside the source repository/)
+})
+
+test("existing-kernel workspace selection creates an empty guarded child under the explicit safe root", async (t) => {
+  const tree = await rootlessWorkspaceTree(t)
+  const fixture = await createExistingKernelWorkspaceFixture(tree)
+
+  assert.equal(fixture.kind, "direct")
+  assert.equal(fixture.workspaceRoot, tree.workspaceRoot)
+  assert.equal(path.dirname(fixture.workspace), tree.workspaceRoot)
+  assert.deepEqual(await readdir(fixture.workspace), [])
+  assert.equal(assertRootlessWorkspaceRoot({
+    workspaceRoot: tree.workspaceRoot,
+    homeDir: tree.homeDir,
+    repositoryRoot: tree.repositoryRoot,
+  }), tree.workspaceRoot)
+
+  await removeRoomDirectDockerWorkspaceFixture(fixture)
+  await assert.rejects(access(fixture.workspace), error => error?.code === "ENOENT")
+})
+
+test("existing-kernel cleanup verifies Room and slice shutdown before removing the owned workspace", async (t) => {
+  const tree = await rootlessWorkspaceTree(t)
+  const fixture = await createExistingKernelWorkspaceFixture(tree)
+  const events = []
+  const requests = {
+    stopRoomEnvironmentRequest: (sessionId) => ({ StopRoomEnvironment: { session_id: sessionId } }),
+    endSessionRequest: (sessionId) => ({ EndSession: { session_id: sessionId } }),
+    stopSliceRequest: (sliceId) => ({ StopSlice: { slice_ref: sliceId } }),
+    deleteSliceRequest: (sliceId) => ({ DeleteSlice: { slice_ref: sliceId } }),
+  }
+  const responses = {
+    StopRoomEnvironment: { RoomEnvironmentUpdated: { environment: { session_id: "room-owned" } } },
+    EndSession: { SessionEnded: { session: { id: "room-owned" } } },
+    StopSlice: { SliceStopped: { slice: { id: "slice-owned" } } },
+    DeleteSlice: { SliceDeleted: { slice: { id: "slice-owned" } } },
+  }
+  const state = {
+    client: {
+      async send(request) {
+        const command = Object.keys(request)[0]
+        events.push(command)
+        return responses[command]
+      },
+      async close() { events.push("close") },
+    },
+    sessionId: "room-owned",
+    sliceId: "slice-owned",
+    roomEnvironmentStartAttempted: true,
+    sessionCreateAttempted: true,
+    sliceCreateAttempted: true,
+    rootlessWorkspaceFixture: fixture,
+    workspaceOwned: false,
+    workspace: fixture.workspace,
+  }
+
+  const errors = await cleanupOwnedResources({
+    state,
+    requests,
+    children: [],
+    removeWorkspaceFixture: async (lease) => {
+      events.push("remove-workspace")
+      await removeRoomDirectDockerWorkspaceFixture(lease)
+    },
+  })
+
+  assert.deepEqual(errors, [])
+  assert.deepEqual(events, [
+    "StopRoomEnvironment", "EndSession", "StopSlice", "DeleteSlice", "close", "remove-workspace",
+  ])
+  await assert.rejects(access(fixture.workspace), error => error?.code === "ENOENT")
+})
+
+test("existing-kernel cleanup retains the workspace when slice deletion is unverified", async (t) => {
+  const tree = await rootlessWorkspaceTree(t)
+  const fixture = await createExistingKernelWorkspaceFixture(tree)
+  const requests = {
+    stopRoomEnvironmentRequest: (sessionId) => ({ StopRoomEnvironment: { session_id: sessionId } }),
+    endSessionRequest: (sessionId) => ({ EndSession: { session_id: sessionId } }),
+    stopSliceRequest: (sliceId) => ({ StopSlice: { slice_ref: sliceId } }),
+    deleteSliceRequest: (sliceId) => ({ DeleteSlice: { slice_ref: sliceId } }),
+  }
+  const state = {
+    client: {
+      async send(request) {
+        const command = Object.keys(request)[0]
+        if (command === "DeleteSlice") throw new Error("delete acknowledgement missing")
+        if (command === "StopRoomEnvironment") {
+          return { RoomEnvironmentUpdated: { environment: { session_id: "room-owned" } } }
+        }
+        if (command === "EndSession") return { SessionEnded: { session: { id: "room-owned" } } }
+        if (command === "StopSlice") return { SliceStopped: { slice: { id: "slice-owned" } } }
+        throw new Error(`unexpected cleanup request: ${command}`)
+      },
+      async close() {},
+    },
+    sessionId: "room-owned",
+    sliceId: "slice-owned",
+    roomEnvironmentStartAttempted: true,
+    sessionCreateAttempted: true,
+    sliceCreateAttempted: true,
+    rootlessWorkspaceFixture: fixture,
+    workspaceOwned: false,
+    workspace: fixture.workspace,
+  }
+
+  const errors = await cleanupOwnedResources({ state, requests, children: [] })
+
+  assert.ok(errors.some(message => message.includes("slice deletion cleanup failed")))
+  assert.ok(errors.some(message => message.includes("refusing rootless workspace removal")))
+  await access(fixture.workspace)
+  await removeRoomDirectDockerWorkspaceFixture(fixture)
+})
+
+test("existing-kernel cleanup refuses a replaced workspace after successful resource shutdown", async (t) => {
+  const tree = await rootlessWorkspaceTree(t)
+  const fixture = await createExistingKernelWorkspaceFixture(tree)
+  const movedWorkspace = path.join(tree.root, "moved-owned-workspace")
+  await rename(fixture.workspace, movedWorkspace)
+  await mkdir(fixture.workspace)
+  const requests = {
+    endSessionRequest: (sessionId) => ({ EndSession: { session_id: sessionId } }),
+    stopSliceRequest: (sliceId) => ({ StopSlice: { slice_ref: sliceId } }),
+    deleteSliceRequest: (sliceId) => ({ DeleteSlice: { slice_ref: sliceId } }),
+  }
+  const state = {
+    client: {
+      async send(request) {
+        const command = Object.keys(request)[0]
+        if (command === "EndSession") return { SessionEnded: { session: { id: "room-owned" } } }
+        if (command === "StopSlice") return { SliceStopped: { slice: { id: "slice-owned" } } }
+        if (command === "DeleteSlice") return { SliceDeleted: { slice: { id: "slice-owned" } } }
+        throw new Error(`unexpected cleanup request: ${command}`)
+      },
+      async close() {},
+    },
+    sessionId: "room-owned",
+    sliceId: "slice-owned",
+    roomEnvironmentStartAttempted: false,
+    sessionCreateAttempted: true,
+    sliceCreateAttempted: true,
+    rootlessWorkspaceFixture: fixture,
+    workspaceOwned: false,
+    workspace: fixture.workspace,
+  }
+
+  const errors = await cleanupOwnedResources({ state, requests, children: [] })
+
+  assert.ok(errors.some(message => message.includes("refusing to remove replaced room fixture workspace")))
+  await access(fixture.workspace)
+  await access(movedWorkspace)
 })
 
 test("isolated mode only claims Cloud visibility after exact relay bootstrap and Room-list proof", () => {
@@ -348,6 +543,7 @@ test("isolated manifest carries exact observer inputs without claiming Browser o
 })
 
 test("existing-kernel manifest defers Cloud and Web transport to the Mac frontend", () => {
+  const directWorkspace = "/var/tmp/drill-c-room-workspace"
   const manifest = buildSetupManifest(manifestInput({
     mode: "existing_kernel",
     relayUrl: null,
@@ -355,9 +551,16 @@ test("existing-kernel manifest defers Cloud and Web transport to the Mac fronten
     priorKernelState: { sessionCount: 7, sliceCount: 2 },
     daemonAlias: null,
     machineAlias: null,
+    session: { ...setup.session, workspace_id: directWorkspace, worktree_id: directWorkspace },
+    slice: { ...setup.slice, workspace_id: directWorkspace, worktree_id: directWorkspace, workspace_mount: directWorkspace },
+    workspace: directWorkspace,
+    worktree: directWorkspace,
   }))
 
   assert.equal(manifest.setupMode, "existing_kernel")
+  assert.match(manifest.rootDir, /^\/home\/test\/\.chariox\/dev\/browser-computer-use\/drill-c$/)
+  assert.equal(manifest.workspace, directWorkspace)
+  assert.equal(manifest.worktree, directWorkspace)
   assert.equal(manifest.kernel.daemonId, "kernel-1")
   assert.equal(manifest.kernel.machineId, "machine-1")
   assert.equal(manifest.relayUrl, null)
