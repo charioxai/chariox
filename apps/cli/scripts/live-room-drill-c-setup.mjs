@@ -1,0 +1,906 @@
+#!/usr/bin/env node
+
+import assert from "node:assert/strict"
+import { spawn, execFile } from "node:child_process"
+import { constants as fsConstants, createWriteStream } from "node:fs"
+import { access, chmod, mkdir, rm, symlink } from "node:fs/promises"
+import net from "node:net"
+import os from "node:os"
+import path from "node:path"
+import { promisify } from "node:util"
+import { fileURLToPath, pathToFileURL } from "node:url"
+
+const execFileAsync = promisify(execFile)
+const scriptDir = path.dirname(fileURLToPath(import.meta.url))
+const repoRoot = path.resolve(scriptDir, "..", "..", "..")
+const kernelClientRoot = path.join(repoRoot, "packages", "kernel-client")
+const devRoot = path.join(os.homedir(), ".chariox", "dev", "browser-computer-use")
+const defaultLocalCloudUrl = "http://127.0.0.1:4321"
+const defaultLocalRelayToken = "local-browser-terminal-relay-token"
+const protocolClientRoomReadyTimeoutMs = 180_000
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+export function parseArgs(argv, env = process.env) {
+  const homeDir = env.HOME?.trim() ? path.resolve(env.HOME) : os.homedir()
+  const taskDevRoot = path.join(homeDir, ".chariox", "dev", "browser-computer-use")
+  const targetDir = env.CARGO_TARGET_DIR?.trim()
+    ? path.resolve(repoRoot, env.CARGO_TARGET_DIR)
+    : path.join(repoRoot, "target")
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-")
+  const options = {
+    rootDir: path.join(taskDevRoot, `drill-c-same-host-${stamp}`),
+    manifestPath: null,
+    localCloudUrl: env.CHARIOX_LOCAL_CLOUD_URL ?? defaultLocalCloudUrl,
+    relayUrl: env.CHARIOX_LOCAL_RELAY_URL ?? null,
+    relayToken: env.CHARIOX_LOCAL_RELAY_TOKEN ?? defaultLocalRelayToken,
+    activeKernelRegistryDir: env.CHARIOX_ACTIVE_KERNEL_REGISTRY_DIR
+      ?? (env.XDG_CONFIG_HOME?.trim()
+        ? path.join(path.resolve(env.XDG_CONFIG_HOME), "chariox", "kernels", "active")
+        : path.join(homeDir, ".chariox", "kernels", "active")),
+    kernelBinary: env.CHARIOX_KERNEL_BINARY ?? path.join(targetDir, "debug", "chariox-kernel"),
+    relayBinary: env.CHARIOX_RELAY_BINARY ?? path.join(targetDir, "debug", "chariox-relay"),
+  }
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index]
+    const next = () => {
+      const value = argv[index + 1]
+      if (!value) throw new Error(`missing value for ${arg}`)
+      index += 1
+      return value
+    }
+    if (arg === "--root-dir") options.rootDir = path.resolve(next())
+    else if (arg === "--manifest") options.manifestPath = path.resolve(next())
+    else if (arg === "--local-cloud-url") options.localCloudUrl = next()
+    else if (arg === "--relay-url") options.relayUrl = next()
+    else if (arg === "--relay-token") options.relayToken = next()
+    else if (arg === "--active-kernel-registry-dir") options.activeKernelRegistryDir = path.resolve(next())
+    else if (arg === "--kernel-binary") options.kernelBinary = path.resolve(next())
+    else if (arg === "--relay-binary") options.relayBinary = path.resolve(next())
+    else if (arg === "--help" || arg === "-h") options.help = true
+    else throw new Error(`unknown option: ${arg}`)
+  }
+  options.rootDir = path.resolve(options.rootDir)
+  options.manifestPath ??= path.join(options.rootDir, "setup-manifest.json")
+  options.manifestPath = path.resolve(options.manifestPath)
+  options.activeKernelRegistryDir = path.resolve(options.activeKernelRegistryDir)
+  options.kernelBinary = path.resolve(options.kernelBinary)
+  options.relayBinary = path.resolve(options.relayBinary)
+  return options
+}
+
+export function assertLoopbackUrl(value, label, protocols) {
+  let url
+  try {
+    url = new URL(value)
+  } catch {
+    throw new Error(`${label} must be an absolute URL`)
+  }
+  assert.ok(protocols.includes(url.protocol), `${label} must use ${protocols.join(" or ")}`)
+  assert.ok(["127.0.0.1", "localhost", "[::1]", "::1"].includes(url.hostname), `${label} must use a loopback host`)
+  assert.equal(url.username, "", `${label} must not contain a username`)
+  assert.equal(url.password, "", `${label} must not contain a password`)
+  assert.equal(url.search, "", `${label} must not contain a query`)
+  assert.equal(url.hash, "", `${label} must not contain a fragment`)
+  return url
+}
+
+export function assertCloudRelayBootstrap({ bootstrap, relayUrl, relayToken, daemonId, machineId, sessionId, sessions }) {
+  assert.ok(bootstrap && typeof bootstrap === "object", "local Cloud omitted relay bootstrap")
+  assert.ok(bootstrap.relayUrl === relayUrl, "local Cloud bootstrap selected a different relay")
+  assert.ok(bootstrap.relayToken === relayToken, "local Cloud bootstrap token does not match the isolated local relay")
+  assert.ok(bootstrap.target?.daemonId === daemonId, "local Cloud bootstrap selected a different kernel")
+  assert.ok(bootstrap.target?.machineId === machineId, "local Cloud bootstrap selected a different machine")
+  assert.ok(Array.isArray(sessions), "relay kernel session list is malformed")
+  assert.ok(sessions.some((session) => session?.id === sessionId),
+    "local Cloud relay client cannot see the setup Room session")
+  return {
+    status: "verified",
+    relayUrl,
+    targetDaemonId: daemonId,
+    targetMachineId: machineId,
+    sessionVisible: true,
+  }
+}
+
+export function buildSetupManifest({
+  createdAt,
+  sourceCommit,
+  rootDir,
+  manifestPath,
+  cloudUrl,
+  kernelUrl,
+  relayUrl,
+  daemonId,
+  daemonAlias,
+  machineId,
+  machineAlias,
+  session,
+  slice,
+  binding,
+  environment,
+  resourceInventory,
+  workspace,
+  worktree,
+  transport,
+}) {
+  for (const [name, value] of Object.entries({
+    sourceCommit,
+    rootDir,
+    manifestPath,
+    cloudUrl,
+    kernelUrl,
+    relayUrl,
+    daemonId,
+    machineId,
+    sessionId: session?.id,
+    sliceId: slice?.id,
+    environmentId: environment?.environment_id,
+  })) assert.ok(typeof value === "string" && value.length > 0, `setup manifest requires ${name}`)
+  assert.ok(path.isAbsolute(rootDir) && path.isAbsolute(manifestPath), "setup manifest paths must be absolute")
+  assert.ok(path.isAbsolute(workspace) && path.isAbsolute(worktree), "Room workspace and worktree must be absolute")
+  assert.equal(binding?.session_id, session.id, "setup manifest slice binding Room mismatch")
+  assert.equal(binding?.slice_id, slice.id, "setup manifest slice binding mismatch")
+  assert.equal(binding?.owner_kernel_id, daemonId, "setup manifest Room is owned by a different kernel")
+  assert.equal(binding?.worker_kernel_ref, slice.worker_kernel_ref,
+    "setup manifest Room binding has a different worker kernel")
+  assert.equal(environment?.session_id, session.id, "setup manifest environment Room mismatch")
+  assert.equal(environment?.lifecycle, "ready", "setup manifest Room environment is not ready")
+  assert.equal(resourceInventory?.environment_id, environment.environment_id, "setup manifest inventory Environment mismatch")
+  assert.equal(resourceInventory?.session_id, session.id, "setup manifest inventory Room mismatch")
+  assert.equal(resourceInventory?.slice_id, slice.id, "setup manifest inventory slice mismatch")
+  assert.equal(slice.backend, "local_docker", "setup manifest slice must use the local Docker backend")
+  assert.equal(slice.workspace_mount, workspace, "setup manifest slice does not use the Room workspace")
+  assert.equal(slice.display_mode, "headed", "setup manifest slice must use a headed display")
+  assert.equal(slice.display_endpoint?.kind, "selkies", "setup manifest slice must use the Selkies display backend")
+  assert.ok(typeof slice.display_endpoint?.url === "string" && slice.display_endpoint.url.length > 0,
+    "headed slice omitted the live display endpoint")
+  assert.ok(slice.local_docker_ports && typeof slice.local_docker_ports === "object",
+    "setup manifest requires the local Docker display port identity")
+  assert.ok(Array.isArray(resourceInventory?.browser_ids) && resourceInventory.browser_ids.length > 0,
+    "setup manifest requires live browser identities")
+  assert.ok(Array.isArray(resourceInventory?.profile_ids) && resourceInventory.profile_ids.length > 0,
+    "setup manifest requires live browser profile identities")
+  const focusedTab = environment.tabs?.find((tab) => tab.tab_id === environment.focused_tab_id)
+  assert.ok(focusedTab, "setup manifest requires the kernel focused tab record")
+  assert.equal(transport?.status, "verified", "setup manifest requires verified local Cloud relay visibility")
+  assert.equal(transport?.relayUrl, relayUrl, "setup manifest Cloud transport selected a different relay")
+  assert.equal(transport?.targetDaemonId, daemonId, "setup manifest Cloud transport selected a different kernel")
+  assert.equal(transport?.targetMachineId, machineId, "setup manifest Cloud transport selected a different machine")
+  assert.equal(transport?.sessionVisible, true, "setup manifest Cloud transport did not observe the Room session")
+
+  const tuiManifestPath = path.join(rootDir, "tui-observer", "manifest.json")
+  const webObservationPath = path.join(rootDir, "evidence", "drill-c-live-observation.json")
+  const tuiObserverArgs = [
+    path.join(repoRoot, "apps", "cli", "scripts", "live-tui-web-parity-visual-session.mjs"),
+    "--observe-room-session", session.id,
+    "--kernel-url", kernelUrl,
+    "--slice-id", slice.id,
+    "--workspace", workspace,
+    "--worktree", worktree,
+    "--web-observation", webObservationPath,
+    "--root-dir", path.join(rootDir, "tui-observer"),
+    "--manifest", tuiManifestPath,
+  ]
+  return {
+    schema: "chariox.drill_c.same_host_setup.v1",
+    status: "ready_for_observers",
+    createdAt,
+    sourceCommit,
+    rootDir,
+    manifestPath,
+    kernel: { url: kernelUrl, daemonId, daemonAlias, machineId, machineAlias },
+    kernelUrl,
+    relayUrl,
+    sessionId: session.id,
+    sliceId: slice.id,
+    workspace,
+    worktree,
+    webObservationPath,
+    room: {
+      sessionId: session.id,
+      environmentId: environment.environment_id,
+      runtimeGeneration: environment.runtime_generation,
+      focusedTabId: environment.focused_tab_id,
+      sliceBinding: binding,
+      browserIds: [...resourceInventory.browser_ids],
+      profileIds: [...resourceInventory.profile_ids],
+      viewport: environment.viewport,
+      tabs: environment.tabs,
+    },
+    slice: {
+      id: slice.id,
+      name: slice.name,
+      backend: slice.backend,
+      displayMode: slice.display_mode,
+      displayBackend: slice.display_endpoint.kind,
+      workerKernelRef: binding.worker_kernel_ref,
+      workspaceMount: slice.workspace_mount,
+    },
+    display: {
+      sliceId: slice.id,
+      environmentId: environment.environment_id,
+      runtimeGeneration: environment.runtime_generation,
+      focusedTabId: environment.focused_tab_id,
+      mode: slice.display_mode,
+      backend: slice.display_endpoint.kind,
+      localDockerPorts: slice.local_docker_ports ?? null,
+      viewport: environment.viewport,
+      browserIds: [...resourceInventory.browser_ids],
+      profileIds: [...resourceInventory.profile_ids],
+    },
+    localCloudTransport: {
+      status: transport.status,
+      relayUrl: transport.relayUrl,
+      targetDaemonId: transport.targetDaemonId,
+      targetMachineId: transport.targetMachineId,
+      sessionVisible: transport.sessionVisible,
+      verifiedAt: transport.verifiedAt,
+      cloudApiUrl: transport.cloudApiUrl,
+    },
+    webObserver: {
+      client: "production-local-web-view",
+      openUrl: `${cloudUrl.replace(/\/$/, "")}/waiting-room`,
+      targetDaemonId: daemonId,
+      sessionId: session.id,
+      relayUrl,
+      observationPath: webObservationPath,
+      evidenceSchema: "chariox.browser_computer.drill_c.web_observer.v1",
+      requiredEvidence: [
+        "sessionId, environmentId, sliceId, runtimeGeneration",
+        "display.viewport, display.browserIds, display.profileIds",
+        "browser.focusedTabId and browser.tab { tabId, url, title, documentRevision }",
+        "actions.computer and actions.webTakeover with actionId, actorId, sequence, mode, kind, state",
+      ],
+      evidenceStatus: "not_observed",
+    },
+    tuiObserver: {
+      executable: "node",
+      args: tuiObserverArgs,
+      manifestPath: tuiManifestPath,
+      verify: {
+        executable: "node",
+        args: [
+          path.join(repoRoot, "apps", "cli", "scripts", "tui-web-parity-visual-control.mjs"),
+          "--manifest", tuiManifestPath,
+          "--action", "drill-c-verify",
+        ],
+      },
+    },
+    cleanup: "Ctrl+C stops the Room environment, deletes the drill slice and session, then stops this harness's kernel and relay.",
+  }
+}
+
+function printHelp() {
+  console.log([
+    "Usage: node apps/cli/scripts/live-room-drill-c-setup.mjs [options]",
+    "",
+    "Options:",
+    "  --root-dir PATH",
+    "  --manifest PATH",
+    "  --local-cloud-url URL             default: http://127.0.0.1:4321",
+    "  --relay-url URL                   must match local Cloud relay bootstrap",
+    "  --relay-token TOKEN               defaults to the local browser relay token",
+    "  --active-kernel-registry-dir PATH defaults to ~/.chariox/kernels/active",
+    "  --kernel-binary PATH              prebuilt binary; this script never builds",
+    "  --relay-binary PATH               prebuilt binary; this script never builds",
+    "",
+    "The script waits after setup so the attach-only TUI and Web observers can run.",
+    "Ctrl+C tears down only the Room, slice, kernel, and relay created by this run.",
+  ].join("\n"))
+}
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2))
+  if (options.help) {
+    printHelp()
+    return
+  }
+  assertSetupPaths(options)
+  assertLoopbackUrl(options.localCloudUrl, "--local-cloud-url", ["http:"])
+  assert.ok(path.isAbsolute(options.activeKernelRegistryDir), "active kernel registry directory must be absolute")
+
+  const cloud = await connectLocalCloud(options.localCloudUrl)
+  const initialDashboard = await cloud.dashboard()
+  const relayUrl = selectLocalRelayUrl(initialDashboard, options.relayUrl)
+  const relayEndpoint = assertLoopbackUrl(relayUrl, "local Cloud relay URL", ["ws:"])
+  assert.ok(relayEndpoint.pathname === "/", "local Cloud relay URL must not contain a path")
+  const relayPort = Number(relayEndpoint.port || "80")
+  const relayHost = relayEndpoint.hostname.replace(/^\[|\]$/g, "")
+  assert.ok(await portIsAvailable(relayPort, relayHost),
+    `isolated relay port ${relayPort} is already in use; stop its owner or configure the local Cloud frontend and rerun with a free matching relay URL`)
+  const ports = await allocateKernelPorts([relayPort])
+  await assertExecutable(options.kernelBinary, "prebuilt chariox-kernel")
+  await assertExecutable(options.relayBinary, "prebuilt chariox-relay")
+  await assertKernelClientBuilt()
+  await assertDockerReady()
+
+  const stamp = `${process.pid}-${Date.now()}`
+  const daemonId = `drill-c-home-${stamp}`
+  const daemonAlias = daemonId
+  const machineId = `drill-c-machine-${stamp}`
+  const machineAlias = machineId
+  const sliceName = `drill-c-${stamp}`
+  const workerKernelRef = `drill-c-worker-${stamp}`
+  const kernelHome = path.join(options.rootDir, "kernel-home")
+  const workspace = path.join(options.rootDir, "workspace")
+  const worktree = workspace
+  const kernelUrl = `ws://127.0.0.1:${ports.kernel}/kernel`
+  const logDir = path.join(options.rootDir, "logs")
+  const clientModule = await import(pathToFileURL(path.join(kernelClientRoot, "dist", "ipc.js")).href)
+  const requests = await import(pathToFileURL(path.join(kernelClientRoot, "dist", "ipc-requests.js")).href)
+  const { LocalIpcClient } = clientModule
+  const children = []
+  const state = {
+    client: null,
+    sessionId: null,
+    sliceId: null,
+    workspace,
+    workspaceOwned: false,
+    presenceRecordPath: path.join(options.activeKernelRegistryDir, `${daemonId}.json`),
+    manifest: null,
+    manifestPath: options.manifestPath,
+  }
+  let stopped = false
+  let stopSignal = null
+  const stopRequested = new Promise((resolve) => {
+    const requestStop = (signal) => {
+      if (stopped) return
+      stopped = true
+      stopSignal = signal
+      resolve()
+    }
+    process.once("SIGINT", () => requestStop("SIGINT"))
+    process.once("SIGTERM", () => requestStop("SIGTERM"))
+  })
+
+  try {
+    await mkdir(devRoot, { recursive: true, mode: 0o700 })
+    await mkdir(options.rootDir, { recursive: false, mode: 0o700 })
+    await mkdir(workspace, { recursive: false, mode: 0o700 })
+    await chmod(workspace, 0o777)
+    state.workspaceOwned = true
+    await mkdir(logDir, { recursive: true, mode: 0o700 })
+    await mkdir(path.dirname(options.activeKernelRegistryDir), { recursive: true, mode: 0o700 })
+    await mkdir(options.activeKernelRegistryDir, { recursive: true, mode: 0o700 })
+    const isolatedRegistryLink = path.join(kernelHome, "kernels", "active")
+    await mkdir(path.dirname(isolatedRegistryLink), { recursive: true, mode: 0o700 })
+    await symlink(options.activeKernelRegistryDir, isolatedRegistryLink, "dir")
+
+    children.push(spawnLogged("relay", options.relayBinary, {
+      ...relayProcessEnvironment(relayUrl, relayHost, relayPort, options.relayToken),
+    }, logDir))
+    await waitForTcp(relayHost, relayPort, 15_000, children[0])
+
+    children.push(spawnLogged("kernel", options.kernelBinary, kernelProcessEnvironment({
+      daemonId,
+      daemonAlias,
+      machineId,
+      machineAlias,
+      kernelHome,
+      kernelPort: ports.kernel,
+      mcpPort: ports.mcp,
+      codexPort: ports.codex,
+      opencodePort: ports.opencode,
+      relayUrl,
+      relayToken: options.relayToken,
+      logDir: path.join(logDir, "kernel-runtime"),
+      sliceRoot: path.join(options.rootDir, "slices"),
+    }), logDir))
+    state.client = await connectKernel(LocalIpcClient, requests, kernelUrl, children)
+
+    let slice = unwrap(await state.client.send(requests.createSliceRequest({
+      name: sliceName,
+      backend: "local_docker",
+      displayMode: "headed",
+      displayBackend: "selkies",
+      workspaceId: workspace,
+      worktreeId: worktree,
+      workspaceMount: workspace,
+      workerKernelRef,
+      base: "clean",
+    })), "SliceCreated").slice
+    state.sliceId = slice?.id
+    assert.ok(state.sliceId, "kernel did not return a slice id")
+    assert.equal(slice.workspace_mount, workspace, "local Docker slice did not retain the owned workspace mount")
+    assert.equal(slice.display_mode, "headed", "slice is not headed")
+    assert.equal(slice.display_endpoint?.kind, "selkies", "slice display backend is not Selkies")
+    await state.client.send(requests.startSliceRequest(slice.id))
+    slice = await waitForSliceRunning(state.client, requests, slice.id, children)
+
+    const session = unwrap(await state.client.send(requests.createSessionRequest(
+      workspace,
+      worktree,
+      `Drill C same-host ${stamp}`,
+    )), "SessionCreated").session
+    state.sessionId = session?.id
+    assert.ok(state.sessionId, "kernel did not return a Room session id")
+    const binding = unwrap(await state.client.send(requests.bindRoomEnvironmentSliceRequest(state.sessionId, slice.id)),
+      "RoomEnvironmentSlice").binding
+    assert.equal(binding?.session_id, state.sessionId, "kernel bound a different Room session")
+    assert.equal(binding?.slice_id, slice.id, "kernel bound a different slice")
+    assert.equal(binding?.worker_kernel_ref, workerKernelRef, "kernel binding returned a different worker kernel")
+
+    unwrap(await state.client.send(requests.startRoomEnvironmentRequest(state.sessionId, {
+      css_width: 1280,
+      css_height: 800,
+      device_scale_factor: 1,
+      desktop_pixel_width: 1280,
+      desktop_pixel_height: 800,
+    })), "RoomEnvironmentUpdated")
+    const { environment, resourceInventory } = await waitForRoomReady(
+      state.client,
+      requests,
+      state.sessionId,
+      slice.id,
+      children,
+    )
+
+    const bootstrap = await waitForCloudBootstrap({
+      cloud,
+      daemonId,
+      machineId,
+      relayUrl,
+      relayToken: options.relayToken,
+      sessionId: state.sessionId,
+      LocalIpcClient,
+      requests,
+      timeoutMs: 45_000,
+      children,
+    })
+    const sourceCommit = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repoRoot })).stdout.trim()
+    state.manifest = buildSetupManifest({
+      createdAt: new Date().toISOString(),
+      sourceCommit,
+      rootDir: options.rootDir,
+      manifestPath: options.manifestPath,
+      cloudUrl: new URL(options.localCloudUrl).origin,
+      kernelUrl,
+      relayUrl,
+      daemonId,
+      daemonAlias,
+      machineId,
+      machineAlias,
+      session,
+      slice,
+      binding,
+      environment,
+      resourceInventory,
+      workspace,
+      worktree,
+      transport: bootstrap,
+    })
+    await mkdir(path.dirname(options.manifestPath), { recursive: true, mode: 0o700 })
+    await writeFile(options.manifestPath, `${JSON.stringify(state.manifest, null, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    })
+    console.log(`[drill-c-setup] ready-for-observers manifest: ${options.manifestPath}`)
+    console.log(`[drill-c-setup] local Cloud transport verified for Room ${state.sessionId} via target ${daemonId}`)
+    console.log(`[drill-c-setup] TUI observer args: ${JSON.stringify(state.manifest.tuiObserver.args)}`)
+    console.log(`[drill-c-setup] open ${state.manifest.webObserver.openUrl}; use the Web observer contract in the manifest`)
+    console.log("[drill-c-setup] run the manifest verify command after Web takeover, then press Ctrl+C to clean up")
+    await stopRequested
+  } catch (error) {
+    console.error(`[drill-c-setup] ${error?.stack ?? String(error)}`)
+    process.exitCode = 1
+  } finally {
+    const cleanupErrors = await cleanupOwnedResources({ state, requests, children })
+    for (const message of cleanupErrors) console.error(`[drill-c-setup] cleanup: ${message}`)
+    if (cleanupErrors.length > 0) process.exitCode = 1
+    if (state.manifest && stopSignal) {
+      state.manifest = { ...state.manifest, status: "stopped", stoppedAt: new Date().toISOString() }
+      await writeFile(options.manifestPath, `${JSON.stringify(state.manifest, null, 2)}\n`, { encoding: "utf8", mode: 0o600 })
+      console.log(`[drill-c-setup] stopped after ${stopSignal}`)
+    }
+  }
+}
+
+function assertSetupPaths(options) {
+  assert.ok(isWithin(options.rootDir, devRoot), "--root-dir must be under ~/.chariox/dev/browser-computer-use")
+  assert.ok(!isWithin(options.rootDir, repoRoot), "setup state must be outside the repository")
+  assert.ok(isWithin(options.manifestPath, options.rootDir), "--manifest must be inside --root-dir")
+  assert.ok(!isWithin(options.activeKernelRegistryDir, repoRoot), "active kernel registry must be outside the repository")
+  assert.ok(options.relayToken.trim().length > 0, "local relay token must not be empty")
+}
+
+function isWithin(candidate, parent) {
+  const relative = path.relative(parent, candidate)
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))
+}
+
+function selectLocalRelayUrl(dashboard, configuredRelayUrl) {
+  const realmRelayUrl = dashboard?.realm?.relayUrl
+  assert.ok(typeof realmRelayUrl === "string" && realmRelayUrl.length > 0,
+    "local Cloud dashboard omitted its configured relay URL")
+  assertLoopbackUrl(realmRelayUrl, "local Cloud relay URL", ["ws:"])
+  if (configuredRelayUrl != null) {
+    assert.equal(configuredRelayUrl, realmRelayUrl, "--relay-url must exactly match local Cloud's configured relay URL")
+  }
+  return realmRelayUrl
+}
+
+async function connectLocalCloud(rawUrl) {
+  const baseUrl = assertLoopbackUrl(rawUrl, "--local-cloud-url", ["http:"]).origin
+  const shellResponse = await fetch(new URL("/waiting-room", baseUrl))
+  assert.equal(shellResponse.status, 200, "local Cloud frontend /waiting-room is unavailable")
+  assert.match(shellResponse.headers.get("content-type") ?? "", /text\/html/i,
+    "local Cloud /waiting-room is not the production-local Web frontend")
+
+  const csrfResponse = await fetch(new URL("/auth/csrf", baseUrl))
+  const csrfBody = await responseJson(csrfResponse, "/auth/csrf")
+  assert.equal(csrfResponse.status, 200, "local Cloud CSRF bootstrap failed")
+  assert.ok(typeof csrfBody.csrfToken === "string" && csrfBody.csrfToken.length > 0,
+    "local Cloud omitted its CSRF token")
+  const csrfCookie = responseCookies(csrfResponse).join("; ")
+  assert.ok(csrfCookie.length > 0, "local Cloud omitted its CSRF cookie")
+
+  const sessionResponse = await fetch(new URL("/auth/cloud-session", baseUrl), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      cookie: csrfCookie,
+      "csrf-token": csrfBody.csrfToken,
+    },
+    body: "{}",
+  })
+  const sessionBody = await responseJson(sessionResponse, "/auth/cloud-session")
+  assert.equal(sessionResponse.status, 200, "local Cloud browser session bootstrap failed")
+  assert.ok(typeof sessionBody.cloudSessionToken === "string" && sessionBody.cloudSessionToken.length > 0,
+    "local Cloud omitted its local browser session token")
+  const cloudSessionToken = sessionBody.cloudSessionToken
+  const sessionCookies = responseCookies(sessionResponse)
+  const cookie = [...new Set([...csrfCookie.split("; "), ...sessionCookies])].filter(Boolean).join("; ")
+
+  async function requestJson(route, { method = "GET", body = undefined } = {}) {
+    const response = await fetch(new URL(route, baseUrl), {
+      method,
+      headers: {
+        accept: "application/json",
+        ...(method === "GET" ? {} : { "content-type": "application/json" }),
+        cookie,
+        "x-chariox-browser-session": cloudSessionToken,
+        ...(method === "GET" ? {} : { "csrf-token": csrfBody.csrfToken }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    })
+    const payload = await responseJson(response, route)
+    assert.ok(response.ok, `local Cloud ${route} failed with status ${response.status}`)
+    return payload
+  }
+
+  return {
+    baseUrl,
+    async dashboard() {
+      return await requestJson("/dashboard")
+    },
+    async bootstrap(targetDaemonId) {
+      return await requestJson("/browser/relay-kernel/bootstrap", {
+        method: "POST",
+        body: { targetDaemonId },
+      })
+    },
+  }
+}
+
+async function responseJson(response, route) {
+  try {
+    return await response.json()
+  } catch {
+    throw new Error(`local Cloud ${route} returned invalid JSON`)
+  }
+}
+
+function responseCookies(response) {
+  const setCookies = typeof response.headers.getSetCookie === "function"
+    ? response.headers.getSetCookie()
+    : [response.headers.get("set-cookie")].filter(Boolean)
+  return setCookies.map((value) => value.split(";", 1)[0]).filter(Boolean)
+}
+
+async function assertExecutable(binary, label) {
+  try {
+    await access(binary, fsConstants.X_OK)
+  } catch {
+    throw new Error(`missing ${label} at ${binary}; this setup script requires prebuilt binaries and never runs Cargo`)
+  }
+}
+
+async function assertKernelClientBuilt() {
+  for (const name of ["ipc.js", "ipc-requests.js"]) {
+    const file = path.join(kernelClientRoot, "dist", name)
+    try {
+      await access(file)
+    } catch {
+      throw new Error(`missing ${file}; build the kernel-client before invoking this source-only setup harness`)
+    }
+  }
+}
+
+async function assertDockerReady() {
+  try {
+    await execFileAsync("docker", ["info", "--format", "{{.ServerVersion}}"], { timeout: 10_000 })
+  } catch {
+    throw new Error("local Docker engine is unavailable; no slice or Room was created")
+  }
+}
+
+function relayProcessEnvironment(relayUrl, relayHost, relayPort, relayToken) {
+  const env = { ...process.env }
+  for (const name of [
+    "CHARIOX_RELAY_SCOPED_ISSUER",
+    "CHARIOX_RELAY_SCOPED_HMAC_SECRET",
+    "CHARIOX_RELAY_ALLOW_OPEN_ACCESS",
+  ]) {
+    delete env[name]
+  }
+  return {
+    ...env,
+    CHARIOX_RELAY_HOST: relayHost,
+    CHARIOX_RELAY_PORT: String(relayPort),
+    CHARIOX_RELAY_URL: relayUrl,
+    CHARIOX_RELAY_TOKEN: relayToken,
+  }
+}
+
+function kernelProcessEnvironment(input) {
+  const env = { ...process.env }
+  for (const name of [
+    "CHARIOX_RELAY_SCOPED_ISSUER",
+    "CHARIOX_RELAY_SCOPED_HMAC_SECRET",
+    "CHARIOX_RELAY_ALLOW_OPEN_ACCESS",
+    "CHARIOX_PROVIDER_DEV_STUB",
+    "CHARIOX_SLICE_DOCKER_BROKER_SOCKET",
+  ]) {
+    delete env[name]
+  }
+  return {
+    ...env,
+    CHARIOX_HOME: input.kernelHome,
+    CHARIOX_KERNEL_PORT: String(input.kernelPort),
+    CHARIOX_MCP_PORT: String(input.mcpPort),
+    CHARIOX_CODEX_PORT: String(input.codexPort),
+    CHARIOX_OPENCODE_PORT: String(input.opencodePort),
+    CHARIOX_DAEMON_ID: input.daemonId,
+    CHARIOX_DAEMON_ALIAS: input.daemonAlias,
+    CHARIOX_MACHINE_ID: input.machineId,
+    CHARIOX_MACHINE_ALIAS: input.machineAlias,
+    CHARIOX_RELAY_URL: input.relayUrl,
+    CHARIOX_RELAY_TOKEN: input.relayToken,
+    CHARIOX_ACCEPT_REMOTE_LEASES: "1",
+    CHARIOX_LOG_DIR: input.logDir,
+    CHARIOX_DAEMON_SOCKET: path.join(input.kernelHome, "daemon.sock"),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(input.kernelHome, "history"),
+    CHARIOX_SLICE_ROOT: input.sliceRoot,
+  }
+}
+
+async function allocateKernelPorts(excludedPorts = []) {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const kernel = 52_000 + Math.floor(Math.random() * 8_000)
+    const ports = { kernel, mcp: kernel + 1, codex: kernel + 2, opencode: kernel + 3 }
+    if (Object.values(ports).some((port) => excludedPorts.includes(port))) continue
+    if ((await Promise.all(Object.values(ports).map(portIsAvailable))).every(Boolean)) return ports
+  }
+  throw new Error("could not allocate a local kernel port set")
+}
+
+async function portIsAvailable(port, host = "127.0.0.1") {
+  return await new Promise((resolve) => {
+    const server = net.createServer()
+    server.once("error", () => resolve(false))
+    server.listen(port, host, () => server.close(() => resolve(true)))
+  })
+}
+
+function spawnLogged(label, binary, env, logDir) {
+  const log = createWriteStream(path.join(logDir, `${label}.log`), { flags: "wx", mode: 0o600 })
+  const child = spawn(binary, [], { cwd: repoRoot, env, stdio: ["ignore", "pipe", "pipe"] })
+  child.setupLabel = label
+  child.setupLog = log
+  child.spawnError = null
+  child.once("error", (error) => { child.spawnError = error })
+  child.stdout.pipe(log, { end: false })
+  child.stderr.pipe(log, { end: false })
+  child.once("exit", () => log.end())
+  return child
+}
+
+async function waitForTcp(host, port, timeoutMs, child) {
+  await waitFor(async () => {
+    assertChildAlive(child)
+    return await new Promise((resolve) => {
+      const socket = net.connect({ host, port })
+      socket.once("connect", () => { socket.destroy(); resolve(true) })
+      socket.once("error", () => { socket.destroy(); resolve(false) })
+    })
+  }, timeoutMs, `relay did not listen on ${host}:${port}`)
+}
+
+async function connectKernel(LocalIpcClient, requests, kernelUrl, children) {
+  let lastError = null
+  const deadline = Date.now() + 60_000
+  while (Date.now() < deadline) {
+    for (const child of children) assertChildAlive(child)
+    const client = new LocalIpcClient(kernelUrl)
+    try {
+      unwrap(await client.send(requests.listSlicesRequest()), "SlicesListed")
+      return client
+    } catch (error) {
+      lastError = error
+      await client.close?.().catch(() => {})
+      await sleep(250)
+    }
+  }
+  throw new Error(`kernel did not accept local public requests: ${lastError?.message ?? String(lastError)}`)
+}
+
+async function waitForSliceRunning(client, requests, sliceId, children) {
+  return await waitFor(async () => {
+    children.forEach(assertChildAlive)
+    const slice = unwrap(await client.send(requests.getSliceRequest(sliceId)), "Slice").slice
+    if (slice.status === "failed" || slice.status === "error") {
+      throw new Error(`local Docker slice entered ${slice.status}: ${slice.error ?? slice.message ?? "no diagnostic"}`)
+    }
+    return slice.status === "running" ? slice : false
+  }, 300_000, `headed local Docker slice ${sliceId} did not become running`)
+}
+
+async function waitForRoomReady(client, requests, sessionId, sliceId, children) {
+  return await waitFor(async () => {
+    children.forEach(assertChildAlive)
+    const environment = unwrap(await client.send(requests.getRoomEnvironmentStateRequest(sessionId)), "RoomEnvironmentState").environment
+    if (environment.lifecycle === "failed" || environment.lifecycle === "error") {
+      throw new Error(`Room environment entered ${environment.lifecycle}: ${environment.error ?? "no diagnostic"}`)
+    }
+    if (environment.lifecycle !== "ready" || !environment.focused_tab_id) return false
+    const binding = unwrap(await client.send(requests.getRoomEnvironmentSliceRequest(sessionId)), "RoomEnvironmentSlice").binding
+    assert.equal(binding?.slice_id, sliceId, "Room environment is bound to a different slice")
+    const resourceInventory = unwrap(await client.send(
+      requests.getRoomEnvironmentResourceInventoryRequest(sessionId, sliceId),
+    ), "RoomEnvironmentResourceInventory").inventory
+    if (!resourceInventory.browser_ids?.length || !resourceInventory.profile_ids?.length) return false
+    if (!environment.tabs?.some((tab) => tab.tab_id === environment.focused_tab_id)) return false
+    return { environment, resourceInventory }
+  }, protocolClientRoomReadyTimeoutMs, "headed Room did not publish a ready browser, tab, and display inventory")
+}
+
+async function waitForCloudBootstrap(input) {
+  let lastError = null
+  const deadline = Date.now() + input.timeoutMs
+  while (Date.now() < deadline) {
+    input.children?.forEach(assertChildAlive)
+    try {
+      const dashboard = await input.cloud.dashboard()
+      const target = dashboard.relayTargets?.find((item) => item.daemonId === input.daemonId)
+      if (!target || target.machineId !== input.machineId) {
+        await sleep(500)
+        continue
+      }
+      const bootstrap = await input.cloud.bootstrap(input.daemonId)
+      assert.ok(bootstrap.relayUrl === input.relayUrl, "local Cloud bootstrap selected a different relay")
+      assert.ok(bootstrap.relayToken === input.relayToken,
+        "local Cloud bootstrap token does not match the isolated local relay")
+      assert.ok(bootstrap.target?.daemonId === input.daemonId, "local Cloud bootstrap selected a different kernel")
+      assert.ok(bootstrap.target?.machineId === input.machineId, "local Cloud bootstrap selected a different machine")
+      const relayClient = new input.LocalIpcClient(bootstrap.relayUrl, {
+        relayAuthToken: bootstrap.relayToken,
+        targetDaemonAlias: bootstrap.target?.daemonAlias ?? input.daemonId,
+        kernelPingIntervalMs: 60_000,
+        kernelMaxMissedPongs: 10,
+      })
+      try {
+        const sessions = unwrap(await relayClient.send(input.requests.listSessionsRequest()), "SessionsListed").sessions
+        const transport = assertCloudRelayBootstrap({
+          bootstrap,
+          relayUrl: input.relayUrl,
+          relayToken: input.relayToken,
+          daemonId: input.daemonId,
+          machineId: input.machineId,
+          sessionId: input.sessionId,
+          sessions,
+        })
+        return { ...transport, verifiedAt: new Date().toISOString(), cloudApiUrl: input.cloud.baseUrl }
+      } finally {
+        await relayClient.close?.().catch(() => {})
+      }
+    } catch (error) {
+      lastError = error
+      if (/local Cloud bootstrap (?:selected|token)|cannot see the setup Room/.test(String(error?.message))) throw error
+      await sleep(500)
+    }
+  }
+  throw new Error(`local Cloud did not expose the new Room over its product relay bootstrap: ${lastError?.message ?? "target not discovered"}`)
+}
+
+async function waitFor(observe, timeoutMs, message) {
+  const deadline = Date.now() + timeoutMs
+  let lastError = null
+  while (Date.now() < deadline) {
+    try {
+      const value = await observe()
+      if (value) return value
+    } catch (error) {
+      lastError = error
+      if (error?.fatal === true) throw error
+      if (/entered (?:failed|error)|different slice|mismatch|exited before setup completed|failed to start/.test(error?.message ?? "")) throw error
+    }
+    await sleep(250)
+  }
+  throw new Error(`${message}${lastError ? `: ${lastError.message}` : ""}`)
+}
+
+function assertChildAlive(child) {
+  if (child.spawnError) throw new Error(`${child.setupLabel} failed to start: ${child.spawnError.message}`)
+  if (child.exitCode != null || child.signalCode != null) {
+    throw new Error(`${child.setupLabel} exited before setup completed: code=${child.exitCode} signal=${child.signalCode}`)
+  }
+}
+
+async function cleanupOwnedResources({ state, requests, children }) {
+  const errors = []
+  if (state.client) {
+    if (state.sessionId) {
+      for (const [label, request] of [
+        ["Room environment", requests.stopRoomEnvironmentRequest?.(state.sessionId)],
+        ["session", requests.endSessionRequest?.(state.sessionId)],
+      ]) {
+        if (!request) continue
+        try { await state.client.send(request) } catch (error) { errors.push(`${label} cleanup failed: ${error.message}`) }
+      }
+    }
+    if (state.sliceId) {
+      try { await state.client.send(requests.stopSliceRequest(state.sliceId)) } catch (error) { errors.push(`slice stop failed: ${error.message}`) }
+      try { await state.client.send(requests.deleteSliceRequest(state.sliceId)) } catch (error) { errors.push(`slice deletion failed: ${error.message}`) }
+    }
+    await state.client.close?.().catch((error) => errors.push(`kernel client close failed: ${error.message}`))
+  }
+  if (state.workspaceOwned && state.workspace) {
+    try {
+      await rm(state.workspace, { recursive: true, force: true })
+    } catch (error) {
+      errors.push(`workspace removal failed: ${error.message}`)
+    }
+  }
+  for (const child of [...children].reverse()) {
+    try { await terminateChild(child) } catch (error) { errors.push(`${child.setupLabel} stop failed: ${error.message}`) }
+  }
+  if (state.presenceRecordPath) {
+    try {
+      await access(state.presenceRecordPath)
+      errors.push(`kernel presence record remained after shutdown: ${state.presenceRecordPath}`)
+    } catch (error) {
+      if (error?.code !== "ENOENT") errors.push(`kernel presence check failed: ${error.message}`)
+    }
+  }
+  return errors
+}
+
+async function terminateChild(child) {
+  if (!child || child.exitCode != null || child.signalCode != null) return
+  child.kill("SIGTERM")
+  const exited = await Promise.race([
+    new Promise((resolve) => child.once("exit", () => resolve(true))),
+    sleep(5_000).then(() => false),
+  ])
+  if (!exited && child.exitCode == null && child.signalCode == null) {
+    child.kill("SIGKILL")
+    await Promise.race([
+      new Promise((resolve) => child.once("exit", resolve)),
+      sleep(2_000),
+    ])
+  }
+}
+
+function unwrap(response, variant) {
+  if (response && typeof response === "object" && variant in response) return response[variant]
+  throw new Error(`kernel response omitted ${variant}`)
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(error?.stack ?? String(error))
+    process.exitCode = 1
+  })
+}
