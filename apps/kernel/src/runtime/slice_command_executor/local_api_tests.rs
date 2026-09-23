@@ -56,9 +56,20 @@ async fn save_api_rejects_reconciled_running_provider_before_snapshot_or_park() 
     let _environment_lock = SLICE_DOCKER_ENV_LOCK
         .lock()
         .expect("Docker provisioner test lock should not be poisoned");
-    let scratch = tempfile::tempdir().expect("private test root should be created");
-    let action_log = scratch.path().join("docker-actions.log");
-    let provisioner = scratch.path().join("slice-provisioner.sh");
+    struct Scratch(std::path::PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let scratch = Scratch(std::env::temp_dir().join(format!(
+        "chariox-busy-save-api-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    )));
+    std::fs::create_dir(&scratch.0).expect("private test root should be created");
+    let action_log = scratch.0.join("docker-actions.log");
+    let provisioner = scratch.0.join("slice-provisioner.sh");
     std::fs::write(
         &provisioner,
         format!(
@@ -80,13 +91,11 @@ async fn save_api_rejects_reconciled_running_provider_before_snapshot_or_park() 
         None,
         &crate::runtime::command::KernelCaller::default(),
         None,
-        crate::local::LocalDaemonRequest::SaveSliceState(
-            crate::local::SliceStateSaveRequest {
-                slice_ref: slice.id.clone(),
-                mode: Some(crate::local::SliceStateSaveMode::RestartAgents),
-                scope: Some(crate::local::SliceStateSaveScope::ThisSlice),
-            },
-        ),
+        crate::local::LocalDaemonRequest::SaveSliceState(crate::local::SliceStateSaveRequest {
+            slice_ref: slice.id.clone(),
+            mode: Some(crate::local::SliceStateSaveMode::RestartAgents),
+            scope: Some(crate::local::SliceStateSaveScope::ThisSlice),
+        }),
     )
     .await;
 
@@ -167,10 +176,8 @@ async fn busy_slice_runtime() -> (
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();
     let worker_run_id = "worker-provider-run".to_string();
-    let projected_run_id = crate::provider::projected_leased_provider_run_id(
-        "leased-agent-1",
-        &worker_run_id,
-    );
+    let projected_run_id =
+        crate::provider::projected_leased_provider_run_id("leased-agent-1", &worker_run_id);
     let slice = app
         .slices()
         .create(
