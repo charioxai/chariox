@@ -539,6 +539,10 @@ test("Path-1 managed-home bootstrap is signed and selected by image install", as
     "Environment=CHARIOX_MANAGED_BOOTSTRAP_PATH=/var/lib/chariox/managed-bootstrap.json",
     "Environment=HOME=/home/chariox",
     "Environment=CHARIOX_HOME=/home/chariox/.chariox",
+    "Environment=CHARIOX_SLICE_DOCKER_BROKER_SOCKET=/var/lib/chariox-slice-share/.broker-private/control/control.sock",
+    "Wants=network-online.target chariox-rootless-docker.service",
+    "After=network-online.target chariox-rootless-docker.service",
+    "ExecStartPre=-+/usr/bin/systemctl restart chariox-slice-broker.service",
     "ExecStart=/usr/local/bin/chariox-managed-bootstrap",
   ]) {
     assert.ok(path1Unit.includes(required), `Path-1 unit is missing ${required}`)
@@ -551,7 +555,6 @@ test("Path-1 managed-home bootstrap is signed and selected by image install", as
     "CHARIOX_MANAGED_SLICE_SERVICE_ROOT",
     "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT",
     "CHARIOX_SLICE_ROOT",
-    "CHARIOX_SLICE_DOCKER_BROKER",
     "bwrap",
     "--disposable-worker",
     "NoNewPrivileges=",
@@ -574,11 +577,21 @@ test("Path-1 managed-home bootstrap is signed and selected by image install", as
     "RootImage=",
     "SystemCallFilter=",
     "CapabilityBoundingSet=",
-    "ExecStartPre=",
     "StateDirectory=",
     "SupplementaryGroups=",
   ]) {
     assert.ok(!path1Unit.includes(forbidden), `Path-1 unit must not contain ${forbidden}`)
+  }
+  const workerUnit = await readFile(
+    join(output, "rootfs/etc/systemd/system/chariox-disposable-worker-bootstrap.service"), "utf8",
+  )
+  for (const required of [
+    "Environment=CHARIOX_SLICE_DOCKER_BROKER_SOCKET=/var/lib/chariox-slice-share/.broker-private/control/control.sock",
+    "Wants=network-online.target chariox-rootless-docker.service",
+    "After=network-online.target chariox-rootless-docker.service",
+    "ExecStartPre=-+/usr/bin/systemctl restart chariox-slice-broker.service",
+  ]) {
+    assert.ok(workerUnit.includes(required), `Path-1 worker unit is missing ${required}`)
   }
 
   const releaseRoot = join(output, "rootfs")
@@ -602,6 +615,30 @@ test("Path-1 managed-home bootstrap is signed and selected by image install", as
   const mismatched = runVerifier(releaseRoot, mismatchedDigest, fixture.trustedPublicKey, "path1")
   assert.equal(mismatched.status, 1)
   assert.match(mismatched.stderr, /does not declare the selected path1 managed bootstrap service/)
+  await writeFile(path1UnitPath, path1Unit)
+  await writeFile(manifestPath, originalManifestBytes)
+  await writeFile(signaturePath, originalSignature)
+
+  const disconnectedBrokerService = path1Unit.replace(
+    "ExecStartPre=-+/usr/bin/systemctl restart chariox-slice-broker.service\n",
+    "",
+  )
+  await writeFile(path1UnitPath, disconnectedBrokerService)
+  const disconnectedBrokerManifestObject = JSON.parse(originalManifestBytes)
+  const disconnectedBrokerArtifact = disconnectedBrokerManifestObject.artifacts.find(
+    (artifact) => artifact.name === "chariox-path1-managed-bootstrap.service",
+  )
+  disconnectedBrokerArtifact.sha256 = `sha256:${createHash("sha256").update(disconnectedBrokerService).digest("hex")}`
+  const disconnectedBrokerManifestBytes = Buffer.from(JSON.stringify(disconnectedBrokerManifestObject))
+  await writeFile(manifestPath, disconnectedBrokerManifestBytes)
+  await writeFile(
+    signaturePath,
+    sign(null, disconnectedBrokerManifestBytes, fixture.releasePrivateKey).toString("base64"),
+  )
+  const disconnectedBrokerDigest = `sha256:${createHash("sha256").update(disconnectedBrokerManifestBytes).digest("hex")}`
+  const disconnectedBroker = runVerifier(releaseRoot, disconnectedBrokerDigest, fixture.trustedPublicKey, "path1")
+  assert.equal(disconnectedBroker.status, 1)
+  assert.match(disconnectedBroker.stderr, /must restart the one-shot broker before launch/)
   await writeFile(path1UnitPath, path1Unit)
   await writeFile(manifestPath, originalManifestBytes)
   await writeFile(signaturePath, originalSignature)

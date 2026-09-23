@@ -263,10 +263,22 @@ async function verifyImageRelease(rootfs, expectedDigest, trustedKeyPath, select
         ["CHARIOX_MANAGED_BOOTSTRAP_PATH", "Environment=CHARIOX_MANAGED_BOOTSTRAP_PATH=/var/lib/chariox/managed-bootstrap.json"],
         ["HOME", "Environment=HOME=/home/chariox"],
         ["CHARIOX_HOME", "Environment=CHARIOX_HOME=/home/chariox/.chariox"],
+        ["CHARIOX_SLICE_DOCKER_BROKER_SOCKET", "Environment=CHARIOX_SLICE_DOCKER_BROKER_SOCKET=/var/lib/chariox-slice-share/.broker-private/control/control.sock"],
       ]) {
         const assignments = lines.filter((line) => line.startsWith(`Environment=${name}=`))
         if (assignments.length !== 1 || assignments[0] !== required) {
           fail(`selected Path-1 managed bootstrap service is missing or overrides ${required}`)
+        }
+      }
+      const brokerPrestarts = lines.filter((line) => line.startsWith("ExecStartPre="))
+      if (brokerPrestarts.length !== 1
+        || brokerPrestarts[0] !== "ExecStartPre=-+/usr/bin/systemctl restart chariox-slice-broker.service") {
+        fail("selected Path-1 managed bootstrap service must restart the one-shot broker before launch")
+      }
+      for (const dependency of ["After=", "Wants="]) {
+        const declarations = lines.filter((line) => line.startsWith(dependency))
+        if (declarations.length !== 1 || !declarations[0].split(/\s+/).includes("chariox-rootless-docker.service")) {
+          fail(`selected Path-1 managed bootstrap service must declare ${dependency}chariox-rootless-docker.service`)
         }
       }
       for (const forbidden of [
@@ -277,7 +289,6 @@ async function verifyImageRelease(rootfs, expectedDigest, trustedKeyPath, select
         "CHARIOX_MANAGED_SLICE_SERVICE_ROOT",
         "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT",
         "CHARIOX_SLICE_ROOT",
-        "CHARIOX_SLICE_DOCKER_BROKER",
         "bwrap",
         "--disposable-worker",
         "NoNewPrivileges=",
@@ -302,7 +313,6 @@ async function verifyImageRelease(rootfs, expectedDigest, trustedKeyPath, select
         "SystemCallFilter=",
         "CapabilityBoundingSet=",
         "UMask=",
-        "ExecStartPre=",
         "StateDirectory=",
         "SupplementaryGroups=",
       ]) {

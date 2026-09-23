@@ -1240,9 +1240,8 @@ mod tests {
             .expect("broker FD should be present in kernel environment");
         assert!(handed_off_fd >= 0);
         assert!(broker_observed.contains("broker_required=<unset>\n"));
-        assert!(broker_observed.contains(
-            "slice_root=/var/lib/chariox-slice-share/slices/development\n"
-        ));
+        assert!(broker_observed
+            .contains("slice_root=/var/lib/chariox-slice-share/slices/development\n"));
         super::super::supervisor::clear_test_broker_lease();
         drop(broker_peer);
 
