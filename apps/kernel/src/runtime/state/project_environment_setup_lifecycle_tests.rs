@@ -1539,9 +1539,11 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         crate::session::unix_epoch_ms()
     ));
     let worker_home = root.join("worker-home");
+    let provider_home = root.join("provider-home");
     let workspace = root.join("worker-worktree");
     let receipt = root.join("receipt.json");
     std::fs::create_dir_all(&worker_home).unwrap();
+    std::fs::create_dir_all(&provider_home).unwrap();
     std::fs::create_dir_all(&workspace).unwrap();
 
     struct Cleanup {
@@ -1865,21 +1867,42 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         )
         .with_agent_id(&backing_agent_id)
         .with_owner_user_id("user-1")
-        .with_variant(Some("fixture".to_string()))
-        .with_structured_endpoint(provider_fixture.address());
-        let provider_run = app
-            .launch_provider(launch_request)
-            .expect("worker utility provider should be prepared through the normal launch path");
+        .with_variant(Some("fixture".to_string()));
+        let mut provider_run = RuntimeProviderRun::new(
+            "setup-transport-recovery-provider-run",
+            &launch_request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "opencode-project-environment-transport-fixture".into(),
+                pty_target: None,
+                pty_program: Some("/bin/sh".into()),
+                pty_args: vec!["-c".into(), "sleep 60".into()],
+                pty_env: BTreeMap::from([
+                    ("HOME".into(), provider_home.display().to_string()),
+                    ("PATH".into(), "/usr/bin:/bin".into()),
+                ]),
+                pty_env_remove: Vec::new(),
+                working_directory: Some(workspace.clone()),
+                structured_endpoint: Some(provider_fixture.address()),
+            },
+        );
+        provider_run.mark_running();
         assert_eq!(
             provider_run.endpoint_mode(),
-            AgentEndpointMode::External,
-            "the simulated OpenCode endpoint must use the external adapter path"
+            AgentEndpointMode::Managed,
+            "project setup requires a managed OpenCode server that can restart with the prepared worker environment"
+        );
+        assert!(
+            provider_run.adapter_key() == "opencode"
+                && matches!(provider_run.adapter_key(), "codex" | "opencode"),
+            "the managed test provider must use the restartable OpenCode server adapter"
         );
         assert_eq!(
             provider_run.state(),
             crate::provider::ProviderRunState::Running,
             "the prepared worker provider context must remain live for replay"
         );
+        app.providers_mut().insert_run_for_test(provider_run);
     }
     let worker_router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
         Arc::clone(&app_worker),
