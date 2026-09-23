@@ -372,6 +372,12 @@ configure_slice_state_directory() {
   " || log "slice state directory ownership refresh unavailable; continuing"
 }
 
+copy_required_slice_overlay() {
+  local source="$1" destination="$2" label="$3"
+  run_with_timeout 30 docker cp "$source" "$destination" \
+    || fail "failed to refresh required slice support overlay: $label"
+}
+
 refresh_slice_support_files() {
   # Saved images retain their original packages. Prepare the desktop services
   # before overlaying the current launcher.
@@ -386,56 +392,56 @@ refresh_slice_support_files() {
       find /var/lib/apt/lists -mindepth 1 -delete
     fi
   ' || fail "could not prepare desktop services in the existing slice image"
-  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-runtime.sh" "$SLICE_NAME:/opt/chariox-slice/start-runtime.sh" \
-    || log "runtime script overlay refresh unavailable; continuing"
-  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-providers.sh" "$SLICE_NAME:/opt/chariox-slice/start-providers.sh" \
-    || log "provider server script overlay refresh unavailable; continuing"
-  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-screen.sh" "$SLICE_NAME:/opt/chariox-slice/slice-screen.sh" \
-    || log "screen script overlay refresh unavailable; continuing"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-runtime.sh" "$SLICE_NAME:/opt/chariox-slice/start-runtime.sh" "runtime launcher"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-providers.sh" "$SLICE_NAME:/opt/chariox-slice/start-providers.sh" "provider launcher"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-screen.sh" "$SLICE_NAME:/opt/chariox-slice/slice-screen.sh" "screen launcher"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/tint2rc" "$SLICE_NAME:/opt/chariox-slice/tint2rc" \
     || log "applications taskbar configuration refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-text-finder.py" "$SLICE_NAME:/opt/chariox-slice/slice-text-finder.py" \
     || log "screen text finder overlay refresh unavailable; continuing"
-  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-selkies.py" "$SLICE_NAME:/opt/chariox-slice/slice-selkies.py" \
-    || log "Selkies lifecycle overlay refresh unavailable; continuing"
-  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-selkies-stream.py" "$SLICE_NAME:/opt/chariox-slice/slice-selkies-stream.py" \
-    || log "Selkies stream overlay refresh unavailable; continuing"
-  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/selkies_viewers.py" "$SLICE_NAME:/opt/chariox-slice/selkies_viewers.py" \
-    || log "Selkies private viewer module overlay refresh unavailable; continuing"
-  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-cdp.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-cdp.mjs" \
-    || log "browser CDP helper overlay refresh unavailable; continuing"
-  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-actions.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-actions.mjs" \
-    || log "browser controller actions module overlay refresh unavailable; continuing"
-  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-cdp.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-cdp.mjs" \
-    || log "browser controller CDP module overlay refresh unavailable; continuing"
+  if [[ "$SLICE_VIEWER_BACKEND" == "selkies" ]]; then
+    copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-selkies.py" "$SLICE_NAME:/opt/chariox-slice/slice-selkies.py" "Selkies lifecycle"
+    copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-selkies-stream.py" "$SLICE_NAME:/opt/chariox-slice/slice-selkies-stream.py" "Selkies streaming"
+    copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/selkies_viewers.py" "$SLICE_NAME:/opt/chariox-slice/selkies_viewers.py" "Selkies viewer module"
+  else
+    run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-selkies.py" "$SLICE_NAME:/opt/chariox-slice/slice-selkies.py" \
+      || log "Selkies lifecycle overlay refresh unavailable; continuing"
+    run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-selkies-stream.py" "$SLICE_NAME:/opt/chariox-slice/slice-selkies-stream.py" \
+      || log "Selkies stream overlay refresh unavailable; continuing"
+    run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/selkies_viewers.py" "$SLICE_NAME:/opt/chariox-slice/selkies_viewers.py" \
+      || log "Selkies private viewer module overlay refresh unavailable; continuing"
+  fi
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-cdp.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-cdp.mjs" "browser CDP helper"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-actions.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-actions.mjs" "Browser Controller actions module"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-cdp.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-cdp.mjs" "Browser Controller CDP module"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-resources.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-resources.mjs" \
-    || log "browser controller resource observation module overlay refresh unavailable; continuing"
+    || fail "failed to refresh required slice support overlay: Browser Controller resources"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-cookie-fence.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-cookie-fence.mjs" \
-    || log "browser controller cookie fence module overlay refresh unavailable; continuing"
+    || fail "failed to refresh required slice support overlay: Browser Controller cookie fence"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-dialogs.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-dialogs.mjs" \
-    || log "browser controller dialog module overlay refresh unavailable; continuing"
+    || fail "failed to refresh required slice support overlay: Browser Controller dialogs"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-compatibility.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-compatibility.mjs" \
-    || log "browser controller compatibility module overlay refresh unavailable; continuing"
+    || fail "failed to refresh required slice support overlay: Browser Controller compatibility"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-events.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-events.mjs" \
-    || log "browser controller events module overlay refresh unavailable; continuing"
+    || fail "failed to refresh required slice support overlay: Browser Controller events"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-files.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-files.mjs" \
-    || log "browser controller file-transfer module overlay refresh unavailable; continuing"
+    || fail "failed to refresh required slice support overlay: Browser Controller files"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-frames.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-frames.mjs" \
-    || log "browser controller frame module overlay refresh unavailable; continuing"
+    || fail "failed to refresh required slice support overlay: Browser Controller frames"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-history.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-history.mjs" \
-    || log "browser controller history module overlay refresh unavailable; continuing"
+    || fail "failed to refresh required slice support overlay: Browser Controller history"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-permissions.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-permissions.mjs" \
-    || log "browser controller permissions module overlay refresh unavailable; continuing"
+    || fail "failed to refresh required slice support overlay: Browser Controller permissions"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-snapshot.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-snapshot.mjs" \
-    || log "browser controller snapshot module overlay refresh unavailable; continuing"
+    || fail "failed to refresh required slice support overlay: Browser Controller snapshot"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller.mjs" \
-    || log "browser controller overlay refresh unavailable; continuing"
+    || fail "failed to refresh required slice support overlay: Browser Controller entrypoint"
   run_with_timeout 30 docker exec -u root "$SLICE_NAME" mkdir -p /opt/chariox-slice/browser-session-import \
-    || log "browser import runtime directory refresh unavailable; continuing"
+    || fail "failed to create required browser import runtime directory"
   local browser_import_module
   for browser_import_module in chrome-cookie-batch.mjs controller-cookie-import.mjs cookie-import-completion.mjs cookie-import-journal.mjs cookie-import-transaction.mjs production-destination.mjs; do
     run_with_timeout 30 docker cp "$REPO_ROOT/apps/browser-session-import/$browser_import_module" "$SLICE_NAME:/opt/chariox-slice/browser-session-import/$browser_import_module" \
-      || log "browser import runtime module refresh unavailable; continuing"
+      || fail "failed to refresh required slice support overlay: browser import module $browser_import_module"
   done
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/managed-provider-isolation-probe.mjs" "$SLICE_NAME:/opt/chariox-slice/managed-provider-isolation-probe.mjs" \
     || log "provider isolation probe overlay refresh unavailable; continuing"
@@ -463,6 +469,8 @@ refresh_slice_support_files() {
     /opt/chariox-slice/browser-controller-permissions.mjs \
     /opt/chariox-slice/browser-controller-snapshot.mjs \
     /opt/chariox-slice/browser-controller.mjs \
+    || fail "failed to set permissions on required slice support overlays"
+  run_with_timeout 30 docker exec -u root "$SLICE_NAME" chmod +x \
     /opt/chariox-slice/managed-provider-isolation-probe.mjs \
     /opt/chariox-slice/managed-provider-isolation-probe-wrapper.sh \
     /opt/chariox-slice/provider-port-bridge.mjs \
