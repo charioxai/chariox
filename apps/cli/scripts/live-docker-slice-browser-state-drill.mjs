@@ -12,7 +12,7 @@ import { browserStateDrillImageConfig } from "./lib/browser-state-drill-image.mj
 import { resolveBrowserStateDrillPaths } from "./lib/browser-state-drill-paths.mjs"
 import { startBrowserComputerFixture } from "./lib/browser-computer-fixture.mjs"
 import { startBrowserStateFixtureSidecar } from "./lib/browser-state-drill-fixture-sidecar.mjs"
-import { startBrowserStateFixtureProxy } from "./lib/browser-state-fixture-proxy.mjs"
+import { browserStateFixtureGateway, startBrowserStateFixtureProxy } from "./lib/browser-state-fixture-proxy.mjs"
 import { finalizeDrillArtifacts } from "./lib/drill-artifacts.mjs"
 import { resolveBuiltBinary } from "./lib/drill-runtime-helpers.mjs"
 import { completeBrowserStateEditorHandoff, createBrowserStateEditorDrill } from "./lib/browser-state-drill-editor.mjs"
@@ -707,9 +707,13 @@ async function waitForBrowserText(needle, timeoutMs, message) {
 
 async function waitForSliceRunning(sliceRef) {
   const current = await waitForSliceStatus(sliceRef, "running", 240_000)
+  const networks = JSON.parse(await dockerText([
+    "inspect", containerName, "--format", "{{json .NetworkSettings.Networks}}",
+  ]))
+  const upstreamHost = browserStateFixtureGateway(networks)
   await dockerText(["exec", "-d", "-u", "slice", containerName, "node", "--input-type=module", "-e",
     `await (${startBrowserStateFixtureProxy.toString()})(${JSON.stringify({
-      port: fixturePort, upstreamHost: "host.docker.internal", upstreamPort: fixturePort,
+      port: fixturePort, upstreamHost, upstreamPort: fixturePort,
     })})`])
   await waitFor(async () => {
     const response = await runCommand("docker", ["exec", "-u", "slice", containerName,

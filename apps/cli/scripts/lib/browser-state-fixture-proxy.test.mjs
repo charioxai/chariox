@@ -2,7 +2,16 @@ import assert from "node:assert/strict"
 import { createServer } from "node:http"
 import { once } from "node:events"
 import test from "node:test"
-import { startBrowserStateFixtureProxy } from "./browser-state-fixture-proxy.mjs"
+import { browserStateFixtureGateway, startBrowserStateFixtureProxy } from "./browser-state-fixture-proxy.mjs"
+
+test("browser fixture reaches the Docker host through the slice gateway", () => {
+  assert.equal(browserStateFixtureGateway({ bridge: { Gateway: "172.17.0.1" } }), "172.17.0.1")
+  assert.throws(() => browserStateFixtureGateway({ bridge: { Gateway: "" } }), /gateway/)
+  assert.throws(() => browserStateFixtureGateway({
+    bridge: { Gateway: "172.17.0.1" },
+    other: { Gateway: "172.18.0.1" },
+  }), /one Docker network/)
+})
 
 test("loopback fixture preserves authenticated requests and response bytes", async () => {
   const fixture = createServer((request, response) => {

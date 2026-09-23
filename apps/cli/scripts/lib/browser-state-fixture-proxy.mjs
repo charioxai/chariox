@@ -1,3 +1,18 @@
+import { isIP } from "node:net"
+
+export function browserStateFixtureGateway(networks) {
+  const attached = networks && typeof networks === "object" && !Array.isArray(networks)
+    ? Object.values(networks)
+    : []
+  if (attached.length !== 1) throw new Error("browser fixture requires one Docker network")
+  const gateway = attached[0]?.Gateway
+  if (typeof gateway !== "string" || !isIP(gateway)
+      || gateway === "0.0.0.0" || gateway === "::" || gateway === "::1" || gateway.startsWith("127.")) {
+    throw new Error("browser fixture Docker network has no usable gateway")
+  }
+  return gateway
+}
+
 // Test-only TCP bridge. Chromium can use its ordinary loopback secure context
 // while the host fixture retains the message ledger used by the M20 driver.
 // Self-contained because the driver executes this function in the test slice.
