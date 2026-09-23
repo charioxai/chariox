@@ -1,10 +1,12 @@
 #!/usr/bin/env node
+import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import net from 'node:net'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { captureDrillCRoomCheckpoint } from './tui-web-parity-visual-control.mjs'
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
@@ -16,7 +18,14 @@ function parseArgs(argv) {
   const options = {
     rootDir: null,
     manifestPath: defaultLatestManifest,
+    manifestPathProvided: false,
     preserve: false,
+    roomSessionId: null,
+    kernelUrl: null,
+    sliceId: null,
+    workspace: null,
+    worktree: null,
+    webObservationPath: null,
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -27,10 +36,19 @@ function parseArgs(argv) {
       return value
     }
     if (arg === '--root-dir') options.rootDir = path.resolve(next())
-    else if (arg === '--manifest') options.manifestPath = path.resolve(next())
+    else if (arg === '--manifest') {
+      options.manifestPath = path.resolve(next())
+      options.manifestPathProvided = true
+    }
+    else if (arg === '--observe-room-session') options.roomSessionId = next()
+    else if (arg === '--kernel-url') options.kernelUrl = next()
+    else if (arg === '--slice-id') options.sliceId = next()
+    else if (arg === '--workspace') options.workspace = path.resolve(next())
+    else if (arg === '--worktree') options.worktree = path.resolve(next())
+    else if (arg === '--web-observation') options.webObservationPath = path.resolve(next())
     else if (arg === '--preserve') options.preserve = true
     else if (arg === '--help' || arg === '-h') {
-      console.log('Usage: node apps/cli/scripts/live-tui-web-parity-visual-session.mjs [--manifest PATH] [--root-dir DIR] [--preserve]')
+      console.log('Usage: node apps/cli/scripts/live-tui-web-parity-visual-session.mjs [--manifest PATH] [--root-dir DIR] [--preserve]\n       node apps/cli/scripts/live-tui-web-parity-visual-session.mjs --observe-room-session ID --kernel-url URL --slice-id ID --workspace PATH --worktree PATH --web-observation PATH [--root-dir DIR] [--manifest PATH]')
       process.exit(0)
     } else {
       throw new Error(`unknown option: ${arg}`)
@@ -317,6 +335,125 @@ async function writeManifest(manifestPath, manifest) {
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
 }
 
+async function runRoomObserverSession(options) {
+  for (const [name, flag] of [
+    ['roomSessionId', '--observe-room-session'],
+    ['kernelUrl', '--kernel-url'],
+    ['sliceId', '--slice-id'],
+    ['workspace', '--workspace'],
+    ['worktree', '--worktree'],
+    ['webObservationPath', '--web-observation'],
+  ]) {
+    assert.ok(options[name], `${flag} is required with --observe-room-session`)
+  }
+  assert.ok(path.isAbsolute(options.workspace) && path.isAbsolute(options.worktree), 'Room workspace and worktree must be absolute')
+  assert.ok(path.isAbsolute(options.webObservationPath), 'Web observation path must be absolute')
+  const kernelEndpoint = new URL(options.kernelUrl)
+  assert.ok(['ws:', 'wss:'].includes(kernelEndpoint.protocol), '--kernel-url must be a WebSocket URL')
+
+  const stamp = `${process.pid}-${Date.now()}`
+  const rootDir = options.rootDir ?? path.join(os.homedir(), '.chariox', 'dev', 'browser-computer-use', `drill-c-live-observer-${stamp}`)
+  assert.ok(rootDir !== repoRoot && !rootDir.startsWith(`${repoRoot}${path.sep}`), 'observer artifacts must be outside the repository')
+  const evidenceDir = path.join(rootDir, 'evidence')
+  const manifestPath = options.manifestPathProvided ? options.manifestPath : path.join(rootDir, 'manifest.json')
+  assert.ok(manifestPath !== repoRoot && !manifestPath.startsWith(`${repoRoot}${path.sep}`), 'observer manifest must be outside the repository')
+  assert.notEqual(manifestPath, options.webObservationPath, 'observer manifest and Web report must use separate files')
+  const automationSocket = path.join(os.tmpdir(), `chariox-drill-c-observer-${stamp}.sock`)
+  await mkdir(evidenceDir, { recursive: true, mode: 0o700 })
+
+  const { LocalIpcClient } = await import('../../../packages/kernel-client/dist/ipc.js')
+  const requests = await import('../../../packages/kernel-client/dist/ipc-requests.js')
+  const client = new LocalIpcClient(options.kernelUrl)
+  let cli = null
+  let cleaned = false
+  const cleanup = async () => {
+    if (cleaned) return
+    cleaned = true
+    await client.close?.().catch(() => {})
+    await stopChild(cli)
+    await rm(automationSocket, { force: true }).catch(() => {})
+  }
+
+  process.once('SIGINT', () => { void cleanup().then(() => process.exit(130)) })
+  process.once('SIGTERM', () => { void cleanup().then(() => process.exit(143)) })
+
+  try {
+    const baseline = await captureDrillCRoomCheckpoint({
+      client,
+      requests,
+      sessionId: options.roomSessionId,
+      sliceId: options.sliceId,
+    })
+    const manifest = {
+      schema: 'chariox.drill_c.live_observer_session.v1',
+      startedAt: new Date().toISOString(),
+      repoRoot,
+      rootDir,
+      evidenceDir,
+      kernelUrl: options.kernelUrl,
+      sessionId: options.roomSessionId,
+      sliceId: options.sliceId,
+      workspace: options.workspace,
+      worktree: options.worktree,
+      webObservationPath: options.webObservationPath,
+      baseline,
+      webObserverContract: {
+        schema: 'chariox.browser_computer.drill_c.web_observer.v1',
+        required: [
+          'sessionId, environmentId, sliceId, runtimeGeneration',
+          'display.viewport, display.browserIds, display.profileIds',
+          'browser.focusedTabId and browser.tab { tabId, url, title, documentRevision }',
+          'actions.computer and actions.webTakeover with actionId, actorId, sequence, mode, kind, state',
+        ],
+      },
+      automationSocket,
+      reportPath: path.join(evidenceDir, 'drill-c-live-observation.json'),
+      command: {
+        verify: `node apps/cli/scripts/tui-web-parity-visual-control.mjs --manifest ${manifestPath} --action drill-c-verify`,
+      },
+      cleanup: 'observer TUI and local IPC connection only; the Room, slice, and session are preserved',
+    }
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+    console.log(`[tui-web-parity-visual] live Room observer manifest: ${manifestPath}`)
+    console.log('[tui-web-parity-visual] attached without creating or mutating the Room; start before Computer work, then run drill-c-verify after Web takeover')
+
+    cli = spawn('bun', [
+      path.join(repoRoot, 'apps/cli/dist/index.js'),
+      '--kernel-url', options.kernelUrl,
+      '--automation-socket', automationSocket,
+      '--session', options.roomSessionId,
+      '--workspace', options.workspace,
+      '--worktree', options.worktree,
+      '--client-id', `chariox-drill-c-observer-${stamp}`,
+    ], {
+      cwd: repoRoot,
+      env: process.env,
+      stdio: 'inherit',
+    })
+    const startupFailure = new Promise((resolve) => {
+      cli.once('error', (error) => resolve(error))
+      cli.once('exit', (code, signal) => {
+        if (code !== 0) resolve(new Error(`observer CLI exited before its automation socket was ready: code=${code} signal=${signal ?? 'none'}`))
+      })
+    })
+    const failed = await Promise.race([
+      waitForSocket(automationSocket).then(() => null),
+      startupFailure,
+    ])
+    if (failed) throw failed
+    await new Promise((resolve, reject) => {
+      cli.once('error', reject)
+      cli.once('exit', (code, signal) => {
+        if (signal) reject(new Error(`observer CLI exited by signal ${signal}`))
+        else if (code && code !== 0) reject(new Error(`observer CLI exited with code ${code}`))
+        else resolve()
+      })
+    })
+  } finally {
+    await cleanup()
+  }
+}
+
 async function stopChild(child) {
   if (!child || child.exitCode !== null || child.signalCode !== null) return
   child.kill('SIGTERM')
@@ -335,6 +472,18 @@ async function stopChild(child) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2))
+  const observerModeRequested = [
+    options.roomSessionId,
+    options.kernelUrl,
+    options.sliceId,
+    options.workspace,
+    options.worktree,
+    options.webObservationPath,
+  ].some(Boolean)
+  if (observerModeRequested) {
+    await runRoomObserverSession(options)
+    return
+  }
   const rootDir = options.rootDir ?? path.join(repoRoot, 'target', 'live-tui-web-parity-visual-session', `${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
   const home = path.join(rootDir, 'home')
@@ -422,6 +571,10 @@ async function main() {
       daemonId,
       ...visual,
       waitingRoom,
+      drillCSharedBrowserComputer: {
+        status: 'not_proven',
+        reason: 'this dev-stub visual session does not create a Room Environment or observe Web takeover',
+      },
       command: {
         control: `pnpm --filter @chariox/cli run tui-web-parity:visual-control --manifest ${options.manifestPath}`,
       },

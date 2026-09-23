@@ -4,12 +4,197 @@ import { spawn } from 'node:child_process'
 import net from 'node:net'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { automationNoticeTexts } from './lib/room-tui-notices.mjs'
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
 const defaultLatestManifest = path.join(repoRoot, 'target', 'live-tui-web-parity-visual-session', 'latest.json')
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+export async function captureDrillCRoomCheckpoint({ client, requests, sessionId, sliceId }) {
+  assert.ok(sessionId && sliceId, 'Drill C checkpoint requires the real Room session and slice ids')
+  const environment = unwrap(await client.send(requests.getRoomEnvironmentStateRequest(sessionId)), 'RoomEnvironmentState').environment
+  assert.equal(environment.session_id, sessionId, 'kernel Room Environment session mismatch')
+  assert.equal(environment.lifecycle, 'ready', 'Drill C Room Environment must be ready')
+  assert.ok(environment.environment_id, 'kernel Room Environment omitted environment id')
+  assert.ok(environment.focused_tab_id, 'kernel Room Environment has no focused browser tab')
+
+  const sliceBinding = unwrap(await client.send(requests.getRoomEnvironmentSliceRequest(sessionId)), 'RoomEnvironmentSlice').binding
+  assert.ok(sliceBinding, 'kernel Room Environment has no slice binding')
+  assert.equal(sliceBinding.session_id, sessionId, 'slice binding Room mismatch')
+  assert.equal(sliceBinding.slice_id, sliceId, 'slice binding id mismatch')
+
+  const resourceInventory = unwrap(await client.send(
+    requests.getRoomEnvironmentResourceInventoryRequest(sessionId, sliceId),
+  ), 'RoomEnvironmentResourceInventory').inventory
+  assert.equal(resourceInventory.session_id, sessionId, 'Room resource inventory Room mismatch')
+  assert.equal(resourceInventory.environment_id, environment.environment_id, 'Room resource inventory Environment mismatch')
+  assert.equal(resourceInventory.slice_id, sliceId, 'Room resource inventory slice mismatch')
+  assert.ok(resourceInventory.browser_ids.length > 0, 'Room resource inventory omitted browser identity')
+  assert.ok(resourceInventory.profile_ids.length > 0, 'Room resource inventory omitted browser profile identity')
+
+  const actionPage = unwrap(await client.send(
+    requests.listRoomEnvironmentActionHistoryRequest(sessionId, null, 100),
+  ), 'RoomEnvironmentActionHistoryListed').page
+  assert.ok(Array.isArray(actionPage.actions), 'kernel Room Action history response is malformed')
+  return {
+    capturedAt: new Date().toISOString(),
+    sessionId,
+    environment,
+    sliceBinding,
+    resourceInventory,
+    actions: actionPage.actions,
+    highestActionSequence: actionPage.actions.reduce(
+      (highest, action) => Math.max(highest, action.sequence),
+      0,
+    ),
+  }
+}
+
+export function assertDrillCSharedRoomEvidence({ baseline, checkpoint, web, tui }) {
+  assert.ok(baseline && checkpoint && web && tui, 'Drill C evidence requires baseline, kernel, Web, and TUI observations')
+  assert.equal(baseline.sessionId, baseline.environment?.session_id, 'baseline Room identity mismatch')
+  assert.equal(checkpoint.environment?.session_id, baseline.sessionId, 'TUI observer saw a different Room')
+  assert.equal(checkpoint.environment?.environment_id, baseline.environment.environment_id, 'Room Environment changed after Computer work')
+  assert.equal(checkpoint.environment?.runtime_generation, baseline.environment.runtime_generation, 'Room runtime changed after Computer work')
+  assert.deepEqual(checkpoint.sliceBinding, baseline.sliceBinding, 'Room slice binding changed after Computer work')
+  assert.deepEqual(displayIdentity(checkpoint), displayIdentity(baseline), 'canonical display identity changed after Computer work')
+  assert.equal(checkpoint.environment.focused_tab_id, baseline.environment.focused_tab_id, 'focused tab changed after Computer work')
+
+  const focusedTab = checkpoint.environment.tabs.find((tab) => tab.tab_id === checkpoint.environment.focused_tab_id)
+  assert.ok(focusedTab, 'kernel Room Environment omitted the focused tab record')
+  assert.equal(web.schema, 'chariox.browser_computer.drill_c.web_observer.v1', 'unsupported Web observer evidence schema')
+  assert.equal(web.status, 'observed', 'Web observer did not report an observed Room')
+  assert.equal(web.observer, 'web', 'Drill C evidence did not come from the Web observer')
+  assert.equal(web.client, 'production-local-web-view', 'Drill C requires evidence from the production Web client')
+  const webObservedAt = Date.parse(web.observedAt)
+  assert.ok(Number.isFinite(webObservedAt), 'Web observation timestamp is invalid')
+  assert.ok(webObservedAt >= Date.parse(baseline.capturedAt), 'Web observation predates the Room baseline')
+  assert.ok(webObservedAt <= Date.parse(checkpoint.capturedAt), 'Web observation postdates the TUI/kernel checkpoint')
+  assert.equal(web.sessionId, baseline.sessionId, 'Web observer saw a different Room')
+  assert.equal(web.environmentId, checkpoint.environment.environment_id, 'Web observer saw a different Room Environment')
+  assert.equal(web.sliceId, checkpoint.sliceBinding.slice_id, 'Web observer saw a different slice')
+  assert.equal(web.runtimeGeneration, checkpoint.environment.runtime_generation, 'Web observer saw a different Room runtime')
+  assert.deepEqual(normalizeWebDisplay(web.display), displayIdentity(checkpoint), 'Web observer saw a different canonical display')
+  assert.equal(web.browser?.focusedTabId, focusedTab.tab_id, 'Web observer saw a different focused tab')
+  assert.deepEqual(web.browser?.tab, {
+    tabId: focusedTab.tab_id,
+    url: focusedTab.url,
+    title: focusedTab.title,
+    documentRevision: focusedTab.document_revision,
+  }, 'Web browser state differs from the kernel Room Environment')
+
+  const actors = new Map(checkpoint.environment.actors.map((actor) => [actor.actor_id, actor]))
+  const newComputerActions = checkpoint.actions.filter((action) =>
+    action.sequence > baseline.highestActionSequence
+    && action.mode === 'computer'
+    && action.state === 'completed'
+    && actors.get(action.actor_id)?.kind === 'agent',
+  ).sort((left, right) => left.sequence - right.sequence)
+  assert.ok(newComputerActions.length > 0, 'kernel history contains no completed agent Computer work after the baseline')
+  const computerAction = newComputerActions.at(-1)
+  assert.deepEqual(web.actions?.computer, actionIdentity(computerAction), 'Web observer did not observe the kernel Computer Action')
+
+  const takeoverAction = checkpoint.actions.find((action) => action.action_id === web.actions?.webTakeover?.actionId)
+  assert.ok(takeoverAction, 'Web takeover Action is absent from kernel-owned Action history')
+  assert.equal(actors.get(takeoverAction.actor_id)?.kind, 'human', 'Web takeover Action is not attributed to a human actor')
+  assert.deepEqual(web.actions.webTakeover, actionIdentity(takeoverAction), 'Web observer Action identity differs from kernel history')
+  assert.ok(takeoverAction.sequence > computerAction.sequence, 'Web takeover must follow Computer work in kernel Action history')
+  assert.ok(webObservedAt >= takeoverAction.submitted_at_ms, 'Web observation predates its takeover Action')
+
+  assert.equal(tui.sessionId, baseline.sessionId, 'TUI observer attached to a different Room')
+  assertTuiRoomStatus(tui.statusNotice, checkpoint.environment, focusedTab)
+  assertTuiActionVisible(tui.actionsNotice, computerAction)
+  assertTuiActionVisible(tui.actionsNotice, takeoverAction)
+
+  return {
+    schema: 'chariox.browser_computer.drill_c.live_evidence.v1',
+    status: 'passed',
+    observedAt: new Date().toISOString(),
+    sameRoom: true,
+    sameEnvironment: true,
+    sameSlice: true,
+    sameTab: true,
+    sameDisplay: true,
+    room: baseline.sessionId,
+    environmentId: checkpoint.environment.environment_id,
+    sliceId: checkpoint.sliceBinding.slice_id,
+    runtimeGeneration: checkpoint.environment.runtime_generation,
+    display: displayIdentity(checkpoint),
+    browser: {
+      focusedTabId: focusedTab.tab_id,
+      tab: web.browser.tab,
+    },
+    actions: {
+      computer: actionIdentity(computerAction),
+      webTakeover: actionIdentity(takeoverAction),
+    },
+    observers: {
+      tui: { statusNotice: tui.statusNotice, actionsNotice: tui.actionsNotice },
+      web: { client: web.client, observedAt: web.observedAt },
+    },
+  }
+}
+
+function displayIdentity(checkpoint) {
+  const environment = checkpoint.environment
+  const inventory = checkpoint.resourceInventory
+  return {
+    environmentId: environment.environment_id,
+    sliceId: checkpoint.sliceBinding.slice_id,
+    runtimeGeneration: environment.runtime_generation,
+    viewport: environment.viewport,
+    browserIds: [...inventory.browser_ids].sort(),
+    profileIds: [...inventory.profile_ids].sort(),
+  }
+}
+
+function actionIdentity(action) {
+  return {
+    actionId: action.action_id,
+    actorId: action.actor_id,
+    sequence: action.sequence,
+    mode: action.mode,
+    kind: action.kind,
+    state: action.state,
+  }
+}
+
+function normalizeWebDisplay(display) {
+  assert.ok(display && typeof display === 'object', 'Web observer omitted canonical display identity')
+  assert.ok(Array.isArray(display.browserIds), 'Web observer omitted browser identities')
+  assert.ok(Array.isArray(display.profileIds), 'Web observer omitted browser profile identities')
+  return {
+    ...display,
+    browserIds: [...display.browserIds].sort(),
+    profileIds: [...display.profileIds].sort(),
+  }
+}
+
+function assertTuiRoomStatus(statusNotice, environment, focusedTab) {
+  assert.equal(typeof statusNotice, 'string', 'TUI observer omitted /room status')
+  const lines = statusNotice.split('\n')
+  assert.equal(lines[0], `Room environment ${environment.environment_id}`, 'TUI observer saw a different Room Environment')
+  const viewport = environment.viewport
+  assert.ok(lines.includes(
+    `viewport=${viewport.desktop_pixel_width}x${viewport.desktop_pixel_height} css=${viewport.css_width}x${viewport.css_height} scale=${viewport.device_scale_factor} revision=${viewport.revision}`,
+  ), 'TUI observer did not show the canonical display viewport')
+  assert.ok(lines.some((line) => line.startsWith(`tab=${focusedTab.tab_id} `)), 'TUI observer did not show the kernel focused tab')
+}
+
+function assertTuiActionVisible(actionsNotice, action) {
+  assert.equal(typeof actionsNotice, 'string', 'TUI observer omitted /room actions')
+  const line = actionsNotice.split('\n').find((candidate) => candidate.startsWith(`#${action.sequence} ${action.action_id} `))
+  assert.ok(line, `TUI observer did not show kernel Action ${action.action_id}`)
+  assert.ok(line.includes(`actor=${action.actor_id} ${action.mode}:${action.kind} `), 'TUI action actor or kind differs from kernel history')
+  assert.ok(line.endsWith(`state=${action.state} submitted_at_ms=${action.submitted_at_ms}`), 'TUI action outcome differs from kernel history')
+}
+
+function unwrap(response, key) {
+  if (response && typeof response === 'object' && key in response) return response[key]
+  throw new Error(`kernel response omitted ${key}`)
+}
 
 function parseArgs(argv) {
   const options = {
@@ -31,7 +216,7 @@ function parseArgs(argv) {
     else if (arg === '--label') options.label = next()
     else if (arg === '--json') options.json = JSON.parse(next())
     else if (arg === '--help' || arg === '-h') {
-      console.log('Usage: node apps/cli/scripts/tui-web-parity-visual-control.mjs [--manifest PATH] [--action snapshot|assert|assert-blobs|capture-layouts|waiting-room|steer-queued|cancel-queued|toggle-first-blob|expand-history-blob|toggle-first-turn|send|report] [--label LABEL] [--json JSON]')
+      console.log('Usage: node apps/cli/scripts/tui-web-parity-visual-control.mjs [--manifest PATH] [--action snapshot|assert|assert-blobs|capture-layouts|waiting-room|steer-queued|cancel-queued|toggle-first-blob|expand-history-blob|toggle-first-turn|send|drill-c-verify|report] [--label LABEL] [--json JSON]')
       process.exit(0)
     } else {
       throw new Error(`unknown option: ${arg}`)
@@ -450,6 +635,15 @@ async function writeReport(manifest) {
     evidenceDir: manifest.evidenceDir,
     sessionId: manifest.sessionId,
     agentId: manifest.agentId,
+    drillCSharedBrowserComputer: manifest.schema === 'chariox.drill_c.live_observer_session.v1'
+      ? {
+        status: 'not_proven',
+        reason: 'run drill-c-verify after Computer work and Web takeover to compare live observers',
+      }
+      : {
+        status: 'not_proven',
+        reason: 'this TUI terminal visual session does not create a Room Environment or observe Web takeover',
+      },
     requirements: {
       visibleTuiSession: 'validated by VS Code screen captures plus automation snapshots from this session',
       agentPaneBlobs: 'requires initial, assert-blobs, and blob-expanded snapshots',
@@ -466,6 +660,67 @@ async function writeReport(manifest) {
   return report
 }
 
+async function observeRoomFromTui(automation) {
+  const attachmentSnapshot = await automation.send('snapshot')
+  const statusSnapshot = await automation.send('submit_prompt', { prompt: '/room status' })
+  const statusNotice = automationNoticeTexts(statusSnapshot)
+    .findLast((notice) => notice.startsWith('Room environment '))
+  const actionsSnapshot = await automation.send('submit_prompt', { prompt: '/room actions 100' })
+  const actionsNotice = automationNoticeTexts(actionsSnapshot)
+    .findLast((notice) => notice.startsWith('Room actions'))
+  assert.ok(statusNotice, 'TUI observer did not return a /room status notice')
+  assert.ok(actionsNotice, 'TUI observer did not return a /room actions notice')
+  return {
+    sessionId: attachmentSnapshot.session?.id ?? null,
+    statusNotice,
+    actionsNotice,
+  }
+}
+
+async function verifyDrillC(manifest, automation) {
+  assertDrillCLiveObserverManifest(manifest)
+
+  const { LocalIpcClient } = await import(pathToFileURL(path.join(repoRoot, 'packages/kernel-client/dist/ipc.js')).href)
+  const requests = await import(pathToFileURL(path.join(repoRoot, 'packages/kernel-client/dist/ipc-requests.js')).href)
+  const client = new LocalIpcClient(manifest.kernelUrl)
+  try {
+    const checkpoint = await captureDrillCRoomCheckpoint({
+      client,
+      requests,
+      sessionId: manifest.sessionId,
+      sliceId: manifest.sliceId,
+    })
+    const web = JSON.parse(await readFile(manifest.webObservationPath, 'utf8'))
+    const tui = await observeRoomFromTui(automation)
+    const report = assertDrillCSharedRoomEvidence({ baseline: manifest.baseline, checkpoint, web, tui })
+    const reportPath = path.join(manifest.evidenceDir, 'drill-c-live-observation.json')
+    await mkdir(path.dirname(reportPath), { recursive: true })
+    await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8')
+    return { report, reportPath }
+  } finally {
+    await client.close?.().catch(() => {})
+  }
+}
+
+export function assertDrillCLiveObserverManifest(manifest) {
+  assert.equal(
+    manifest?.schema,
+    'chariox.drill_c.live_observer_session.v1',
+    'Drill C verification requires a live Room observer manifest; dev-stub visual sessions cannot pass',
+  )
+  assert.ok(manifest.baseline && manifest.sessionId && manifest.sliceId, 'live observer manifest is incomplete')
+  const endpoint = new URL(manifest.kernelUrl)
+  assert.ok(['ws:', 'wss:'].includes(endpoint.protocol), 'live observer manifest kernel URL is invalid')
+  assert.ok(Number.isSafeInteger(manifest.baseline.highestActionSequence), 'live observer baseline omitted kernel Action sequence')
+  assert.equal(manifest.baseline.sessionId, manifest.sessionId, 'live observer baseline Room mismatch')
+  assert.equal(manifest.baseline.environment?.session_id, manifest.sessionId, 'live observer baseline Environment mismatch')
+  assert.ok(manifest.baseline.environment?.environment_id, 'live observer baseline omitted Environment identity')
+  assert.equal(manifest.baseline.sliceBinding?.slice_id, manifest.sliceId, 'live observer baseline slice mismatch')
+  assert.equal(manifest.baseline.resourceInventory?.environment_id, manifest.baseline.environment.environment_id, 'live observer baseline inventory mismatch')
+  assert.equal(manifest.baseline.resourceInventory?.slice_id, manifest.sliceId, 'live observer baseline inventory slice mismatch')
+  assert.ok(path.isAbsolute(manifest.webObservationPath), 'Web observer report path must be absolute')
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   const manifest = JSON.parse(await readFile(options.manifestPath, 'utf8'))
@@ -476,6 +731,10 @@ async function main() {
     let snapshot
     if (options.action === 'snapshot') {
       snapshot = await automation.send('snapshot')
+    } else if (options.action === 'drill-c-verify') {
+      const verified = await verifyDrillC(manifest, automation)
+      console.log(JSON.stringify(verified, null, 2))
+      return
     } else if (options.action === 'assert') {
       snapshot = await automation.send('snapshot')
     } else if (options.action === 'assert-blobs') {
@@ -552,7 +811,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(`[tui-web-parity-visual-control] ${error.stack ?? error.message}`)
-  process.exitCode = 1
-})
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(`[tui-web-parity-visual-control] ${error.stack ?? error.message}`)
+    process.exitCode = 1
+  })
+}
