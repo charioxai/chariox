@@ -22,6 +22,9 @@ import {
 import { removeRoomDirectDockerWorkspaceFixture } from "./lib/room-rootless-workspace-fixture.mjs"
 
 const workspace = "/home/test/.chariox/dev/browser-computer-use/drill-c/workspace"
+// The existing-kernel mount fixture deliberately requires Linux's real /var/tmp.
+// macOS normally resolves /var through /private/var, which the production guard rejects.
+const linuxMountFixture = { skip: process.platform !== "linux" }
 
 const setup = {
   session: {
@@ -194,7 +197,7 @@ test("Drill C setup modes require loopback endpoints and explicit existing-kerne
   }), /outside the source repository/)
 })
 
-test("existing-kernel workspace selection creates an empty guarded child under the explicit safe root", async (t) => {
+test("existing-kernel workspace selection creates an empty guarded child under the explicit safe root", linuxMountFixture, async (t) => {
   const tree = await rootlessWorkspaceTree(t)
   const fixture = await createExistingKernelWorkspaceFixture(tree)
 
@@ -212,7 +215,7 @@ test("existing-kernel workspace selection creates an empty guarded child under t
   await assert.rejects(access(fixture.workspace), error => error?.code === "ENOENT")
 })
 
-test("existing-kernel cleanup verifies Room and slice shutdown before removing the owned workspace", async (t) => {
+test("existing-kernel cleanup verifies Room and slice shutdown before removing the owned workspace", linuxMountFixture, async (t) => {
   const tree = await rootlessWorkspaceTree(t)
   const fixture = await createExistingKernelWorkspaceFixture(tree)
   const events = []
@@ -264,7 +267,7 @@ test("existing-kernel cleanup verifies Room and slice shutdown before removing t
   await assert.rejects(access(fixture.workspace), error => error?.code === "ENOENT")
 })
 
-test("existing-kernel cleanup retains the workspace when slice deletion is unverified", async (t) => {
+test("existing-kernel cleanup retains the workspace when slice deletion is unverified", linuxMountFixture, async (t) => {
   const tree = await rootlessWorkspaceTree(t)
   const fixture = await createExistingKernelWorkspaceFixture(tree)
   const requests = {
@@ -305,7 +308,7 @@ test("existing-kernel cleanup retains the workspace when slice deletion is unver
   await removeRoomDirectDockerWorkspaceFixture(fixture)
 })
 
-test("existing-kernel cleanup refuses a replaced workspace after successful resource shutdown", async (t) => {
+test("existing-kernel cleanup refuses a replaced workspace after successful resource shutdown", linuxMountFixture, async (t) => {
   const tree = await rootlessWorkspaceTree(t)
   const fixture = await createExistingKernelWorkspaceFixture(tree)
   const movedWorkspace = path.join(tree.root, "moved-owned-workspace")
