@@ -80,7 +80,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version 53 carries the home-authoritative setup attempt on worker redispatch.
 /// Version 54 carries recipe and lockfile input attestations for worker setup.
 /// Version 55 carries definition-derived executable path entries for worker setup.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 55;
+/// Version 56 carries the originating home prompt for forwarded worker runtime tools.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 56;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
@@ -202,6 +203,8 @@ pub struct RemoteWorkspaceLiveSyncContext {
     pub home_kernel_id: String,
     pub home_session_id: String,
     pub home_agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_prompt_id: Option<String>,
     pub leased_agent_id: String,
     pub worker_kernel_id: String,
     pub worker_machine_id: String,
@@ -1113,7 +1116,7 @@ mod tests {
 
     #[test]
     fn leased_completion_provider_termination_shape_is_versioned() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 55);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 56);
         let completion = RelayProjectedCompletion {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,
@@ -1178,8 +1181,8 @@ mod tests {
     }
 
     #[test]
-    fn project_environment_setup_relay_shapes_round_trip_at_protocol_55() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 55);
+    fn project_environment_setup_relay_shapes_round_trip_at_protocol_56() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 56);
         let definition = crate::session::ProjectEnvironmentDefinition {
             schema_version: 1,
             origin: crate::session::ProjectEnvironmentDefinitionOrigin::UtilityGenerated,

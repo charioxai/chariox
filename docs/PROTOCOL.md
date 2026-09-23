@@ -1651,6 +1651,12 @@ Workflow trigger and deployment direction:
   back to the Waiting Room. The v342 protocol snapshot covers omitted and
   custom create values plus default and custom summary projections; the focused
   managed API drill covers request serialization and authoritative projection.
+- protocol 343 and relay peer protocol 56 add the worker's originating home
+  prompt ID to forwarded runtime tool context. The home kernel accepts a
+  forwarded `chariox.send_agent_message` only while that prompt is active for
+  the bound home agent, leased agent, and worker provider run. Calls carrying a
+  settled home prompt ID cannot message another agent. The local
+  client shape is unchanged, so web and native minimum versions do not change.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

@@ -179,6 +179,43 @@ impl KernelRuntimeState {
         ),
         DaemonError,
     > {
+        if crate::transport::runtime_tools::canonical_agent_messaging_tool_name(&tool_name)
+            == Some(crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL)
+        {
+            let session = self
+                .owned
+                .session_store
+                .get_session(&context.home_session_id)?;
+            let sender = self.owned.agent_store.get_agent(&context.home_agent_id)?;
+            let origin_is_current = sender.session_id() == context.home_session_id
+                && self.owned.config_projection.snapshot().daemon_id == context.home_kernel_id
+                && sender.remote_execution().is_some_and(|binding| {
+                    binding.leased_agent_id == context.leased_agent_id
+                        && binding.worker_kernel_id == context.worker_kernel_id
+                        && binding.worker_machine_id == context.worker_machine_id
+                        && binding.active_worker_provider_run_id.as_deref()
+                            == Some(context.worker_provider_run_id.as_str())
+                })
+                && context
+                    .home_prompt_id
+                    .as_deref()
+                    .is_some_and(|home_prompt_id| {
+                        self.owned
+                            .prompt_state_owner
+                            .active_prompt_for_agent(&session, sender.id())
+                            .is_some_and(|prompt| {
+                                prompt.id() == home_prompt_id
+                                    && prompt.status() == crate::session::PromptStatus::Running
+                            })
+                    });
+            if !origin_is_current {
+                return Err(DaemonError::LocalTransport {
+                    operation: "dispatch forwarded agent message",
+                    message: "sender prompt or leased worker binding is no longer current"
+                        .to_string(),
+                });
+            }
+        }
         let (result, package) = self
             .dispatch_capability_runtime_tool_call_for_agent(
                 &context.home_session_id,

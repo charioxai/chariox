@@ -202,6 +202,7 @@ mod tests {
     mod m23_metaagent_runtime_tools;
     mod provider_projection;
     mod relay_leased_prompt_steer;
+    mod remote_agent_message_origin;
     mod remote_authorization;
     mod remote_workspace_live_sync_authorization;
     mod resource_telemetry;
