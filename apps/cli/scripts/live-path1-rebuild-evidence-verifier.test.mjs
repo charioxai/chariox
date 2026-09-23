@@ -162,7 +162,7 @@ function validEvidence() {
       manifestDigestVerified: true,
       kernelArtifactVerified: true,
     },
-    serviceInstances: [{ unit: "chariox-disposable-worker-bootstrap.service", invocationId: "new-service-invocation-02" }],
+    serviceInstances: [{ unit: "chariox-path1-managed-bootstrap.service", invocationId: "new-service-invocation-02" }],
     processes: ["new-boot-identity-002:pid-81:start-18"],
     stateInstances: [
       { path: "/var/lib/chariox", instanceId: "new-state-device-inode-4001" },
@@ -243,6 +243,15 @@ test("valid captured receipts prove a fresh-equivalent rebuild of the same alloc
   })
 })
 
+test("a rebuilt Path-1 managed home accepts its bootstrap service alongside rootless Docker", () => {
+  const evidence = validEvidence()
+  evidence.after.identity.serviceInstances.push({
+    unit: "chariox-rootless-docker.service",
+    invocationId: "new-rootless-invocation-03",
+  })
+  assert.equal(verifyPath1RebuildEvidence(evidence).status, "pass")
+})
+
 test("a missing required receipt fails closed", () => {
   const evidence = validEvidence()
   evidence.rebuild = undefined
@@ -261,9 +270,9 @@ test("a rebuilt shared-host service cannot pass the Path-1 evidence gate", () =>
   )
 })
 
-test("a rebuilt host without the disposable-worker service cannot pass the Path-1 evidence gate", () => {
+test("a rebuilt home running only the disposable-worker service cannot pass the Path-1 evidence gate", () => {
   const evidence = validEvidence()
-  evidence.after.identity.serviceInstances[0].unit = "chariox-rootless-docker.service"
+  evidence.after.identity.serviceInstances[0].unit = "chariox-disposable-worker-bootstrap.service"
   assert.throws(
     () => verifyPath1RebuildEvidence(evidence),
     (error) => error instanceof RebuildEvidenceError && error.code === "path1_service_topology",
