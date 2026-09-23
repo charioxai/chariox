@@ -758,17 +758,6 @@ async function main() {
       workspace,
       priorSliceIds: priorKernelState.sliceIds ?? [],
     })
-    await state.client.send(requests.startSliceRequest(state.sliceId))
-    slice = await waitForSliceRunning(state.client, requests, state.sliceId, children)
-    slice = assertNewSliceIdentity({
-      slice,
-      expectedDaemonId: daemonId,
-      expectedMachineId: machineId,
-      workspace,
-      priorSliceIds: priorKernelState.sliceIds ?? [],
-      requireDisplayPorts: true,
-    })
-
     state.sessionCreateAttempted = true
     const created = unwrap(await state.client.send(requests.createSessionRequest(
       workspace,
@@ -790,6 +779,19 @@ async function main() {
     const binding = unwrap(await state.client.send(requests.bindRoomEnvironmentSliceRequest(state.sessionId, state.sliceId)),
       "RoomEnvironmentSlice").binding
     assertRoomSliceBinding(binding, { sessionId: state.sessionId, slice, daemonId })
+
+    // The worker reads its Room binding when the slice starts. Binding an
+    // already-running slice leaves that worker without the provisioned scope.
+    await state.client.send(requests.startSliceRequest(state.sliceId))
+    slice = await waitForSliceRunning(state.client, requests, state.sliceId, children)
+    slice = assertNewSliceIdentity({
+      slice,
+      expectedDaemonId: daemonId,
+      expectedMachineId: machineId,
+      workspace,
+      priorSliceIds: priorKernelState.sliceIds ?? [],
+      requireDisplayPorts: true,
+    })
 
     state.roomEnvironmentStartAttempted = true
     unwrap(await state.client.send(requests.startRoomEnvironmentRequest(state.sessionId, {
