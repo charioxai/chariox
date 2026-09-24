@@ -248,7 +248,17 @@ impl KernelRuntimeState {
             }
         }
 
-        Ok(crate::extension::RemoteExtensionManifest { tools })
+        let room_has_environment = self
+            .owned
+            .slice_store
+            .environment_slice(agent.session_id())
+            .is_some();
+        let room_browser_available =
+            room_has_environment && self.browser_controller_enabled_for_room(agent.session_id());
+        Ok(crate::extension::RemoteExtensionManifest {
+            tools,
+            room_browser_available,
+        })
     }
 
     pub(in crate::runtime::state) fn remote_prompt_mcp_capabilities_for_agent(

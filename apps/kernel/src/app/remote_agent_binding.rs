@@ -123,7 +123,10 @@ impl DaemonApp {
                 });
             }
         }
-        Ok(crate::extension::RemoteExtensionManifest { tools })
+        Ok(crate::extension::RemoteExtensionManifest {
+            tools,
+            room_browser_available: self.slices.environment_slice(agent.session_id()).is_some(),
+        })
     }
 
     pub(crate) fn required_remote_mcps_for_native_provider_launch(

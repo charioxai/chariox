@@ -23,12 +23,7 @@ impl KernelRuntimeState {
                     operation,
                     message: "forwarded Room browser context omitted the worker kernel".to_string(),
                 })?;
-        if from_worker_kernel_id != expected_worker_kernel_id {
-            return Err(DaemonError::LocalTransport {
-                operation,
-                message: "relay sender does not match the bound worker kernel".to_string(),
-            });
-        }
+        ensure_bound_worker_kernel(from_worker_kernel_id, expected_worker_kernel_id, operation)?;
         super::home_extension_authorizer::authorize_remote_home_context(self, &context, operation)?;
         let slice = self
             .owned
@@ -53,5 +48,38 @@ impl KernelRuntimeState {
             call.arguments,
         )
         .await
+    }
+}
+
+fn ensure_bound_worker_kernel(
+    from_worker_kernel_id: &str,
+    expected_worker_kernel_id: &str,
+    operation: &'static str,
+) -> Result<(), DaemonError> {
+    if from_worker_kernel_id != expected_worker_kernel_id {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: "relay sender does not match the bound worker kernel".to_string(),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forwarded_room_browser_rejects_wrong_bound_worker() {
+        let error = ensure_bound_worker_kernel(
+            "worker-wrong",
+            "worker-bound",
+            "test forwarded Room browser tool",
+        )
+        .expect_err("a different worker must not use the home Room capability");
+
+        assert!(error
+            .to_string()
+            .contains("does not match the bound worker kernel"));
     }
 }

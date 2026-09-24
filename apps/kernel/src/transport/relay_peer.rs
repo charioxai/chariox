@@ -83,7 +83,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version 56 carries the originating home prompt for forwarded worker runtime tools.
 /// Version 57 rejects worker kernels that cannot supply the required origin turn
 /// for `chariox.send_agent_message`; mixed-version peers fail before dispatch.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 57;
+/// Version 58 carries the home-owned Room browser capability in extension manifests.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 58;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
@@ -1117,8 +1118,30 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     #[test]
+    fn remote_room_browser_capability_manifest_is_versioned_at_protocol_58() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 58);
+        let request = RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
+            leased_agent_id: "leased-agent-1".to_string(),
+            remote_extension_manifest: crate::extension::RemoteExtensionManifest {
+                room_browser_available: true,
+                ..crate::extension::RemoteExtensionManifest::default()
+            },
+        };
+        let snapshot = serde_json::to_value(&request).expect("request should serialize");
+        assert_eq!(
+            snapshot.pointer("/remote_extension_manifest/room_browser_available"),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(
+            serde_json::from_value::<RelayPeerRequest>(snapshot)
+                .expect("request should deserialize"),
+            request
+        );
+    }
+
+    #[test]
     fn leased_completion_provider_termination_shape_is_versioned() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 57);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 58);
         let completion = RelayProjectedCompletion {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,
@@ -1183,8 +1206,8 @@ mod tests {
     }
 
     #[test]
-    fn project_environment_setup_relay_shapes_round_trip_at_protocol_57() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 57);
+    fn project_environment_setup_relay_shapes_round_trip_at_protocol_58() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 58);
         let definition = crate::session::ProjectEnvironmentDefinition {
             schema_version: 1,
             origin: crate::session::ProjectEnvironmentDefinitionOrigin::UtilityGenerated,

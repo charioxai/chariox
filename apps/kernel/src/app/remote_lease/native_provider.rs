@@ -461,6 +461,7 @@ mod tests {
                 timeout_sec: Some(30),
                 version_hash: Some("hash".to_string()),
             }],
+            ..crate::extension::RemoteExtensionManifest::default()
         };
 
         let run = runtime

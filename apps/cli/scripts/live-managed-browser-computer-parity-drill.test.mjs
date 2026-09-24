@@ -287,7 +287,7 @@ test("live M0 binds released kernel-client source modules before managed telemet
   )
   const daemonProtocol = releasedSourceConstant(typesSource, "LOCAL_DAEMON_PROTOCOL_VERSION")
   assert.equal(telemetryProtocol, MANAGED_BROWSER_COMPUTER_PARITY_PROTOCOL)
-  assert.equal(daemonProtocol, 343, "kernel-types.ts is authoritative for the current daemon protocol")
+  assert.equal(daemonProtocol, 344, "kernel-types.ts is authoritative for the current daemon protocol")
   assert.match(controlSource, /return \{ GetKernelResourceTelemetry: null \}/)
 
   const requestApi = {

@@ -124,6 +124,7 @@ mod tests {
                 timeout_sec: Some(5),
                 version_hash: Some("hash-1".to_string()),
             }],
+            ..RemoteExtensionManifest::default()
         };
         let payload = render_tool_transcript_update(
             &OpenCodePart {

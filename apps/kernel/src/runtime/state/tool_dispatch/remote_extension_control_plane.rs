@@ -172,16 +172,11 @@ impl KernelRuntimeState {
                 });
             }
         };
-        if !remote_extension_manifest.is_empty() {
-            let updated = self
-                .owned
-                .provider_store
-                .update_run_remote_extension_manifest(
-                    provider_run.id(),
-                    remote_extension_manifest,
-                )?;
-            self.owned.provider_run_projection.update(updated);
-        }
+        let updated = self
+            .owned
+            .provider_store
+            .update_run_remote_extension_manifest(provider_run.id(), remote_extension_manifest)?;
+        self.owned.provider_run_projection.update(updated);
         let result = self.apply_remote_skill_package_response(
             &workspace_context.root,
             &remote_context.home_kernel_id,
