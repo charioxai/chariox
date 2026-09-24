@@ -216,3 +216,44 @@ test("two same-tab agent observations and third-tab work require matching comple
     ...input, snapshots: [{ observed_at_ms: 110, environment: missingThird }],
   }).checks.twoAgentTabReads.status, "incomplete")
 })
+
+test("same-tab serialization does not count queued status/find observations as mutations", () => {
+  const runningRead = action({
+    id: "action:status", sequence: 1, actor: "agent:a", tab: "tab:one",
+    kind: "browser_status", state: "running", submitted: 100, started: 101,
+  })
+  const queuedRead = action({
+    id: "action:find", sequence: 2, actor: "agent:b", tab: "tab:one",
+    kind: "browser_find", state: "queued", submitted: 110,
+  })
+  const observed = environment({ actions: [runningRead, queuedRead] })
+  const completedRead = {
+    ...runningRead,
+    state: "completed",
+    finished_at_ms: 160,
+    outcome: { status: "completed" },
+  }
+  const cancelledRead = {
+    ...queuedRead,
+    state: "cancelled",
+    finished_at_ms: 170,
+    outcome: { status: "cancelled", reason: "human_takeover" },
+  }
+  const finalEnvironment = environment({
+    actions: [completedRead, cancelledRead],
+    ownership: [{
+      target: { kind: "browser_tab", id: "tab:one" },
+      actor_id: "user:operator",
+    }],
+  })
+
+  const report = verifyDrillE({
+    sessionId: "session-live",
+    snapshots: [{ observed_at_ms: 130, environment: observed }],
+    finalEnvironment,
+    actions: [completedRead, cancelledRead],
+    baselineActionSequence: 0,
+  })
+
+  assert.equal(report.checks.sameTabSerialization.status, "incomplete")
+})

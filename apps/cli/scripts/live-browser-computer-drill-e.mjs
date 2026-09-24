@@ -14,6 +14,7 @@ const defaultObserveMs = 60_000
 const maxObserveMs = 300_000
 const minPollMs = 250
 const maxPollMs = 10_000
+const browserObservationKinds = new Set(["browser_status", "browser_find"])
 
 function parseArgs(argv) {
   const options = {
@@ -184,6 +185,10 @@ function matchingTarget(target, tabId) {
   return target?.kind === "browser_tab" && target.id === tabId
 }
 
+function isBrowserObservation(action) {
+  return browserObservationKinds.has(action?.kind)
+}
+
 function sameActionIdentity(projected, recorded) {
   return projected.action_id === recorded.action_id
     && projected.sequence === recorded.sequence
@@ -201,7 +206,7 @@ function findConcurrentReads(snapshots, finalEnvironment, actionsById) {
     const environment = sample.environment
     const actors = actorKinds(environment)
     const running = environment.actions.filter((action) =>
-      action?.state === "running" && ["browser_status", "browser_find"].includes(action.kind)
+      action?.state === "running" && isBrowserObservation(action)
       && isAgentAction(action, actors, environment.runtime_generation)
       && finalTabIds.has(tabTarget(action)))
     for (const first of running) {
@@ -242,11 +247,13 @@ function findQueuePair(snapshots, finalEnvironment, actionsById) {
     const environment = sample.environment
     const actors = actorKinds(environment)
     const running = environment.actions.filter((action) =>
-      action?.state === "running" && isAgentAction(action, actors, environment.runtime_generation)
+      action?.state === "running" && !isBrowserObservation(action)
+      && isAgentAction(action, actors, environment.runtime_generation)
       && safeInteger(action.started_at_ms)
       && environment.tabs.some((tab) => tab.tab_id === tabTarget(action)))
     const queued = environment.actions.filter((action) =>
-      action?.state === "queued" && isAgentAction(action, actors, environment.runtime_generation)
+      action?.state === "queued" && !isBrowserObservation(action)
+      && isAgentAction(action, actors, environment.runtime_generation)
       && action.started_at_ms == null
       && environment.tabs.some((tab) => tab.tab_id === tabTarget(action)))
     for (const first of running) {
