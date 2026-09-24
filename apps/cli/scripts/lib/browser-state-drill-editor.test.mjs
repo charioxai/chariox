@@ -1,7 +1,36 @@
 import assert from "node:assert/strict"
+import { readFile } from "node:fs/promises"
 import { test } from "node:test"
 
-import { completeBrowserStateEditorHandoff } from "./browser-state-drill-editor.mjs"
+import { completeBrowserStateEditorHandoff, createBrowserStateEditorDrill } from "./browser-state-drill-editor.mjs"
+
+test("graphical editor fixtures are written by the slice user in rootless Docker", async () => {
+  const calls = []
+  const dockerText = async (args, options = {}) => {
+    calls.push({ args, options })
+    if (args.includes("dpkg-query")) return "0.5.10-2\n"
+    if (args.includes("sha256sum")) return "fixture hashes\n"
+    if (args.some((part) => part.includes("CHARIOX_SLICE_DISPLAY"))) return ":99"
+    return ""
+  }
+  const editor = createBrowserStateEditorDrill({
+    containerName: "slice-test", runId: "test", dockerText,
+  })
+
+  await editor.install()
+
+  for (const [name, target] of [
+    ["launch.sh", "/home/slice/.config/chariox-browser-state-editor/launch.sh"],
+    ["menu.xml", "/home/slice/.config/openbox/menu.xml"],
+  ]) {
+    const write = calls.find(({ args }) => args.some((part) => part.includes(target)))
+    assert.ok(write, `missing ${name} fixture write`)
+    assert.deepEqual(write.args.slice(0, 5), ["exec", "-i", "-u", "slice", "slice-test"])
+    assert.deepEqual(write.options.stdin,
+      await readFile(new URL(`../fixtures/browser-state-editor/${name}`, import.meta.url)))
+  }
+  assert.equal(calls.some(({ args }) => args[0] === "cp"), false)
+})
 
 function handoffDependencies(events, { visualMatches = [{
   text: "Fixture interactions", center_x: 640, center_y: 400,

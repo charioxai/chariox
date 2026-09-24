@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { readFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { verifyRoomDesktopHealth } from "./live-room-desktop-health.mjs"
 
@@ -193,8 +194,10 @@ export function createBrowserStateEditorDrill({ containerName, runId, dockerText
       await user(["mkdir", "-p", fixtureConfig, "/home/slice/.config/openbox"])
       for (const [file, target] of [["launch.sh", `${fixtureConfig}/launch.sh`],
         ["menu.xml", "/home/slice/.config/openbox/menu.xml"]]) {
-        await dockerText(["cp", fileURLToPath(new URL(`../fixtures/browser-state-editor/${file}`, import.meta.url)),
-          `${containerName}:${target}`])
+        await dockerText(["exec", "-i", "-u", "slice", containerName, "sh", "-c",
+          `umask 077; tee ${target} >/dev/null`], {
+          stdin: await readFile(fileURLToPath(new URL(`../fixtures/browser-state-editor/${file}`, import.meta.url))),
+        })
       }
       await user(["openbox", "--reconfigure"])
       report.initialIdentity = await identities()
