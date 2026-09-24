@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process"
 import test from "node:test"
 
 const verifier = new URL("./verify-image-release.mjs", import.meta.url)
+const imagePreparation = new URL("./prepare-hetzner-image.sh", import.meta.url)
 const SOURCE_COMMIT = "a".repeat(40)
 const SOURCE_TREE = "b".repeat(40)
 const TARGET = "x86_64-unknown-linux-gnu"
@@ -190,6 +191,37 @@ function runVerifier(fixture, topology, trustedBuilderKeyPath) {
   if (trustedBuilderKeyPath) args.push(trustedBuilderKeyPath)
   return spawnSync(process.execPath, args, { encoding: "utf8", timeout: 10_000 })
 }
+
+test("Path-1 image preparation rejects inherited systemd drop-ins", async (context) => {
+  const source = await readFile(imagePreparation, "utf8")
+  const guard = source.match(/assert_path1_unit_has_no_dropins\(\) \{\n[\s\S]*?^\}/m)?.[0]
+  assert.ok(guard, "Path-1 preparation must define an effective-unit drop-in guard")
+  assert.match(
+    source,
+    /if \[ "\$managed_provider_topology" = path1 \]; then\n[\s\S]*?assert_path1_unit_has_no_dropins "\$managed_bootstrap_service"/,
+    "Path-1 image preparation must run the guard for its selected service",
+  )
+
+  const scratch = await mkdtemp(join(tmpdir(), "chariox-path1-dropin-test-"))
+  context.after(() => rm(scratch, { recursive: true, force: true }))
+  const systemctl = join(scratch, "systemctl")
+  await writeFile(systemctl, '#!/bin/sh\nprintf "%s" "${SYSTEMD_DROP_IN_PATHS:-}"\n')
+  await chmod(systemctl, 0o755)
+  const command = `fail() { echo "$*" >&2; exit 1; }\n${guard}\nassert_path1_unit_has_no_dropins chariox-path1-managed-bootstrap.service\n`
+  const env = { ...process.env, PATH: `${scratch}:${process.env.PATH}` }
+  const clean = spawnSync("/bin/sh", ["-c", command], {
+    encoding: "utf8",
+    env: { ...env, SYSTEMD_DROP_IN_PATHS: "" },
+  })
+  assert.equal(clean.status, 0, clean.stderr)
+
+  const inherited = spawnSync("/bin/sh", ["-c", command], {
+    encoding: "utf8",
+    env: { ...env, SYSTEMD_DROP_IN_PATHS: "/etc/systemd/system/service.d/50-hardening.conf" },
+  })
+  assert.notEqual(inherited.status, 0)
+  assert.match(inherited.stderr, /systemd drop-ins/)
+})
 
 test("Path-1 verification requires an independently supplied builder trust root", async (context) => {
   const fixture = await createReleaseFixture(context)
