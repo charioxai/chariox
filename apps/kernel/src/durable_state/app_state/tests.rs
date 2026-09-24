@@ -548,7 +548,12 @@ fn schedule_operations_commit_wakes_that_the_writer_reports_due_and_completes() 
         .app_wakes(AppWakeOperation::Delivered(due[0].clone()))
         .unwrap();
     assert_eq!(
-        store.app_wakes(AppWakeOperation::NextDue).unwrap(),
-        AppWakeOutcome::NextDue(None)
+        store
+            .app_wakes(AppWakeOperation::Due {
+                now_ms: u64::MAX >> 12,
+                limit: 8
+            })
+            .unwrap(),
+        AppWakeOutcome::Due(Vec::new())
     );
 }

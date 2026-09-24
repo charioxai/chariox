@@ -2,13 +2,54 @@
 //! workers on demand. The App needs no resident process to wait for a due time.
 use super::KernelRuntimeState;
 use crate::durable_state::app_wakes::{AppWakeOperation, AppWakeOutcome};
+use crate::runtime::app_lifecycle::LifecycleError;
 use chariox_app_runtime::managed_state::DueWake;
-use std::time::Duration;
+use std::{collections::BTreeMap, time::Duration};
 
 const PAGE: usize = 8;
 /// A wake delivered this long after its due time is reported as overdue.
 const OVERDUE_AFTER_MS: u64 = 60_000;
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
+/// Waiting wakes step aside for this long so they cannot starve later ones.
+const START_WAIT_MS: u64 = 2_000;
+
+/// Outcome of one on-demand start request for an installation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Start {
+    /// Starting, already starting, or admission busy: wait without an attempt.
+    Pending,
+    /// User stop, failed generation, revocation or inactive: bounded attempts.
+    Refused,
+}
+
+/// Pure pass planning: deliver to live workers, start each stopped
+/// installation at most once, and never let waiting wakes block the page.
+fn plan(
+    due: Vec<DueWake>,
+    now_ms: u64,
+    is_live: impl Fn(&DueWake) -> bool,
+    mut start: impl FnMut(&DueWake) -> Start,
+) -> (Vec<DueWake>, Vec<AppWakeOperation>) {
+    let mut deliver = Vec::new();
+    let mut records = Vec::new();
+    let mut started: BTreeMap<(String, String), Start> = BTreeMap::new();
+    for wake in due {
+        if is_live(&wake) {
+            deliver.push(wake);
+            continue;
+        }
+        let key = (wake.owner_id.clone(), wake.installation_id.clone());
+        let outcome = *started.entry(key).or_insert_with(|| start(&wake));
+        records.push(match outcome {
+            Start::Pending => AppWakeOperation::Postponed {
+                wake,
+                until_ms: now_ms.saturating_add(START_WAIT_MS),
+            },
+            Start::Refused => AppWakeOperation::Failed { wake, now_ms },
+        });
+    }
+    (deliver, records)
+}
 
 impl KernelRuntimeState {
     /// Coordinator wiring only: one bounded pass per reservation.
@@ -44,52 +85,111 @@ impl KernelRuntimeState {
         let Ok(Ok(AppWakeOutcome::Due(due))) = due else {
             return;
         };
-        for wake in due {
-            let outcome = self.deliver_app_wake(&wake, now_ms).await;
-            let Some(operation) = outcome else {
-                continue;
+        let control = self.app_control().clone();
+        let handle = tokio::runtime::Handle::current();
+        let planning = control.clone();
+        let Ok((deliver, mut records)) = tokio::task::spawn_blocking(move || {
+            let lifecycle = planning.lifecycle().clone();
+            plan(
+                due,
+                now_ms,
+                |wake| {
+                    planning
+                        .active_app_lease(&wake.owner_id, &wake.installation_id)
+                        .is_some()
+                },
+                |wake| match lifecycle.start_on_demand_blocking(
+                    &wake.owner_id,
+                    &wake.installation_id,
+                    handle.clone(),
+                ) {
+                    Ok(_) | Err(LifecycleError::Busy) => Start::Pending,
+                    Err(_) => Start::Refused,
+                },
+            )
+        })
+        .await
+        else {
+            return;
+        };
+        for wake in deliver {
+            let overdue = now_ms.saturating_sub(wake.wake.due_at_ms) > OVERDUE_AFTER_MS;
+            let delivered = match control.active_app_lease(&wake.owner_id, &wake.installation_id) {
+                Some(lease) => lease
+                    .deliver_wake(&wake.wake, overdue, DELIVERY_TIMEOUT)
+                    .await
+                    .is_ok(),
+                None => false,
             };
-            let store = self.owned.durable_state_store.clone();
-            let _ = tokio::task::spawn_blocking(move || store.app_wakes(operation)).await;
+            records.push(if delivered {
+                AppWakeOperation::Delivered(wake)
+            } else {
+                AppWakeOperation::Failed { wake, now_ms }
+            });
+        }
+        let store = self.owned.durable_state_store.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            for record in records {
+                let _ = store.app_wakes(record);
+            }
+        })
+        .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chariox_app_runtime::managed_state::Wake;
+    use std::cell::RefCell;
+
+    fn due(installation: &str, id: &str) -> DueWake {
+        DueWake {
+            owner_id: "alice".into(),
+            installation_id: installation.into(),
+            wake: Wake {
+                id: id.into(),
+                due_at_ms: 1,
+                revision: String::new(),
+            },
+            attempts: 0,
         }
     }
 
-    /// `None` means delivery is pending an on-demand start; the wake stays due
-    /// without consuming a delivery attempt.
-    async fn deliver_app_wake(&self, wake: &DueWake, now_ms: u64) -> Option<AppWakeOperation> {
-        let control = self.app_control();
-        match control.active_app_lease(&wake.owner_id, &wake.installation_id) {
-            Some(lease) => {
-                let overdue = now_ms.saturating_sub(wake.wake.due_at_ms) > OVERDUE_AFTER_MS;
-                Some(
-                    match lease.deliver_wake(&wake.wake, overdue, DELIVERY_TIMEOUT).await {
-                        Ok(()) => AppWakeOperation::Delivered(wake.clone()),
-                        Err(_) => AppWakeOperation::Failed {
-                            wake: wake.clone(),
-                            now_ms,
-                        },
-                    },
-                )
-            }
-            None => {
-                let lifecycle = control.lifecycle().clone();
-                let (owner, installation) = (wake.owner_id.clone(), wake.installation_id.clone());
-                let handle = tokio::runtime::Handle::current();
-                let started = tokio::task::spawn_blocking(move || {
-                    lifecycle.start_active_blocking(&owner, &installation, handle)
-                })
-                .await;
-                match started {
-                    Ok(Ok(_)) => None,
-                    // Busy admission retries on a later pass; other failures
-                    // (inactive, revoked, stopped) consume a bounded attempt.
-                    Ok(Err(crate::runtime::app_lifecycle::LifecycleError::Busy)) => None,
-                    _ => Some(AppWakeOperation::Failed {
-                        wake: wake.clone(),
-                        now_ms,
-                    }),
-                }
-            }
-        }
+    #[test]
+    fn stopped_installations_start_once_per_pass_and_waiting_wakes_step_aside() {
+        let starts = RefCell::new(Vec::new());
+        let (deliver, records) = plan(
+            vec![due("stopped", "a"), due("live", "b"), due("stopped", "c")],
+            100,
+            |wake| wake.installation_id == "live",
+            |wake| {
+                starts.borrow_mut().push(wake.installation_id.clone());
+                Start::Pending
+            },
+        );
+        assert_eq!(starts.into_inner(), ["stopped"]);
+        assert_eq!(deliver.len(), 1);
+        assert_eq!(deliver[0].wake.id, "b");
+        assert_eq!(records.len(), 2);
+        assert!(records.iter().all(|record| matches!(
+            record,
+            AppWakeOperation::Postponed { until_ms, .. } if *until_ms == 100 + START_WAIT_MS
+        )));
+    }
+
+    #[test]
+    fn refused_starts_consume_bounded_attempts_instead_of_restarting() {
+        let (deliver, records) = plan(
+            vec![due("user-stopped", "a"), due("user-stopped", "b")],
+            100,
+            |_| false,
+            |_| Start::Refused,
+        );
+        assert!(deliver.is_empty());
+        assert_eq!(records.len(), 2);
+        assert!(records
+            .iter()
+            .all(|record| matches!(record, AppWakeOperation::Failed { now_ms: 100, .. })));
     }
 }

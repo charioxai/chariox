@@ -9,14 +9,13 @@ pub(crate) enum AppWakeOperation {
     Due { now_ms: u64, limit: usize },
     Delivered(DueWake),
     Failed { wake: DueWake, now_ms: u64 },
-    NextDue,
+    Postponed { wake: DueWake, until_ms: u64 },
 }
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum AppWakeOutcome {
     Due(Vec<DueWake>),
     Recorded,
-    NextDue(Option<u64>),
 }
 
 pub(super) struct AppWakeRequest {
@@ -53,7 +52,9 @@ pub(super) fn execute(connection: &mut Connection, request: AppWakeRequest) {
         AppWakeOperation::Failed { wake, now_ms } => {
             managed_state::defer_wake(connection, &wake, now_ms).map(|_| AppWakeOutcome::Recorded)
         }
-        AppWakeOperation::NextDue => managed_state::next_wake_at(connection).map(AppWakeOutcome::NextDue),
+        AppWakeOperation::Postponed { wake, until_ms } => {
+            managed_state::postpone_wake(connection, &wake, until_ms).map(|()| AppWakeOutcome::Recorded)
+        }
     };
     let _ = request.response.send(result);
 }

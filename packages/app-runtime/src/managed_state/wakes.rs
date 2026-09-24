@@ -183,6 +183,22 @@ pub fn complete_wake(connection: &Connection, delivered: &DueWake) -> Result<()>
     Ok(())
 }
 
+/// Wait for an on-demand start without consuming a delivery attempt.
+pub fn postpone_wake(connection: &Connection, waiting: &DueWake, until_ms: u64) -> Result<()> {
+    connection.execute(
+        "UPDATE app_wakes SET next_attempt_at_ms=?5
+         WHERE installation_id=?1 AND wake_id=?2 AND revision=?3 AND due_at_ms=?4",
+        params![
+            waiting.installation_id,
+            waiting.wake.id,
+            waiting.wake.revision,
+            waiting.wake.due_at_ms as i64,
+            until_ms.min(MAX_REVISION) as i64
+        ],
+    )?;
+    Ok(())
+}
+
 /// Record a failed delivery with bounded exponential backoff. After the last
 /// attempt the wake is dropped; the App reconstructs schedules from its state.
 pub fn defer_wake(connection: &Connection, delivered: &DueWake, now_ms: u64) -> Result<bool> {
@@ -205,13 +221,4 @@ pub fn defer_wake(connection: &Connection, delivered: &DueWake, now_ms: u64) -> 
         ],
     )?;
     Ok(true)
-}
-
-/// Uninstall removes an installation's pending wakes.
-pub fn delete_installation_wakes(connection: &Connection, installation: &str) -> Result<()> {
-    connection.execute(
-        "DELETE FROM app_wakes WHERE installation_id=?1",
-        params![installation],
-    )?;
-    Ok(())
 }

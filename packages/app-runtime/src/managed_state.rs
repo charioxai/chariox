@@ -8,8 +8,8 @@ mod wakes;
 
 pub use changes::{StateChanges, StateCheck, StateWrite};
 pub use wakes::{
-    complete_wake, defer_wake, delete_installation_wakes, due_wakes, next_wake_at, DueWake, Wake,
-    WakeChange, MAX_WAKES, MAX_WAKE_CHANGES,
+    complete_wake, defer_wake, due_wakes, next_wake_at, postpone_wake, DueWake, Wake, WakeChange,
+    MAX_WAKES, MAX_WAKE_CHANGES,
 };
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 use serde_json::Value;

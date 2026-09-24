@@ -65,7 +65,9 @@ function registry(declared, label) {
 function wakeRecord(wake) {
   record(wake, 'wake');
   const revision = wake.revision ?? '';
-  if (!Number.isSafeInteger(wake.dueAtMs) || wake.dueAtMs < 0 || typeof revision !== 'string' || revision.length > 128) {
+  // The kernel bounds revisions in UTF-8 bytes, like other identities.
+  if (!Number.isSafeInteger(wake.dueAtMs) || wake.dueAtMs < 0 || typeof revision !== 'string'
+    || Buffer.byteLength(revision) > 128) {
     throw new AppError('INVALID_ARGUMENT', 'Invalid wake');
   }
   return { id: name(wake.id, 'wake identity'), dueAtMs: wake.dueAtMs, revision };
