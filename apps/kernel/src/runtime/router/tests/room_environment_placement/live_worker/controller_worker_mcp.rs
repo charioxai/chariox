@@ -144,20 +144,22 @@ async fn check_leased_agent_on_another_kernel_uses_room_browser() {
             Err(error) => {
                 let (prompt, run_state) = {
                     let app = agent_worker.app.lock().await;
-                    let run = app
-                        .providers()
-                        .get_run(&worker_provider_run_id)
-                        .expect("leased provider remains available after failed status");
-                    let worker_agent_id = run
-                        .agent_instance_id()
-                        .expect("leased provider agent");
-                    let prompt = app
-                        .prompt_owner_active_prompt_for_agent_snapshot(
-                            run.session_id(),
-                            worker_agent_id,
-                        )
-                        .expect("leased worker prompt after failed status");
-                    (prompt, run.state())
+                    match app.providers().get_run(&worker_provider_run_id) {
+                        Ok(run) => {
+                            let prompt = run.agent_instance_id().map(|worker_agent_id| {
+                                app.prompt_owner_active_prompt_for_agent_snapshot(
+                                    run.session_id(),
+                                    worker_agent_id,
+                                )
+                                .map_err(|lookup_error| lookup_error.to_string())
+                            });
+                            (format!("{prompt:?}"), format!("{:?}", run.state()))
+                        }
+                        Err(lookup_error) => (
+                            "unavailable because provider lookup failed".to_string(),
+                            format!("provider lookup failed: {lookup_error}"),
+                        ),
+                    }
                 };
                 panic!(
                     "leased agent reads the same Tab after navigation: {error}; after_open_prompt={:?}, after_open_provider_run={:?}, after_failed_status_prompt={:?}, after_failed_status_provider_run={:?}",
