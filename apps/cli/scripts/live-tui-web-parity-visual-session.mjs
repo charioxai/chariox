@@ -89,7 +89,6 @@ export function buildObserverCliArgs({
   cliPath,
   kernelUrl,
   relay,
-  relayToken,
   automationSocket,
   sessionId,
   workspace,
@@ -98,7 +97,7 @@ export function buildObserverCliArgs({
 }) {
   const args = [cliPath]
   if (relay) {
-    args.push('--relay-url', relay.url, '--relay-token', relayToken, '--target-daemon-id', relay.targetDaemonId)
+    args.push('--relay-url', relay.url, '--relay-token-env', 'CHARIOX_DRILL_C_RELAY_TOKEN', '--target-daemon-id', relay.targetDaemonId)
   } else {
     args.push('--kernel-url', kernelUrl)
   }
@@ -635,7 +634,6 @@ async function runRoomObserverSession(options) {
     remoteCli = spawn('bun', buildObserverCliArgs({
       cliPath,
       relay: remoteRelay,
-      relayToken,
       automationSocket: remoteAutomationSocket,
       sessionId: options.roomSessionId,
       workspace: options.workspace,
@@ -643,7 +641,7 @@ async function runRoomObserverSession(options) {
       clientId: `chariox-drill-c-observer-${stamp}-remote`,
     }), {
       cwd: repoRoot,
-      env: observerEnv,
+      env: { ...observerEnv, CHARIOX_DRILL_C_RELAY_TOKEN: relayToken },
       stdio: 'inherit',
     })
     const remoteStartupFailure = new Promise((resolve) => {

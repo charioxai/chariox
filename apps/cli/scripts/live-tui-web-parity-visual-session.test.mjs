@@ -74,7 +74,6 @@ test('observer CLI arguments keep direct kernel and relay attachments separate',
   const remote = buildObserverCliArgs({
     cliPath: '/repo/apps/cli/dist/index.js',
     relay: { url: 'ws://localhost:52000', targetDaemonId: 'slice-daemon-1' },
-    relayToken: 'relay-secret-test-value',
     automationSocket: '/tmp/remote.sock',
     sessionId: 'room-1',
     workspace: '/tmp/workspace',
@@ -82,8 +81,9 @@ test('observer CLI arguments keep direct kernel and relay attachments separate',
     clientId: 'remote-observer',
   })
   assert.ok(remote.includes('--relay-url'))
-  assert.ok(remote.includes('--relay-token'))
-  assert.ok(remote.includes('relay-secret-test-value'))
+  assert.ok(remote.includes('--relay-token-env'))
+  assert.ok(remote.includes('CHARIOX_DRILL_C_RELAY_TOKEN'))
+  assert.ok(!remote.includes('relay-secret-test-value'))
   assert.ok(remote.includes('--target-daemon-id'))
   assert.ok(remote.includes('/tmp/remote.sock'))
   assert.ok(!remote.includes('--kernel-url'))
