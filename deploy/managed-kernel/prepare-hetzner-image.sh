@@ -124,6 +124,35 @@ docker buildx version >/dev/null || fail "Docker Buildx is unavailable"
 
 "$script_root/install-image.sh" \
   "$release_rootfs" "$release_digest" "$trusted_public_key" "$managed_provider_topology"
+# The general installer journals even a no-op home migration. A fresh image
+# must not carry that runtime bookkeeping into every future machine.
+migration_journal=/var/lib/chariox/home-migration.json
+migration_complete=/var/lib/chariox/home-migration-complete
+if [ -e "$migration_journal" ] || [ -L "$migration_journal" ] \
+  || [ -e "$migration_complete" ] || [ -L "$migration_complete" ]; then
+  for migration_file in "$migration_journal" "$migration_complete"; do
+    [ -f "$migration_file" ] && [ ! -L "$migration_file" ] \
+      && [ "$(stat -c '%u:%a' "$migration_file")" = "0:600" ] \
+      || fail "image installer left unsafe migration state"
+  done
+  printf 'complete\n' | cmp -s - "$migration_complete" \
+    || fail "image installer left incomplete migration state"
+  jq -e \
+    --arg stateRoot /var/lib/chariox \
+    --arg legacyHome /var/lib/chariox/home \
+    --arg managedHome /home/chariox \
+    --arg managedState /home/chariox/.chariox \
+    --argjson uid "$(id -u chariox)" \
+    --argjson gid "$(id -g chariox)" \
+    'keys == ["charioxGid", "charioxUid", "entries", "legacyHome", "managedHome", "managedState", "required", "rootIdentity", "schemaVersion", "stateRoot"]
+      and .schemaVersion == 1 and .stateRoot == $stateRoot
+      and .legacyHome == $legacyHome and .managedHome == $managedHome
+      and .managedState == $managedState and .charioxUid == $uid
+      and .charioxGid == $gid and .required == false and .rootIdentity == null and .entries == []' \
+    "$migration_journal" >/dev/null \
+    || fail "image installer left a nonempty migration journal"
+  rm -f -- "$migration_journal" "$migration_complete"
+fi
 provider_toolchain_source=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/toolchain
 provider_toolchain_root=/opt/chariox-provider-toolchain
 for toolchain_file in package.json package-lock.json; do
