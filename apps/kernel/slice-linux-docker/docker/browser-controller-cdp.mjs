@@ -72,9 +72,13 @@ export class BrowserCdpClient {
     this.eventJournal = eventJournal;
     this.connection = null;
     this.unsubscribeFromConnection = null;
+    this.connectionEpoch = 0;
+    this.connectionAttempt = null;
     this.browserGeneration = 0;
     this.sessionsByTarget = new Map();
     this.targetsBySession = new Map();
+    this.sessionEpochByTarget = new Map();
+    this.targetSessionAttempts = new Map();
     this.targetsByFrame = new BrowserFrameTargets();
     this.frameSessions = new BrowserFrameSessions(this.targetsByFrame, (id) => this.targetsBySession.get(id));
     this.targetsByDownload = new Map();
@@ -133,34 +137,54 @@ export class BrowserCdpClient {
       };
     } catch (error) {
       if (!connection.isOpen()) {
-        this.connection = null;
-        this.sessionsByTarget.clear();
-        this.targetsBySession.clear();
-        this.targetsByFrame.clear();
-        this.frameSessions.clear();
-        this.targetsByDownload.clear();
-        this.downloadCancellationReasons.clear();
-        this.downloadDiskCheckPending = false;
-        this.downloadDiskCheckRequested = false;
-        this.documentIdsByTarget.clear();
-        this.dialogDefaults.clear();
-        this.networkRequestsBySession.clear();
-        this.cookieWriterFence = null;
-        this.cookieWriterFenceInUse = false;
+        this.invalidateConnection(connection);
       }
       throw normalizeControllerError(error);
     }
   }
 
   async close() {
+    const connection = this.invalidateConnection(undefined, { preserveFrameSessions: true });
+    await this.frameSessions.close();
+    if (connection) {
+      await connection.close();
+    }
+  }
+
+  invalidateConnection(expectedConnection, {
+    preserveFrameSessions = false,
+    excludeConnectionAttempt = null,
+  } = {}) {
+    if (expectedConnection !== undefined && this.connection !== expectedConnection) {
+      return null;
+    }
+    this.connectionEpoch += 1;
     const connection = this.connection;
-    this.connection = null;
+    const error = new BrowserControllerError(
+      "browser_cdp_disconnected",
+      "browser connection was invalidated",
+    );
+    const connectionAttempt = this.connectionAttempt;
+    if (connectionAttempt !== excludeConnectionAttempt) {
+      this.connectionAttempt = null;
+    }
+    if (connectionAttempt && connectionAttempt !== excludeConnectionAttempt) {
+      connectionAttempt.invalidated = true;
+      connectionAttempt.rejectInvalidated?.(error);
+    }
+    for (const attempt of this.targetSessionAttempts.values()) {
+      attempt.invalidated = true;
+      attempt.rejectInvalidated?.(error);
+    }
+    this.targetSessionAttempts.clear();
     this.unsubscribeFromConnection?.();
     this.unsubscribeFromConnection = null;
+    this.connection = null;
     this.sessionsByTarget.clear();
     this.targetsBySession.clear();
+    this.sessionEpochByTarget.clear();
     this.targetsByFrame.clear();
-    await this.frameSessions.close();
+    if (!preserveFrameSessions) this.frameSessions.clear();
     this.targetsByDownload.clear();
     this.downloadCancellationReasons.clear();
     this.downloadDiskCheckPending = false;
@@ -171,9 +195,7 @@ export class BrowserCdpClient {
     this.networkRequestsBySession.clear();
     this.cookieWriterFence = null;
     this.cookieWriterFenceInUse = false;
-    if (connection) {
-      await connection.close();
-    }
+    return connection;
   }
 
   async withCookieWritersQuiesced(operation) {
@@ -254,54 +276,228 @@ export class BrowserCdpClient {
   }
 
   async ensureConnection() {
+    if (this.connectionAttempt) {
+      return this.connectionAttempt.promise;
+    }
     if (this.connection?.isOpen()) {
       return this.connection;
     }
-    this.unsubscribeFromConnection?.();
-    this.unsubscribeFromConnection = null;
-    this.sessionsByTarget.clear();
-    this.targetsBySession.clear();
-    this.targetsByFrame.clear();
-    this.frameSessions.clear();
-    this.targetsByDownload.clear();
-    this.downloadCancellationReasons.clear();
-    this.downloadDiskCheckPending = false;
-    this.downloadDiskCheckRequested = false;
-    this.documentIdsByTarget.clear();
-    this.snapshotStateByTarget.clear();
-    this.dialogDefaults.clear();
-    this.networkRequestsBySession.clear();
-    this.cookieWriterFence = null;
-    this.cookieWriterFenceInUse = false;
-    const connection = this.connectionFactory
-      ? await this.connectionFactory()
-      : await connectToBrowser({
-          debuggerEndpoint: this.debuggerEndpoint,
-          requestTimeoutMs: this.requestTimeoutMs,
-          fetchImpl: this.fetchImpl,
-          webSocketFactory: this.webSocketFactory,
-        });
-    this.connection = connection;
-    this.browserGeneration += 1;
-    if (typeof connection.subscribe === "function") {
-      this.unsubscribeFromConnection = connection.subscribe(
-        (message) => this.recordConnectionEvent(message),
-      );
-    }
+    const staleConnection = this.invalidateConnection();
+    const attempt = { epoch: ++this.connectionEpoch, invalidated: false };
+    let rejectInvalidated;
+    const invalidated = new Promise((_, reject) => {
+      rejectInvalidated = reject;
+    });
+    attempt.rejectInvalidated = rejectInvalidated;
+    this.connectionAttempt = attempt;
+    const initialization = this.initializeConnection(attempt, staleConnection);
+    attempt.promise = Promise.race([initialization, invalidated]).finally(() => {
+      if (this.connectionAttempt === attempt) this.connectionAttempt = null;
+    });
+    return attempt.promise;
+  }
+
+  async initializeConnection(attempt, staleConnection) {
+    let connection;
+    let unsubscribe;
     try {
+      if (staleConnection) {
+        await staleConnection.close().catch(() => {});
+      }
+      this.assertConnectionAttemptCurrent(attempt);
+      connection = this.connectionFactory
+        ? await this.connectionFactory()
+        : await connectToBrowser({
+            debuggerEndpoint: this.debuggerEndpoint,
+            requestTimeoutMs: this.requestTimeoutMs,
+            fetchImpl: this.fetchImpl,
+            webSocketFactory: this.webSocketFactory,
+          });
+      attempt.connection = connection;
+      this.assertConnectionAttemptCurrent(attempt);
+      if (!connection?.isOpen()) {
+        throw new BrowserControllerError(
+          "browser_cdp_disconnected",
+          "browser connection closed during initialization",
+        );
+      }
+      this.connection = connection;
+      this.browserGeneration += 1;
+      if (typeof connection.subscribe === "function") {
+        unsubscribe = connection.subscribe((message) => {
+          if (this.connection === connection
+              && this.connectionEpoch === attempt.epoch
+              && connection.isOpen()) {
+            this.recordConnectionEvent(message);
+          }
+        });
+        attempt.unsubscribe = unsubscribe;
+      }
+      this.unsubscribeFromConnection = unsubscribe ?? null;
+      this.assertConnectionAttemptCurrent(attempt, connection);
       await connection.send("Target.setDiscoverTargets", { discover: true });
+      this.assertConnectionAttemptCurrent(attempt, connection);
       this.eventJournal.recordCdp(
         { method: "Chariox.browserConnected", params: {} },
         this.eventContext(),
       );
       return connection;
     } catch (error) {
-      this.unsubscribeFromConnection?.();
-      this.unsubscribeFromConnection = null;
-      if (this.connection === connection) this.connection = null;
-      await connection.close().catch(() => {});
+      unsubscribe?.();
+      if (this.unsubscribeFromConnection === unsubscribe) {
+        this.unsubscribeFromConnection = null;
+      }
+      if (connection && this.connection === connection && this.connectionEpoch === attempt.epoch) {
+        this.invalidateConnection(connection, { excludeConnectionAttempt: attempt });
+      }
+      if (connection && this.connection !== connection) {
+        await connection.close().catch(() => {});
+      }
       throw error;
     }
+  }
+
+  assertConnectionAttemptCurrent(attempt, connection) {
+    if (!this.isConnectionAttemptCurrent(attempt, connection)) {
+      throw new BrowserControllerError(
+        "browser_cdp_disconnected",
+        "browser connection initialization was invalidated",
+      );
+    }
+  }
+
+  isConnectionAttemptCurrent(attempt, connection) {
+    return this.connectionAttempt === attempt
+      && !attempt.invalidated
+      && this.connectionEpoch === attempt.epoch
+      && (connection === undefined || this.connection === connection)
+      && (connection === undefined || connection.isOpen());
+  }
+
+  async configurePageTargetSession(connection, sessionId) {
+    const results = await Promise.allSettled([
+      connection.send("Page.enable", {}, sessionId),
+      connection.send("Page.setLifecycleEventsEnabled", { enabled: true }, sessionId),
+      connection.send("Runtime.enable", {}, sessionId),
+      connection.send("Network.enable", {}, sessionId),
+      connection.send("Inspector.enable", {}, sessionId),
+      this.frameSessions.start(connection, sessionId),
+    ]);
+    const failed = results.find((result) => result.status === "rejected");
+    if (failed) throw failed.reason;
+  }
+
+  async configureWriterTargetSession(connection, sessionId) {
+    const results = await Promise.allSettled([
+      connection.send("Network.enable", {}, sessionId),
+      connection.send("Debugger.enable", {}, sessionId),
+    ]);
+    const failed = results.find((result) => result.status === "rejected");
+    if (failed) throw failed.reason;
+  }
+
+  async initializeTargetSession(attempt, configure) {
+    const { connection, targetId } = attempt;
+    let sessionId;
+    try {
+      const attached = await connection.send("Target.attachToTarget", {
+        targetId,
+        flatten: true,
+      });
+      if (typeof attached?.sessionId !== "string" || !attached.sessionId) {
+        throw new BrowserControllerError(
+          "browser_attach_failed",
+          `browser target ${JSON.stringify(targetId)} did not return a session`,
+        );
+      }
+      sessionId = attached.sessionId;
+      attempt.sessionId = sessionId;
+      this.assertTargetSessionAttemptCurrent(attempt);
+      this.sessionsByTarget.set(targetId, sessionId);
+      this.targetsBySession.set(sessionId, targetId);
+      this.sessionEpochByTarget.set(targetId, attempt.epoch);
+      attempt.published = true;
+      await configure(connection, sessionId, targetId);
+      this.assertTargetSessionAttemptCurrent(attempt);
+      return sessionId;
+    } catch (error) {
+      const ownsSession = sessionId
+        && this.sessionsByTarget.get(targetId) === sessionId
+        && this.sessionEpochByTarget.get(targetId) === attempt.epoch
+        && this.targetsBySession.get(sessionId) === targetId;
+      if (ownsSession) {
+        this.sessionsByTarget.delete(targetId);
+        this.sessionEpochByTarget.delete(targetId);
+        this.targetsBySession.delete(sessionId);
+        await this.frameSessions.removeTarget(targetId);
+      }
+      if (sessionId && !(this.connection === connection && this.connectionEpoch !== attempt.epoch)) {
+        await connection.send("Target.detachFromTarget", { sessionId }).catch(() => {});
+      }
+      throw error;
+    }
+  }
+
+  assertTargetSessionAttemptCurrent(attempt) {
+    if (!this.isTargetSessionAttemptCurrent(attempt)) {
+      throw new BrowserControllerError(
+        "browser_cdp_disconnected",
+        `browser target ${JSON.stringify(attempt.targetId)} session attach was invalidated`,
+      );
+    }
+  }
+
+  isTargetSessionAttemptCurrent(attempt) {
+    return this.targetSessionAttempts.get(attempt.targetId) === attempt
+      && !attempt.invalidated
+      && this.connectionEpoch === attempt.epoch
+      && this.connection === attempt.connection
+      && attempt.connection.isOpen()
+      && (!attempt.published
+        || this.sessionsByTarget.get(attempt.targetId) === attempt.sessionId);
+  }
+
+  beginTargetSessionAttempt(connection, targetId, configure) {
+    const attempt = {
+      connection,
+      epoch: this.connectionEpoch,
+      targetId,
+      published: false,
+      invalidated: false,
+    };
+    let rejectInvalidated;
+    const invalidated = new Promise((_, reject) => {
+      rejectInvalidated = reject;
+    });
+    attempt.rejectInvalidated = rejectInvalidated;
+    this.targetSessionAttempts.set(targetId, attempt);
+    const initialization = this.initializeTargetSession(attempt, configure);
+    attempt.promise = Promise.race([initialization, invalidated]).finally(() => {
+      if (this.targetSessionAttempts.get(targetId) === attempt) {
+        this.targetSessionAttempts.delete(targetId);
+      }
+    });
+    return attempt.promise;
+  }
+
+  ensureTargetSessionFor(connection, targetId, configure) {
+    if (connection !== this.connection || !connection.isOpen()) {
+      return Promise.reject(new BrowserControllerError(
+        "browser_cdp_disconnected",
+        `browser target ${JSON.stringify(targetId)} cannot attach on a stale connection`,
+      ));
+    }
+    const pending = this.targetSessionAttempts.get(targetId);
+    if (pending && pending.connection === connection && pending.epoch === this.connectionEpoch
+        && !pending.invalidated) {
+      return pending.promise;
+    }
+    const sessionId = this.sessionsByTarget.get(targetId);
+    if (sessionId && this.targetsBySession.get(sessionId) === targetId
+        && this.sessionEpochByTarget.get(targetId) === this.connectionEpoch) {
+      return Promise.resolve(sessionId);
+    }
+    return this.beginTargetSessionAttempt(connection, targetId, configure);
   }
 
   async inspectPage(connection, target, viewport) {
@@ -749,71 +945,20 @@ export class BrowserCdpClient {
     };
   }
 
-  async ensureTargetSession(connection, targetId) {
-    let sessionId = this.sessionsByTarget.get(targetId);
-    if (sessionId) {
-      return sessionId;
-    }
-    const attached = await connection.send("Target.attachToTarget", {
+  ensureTargetSession(connection, targetId) {
+    return this.ensureTargetSessionFor(
+      connection,
       targetId,
-      flatten: true,
-    });
-    if (typeof attached?.sessionId !== "string" || !attached.sessionId) {
-      throw new BrowserControllerError(
-        "browser_attach_failed",
-        `browser target ${JSON.stringify(targetId)} did not return a session`,
-      );
-    }
-    sessionId = attached.sessionId;
-    this.sessionsByTarget.set(targetId, sessionId);
-    this.targetsBySession.set(sessionId, targetId);
-    try {
-      await Promise.all([
-        connection.send("Page.enable", {}, sessionId),
-        connection.send("Page.setLifecycleEventsEnabled", { enabled: true }, sessionId),
-        connection.send("Runtime.enable", {}, sessionId),
-        connection.send("Network.enable", {}, sessionId),
-        connection.send("Inspector.enable", {}, sessionId),
-        this.frameSessions.start(connection, sessionId),
-      ]);
-    } catch (error) {
-      this.sessionsByTarget.delete(targetId);
-      this.targetsBySession.delete(sessionId);
-      await this.frameSessions.removeTarget(targetId);
-      await connection.send("Target.detachFromTarget", { sessionId }).catch(() => {});
-      throw error;
-    }
-    return sessionId;
+      (activeConnection, sessionId) => this.configurePageTargetSession(activeConnection, sessionId),
+    );
   }
 
-  async ensureWriterTargetSession(connection, targetId) {
-    let sessionId = this.sessionsByTarget.get(targetId);
-    if (sessionId) return sessionId;
-    const attached = await connection.send("Target.attachToTarget", {
+  ensureWriterTargetSession(connection, targetId) {
+    return this.ensureTargetSessionFor(
+      connection,
       targetId,
-      flatten: true,
-    });
-    if (typeof attached?.sessionId !== "string" || !attached.sessionId) {
-      throw new BrowserControllerError(
-        "browser_attach_failed",
-        `browser writer target ${JSON.stringify(targetId)} did not return a session`,
-      );
-    }
-    sessionId = attached.sessionId;
-    this.sessionsByTarget.set(targetId, sessionId);
-    this.targetsBySession.set(sessionId, targetId);
-    try {
-      await Promise.all([
-        connection.send("Network.enable", {}, sessionId),
-        connection.send("Debugger.enable", {}, sessionId),
-      ]);
-    } catch (error) {
-      this.sessionsByTarget.delete(targetId);
-      this.targetsBySession.delete(sessionId);
-      await connection.send("Target.detachFromTarget", { sessionId }).catch(() => {});
-      throw error;
-    }
-    return sessionId;
+      (activeConnection, sessionId) => this.configureWriterTargetSession(activeConnection, sessionId),
+    );
   }
 
   recordConnectionEvent(message) {
@@ -840,10 +985,29 @@ export class BrowserCdpClient {
         this.networkRequestsBySession.delete(sessionId);
       }
       if (typeof targetId === "string") {
-        this.sessionsByTarget.delete(targetId);
-        this.dialogDefaults.delete(targetId);
-        this.targetsByFrame.removeTarget(targetId);
-        void this.frameSessions.removeTarget(targetId);
+        const pending = this.targetSessionAttempts.get(targetId);
+        if (pending && pending.connection === this.connection
+            && (pending.sessionId === undefined || pending.sessionId === sessionId)) {
+          pending.invalidated = true;
+          if (this.targetSessionAttempts.get(targetId) === pending) {
+            this.targetSessionAttempts.delete(targetId);
+          }
+          pending.rejectInvalidated?.(new BrowserControllerError(
+            "browser_cdp_disconnected",
+            `browser target ${JSON.stringify(targetId)} detached during session initialization`,
+          ));
+        }
+        const currentSessionId = this.sessionsByTarget.get(targetId);
+        const currentTargetDetached = currentSessionId === undefined || currentSessionId === sessionId;
+        if (currentSessionId === sessionId) {
+          this.sessionsByTarget.delete(targetId);
+          this.sessionEpochByTarget.delete(targetId);
+        }
+        if (currentTargetDetached) {
+          this.dialogDefaults.delete(targetId);
+          this.targetsByFrame.removeTarget(targetId);
+          void this.frameSessions.removeTarget(targetId);
+        }
       }
     }
     this.targetsByFrame.record(message, this.targetsBySession.get(message?.sessionId));
