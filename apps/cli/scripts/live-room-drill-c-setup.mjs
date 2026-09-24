@@ -132,7 +132,7 @@ export function parseArgs(argv, env = process.env) {
       options.relayToken = env.CHARIOX_LOCAL_RELAY_TOKEN ?? defaultLocalRelayToken
     }
   } else {
-    options.relayUrl = null
+    if (!options.relayUrlArgumentProvided) options.relayUrl = null
     options.relayToken = null
   }
   if (options.mode === "existing_kernel" && !options.rootDirProvided) {
@@ -143,7 +143,7 @@ export function parseArgs(argv, env = process.env) {
   return options
 }
 
-export function assertModeOptions(options) {
+export function assertModeOptions(options, env = process.env) {
   if (options.mode === "existing_kernel") {
     const endpoint = assertLoopbackUrl(options.existingKernelUrl, "--existing-kernel", ["ws:"])
     assert.ok(["", "/", "/kernel"].includes(endpoint.pathname),
@@ -157,8 +157,17 @@ export function assertModeOptions(options) {
     if (options.expectedMachineId != null) {
       assert.ok(options.expectedMachineId.trim(), "--expected-machine-id must not be empty")
     }
-    assert.equal(options.relayUrlArgumentProvided, false, "--existing-kernel cannot be combined with --relay-url")
     assert.equal(options.relayTokenArgumentProvided, false, "--existing-kernel does not accept a relay token")
+    assert.equal(options.relayToken, null, "existing-kernel mode must not retain a relay token argument")
+    if (options.relayUrl != null) {
+      const relayEndpoint = assertLoopbackUrl(options.relayUrl, "--relay-url", ["ws:"])
+      assert.ok(["", "/"].includes(relayEndpoint.pathname), "--relay-url must address the same-host relay WebSocket endpoint")
+      assert.notEqual(relayEndpoint.origin, endpoint.origin,
+        "--relay-url must use an endpoint distinct from --existing-kernel")
+      assert.ok(typeof env.CHARIOX_DRILL_C_RELAY_TOKEN === "string"
+        && env.CHARIOX_DRILL_C_RELAY_TOKEN.trim().length > 0,
+      "--relay-url in existing-kernel mode requires CHARIOX_DRILL_C_RELAY_TOKEN")
+    }
     return
   }
   assert.equal(options.expectedDaemonId, null, "--expected-daemon-id requires --existing-kernel")
@@ -442,7 +451,13 @@ export function buildSetupManifest({
     assert.equal(transport?.sessionVisible, true, "setup manifest Cloud transport did not observe the Room session")
   } else {
     assert.equal(mode, "existing_kernel", "setup manifest has an unknown mode")
-    assert.equal(relayUrl, null, "existing-kernel mode must not invent or claim a relay URL")
+    if (relayUrl != null) {
+      const relayEndpoint = assertLoopbackUrl(relayUrl, "existing-kernel relay URL", ["ws:"])
+      assert.ok(["", "/"].includes(relayEndpoint.pathname),
+        "existing-kernel relay URL must address the same-host relay WebSocket endpoint")
+      assert.notEqual(relayEndpoint.origin, new URL(kernelUrl).origin,
+        "existing-kernel relay URL must use an endpoint distinct from the local kernel")
+    }
     assert.equal(transport?.status, "not_observed", "existing-kernel mode must leave Cloud relay transport unobserved")
     assert.equal(transport?.sessionVisible, null, "existing-kernel mode must not claim the Room is visible to Cloud")
     assert.equal(transport?.relayUrl ?? null, null, "existing-kernel mode must not claim Cloud selected a relay")
@@ -577,7 +592,7 @@ export function buildSetupManifest({
       openUrl: cloudUrl ? `${cloudUrl.replace(/\/$/, "")}/waiting-room` : null,
       targetDaemonId: daemonId,
       sessionId: session.id,
-      relayUrl,
+      relayUrl: mode === "existing_kernel" ? null : relayUrl,
       observationPath: webObservationPath,
       evidenceSchema: "chariox.browser_computer.drill_c.web_observer.v1",
       requiredEvidence: [
@@ -627,14 +642,14 @@ function printHelp() {
     "  --expected-daemon-id ID             required with --existing-kernel",
     "  --expected-machine-id ID            optional additional identity check",
     "  --local-cloud-url URL             default: http://127.0.0.1:4321",
-    "  --relay-url URL                   must match local Cloud relay bootstrap",
-    "  --relay-token TOKEN               defaults to the local browser relay token",
+    "  --relay-url URL                   Cloud relay in isolated mode; same-host relay with --existing-kernel",
+    "  --relay-token TOKEN               isolated mode only; existing-kernel reads CHARIOX_DRILL_C_RELAY_TOKEN",
     "  --active-kernel-registry-dir PATH defaults to ~/.chariox/kernels/active",
     "  --kernel-binary PATH              prebuilt binary; this script never builds",
     "  --relay-binary PATH               prebuilt binary; this script never builds",
     "",
     "The script waits after setup so the attach-only TUI and Web observers can run.",
-    `Existing-kernel mode requires a loopback ws:// URL and an explicit --rootless-workspace-root (or ${roomDirectDockerWorkspaceRootEnvironment}); Cloud/Web transport stays unobserved.`,
+    `Existing-kernel mode requires a loopback ws:// URL and an explicit --rootless-workspace-root (or ${roomDirectDockerWorkspaceRootEnvironment}); --relay-url additionally requires CHARIOX_DRILL_C_RELAY_TOKEN. Cloud/Web transport stays unobserved.`,
     "Ctrl+C cleans up only this run's Room and slice; its workspace is removed only after matching cleanup acknowledgements.",
   ].join("\n"))
 }
@@ -645,13 +660,13 @@ async function main() {
     printHelp()
     return
   }
-  assertModeOptions(options)
+  assertModeOptions(options, process.env)
   assertSetupPaths(options)
   assertLoopbackUrl(options.localCloudUrl, "--local-cloud-url", ["http:"])
 
   const existingKernel = options.mode === "existing_kernel"
   const cloud = existingKernel ? null : await connectLocalCloud(options.localCloudUrl)
-  let relayUrl = null
+  let relayUrl = options.mode === "existing_kernel" ? options.relayUrl : null
   let ports = null
   let kernelUrl = options.existingKernelUrl
   let daemonId = options.expectedDaemonId

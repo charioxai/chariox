@@ -247,12 +247,53 @@ test("Drill C setup modes require loopback endpoints and explicit existing-kerne
     "--expected-daemon-id", "kernel-1",
     "--rootless-workspace-root", "/var/tmp",
   ], { HOME: "/home/test" })), /loopback host/)
+  const existingRelayEnv = {
+    HOME: "/home/test",
+    CHARIOX_ROOM_DRILL_FIXTURE_WORKSPACE_ROOT: "/var/tmp",
+    CHARIOX_DRILL_C_RELAY_TOKEN: "relay-secret-test-value",
+    get CHARIOX_LOCAL_RELAY_URL() { throw new Error("existing mode read the local relay URL") },
+    get CHARIOX_LOCAL_RELAY_TOKEN() { throw new Error("existing mode read a relay token") },
+  }
+  const existingWithRelay = parseArgs([
+    "--existing-kernel", "ws://127.0.0.1:52001/kernel",
+    "--expected-daemon-id", "kernel-1",
+    "--rootless-workspace-root", "/var/tmp",
+    "--relay-url", "ws://127.0.0.1:47000",
+  ], existingRelayEnv)
+  assert.equal(existingWithRelay.relayUrl, "ws://127.0.0.1:47000")
+  assert.equal(existingWithRelay.relayToken, null)
+  assert.doesNotThrow(() => assertModeOptions(existingWithRelay, existingRelayEnv))
   assert.throws(() => assertModeOptions(parseArgs([
     "--existing-kernel", "ws://127.0.0.1:52001/kernel",
     "--expected-daemon-id", "kernel-1",
     "--rootless-workspace-root", "/var/tmp",
     "--relay-url", "ws://127.0.0.1:47000",
-  ], { HOME: "/home/test" })), /cannot be combined/)
+  ], existingEnv), existingEnv), /CHARIOX_DRILL_C_RELAY_TOKEN/)
+  assert.throws(() => assertModeOptions(parseArgs([
+    "--existing-kernel", "ws://127.0.0.1:52001/kernel",
+    "--expected-daemon-id", "kernel-1",
+    "--rootless-workspace-root", "/var/tmp",
+    "--relay-url", "ws://relay.example.test",
+  ], existingRelayEnv), existingRelayEnv), /loopback host/)
+  assert.throws(() => assertModeOptions(parseArgs([
+    "--existing-kernel", "ws://127.0.0.1:52001/kernel",
+    "--expected-daemon-id", "kernel-1",
+    "--rootless-workspace-root", "/var/tmp",
+    "--relay-url", "ws://127.0.0.1:47000/?token=secret",
+  ], existingRelayEnv), existingRelayEnv), /must not contain a query/)
+  assert.throws(() => assertModeOptions(parseArgs([
+    "--existing-kernel", "ws://127.0.0.1:52001/kernel",
+    "--expected-daemon-id", "kernel-1",
+    "--rootless-workspace-root", "/var/tmp",
+    "--relay-url", "ws://127.0.0.1:52001/",
+  ], existingRelayEnv), existingRelayEnv), /distinct from --existing-kernel/)
+  assert.throws(() => assertModeOptions(parseArgs([
+    "--existing-kernel", "ws://127.0.0.1:52001/kernel",
+    "--expected-daemon-id", "kernel-1",
+    "--rootless-workspace-root", "/var/tmp",
+    "--relay-url", "ws://127.0.0.1:47000",
+    "--relay-token", "argv-secret",
+  ], existingRelayEnv), existingRelayEnv), /does not accept a relay token/)
   assert.throws(() => assertModeOptions(parseArgs([
     "--existing-kernel", "ws://127.0.0.1:52001/kernel",
     "--expected-daemon-id", "kernel-1",
@@ -712,6 +753,54 @@ test("existing-kernel manifest defers Cloud and Web transport to the Mac fronten
   })
   assert.deepEqual(manifest.baseline.actionHistory, [])
   assert.equal(manifest.priorKernelState.sessionCount, 7)
+  assert.equal("relayToken" in manifest, false)
+})
+
+test("existing-kernel relay configuration feeds the integrated observer without claiming Cloud or Web transport", () => {
+  const directWorkspace = "/var/tmp/drill-c-room-workspace"
+  assert.throws(() => buildSetupManifest(manifestInput({
+    mode: "existing_kernel",
+    relayUrl: "ws://127.0.0.1:52001/",
+    transport: { status: "not_observed", sessionVisible: null },
+    priorKernelState: { sessionCount: 7, sliceCount: 2 },
+    daemonAlias: null,
+    machineAlias: null,
+    session: { ...setup.session, workspace_id: directWorkspace, worktree_id: directWorkspace },
+    slice: { ...setup.slice, workspace_id: directWorkspace, worktree_id: directWorkspace, workspace_mount: directWorkspace },
+    workspace: directWorkspace,
+    worktree: directWorkspace,
+  })), /distinct from the local kernel/)
+  const manifest = buildSetupManifest(manifestInput({
+    mode: "existing_kernel",
+    relayUrl: "ws://127.0.0.1:47000",
+    transport: { status: "not_observed", sessionVisible: null },
+    priorKernelState: { sessionCount: 7, sliceCount: 2 },
+    daemonAlias: null,
+    machineAlias: null,
+    session: { ...setup.session, workspace_id: directWorkspace, worktree_id: directWorkspace },
+    slice: { ...setup.slice, workspace_id: directWorkspace, worktree_id: directWorkspace, workspace_mount: directWorkspace },
+    workspace: directWorkspace,
+    worktree: directWorkspace,
+  }))
+
+  assert.equal(manifest.relayUrl, "ws://127.0.0.1:47000")
+  assert.deepEqual(manifest.tuiObserver.remoteRelay, {
+    url: "ws://127.0.0.1:47000",
+    targetDaemonId: "kernel-1",
+    credentialEnvironment: "CHARIOX_DRILL_C_RELAY_TOKEN",
+    status: "relay_url_selected",
+  })
+  assert.deepEqual(manifest.tuiObserver.args.slice(-4), [
+    "--relay-url", "ws://127.0.0.1:47000", "--target-daemon-id", "kernel-1",
+  ])
+  assert.equal(manifest.tuiObserver.args.includes("--relay-token"), false)
+  assert.equal(manifest.tuiObserver.args.includes("relay-secret-test-value"), false)
+  assert.equal(manifest.localCloudTransport.status, "not_observed")
+  assert.equal(manifest.localCloudTransport.relayUrl, null)
+  assert.equal(manifest.localCloudTransport.sessionVisible, null)
+  assert.equal(manifest.webObserver.transportStatus, "not_observed")
+  assert.equal(manifest.webObserver.evidenceStatus, "not_observed")
+  assert.equal(manifest.webObserver.relayUrl, null)
   assert.equal("relayToken" in manifest, false)
 })
 
