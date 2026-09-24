@@ -12,13 +12,17 @@ const OVERDUE_AFTER_MS: u64 = 60_000;
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 /// Waiting wakes step aside for this long so they cannot starve later ones.
 const START_WAIT_MS: u64 = 2_000;
+/// A user-stopped App keeps its wakes until the user starts it again.
+const STOPPED_WAIT_MS: u64 = 60_000;
 
 /// Outcome of one on-demand start request for an installation.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Start {
     /// Starting, already starting, or admission busy: wait without an attempt.
     Pending,
-    /// User stop, failed generation, revocation or inactive: bounded attempts.
+    /// The user stopped the App: keep wakes without spending attempts.
+    UserStopped,
+    /// Failed generation, revocation or inactive installation: bounded attempts.
     Refused,
 }
 
@@ -44,6 +48,10 @@ fn plan(
             Start::Pending => AppWakeOperation::Postponed {
                 wake,
                 until_ms: now_ms.saturating_add(START_WAIT_MS),
+            },
+            Start::UserStopped => AppWakeOperation::Postponed {
+                wake,
+                until_ms: now_ms.saturating_add(STOPPED_WAIT_MS),
             },
             Start::Refused => AppWakeOperation::Failed { wake, now_ms },
         });
@@ -104,6 +112,7 @@ impl KernelRuntimeState {
                     handle.clone(),
                 ) {
                     Ok(_) | Err(LifecycleError::Busy) => Start::Pending,
+                    Err(LifecycleError::Stopped) => Start::UserStopped,
                     Err(_) => Start::Refused,
                 },
             )
@@ -176,6 +185,15 @@ mod tests {
             record,
             AppWakeOperation::Postponed { until_ms, .. } if *until_ms == 100 + START_WAIT_MS
         )));
+    }
+
+    #[test]
+    fn user_stopped_apps_keep_their_wakes_without_spending_attempts() {
+        let (_, records) = plan(vec![due("stopped", "a")], 100, |_| false, |_| Start::UserStopped);
+        assert!(matches!(
+            records[..],
+            [AppWakeOperation::Postponed { until_ms, .. }] if until_ms == 100 + STOPPED_WAIT_MS
+        ));
     }
 
     #[test]

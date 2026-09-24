@@ -159,15 +159,6 @@ pub fn due_wakes(connection: &Connection, now_ms: u64, limit: usize) -> Result<V
     rows.collect::<std::result::Result<_, _>>().map_err(Into::into)
 }
 
-/// Earliest pending attempt time, for the pump's next scheduling decision.
-pub fn next_wake_at(connection: &Connection) -> Result<Option<u64>> {
-    let next: Option<i64> = connection
-        .query_row("SELECT min(next_attempt_at_ms) FROM app_wakes", [], |row| row.get(0))
-        .optional()?
-        .flatten();
-    Ok(next.map(|value| value.max(0) as u64))
-}
-
 /// Remove a delivered wake. A wake replaced since delivery began keeps its
 /// newer due time and revision.
 pub fn complete_wake(connection: &Connection, delivered: &DueWake) -> Result<()> {

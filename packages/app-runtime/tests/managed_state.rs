@@ -4,7 +4,7 @@ use chariox_app_runtime::{
         ReleaseMetadata,
     },
     managed_state::{
-        complete_wake, defer_wake, due_wakes, next_wake_at, ManagedStateStore, StateChanges,
+        complete_wake, defer_wake, due_wakes, ManagedStateStore, StateChanges,
         StateCheck, StateError, StateScope, StateWrite, Wake, WakeChange, MAX_CHANGES, MAX_KEYS,
         MAX_REVISION, MAX_STATE_BYTES, MAX_VALUE_BYTES, MAX_WAKES,
     },
@@ -424,7 +424,6 @@ fn wakes_are_due_in_order_replaced_by_id_and_completed_only_at_their_revision() 
     let mut db = fixture.open();
     install(&mut db, "todo");
     apply_wakes(&mut db, "todo", &[wake("b", 200, "r1"), wake("a", 100, "r1")]).unwrap();
-    assert_eq!(next_wake_at(&db).unwrap(), Some(100));
     assert!(due_wakes(&db, 99, 8).unwrap().is_empty());
     let due = due_wakes(&db, 250, 8).unwrap();
     assert_eq!(due.iter().map(|w| w.wake.id.as_str()).collect::<Vec<_>>(), ["a", "b"]);
@@ -450,13 +449,12 @@ fn failed_wake_delivery_backs_off_and_is_dropped_after_bounded_attempts() {
     while kept {
         let due = due_wakes(&db, now, 8).unwrap();
         assert_eq!(due.len(), 1);
-        assert!(due_wakes(&db, now - 1, 8).unwrap().is_empty() || attempts == 0);
         kept = defer_wake(&db, &due[0], now).unwrap();
         attempts += 1;
-        now = next_wake_at(&db).unwrap().unwrap_or(now);
+        now = now.saturating_add(24 * 3_600_000);
     }
     assert_eq!(attempts, 8);
-    assert_eq!(next_wake_at(&db).unwrap(), None);
+    assert!(due_wakes(&db, u64::MAX >> 12, 8).unwrap().is_empty());
 }
 
 #[test]

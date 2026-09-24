@@ -244,3 +244,33 @@ pub(super) fn candidates(
     )?;
     sql(rows.collect())
 }
+
+/// Read-only mirror of the active start claim's admission and recovery fence.
+pub(super) fn start_gate(
+    connection: &mut Connection,
+    owner: &str,
+    installation: &str,
+) -> Result<StartGate> {
+    identity(owner)?;
+    identity(installation)?;
+    let Ok(binding) = InstallationRegistry::new(connection).active_trust(owner, installation) else {
+        return Ok(StartGate::Refused);
+    };
+    if PublisherTrustRegistry::new(connection)
+        .trusted_publisher(owner, binding.publisher_id(), binding.key_id())
+        .is_err()
+    {
+        return Ok(StartGate::Refused);
+    }
+    Ok(match status(connection, owner, installation)? {
+        Some(old) if old.generation == binding.token().generation && !old.desired_running => {
+            StartGate::UserStopped
+        }
+        Some(old)
+            if old.generation == binding.token().generation && old.phase == WorkerPhase::Failed =>
+        {
+            StartGate::Refused
+        }
+        _ => StartGate::Allowed,
+    })
+}

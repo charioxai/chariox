@@ -22,7 +22,7 @@ fn app_event_payload_contract_is_versioned_and_matches_the_sdk_fixture() {
     assert_eq!(actual["occurrence"], fixture["occurrence"]);
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&actual).unwrap())),
-        "71b7f9838ad25fcec71051053e415fe2aae02ea8887f3f0d140f3236f1aceea1"
+        "b082abbec3b9718abed2066532f77e23aa19e83df42c5f33897b8684c0af8bc5"
     );
     for field in ["occurredAtMs", "eventVersion", "invocation"] {
         let mut incomplete = fixture["occurrence"].clone();

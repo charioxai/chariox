@@ -11,25 +11,21 @@ impl AppLifecycleService {
     ) -> Result<StartDisposition> {
         self.start(owner, installation, false, runtime)
     }
-    /// On-demand start for a wake, event or tool call. It keeps the recovery
-    /// fence: a user stop or a failed generation is never restarted by use.
+    /// On-demand start for a wake, event or tool call. Its synchronous gate
+    /// mirrors the start claim, so a user stop, failed generation, revoked
+    /// publisher or inactive installation is never started by use.
     pub(crate) fn start_on_demand_blocking(
         &self,
         owner: &str,
         installation: &str,
         runtime: Handle,
     ) -> Result<StartDisposition> {
-        if self
-            .0
-            .store
-            .app_worker_status(owner, installation)?
-            .is_some_and(|status| {
-                !status.desired_running || status.phase == crate::durable_state::app_worker_lifecycle::WorkerPhase::Failed
-            })
-        {
-            return Err(LifecycleError::Stopped);
+        use crate::durable_state::app_worker_lifecycle::StartGate;
+        match self.0.store.app_worker_start_gate(owner, installation)? {
+            StartGate::Allowed => self.start(owner, installation, true, runtime),
+            StartGate::UserStopped => Err(LifecycleError::Stopped),
+            StartGate::Refused => Err(LifecycleError::Authority),
         }
-        self.start(owner, installation, true, runtime)
     }
     pub(super) fn start(
         &self,
