@@ -29,9 +29,7 @@ impl KernelRuntimeState {
                 message: "relay sender does not match the bound worker kernel".to_string(),
             });
         }
-        let agent = super::home_extension_authorizer::authorize_remote_home_context(
-            self, &context, operation,
-        )?;
+        super::home_extension_authorizer::authorize_remote_home_context(self, &context, operation)?;
         let slice = self
             .owned
             .slice_store
@@ -40,24 +38,6 @@ impl KernelRuntimeState {
                 operation,
                 message: "the home Room has no reserved browser slice".to_string(),
             })?;
-        if slice.worker_kernel_id.as_deref() != Some(expected_worker_kernel_id)
-            || slice.worker_machine_id.as_deref() != context.worker_machine_id.as_deref()
-        {
-            return Err(DaemonError::LocalTransport {
-                operation,
-                message: "the bound worker does not own the home Room browser slice".to_string(),
-            });
-        }
-        if !slice
-            .agent_ids
-            .iter()
-            .any(|agent_id| agent_id == agent.id())
-        {
-            return Err(DaemonError::LocalTransport {
-                operation,
-                message: "the home agent is not attached to the Room browser slice".to_string(),
-            });
-        }
         if !self.browser_controller_enabled_for_room(&context.home_session_id) {
             return Err(DaemonError::LocalTransport {
                 operation,
