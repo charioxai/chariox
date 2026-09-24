@@ -385,6 +385,7 @@ async function verifyImageRelease(
       for (const [name, required] of [
         ["CHARIOX_MANAGED_PROVIDER_TOPOLOGY", "Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1"],
         ["CHARIOX_MANAGED_BOOTSTRAP_PATH", "Environment=CHARIOX_MANAGED_BOOTSTRAP_PATH=/var/lib/chariox/managed-bootstrap.json"],
+        ["CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY", "Environment=CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY=/etc/chariox/trusted-builder-public-key"],
         ["HOME", "Environment=HOME=/home/chariox"],
         ["CHARIOX_HOME", "Environment=CHARIOX_HOME=/home/chariox/.chariox"],
         ["CHARIOX_SLICE_DOCKER_BROKER_SOCKET", "Environment=CHARIOX_SLICE_DOCKER_BROKER_SOCKET=/var/lib/chariox-slice-share/.broker-private/control/control.sock"],

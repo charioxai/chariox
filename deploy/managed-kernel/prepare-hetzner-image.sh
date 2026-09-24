@@ -129,6 +129,15 @@ docker buildx version >/dev/null || fail "Docker Buildx is unavailable"
 
 "$script_root/install-image.sh" \
   "$release_rootfs" "$release_digest" "$trusted_public_key" "$managed_provider_topology"
+if [ "$managed_provider_topology" = path1 ]; then
+  runtime_builder_key=/etc/chariox/trusted-builder-public-key
+  [ -f "$runtime_builder_key" ] && [ ! -L "$runtime_builder_key" ] \
+    || fail "Path-1 image is missing its independent runtime builder key"
+  [ "$(stat -c '%u:%a' "$runtime_builder_key")" = "0:644" ] \
+    || fail "Path-1 runtime builder key ownership or mode is unsafe"
+  cmp -s "$CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY" "$runtime_builder_key" \
+    || fail "Path-1 runtime builder key differs from the independent input"
+fi
 # The general installer journals even a no-op home migration. A fresh image
 # must not carry that runtime bookkeeping into every future machine.
 migration_journal=/var/lib/chariox/home-migration.json

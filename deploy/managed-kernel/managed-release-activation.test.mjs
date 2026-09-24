@@ -4,6 +4,8 @@ import test from "node:test"
 
 const installSource = await readFile(new URL("./install-image.sh", import.meta.url), "utf8")
 const upgradeSource = await readFile(new URL("./upgrade-image.sh", import.meta.url), "utf8")
+const prepareSource = await readFile(new URL("./prepare-hetzner-image.sh", import.meta.url), "utf8")
+const path1Service = await readFile(new URL("./chariox-path1-managed-bootstrap.service", import.meta.url), "utf8")
 
 function indexOf(source, text, label, from = 0) {
   const index = source.indexOf(text, from)
@@ -30,6 +32,21 @@ test("install names releases from the validated manifest digest", () => {
   assert.ok(installSource.includes('verify_selected_release "$published_release" "$expected_release_digest" "$trusted_public_key"'))
   assert.ok(installSource.includes('"$@" path1 "$trusted_builder_public_key"'))
   assert.ok(upgradeSource.includes('"$@" path1 "$trusted_builder_public_key"'))
+})
+
+test("Path-1 install and upgrade keep the independent builder key available to runtime", () => {
+  const keyPath = "/etc/chariox/trusted-builder-public-key"
+  assert.ok(path1Service.includes(`Environment=CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY=${keyPath}`))
+  for (const source of [installSource, upgradeSource]) {
+    assert.ok(source.includes(`trusted_builder_runtime_key=$install_root${keyPath}`))
+    assert.match(source, /cmp -s \"\$trusted_builder_public_key\" \"\$trusted_builder_runtime_key\"/)
+    assert.match(source, /install -o root -g root -m 0644 \"\$trusted_builder_public_key\" \"\$trusted_builder_runtime_key\"/)
+  }
+  const publishKey = indexOf(installSource, 'install -o root -g root -m 0644 "$trusted_builder_public_key" "$trusted_builder_runtime_key"', "runtime builder key publication")
+  const activate = indexOf(installSource, 'atomic_symlink "releases/$release_name" "$install_root/usr/lib/chariox/current"', "current activation")
+  assert.ok(publishKey < activate)
+  assert.ok(prepareSource.includes('runtime_builder_key=/etc/chariox/trusted-builder-public-key'))
+  assert.ok(prepareSource.includes('cmp -s "$CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY" "$runtime_builder_key"'))
 })
 
 test("install durably publishes the verified release before activating current", () => {

@@ -452,6 +452,27 @@ install -d -o root -g root -m 0755 \
   "$install_root/etc/systemd/user" \
   "$install_root/etc/systemd/system/user@$docker_uid.service.d" \
   "$releases_root"
+if [ "$managed_provider_topology" = path1 ]; then
+  trusted_builder_runtime_key=$install_root/etc/chariox/trusted-builder-public-key
+  require_real_ancestor_chain "$install_root/etc/chariox" "trusted builder key directory"
+  ensure_directory_parent "$install_root/etc/chariox" "trusted builder key directory"
+  if [ "$(stat -c %u "$install_root/etc/chariox")" != 0 ] \
+    || [ -n "$(find "$install_root/etc/chariox" -maxdepth 0 -perm /022 -print -quit)" ]; then
+    echo "trusted builder key directory owner or permissions are unsafe" >&2
+    exit 1
+  fi
+  if path_exists "$trusted_builder_runtime_key"; then
+    require_regular_file "$trusted_builder_runtime_key"
+    if [ "$(stat -c %u "$trusted_builder_runtime_key")" != 0 ] \
+      || [ -n "$(find "$trusted_builder_runtime_key" -maxdepth 0 -perm /022 -print -quit)" ] \
+      || ! cmp -s "$trusted_builder_public_key" "$trusted_builder_runtime_key"; then
+      echo "installed trusted builder key differs from the independent input" >&2
+      exit 1
+    fi
+  fi
+  install -o root -g root -m 0644 "$trusted_builder_public_key" "$trusted_builder_runtime_key"
+  node "$script_root/managed-kernel-upgrade-state.mjs" sync-tree "$install_root/etc/chariox"
+fi
 rm -rf -- "$pending_release"
 if [ -e "$published_release" ] || [ -L "$published_release" ]; then
   if ! verify_selected_release "$published_release" "$expected_release_digest" "$trusted_public_key"; then

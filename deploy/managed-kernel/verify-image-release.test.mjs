@@ -33,6 +33,7 @@ const PATH1_SERVICE = [
   "[Service]",
   "Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1",
   "Environment=CHARIOX_MANAGED_BOOTSTRAP_PATH=/var/lib/chariox/managed-bootstrap.json",
+  "Environment=CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY=/etc/chariox/trusted-builder-public-key",
   "Environment=HOME=/home/chariox",
   "Environment=CHARIOX_HOME=/home/chariox/.chariox",
   "Environment=CHARIOX_SLICE_DOCKER_BROKER_SOCKET=/var/lib/chariox-slice-share/.broker-private/control/control.sock",
@@ -88,6 +89,7 @@ async function createReleaseFixture(context, {
   malformedAttestation = false,
   invalidBuilderSignature = false,
   wrongTrustedBuilderKey = false,
+  path1Service = PATH1_SERVICE,
 } = {}) {
   const scratch = await mkdtemp(join(tmpdir(), "chariox-release-provenance-test-"))
   context.after(() => rm(scratch, { recursive: true, force: true }))
@@ -140,7 +142,7 @@ async function createReleaseFixture(context, {
     ["chariox-kernel", KERNEL],
     ["chariox-managed-bootstrap", BOOTSTRAP],
     ["chariox-managed-bootstrap.service", Buffer.from("[Service]\nExecStart=/usr/local/bin/chariox-managed-bootstrap\n")],
-    ["chariox-path1-managed-bootstrap.service", Buffer.from(PATH1_SERVICE)],
+    ["chariox-path1-managed-bootstrap.service", Buffer.from(path1Service)],
     ["chariox-disposable-worker-bootstrap.service", Buffer.from("[Service]\nExecStart=/usr/local/bin/chariox-managed-bootstrap\n")],
     ["chariox-rootless-docker.service", Buffer.from("[Service]\n")],
     ["chariox-slice-broker.service", Buffer.from("[Service]\n")],
@@ -208,6 +210,18 @@ test("Path-1 verification accepts a valid externally trusted builder attestation
   const fixture = await createReleaseFixture(context)
   const result = runVerifier(fixture, "path1", fixture.trustedBuilderKey)
   assert.equal(result.status, 0, result.stderr)
+})
+
+test("Path-1 verification rejects a signed service without the independent runtime builder key", async (context) => {
+  const fixture = await createReleaseFixture(context, {
+    path1Service: PATH1_SERVICE.replace(
+      "Environment=CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY=/etc/chariox/trusted-builder-public-key\n",
+      "",
+    ),
+  })
+  const result = runVerifier(fixture, "path1", fixture.trustedBuilderKey)
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY/)
 })
 
 test("Path-1 verification rejects an embedded key that differs from its independent trust root", async (context) => {

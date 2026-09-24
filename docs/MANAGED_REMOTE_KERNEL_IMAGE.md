@@ -78,7 +78,13 @@ public key and the pinned OpenShip builder public key to the image builder.
 Keep the builder key outside the release root filesystem and supply it as
 `CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY` for Path-1 preparation and upgrade.
 The installer checks it independently against the packaged key and verifies
-the builder attestation at every Path-1 release activation. The packager
+the builder attestation at every Path-1 release activation. It also installs
+that public pin at `/etc/chariox/trusted-builder-public-key`,
+outside the signed release tree, and the Path-1 bootstrap service passes this
+path to the runtime for its own revalidation. A different existing pin is an
+error, not a rotation. The image preparation checks the installed pin before
+snapshotting; upgrades require the same external pin.
+The packager
 verifies the detached builder signature, exact commit and tree IDs, target,
 and all three staged binary digests
 before it reads the release-signing key. The signed release retains the builder

@@ -664,6 +664,25 @@ require_root_owned_directory "$releases_root/${expected_current_digest#sha256:}"
 verify_selected_release \
   "$releases_root/${expected_current_digest#sha256:}" "$expected_current_digest" "$trusted_public_key"
 verify_selected_release "$image_root" "$expected_new_digest" "$next_trusted_public_key"
+if [ "$managed_provider_topology" = path1 ]; then
+  trusted_builder_runtime_key=$install_root/etc/chariox/trusted-builder-public-key
+  require_root_owned_directory "$install_root/etc"
+  if path_exists "$install_root/etc/chariox"; then
+    require_root_owned_directory "$install_root/etc/chariox"
+  else
+    install -d -o root -g root -m 0755 "$install_root/etc/chariox"
+  fi
+  require_root_owned_ancestor_chain "$trusted_builder_runtime_key" "trusted builder runtime key"
+  if path_exists "$trusted_builder_runtime_key"; then
+    require_root_owned_private_regular_file "$trusted_builder_runtime_key" "trusted builder runtime key"
+    if ! cmp -s "$trusted_builder_public_key" "$trusted_builder_runtime_key"; then
+      echo "installed trusted builder key differs from the independent input" >&2
+      exit 1
+    fi
+  fi
+  install -o root -g root -m 0644 "$trusted_builder_public_key" "$trusted_builder_runtime_key"
+  node "$script_root/managed-kernel-upgrade-state.mjs" sync-tree "$install_root/etc/chariox"
+fi
 
 current_protocol=$(protocol_version "$current_link/usr/local/bin/chariox-kernel")
 target_protocol=$(protocol_version "$image_root/usr/local/bin/chariox-kernel")
