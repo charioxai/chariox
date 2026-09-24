@@ -72,6 +72,7 @@ export function parseArgs(argv, env = process.env) {
     scopedRelayIssuer: env.CHARIOX_RELAY_SCOPED_ISSUER?.trim() || null,
     scopedRelaySecret: env.CHARIOX_RELAY_SCOPED_HMAC_SECRET?.trim() || null,
     sliceImageBuildPolicy: "never",
+    allowProviderSandboxCompatibility: false,
     activeKernelRegistryDir: env.CHARIOX_ACTIVE_KERNEL_REGISTRY_DIR
       ?? (env.XDG_CONFIG_HOME?.trim()
         ? path.join(path.resolve(env.XDG_CONFIG_HOME), "chariox", "kernels", "active")
@@ -100,6 +101,7 @@ export function parseArgs(argv, env = process.env) {
     else if (arg === "--expected-daemon-id") options.expectedDaemonId = next()
     else if (arg === "--expected-machine-id") options.expectedMachineId = next()
     else if (arg === "--allow-slice-image-build") options.sliceImageBuildPolicy = "auto"
+    else if (arg === "--allow-provider-sandbox-compatibility") options.allowProviderSandboxCompatibility = true
     else if (arg === "--local-cloud-url") options.localCloudUrl = next()
     else if (arg === "--relay-url") {
       options.relayUrl = next()
@@ -157,6 +159,8 @@ export function assertModeOptions(options, env = process.env) {
   if (options.mode === "existing_kernel") {
     assert.equal(options.sliceImageBuildPolicy, "never",
       "--allow-slice-image-build only applies to isolated-local mode")
+    assert.equal(options.allowProviderSandboxCompatibility, false,
+      "--allow-provider-sandbox-compatibility only applies to isolated-local mode")
     const endpoint = assertLoopbackUrl(options.existingKernelUrl, "--existing-kernel", ["ws:"])
     assert.ok(["", "/", "/kernel"].includes(endpoint.pathname),
       "--existing-kernel must address the local kernel WebSocket endpoint")
@@ -651,6 +655,7 @@ function printHelp() {
     "  --manifest PATH",
     "  --existing-kernel URL              use the already-running local kernel; do not start or stop it",
     "  --allow-slice-image-build          permit auto-building the isolated slice image; default requires a compatible cache",
+    "  --allow-provider-sandbox-compatibility  opt in to the provisioner's Docker grants and pre-start Bubblewrap probe for an isolated slice",
     "  --rootless-workspace-root PATH     required for existing-kernel; safe root under /var/tmp",
     "  --expected-daemon-id ID             required with --existing-kernel",
     "  --expected-machine-id ID            optional additional identity check",
@@ -663,6 +668,7 @@ function printHelp() {
     "",
     "The script waits after setup so the attach-only TUI and Web observers can run.",
     "Isolated mode defaults to slices.linux.build_image = never and fails before container mutation if the cached image is missing or stale. --allow-slice-image-build restores auto-build behavior and may trigger a costly release compile.",
+    "An isolated real-provider slice may need --allow-provider-sandbox-compatibility; this grants the provisioner's bounded Docker setup capabilities and fails before runtime start if its Bubblewrap probe fails.",
     `Existing-kernel mode requires a loopback ws:// URL and an explicit --rootless-workspace-root (or ${roomDirectDockerWorkspaceRootEnvironment}); --relay-url additionally requires CHARIOX_DRILL_C_RELAY_TOKEN. Cloud/Web transport stays unobserved.`,
     "Ctrl+C cleans up only this run's Room and slice; its workspace is removed only after matching cleanup acknowledgements.",
   ].join("\n"))
@@ -806,6 +812,7 @@ async function main() {
         relayToken: options.relayToken,
         logDir: path.join(logDir, "kernel-runtime"),
         sliceRoot: path.join(options.rootDir, "slices"),
+        allowProviderSandboxCompatibility: options.allowProviderSandboxCompatibility,
       }), logDir))
     }
     state.client = await connectKernel(LocalIpcClient, requests, kernelUrl, children)
@@ -1146,7 +1153,7 @@ function relayProcessEnvironment(relayUrl, relayHost, relayPort, options) {
   }
 }
 
-function kernelProcessEnvironment(input) {
+export function kernelProcessEnvironment(input) {
   const env = { ...process.env }
   for (const name of [
     "CHARIOX_RELAY_SCOPED_ISSUER",
@@ -1154,6 +1161,7 @@ function kernelProcessEnvironment(input) {
     "CHARIOX_RELAY_ALLOW_OPEN_ACCESS",
     "CHARIOX_PROVIDER_DEV_STUB",
     "CHARIOX_SLICE_DOCKER_BROKER_SOCKET",
+    "CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY",
   ]) {
     delete env[name]
   }
@@ -1175,6 +1183,9 @@ function kernelProcessEnvironment(input) {
     CHARIOX_DAEMON_SOCKET: path.join(input.kernelHome, "daemon.sock"),
     CHARIOX_SESSION_HISTORY_DIR: path.join(input.kernelHome, "history"),
     CHARIOX_SLICE_ROOT: input.sliceRoot,
+    ...(input.allowProviderSandboxCompatibility
+      ? { CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY: "1" }
+      : {}),
   }
 }
 

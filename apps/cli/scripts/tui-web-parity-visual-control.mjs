@@ -208,7 +208,9 @@ function assertTuiRoomStatus(statusNotice, environment, focusedTab) {
   assert.ok(lines.includes(
     `viewport=${viewport.desktop_pixel_width}x${viewport.desktop_pixel_height} css=${viewport.css_width}x${viewport.css_height} scale=${viewport.device_scale_factor} revision=${viewport.revision}`,
   ), 'TUI observer did not show the canonical display viewport')
-  assert.ok(lines.some((line) => line.startsWith(`tab=${focusedTab.tab_id} `)), 'TUI observer did not show the kernel focused tab')
+  const title = typeof focusedTab.title === 'string' ? focusedTab.title.trim() : ''
+  const tabLabel = title && title !== focusedTab.url ? `${title} — ${focusedTab.url}` : focusedTab.url
+  assert.ok(lines.includes(`tab=${focusedTab.tab_id} ${tabLabel}`), 'TUI observer did not show the final focused browser tab state')
 }
 
 function assertTuiActionVisible(actionsNotice, action) {

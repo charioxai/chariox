@@ -17,6 +17,7 @@ import {
   cleanupOwnedResources,
   createExistingKernelWorkspaceFixture,
   isolatedKernelUserConfig,
+  kernelProcessEnvironment,
   mintDrillCKernelRelayToken,
   parseArgs,
   requiresDirectDockerAccess,
@@ -849,4 +850,44 @@ test("Drill C slice image builds are opt-in for isolated kernels", () => {
   ], { HOME: "/home/test" })
   assert.throws(() => assertModeOptions(existing), /only applies to isolated-local mode/)
   assert.throws(() => isolatedKernelUserConfig(existing), /only applies to an isolated-local kernel/)
+})
+
+test("Drill C provider sandbox compatibility is explicit and probes only an isolated slice", () => {
+  const defaults = parseArgs([], { HOME: "/home/test" })
+  const enabled = parseArgs(["--allow-provider-sandbox-compatibility"], { HOME: "/home/test" })
+  assert.equal(defaults.allowProviderSandboxCompatibility, false)
+  assert.equal(enabled.allowProviderSandboxCompatibility, true)
+  assert.doesNotThrow(() => assertModeOptions(enabled))
+
+  const kernelInput = {
+    daemonId: "kernel-1",
+    daemonAlias: "test-kernel",
+    machineId: "machine-1",
+    machineAlias: "test-machine",
+    kernelHome: "/tmp/drill-c-home",
+    kernelPort: 52000,
+    mcpPort: 52001,
+    codexPort: 52002,
+    opencodePort: 52003,
+    relayUrl: "ws://127.0.0.1:47001",
+    relayToken: "local-fixture-token",
+    logDir: "/tmp/drill-c-logs",
+    sliceRoot: "/tmp/drill-c-slices",
+  }
+  assert.equal(kernelProcessEnvironment({
+    ...kernelInput,
+    allowProviderSandboxCompatibility: false,
+  }).CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY, undefined)
+  assert.equal(kernelProcessEnvironment({
+    ...kernelInput,
+    allowProviderSandboxCompatibility: true,
+  }).CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY, "1")
+
+  const existing = parseArgs([
+    "--existing-kernel", "ws://127.0.0.1:52001/kernel",
+    "--expected-daemon-id", "kernel-1",
+    "--rootless-workspace-root", "/var/tmp",
+    "--allow-provider-sandbox-compatibility",
+  ], { HOME: "/home/test" })
+  assert.throws(() => assertModeOptions(existing), /only applies to isolated-local mode/)
 })

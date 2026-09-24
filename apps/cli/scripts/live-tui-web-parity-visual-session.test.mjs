@@ -5,6 +5,7 @@ import {
   assertSameRoomObservers,
   buildObserverCliArgs,
   buildRoomObserverManifest,
+  observerSocketPaths,
   parseArgs,
   validateRemoteRelay,
 } from './live-tui-web-parity-visual-session.mjs'
@@ -19,6 +20,14 @@ const observerArgs = [
   '--relay-url', 'ws://localhost:52000',
   '--target-daemon-id', 'slice-daemon-1',
 ]
+
+test('Room observer sockets fit the macOS Unix socket path limit with a long temp directory', () => {
+  const sockets = observerSocketPaths('40303-1790250501780', '/var/folders/mw/jzn2k81d0fj4_y4b3sq21_g80000gn/T/extra-long-temporary-directory')
+  assert.ok(Buffer.byteLength(sockets.local) <= 100)
+  assert.ok(Buffer.byteLength(sockets.remote) <= 100)
+  assert.notEqual(sockets.local, sockets.remote)
+  assert.equal(path.dirname(sockets.local), '/tmp')
+})
 
 test('Room observer accepts the same-host relay identity as explicit arguments', () => {
   const options = parseArgs(observerArgs)

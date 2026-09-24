@@ -311,6 +311,27 @@ test('Drill C verifier rejects Web evidence with a different tab or viewport', (
   }), /different canonical display/)
 })
 
+test('Drill C verifier requires both TUI traces to show the final focused browser tab state', () => {
+  const staleStatusNotice = tui.statusNotice.replace(
+    'Shared page — https://fixture.invalid/page',
+    'Earlier page — https://fixture.invalid/before',
+  )
+  assert.throws(() => assertDrillCSharedRoomEvidence({
+    baseline,
+    checkpoint,
+    web,
+    tui: { ...tui, statusNotice: staleStatusNotice },
+    remoteTui,
+  }), /final focused browser tab state/)
+  assert.throws(() => assertDrillCSharedRoomEvidence({
+    baseline,
+    checkpoint,
+    web,
+    tui,
+    remoteTui: { ...remoteTui, statusNotice: staleStatusNotice },
+  }), /final focused browser tab state/)
+})
+
 test('Drill C verifier rejects missing Computer work and mismatched actor history', () => {
   assert.throws(() => assertDrillCSharedRoomEvidence({
     baseline,

@@ -526,6 +526,15 @@ export function buildRoomObserverManifest({
   }
 }
 
+export function observerSocketPaths(stamp, temporaryDirectory = os.tmpdir()) {
+  const socket = (suffix) => {
+    const name = `chariox-dc-${stamp}-${suffix}.sock`
+    const preferred = path.join(temporaryDirectory, name)
+    return Buffer.byteLength(preferred) <= 100 ? preferred : path.join('/tmp', name)
+  }
+  return { local: socket('l'), remote: socket('r') }
+}
+
 async function runRoomObserverSession(options) {
   for (const [name, flag] of [
     ['roomSessionId', '--observe-room-session'],
@@ -551,8 +560,7 @@ async function runRoomObserverSession(options) {
   const manifestPath = options.manifestPathProvided ? options.manifestPath : path.join(rootDir, 'manifest.json')
   assert.ok(manifestPath !== repoRoot && !manifestPath.startsWith(`${repoRoot}${path.sep}`), 'observer manifest must be outside the repository')
   assert.notEqual(manifestPath, options.webObservationPath, 'observer manifest and Web report must use separate files')
-  const automationSocket = path.join(os.tmpdir(), `chariox-drill-c-observer-${stamp}-local.sock`)
-  const remoteAutomationSocket = path.join(os.tmpdir(), `chariox-drill-c-observer-${stamp}-remote.sock`)
+  const { local: automationSocket, remote: remoteAutomationSocket } = observerSocketPaths(stamp)
   assert.ok(path.isAbsolute(remoteAutomationSocket), 'remote automation socket must be absolute')
   assert.notEqual(automationSocket, remoteAutomationSocket, 'local and remote observers require distinct automation sockets')
   await mkdir(evidenceDir, { recursive: true, mode: 0o700 })
