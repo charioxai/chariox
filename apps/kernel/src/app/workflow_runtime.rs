@@ -707,13 +707,11 @@ mod tests {
 
     #[test]
     fn failed_claimed_workflow_run_releases_its_workspace_claim() {
+        let worktree = crate::test_support::TestWorktree::new("workflow-runtime-claim-release");
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
         let (failed_session, failed_agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(crate::session::CreateSessionRequest::new(
-                "shared-workspace",
-                "shared-worktree",
-            ))
+            .create_session(worktree.session_request())
             .expect("failed session should be created");
         let failed_workflow = app
             .sessions_mut()
@@ -764,10 +762,7 @@ mod tests {
         );
 
         let (next_session, next_agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(crate::session::CreateSessionRequest::new(
-                "shared-workspace",
-                "shared-worktree",
-            ))
+            .create_session(worktree.session_request())
             .expect("next session should be created");
         let next_workflow = app
             .sessions_mut()
@@ -811,15 +806,13 @@ mod tests {
 
     #[test]
     fn queued_workflow_prompt_preserves_agent_runtime_context() {
+        let worktree = crate::test_support::TestWorktree::new("workflow-runtime-queued-context");
         let mut app = crate::test_support::bootstrap_authenticated_app(
             crate::config::DaemonConfig::for_tests(),
         )
         .expect("daemon bootstrap should succeed");
         let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(crate::session::CreateSessionRequest::new(
-                "workspace-1",
-                "worktree-1",
-            ))
+            .create_session(worktree.session_request())
             .expect("session should be created");
         let profile = app
             .provider_account_profile_registry()
@@ -906,13 +899,11 @@ mod tests {
 
     #[test]
     fn workflow_context_flush_replaces_idle_provider_without_resuming_its_session() {
+        let worktree = crate::test_support::TestWorktree::new("workflow-runtime-flush-idle");
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
         let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(crate::session::CreateSessionRequest::new(
-                "workspace-flush",
-                "worktree-flush",
-            ))
+            .create_session(worktree.session_request())
             .expect("session should be created");
         let agent = crate::app::KernelSessionService::new(&mut app)
             .spawn_agent(
@@ -997,13 +988,11 @@ mod tests {
 
     #[test]
     fn workflow_context_flush_still_applies_after_current_turn_is_dispatched() {
+        let worktree = crate::test_support::TestWorktree::new("workflow-runtime-flush-dispatched");
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
         let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(crate::session::CreateSessionRequest::new(
-                "workspace-flush-dispatched",
-                "worktree-flush-dispatched",
-            ))
+            .create_session(worktree.session_request())
             .expect("session should be created");
         let agent = crate::app::KernelSessionService::new(&mut app)
             .spawn_agent(
@@ -1072,13 +1061,11 @@ mod tests {
 
     #[test]
     fn workflow_context_flush_is_keyed_to_the_dispatched_node_not_provider_start_time() {
+        let worktree = crate::test_support::TestWorktree::new("workflow-runtime-flush-node");
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
         let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(crate::session::CreateSessionRequest::new(
-                "workspace-cross-workflow-flush",
-                "worktree-cross-workflow-flush",
-            ))
+            .create_session(worktree.session_request())
             .expect("session should be created");
         let agent = crate::app::KernelSessionService::new(&mut app)
             .spawn_agent(
@@ -1162,13 +1149,11 @@ mod tests {
         // Provider setup reads environment-backed account paths. Config tests
         // may replace and remove those roots while this test promotes the queue.
         let _environment = crate::env_lock::lock();
+        let worktree = crate::test_support::TestWorktree::new("workflow-runtime-flush-queued");
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
         let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(crate::session::CreateSessionRequest::new(
-                "workspace-flush-queued",
-                "worktree-flush-queued",
-            ))
+            .create_session(worktree.session_request())
             .expect("session should be created");
         let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
@@ -1291,15 +1276,13 @@ mod tests {
     #[test]
     fn queued_event_prompt_derives_reply_and_context_capabilities_independently() {
         let _environment = crate::env_lock::lock();
+        let worktree = crate::test_support::TestWorktree::new("workflow-runtime-event");
         let mut app = crate::test_support::bootstrap_authenticated_app(
             crate::config::DaemonConfig::for_tests(),
         )
         .expect("daemon bootstrap should succeed");
         let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(crate::session::CreateSessionRequest::new(
-                "workspace-event",
-                "worktree-event",
-            ))
+            .create_session(worktree.session_request())
             .expect("session should be created");
         let agent = crate::app::KernelSessionService::new(&mut app)
             .spawn_agent(crate::agent::CreateAgentRequest::new(session.id(), "codex"))
@@ -1472,15 +1455,13 @@ mod tests {
     #[test]
     fn queued_workflow_scheduler_continues_after_invalid_candidate() {
         let _environment = crate::env_lock::lock();
+        let worktree = crate::test_support::TestWorktree::new("workflow-runtime-scheduler");
         let mut app = crate::test_support::bootstrap_authenticated_app(
             crate::config::DaemonConfig::for_tests(),
         )
         .expect("daemon bootstrap should succeed");
         let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(crate::session::CreateSessionRequest::new(
-                "workspace-1",
-                "worktree-1",
-            ))
+            .create_session(worktree.session_request())
             .expect("session should be created");
         let agent = crate::app::KernelSessionService::new(&mut app)
             .spawn_agent(crate::agent::CreateAgentRequest::new(session.id(), "codex"))
@@ -1565,13 +1546,11 @@ mod tests {
 
     #[test]
     fn app_workflow_completion_archives_terminal_run_outside_hot_session() {
+        let worktree = crate::test_support::TestWorktree::new("workflow-runtime-completion");
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(crate::session::CreateSessionRequest::new(
-                "workspace-durable-workflow-completion",
-                "worktree-durable-workflow-completion",
-            ))
+            .create_session(worktree.session_request())
             .expect("session should be created");
         let workflow = app
             .sessions_mut()

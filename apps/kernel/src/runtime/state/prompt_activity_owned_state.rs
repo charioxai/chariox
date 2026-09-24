@@ -6,6 +6,8 @@
 use super::*;
 
 const PROMPT_SETTLEMENT_RECHECK_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
+// Periodic observation only. Elapsed silence must never settle a turn.
+const QUIET_PROVIDER_RECHECK_MS: u64 = 10 * 60 * 1000;
 
 enum FailedPromptResumePreparation {
     NotRequired,
@@ -452,6 +454,7 @@ impl KernelRuntimeOwnedState {
     }
 
     pub(super) fn clear_prompt_activity(&self, provider_run_id: &str) -> bool {
+        let activity_mutation = self.begin_managed_activity_mutation();
         self.provider_output_deadlines.clear(provider_run_id);
         let prompt_activity = self.prompt_activity.write().remove(provider_run_id);
         let active_turn = self.active_turns.get(provider_run_id);
@@ -470,6 +473,7 @@ impl KernelRuntimeOwnedState {
         // the reporter's barrier across that window, so publish a second change only after the
         // turn has been cleared by the completed settlement path.
         if active_turn.is_some() {
+            activity_mutation.record();
             self.runtime_projection_changes.record_change();
         }
         released_claim
@@ -486,7 +490,12 @@ impl KernelRuntimeOwnedState {
         for provider_run_id in provider_run_ids {
             let _ = self.clear_prompt_activity(&provider_run_id);
         }
-        self.active_turns.clear_session(session_id);
+        let activity_mutation = self.begin_managed_activity_mutation();
+        let cleared_active_turns = self.active_turns.clear_session(session_id);
+        if cleared_active_turns > 0 {
+            activity_mutation.record();
+            self.runtime_projection_changes.record_change();
+        }
         let _ = self
             .prompt_workspace_claims
             .remove_matching(|claim| claim.session_id == session_id);
@@ -505,7 +514,12 @@ impl KernelRuntimeOwnedState {
         for provider_run_id in provider_run_ids {
             let _ = self.clear_prompt_activity(&provider_run_id);
         }
-        self.active_turns.clear_agent(session_id, agent_id);
+        let activity_mutation = self.begin_managed_activity_mutation();
+        let cleared_active_turns = self.active_turns.clear_agent(session_id, agent_id);
+        if cleared_active_turns > 0 {
+            activity_mutation.record();
+            self.runtime_projection_changes.record_change();
+        }
     }
 
     pub(super) fn release_workflow_node_workspace_claim(
@@ -557,10 +571,12 @@ impl KernelRuntimeOwnedState {
                 )
             });
         if let Some(turn) = active_turn {
+            let activity_mutation = self.begin_managed_activity_mutation();
             self.active_turns.start(turn);
             self.active_turns
                 .mark_awaiting_first_output(provider_run_id);
-            self.schedule_provider_output_timeout(provider_run_id);
+            activity_mutation.record();
+            self.schedule_quiet_provider_recheck(provider_run_id);
         }
     }
 
@@ -573,7 +589,7 @@ impl KernelRuntimeOwnedState {
         };
         self.active_turns.mark_streaming(provider_run_id);
         if tracked {
-            self.schedule_provider_output_timeout(provider_run_id);
+            self.schedule_quiet_provider_recheck(provider_run_id);
         }
     }
 
@@ -600,7 +616,7 @@ impl KernelRuntimeOwnedState {
             }
         }
         if self.prompt_activity.read().contains_key(provider_run_id) {
-            self.schedule_provider_output_timeout(provider_run_id);
+            self.schedule_quiet_provider_recheck(provider_run_id);
         }
     }
 
@@ -659,20 +675,20 @@ impl KernelRuntimeOwnedState {
         self.schedule_provider_output_check_after(provider_run_id, delay);
     }
 
-    pub(super) fn ensure_provider_output_timeout_scheduled(&self, provider_run_id: &str) {
+    pub(super) fn ensure_quiet_provider_recheck_scheduled(&self, provider_run_id: &str) {
         if !self.prompt_activity.read().contains_key(provider_run_id) {
             return;
         }
         self.provider_output_deadlines.schedule_if_absent(
             provider_run_id,
-            crate::session::unix_epoch_ms().saturating_add(crate::app::PROVIDER_OUTPUT_TIMEOUT_MS),
+            crate::session::unix_epoch_ms().saturating_add(QUIET_PROVIDER_RECHECK_MS),
         );
     }
 
-    fn schedule_provider_output_timeout(&self, provider_run_id: &str) {
+    fn schedule_quiet_provider_recheck(&self, provider_run_id: &str) {
         self.provider_output_deadlines.schedule(
             provider_run_id,
-            crate::session::unix_epoch_ms().saturating_add(crate::app::PROVIDER_OUTPUT_TIMEOUT_MS),
+            crate::session::unix_epoch_ms().saturating_add(QUIET_PROVIDER_RECHECK_MS),
         );
     }
 

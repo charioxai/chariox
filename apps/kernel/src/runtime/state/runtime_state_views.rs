@@ -34,7 +34,9 @@ impl KernelRuntimeState {
         if let Some(prompt) = active_prompt.as_ref() {
             active_turn = active_turn.with_prompt_metadata(prompt);
         }
+        let activity_mutation = self.owned.begin_managed_activity_mutation();
         self.owned.active_turns.start(active_turn);
+        activity_mutation.record();
         if self
             .owned
             .git_turn_snapshots

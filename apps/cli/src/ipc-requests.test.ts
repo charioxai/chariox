@@ -3,6 +3,7 @@ import test from "node:test"
 
 import {
   attachToSessionRequest,
+  getKernelResourceTelemetryRequest,
   launchProviderRunRequest,
   submitPromptRequest,
 } from "./ipc-requests.js"
@@ -101,4 +102,10 @@ test("attach and submit requests preserve full terminal fields", () => {
       },
     },
   )
+})
+
+test("kernel resource telemetry request is re-exported by the CLI client surface", () => {
+  assert.deepEqual(getKernelResourceTelemetryRequest(), {
+    GetKernelResourceTelemetry: null,
+  })
 })

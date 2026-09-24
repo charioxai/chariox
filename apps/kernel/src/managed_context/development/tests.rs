@@ -3,6 +3,339 @@ use flate2::read::GzDecoder;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+struct TestEnvironmentVariableGuard {
+    name: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl TestEnvironmentVariableGuard {
+    fn set(name: &'static str, value: Option<&std::ffi::OsStr>) -> Self {
+        let previous = std::env::var_os(name);
+        match value {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
+        Self { name, previous }
+    }
+}
+
+impl Drop for TestEnvironmentVariableGuard {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => std::env::set_var(self.name, value),
+            None => std::env::remove_var(self.name),
+        }
+    }
+}
+
+struct ManagedPublicationEnvGuard {
+    _control_state: TestEnvironmentVariableGuard,
+    _repository_root: TestEnvironmentVariableGuard,
+    _slice_publication_root: TestEnvironmentVariableGuard,
+}
+
+impl ManagedPublicationEnvGuard {
+    fn set(control_state: &Path, repository_root: &Path) -> Self {
+        Self {
+            _control_state: TestEnvironmentVariableGuard::set(
+                "CHARIOX_PUBLICATION_CONTROL_STATE_DIR",
+                Some(control_state.as_os_str()),
+            ),
+            _repository_root: TestEnvironmentVariableGuard::set(
+                crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
+                Some(repository_root.as_os_str()),
+            ),
+            _slice_publication_root: TestEnvironmentVariableGuard::set(
+                "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT",
+                None,
+            ),
+        }
+    }
+}
+
+#[test]
+fn exports_plain_workspace_without_creating_git_metadata() {
+    let root = test_root("plain-workspace");
+    let _cleanup = PlainWorkspaceCleanup(root.clone());
+    let workspace = root.join("office");
+    fs::create_dir_all(workspace.join("documents/empty")).expect("create plain workspace");
+    fs::write(workspace.join("notes.txt"), "office notes\n").expect("write plain file");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(
+            workspace.join("notes.txt"),
+            fs::Permissions::from_mode(0o750),
+        )
+        .expect("make plain file executable");
+    }
+    fs::write(workspace.join(".env.local"), "EXCLUDED=fixture").unwrap();
+    fs::write(workspace.join(".charioxignore"), "private.txt\n").unwrap();
+    fs::write(workspace.join("private.txt"), "excluded fixture").unwrap();
+    let result = export_development_context(DevelopmentContextExportRequest {
+        project_id: "plain-project".to_string(),
+        repositories: vec![DevelopmentRepositorySelection {
+            workspace_id: workspace.display().to_string(),
+            worktree_id: None,
+            worktree_path: workspace.clone(),
+            role: DevelopmentRepositoryRole::Primary,
+        }],
+        archive_path: root.join("plain.tar.gz"),
+    })
+    .expect("plain workspace export");
+    assert!(!workspace.join(".git").exists());
+    assert_eq!(result.manifest.schema_version, 3);
+    assert_eq!(
+        result.manifest.repositories[0].workspace_kind,
+        DevelopmentWorkspaceKind::Directory
+    );
+    assert_eq!(result.manifest.repositories[0].target_directory, "office");
+    assert!(result.manifest.repositories[0].bundle_path.is_empty());
+    let request = DevelopmentContextImportRequest {
+        archive_path: result.archive_path.clone(),
+        expected_archive_sha256: result.archive_sha256,
+        expected_project_id: "plain-project".into(),
+        expected_source_repositories: None,
+        destination_root: root.join("managed/plain-publication"),
+    };
+    let receipt =
+        import_development_context_with_publication(request.clone(), "plain-publication".into())
+            .unwrap();
+    let destination = &receipt.repositories[0].destination_path;
+    assert_eq!(
+        fs::read_to_string(destination.join("notes.txt")).unwrap(),
+        "office notes\n"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_ne!(
+            fs::metadata(destination.join("notes.txt"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o111,
+            0
+        );
+    }
+    assert!(destination.join("documents/empty").is_dir());
+    for excluded in [".git", ".env.local", "private.txt"] {
+        assert!(!destination.join(excluded).exists());
+    }
+    assert_eq!(receipt.schema_version, 3);
+    assert!(
+        recover_development_context_publication(&request, "plain-publication")
+            .unwrap()
+            .is_some()
+    );
+    fs::remove_file(&result.archive_path).unwrap();
+    let source = vec![DevelopmentSourceRepositoryBinding {
+        role: DevelopmentRepositoryRole::Primary,
+        workspace_id: workspace.display().to_string(),
+        worktree_id: None,
+    }];
+    assert!(recover_pruned_mutable_development_context_publication(
+        &root.join("managed"),
+        "plain-project",
+        &source
+    )
+    .unwrap()
+    .is_some());
+}
+
+#[test]
+fn exports_and_imports_git_and_directory_workspaces_together() {
+    let root = test_root("mixed-workspaces");
+    let _cleanup = PlainWorkspaceCleanup(root.clone());
+    let repository = root.join("source-repository");
+    let directory = root.join("source-directory");
+    init_repository(&repository, "tracked.txt", "tracked fixture\n");
+    fs::create_dir_all(directory.join("nested/empty")).expect("create directory workspace");
+    fs::write(directory.join("nested/plain.txt"), "plain fixture\n")
+        .expect("write directory workspace");
+    let repository_head = git_text_test(&repository, &["rev-parse", "HEAD"]);
+
+    let exported = export_development_context(DevelopmentContextExportRequest {
+        project_id: "mixed-project".to_string(),
+        repositories: vec![
+            DevelopmentRepositorySelection {
+                workspace_id: "git-workspace".into(),
+                worktree_id: None,
+                worktree_path: repository,
+                role: DevelopmentRepositoryRole::Primary,
+            },
+            DevelopmentRepositorySelection {
+                workspace_id: "directory-workspace".into(),
+                worktree_id: None,
+                worktree_path: directory,
+                role: DevelopmentRepositoryRole::Supporting,
+            },
+        ],
+        archive_path: root.join("mixed.tar.gz"),
+    })
+    .expect("export mixed workspaces");
+    assert_eq!(exported.manifest.schema_version, 3);
+    assert_eq!(
+        exported
+            .manifest
+            .repositories
+            .iter()
+            .map(|entry| entry.workspace_kind)
+            .collect::<Vec<_>>(),
+        vec![
+            DevelopmentWorkspaceKind::Git,
+            DevelopmentWorkspaceKind::Directory
+        ]
+    );
+
+    let request = DevelopmentContextImportRequest {
+        archive_path: exported.archive_path,
+        expected_archive_sha256: exported.archive_sha256,
+        expected_project_id: "mixed-project".into(),
+        expected_source_repositories: Some(vec![
+            DevelopmentSourceRepositoryBinding {
+                role: DevelopmentRepositoryRole::Primary,
+                workspace_id: "git-workspace".into(),
+                worktree_id: None,
+            },
+            DevelopmentSourceRepositoryBinding {
+                role: DevelopmentRepositoryRole::Supporting,
+                workspace_id: "directory-workspace".into(),
+                worktree_id: None,
+            },
+        ]),
+        destination_root: root.join("managed/mixed-publication"),
+    };
+    let receipt =
+        import_development_context_with_publication(request.clone(), "mixed-publication".into())
+            .expect("import mixed workspaces");
+    assert_eq!(receipt.schema_version, 3);
+    let imported_git = receipt
+        .repositories
+        .iter()
+        .find(|entry| entry.workspace_kind == DevelopmentWorkspaceKind::Git)
+        .expect("imported Git workspace");
+    assert_eq!(imported_git.head_sha, repository_head);
+    assert!(imported_git.destination_path.join(".git").is_dir());
+    assert_eq!(
+        fs::read_to_string(imported_git.destination_path.join("tracked.txt")).unwrap(),
+        "tracked fixture\n"
+    );
+    let imported_directory = receipt
+        .repositories
+        .iter()
+        .find(|entry| entry.workspace_kind == DevelopmentWorkspaceKind::Directory)
+        .expect("imported directory workspace");
+    assert!(imported_directory.head_sha.is_empty());
+    assert!(!imported_directory.destination_path.join(".git").exists());
+    assert!(imported_directory
+        .destination_path
+        .join("nested/empty")
+        .is_dir());
+    assert_eq!(
+        fs::read_to_string(imported_directory.destination_path.join("nested/plain.txt")).unwrap(),
+        "plain fixture\n"
+    );
+    assert_eq!(
+        recover_development_context_publication(&request, "mixed-publication")
+            .expect("recover mixed publication"),
+        Some(receipt)
+    );
+}
+
+struct PlainWorkspaceCleanup(PathBuf);
+impl Drop for PlainWorkspaceCleanup {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn plain_workspace_rejects_symlinks_and_special_files_without_publishing() {
+    let root = test_root("plain-unsafe");
+    let _cleanup = PlainWorkspaceCleanup(root.clone());
+    let workspace = root.join("office");
+    fs::create_dir_all(&workspace).unwrap();
+    fs::write(root.join("outside"), "outside fixture").unwrap();
+    for (index, link_target) in [root.join("outside"), root.clone()].iter().enumerate() {
+        let link = workspace.join("linked");
+        std::os::unix::fs::symlink(link_target, &link).unwrap();
+        let request = DevelopmentContextExportRequest {
+            project_id: "plain".into(),
+            repositories: vec![DevelopmentRepositorySelection {
+                workspace_id: "office".into(),
+                worktree_id: None,
+                worktree_path: workspace.clone(),
+                role: DevelopmentRepositoryRole::Primary,
+            }],
+            archive_path: root.join(format!("unsafe-{index}.tar.gz")),
+        };
+        assert!(export_development_context(request.clone()).is_err());
+        assert!(!request.archive_path.exists());
+        fs::remove_file(link).unwrap();
+    }
+    use std::os::unix::ffi::OsStrExt;
+    let fifo = std::ffi::CString::new(workspace.join("special").as_os_str().as_bytes()).unwrap();
+    // A FIFO exercises special-file rejection without macOS's short socket-path limit.
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    assert!(one_repo_export(&root, &workspace, "special").is_err());
+    fs::remove_file(workspace.join("special")).unwrap();
+    File::create(workspace.join("oversized"))
+        .unwrap()
+        .set_len(MAX_OVERLAY_FILE_BYTES + 1)
+        .unwrap();
+    let oversized_archive = root.join("oversized.tar.gz");
+    assert!(one_repo_export(&root, &workspace, "oversized").is_err());
+    assert!(!oversized_archive.exists());
+}
+
+#[test]
+fn plain_workspace_manifest_rejects_git_state_and_unsafe_directories() {
+    let root = test_root("plain-manifest");
+    let _cleanup = PlainWorkspaceCleanup(root.clone());
+    let workspace = root.join("office");
+    fs::create_dir_all(&workspace).unwrap();
+    fs::write(workspace.join("notes.txt"), "notes").unwrap();
+    let exported = one_repo_export(&root, &workspace, "plain-manifest").unwrap();
+    let unpacked = root.join("unpacked");
+    unpack_archive(&exported.archive_path, &unpacked);
+    fs::remove_file(unpacked.join("manifest.json")).unwrap();
+    for case in 0..5 {
+        let mut manifest = exported.manifest.clone();
+        match case {
+            0 => manifest.schema_version = 2,
+            1 => manifest.repositories[0].head_sha = "a".repeat(40),
+            2 => manifest.repositories[0]
+                .directories
+                .push("../outside".into()),
+            3 => manifest.repositories[0].directories.push(".git".into()),
+            _ => {
+                manifest.repositories[0].overlay[0].index =
+                    manifest.repositories[0].overlay[0].worktree.clone()
+            }
+        }
+        let archive = root.join(format!("malformed-{case}.tar.gz"));
+        write_archive(
+            &archive,
+            private_create_new(&archive).unwrap(),
+            &unpacked,
+            &manifest,
+        )
+        .unwrap();
+        let destination = root.join(format!("managed/case-{case}"));
+        assert!(import_development_context(DevelopmentContextImportRequest {
+            expected_archive_sha256: sha256_file(&archive).unwrap(),
+            archive_path: archive,
+            expected_project_id: manifest.project_id,
+            expected_source_repositories: None,
+            destination_root: destination.clone(),
+        })
+        .is_err());
+        assert!(!destination.exists());
+    }
+}
+
 #[test]
 fn exports_two_repositories_with_unpushed_commits_and_exact_dirty_states() {
     let root = test_root("two-repositories");
@@ -363,24 +696,337 @@ fn bounds_bundle_writes_and_handles_unicode_ignore_patterns() {
 }
 
 #[test]
-fn bounds_origin_derived_target_directories_with_a_stable_suffix() {
+fn preserves_source_repository_basename_as_the_target_directory() {
     let root = test_root("bounded-target-directory");
     let repository = root.join("repository");
     init_repository(&repository, "tracked.txt", "base\n");
-    let long_name = "a".repeat(400);
+    let long_name = "remote-name";
     let origin = format!("https://example.com/org/{long_name}.git");
     git(&repository, &["remote", "add", "origin", &origin]);
 
-    let first = one_repo_export(&root, &repository, "long-target-first")
-        .expect("long origin should export with a bounded target");
-    let target = &first.manifest.repositories[0].target_directory;
-    assert!(target.len() <= MAX_TARGET_DIRECTORY_BASE_BYTES);
-    assert!(target.starts_with(&"a".repeat(100)));
-    let repeated = one_repo_export(&root, &repository, "long-target-repeated")
-        .expect("repeated long origin should keep the same target");
-    assert_eq!(repeated.manifest.repositories[0].target_directory, *target);
+    let first = one_repo_export(&root, &repository, "source-basename-first")
+        .expect("source basename should be the target");
+    assert_eq!(
+        first.manifest.repositories[0].target_directory,
+        "repository"
+    );
+    assert_eq!(first.manifest.repositories[0].logical_name, long_name);
 
     fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn ordinary_source_repository_basename_collision_keeps_compatible_disambiguation() {
+    let root = test_root("target-directory-collision");
+    let first = root.join("first").join("same-name");
+    let second = root.join("second").join("same-name");
+    init_repository(&first, "first.txt", "first\n");
+    init_repository(&second, "second.txt", "second\n");
+    let exported = export_development_context(DevelopmentContextExportRequest {
+        project_id: "collision-project".to_string(),
+        repositories: vec![
+            DevelopmentRepositorySelection {
+                workspace_id: "first".to_string(),
+                worktree_id: None,
+                worktree_path: first,
+                role: DevelopmentRepositoryRole::Primary,
+            },
+            DevelopmentRepositorySelection {
+                workspace_id: "second".to_string(),
+                worktree_id: None,
+                worktree_path: second,
+                role: DevelopmentRepositoryRole::Supporting,
+            },
+        ],
+        archive_path: root.join("collision.tar.gz"),
+    })
+    .expect("ordinary duplicate basenames remain exportable");
+    let targets = exported
+        .manifest
+        .repositories
+        .iter()
+        .map(|repository| repository.target_directory.as_str())
+        .collect::<BTreeSet<_>>();
+    assert!(targets.contains("same-name"));
+    assert_eq!(targets.len(), 2);
+    assert!(targets
+        .iter()
+        .any(|target| target.starts_with("same-name-")));
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn managed_destination_names_reserve_provider_control_entries() {
+    for reserved in [
+        ".chariox",
+        ".provider-account",
+        "managed-context-workspaces",
+        "managed-context",
+        "provider-home",
+        ".chariox-empty-context-context-id",
+    ] {
+        assert!(
+            export::validate_managed_repository_basename(reserved).is_err(),
+            "managed destination `{reserved}` must be reserved"
+        );
+    }
+    assert!(export::validate_repository_basename(".chariox").is_ok());
+    let mut occupied = BTreeSet::new();
+    export::unique_managed_target_directory("same-name", &mut occupied)
+        .expect("first managed basename");
+    assert!(export::unique_managed_target_directory("SAME-NAME", &mut occupied).is_err());
+}
+
+#[test]
+fn managed_export_rejects_case_insensitive_source_basename_collisions() {
+    let _lock = crate::env_lock::lock();
+    let root = test_root("managed-export-name-collision");
+    let control_state = root.join("control-state");
+    let repository_root = root.join("repository-root");
+    fs::create_dir_all(&control_state).expect("create control state");
+    fs::create_dir_all(&repository_root).expect("create repository root");
+    let _environment = ManagedPublicationEnvGuard::set(&control_state, &repository_root);
+
+    let first = root.join("first").join("Same-Name");
+    let second = root.join("second").join("same-name");
+    init_repository(&first, "first.txt", "first\n");
+    init_repository(&second, "second.txt", "second\n");
+    let archive = control_state.join("collision.tar.gz");
+    let error = export_development_context(DevelopmentContextExportRequest {
+        project_id: "managed-collision-project".to_string(),
+        repositories: vec![
+            DevelopmentRepositorySelection {
+                workspace_id: "first".to_string(),
+                worktree_id: None,
+                worktree_path: first,
+                role: DevelopmentRepositoryRole::Primary,
+            },
+            DevelopmentRepositorySelection {
+                workspace_id: "second".to_string(),
+                worktree_id: None,
+                worktree_path: second,
+                role: DevelopmentRepositoryRole::Supporting,
+            },
+        ],
+        archive_path: archive.clone(),
+    })
+    .expect_err("managed copies must fail on case-insensitive basename collision");
+
+    assert!(error.to_string().contains("collides with another selected"));
+    assert!(!archive.exists());
+    assert_no_export_temporaries(&control_state);
+    drop(_environment);
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn managed_publication_preserves_basename_under_trusted_root_and_recovers_retry() {
+    let _lock = crate::env_lock::lock();
+    let root = test_root("managed-publication-selected-root");
+    let control_state = root.join("control-state");
+    let control_parent = control_state.join("managed-context-workspaces");
+    let repository_root = root.join("selected repository root");
+    fs::create_dir_all(&control_parent).expect("create private control parent");
+    fs::create_dir_all(&repository_root).expect("create selected repository root");
+    let _environment = ManagedPublicationEnvGuard::set(&control_state, &repository_root);
+
+    let source = root.join("source-project-name");
+    init_repository(&source, "tracked.txt", "copied repository\n");
+    let archive_path = control_state.join("development.tar.gz");
+    let exported = export_development_context(DevelopmentContextExportRequest {
+        project_id: "selected-root-project".to_string(),
+        repositories: vec![DevelopmentRepositorySelection {
+            workspace_id: "source-workspace".to_string(),
+            worktree_id: None,
+            worktree_path: source.clone(),
+            role: DevelopmentRepositoryRole::Primary,
+        }],
+        archive_path,
+    })
+    .expect("export managed publication");
+    assert_eq!(
+        exported.manifest.repositories[0].target_directory,
+        "source-project-name"
+    );
+
+    let request = DevelopmentContextImportRequest {
+        archive_path: exported.archive_path,
+        expected_archive_sha256: exported.archive_sha256,
+        expected_project_id: "selected-root-project".to_string(),
+        expected_source_repositories: None,
+        destination_root: control_parent.join("transfer-1"),
+    };
+    let receipt = import_development_context_with_publication(
+        request.clone(),
+        "transfer-1".to_string(),
+    )
+    .expect("publish under the bootstrap-selected repository root");
+    let copied_repository = repository_root.join("source-project-name");
+    assert_eq!(receipt.repositories[0].target_directory, "source-project-name");
+    assert_eq!(receipt.repositories[0].destination_path, copied_repository);
+    assert_eq!(
+        fs::read_to_string(copied_repository.join("tracked.txt"))
+            .expect("read copied repository"),
+        "copied repository\n"
+    );
+    assert_eq!(
+        recover_development_context_publication(&request, "transfer-1")
+            .expect("recover completed transfer")
+            .expect("existing transfer is recoverable"),
+        receipt,
+        "retry recovery must return the same publication instead of copying again"
+    );
+
+    drop(_environment);
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn managed_publication_rejects_existing_and_symlink_repository_targets() {
+    let _lock = crate::env_lock::lock();
+    let root = test_root("managed-publication-target-collision");
+    let control_state = root.join("control-state");
+    let control_parent = control_state.join("managed-context-workspaces");
+    let repository_root = root.join("selected-root");
+    fs::create_dir_all(&control_parent).expect("create private control parent");
+    fs::create_dir_all(&repository_root).expect("create selected repository root");
+    let _environment = ManagedPublicationEnvGuard::set(&control_state, &repository_root);
+
+    let source = root.join("same-basename");
+    init_repository(&source, "tracked.txt", "source\n");
+    let exported = one_repo_export(&root, &source, "target-collision")
+        .expect("export collision fixture");
+    let occupied = repository_root.join("same-basename");
+    fs::create_dir_all(&occupied).expect("create existing repository target");
+    fs::write(occupied.join("owner.txt"), "keep existing data\n")
+        .expect("write existing target marker");
+
+    let error = import_development_context_with_publication(
+        DevelopmentContextImportRequest {
+            archive_path: exported.archive_path.clone(),
+            expected_archive_sha256: exported.archive_sha256.clone(),
+            expected_project_id: exported.manifest.project_id.clone(),
+            expected_source_repositories: None,
+            destination_root: control_parent.join("directory-collision"),
+        },
+        "directory-collision".to_string(),
+    )
+    .expect_err("existing repository target must not be replaced");
+    assert!(error.to_string().contains("already exists"));
+    assert_eq!(
+        fs::read_to_string(occupied.join("owner.txt")).expect("read existing target marker"),
+        "keep existing data\n"
+    );
+    assert!(!control_parent.join("directory-collision").exists());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        fs::remove_dir_all(&occupied).expect("remove existing target fixture");
+        let outside = root.join("outside");
+        fs::create_dir_all(&outside).expect("create symlink target");
+        fs::write(outside.join("owner.txt"), "keep symlink target data\n")
+            .expect("write symlink target marker");
+        symlink(&outside, &occupied).expect("create colliding repository symlink");
+        let error = import_development_context_with_publication(
+            DevelopmentContextImportRequest {
+                archive_path: exported.archive_path,
+                expected_archive_sha256: exported.archive_sha256,
+                expected_project_id: exported.manifest.project_id,
+                expected_source_repositories: None,
+                destination_root: control_parent.join("symlink-collision"),
+            },
+            "symlink-collision".to_string(),
+        )
+        .expect_err("symlink repository target must be rejected");
+        assert!(error.to_string().contains("already exists"));
+        assert_eq!(
+            fs::read_to_string(outside.join("owner.txt")).expect("read symlink target marker"),
+            "keep symlink target data\n"
+        );
+        assert!(!control_parent.join("symlink-collision").exists());
+    }
+
+    drop(_environment);
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[cfg(unix)]
+#[test]
+fn managed_publication_rejects_symlinked_and_traversing_repository_roots() {
+    use std::os::unix::fs::symlink;
+
+    let _lock = crate::env_lock::lock();
+    let root = test_root("managed-publication-unsafe-root");
+    let control_state = root.join("control-state");
+    let control_parent = control_state.join("managed-context-workspaces");
+    let repository_root = root.join("selected-root");
+    fs::create_dir_all(&control_parent).expect("create private control parent");
+    fs::create_dir_all(&repository_root).expect("create selected repository root");
+    let _environment = ManagedPublicationEnvGuard::set(&control_state, &repository_root);
+
+    let source = root.join("unsafe-root-repository");
+    init_repository(&source, "tracked.txt", "source\n");
+    let exported = one_repo_export(&root, &source, "unsafe-managed-root")
+        .expect("export unsafe-root fixture");
+
+    let repository_root_link = root.join("selected-root-link");
+    symlink(&repository_root, &repository_root_link).expect("create root symlink");
+    std::env::set_var(
+        crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
+        &repository_root_link,
+    );
+    let symlink_error = import_development_context_with_publication(
+        DevelopmentContextImportRequest {
+            archive_path: exported.archive_path.clone(),
+            expected_archive_sha256: exported.archive_sha256.clone(),
+            expected_project_id: exported.manifest.project_id.clone(),
+            expected_source_repositories: None,
+            destination_root: control_parent.join("symlink-root"),
+        },
+        "symlink-root".to_string(),
+    )
+    .expect_err("a symlink repository root must be rejected");
+    assert!(symlink_error.to_string().contains("must be a real directory"));
+    assert!(!control_parent.join("symlink-root").exists());
+    assert!(!repository_root.join("unsafe-root-repository").exists());
+
+    let traversing_root = repository_root.join("..").join("selected-root");
+    std::env::set_var(
+        crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
+        &traversing_root,
+    );
+    let traversal_error = import_development_context_with_publication(
+        DevelopmentContextImportRequest {
+            archive_path: exported.archive_path,
+            expected_archive_sha256: exported.archive_sha256,
+            expected_project_id: exported.manifest.project_id,
+            expected_source_repositories: None,
+            destination_root: control_parent.join("traversing-root"),
+        },
+        "traversing-root".to_string(),
+    )
+    .expect_err("a parent-directory root component must be rejected");
+    assert!(traversal_error.to_string().contains("managed repository root"));
+    assert!(!control_parent.join("traversing-root").exists());
+    assert!(!repository_root.join("unsafe-root-repository").exists());
+
+    drop(_environment);
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn managed_repository_root_defaults_to_home_chariox_without_bootstrap_selection() {
+    let _lock = crate::env_lock::lock();
+    let _repository_root = TestEnvironmentVariableGuard::set(
+        crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
+        None,
+    );
+    assert_eq!(
+        crate::managed_bootstrap::managed_repository_root_from_env()
+            .expect("default managed repository root"),
+        PathBuf::from("/home/chariox")
+    );
 }
 
 #[test]
@@ -780,7 +1426,14 @@ fn supporting_repository_failure_publishes_no_partial_project() {
 
 #[test]
 fn import_rejects_unsafe_manifest_paths_and_archive_symlinks() {
+    let _lock = crate::env_lock::lock();
     let root = test_root("import-unsafe-manifest");
+    let control_state = root.join("control-state");
+    let control_parent = control_state.join("managed-context-workspaces");
+    let repository_root = root.join("repository-root");
+    fs::create_dir_all(&control_parent).expect("create private control parent");
+    fs::create_dir_all(&repository_root).expect("create managed repository root");
+    let _environment = ManagedPublicationEnvGuard::set(&control_state, &repository_root);
     let repository = root.join("repository");
     init_repository(&repository, "tracked.txt", "base\n");
     let exported = one_repo_export(&root, &repository, "unsafe-import-source")
@@ -798,7 +1451,7 @@ fn import_rejects_unsafe_manifest_paths_and_archive_symlinks() {
     let unsafe_error = import_development_context(DevelopmentContextImportRequest {
         archive_path: unsafe_archive.clone(),
         expected_archive_sha256: sha256_file(&unsafe_archive).expect("hash unsafe archive"),
-        expected_project_id: unsafe_manifest.project_id,
+        expected_project_id: unsafe_manifest.project_id.clone(),
         expected_source_repositories: None,
         destination_root: unsafe_destination.clone(),
     })
@@ -807,6 +1460,25 @@ fn import_rejects_unsafe_manifest_paths_and_archive_symlinks() {
         .to_string()
         .contains("target directory is invalid"));
     assert!(!unsafe_destination.exists());
+
+    let managed_unsafe_destination = control_parent.join("unsafe-manifest");
+    let managed_unsafe_error = import_development_context_with_publication(
+        DevelopmentContextImportRequest {
+            archive_path: unsafe_archive.clone(),
+            expected_archive_sha256: sha256_file(&unsafe_archive).expect("hash unsafe archive"),
+            expected_project_id: unsafe_manifest.project_id.clone(),
+            expected_source_repositories: None,
+            destination_root: managed_unsafe_destination.clone(),
+        },
+        "unsafe-manifest".to_string(),
+    )
+    .expect_err("managed import must reject a parent-directory target");
+    assert!(managed_unsafe_error
+        .to_string()
+        .contains("target directory is invalid"));
+    assert!(!managed_unsafe_destination.exists());
+    assert!(!root.join("escape").exists());
+    assert_no_import_temporaries(&control_parent);
 
     #[cfg(unix)]
     {
@@ -1215,6 +1887,99 @@ fn failed_transfer_cleanup_removes_only_its_receipted_publication() {
     cleanup_development_context_publication(&destination_root, "ctx_failed_publication")
         .expect("remove exact failed publication");
     assert!(!destination_root.exists());
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn managed_materialization_requires_the_explicit_trusted_control_parent() {
+    let root = test_root("managed-root-seam");
+    let trusted_parent = root.join("trusted/managed-context-workspaces");
+    let untrusted_parent = root.join("untrusted/managed-context-workspaces");
+    fs::create_dir_all(&trusted_parent).expect("create trusted control parent");
+    fs::create_dir_all(&untrusted_parent).expect("create untrusted control parent");
+    let control = untrusted_parent.join("publication");
+    assert_eq!(
+        super::import::managed_materialization_root_for_control(&control, Some(&trusted_parent),)
+            .expect("validate trusted control parent"),
+        None
+    );
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn managed_materialization_uses_the_bootstrap_repository_root() {
+    let _lock = crate::env_lock::lock();
+    let previous = std::env::var_os(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV);
+    let root = test_root("managed-configured-root");
+    let repository_root = root.join("user-selected workspaces");
+    let trusted_parent = root.join("control/managed-context-workspaces");
+    fs::create_dir_all(&repository_root).expect("create configured repository root");
+    fs::create_dir_all(&trusted_parent).expect("create trusted control parent");
+    std::env::set_var(
+        crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
+        &repository_root,
+    );
+
+    let resolved = super::import::managed_materialization_root_for_control(
+        &trusted_parent.join("publication"),
+        Some(&trusted_parent),
+    )
+    .expect("resolve configured repository root")
+    .expect("managed materialization root");
+    assert_eq!(resolved, fs::canonicalize(&repository_root).unwrap());
+
+    match previous {
+        Some(value) => {
+            std::env::set_var(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV, value)
+        }
+        None => std::env::remove_var(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV),
+    }
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[cfg(unix)]
+#[test]
+fn interrupted_materialization_recovers_the_directory_published_after_intent() {
+    let root = test_root("materialization-crash-after-rename");
+    let staging = root.join("staging");
+    let source = root.join("source");
+    let destination = root.join("workspace");
+    fs::create_dir_all(&staging).expect("create staging");
+    fs::create_dir_all(&source).expect("create source");
+    fs::write(source.join("canary.txt"), "owned\n").expect("write source canary");
+    super::import::test_recover_pending_materialization_after_rename(
+        &staging,
+        &source,
+        &destination,
+    )
+    .expect("recover crash after rename");
+    assert!(!destination.exists());
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[cfg(unix)]
+#[test]
+fn materialization_cleanup_rejects_an_adversarial_replacement() {
+    let root = test_root("materialization-replacement");
+    let staging = root.join("staging");
+    let source = root.join("source");
+    let destination = root.join("workspace");
+    let replacement = root.join("replacement");
+    fs::create_dir_all(&staging).expect("create staging");
+    fs::create_dir_all(&source).expect("create source");
+    fs::write(source.join("owned.txt"), "owned\n").expect("write source");
+    fs::create_dir_all(&replacement).expect("create replacement");
+    fs::write(replacement.join("attacker-canary.txt"), "retain\n")
+        .expect("write replacement canary");
+    let error = super::import::test_reject_replaced_materialization(
+        &staging,
+        &source,
+        &destination,
+        &replacement,
+    )
+    .expect_err("replacement identity must be rejected");
+    assert!(error.to_string().contains("identity changed"));
+    assert!(destination.join("attacker-canary.txt").exists());
     fs::remove_dir_all(root).expect("remove test root");
 }
 

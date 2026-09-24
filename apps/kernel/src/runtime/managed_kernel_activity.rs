@@ -20,12 +20,15 @@ pub(crate) struct ManagedKernelActivityReporter {
     binding: ManagedKernelActivityBinding,
     #[cfg(test)]
     confirmation_wait_started: Option<tokio::sync::mpsc::UnboundedSender<Duration>>,
+    #[cfg(test)]
+    persistence_retry_started: Option<tokio::sync::mpsc::UnboundedSender<Duration>>,
 }
 
 struct ManagedKernelActivityBinding {
     api_url: String,
     account_id: String,
-    environment_id: String,
+    resource_id: String,
+    worker: bool,
     machine_id: String,
     kernel_id: String,
     machine_credential: String,
@@ -35,6 +38,7 @@ struct ManagedKernelActivityBinding {
 struct AcceptedActivity {
     sequence: u32,
     running_agent_count: u8,
+    activity_changed_at_ms: u64,
 }
 
 #[derive(Debug, Default)]
@@ -51,6 +55,7 @@ struct SignedActivity<'a> {
     environment_id: &'a str,
     kernel_id: &'a str,
     machine_id: &'a str,
+    activity_changed_at: &'a str,
     running_agent_count: u8,
     sequence: u32,
 }
@@ -68,7 +73,38 @@ impl ManagedKernelActivityReporter {
         registration: Option<&ConfirmedManagedKernelRegistration>,
     ) -> Result<Option<Self>, DaemonError> {
         let Some(registration) = registration else {
-            return Ok(None);
+            let Some(path) =
+                std::env::var_os(crate::managed_bootstrap::worker::ACTIVITY_RECEIPT_ENV)
+            else {
+                return Ok(None);
+            };
+            let profile = config
+                .cloud_relay
+                .as_ref()
+                .ok_or_else(|| activity_error("disposable worker has no Cloud relay profile"))?;
+            let allocation_id = crate::managed_bootstrap::worker::activity_allocation(
+                std::path::Path::new(&path),
+                config,
+                profile,
+            )?;
+            return Ok(Some(Self {
+                binding: ManagedKernelActivityBinding {
+                    api_url: profile.api_url.trim_end_matches('/').to_string(),
+                    account_id: profile.account_id.clone(),
+                    resource_id: allocation_id,
+                    worker: true,
+                    machine_id: config.host_machine_id.clone(),
+                    kernel_id: config.daemon_id.clone(),
+                    machine_credential: profile
+                        .machine_credential
+                        .clone()
+                        .ok_or_else(|| activity_error("worker Machine credential is missing"))?,
+                },
+                #[cfg(test)]
+                confirmation_wait_started: None,
+                #[cfg(test)]
+                persistence_retry_started: None,
+            }));
         };
         let profile = config
             .cloud_relay
@@ -79,6 +115,8 @@ impl ManagedKernelActivityReporter {
             binding,
             #[cfg(test)]
             confirmation_wait_started: None,
+            #[cfg(test)]
+            persistence_retry_started: None,
         }))
     }
 
@@ -88,7 +126,19 @@ impl ManagedKernelActivityReporter {
         mut shutdown: tokio::sync::watch::Receiver<bool>,
     ) -> Result<(), DaemonError> {
         let mut cursor = ActivityCursor::default();
-        let (mut change_sequence, mut running_agent_count) = runtime.managed_activity_snapshot();
+        runtime.ensure_managed_activity_tracking(&self.binding.kernel_id)?;
+        let mut persistence_retry_delay = MIN_RETRY_DELAY;
+        let Some((mut change_sequence, mut observation)) = self
+            .retry_activity_snapshot(
+                &runtime,
+                &mut shutdown,
+                &mut persistence_retry_delay,
+                None,
+            )
+            .await
+        else {
+            return Ok(());
+        };
         let mut retry_delay = MIN_RETRY_DELAY;
         let mut confirmation_delay = MIN_RETRY_DELAY;
 
@@ -97,33 +147,42 @@ impl ManagedKernelActivityReporter {
                 return Ok(());
             }
 
-            if let Some(report) = cursor.next_report(running_agent_count)? {
-                match self
-                    .report(report.sequence, report.running_agent_count)
-                    .await
-                {
+            if let Some(report) = cursor.next_report(observation)? {
+                match self.report(report).await {
                     Ok(response) => {
                         let accepted = cursor.accept_response(response)?;
                         crate::logging::info_with_fields(
                             "managed_kernel.activity",
                             "managed kernel activity accepted",
                             serde_json::json!({
-                                "environment_id": self.binding.environment_id,
+                                "resource_id": self.binding.resource_id,
+                                "disposable_worker": self.binding.worker,
                                 "machine_id": self.binding.machine_id,
                                 "kernel_id": self.binding.kernel_id,
                                 "sequence": accepted.sequence,
                                 "running_agent_count": accepted.running_agent_count,
                             }),
                         );
-                        (change_sequence, running_agent_count) =
-                            runtime.managed_activity_snapshot();
+                        let Some(snapshot) = self
+                            .retry_activity_snapshot(
+                                &runtime,
+                                &mut shutdown,
+                                &mut persistence_retry_delay,
+                                None,
+                            )
+                            .await
+                        else {
+                            return Ok(());
+                        };
+                        (change_sequence, observation) = snapshot;
                         retry_delay = MIN_RETRY_DELAY;
                         if cursor.requires_confirmation {
                             crate::logging::warn_with_fields(
                                 "managed_kernel.activity",
                                 "Cloud activity cursor remains ahead; confirmation will be delayed",
                                 serde_json::json!({
-                                    "environment_id": self.binding.environment_id,
+                                    "resource_id": self.binding.resource_id,
+                                    "disposable_worker": self.binding.worker,
                                     "machine_id": self.binding.machine_id,
                                     "kernel_id": self.binding.kernel_id,
                                     "sequence": accepted.sequence,
@@ -136,30 +195,40 @@ impl ManagedKernelActivityReporter {
                             }
                             let sleep = tokio::time::sleep(jittered(confirmation_delay));
                             tokio::pin!(sleep);
-                            loop {
+                            let snapshot_error = loop {
                                 tokio::select! {
                                     changed = shutdown.changed() => {
                                         if changed.is_err() || *shutdown.borrow() {
                                             return Ok(());
                                         }
                                     }
-                                    _transition = runtime.wait_for_managed_activity_transition_after(
+                                    transition = runtime.wait_for_managed_activity_transition_after(
                                         change_sequence,
-                                        running_agent_count,
+                                        observation,
                                     ) => {
                                         confirmation_delay = MIN_RETRY_DELAY;
-                                        break;
+                                        break transition.err();
                                     }
                                     _ = &mut sleep => {
                                         confirmation_delay = confirmation_delay
                                             .saturating_mul(2)
                                             .min(MAX_RETRY_DELAY);
-                                        break;
+                                        break None;
                                     }
                                 }
-                            }
-                            (change_sequence, running_agent_count) =
-                                runtime.managed_activity_snapshot();
+                            };
+                            let Some(snapshot) = self
+                                .retry_activity_snapshot(
+                                    &runtime,
+                                    &mut shutdown,
+                                    &mut persistence_retry_delay,
+                                    snapshot_error,
+                                )
+                                .await
+                            else {
+                                return Ok(());
+                            };
+                            (change_sequence, observation) = snapshot;
                         } else {
                             confirmation_delay = MIN_RETRY_DELAY;
                         }
@@ -170,7 +239,8 @@ impl ManagedKernelActivityReporter {
                             "managed_kernel.activity",
                             "managed kernel activity report failed; reporter will retry",
                             serde_json::json!({
-                                "environment_id": self.binding.environment_id,
+                                "resource_id": self.binding.resource_id,
+                                "disposable_worker": self.binding.worker,
                                 "machine_id": self.binding.machine_id,
                                 "kernel_id": self.binding.kernel_id,
                                 "sequence": report.sequence,
@@ -189,9 +259,23 @@ impl ManagedKernelActivityReporter {
                             }
                             transition = runtime.wait_for_managed_activity_transition_after(
                                 change_sequence,
-                                running_agent_count,
+                                observation,
                             ) => {
-                                (change_sequence, running_agent_count) = transition;
+                                let snapshot = match transition {
+                                    Ok(snapshot) => Some(snapshot),
+                                    Err(error) => self
+                                        .retry_activity_snapshot(
+                                            &runtime,
+                                            &mut shutdown,
+                                            &mut persistence_retry_delay,
+                                            Some(error),
+                                        )
+                                        .await,
+                                };
+                                let Some(snapshot) = snapshot else {
+                                    return Ok(());
+                                };
+                                (change_sequence, observation) = snapshot;
                                 retry_delay = MIN_RETRY_DELAY;
                                 confirmation_delay = MIN_RETRY_DELAY;
                             }
@@ -212,9 +296,23 @@ impl ManagedKernelActivityReporter {
                 }
                 transition = runtime.wait_for_managed_activity_transition_after(
                     change_sequence,
-                    running_agent_count,
+                    observation,
                 ) => {
-                    (change_sequence, running_agent_count) = transition;
+                    let snapshot = match transition {
+                        Ok(snapshot) => Some(snapshot),
+                        Err(error) => self
+                            .retry_activity_snapshot(
+                                &runtime,
+                                &mut shutdown,
+                                &mut persistence_retry_delay,
+                                Some(error),
+                            )
+                            .await,
+                    };
+                    let Some(snapshot) = snapshot else {
+                        return Ok(());
+                    };
+                    (change_sequence, observation) = snapshot;
                     retry_delay = MIN_RETRY_DELAY;
                     confirmation_delay = MIN_RETRY_DELAY;
                 }
@@ -222,25 +320,89 @@ impl ManagedKernelActivityReporter {
         }
     }
 
+    async fn retry_activity_snapshot(
+        &self,
+        runtime: &KernelRuntimeState,
+        shutdown: &mut tokio::sync::watch::Receiver<bool>,
+        retry_delay: &mut Duration,
+        mut first_error: Option<DaemonError>,
+    ) -> Option<(u64, crate::runtime::state::ManagedActivityObservation)> {
+        loop {
+            if *shutdown.borrow() {
+                return None;
+            }
+            let snapshot = match first_error.take() {
+                Some(error) => Err(error),
+                None => runtime.managed_activity_report_snapshot(),
+            };
+            match snapshot {
+                Ok(snapshot) => {
+                    *retry_delay = MIN_RETRY_DELAY;
+                    return Some(snapshot);
+                }
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "managed_kernel.activity",
+                        "managed activity persistence unavailable; reporter will retry",
+                        serde_json::json!({
+                            "resource_id": self.binding.resource_id,
+                            "disposable_worker": self.binding.worker,
+                            "machine_id": self.binding.machine_id,
+                            "kernel_id": self.binding.kernel_id,
+                            "retry_delay_ms": (*retry_delay).as_millis(),
+                            "error": error.to_string(),
+                        }),
+                    );
+                    #[cfg(test)]
+                    if let Some(retry_started) = &self.persistence_retry_started {
+                        let _ = retry_started.send(*retry_delay);
+                    }
+                    let sleep = tokio::time::sleep(jittered(*retry_delay));
+                    tokio::pin!(sleep);
+                    tokio::select! {
+                        changed = shutdown.changed() => {
+                            if changed.is_err() || *shutdown.borrow() {
+                                return None;
+                            }
+                        }
+                        _ = &mut sleep => {
+                            *retry_delay = (*retry_delay)
+                                .saturating_mul(2)
+                                .min(MAX_RETRY_DELAY);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     async fn report(
         &self,
-        sequence: u32,
-        running_agent_count: u8,
+        report: AcceptedActivity,
     ) -> Result<ReportActivityResponse, DaemonError> {
-        let signature = activity_signature(&self.binding, sequence, running_agent_count)?;
+        let activity_changed_at = canonical_activity_timestamp(report.activity_changed_at_ms)?;
+        let signature = activity_signature(
+            &self.binding,
+            report.sequence,
+            report.running_agent_count,
+            &activity_changed_at,
+        )?;
+        let mut payload = signed_activity_value(
+            &self.binding,
+            report.sequence,
+            report.running_agent_count,
+            &activity_changed_at,
+        )?;
+        payload["machineCredential"] = self.binding.machine_credential.clone().into();
+        payload["signature"] = signature.into();
         post_cloud_json(
             self.binding.api_url.clone(),
-            ACTIVITY_ENDPOINT,
-            serde_json::json!({
-                "accountId": self.binding.account_id,
-                "environmentId": self.binding.environment_id,
-                "machineId": self.binding.machine_id,
-                "kernelId": self.binding.kernel_id,
-                "machineCredential": self.binding.machine_credential,
-                "sequence": sequence,
-                "runningAgentCount": running_agent_count,
-                "signature": signature,
-            }),
+            if self.binding.worker {
+                "/v1/disposable-workers/activity"
+            } else {
+                ACTIVITY_ENDPOINT
+            },
+            payload,
         )
         .await
     }
@@ -273,7 +435,8 @@ impl ManagedKernelActivityBinding {
         Ok(Self {
             api_url: profile.api_url.trim_end_matches('/').to_string(),
             account_id: profile.account_id.clone(),
-            environment_id: registration.environment_id.clone(),
+            resource_id: registration.environment_id.clone(),
+            worker: false,
             machine_id: machine_id.to_string(),
             kernel_id: registration.kernel_id.clone(),
             machine_credential: machine_credential.to_string(),
@@ -284,7 +447,7 @@ impl ManagedKernelActivityBinding {
 impl ActivityCursor {
     fn next_report(
         &mut self,
-        running_agent_count: u8,
+        observation: crate::runtime::state::ManagedActivityObservation,
     ) -> Result<Option<AcceptedActivity>, DaemonError> {
         if let Some(pending) = self.pending {
             return Ok(Some(pending));
@@ -292,17 +455,20 @@ impl ActivityCursor {
         let report = match self.accepted {
             None => AcceptedActivity {
                 sequence: 1,
-                running_agent_count,
+                running_agent_count: observation.running_agent_count,
+                activity_changed_at_ms: observation.changed_at_ms,
             },
             Some(accepted)
-                if accepted.running_agent_count == running_agent_count
+                if accepted.running_agent_count == observation.running_agent_count
+                    && accepted.activity_changed_at_ms == observation.changed_at_ms
                     && !self.requires_confirmation =>
             {
                 return Ok(None);
             }
             Some(accepted) if accepted.sequence < MAX_ACTIVITY_SEQUENCE => AcceptedActivity {
                 sequence: accepted.sequence + 1,
-                running_agent_count,
+                running_agent_count: observation.running_agent_count,
+                activity_changed_at_ms: observation.changed_at_ms,
             },
             Some(_) => return Err(activity_error("managed activity sequence is exhausted")),
         };
@@ -328,6 +494,7 @@ impl ActivityCursor {
         let accepted = AcceptedActivity {
             sequence: response.accepted_sequence,
             running_agent_count: response.running_agent_count,
+            activity_changed_at_ms: pending.activity_changed_at_ms,
         };
         self.requires_confirmation = response.accepted_sequence > pending.sequence;
         self.accepted = Some(accepted);
@@ -336,24 +503,68 @@ impl ActivityCursor {
     }
 }
 
-fn activity_signature(
+fn signed_activity_value(
     binding: &ManagedKernelActivityBinding,
     sequence: u32,
     running_agent_count: u8,
-) -> Result<String, DaemonError> {
-    let canonical = serde_json::to_string(&SignedActivity {
+    activity_changed_at: &str,
+) -> Result<serde_json::Value, DaemonError> {
+    let mut value = serde_json::to_value(&SignedActivity {
         account_id: &binding.account_id,
-        environment_id: &binding.environment_id,
+        environment_id: &binding.resource_id,
         kernel_id: &binding.kernel_id,
         machine_id: &binding.machine_id,
+        activity_changed_at,
         running_agent_count,
         sequence,
     })
     .map_err(|error| activity_error(format!("could not encode managed activity: {error}")))?;
+    if binding.worker {
+        let fields = value
+            .as_object_mut()
+            .expect("activity serializes as an object");
+        let id = fields
+            .remove("environmentId")
+            .expect("activity contains environmentId");
+        fields.insert("allocationId".to_string(), id);
+    }
+    Ok(value)
+}
+
+fn activity_signature(
+    binding: &ManagedKernelActivityBinding,
+    sequence: u32,
+    running_agent_count: u8,
+    activity_changed_at: &str,
+) -> Result<String, DaemonError> {
+    let value = signed_activity_value(
+        binding,
+        sequence,
+        running_agent_count,
+        activity_changed_at,
+    )?;
+    // Sort explicitly so the signature does not depend on serde_json's map feature flags.
+    let fields: std::collections::BTreeMap<_, _> = value
+        .as_object()
+        .expect("activity is an object")
+        .iter()
+        .collect();
+    let canonical = serde_json::to_string(&fields)
+        .map_err(|error| activity_error(format!("could not encode managed activity: {error}")))?;
     let mut mac = Hmac::<Sha256>::new_from_slice(binding.machine_credential.as_bytes())
         .map_err(|error| activity_error(format!("could not sign managed activity: {error}")))?;
     mac.update(canonical.as_bytes());
     Ok(format!("sha256:{:x}", mac.finalize().into_bytes()))
+}
+
+fn canonical_activity_timestamp(timestamp_ms: u64) -> Result<String, DaemonError> {
+    let timestamp_ms = i64::try_from(timestamp_ms)
+        .map_err(|_| activity_error("managed activity timestamp overflows i64"))?;
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(timestamp_ms)
+        .ok_or_else(|| activity_error("managed activity timestamp is invalid"))
+        .map(|timestamp| {
+            timestamp.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        })
 }
 
 fn jittered(delay: Duration) -> Duration {
@@ -384,30 +595,114 @@ mod tests {
         ManagedKernelActivityBinding {
             api_url: "https://cloud.example.test".to_string(),
             account_id: "acct-1".to_string(),
-            environment_id: "env-1".to_string(),
+            resource_id: "env-1".to_string(),
+            worker: false,
             machine_id: "machine-1".to_string(),
             kernel_id: "kernel-1".to_string(),
             machine_credential: "mcred_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN".to_string(),
         }
     }
 
+    fn observation(
+        running_agent_count: u8,
+        changed_at_ms: u64,
+    ) -> crate::runtime::state::ManagedActivityObservation {
+        crate::runtime::state::ManagedActivityObservation {
+            running_agent_count,
+            changed_at_ms,
+        }
+    }
+
+    #[test]
+    fn worker_activity_uses_allocation_without_managed_environment_identity() {
+        let mut worker = binding();
+        worker.worker = true;
+        let payload =
+            signed_activity_value(&worker, 7, 1, "1970-01-01T00:00:01.000Z").unwrap();
+        assert_eq!(payload["allocationId"], "env-1");
+        assert!(payload.get("environmentId").is_none());
+        assert!(payload.get("machineCredential").is_none());
+        assert_eq!(
+            activity_signature(&worker, 7, 1, "1970-01-01T00:00:01.000Z").unwrap(),
+            "sha256:42b9ef2e9414baf065431cd5fc7df85e3cef537a6ba697ba43fe752348dbf1b9"
+        );
+        assert_ne!(
+            activity_signature(&worker, 7, 1, "1970-01-01T00:00:01.000Z").unwrap(),
+            activity_signature(&binding(), 7, 1, "1970-01-01T00:00:01.000Z").unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_report_posts_signed_allocation_to_worker_endpoint() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let fixture = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_http_request(&mut stream);
+            assert!(request.starts_with("POST /v1/disposable-workers/activity HTTP/1.1"));
+            let payload = http_request_body(&request);
+            assert_eq!(payload["allocationId"], "worker-1");
+            assert!(payload.get("environmentId").is_none());
+            let mut expected = binding();
+            expected.worker = true;
+            expected.resource_id = "worker-1".to_string();
+            assert_eq!(
+                payload["signature"],
+                activity_signature(&expected, 7, 1, "1970-01-01T00:00:01.000Z").unwrap()
+            );
+            assert_eq!(payload["machineCredential"], expected.machine_credential);
+            write_http_response(
+                &mut stream,
+                &serde_json::json!({
+                    "acceptedSequence": 7, "runningAgentCount": 1,
+                }),
+            );
+        });
+        let mut worker = binding();
+        worker.worker = true;
+        worker.resource_id = "worker-1".to_string();
+        worker.api_url = format!("http://{address}");
+        let reporter = ManagedKernelActivityReporter {
+            binding: worker,
+            confirmation_wait_started: None,
+            persistence_retry_started: None,
+        };
+        let response = reporter
+            .report(AcceptedActivity {
+                sequence: 7,
+                running_agent_count: 1,
+                activity_changed_at_ms: 1_000,
+            })
+            .await
+            .unwrap();
+        assert_eq!(response.accepted_sequence, 7);
+        assert_eq!(response.running_agent_count, 1);
+        fixture.join().unwrap();
+    }
+
     #[test]
     fn activity_signature_matches_cloud_canonical_json_vector() {
+        assert_eq!(
+            canonical_activity_timestamp(1_000).expect("timestamp should format"),
+            "1970-01-01T00:00:01.000Z"
+        );
         assert_eq!(
             serde_json::to_string(&SignedActivity {
                 account_id: "acct-1",
                 environment_id: "env-1",
                 kernel_id: "kernel-1",
                 machine_id: "machine-1",
+                activity_changed_at: "1970-01-01T00:00:01.000Z",
                 running_agent_count: 1,
                 sequence: 7,
             })
             .expect("activity should serialize"),
-            "{\"accountId\":\"acct-1\",\"environmentId\":\"env-1\",\"kernelId\":\"kernel-1\",\"machineId\":\"machine-1\",\"runningAgentCount\":1,\"sequence\":7}"
+            "{\"accountId\":\"acct-1\",\"environmentId\":\"env-1\",\"kernelId\":\"kernel-1\",\"machineId\":\"machine-1\",\"activityChangedAt\":\"1970-01-01T00:00:01.000Z\",\"runningAgentCount\":1,\"sequence\":7}"
         );
         assert_eq!(
-            activity_signature(&binding(), 7, 1).expect("activity should sign"),
-            "sha256:5bb7f722ce8a9f9e3086fe2255f0d6483b04e1e1905e767d613cecf92ea45b47"
+            activity_signature(&binding(), 7, 1, "1970-01-01T00:00:01.000Z")
+                .expect("activity should sign"),
+            "sha256:2e4cc0ff504b4222281a8bc3e08349cc78b9591fec4d0abd08ff14f1a1598351"
         );
     }
 
@@ -415,10 +710,11 @@ mod tests {
     fn cursor_resynchronizes_from_cloud_before_sending_a_transition() {
         let mut cursor = ActivityCursor::default();
         assert_eq!(
-            cursor.next_report(1).expect("report"),
+            cursor.next_report(observation(1, 1_000)).expect("report"),
             Some(AcceptedActivity {
                 sequence: 1,
                 running_agent_count: 1,
+                activity_changed_at_ms: 1_000,
             })
         );
         cursor
@@ -428,10 +724,11 @@ mod tests {
             })
             .expect("stale response should synchronize");
         assert_eq!(
-            cursor.next_report(1).expect("report"),
+            cursor.next_report(observation(1, 1_000)).expect("report"),
             Some(AcceptedActivity {
                 sequence: 10,
                 running_agent_count: 1,
+                activity_changed_at_ms: 1_000,
             })
         );
         cursor
@@ -440,17 +737,23 @@ mod tests {
                 running_agent_count: 1,
             })
             .expect("transition should synchronize");
-        assert_eq!(cursor.next_report(1).expect("report"), None);
+        assert_eq!(
+            cursor.next_report(observation(1, 1_000)).expect("report"),
+            None
+        );
     }
 
     #[test]
     fn cursor_resynchronizes_equal_first_sequence_after_restart() {
         let mut cursor = ActivityCursor::default();
         assert_eq!(
-            cursor.next_report(1).expect("restart report"),
+            cursor
+                .next_report(observation(1, 1_000))
+                .expect("restart report"),
             Some(AcceptedActivity {
                 sequence: 1,
                 running_agent_count: 1,
+                activity_changed_at_ms: 1_000,
             })
         );
         cursor
@@ -460,10 +763,13 @@ mod tests {
             })
             .expect("stored Cloud cursor should synchronize");
         assert_eq!(
-            cursor.next_report(1).expect("corrective report"),
+            cursor
+                .next_report(observation(1, 1_000))
+                .expect("corrective report"),
             Some(AcceptedActivity {
                 sequence: 2,
                 running_agent_count: 1,
+                activity_changed_at_ms: 1_000,
             })
         );
     }
@@ -472,10 +778,13 @@ mod tests {
     fn cursor_confirms_same_count_after_cloud_resynchronization() {
         let mut cursor = ActivityCursor::default();
         assert_eq!(
-            cursor.next_report(0).expect("restart report"),
+            cursor
+                .next_report(observation(0, 1_000))
+                .expect("restart report"),
             Some(AcceptedActivity {
                 sequence: 1,
                 running_agent_count: 0,
+                activity_changed_at_ms: 1_000,
             })
         );
         cursor
@@ -485,10 +794,13 @@ mod tests {
             })
             .expect("stored Cloud cursor should synchronize");
         assert_eq!(
-            cursor.next_report(0).expect("post-start confirmation"),
+            cursor
+                .next_report(observation(0, 1_000))
+                .expect("post-start confirmation"),
             Some(AcceptedActivity {
                 sequence: 52,
                 running_agent_count: 0,
+                activity_changed_at_ms: 1_000,
             }),
             "a replayed restart report must be followed by a fresh report even when the count is unchanged"
         );
@@ -541,6 +853,7 @@ mod tests {
         let reporter = ManagedKernelActivityReporter {
             binding: activity_binding,
             confirmation_wait_started: None,
+            persistence_retry_started: None,
         };
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let reporter_runtime = runtime.clone();
@@ -563,6 +876,7 @@ mod tests {
             "trace-1",
         );
         runtime.record_waiting_room_change();
+        runtime.record_managed_activity_transition_for_test();
         release_first_tx
             .send(())
             .expect("release first activity response");
@@ -585,6 +899,262 @@ mod tests {
             .expect("activity reporter task should not panic")
             .expect("activity reporter should succeed");
         fixture.join().expect("activity fixture should stop");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn blocked_http_does_not_move_finished_agent_transition_time() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind activity fixture");
+        let address = listener.local_addr().expect("activity fixture address");
+        let (first_request_tx, first_request_rx) = tokio::sync::oneshot::channel();
+        let (release_first_tx, release_first_rx) = std::sync::mpsc::channel();
+        let (idle_request_tx, idle_request_rx) = tokio::sync::oneshot::channel();
+        let fixture = std::thread::spawn(move || {
+            let (mut first_stream, _) = listener.accept().expect("accept active report");
+            first_request_tx
+                .send(http_request_body(&read_http_request(&mut first_stream)))
+                .expect("publish active report");
+            release_first_rx.recv().expect("release active response");
+            write_http_response(
+                &mut first_stream,
+                &serde_json::json!({
+                    "acceptedSequence": 1,
+                    "runningAgentCount": 1,
+                }),
+            );
+
+            let (mut idle_stream, _) = listener.accept().expect("accept idle report");
+            let idle_request = http_request_body(&read_http_request(&mut idle_stream));
+            write_http_response(
+                &mut idle_stream,
+                &serde_json::json!({
+                    "acceptedSequence": 2,
+                    "runningAgentCount": 0,
+                }),
+            );
+            idle_request_tx
+                .send(idle_request)
+                .expect("publish idle report");
+        });
+
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let runtime = CommandRouter::with_interactive_capacity(app, 1).runtime_state();
+        runtime
+            .ensure_managed_activity_tracking("kernel-1")
+            .expect("activate test tracking before activity");
+        runtime.start_active_turn_with_trace_id(
+            "session-1",
+            "agent-1",
+            "prompt-1",
+            "provider-run-1",
+            "trace-1",
+        );
+        runtime.record_waiting_room_change();
+        runtime.record_managed_activity_transition_for_test();
+
+        let mut activity_binding = binding();
+        activity_binding.api_url = format!("http://{address}");
+        let reporter = ManagedKernelActivityReporter {
+            binding: activity_binding,
+            confirmation_wait_started: None,
+            persistence_retry_started: None,
+        };
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let reporter_runtime = runtime.clone();
+        let reporter_task =
+            tokio::spawn(async move { reporter.run(reporter_runtime, shutdown_rx).await });
+
+        let first_request = tokio::time::timeout(Duration::from_secs(2), first_request_rx)
+            .await
+            .expect("active report should arrive")
+            .expect("activity fixture should stay available");
+        assert_eq!(first_request["runningAgentCount"], 1);
+
+        runtime.clear_prompt_activity_for_managed_activity_test("provider-run-1");
+        let (_, idle_observation) = runtime
+            .managed_activity_report_snapshot()
+            .expect("idle transition should already be durable");
+        assert_eq!(idle_observation.running_agent_count, 0);
+        let expected_changed_at =
+            canonical_activity_timestamp(idle_observation.changed_at_ms).expect("canonical T0");
+        release_first_tx
+            .send(())
+            .expect("release blocked active response");
+
+        let idle_request = tokio::time::timeout(Duration::from_secs(2), idle_request_rx)
+            .await
+            .expect("idle report should arrive")
+            .expect("activity fixture should stay available");
+        assert_eq!(idle_request["sequence"], 2);
+        assert_eq!(idle_request["runningAgentCount"], 0);
+        assert_eq!(idle_request["activityChangedAt"], expected_changed_at);
+
+        shutdown_tx.send(true).expect("stop activity reporter");
+        tokio::time::timeout(Duration::from_secs(2), reporter_task)
+            .await
+            .expect("activity reporter should stop")
+            .expect("activity reporter task should not panic")
+            .expect("activity reporter should succeed");
+        fixture.join().expect("activity fixture should stop");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn transient_activity_persistence_failure_retries_original_transition() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind activity fixture");
+        let address = listener.local_addr().expect("activity fixture address");
+        let (initial_request_tx, initial_request_rx) = tokio::sync::oneshot::channel();
+        let (recovered_request_tx, recovered_request_rx) = tokio::sync::oneshot::channel();
+        let fixture = std::thread::spawn(move || {
+            let (mut initial_stream, _) = listener.accept().expect("accept initial report");
+            let initial_request = http_request_body(&read_http_request(&mut initial_stream));
+            write_http_response(
+                &mut initial_stream,
+                &serde_json::json!({
+                    "acceptedSequence": 1,
+                    "runningAgentCount": 0,
+                }),
+            );
+            initial_request_tx
+                .send(initial_request)
+                .expect("publish initial report");
+
+            let (mut recovered_stream, _) = listener.accept().expect("accept recovered report");
+            let recovered_request =
+                http_request_body(&read_http_request(&mut recovered_stream));
+            write_http_response(
+                &mut recovered_stream,
+                &serde_json::json!({
+                    "acceptedSequence": 2,
+                    "runningAgentCount": 1,
+                }),
+            );
+            recovered_request_tx
+                .send(recovered_request)
+                .expect("publish recovered report");
+        });
+
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let state_path = app.durable_state_store().path().to_path_buf();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = CommandRouter::with_interactive_capacity(app, 1).runtime_state();
+        let mut activity_binding = binding();
+        activity_binding.api_url = format!("http://{address}");
+        let (retry_started_tx, mut retry_started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let reporter = ManagedKernelActivityReporter {
+            binding: activity_binding,
+            confirmation_wait_started: None,
+            persistence_retry_started: Some(retry_started_tx),
+        };
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let reporter_runtime = runtime.clone();
+        let reporter_task =
+            tokio::spawn(async move { reporter.run(reporter_runtime, shutdown_rx).await });
+
+        let initial_request = tokio::time::timeout(Duration::from_secs(2), initial_request_rx)
+            .await
+            .expect("initial report should arrive")
+            .expect("activity fixture should stay available");
+        assert_eq!(initial_request["runningAgentCount"], 0);
+
+        let database = rusqlite::Connection::open(state_path)
+            .expect("durable database should open for failure injection");
+        database
+            .execute_batch(
+                "CREATE TRIGGER fail_managed_activity_append
+                 BEFORE INSERT ON durable_state_events
+                 WHEN NEW.kind = 'managed_kernel.activity.changed'
+                 BEGIN
+                   SELECT RAISE(FAIL, 'injected managed activity persistence failure');
+                 END;",
+            )
+            .expect("activity persistence failure trigger should install");
+        runtime.start_active_turn_with_trace_id(
+            "session-1",
+            "agent-1",
+            "prompt-1",
+            "provider-run-1",
+            "trace-1",
+        );
+        runtime.record_managed_activity_transition_for_test();
+        let transition_recorded_by = crate::session::unix_epoch_ms();
+        runtime.record_waiting_room_change();
+
+        let retry_delay = tokio::time::timeout(Duration::from_secs(2), retry_started_rx.recv())
+            .await
+            .expect("persistence retry should start")
+            .expect("activity reporter should stay available");
+        assert_eq!(retry_delay, MIN_RETRY_DELAY);
+        assert!(!reporter_task.is_finished());
+        database
+            .execute_batch("DROP TRIGGER fail_managed_activity_append;")
+            .expect("activity persistence failure trigger should be removed");
+
+        let recovered_request =
+            tokio::time::timeout(Duration::from_secs(3), recovered_request_rx)
+                .await
+                .expect("recovered report should arrive")
+                .expect("activity fixture should stay available");
+        assert_eq!(recovered_request["runningAgentCount"], 1);
+        let recovered_changed_at = chrono::DateTime::parse_from_rfc3339(
+            recovered_request["activityChangedAt"]
+                .as_str()
+                .expect("activity timestamp should be a string"),
+        )
+        .expect("activity timestamp should be canonical RFC3339")
+        .timestamp_millis() as u64;
+        assert!(recovered_changed_at <= transition_recorded_by);
+
+        shutdown_tx.send(true).expect("stop activity reporter");
+        tokio::time::timeout(Duration::from_secs(2), reporter_task)
+            .await
+            .expect("activity reporter should stop")
+            .expect("activity reporter task should not panic")
+            .expect("activity reporter should succeed");
+        fixture.join().expect("activity fixture should stop");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn activity_persistence_retry_wait_is_shutdown_responsive() {
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let state_path = app.durable_state_store().path().to_path_buf();
+        let database = rusqlite::Connection::open(state_path)
+            .expect("durable database should open for failure injection");
+        database
+            .execute_batch(
+                "CREATE TRIGGER fail_managed_activity_append_on_start
+                 BEFORE INSERT ON durable_state_events
+                 WHEN NEW.kind = 'managed_kernel.activity.changed'
+                 BEGIN
+                   SELECT RAISE(FAIL, 'injected initial managed activity persistence failure');
+                 END;",
+            )
+            .expect("initial activity failure trigger should install");
+        let app = Arc::new(Mutex::new(app));
+        let runtime = CommandRouter::with_interactive_capacity(app, 1).runtime_state();
+        let (retry_started_tx, mut retry_started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let reporter = ManagedKernelActivityReporter {
+            binding: binding(),
+            confirmation_wait_started: None,
+            persistence_retry_started: Some(retry_started_tx),
+        };
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let reporter_task = tokio::spawn(async move { reporter.run(runtime, shutdown_rx).await });
+
+        let retry_delay = tokio::time::timeout(Duration::from_secs(2), retry_started_rx.recv())
+            .await
+            .expect("initial persistence retry should start")
+            .expect("activity reporter should stay available");
+        assert_eq!(retry_delay, MIN_RETRY_DELAY);
+        shutdown_tx.send(true).expect("stop activity reporter");
+        tokio::time::timeout(Duration::from_millis(250), reporter_task)
+            .await
+            .expect("persistence backoff should be shutdown responsive")
+            .expect("activity reporter task should not panic")
+            .expect("activity reporter should succeed");
+        database
+            .execute_batch("DROP TRIGGER fail_managed_activity_append_on_start;")
+            .expect("initial activity failure trigger should be removed");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -636,6 +1206,7 @@ mod tests {
         let reporter = ManagedKernelActivityReporter {
             binding: activity_binding,
             confirmation_wait_started: None,
+            persistence_retry_started: None,
         };
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let reporter_task = tokio::spawn(async move { reporter.run(runtime, shutdown_rx).await });
@@ -703,6 +1274,7 @@ mod tests {
         let reporter = ManagedKernelActivityReporter {
             binding: activity_binding,
             confirmation_wait_started: None,
+            persistence_retry_started: None,
         };
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let reporter_task = tokio::spawn(async move { reporter.run(runtime, shutdown_rx).await });
@@ -770,6 +1342,7 @@ mod tests {
         let reporter = ManagedKernelActivityReporter {
             binding: activity_binding,
             confirmation_wait_started: Some(wait_started_tx),
+            persistence_retry_started: None,
         };
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let reporter_runtime = runtime.clone();
@@ -795,6 +1368,7 @@ mod tests {
             "trace-1",
         );
         runtime.record_waiting_room_change();
+        runtime.record_managed_activity_transition_for_test();
 
         let confirmation = tokio::time::timeout(Duration::from_secs(1), transition_confirmation_rx)
             .await
@@ -867,15 +1441,20 @@ mod tests {
         let initial = AcceptedActivity {
             sequence: 1,
             running_agent_count: 0,
+            activity_changed_at_ms: 1_000,
         };
         assert_eq!(
-            cursor.next_report(0).expect("initial report"),
+            cursor
+                .next_report(observation(0, 1_000))
+                .expect("initial report"),
             Some(initial)
         );
         assert_eq!(
-            cursor.next_report(1).expect("retry after local transition"),
+            cursor
+                .next_report(observation(1, 2_000))
+                .expect("retry after local transition"),
             Some(initial),
-            "the pending report must not change before acknowledgement"
+            "the pending report and its transition timestamp must not change before acknowledgement"
         );
         cursor
             .accept_response(ReportActivityResponse {
@@ -884,10 +1463,13 @@ mod tests {
             })
             .expect("initial report should be acknowledged");
         assert_eq!(
-            cursor.next_report(1).expect("new transition"),
+            cursor
+                .next_report(observation(1, 2_000))
+                .expect("new transition"),
             Some(AcceptedActivity {
                 sequence: 2,
                 running_agent_count: 1,
+                activity_changed_at_ms: 2_000,
             })
         );
     }
@@ -895,7 +1477,9 @@ mod tests {
     #[test]
     fn cursor_preserves_later_pending_report_across_aba_change() {
         let mut cursor = ActivityCursor::default();
-        cursor.next_report(1).expect("initial report");
+        cursor
+            .next_report(observation(1, 1_000))
+            .expect("initial report");
         cursor
             .accept_response(ReportActivityResponse {
                 accepted_sequence: 1,
@@ -906,10 +1490,18 @@ mod tests {
         let idle = AcceptedActivity {
             sequence: 2,
             running_agent_count: 0,
+            activity_changed_at_ms: 2_000,
         };
-        assert_eq!(cursor.next_report(0).expect("idle report"), Some(idle));
         assert_eq!(
-            cursor.next_report(1).expect("retry after ABA change"),
+            cursor
+                .next_report(observation(0, 2_000))
+                .expect("idle report"),
+            Some(idle)
+        );
+        assert_eq!(
+            cursor
+                .next_report(observation(1, 3_000))
+                .expect("retry after ABA change"),
             Some(idle),
             "the acknowledged Cloud state must be repaired before the latest local state"
         );
@@ -920,11 +1512,52 @@ mod tests {
             })
             .expect("idle report should be acknowledged");
         assert_eq!(
-            cursor.next_report(1).expect("active correction"),
+            cursor
+                .next_report(observation(1, 3_000))
+                .expect("active correction"),
             Some(AcceptedActivity {
                 sequence: 3,
                 running_agent_count: 1,
+                activity_changed_at_ms: 3_000,
             })
+        );
+    }
+
+    #[test]
+    fn cursor_reports_later_idle_transition_after_unobserved_busy_cycle() {
+        let mut cursor = ActivityCursor::default();
+        let first_idle = cursor
+            .next_report(observation(0, 1_000))
+            .expect("initial idle report")
+            .expect("initial idle report should exist");
+        assert_eq!(
+            cursor
+                .next_report(observation(1, 2_000))
+                .expect("busy transition while request is pending"),
+            Some(first_idle)
+        );
+        assert_eq!(
+            cursor
+                .next_report(observation(0, 3_000))
+                .expect("later idle while request is pending"),
+            Some(first_idle)
+        );
+        cursor
+            .accept_response(ReportActivityResponse {
+                accepted_sequence: 1,
+                running_agent_count: 0,
+            })
+            .expect("first idle should be acknowledged");
+        assert_eq!(
+            cursor
+                .next_report(observation(0, 3_000))
+                .expect("later idle transition"),
+            Some(AcceptedActivity {
+                sequence: 2,
+                running_agent_count: 0,
+                activity_changed_at_ms: 3_000,
+            }),
+            "the intervening busy cycle must reset the idle transition clock"
         );
     }
 

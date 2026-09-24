@@ -11,6 +11,7 @@ import {
 
 import WebSocket from "ws"
 
+import { getKernelResourceTelemetryRequest } from "./ipc-kernel-control-requests.js"
 import type { KernelEvent } from "./kernel-events.js"
 import type {
   IpcEnvelope,
@@ -23,6 +24,7 @@ import type {
   RelayResponseFrame,
   RelayTarget,
 } from "./kernel-transport-frames.js"
+import type { KernelResourceTelemetryResponse } from "./kernel-types.js"
 import { normalizeWebSocketRequest } from "./kernel-transport-requests.js"
 import {
   buildKernelSubscriptionTransportRequest,
@@ -41,6 +43,7 @@ import {
   normalizeRelayRequest,
 } from "./relay-transport.js"
 import { KernelPendingRequestRegistry } from "./websocket-pending-requests.js"
+import { KernelRequestLifetime, waitForKernelRequestReplay } from "./websocket-request-lifetime.js"
 import { formatTransportError, isWebSocketEndpoint } from "./websocket-transport-diagnostics.js"
 
 // Slice start can cold-build the managed Linux image before returning the
@@ -223,6 +226,7 @@ export class LocalIpcClient {
   private controlWebsocketConnectPromise: Promise<WebSocket> | null = null
   private eventWebsocketConnectPromise: Promise<WebSocket> | null = null
   private readonly pendingRequests = new KernelPendingRequestRegistry(IPC_TIMEOUT_MS)
+  private readonly requestLifetime = new KernelRequestLifetime()
   private eventHandlers = new Set<(event: KernelEvent) => void>()
   private activeKernelSubscription: KernelSubscriptionState | null = null
   private reconnectTimeout: NodeJS.Timeout | null = null
@@ -310,6 +314,13 @@ export class LocalIpcClient {
       return this.sendWebSocket(request)
     }
     return this.sendLocalSocket(request)
+  }
+
+  async getManagedTargetResourceTelemetry(options: {
+    kernelRef?: string | null
+    machineRef?: string | null
+  } = {}): Promise<KernelResourceTelemetryResponse> {
+    return this.send<KernelResourceTelemetryResponse>(getKernelResourceTelemetryRequest(options))
   }
 
   async subscribeToKernelEvents(sessionId: string, attachmentId: string): Promise<void> {
@@ -460,6 +471,7 @@ export class LocalIpcClient {
   }
 
   private clearRuntimeTransportState(pendingMessage: string): void {
+    this.requestLifetime.retire(pendingMessage)
     this.activeKernelSubscription = null
     this.clearReconnectState()
     this.clearKernelEventWatchdog()
@@ -475,6 +487,7 @@ export class LocalIpcClient {
   }
 
   private async sendWebSocket<TResponse>(request: unknown, lane: KernelSocketLane = "control"): Promise<TResponse> {
+    const lifetime = this.requestLifetime.capture()
     const requestId = randomUUID()
     const retryUntilMs = lane === "control"
       ? Date.now() + this.controlRequestRetryDeadlineMs
@@ -482,18 +495,21 @@ export class LocalIpcClient {
     let retryDelayMs = KERNEL_RECONNECT_BASE_DELAY_MS
 
     for (;;) {
+      lifetime.throwIfAborted()
       let socket: WebSocket
       try {
         socket = await this.ensureWebSocket(lane)
       } catch (error) {
+        lifetime.throwIfAborted()
         if (!this.shouldReplayWebSocketRequest(error, lane, retryUntilMs)) {
           throw error
         }
         this.destroyWebSocket(lane)
-        retryDelayMs = await this.waitBeforeWebSocketRequestReplay(retryDelayMs, retryUntilMs)
+        retryDelayMs = await this.waitBeforeWebSocketRequestReplay(retryDelayMs, retryUntilMs, lifetime)
         continue
       }
 
+      lifetime.throwIfAborted()
       const pending = this.pendingRequests.register<TResponse>(
         requestId,
         lane,
@@ -518,11 +534,12 @@ export class LocalIpcClient {
       try {
         return await pending.promise
       } catch (error) {
+        lifetime.throwIfAborted()
         if (!this.shouldReplayWebSocketRequest(error, lane, retryUntilMs)) {
           throw error
         }
         this.destroyWebSocket(lane)
-        retryDelayMs = await this.waitBeforeWebSocketRequestReplay(retryDelayMs, retryUntilMs)
+        retryDelayMs = await this.waitBeforeWebSocketRequestReplay(retryDelayMs, retryUntilMs, lifetime)
       }
     }
   }
@@ -546,14 +563,15 @@ export class LocalIpcClient {
     return this.controlResponseStallMs
   }
 
-  private async waitBeforeWebSocketRequestReplay(delayMs: number, retryUntilMs: number): Promise<number> {
+  private async waitBeforeWebSocketRequestReplay(delayMs: number, retryUntilMs: number, lifetime: AbortSignal): Promise<number> {
+    lifetime.throwIfAborted()
     const remainingMs = retryUntilMs - Date.now()
     if (remainingMs <= 0) {
       return delayMs
     }
     const waitMs = Math.min(this.reconnectDelayWithJitter(delayMs), remainingMs)
     if (waitMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, waitMs))
+      await waitForKernelRequestReplay(waitMs, lifetime)
     }
     return this.nextReconnectDelayMs(delayMs)
   }
@@ -797,10 +815,17 @@ export class LocalIpcClient {
     }
 
     if ("type" in frame && frame.type === "event") {
+      let event: KernelEvent
+      try {
+        event = kernelEventFromValue(frame.event)
+      } catch (error) {
+        this.rejectPending(error instanceof Error ? error.message : String(error), lane)
+        return
+      }
       this.lastReceivedEventId = frame.event_id
       this.markKernelEventReceived()
       for (const handler of this.eventHandlers) {
-        handler(frame.event)
+        handler(event)
       }
       return
     }
@@ -817,7 +842,7 @@ export class LocalIpcClient {
       }
       try {
         const decrypted = decryptRelayPayload(subscription.relayPrivateKey, frame.encrypted_event)
-        const event = JSON.parse(decrypted) as KernelEvent
+        const event = kernelEventFromValue(JSON.parse(decrypted))
         this.lastReceivedEventId = frame.event_id
         this.markKernelEventReceived()
         this.emitSyntheticEvent(event)
@@ -1158,6 +1183,16 @@ export class LocalIpcClient {
       socket.terminate()
     }
   }
+}
+
+function kernelEventFromValue(value: unknown): KernelEvent {
+  const eventName = value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>).event
+    : null
+  if (typeof eventName !== "string" || !eventName.trim()) {
+    throw new Error("kernel event envelope must contain a non-empty event name")
+  }
+  return value as KernelEvent
 }
 
 function clampRandom(value: number): number {

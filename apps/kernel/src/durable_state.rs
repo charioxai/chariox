@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
 
+pub(crate) mod browser_import;
 mod owner;
 pub(crate) mod workflow_runtime;
 
@@ -117,6 +118,7 @@ struct DurableWriteRequest {
 
 #[derive(Debug)]
 enum DurableWriteOperation {
+    BrowserImport(browser_import::ImportStateWrite),
     Event {
         event_id: String,
         kind: String,
@@ -145,6 +147,7 @@ enum DurableWriteOperation {
         hot_entities: Vec<DurableWorkflowHotEntityWrite>,
         workflow_runs: Vec<DurableWorkflowRunWrite>,
         delivery_receipts: Vec<DurableDeliveryReceiptWrite>,
+        prompt_state_json: Option<String>,
     },
     WorkflowRuntimeSessionsTransition {
         event_id: String,
@@ -1185,6 +1188,7 @@ impl DurableStateWriter {
                 operation: "durable_state.writer_wal",
                 message: error.to_string(),
             })?;
+        configure_durable_write_sync(&connection)?;
         let (sender, receiver) = mpsc::sync_channel(DURABLE_WRITE_QUEUE_CAPACITY);
         let health = Arc::new(DurableWriterHealth::default());
         let worker_health = Arc::clone(&health);
@@ -1248,6 +1252,17 @@ impl DurableStateWriter {
     }
 }
 
+fn configure_durable_write_sync(connection: &Connection) -> Result<(), DaemonError> {
+    // Acknowledgement may release recovery state, so do not inherit a weaker
+    // SQLite build default. This applies to the writer connection, not readers.
+    connection
+        .pragma_update(None, "synchronous", "FULL")
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "durable_state.writer_sync",
+            message: error.to_string(),
+        })
+}
+
 impl Drop for DurableStateWriter {
     fn drop(&mut self) {
         self.sender
@@ -1303,6 +1318,9 @@ fn commit_durable_write_batch(
     let mut failure = None;
     for request in &batch {
         let result = match &request.operation {
+            DurableWriteOperation::BrowserImport(write) => {
+                browser_import::apply(&transaction, write)
+            }
             DurableWriteOperation::Event {
                 event_id,
                 kind,
@@ -1353,6 +1371,7 @@ fn commit_durable_write_batch(
                 hot_entities,
                 workflow_runs,
                 delivery_receipts,
+                prompt_state_json,
             } => workflow_runtime::write_workflow_runtime_transition(
                 &transaction,
                 workflow_runtime::WorkflowRuntimeTransitionWrite {
@@ -1365,6 +1384,7 @@ fn commit_durable_write_batch(
                     hot_entities,
                     workflow_runs,
                     delivery_receipts,
+                    prompt_state_json: prompt_state_json.as_deref(),
                 },
             ),
             DurableWriteOperation::WorkflowRuntimeSessionsTransition {
@@ -1562,6 +1582,15 @@ fn write_entity_checkpoint(
 }
 
 const DURABLE_STATE_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS durable_browser_import (
+    environment_id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    room_id TEXT NOT NULL,
+    recovery_required INTEGER NOT NULL CHECK (recovery_required IN (0, 1))
+);
+CREATE INDEX IF NOT EXISTS durable_browser_import_room ON durable_browser_import(room_id);
+
 CREATE TABLE IF NOT EXISTS durable_state_events (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id TEXT NOT NULL UNIQUE,
@@ -1757,6 +1786,64 @@ fn rand_suffix() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn durable_write_sync_overrides_weaker_connection_setting() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .pragma_update(None, "synchronous", "OFF")
+            .unwrap();
+        configure_durable_write_sync(&connection).unwrap();
+        let mode: i64 = connection
+            .pragma_query_value(None, "synchronous", |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, 2);
+    }
+
+    #[test]
+    fn import_recovery_survives_verified_checkpoint_pruning() {
+        let directory =
+            std::env::temp_dir().join(format!("chariox-import-checkpoint-{}", rand_suffix()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("kernel.db");
+        {
+            let store = DurableKernelStateStore::open(path.clone()).unwrap();
+            store
+                .begin_browser_import_recovery("environment", "request", "user", "room")
+                .unwrap();
+            let event = store
+                .append_event(
+                    "session.updated",
+                    Some("room".into()),
+                    serde_json::json!({"id":"room"}),
+                )
+                .unwrap();
+            store
+                .migrate_legacy_workflow_history_chunk("owner", &[], true)
+                .unwrap();
+            store
+                .save_entity_checkpoint(
+                    "owner",
+                    event.sequence,
+                    vec![DurableCheckpointEntity {
+                        kind: "sessions".into(),
+                        id: "room".into(),
+                        payload_json: serde_json::json!({"id":"room"}).to_string(),
+                    }],
+                )
+                .unwrap();
+            assert!(store
+                .load_events_by_kind("session.updated")
+                .unwrap()
+                .is_empty());
+            assert!(store.browser_import_pending("environment").unwrap());
+        }
+        {
+            let store = DurableKernelStateStore::open(path).unwrap();
+            assert!(store.browser_import_pending("environment").unwrap());
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn durable_writer_groups_concurrent_acknowledged_events() {

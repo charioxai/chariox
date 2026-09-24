@@ -129,13 +129,11 @@ fn event_context_runtime_receipts_redact_provider_payloads() {
 
 #[test]
 fn event_context_tool_is_discovered_without_reply_tool() {
+    let worktree = crate::test_support::TestWorktree::new("workflow-tool-event-context");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "event-context-workspace",
-            "event-context-worktree",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let run = app
         .launch_provider(
@@ -172,13 +170,11 @@ fn event_context_tool_is_discovered_without_reply_tool() {
 
 #[test]
 fn starting_workflow_prompt_persists_running_node_for_restart_recovery() {
+    let worktree = crate::test_support::TestWorktree::new("workflow-tool-start-persistence");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workflow-start-persistence-workspace",
-            "workflow-start-persistence-worktree",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let workflow = app
         .sessions_mut()
@@ -229,6 +225,15 @@ fn starting_workflow_prompt_persists_running_node_for_restart_recovery() {
     .with_workflow_context(workflow_run.id(), &node_run_id);
 
     let runtime = runtime_state_from_app(app);
+    let activity_lock = Arc::clone(&runtime.owned.managed_activity_mutation_lock);
+    super::super::workflow_completion_owned_state::set_before_workflow_activity_persistence_hook(
+        move || {
+            assert!(matches!(
+                activity_lock.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ));
+        },
+    );
     runtime
         .owned
         .workflow_start_prompt(session.id(), &prompt)
@@ -269,13 +274,11 @@ fn starting_workflow_prompt_persists_running_node_for_restart_recovery() {
 
 #[test]
 fn workflow_admission_replaces_idle_ordinary_provider_before_dispatch() {
+    let worktree = crate::test_support::TestWorktree::new("workflow-tool-idle-provider");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workflow-idle-provider-workspace",
-            "workflow-idle-provider-worktree",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let ordinary = app
         .launch_provider(
@@ -418,13 +421,11 @@ fn workflow_admission_replaces_idle_ordinary_provider_before_dispatch() {
 
 #[test]
 fn workflow_turn_context_lists_public_outgoing_edges_without_downstream_instructions() {
+    let worktree = crate::test_support::TestWorktree::new("workflow-tool-turn-context");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, router_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace",
-            "worktree",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let worker_a = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(

@@ -16,6 +16,7 @@ export function parseArgs(args: string[]): CliOptions {
     accountProfile: "default",
     effort: "",
   }
+  let relayTokenSource: "argv" | "environment" | null = null
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index] ?? ""
@@ -48,8 +49,20 @@ export function parseArgs(args: string[]): CliOptions {
         options.relayUrl = next()
         break
       case "--relay-token":
+        if (relayTokenSource) throw new Error("--relay-token and --relay-token-env cannot be combined")
         options.relayToken = next()
+        relayTokenSource = "argv"
         break
+      case "--relay-token-env": {
+        if (relayTokenSource) throw new Error("--relay-token and --relay-token-env cannot be combined")
+        const name = next()
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error("--relay-token-env requires an environment variable name")
+        const token = process.env[name]
+        if (!token?.trim()) throw new Error(`--relay-token-env ${name} is empty or missing`)
+        options.relayToken = token
+        relayTokenSource = "environment"
+        break
+      }
       case "--target-daemon-id":
         options.targetDaemonId = next()
         break
@@ -198,7 +211,7 @@ function parseTerminalPairingLink(pairingLink: string) {
 
 function printUsage() {
   process.stdout.write([
-    "usage: chariox-cli [--detached] [--kernel-url URL] [--socket PATH] [--automation-socket PATH] [--terminal-pairing-link LINK] [--relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]",
+    "usage: chariox-cli [--detached] [--kernel-url URL] [--socket PATH] [--automation-socket PATH] [--terminal-pairing-link LINK] [--relay-url URL (--relay-token TOKEN|--relay-token-env NAME) (--target-daemon-id ID|--target-daemon-alias NAME)] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]",
     "       chariox-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N] [--bundle DIR]",
     "",
     "commands:",
@@ -250,7 +263,7 @@ function printUsage() {
     "  /machine forget <m>   forget a registered remote machine",
     "  /machine rename <m> <alias> rename and approve a remote machine",
     "  /slice list           list slices owned by this kernel",
-    "  /slice create <n>     create a slice inventory entry (--headed|--headless)",
+    "  /slice create <n>     create a slice (--headed [--display-backend selkies|novnc]|--headless)",
     "  /slice status [s]     show a slice, defaulting to focused agent slice",
     "  /slice doctor [s]     check slice worker, scope, display, operation, and auth health",
     "  /slice logs [s]       show slice worker and lifecycle logs (--tail n)",
@@ -258,6 +271,7 @@ function printUsage() {
     "  /slice state [s]      show saved slice state and restart requirements",
     "  /slice save-state [s] save slice state after shutdown or agent restart",
     "  /slice backup [s]     create a recoverable slice state backup",
+    "  /slice backup restore restore a stopped slice from a verified backup",
     "  /slice reset-state [s] reset saved slice state after agents are detached",
     "  /slice start [s]      start a slice, defaulting to focused agent slice",
     "  /slice stop [s]       stop a slice, defaulting to focused agent slice",

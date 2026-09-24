@@ -3,6 +3,47 @@ use crate::account_profile::{
     ProviderAccountUsageSnapshot,
 };
 use crate::{DaemonApp, DaemonConfig, DaemonError};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TEST_WORKTREE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// A real, disposable working directory for provider-launch fixtures.
+///
+/// Provider launch preflight intentionally rejects synthetic paths. Keep the
+/// fixture's lifetime tied to the test so callers cannot accidentally leave
+/// shared worktree state behind.
+pub(crate) struct TestWorktree {
+    path: PathBuf,
+}
+
+impl TestWorktree {
+    pub(crate) fn new(label: &str) -> Self {
+        let nonce = crate::session::unix_epoch_ms();
+        let sequence = TEST_WORKTREE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "chariox-test-worktree-{label}-{}-{nonce}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path).expect("test worktree should exist");
+        Self { path }
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn session_request(&self) -> crate::session::CreateSessionRequest {
+        let path = self.path.display().to_string();
+        crate::session::CreateSessionRequest::new(path.clone(), path)
+    }
+}
+
+impl Drop for TestWorktree {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
 
 /// Synthetic runtime fixtures must not discover the developer's real provider credentials.
 /// A fresh unavailable usage observation keeps optional native usage probes out of the fixture.

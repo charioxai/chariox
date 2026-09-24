@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -19,7 +19,6 @@ mod prompt_activity;
 mod prompt_lifecycle;
 mod prompt_state_owner;
 mod provider_activation;
-mod provider_first_output_watchdog;
 mod provider_focus;
 mod provider_launch_failure_retry;
 mod provider_launch_policy;
@@ -39,6 +38,7 @@ mod relay_runtime;
 mod remote_agent_binding;
 mod remote_kernel_selection;
 mod remote_lease;
+mod remote_prompt_peer;
 mod remote_workspace_live_sync_fanout;
 mod session_runtime;
 mod terminal_fanout;
@@ -108,12 +108,6 @@ pub(crate) use kernel_session::{KernelSessionReadService, KernelSessionService};
 pub(crate) use legacy_workflow_history::LegacyWorkflowHistoryStore;
 pub(crate) use prompt_lifecycle::{ProviderPromptDispatcher, RemoteWorkflowTurnContextResolver};
 pub(crate) use provider_activation::StartedProviderLaunch;
-pub(crate) use provider_first_output_watchdog::{
-    provider_first_output_timeout_candidates, provider_first_output_timeout_diagnostic,
-    provider_inactivity_timeout_candidates, provider_inactivity_timeout_diagnostic,
-    ProviderFirstOutputTimeoutCandidate, ProviderInactivityTimeoutCandidate,
-    PROVIDER_OUTPUT_TIMEOUT_MS,
-};
 pub(crate) use provider_launch_failure_retry::{
     ProviderLaunchFailureRetry, ProviderLaunchFailureRetryScheduleOutcome,
     ProviderLaunchFailureRetryStore,
@@ -122,15 +116,22 @@ pub(crate) use provider_launch_policy::{
     apply_metaagent_launch_policy, default_provider_env_remove,
     failed_provider_resume_state_replacement,
     failed_provider_resume_state_replacement_from_message, generate_runtime_mcp_auth_token,
-    granted_mcp_servers_for_agent_launch, registered_workflow_runtime_worktree_root,
-    resolve_mcp_credentials_for_launch, sanitize_resume_state_for_launch,
-    workspace_live_sync_protected_roots,
+    granted_mcp_servers_for_agent_launch, resolve_mcp_credentials_for_launch,
+    sanitize_resume_state_for_launch, workspace_live_sync_protected_roots,
 };
-pub(crate) use provider_liveness::ProviderRunExitSessionSummary;
-pub(crate) use provider_processes::{ProviderLaunchProcessRuntime, ProviderProcessReapSummary};
+pub(crate) use provider_liveness::{
+    clear_active_provider_run_session_pointer, ProviderRunExitSessionSummary,
+};
+pub(crate) use provider_processes::{
+    ProviderLaunchProcessRuntime, ProviderProcessReapSummary, ProviderProcessTracker,
+};
 pub(crate) use provider_run_read::ProviderRunReadService;
+#[cfg(test)]
+pub(crate) use remote_lease::ProviderCleanupFailurePoint;
 pub(crate) use remote_lease::{
+    LeaseCallerBinding, LeasedAgentCleanupPhase, LeasedProjectEnvironmentSetupTarget,
     PreparedLeasedProviderRun, RemoteLeaseRuntime, RemoteProviderFailure,
+    REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS,
 };
 
 pub struct DaemonApp {
@@ -179,6 +180,22 @@ pub struct DaemonApp {
     pending_structured_output_records: provider_output::StructuredOutputRecordStore,
     execution_leases: BTreeMap<String, ExecutionLease>,
     leased_agents: BTreeMap<String, LeasedAgent>,
+    execution_lease_callers: BTreeMap<String, remote_lease::LeaseCallerBinding>,
+    leased_agent_callers: BTreeMap<String, remote_lease::LeaseCallerBinding>,
+    completed_execution_lease_callers: BTreeMap<String, remote_lease::LeaseCallerBinding>,
+    completed_leased_agent_callers: BTreeMap<String, remote_lease::LeaseCallerBinding>,
+    pending_execution_lease_authorizations:
+        BTreeMap<(String, remote_lease::LeaseCallerBinding), usize>,
+    pending_leased_agent_authorizations:
+        BTreeMap<(String, remote_lease::LeaseCallerBinding), usize>,
+    completed_leased_agent_deletions: VecDeque<String>,
+    completed_execution_lease_deletions: VecDeque<String>,
+    leased_agent_cleanup_phases: BTreeMap<String, remote_lease::LeasedAgentCleanupPhase>,
+    #[cfg(test)]
+    leased_agent_cleanup_failures: BTreeMap<String, remote_lease::LeasedAgentCleanupPhase>,
+    #[cfg(test)]
+    leased_agent_provider_cleanup_failures:
+        BTreeMap<String, remote_lease::ProviderCleanupFailurePoint>,
     /// Workflow bindings are keyed by backing/home prompt, not provider run.
     /// A provider run can have one active turn plus queued turns, each with a
     /// different workflow context and capability snapshot.
@@ -266,6 +283,14 @@ impl DaemonApp {
                 managed_context_root.join("managed-context-transfers"),
                 managed_context_launch_recovery.as_ref(),
             )?;
+        if config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker
+            && managed_context_transfers.has_incomplete_import()
+        {
+            return Err(DaemonError::KernelRuntimeRoleDenied {
+                role: config.kernel_runtime_role.as_str(),
+                operation: "startup.managed_context_import",
+            });
+        }
         let managed_context_outbound =
             crate::managed_context::outbound_service::ManagedContextOutboundOperationStore::open(
                 managed_context_root.join("managed-context-outbound"),
@@ -338,6 +363,19 @@ impl DaemonApp {
                 provider_output::StructuredOutputRecordStore::default(),
             execution_leases: BTreeMap::new(),
             leased_agents: BTreeMap::new(),
+            execution_lease_callers: BTreeMap::new(),
+            leased_agent_callers: BTreeMap::new(),
+            completed_execution_lease_callers: BTreeMap::new(),
+            completed_leased_agent_callers: BTreeMap::new(),
+            pending_execution_lease_authorizations: BTreeMap::new(),
+            pending_leased_agent_authorizations: BTreeMap::new(),
+            completed_leased_agent_deletions: VecDeque::new(),
+            completed_execution_lease_deletions: VecDeque::new(),
+            leased_agent_cleanup_phases: BTreeMap::new(),
+            #[cfg(test)]
+            leased_agent_cleanup_failures: BTreeMap::new(),
+            #[cfg(test)]
+            leased_agent_provider_cleanup_failures: BTreeMap::new(),
             leased_workflow_turns: BTreeMap::new(),
             remote_git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
             completed_git_turn_snapshots:
@@ -346,11 +384,23 @@ impl DaemonApp {
             next_execution_lease_number: 0,
             next_leased_agent_number: 0,
             started_at_ms: crate::session::unix_epoch_ms(),
-            relay_client_state: Arc::new(tokio::sync::RwLock::new(RelayClientState::default())),
+            relay_client_state: Arc::new(tokio::sync::RwLock::new(
+                RelayClientState::with_pinned_peer_public_keys(
+                    DaemonConfig::relay_peer_public_key_entries(),
+                ),
+            )),
             config,
         };
         let restore_started = Instant::now();
         app.restore_durable_state()?;
+        if app.config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker
+            && !app.sessions.list_all_sessions().is_empty()
+        {
+            return Err(DaemonError::KernelRuntimeRoleDenied {
+                role: app.config.kernel_runtime_role.as_str(),
+                operation: "startup.restored_session",
+            });
+        }
         let restored_publication_tunnel_count = {
             let sessions = app.sessions();
             let mut relay_state = app.relay_client_state.try_write().map_err(|error| {
@@ -661,10 +711,11 @@ mod tests {
     use super::*;
     use crate::agent::CreateAgentRequest;
     use crate::provider::LaunchProviderRequest;
-    use crate::session::CreateSessionRequest;
+    use crate::test_support::TestWorktree;
 
     #[test]
     fn durable_restore_keeps_sessions_bound_to_their_kernel_id() {
+        let worktree = TestWorktree::new("shared-kernel-state");
         let state_path = std::env::temp_dir().join("chariox-tests").join(format!(
             "shared-kernel-state-{}.db",
             crate::session::unix_epoch_ms()
@@ -675,7 +726,7 @@ mod tests {
         let session_id = {
             let mut app = DaemonApp::bootstrap(config_a.clone()).expect("kernel a should boot");
             let (session, _) = app
-                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .create_session(worktree.session_request())
                 .expect("session should create");
             session.id().to_string()
         };
@@ -745,6 +796,7 @@ mod tests {
                         backend: crate::slice::SliceBackendKind::LocalDocker,
                         os: "linux".to_string(),
                         display_mode: crate::slice::SliceDisplayMode::Headed,
+                        display_backend: Default::default(),
                         workspace_id: None,
                         worktree_id: None,
                         workspace_mount: Some("/repo".to_string()),
@@ -789,6 +841,7 @@ mod tests {
 
     #[test]
     fn daemon_restart_restores_sessions_after_shutdown_cleanup() {
+        let worktree = TestWorktree::new("restart-preserves-sessions");
         let state_path = std::env::temp_dir().join("chariox-tests").join(format!(
             "restart-preserves-sessions-{}.db",
             crate::session::unix_epoch_ms()
@@ -799,7 +852,7 @@ mod tests {
         let session_id = {
             let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
             let (session, _) = app
-                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .create_session(worktree.session_request())
                 .expect("session should create");
             app.shutdown_cleanup()
                 .expect("shutdown should clean runtime without ending session");
@@ -822,6 +875,8 @@ mod tests {
 
     #[test]
     fn durable_restore_ignores_newer_snapshot_from_other_kernel_owner() {
+        let first_worktree = TestWorktree::new("shared-kernel-snapshot-owner-a");
+        let second_worktree = TestWorktree::new("shared-kernel-snapshot-owner-b");
         let state_path = std::env::temp_dir().join("chariox-tests").join(format!(
             "shared-kernel-snapshot-owner-{}.db",
             crate::session::unix_epoch_ms()
@@ -832,7 +887,7 @@ mod tests {
         let session_id = {
             let mut app = DaemonApp::bootstrap(config_a.clone()).expect("kernel a should boot");
             let (session, _) = app
-                .create_session(CreateSessionRequest::new("workspace-a", "worktree-a"))
+                .create_session(first_worktree.session_request())
                 .expect("session should create");
             session.id().to_string()
         };
@@ -842,7 +897,7 @@ mod tests {
         config_b.user_config.state.path = Some(state_path.display().to_string());
         {
             let mut app = DaemonApp::bootstrap(config_b).expect("kernel b should boot");
-            app.create_session(CreateSessionRequest::new("workspace-b", "worktree-b"))
+            app.create_session(second_worktree.session_request())
                 .expect("kernel b session should create");
             app.save_durable_state_snapshot()
                 .expect("kernel b should write latest snapshot");
@@ -860,6 +915,7 @@ mod tests {
 
     #[test]
     fn durable_restore_republishes_agent_runtime_profile_to_session_projection() {
+        let worktree = TestWorktree::new("restart-agent-projection");
         let state_path = std::env::temp_dir().join("chariox-tests").join(format!(
             "restart-agent-projection-{}.db",
             crate::session::unix_epoch_ms()
@@ -870,7 +926,7 @@ mod tests {
         let session_id = {
             let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
             let (session, agent) = app
-                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .create_session(worktree.session_request())
                 .expect("session should create");
             app.launch_provider(
                 LaunchProviderRequest::new(
@@ -904,6 +960,7 @@ mod tests {
 
     #[test]
     fn durable_restore_preserves_metaagent_event_inbox_state() {
+        let worktree = TestWorktree::new("restart-metaagent-events");
         let state_path = std::env::temp_dir().join("chariox-tests").join(format!(
             "restart-metaagent-events-{}.db",
             crate::session::unix_epoch_ms()
@@ -914,7 +971,7 @@ mod tests {
         let (metaagent_id, event_id, subscription_id) = {
             let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
             let (session, _default_agent) = app
-                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .create_session(worktree.session_request())
                 .expect("session should create");
             let worker = crate::app::KernelSessionService::new(&mut app)
                 .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"))

@@ -141,7 +141,10 @@ impl KernelRuntimeState {
         &self,
         request: crate::local::RebuildWorkflowCodeSourceRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.with_app_side_effect(move |app| {
+        let session_id = request.session_id.clone();
+        let workflow_ref = request.workflow_ref.clone();
+        let expected_workflow_revision = request.expected_workflow_revision;
+        let (preview, confirmed_rebuild) = self.with_app_side_effect(move |app| {
             let workflow = app
                 .sessions()
                 .resolve_workflow_ref(&request.session_id, &request.workflow_ref)?;
@@ -230,34 +233,67 @@ impl KernelRuntimeState {
                 changes,
             };
             if !request.confirm {
-                return Ok(LocalDaemonResponse::WorkflowCodeRebuildPreview { preview });
+                return Ok((preview, None));
             }
-            let result = app.sessions_mut().rebuild_workflow_code_definition(
-                &request.session_id,
-                &request.workflow_ref,
-                request.expected_workflow_revision,
-                &compile.definition,
-                crate::session::WorkflowCodeSourceDescriptor {
-                    artifact_name: artifact.metadata.name,
-                    language: artifact.metadata.language,
-                    source_sha256: artifact.metadata.source_sha256,
-                    origin,
-                },
-            )?;
-            let session = crate::app::KernelSessionReadService::new(app)
-                .session_snapshot(&request.session_id)?;
-            app.durable_state_store().append_event(
-                "workflow_code_source.rebuilt",
-                Some(request.session_id),
-                serde_json::json!({ "preview": &preview, "result": &result }),
-            )?;
-            Ok(LocalDaemonResponse::WorkflowCodeSourceRebuilt {
+            Ok((
                 preview,
-                result,
-                session,
-            })
+                Some((
+                    compile.definition,
+                    crate::session::WorkflowCodeSourceDescriptor {
+                        artifact_name: artifact.metadata.name,
+                        language: artifact.metadata.language,
+                        source_sha256: artifact.metadata.source_sha256,
+                        origin,
+                    },
+                )),
+            ))
         })
-        .await
+        .await?;
+        let Some((definition, source)) = confirmed_rebuild else {
+            return Ok(LocalDaemonResponse::WorkflowCodeRebuildPreview { preview });
+        };
+
+        // Compilation, validation, and preview construction above are non-mutating and may run
+        // external tooling. Enter the synchronous activity boundary only for the confirmed
+        // authoritative rebuild, its durable workflow snapshot, or its in-lock rollback.
+        let activity_mutation = self.owned.begin_managed_activity_mutation();
+        let durable_state_store = self.owned.durable_state_store.clone();
+        let rebuilt = durable_state_store.with_workflow_runtime_transition_lock(|| {
+            let mut sessions = self.owned.session_store.write();
+            sessions.rebuild_workflow_code_definition_with_commit(
+                &session_id,
+                &workflow_ref,
+                expected_workflow_revision,
+                &definition,
+                source,
+                |session, _result| {
+                    let mut durable_session = session.clone();
+                    durable_session
+                        .set_agents(self.owned.agent_store.get_session_agents(&session_id));
+                    self.owned.project_session_runtime_view(&mut durable_session);
+                    // Use the authoritative workflow-runtime transition as the rebuild record.
+                    // A separate audit append cannot be atomic with rollback of this mutation.
+                    durable_state_store.persist_workflow_runtime_transition(
+                        &durable_session,
+                        "workflow_code_source_rebuilt",
+                    )?;
+                    Ok(())
+                },
+            )
+        });
+        let (result, mut session) = match rebuilt {
+            Ok(rebuilt) => rebuilt,
+            Err(error) => return Err(error),
+        };
+        session.set_agents(self.owned.agent_store.get_session_agents(&session_id));
+        self.owned.project_session_runtime_view(&mut session);
+        activity_mutation.record();
+
+        Ok(LocalDaemonResponse::WorkflowCodeSourceRebuilt {
+            preview,
+            result,
+            session,
+        })
     }
 
     pub(super) async fn execute_workflow_code_source_update_from_workflow_request(

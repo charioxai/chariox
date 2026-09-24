@@ -2,13 +2,11 @@ use super::*;
 
 #[tokio::test]
 async fn started_prompt_history_records_prompt_activation_timestamp() {
+    let worktree = crate::test_support::TestWorktree::new("history-projection-prompt-time");
     let mut app =
         DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-prompt-timestamp",
-            "worktree-prompt-timestamp",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -46,16 +44,11 @@ async fn started_prompt_history_records_prompt_activation_timestamp() {
 
 #[tokio::test]
 async fn session_lookup_snapshots_project_runtime_view_from_owned_state() {
+    let worktree = crate::test_support::TestWorktree::new("history-projection-session-lookup");
     let mut app =
         DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(
-            crate::session::CreateSessionRequest::new(
-                "workspace-session-lookup-projection",
-                "worktree-session-lookup-projection",
-            )
-            .with_alias("lookup-projection"),
-        )
+        .create_session(worktree.session_request().with_alias("lookup-projection"))
         .expect("session should be created");
     let run = app
         .launch_provider(
@@ -120,7 +113,7 @@ async fn session_lookup_snapshots_project_runtime_view_from_owned_state() {
     let resolved = runtime
         .resolve_session_snapshot(crate::local::ResolveSessionRequest {
             session_ref: "lookup-projection".to_string(),
-            workspace_id: Some("workspace-session-lookup-projection".to_string()),
+            workspace_id: Some(worktree.path().display().to_string()),
         })
         .expect("session should resolve by alias");
     assert_eq!(resolved.id(), session.id());
@@ -141,13 +134,11 @@ async fn session_lookup_snapshots_project_runtime_view_from_owned_state() {
 
 #[tokio::test]
 async fn unchanged_session_lookup_does_not_wake_waiting_room_subscribers() {
+    let worktree = crate::test_support::TestWorktree::new("history-projection-idle-lookup");
     let mut app =
         DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-idle-session-lookup",
-            "worktree-idle-session-lookup",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let session_id = session.id().to_string();
     let app = Arc::new(Mutex::new(app));
@@ -173,15 +164,13 @@ async fn unchanged_session_lookup_does_not_wake_waiting_room_subscribers() {
 
 #[tokio::test]
 async fn owned_user_prompt_history_enqueues_archive_outbox_when_external_archive_enabled() {
+    let worktree = crate::test_support::TestWorktree::new("history-projection-archive");
     let mut config = crate::config::DaemonConfig::for_tests();
     config.user_config.history.archive.mode = crate::config::HistoryArchiveMode::External;
     config.user_config.history.archive.url = Some("http://127.0.0.1:9".to_string());
     let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-owned-archive",
-            "worktree-owned-archive",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -225,13 +214,11 @@ async fn owned_user_prompt_history_enqueues_archive_outbox_when_external_archive
 
 #[tokio::test]
 async fn owned_user_prompt_history_does_not_write_the_legacy_jsonl_store() {
+    let worktree = crate::test_support::TestWorktree::new("history-projection-legacy-user");
     let mut app =
         DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-owned-legacy-history-fail",
-            "worktree-owned-legacy-history-fail",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -279,13 +266,11 @@ async fn owned_user_prompt_history_does_not_write_the_legacy_jsonl_store() {
 
 #[tokio::test]
 async fn owned_user_prompt_history_preserves_external_prompt_origin() {
+    let worktree = crate::test_support::TestWorktree::new("history-projection-external-user");
     let mut app =
         DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-external-user-history",
-            "worktree-external-user-history",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -328,13 +313,11 @@ async fn owned_user_prompt_history_preserves_external_prompt_origin() {
 
 #[tokio::test]
 async fn owned_external_observed_history_uses_provider_turn_id_for_operational_turn() {
+    let worktree = crate::test_support::TestWorktree::new("history-projection-external-turn");
     let mut app =
         DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-owned-external-turn-id",
-            "worktree-owned-external-turn-id",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
 
     let app = Arc::new(Mutex::new(app));
@@ -375,13 +358,11 @@ async fn owned_external_observed_history_uses_provider_turn_id_for_operational_t
 
 #[tokio::test]
 async fn owned_runtime_notice_does_not_write_the_legacy_jsonl_store() {
+    let worktree = crate::test_support::TestWorktree::new("history-projection-runtime-notice");
     let mut app =
         DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-owned-notice-legacy-history-fail",
-            "worktree-owned-notice-legacy-history-fail",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let run = app
         .launch_provider(
@@ -429,13 +410,11 @@ async fn owned_runtime_notice_does_not_write_the_legacy_jsonl_store() {
 
 #[tokio::test]
 async fn rejected_owned_local_prompt_does_not_persist_history() {
+    let worktree = crate::test_support::TestWorktree::new("history-projection-rejected-prompt");
     let mut app =
         DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-owned-queue-overflow",
-            "worktree-owned-queue-overflow",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(

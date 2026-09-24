@@ -2,10 +2,11 @@ use super::*;
 
 #[test]
 fn local_request_api_rejects_config_updates_for_native_tui_provider_agents() {
+    let worktree = crate::test_support::TestWorktree::new("prompt-routing-native-tui");
     let harness = LocalRouterTestHarness::new();
     let (session, agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -58,12 +59,14 @@ fn local_request_api_rejects_config_updates_for_native_tui_provider_agents() {
 
 #[test]
 fn app_submit_prompt_rejects_agent_from_another_session() {
+    let first_worktree = crate::test_support::TestWorktree::new("prompt-routing-cross-first");
+    let second_worktree = crate::test_support::TestWorktree::new("prompt-routing-cross-second");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (first_session, first_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(first_worktree.session_request())
         .expect("first session should be created");
     let (second_session, _second_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-2", "worktree-2"))
+        .create_session(second_worktree.session_request())
         .expect("second session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -102,12 +105,14 @@ fn app_submit_prompt_rejects_agent_from_another_session() {
 
 #[test]
 fn app_prompt_settlement_rejects_agent_from_another_session() {
+    let first_worktree = crate::test_support::TestWorktree::new("prompt-settlement-cross-first");
+    let second_worktree = crate::test_support::TestWorktree::new("prompt-settlement-cross-second");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (_first_session, first_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(first_worktree.session_request())
         .expect("first session should be created");
     let (second_session, _second_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-2", "worktree-2"))
+        .create_session(second_worktree.session_request())
         .expect("second session should be created");
 
     let complete_error = app
@@ -135,10 +140,11 @@ fn app_prompt_settlement_rejects_agent_from_another_session() {
 
 #[test]
 fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
+    let worktree = crate::test_support::TestWorktree::new("prompt-routing-focus-change");
     let harness = LocalRouterTestHarness::new();
     let (session, default_agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session should be created")
     {
@@ -302,10 +308,11 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
 
 #[test]
 fn spawning_agent_during_active_prompt_keeps_snapshot_on_working_run() {
+    let worktree = crate::test_support::TestWorktree::new("prompt-routing-spawn-active");
     let harness = LocalRouterTestHarness::new();
     let (session, default_agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session should be created")
     {
@@ -394,10 +401,11 @@ fn spawning_agent_during_active_prompt_keeps_snapshot_on_working_run() {
 
 #[test]
 fn local_request_api_auto_launches_provider_run_for_prompt() {
+    let worktree = crate::test_support::TestWorktree::new("prompt-routing-auto-launch");
     let harness = LocalRouterTestHarness::new();
     let (session, _default_agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -445,10 +453,11 @@ fn local_request_api_auto_launches_provider_run_for_prompt() {
 
 #[test]
 fn local_request_api_rejects_prompt_for_unavailable_provider_account() {
+    let worktree = crate::test_support::TestWorktree::new("prompt-routing-unavailable-account");
     let harness = LocalRouterTestHarness::new();
     let (session, agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -533,10 +542,11 @@ fn local_request_api_rejects_prompt_for_unavailable_provider_account() {
 
 #[test]
 fn local_request_api_rejects_prompt_for_fresh_exhausted_provider_account() {
+    let worktree = crate::test_support::TestWorktree::new("prompt-routing-exhausted-account");
     let harness = LocalRouterTestHarness::new();
     let (session, agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -648,10 +658,11 @@ fn local_request_api_rejects_prompt_for_fresh_exhausted_provider_account() {
 
 #[test]
 fn local_request_api_rejects_new_prompt_when_busy_agent_account_becomes_unavailable() {
+    let worktree = crate::test_support::TestWorktree::new("prompt-routing-busy-account");
     let harness = LocalRouterTestHarness::new();
     let (session, agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -829,10 +840,11 @@ fn local_request_api_rejects_new_prompt_when_busy_agent_account_becomes_unavaila
 
 #[test]
 fn direct_prompt_completion_resolves_unfocused_single_active_agent() {
+    let worktree = crate::test_support::TestWorktree::new("prompt-routing-direct-complete");
     let harness = LocalRouterTestHarness::new();
     let (session, default_agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -905,10 +917,11 @@ fn direct_prompt_completion_resolves_unfocused_single_active_agent() {
 
 #[test]
 fn direct_prompt_cancel_resolves_unfocused_single_active_agent() {
+    let worktree = crate::test_support::TestWorktree::new("prompt-routing-direct-cancel");
     let harness = LocalRouterTestHarness::new();
     let (session, default_agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -988,10 +1001,11 @@ fn direct_prompt_cancel_resolves_unfocused_single_active_agent() {
 
 #[test]
 fn direct_prompt_cancel_uses_explicit_target_agent_when_multiple_agents_are_active() {
+    let worktree = crate::test_support::TestWorktree::new("prompt-routing-target-cancel");
     let harness = LocalRouterTestHarness::new();
     let (session, default_agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -1090,10 +1104,11 @@ fn local_request_api_rejects_invalid_provider_adapter() {
 }
 
 fn local_request_api_rejects_invalid_provider_adapter_inner() {
+    let worktree = crate::test_support::TestWorktree::new("prompt-routing-invalid-adapter");
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {

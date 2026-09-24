@@ -26,6 +26,26 @@ trusted_public_key=$3
 script_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 provider_versions=$script_root/provider-versions.env
 
+case "${CHARIOX_MANAGED_PROVIDER_TOPOLOGY-}" in
+  path1)
+    managed_provider_topology=path1
+    managed_bootstrap_service=chariox-path1-managed-bootstrap.service
+    other_managed_bootstrap_service=chariox-managed-bootstrap.service
+    [ -n "${CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY:-}" ] \
+      || fail "Path-1 preparation requires CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY outside the release rootfs"
+    [ -f "$CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY" ] \
+      && [ ! -L "$CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY" ] \
+      || fail "trusted builder public key must be a regular file"
+    ;;
+  shared_host|legacy_shared_host)
+    managed_provider_topology=shared_host
+    managed_bootstrap_service=chariox-managed-bootstrap.service
+    other_managed_bootstrap_service=chariox-path1-managed-bootstrap.service
+    ;;
+  '') fail "CHARIOX_MANAGED_PROVIDER_TOPOLOGY must be explicitly set to path1 or shared_host" ;;
+  *) fail "CHARIOX_MANAGED_PROVIDER_TOPOLOGY must be path1 or shared_host" ;;
+esac
+
 printf '%s\n' "$release_digest" | grep -Eq '^sha256:[0-9a-f]{64}$' \
   || fail "release digest must be a SHA-256 digest"
 if [ ! -f "$provider_versions" ] || [ -L "$provider_versions" ]; then
@@ -58,7 +78,10 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
+# Bubblewrap remains installed for Docker-slice inner defense and explicit
+# shared-host images; Path 1 does not use it as the provider boundary.
 apt-get install -y --no-install-recommends \
+  dbus-user-session \
   acl \
   bash \
   bubblewrap \
@@ -67,6 +90,7 @@ apt-get install -y --no-install-recommends \
   ca-certificates \
   cloud-init \
   curl \
+  docker-buildx \
   docker.io \
   fuse-overlayfs \
   gh \
@@ -101,8 +125,48 @@ docker_socket_state=$(systemctl is-active docker.socket || true)
 
 node_major=$(node -p 'Number(process.versions.node.split(".")[0])')
 [ "$node_major" -eq 22 ] || fail "Ubuntu image did not provide the required Node.js 22 runtime"
+docker buildx version >/dev/null || fail "Docker Buildx is unavailable"
 
-"$script_root/install-image.sh" "$release_rootfs" "$release_digest" "$trusted_public_key"
+"$script_root/install-image.sh" \
+  "$release_rootfs" "$release_digest" "$trusted_public_key" "$managed_provider_topology"
+if [ "$managed_provider_topology" = path1 ]; then
+  runtime_builder_key=/etc/chariox/trusted-builder-public-key
+  [ -f "$runtime_builder_key" ] && [ ! -L "$runtime_builder_key" ] \
+    || fail "Path-1 image is missing its independent runtime builder key"
+  [ "$(stat -c '%u:%a' "$runtime_builder_key")" = "0:644" ] \
+    || fail "Path-1 runtime builder key ownership or mode is unsafe"
+  cmp -s "$CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY" "$runtime_builder_key" \
+    || fail "Path-1 runtime builder key differs from the independent input"
+fi
+# The general installer journals even a no-op home migration. A fresh image
+# must not carry that runtime bookkeeping into every future machine.
+migration_journal=/var/lib/chariox/home-migration.json
+migration_complete=/var/lib/chariox/home-migration-complete
+if [ -e "$migration_journal" ] || [ -L "$migration_journal" ] \
+  || [ -e "$migration_complete" ] || [ -L "$migration_complete" ]; then
+  for migration_file in "$migration_journal" "$migration_complete"; do
+    [ -f "$migration_file" ] && [ ! -L "$migration_file" ] \
+      && [ "$(stat -c '%u:%a' "$migration_file")" = "0:600" ] \
+      || fail "image installer left unsafe migration state"
+  done
+  printf 'complete\n' | cmp -s - "$migration_complete" \
+    || fail "image installer left incomplete migration state"
+  jq -e \
+    --arg stateRoot /var/lib/chariox \
+    --arg legacyHome /var/lib/chariox/home \
+    --arg managedHome /home/chariox \
+    --arg managedState /home/chariox/.chariox \
+    --argjson uid "$(id -u chariox)" \
+    --argjson gid "$(id -g chariox)" \
+    'keys == ["charioxGid", "charioxUid", "entries", "legacyHome", "managedHome", "managedState", "required", "rootIdentity", "schemaVersion", "stateRoot"]
+      and .schemaVersion == 1 and .stateRoot == $stateRoot
+      and .legacyHome == $legacyHome and .managedHome == $managedHome
+      and .managedState == $managedState and .charioxUid == $uid
+      and .charioxGid == $gid and .required == false and .rootIdentity == null and .entries == []' \
+    "$migration_journal" >/dev/null \
+    || fail "image installer left a nonempty migration journal"
+  rm -f -- "$migration_journal" "$migration_complete"
+fi
 provider_toolchain_source=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/toolchain
 provider_toolchain_root=/opt/chariox-provider-toolchain
 for toolchain_file in package.json package-lock.json; do
@@ -163,7 +227,9 @@ provider_tool_as_chariox() {
   || fail "installed Claude Code version does not match"
 [ "$(provider_tool_as_chariox pnpm --version)" = "11.22.0" ] \
   || fail "installed pnpm version does not match"
-sh "$script_root/verify-provider-runtime-bind.sh"
+if [ "$managed_provider_topology" = shared_host ]; then
+  sh "$script_root/verify-provider-runtime-bind.sh"
+fi
 rm -rf "$provider_probe_home"
 trap - 0 HUP INT TERM
 [ -x /usr/share/docker.io/contrib/dockerd-rootless.sh ] \
@@ -212,9 +278,23 @@ slice_base_image=node:22.17.1-bookworm@sha256:37ff334612f77d8f999c10af8797727b73
 runuser -u chariox-docker -- env \
   DOCKER_HOST=unix:///run/chariox-docker/docker.sock \
   docker pull "$slice_base_image" >/dev/null
+# Exercise BuildKit's client-side registry-auth resolution through the real
+# broker entrypoint. A Docker pull alone only tests daemon-side resolution.
+broker_namespace=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/enter-rootless-docker-namespace.sh
+{
+  printf '%s\n' '# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32'
+  printf 'FROM %s\n' "$slice_base_image"
+} |
+runuser -u chariox-docker -- env \
+  DOCKER_BUILDKIT=1 \
+  DOCKER_HOST=unix:///run/chariox-docker/docker.sock \
+  "$broker_namespace" docker build --pull --tag chariox-broker-network-check:local - >/dev/null
 runuser -u chariox-docker -- env \
   DOCKER_HOST=unix:///run/chariox-docker/docker.sock \
   docker image inspect "$slice_base_image" >/dev/null
+runuser -u chariox-docker -- env \
+  DOCKER_HOST=unix:///run/chariox-docker/docker.sock \
+  docker image rm chariox-broker-network-check:local >/dev/null
 runuser -u chariox-docker -- env \
   DOCKER_HOST=unix:///run/chariox-docker/docker.sock \
   docker image rm "$slice_base_image" >/dev/null
@@ -229,14 +309,35 @@ systemctl is-enabled --quiet chariox-rootless-docker.service \
 if systemctl is-enabled --quiet chariox-slice-broker.service; then
   fail "slice Docker broker must be published only by managed bootstrap prestart"
 fi
-systemctl is-enabled --quiet chariox-managed-bootstrap.service \
+systemctl is-enabled --quiet "$managed_bootstrap_service" \
   || fail "managed bootstrap service was not enabled"
-if systemctl is-active --quiet chariox-managed-bootstrap.service; then
+if systemctl is-enabled --quiet "$other_managed_bootstrap_service"; then
+  fail "a non-selected managed bootstrap service was also enabled"
+fi
+if systemctl is-active --quiet "$managed_bootstrap_service"; then
   fail "managed bootstrap service started while the image was being built"
 fi
 
-if find /var/lib/chariox -mindepth 1 ! -path /var/lib/chariox/home -print -quit | grep -q .; then
+if find /var/lib/chariox -mindepth 1 -print -quit | grep -q .; then
   fail "managed runtime state entered the image"
+fi
+if [ -L /home/chariox ] || [ ! -d /home/chariox ]; then
+  fail "managed service-account home is missing or linked"
+fi
+if [ "$(stat -c %a /home/chariox)" != 700 ] || [ "$(stat -c %U /home/chariox)" != chariox ]; then
+  fail "managed service-account home permissions are unsafe"
+fi
+if find /home/chariox -mindepth 1 ! -path /home/chariox/.chariox -print -quit | grep -q .; then
+  fail "managed user data entered the image"
+fi
+if [ -L /home/chariox/.chariox ] || [ ! -d /home/chariox/.chariox ]; then
+  fail "managed kernel state directory is missing or linked"
+fi
+if [ "$(stat -c %a /home/chariox/.chariox)" != 700 ] || [ "$(stat -c %U /home/chariox/.chariox)" != chariox ]; then
+  fail "managed kernel state directory permissions are unsafe"
+fi
+if find /home/chariox/.chariox -mindepth 1 -print -quit | grep -q .; then
+  fail "managed kernel state entered the image"
 fi
 if find /var/lib/chariox-docker -mindepth 1 ! -path /var/lib/chariox-docker/home -print -quit | grep -q . \
   || find /var/lib/chariox-docker/home -mindepth 1 -print -quit | grep -q .; then
@@ -256,6 +357,25 @@ if find /var/lib/chariox-slice-share -mindepth 1 \
 fi
 
 apt-get clean
+managed_sshd_config=/etc/ssh/sshd_config.d/00-chariox-managed.conf
+install -d -o root -g root -m 0755 /etc/ssh/sshd_config.d
+managed_sshd_tmp=$(mktemp)
+{
+  printf '%s\n' 'PasswordAuthentication no'
+  printf '%s\n' 'KbdInteractiveAuthentication no'
+  printf '%s\n' 'PermitRootLogin prohibit-password'
+} >"$managed_sshd_tmp"
+install -o root -g root -m 0644 "$managed_sshd_tmp" "$managed_sshd_config"
+rm -f "$managed_sshd_tmp"
+passwd --lock root
+chage -d "$(date -u +%Y-%m-%d)" -M 99999 -I -1 -E -1 root
+sshd_effective=$(sshd -T)
+printf '%s\n' "$sshd_effective" | grep -Fxq 'passwordauthentication no' \
+  || fail "managed image must disable SSH password authentication"
+printf '%s\n' "$sshd_effective" | grep -Fxq 'kbdinteractiveauthentication no' \
+  || fail "managed image must disable interactive SSH authentication"
+printf '%s\n' "$sshd_effective" | grep -Fxq 'permitrootlogin prohibit-password' \
+  || fail "managed image must restrict root SSH to public keys"
 rm -rf /var/lib/apt/lists/* /tmp/chariox-managed-release /root/.cache /root/.npm /root/.ssh
 find /var/log -type f -exec sh -c ': > "$1"' _ {} \;
 cloud-init clean --logs --machine-id --seed

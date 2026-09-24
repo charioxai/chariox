@@ -39,6 +39,24 @@ test("parseArgs rejects invalid option combinations", () => {
   )
 })
 
+test("parseArgs reads a relay token from an explicit environment variable without argv exposure", () => {
+  const previous = process.env.CHARIOX_DRILL_C_RELAY_TOKEN
+  process.env.CHARIOX_DRILL_C_RELAY_TOKEN = "scoped-test-token"
+  try {
+    const args = [
+      "--relay-url", "ws://127.0.0.1:47000",
+      "--relay-token-env", "CHARIOX_DRILL_C_RELAY_TOKEN",
+      "--target-daemon-id", "kernel-home",
+    ]
+    assert.equal(parseArgs(args).relayToken, "scoped-test-token")
+    assert.equal(args.includes("scoped-test-token"), false)
+    assert.throws(() => parseArgs([...args, "--relay-token", "argv-token"]), /cannot be combined/)
+  } finally {
+    if (previous === undefined) delete process.env.CHARIOX_DRILL_C_RELAY_TOKEN
+    else process.env.CHARIOX_DRILL_C_RELAY_TOKEN = previous
+  }
+})
+
 test("parseArgs help lists remote runtime once next to kernel health", () => {
   const previousWrite = process.stdout.write
   const previousExit = process.exit

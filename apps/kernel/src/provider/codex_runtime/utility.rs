@@ -4,7 +4,10 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use crate::error::DaemonError;
-use crate::provider::RuntimeProviderRun;
+use crate::provider::{
+    AgentExecutionMode, AgentPermissionLevel, ProviderUtilityExecutionPolicy,
+    ProviderWriteAccessMode, RuntimeProviderRun,
+};
 use crate::terminal::TerminalOutputKind;
 
 use super::input::codex_input;
@@ -19,6 +22,7 @@ pub fn run_codex_utility_prompt(
     prompt: &str,
     hidden_system_context: &str,
     timeout: Duration,
+    policy: ProviderUtilityExecutionPolicy,
 ) -> Result<String, DaemonError> {
     let endpoint = run
         .structured_endpoint()
@@ -29,6 +33,13 @@ pub fn run_codex_utility_prompt(
         })?
         .to_string();
     let client = codex_client_for_run(run, &endpoint, None)?;
+    let client = if policy.is_read_only_discovery() {
+        client
+            .with_write_access_mode(ProviderWriteAccessMode::WorkspaceLiveSyncTracked)
+            .with_read_only_discovery_permissions()
+    } else {
+        client
+    };
     let mut socket = client.connect_initialized()?;
     let mut next_request_id = 1;
     let cwd = run
@@ -36,17 +47,37 @@ pub fn run_codex_utility_prompt(
         .map(|path| path.to_string_lossy().to_string());
     let model = normalize_codex_model(run.model());
     let effort = normalize_variant(run.variant());
+    let (write_access_mode, execution_mode, permission_level) = if policy.is_read_only_discovery() {
+        // Plan plus the tracked live-sync mode is Codex's enforced
+        // read-only sandbox on every host platform, including macOS. Do
+        // not inherit a provider run's ordinary build/yolo capability for
+        // discovery.
+        (
+            ProviderWriteAccessMode::WorkspaceLiveSyncTracked,
+            AgentExecutionMode::Plan,
+            AgentPermissionLevel::Required,
+        )
+    } else {
+        (
+            run.write_access_mode(),
+            run.execution_mode(),
+            run.permission_level(),
+        )
+    };
     let thread = client.thread_start(
         &mut socket,
         &mut next_request_id,
         cwd.as_deref(),
         model.as_deref(),
-        run.write_access_mode(),
-        run.execution_mode(),
-        run.permission_level(),
+        write_access_mode,
+        execution_mode,
+        permission_level,
         hidden_context_for_provider(hidden_system_context),
     )?;
     let mut state = CodexRuntimeState::new(endpoint, thread.thread.id, socket, next_request_id);
+    if policy.is_read_only_discovery() {
+        state.set_read_only_discovery_permissions(true);
+    }
     let input = codex_input(prompt, &[]);
     let thread_id = state.thread_id().to_string();
     let response = client.turn_start(
@@ -56,9 +87,9 @@ pub fn run_codex_utility_prompt(
         cwd.as_deref(),
         model.as_deref(),
         effort.as_deref(),
-        run.write_access_mode(),
-        run.execution_mode(),
-        run.permission_level(),
+        write_access_mode,
+        execution_mode,
+        permission_level,
         hidden_context_for_provider(hidden_system_context),
         input,
         &mut state.buffered_notifications,

@@ -19,14 +19,12 @@ mod background;
 mod structured_store;
 #[cfg(test)]
 mod tests;
-mod timeouts;
 
 use background::pump_session_active_prompt_outputs;
 pub(crate) use structured_store::{
     structured_output_batch_should_poll_immediately, StructuredOutputRecordStore,
     STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS, STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT,
 };
-use timeouts::{reap_provider_first_output_timeouts, reap_provider_inactivity_timeouts};
 
 pub(crate) struct ProviderOutputPumpRequest<'a> {
     pub(crate) session_id: &'a str,
@@ -49,8 +47,6 @@ pub(crate) fn pump_terminal_output_for_attachment(
     attachment_id: &str,
 ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
     reap_structured_prompt_jobs(app);
-    reap_provider_first_output_timeouts(app, session_id)?;
-    reap_provider_inactivity_timeouts(app, session_id)?;
     crate::app::KernelSessionReadService::new(app)
         .ensure_attachment_in_session(session_id, attachment_id)?;
     pump_session_active_prompt_outputs(app, session_id);
@@ -66,26 +62,6 @@ pub(crate) fn pump_active_prompt_outputs(app: &mut DaemonApp) -> Vec<String> {
     let sessions = app.sessions.list_sessions();
     let mut pumped_provider_run_ids = Vec::new();
     for session in sessions {
-        if let Err(error) = reap_provider_first_output_timeouts(app, session.id()) {
-            crate::logging::warn_with_fields(
-                "daemon.provider_output",
-                "provider first-output timeout reap failed",
-                serde_json::json!({
-                    "session_id": session.id(),
-                    "error": error.to_string(),
-                }),
-            );
-        }
-        if let Err(error) = reap_provider_inactivity_timeouts(app, session.id()) {
-            crate::logging::warn_with_fields(
-                "daemon.provider_output",
-                "provider inactivity timeout reap failed",
-                serde_json::json!({
-                    "session_id": session.id(),
-                    "error": error.to_string(),
-                }),
-            );
-        }
         pumped_provider_run_ids.extend(pump_session_active_prompt_outputs(app, session.id()));
     }
     pumped_provider_run_ids
@@ -107,10 +83,6 @@ impl<'a> ProviderOutputPump<'a> {
         request: ProviderOutputPumpRequest<'_>,
     ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
         self.context.reap_structured_prompt_jobs();
-        self.context
-            .reap_provider_first_output_timeouts(request.session_id)?;
-        self.context
-            .reap_provider_inactivity_timeouts(request.session_id)?;
         let mut provider_run = self
             .context
             .ensure_provider_run_in_session(request.session_id, request.provider_run_id)?;
@@ -384,14 +356,6 @@ impl<'a> ProviderOutputPumpContext<'a> {
         reap_structured_prompt_jobs(self.app);
     }
 
-    fn reap_provider_first_output_timeouts(&mut self, session_id: &str) -> Result<(), DaemonError> {
-        reap_provider_first_output_timeouts(self.app, session_id)
-    }
-
-    fn reap_provider_inactivity_timeouts(&mut self, session_id: &str) -> Result<(), DaemonError> {
-        reap_provider_inactivity_timeouts(self.app, session_id)
-    }
-
     fn reconcile_provider_run_exit(
         &mut self,
         session_id: &str,
@@ -427,6 +391,40 @@ impl<'a> ProviderOutputPumpContext<'a> {
     ) -> Result<bool, DaemonError> {
         self.app
             .provider_run_has_active_prompt(session_id, provider_run)
+    }
+
+    fn stale_structured_poll_has_replacement_prompt(
+        &mut self,
+        provider_run_id: &str,
+        polled_prompt_id: Option<&str>,
+    ) -> Result<bool, DaemonError> {
+        let provider_run = match self.provider_store.get_run(provider_run_id) {
+            Ok(provider_run) => provider_run,
+            Err(_) => return Ok(false),
+        };
+        if !matches!(
+            provider_run.state(),
+            ProviderRunState::Running | ProviderRunState::Starting
+        ) {
+            return Ok(false);
+        }
+        let Some(agent_id) = provider_run.agent_instance_id() else {
+            return Ok(false);
+        };
+        let Some(active_prompt) = self
+            .app
+            .prompt_owner_active_prompt_for_agent(provider_run.session_id(), agent_id)?
+        else {
+            return Ok(false);
+        };
+        if active_prompt.is_external()
+            || polled_prompt_id
+                .is_some_and(|polled_prompt_id| active_prompt.id() == polled_prompt_id)
+        {
+            return Ok(false);
+        }
+        self.app
+            .provider_run_has_active_prompt(provider_run.session_id(), &provider_run)
     }
 
     fn resume_detached_provider_run(
@@ -571,6 +569,11 @@ impl<'a> ProviderOutputPumpContext<'a> {
                                 self.reconcile_provider_run_exit(&session_id, &provider_run_id)
                             })
                     };
+                    let stale_replacement_prompt = self
+                        .stale_structured_poll_has_replacement_prompt(
+                            &provider_run_id,
+                            polled_prompt_id.as_deref(),
+                        )?;
                     match reconcile_result {
                         Ok(true) => {
                             self.pending_structured_output_records
@@ -578,10 +581,45 @@ impl<'a> ProviderOutputPumpContext<'a> {
                             continue;
                         }
                         Ok(false) => {
+                            if stale_replacement_prompt {
+                                self.pending_structured_output_records
+                                    .schedule_after_stale_poll_failure(&provider_run_id, now_ms);
+                                crate::logging::warn_with_fields(
+                                    "daemon.app",
+                                    "stale structured output poll failed; replacement poll scheduled",
+                                    serde_json::json!({
+                                        "session_id": if is_requested_run {
+                                            Some(requested_session_id)
+                                        } else {
+                                            None
+                                        },
+                                        "provider_run_id": provider_run_id,
+                                        "polled_prompt_id": polled_prompt_id,
+                                        "retry_limit": STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT,
+                                        "error": error.to_string(),
+                                    }),
+                                );
+                                continue;
+                            }
                             let retry_attempt = self
                                 .pending_structured_output_records
-                                .schedule_after_poll_failure(&provider_run_id, now_ms);
+                                .schedule_after_poll_failure_for_prompt(
+                                    &provider_run_id,
+                                    polled_prompt_id.as_deref(),
+                                    now_ms,
+                                );
                             if retry_attempt.is_none() {
+                                let failure_session_id = self
+                                    .provider_store
+                                    .get_run(&provider_run_id)
+                                    .map(|run| run.session_id().to_string())
+                                    .unwrap_or_else(|_| requested_session_id.to_string());
+                                let _ = self.settle_repeated_structured_poll_failure_if_matches(
+                                    &failure_session_id,
+                                    &provider_run_id,
+                                    polled_prompt_id.as_deref(),
+                                    &error,
+                                )?;
                                 crate::logging::error_with_fields(
                                     "daemon.app",
                                     "structured output polling abandoned after repeated failures",
@@ -617,11 +655,59 @@ impl<'a> ProviderOutputPumpContext<'a> {
                             );
                             continue;
                         }
-                        Err(reconcile_error) if is_requested_run => return Err(reconcile_error),
+                        Err(reconcile_error) if is_requested_run => {
+                            if stale_replacement_prompt {
+                                self.pending_structured_output_records
+                                    .schedule_after_stale_poll_failure(&provider_run_id, now_ms);
+                                crate::logging::warn_with_fields(
+                                    "daemon.app",
+                                    "stale structured output poll reconciliation failed; replacement poll scheduled",
+                                    serde_json::json!({
+                                        "session_id": requested_session_id,
+                                        "provider_run_id": provider_run_id,
+                                        "polled_prompt_id": polled_prompt_id,
+                                        "error": reconcile_error.to_string(),
+                                    }),
+                                );
+                                continue;
+                            }
+                            return Err(reconcile_error);
+                        }
                         Err(reconcile_error) => {
+                            if stale_replacement_prompt {
+                                self.pending_structured_output_records
+                                    .schedule_after_stale_poll_failure(&provider_run_id, now_ms);
+                                crate::logging::warn_with_fields(
+                                    "daemon.app",
+                                    "stale structured output poll reconciliation failed; replacement poll scheduled",
+                                    serde_json::json!({
+                                        "provider_run_id": provider_run_id,
+                                        "polled_prompt_id": polled_prompt_id,
+                                        "error": reconcile_error.to_string(),
+                                    }),
+                                );
+                                continue;
+                            }
                             let retry_attempt = self
                                 .pending_structured_output_records
-                                .schedule_after_poll_failure(&provider_run_id, now_ms);
+                                .schedule_after_poll_failure_for_prompt(
+                                    &provider_run_id,
+                                    polled_prompt_id.as_deref(),
+                                    now_ms,
+                                );
+                            if retry_attempt.is_none() {
+                                let failure_session_id = self
+                                    .provider_store
+                                    .get_run(&provider_run_id)
+                                    .map(|run| run.session_id().to_string())
+                                    .unwrap_or_else(|_| requested_session_id.to_string());
+                                let _ = self.settle_repeated_structured_poll_failure_if_matches(
+                                    &failure_session_id,
+                                    &provider_run_id,
+                                    polled_prompt_id.as_deref(),
+                                    &reconcile_error,
+                                )?;
+                            }
                             let message = if retry_attempt.is_some() {
                                 "background structured output poll reconciliation failed; retry scheduled"
                             } else {
@@ -1081,6 +1167,32 @@ impl<'a> ProviderOutputPumpContext<'a> {
     ) -> Result<(), DaemonError> {
         self.prompt_settlement()
             .fail_for_terminal_failure(session_id, provider_run_id, message)
+    }
+
+    fn settle_repeated_structured_poll_failure_if_matches(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        expected_prompt_id: Option<&str>,
+        error: &DaemonError,
+    ) -> Result<bool, DaemonError> {
+        let Some(expected_prompt_id) = expected_prompt_id else {
+            return Ok(false);
+        };
+        let diagnostic =
+            format!("Structured provider output polling failed after repeated failures: {error}");
+        let termination = crate::provider::ProviderRunTermination::explicit_provider_error(
+            &diagnostic,
+            crate::session::unix_epoch_ms(),
+        );
+        self.prompt_settlement()
+            .fail_for_terminal_failure_if_matches(
+                session_id,
+                provider_run_id,
+                Some(expected_prompt_id),
+                Some(termination),
+                &diagnostic,
+            )
     }
 
     fn prompt_settlement(&mut self) -> ProviderOutputPromptSettlement<'_> {

@@ -68,6 +68,9 @@ pub struct SliceRecord {
     pub name: String,
     pub owner_kernel_id: String,
     pub owner_machine_id: String,
+    /// Durable reservation of this physical browser/profile for one Room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -164,8 +167,43 @@ pub struct SliceLocalDockerPorts {
 #[serde(rename_all = "snake_case")]
 pub enum SliceDisplayEndpointKind {
     Novnc,
+    Selkies,
     CharioxViewer,
     External,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SliceDisplayBackend {
+    Novnc,
+    #[default]
+    Selkies,
+}
+
+impl SliceDisplayBackend {
+    pub fn is_selkies(&self) -> bool {
+        *self == Self::Selkies
+    }
+
+    pub fn as_env_value(self) -> &'static str {
+        match self {
+            Self::Novnc => "novnc",
+            Self::Selkies => "selkies",
+        }
+    }
+}
+
+impl SliceRecord {
+    pub fn display_backend(&self) -> SliceDisplayBackend {
+        match self
+            .display_endpoint
+            .as_ref()
+            .map(|endpoint| &endpoint.kind)
+        {
+            Some(SliceDisplayEndpointKind::Selkies) => SliceDisplayBackend::Selkies,
+            _ => SliceDisplayBackend::Novnc,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -186,6 +224,12 @@ pub struct SliceDisplayEndpoint {
     pub expires_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_protocol: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_public_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -232,6 +276,21 @@ pub struct SliceBackupRecord {
     pub created_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_archive_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceBackupRestoreTransactionRecord {
+    pub id: String,
+    pub source_slice_id: String,
+    pub target_backup: SliceBackupRecord,
+    pub rollback_backup: SliceBackupRecord,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_saved_state: Option<SliceSavedStateRecord>,
+    pub started_at_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -240,6 +299,7 @@ pub struct CreateSliceInput {
     pub backend: SliceBackendKind,
     pub os: String,
     pub display_mode: SliceDisplayMode,
+    pub display_backend: SliceDisplayBackend,
     pub workspace_id: Option<String>,
     pub worktree_id: Option<String>,
     pub workspace_mount: Option<String>,
@@ -254,6 +314,8 @@ pub struct CreateSliceInput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalDockerSliceAction {
     Provision,
+    RestoreState,
+    Recover,
     ImportProviderAuth,
     RemoveProviderAuth,
     Stop,

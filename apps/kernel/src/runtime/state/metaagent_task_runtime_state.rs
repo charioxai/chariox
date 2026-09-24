@@ -2,6 +2,7 @@ use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::session::MetaagentTaskStatus;
 
+use super::managed_activity_runtime_state::ManagedActivityMutation;
 use super::KernelRuntimeState;
 
 pub(crate) struct MetaSlashCommand {
@@ -22,12 +23,90 @@ pub(crate) fn parse_meta_slash_command(prompt: &str) -> Option<MetaSlashCommand>
 }
 
 impl KernelRuntimeState {
+    /// Keep rejected task mutations invisible to session readers and activity sampling.
+    pub(super) fn mutate_metaagent_task_session(
+        &self,
+        session_id: &str,
+        reason: &str,
+        mutate: impl FnOnce(
+            &mut crate::session::SessionService,
+        ) -> Result<crate::session::RuntimeSession, DaemonError>,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let (_, session) = self
+            .mutate_metaagent_task_session_with_result(session_id, reason, |sessions| {
+                mutate(sessions).map(Some)
+            })?
+            .expect("required metaagent task mutation must produce a result");
+        Ok(session)
+    }
+
+    /// Commit an optional task mutation and return caller-owned output with its projection.
+    /// `None` is a no-op and therefore must not mutate the session.
+    fn mutate_metaagent_task_session_with_result<T>(
+        &self,
+        session_id: &str,
+        reason: &str,
+        mutate: impl FnOnce(&mut crate::session::SessionService) -> Result<Option<T>, DaemonError>,
+    ) -> Result<Option<(T, crate::session::RuntimeSession)>, DaemonError> {
+        let activity_mutation = self.owned.begin_managed_activity_mutation();
+        let committed = self
+            .owned
+            .durable_state_store
+            .with_workflow_runtime_transition_lock(|| {
+                let mut sessions = self.owned.session_store.write();
+                let before = sessions.get_session(session_id)?;
+                let result = (|| {
+                    let Some(result) = mutate(&mut sessions)? else {
+                        return Ok(None);
+                    };
+                    let mut session = sessions.get_session(session_id)?;
+                    session.set_agents(self.owned.agent_store.get_session_agents(session_id));
+                    self.owned.project_session_runtime_view(&mut session);
+                    self.owned.durable_state_store.append_event(
+                        "session.updated",
+                        Some(session_id.to_string()),
+                        serde_json::json!({"session": &session, "reason": reason}),
+                    )?;
+                    Ok(Some((result, session)))
+                })();
+                if result.is_err() {
+                    // Restore under the same write guard, before unrelated writers can intervene.
+                    sessions.restore_session(before);
+                }
+                result
+            })?;
+        let Some((result, committed)) = committed else {
+            return Ok(None);
+        };
+        activity_mutation.record();
+        Ok(Some((
+            result,
+            self.owned.publish_session_after_durable_mutation(committed),
+        )))
+    }
+
     pub(super) fn persist_metaagent_task_session_update(
         &self,
         session_id: &str,
         reason: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        let session = self.owned.session_snapshot(session_id)?;
+        let activity_mutation = self.owned.begin_managed_activity_mutation();
+        self.persist_metaagent_task_session_update_with_activity_mutation(
+            session_id,
+            reason,
+            activity_mutation,
+        )
+    }
+
+    pub(super) fn persist_metaagent_task_session_update_with_activity_mutation(
+        &self,
+        session_id: &str,
+        reason: &str,
+        activity_mutation: ManagedActivityMutation<'_>,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let session = self
+            .owned
+            .session_snapshot_without_projection_update(session_id)?;
         self.owned.durable_state_store.append_event(
             "session.updated",
             Some(session_id.to_string()),
@@ -36,7 +115,8 @@ impl KernelRuntimeState {
                 "reason": reason,
             }),
         )?;
-        Ok(session)
+        activity_mutation.record();
+        Ok(self.owned.publish_session_after_durable_mutation(session))
     }
 
     pub(crate) fn session_task_lane_busy(&self, session_id: &str) -> Result<bool, DaemonError> {
@@ -58,22 +138,23 @@ impl KernelRuntimeState {
         ),
         DaemonError,
     > {
-        let task = self.owned.session_store.write().enqueue_metaagent_task(
-            session_id,
-            metaagent_id,
-            source_attachment_id,
-            task_markdown,
-            attachments,
-        )?;
-        let session = self.owned.session_snapshot(session_id)?;
-        self.owned.durable_state_store.append_event(
-            "session.updated",
-            Some(session_id.to_string()),
-            serde_json::json!({
-                "session": &session,
-                "reason": "metaagent_task_queued",
-            }),
-        )?;
+        let (task, session) = self
+            .mutate_metaagent_task_session_with_result(
+                session_id,
+                "metaagent_task_queued",
+                |sessions| {
+                    sessions
+                        .enqueue_metaagent_task(
+                            session_id,
+                            metaagent_id,
+                            source_attachment_id,
+                            task_markdown,
+                            attachments,
+                        )
+                        .map(Some)
+                },
+            )?
+            .expect("enqueueing a metaagent task must mutate the session");
         Ok((task, session))
     }
 
@@ -110,6 +191,7 @@ impl KernelRuntimeState {
             let _ = self.owned.agent_store.deactivate_agent_meta_mode(agent_id);
             return Err(error);
         }
+        let activity_mutation = self.owned.begin_managed_activity_mutation();
         let session_result = (|| {
             let mut sessions = self.owned.session_store.write();
             sessions.start_or_update_metaagent_task(session_id, agent_id, task_prompt)
@@ -117,6 +199,7 @@ impl KernelRuntimeState {
         let session = match session_result {
             Ok(session) => session,
             Err(error) => {
+                drop(activity_mutation);
                 let _ = self
                     .sync_remote_leased_agent_meta_mode(session_id, agent_id, false)
                     .await;
@@ -139,6 +222,7 @@ impl KernelRuntimeState {
             .agent_store
             .activate_agent_meta_mode(agent_id, task_id)
         {
+            drop(activity_mutation);
             let _ = self
                 .sync_remote_leased_agent_meta_mode(session_id, agent_id, false)
                 .await;
@@ -152,8 +236,11 @@ impl KernelRuntimeState {
                 .await;
             return Err(error);
         }
-        let session =
-            self.persist_metaagent_task_session_update(session_id, "metaagent_task_started")?;
+        let session = self.persist_metaagent_task_session_update_with_activity_mutation(
+            session_id,
+            "metaagent_task_started",
+            activity_mutation,
+        )?;
         Ok(self.project_metaagent_task_session(session))
     }
 
@@ -270,16 +357,18 @@ impl KernelRuntimeState {
         if !agent.is_metaagent() {
             return Ok(None);
         }
-        let Some(_session) = self
-            .owned
-            .session_store
-            .write()
-            .start_metaagent_task_if_needed(session_id, metaagent_id, prompt)?
+        let Some(((), session)) = self.mutate_metaagent_task_session_with_result(
+            session_id,
+            "metaagent_task_started",
+            |sessions| {
+                sessions
+                    .start_metaagent_task_if_needed(session_id, metaagent_id, prompt)
+                    .map(|session| session.map(|_| ()))
+            },
+        )?
         else {
             return Ok(None);
         };
-        let session =
-            self.persist_metaagent_task_session_update(session_id, "metaagent_task_started")?;
         Ok(Some(self.project_metaagent_task_session(session)))
     }
 
@@ -415,26 +504,27 @@ impl KernelRuntimeState {
                 let metaagent_id = request.metaagent_id;
                 let task_updated = request.task_markdown.is_some();
                 let plan_updated = request.plan_markdown.is_some();
-                {
-                    let mut sessions = self.owned.session_store.write();
-                    if let Some(task_markdown) = request.task_markdown {
-                        sessions.update_metaagent_task_markdown(
-                            &session_id,
-                            &metaagent_id,
-                            task_markdown,
-                        )?;
-                    } else {
-                        let _ = sessions.get_session(&session_id)?;
-                    }
-                    if let Some(plan_markdown) = request.plan_markdown {
-                        sessions.update_metaagent_plan_markdown(
-                            &session_id,
-                            &metaagent_id,
-                            plan_markdown,
-                        )?;
-                    }
-                }
-                self.persist_metaagent_task_session_update(&session_id, "metaagent_task_updated")?;
+                self.mutate_metaagent_task_session(
+                    &session_id,
+                    "metaagent_task_updated",
+                    |sessions| {
+                        if let Some(task_markdown) = request.task_markdown {
+                            sessions.update_metaagent_task_markdown(
+                                &session_id,
+                                &metaagent_id,
+                                task_markdown,
+                            )?;
+                        }
+                        if let Some(plan_markdown) = request.plan_markdown {
+                            sessions.update_metaagent_plan_markdown(
+                                &session_id,
+                                &metaagent_id,
+                                plan_markdown,
+                            )?;
+                        }
+                        sessions.get_session(&session_id)
+                    },
+                )?;
                 let notification = {
                     let session = self.owned.session_store.get_session(&session_id)?;
                     metaagent_task_update_notification(
@@ -452,15 +542,16 @@ impl KernelRuntimeState {
             LocalDaemonRequest::PauseMetaagentTask(request) => {
                 let metaagent =
                     self.ensure_session_metaagent(&request.session_id, &request.metaagent_id)?;
-                let session = self.owned.session_store.write().set_metaagent_task_status(
-                    &request.session_id,
-                    &request.metaagent_id,
-                    MetaagentTaskStatus::Paused,
-                )?;
-                drop(session);
-                self.persist_metaagent_task_session_update(
+                self.mutate_metaagent_task_session(
                     &request.session_id,
                     "metaagent_task_paused",
+                    |sessions| {
+                        sessions.set_metaagent_task_status(
+                            &request.session_id,
+                            &request.metaagent_id,
+                            MetaagentTaskStatus::Paused,
+                        )
+                    },
                 )?;
                 self.cancel_active_metaagent_prompt_if_any(
                     &request.session_id,
@@ -475,15 +566,16 @@ impl KernelRuntimeState {
             LocalDaemonRequest::ResumeMetaagentTask(request) => {
                 let metaagent =
                     self.ensure_session_metaagent(&request.session_id, &request.metaagent_id)?;
-                let session = self.owned.session_store.write().set_metaagent_task_status(
-                    &request.session_id,
-                    &request.metaagent_id,
-                    MetaagentTaskStatus::Active,
-                )?;
-                drop(session);
-                self.persist_metaagent_task_session_update(
+                self.mutate_metaagent_task_session(
                     &request.session_id,
                     "metaagent_task_resumed",
+                    |sessions| {
+                        sessions.set_metaagent_task_status(
+                            &request.session_id,
+                            &request.metaagent_id,
+                            MetaagentTaskStatus::Active,
+                        )
+                    },
                 )?;
                 let queued_prompt = self.owned.prompt_state_owner.peek_next_queued_prompt(
                     &self.owned.session_store.get_session(&request.session_id)?,
@@ -554,15 +646,16 @@ impl KernelRuntimeState {
             LocalDaemonRequest::AbortMetaagentTask(request) => {
                 let metaagent =
                     self.ensure_session_metaagent(&request.session_id, &request.metaagent_id)?;
-                let session = self.owned.session_store.write().abort_metaagent_task(
-                    &request.session_id,
-                    &request.metaagent_id,
-                    request.reason,
-                )?;
-                drop(session);
-                self.persist_metaagent_task_session_update(
+                self.mutate_metaagent_task_session(
                     &request.session_id,
                     "metaagent_task_aborted",
+                    |sessions| {
+                        sessions.abort_metaagent_task(
+                            &request.session_id,
+                            &request.metaagent_id,
+                            request.reason,
+                        )
+                    },
                 )?;
                 self.cancel_active_metaagent_prompt_if_any(
                     &request.session_id,
@@ -854,6 +947,10 @@ mod task_notification_tests {
         assert!(notification.contains("Updated plan:\n1. Inspect\n2. Fix"));
     }
 }
+
+#[cfg(test)]
+#[path = "metaagent_task_durability_tests.rs"]
+mod durability_tests;
 
 #[cfg(test)]
 mod tests {

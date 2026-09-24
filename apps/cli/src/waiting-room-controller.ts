@@ -32,6 +32,7 @@ import type {
   ManagedEnvironmentContextPlanInput,
 } from "@chariox/kernel-client/ipc-managed-environment-requests"
 import {
+  DEFAULT_MANAGED_REPOSITORY_ROOT,
   managedEnvironmentAutoStopPolicy,
   managedEnvironmentContextPlanInput,
   managedEnvironmentDraftBlockReason,
@@ -60,6 +61,7 @@ export type WaitingRoomLaunchConfig = {
         kind: "new"
         computeClass: string
         region: string
+        managedRepositoryRoot: string
         autoStopPolicy: ManagedEnvironmentAutoStopPolicy
         contextPlan: ManagedEnvironmentContextPlanInput
       }
@@ -400,6 +402,7 @@ function waitingRoomManagedLaunchSelection(
       kind: "new",
       computeClass: state.managedComputeClass ?? "",
       region: state.managedRegion ?? "",
+      managedRepositoryRoot: state.managedRepositoryRoot ?? DEFAULT_MANAGED_REPOSITORY_ROOT,
       autoStopPolicy: managedEnvironmentAutoStopPolicy(state),
       contextPlan: managedEnvironmentContextPlanInput(state, remote),
     }

@@ -3,10 +3,11 @@ use crate::local::PumpTerminalOutputRequest;
 
 #[test]
 fn append_native_provider_output_fans_out_and_records_history() {
+    let worktree = crate::test_support::TestWorktree::new("terminal-native-output");
     let harness = LocalRouterTestHarness::new();
     let (session, agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session should be created")
     {
@@ -73,10 +74,11 @@ fn append_native_provider_output_fans_out_and_records_history() {
 
 #[test]
 fn stale_terminal_sweep_removes_dead_attachment_before_fanout() {
+    let worktree = crate::test_support::TestWorktree::new("terminal-stale-sweep");
     let harness = LocalRouterTestHarness::new();
     let (session, agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-stale-terminal", "worktree-stale-terminal"),
+            worktree.session_request(),
         ))
         .expect("session should be created")
     {
@@ -192,10 +194,11 @@ fn stale_terminal_sweep_removes_dead_attachment_before_fanout() {
 
 #[test]
 fn pump_terminal_output_refreshes_terminal_attachment_heartbeat() {
+    let worktree = crate::test_support::TestWorktree::new("terminal-pump-heartbeat");
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-pump-heartbeat", "worktree-pump-heartbeat"),
+            worktree.session_request(),
         ))
         .expect("session should be created")
     {
@@ -242,10 +245,11 @@ fn pump_terminal_output_refreshes_terminal_attachment_heartbeat() {
 
 #[test]
 fn poll_runtime_notices_refreshes_terminal_attachment_heartbeat() {
+    let worktree = crate::test_support::TestWorktree::new("terminal-notice-heartbeat");
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-notice-heartbeat", "worktree-notice-heartbeat"),
+            worktree.session_request(),
         ))
         .expect("session should be created")
     {

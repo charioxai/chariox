@@ -1,5 +1,33 @@
 use super::*;
 
+#[cfg(test)]
+std::thread_local! {
+    static BEFORE_EVENT_ACTIVITY_GATE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static AFTER_EVENT_ACTIVITY_GATE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+fn run_event_activity_gate_hook(
+    hook: &'static std::thread::LocalKey<std::cell::RefCell<Option<Box<dyn FnOnce()>>>>,
+) {
+    hook.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(test)]
+fn set_event_activity_gate_hooks(
+    before: impl FnOnce() + 'static,
+    after: impl FnOnce() + 'static,
+) {
+    BEFORE_EVENT_ACTIVITY_GATE.with(|slot| *slot.borrow_mut() = Some(Box::new(before)));
+    AFTER_EVENT_ACTIVITY_GATE.with(|slot| *slot.borrow_mut() = Some(Box::new(after)));
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AcceptedWorkflowEventDelivery {
     pub delivery_id: String,
@@ -203,24 +231,6 @@ impl KernelRuntimeState {
                 ),
             });
         }
-        let existing_receipt = {
-            let sessions = self.owned.session_store.read();
-            sessions
-                .get_session(&session_id)?
-                .workflow_event_delivery_receipts()
-                .get(&delivery.delivery_id)
-                .cloned()
-        };
-        if let Some(receipt) = existing_receipt {
-            return Ok(AcceptedWorkflowEventDelivery {
-                delivery_id: delivery.delivery_id,
-                queued_prompt_id: receipt.queued_prompt_id,
-                duplicate: true,
-                session: self.owned.session_snapshot(&session_id)?,
-            });
-        }
-
-        let before = self.owned.session_snapshot(&session_id)?;
         let artifacts = delivery
             .artifacts
             .iter()
@@ -248,7 +258,33 @@ impl KernelRuntimeState {
                 "binding_id": binding.id,
             }),
         };
-        let queued_prompt = match self
+        #[cfg(test)]
+        run_event_activity_gate_hook(&BEFORE_EVENT_ACTIVITY_GATE);
+        let activity_mutation = self.owned.begin_managed_activity_mutation();
+        #[cfg(test)]
+        run_event_activity_gate_hook(&AFTER_EVENT_ACTIVITY_GATE);
+        let existing_receipt = self
+            .owned
+            .session_store
+            .get_session(&session_id)?
+            .workflow_event_delivery_receipts()
+            .get(&delivery.delivery_id)
+            .cloned();
+        if let Some(receipt) = existing_receipt {
+            drop(activity_mutation);
+            return Ok(AcceptedWorkflowEventDelivery {
+                delivery_id: delivery.delivery_id,
+                queued_prompt_id: receipt.queued_prompt_id,
+                duplicate: true,
+                session: self.owned.session_snapshot(&session_id)?,
+            });
+        }
+
+        // Keep the rollback snapshot raw: session_snapshot publishes a projection and may
+        // perform activity capture, which must not nest inside this admission boundary.
+        let before = self.owned.session_store.get_session(&session_id)?;
+        // Drop the write guard before a rejected mutation attempts rollback.
+        let enqueue_result = self
             .owned
             .session_store
             .write()
@@ -261,11 +297,15 @@ impl KernelRuntimeState {
                 crate::session::WorkflowQueuedPromptSource::Event,
                 None,
                 Some(invocation),
-            ) {
+            );
+        let queued_prompt = match enqueue_result {
             Ok(prompt) => prompt,
-            Err(error) => return Err(error),
+            Err(error) => {
+                self.owned.session_store.write().restore_session(before);
+                return Err(error);
+            }
         };
-        if let Err(error) = self
+        let receipt_result = self
             .owned
             .session_store
             .write()
@@ -279,16 +319,25 @@ impl KernelRuntimeState {
                     accepted_at_ms: now_ms,
                     expires_at_ms: delivery.expires_at_ms,
                 },
-            )
-        {
+            );
+        if let Err(error) = receipt_result {
             self.owned.session_store.write().restore_session(before);
             return Err(error);
         }
         if let Err(error) = self
             .owned
-            .persist_workflow_runtime_session(&session_id, "workflow_event_delivery_accepted")
+            .persist_workflow_runtime_session_with_activity_mutation_and_rollback(
+                &session_id,
+                "workflow_event_delivery_accepted",
+                activity_mutation,
+                {
+                    let session_store = self.owned.session_store.clone();
+                    move || {
+                        session_store.write().restore_session(before);
+                    }
+                },
+            )
         {
-            self.owned.session_store.write().restore_session(before);
             return Err(error);
         }
 
@@ -334,4 +383,326 @@ fn event_binding_effectively_active(
             .workflow_publications()
             .iter()
             .any(|publication| publication.id() == binding.publication_id && publication.enabled())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::DaemonConfig;
+    use crate::runtime::router::CommandRouter;
+    use std::sync::{mpsc, Arc, Barrier};
+    use std::time::Duration;
+    use tokio::sync::Mutex;
+
+    fn runtime_with_event_binding() -> (
+        KernelRuntimeState,
+        String,
+        crate::session::WorkflowEventBinding,
+    ) {
+        let mut config = DaemonConfig::for_tests();
+        config.publication_control_state_root = Some(std::env::temp_dir().join(format!(
+            "chariox-event-admission-control-{}-{:032x}",
+            std::process::id(),
+            rand::random::<u128>()
+        )));
+        let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-event-admission",
+                "worktree-event-admission",
+            ))
+            .expect("event admission session should create");
+        let workflow = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("event-admission".to_string()))
+            .expect("event workflow should create");
+        let node = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), workflow.id(), agent.id())
+            .expect("event workflow node should create");
+        let endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                node.id(),
+                Some("event-entry".to_string()),
+            )
+            .expect("event workflow endpoint should create");
+        let publication = app
+            .sessions_mut()
+            .create_workflow_publication_idempotent(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                None,
+                None,
+                Some("default".to_string()),
+                Some("event-publication".to_string()),
+                Some(crate::session::WORKFLOW_PUBLICATION_KIND_EVENT_BASED.to_string()),
+                None,
+                Vec::new(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                vec![agent.clone()],
+                crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
+            )
+            .expect("event publication should create");
+        let binding = app
+            .sessions_mut()
+            .create_workflow_event_binding(
+                session.id(),
+                publication.id(),
+                "dev.chariox.test".to_string(),
+                "1.0.0".to_string(),
+                "event-admission-manifest".to_string(),
+                "event-admission-connection".to_string(),
+                "tenant:event-admission".to_string(),
+                "test.event".to_string(),
+                1,
+                serde_json::json!({"scope": "event-admission"}),
+                Some("event-admission-environment".to_string()),
+                Some("default".to_string()),
+                None,
+                Vec::new(),
+            )
+            .expect("event binding should create");
+        let runtime = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1)
+            .runtime_state();
+        (runtime, session.id().to_string(), binding)
+    }
+
+    fn delivery(
+        binding: &crate::session::WorkflowEventBinding,
+        delivery_id: &str,
+    ) -> chariox_event_protocol::EventDeliveryEnvelope {
+        chariox_event_protocol::EventDeliveryEnvelope {
+            delivery_id: delivery_id.to_string(),
+            binding_id: binding.id.clone(),
+            event_type: binding.event_type.clone(),
+            event_type_version: binding.event_type_version,
+            occurrence_id: format!("occurrence-{delivery_id}"),
+            occurred_at: chrono::Utc::now()
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            prompt: "Process the gated event.".to_string(),
+            artifacts: Vec::new(),
+            metadata: serde_json::json!({"test": "activity-admission"}),
+            reply_context: None,
+            expires_at_ms: u64::MAX,
+        }
+    }
+
+    fn assert_no_event_work(
+        runtime: &KernelRuntimeState,
+        session_id: &str,
+    ) {
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(session_id)
+            .expect("event session should remain available");
+        assert!(session.workflow_queued_prompts().is_empty());
+        assert!(session.workflow_event_delivery_receipts().is_empty());
+        assert!(!session.has_active_workflow_run());
+    }
+
+    fn install_workflow_append_failure(runtime: &KernelRuntimeState) -> rusqlite::Connection {
+        let connection = rusqlite::Connection::open(runtime.owned.durable_state_store.path())
+            .expect("durable database should open for event failure injection");
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_event_workflow_runtime_append
+                 BEFORE INSERT ON durable_state_events
+                 WHEN NEW.kind = 'workflow.runtime.updated'
+                 BEGIN
+                   SELECT RAISE(FAIL, 'injected event workflow append failure');
+                 END;",
+            )
+            .expect("event workflow append failure trigger should install");
+        connection
+    }
+
+    #[tokio::test]
+    async fn event_delivery_blocks_at_activity_gate_before_enqueue_or_receipt() {
+        let (runtime, session_id, binding) = runtime_with_event_binding();
+        runtime
+            .ensure_managed_activity_tracking("kernel-event-entry-gate")
+            .expect("managed activity tracking should activate");
+
+        let (locked_tx, locked_rx) = mpsc::sync_channel(0);
+        let (before_tx, before_rx) = mpsc::sync_channel(0);
+        let (after_tx, after_rx) = mpsc::sync_channel(0);
+        let activity_lock = Arc::clone(&runtime.owned.managed_activity_mutation_lock);
+        let observed_runtime = runtime.clone();
+        let observed_session_id = session_id.clone();
+        let holder = std::thread::spawn(move || {
+            let guard = activity_lock
+                .lock()
+                .expect("managed activity mutation mutex should lock");
+            locked_tx
+                .send(())
+                .expect("gate ownership should be observable");
+            before_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("event admission should reach the gate");
+            assert_no_event_work(&observed_runtime, &observed_session_id);
+            assert!(matches!(
+                after_rx.recv_timeout(Duration::from_millis(100)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ));
+            assert_no_event_work(&observed_runtime, &observed_session_id);
+            drop(guard);
+            after_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("event admission should acquire the released gate");
+        });
+        locked_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("test should own the activity gate");
+        set_event_activity_gate_hooks(
+            move || before_tx.send(()).expect("before-gate hook should be observed"),
+            move || after_tx.send(()).expect("after-gate hook should be observed"),
+        );
+
+        let accepted = runtime
+            .accept_workflow_event_delivery(delivery(&binding, "delivery-entry-gate"))
+            .expect("event should admit after the gate is released");
+        holder.join().expect("gate holder should finish cleanly");
+
+        assert!(!accepted.duplicate);
+        assert_eq!(
+            runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .expect("event session should remain available")
+                .workflow_event_delivery_receipts()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_duplicate_event_delivery_enqueues_once_under_activity_gate() {
+        let (runtime, session_id, binding) = runtime_with_event_binding();
+        let barrier = Arc::new(Barrier::new(2));
+        let envelope = delivery(&binding, "delivery-concurrent-duplicate");
+        let mut threads = Vec::new();
+        for _ in 0..2 {
+            let runtime = runtime.clone();
+            let barrier = Arc::clone(&barrier);
+            let envelope = envelope.clone();
+            threads.push(std::thread::spawn(move || {
+                set_event_activity_gate_hooks(
+                    move || {
+                        barrier.wait();
+                    },
+                    || {},
+                );
+                runtime.accept_workflow_event_delivery(envelope)
+            }));
+        }
+        let outcomes = threads
+            .into_iter()
+            .map(|thread| {
+                thread
+                    .join()
+                    .expect("duplicate delivery thread should finish")
+                    .expect("duplicate delivery should resolve")
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            outcomes.iter().filter(|outcome| outcome.duplicate).count(),
+            1
+        );
+        assert_eq!(outcomes[0].queued_prompt_id, outcomes[1].queued_prompt_id);
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("event session should remain available");
+        assert_eq!(session.workflow_event_delivery_receipts().len(), 1);
+        assert_eq!(session.workflow_queued_prompts().len(), 1);
+        assert_eq!(
+            session
+                .workflow_event_delivery_receipts()
+                .get("delivery-concurrent-duplicate")
+                .expect("accepted delivery receipt should remain")
+                .queued_prompt_id,
+            session.workflow_queued_prompts()[0].id()
+        );
+    }
+
+    #[tokio::test]
+    async fn rejected_event_enqueue_releases_session_guard_before_rollback() {
+        let (runtime, session_id, binding) = runtime_with_event_binding();
+        let mut session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("event session should exist");
+        session
+            .workflow_event_binding_mut(&binding.id)
+            .expect("event binding should exist")
+            .queue_ref = Some("removed-event-queue".to_string());
+        runtime.owned.session_store.restore_session(session);
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            let outcome = runtime.accept_workflow_event_delivery(delivery(
+                &binding,
+                "delivery-rejected-queue",
+            ));
+            assert_no_event_work(&runtime, &session_id);
+            result_tx.send(outcome).expect("test should receive rejection");
+        });
+        let outcome = result_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("rejected enqueue must return without re-locking its session guard");
+        worker.join().expect("rejected delivery worker should finish");
+        assert!(matches!(
+            outcome,
+            Err(DaemonError::InvalidWorkflowGraphReference { reference, .. })
+                if reference == "removed-event-queue"
+        ), "removed queue must reject event admission");
+    }
+
+    #[tokio::test]
+    async fn failed_event_delivery_append_rolls_back_before_activity_capture_and_retries() {
+        let (runtime, session_id, binding) = runtime_with_event_binding();
+        runtime
+            .ensure_managed_activity_tracking("kernel-event-append-failure")
+            .expect("managed activity tracking should activate");
+        let (sequence_before, observation_before) = runtime
+            .managed_activity_report_snapshot()
+            .expect("initial idle activity should be durable");
+        let connection = install_workflow_append_failure(&runtime);
+        let envelope = delivery(&binding, "delivery-append-failure");
+
+        let error = runtime
+            .accept_workflow_event_delivery(envelope.clone())
+            .expect_err("durable append failure should reject event admission");
+        assert!(error
+            .to_string()
+            .contains("injected event workflow append failure"));
+        assert_no_event_work(&runtime, &session_id);
+        let (sequence_after, observation_after) = runtime
+            .managed_activity_report_snapshot()
+            .expect("rolled-back activity should remain readable");
+        assert_eq!(sequence_after, sequence_before);
+        assert_eq!(observation_after, observation_before);
+
+        connection
+            .execute_batch("DROP TRIGGER fail_event_workflow_runtime_append;")
+            .expect("event workflow append failure trigger should be removed");
+        let accepted = runtime
+            .accept_workflow_event_delivery(envelope)
+            .expect("rolled-back event delivery should retry as new");
+        assert!(!accepted.duplicate);
+    }
 }

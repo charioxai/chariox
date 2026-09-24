@@ -85,13 +85,25 @@ impl<'a> KernelAgentService<'a> {
             .app
             .providers
             .run_uses_structured_prompt_io(&provider_run);
+        let terminate_unacknowledged_claude = active_prompt.delivery_pending()
+            && crate::provider::provider_run_is_claude_headless(&provider_run);
         if !uses_structured_prompt_io {
-            crate::app::terminal_input::ProviderTerminalInput::new(self.app).send_provider_input(
-                session_id,
-                &provider_run_id,
-                attachment_id.unwrap_or(active_prompt.source_attachment_id()),
-                b"\x03",
-            )?;
+            if terminate_unacknowledged_claude {
+                // Before UserPromptSubmit acknowledges delivery, Claude may still
+                // be in startup/onboarding UI. Ctrl-C has no prompt lifecycle hook
+                // to settle through in that state, so terminate the owned process;
+                // normal liveness reconciliation finalizes this cancellation.
+                crate::app::provider_runtime::ProviderProcessTracker::new(self.app)
+                    .remove_run(&provider_run_id)?;
+            } else {
+                crate::app::terminal_input::ProviderTerminalInput::new(self.app)
+                    .send_provider_input(
+                        session_id,
+                        &provider_run_id,
+                        attachment_id.unwrap_or(active_prompt.source_attachment_id()),
+                        b"\x03",
+                    )?;
+            }
         }
 
         let prompt = self
@@ -177,6 +189,91 @@ impl<'a> KernelAgentService<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelling_unacknowledged_claude_headless_prompt_terminates_provider() {
+        let mut app = crate::DaemonApp::bootstrap(crate::DaemonConfig::for_tests())
+            .expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-cancellation-claude-headless",
+                "worktree-cancellation-claude-headless",
+            ))
+            .expect("session should exist");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-cancellation-claude-headless",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "claude",
+            "claude-headless",
+            "default",
+            "claude-opus",
+        )
+        .with_agent_id(agent.id());
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "provider-run-cancellation-claude-headless",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "claude:headless".to_string(),
+                pty_target: None,
+                pty_program: Some("/bin/sh".to_string()),
+                pty_args: vec![
+                    "-lc".to_string(),
+                    "trap '' INT; while :; do sleep 60; done".to_string(),
+                ],
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.sessions
+            .set_active_provider_run(session.id(), Some(run.id().to_string()))
+            .expect("active provider run should be set");
+        app.pty
+            .spawn_for_run(&run)
+            .expect("test provider PTY should start");
+        crate::app::provider_runtime::ProviderProcessTracker::new(&mut app)
+            .register_managed_run(&run)
+            .expect("test provider process should be tracked");
+        let mut prompt = crate::session::PromptQueueItem::new(
+            "prompt-cancellation-claude-headless",
+            attachment.id(),
+            agent.id(),
+            "cancel before Claude accepts this prompt",
+            PromptStatus::Dispatching,
+        );
+        prompt.set_durable_delivery(
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+            Some(run.id().to_string()),
+            None,
+        );
+        app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .expect("dispatching prompt should become active");
+
+        app.cancel_active_prompt(session.id(), attachment.id())
+            .expect("cancellation should be acknowledged");
+
+        assert!(
+            !app.pty.has_process(run.id()),
+            "Claude must be terminated when cancellation precedes UserPromptSubmit acknowledgement"
+        );
+        assert_eq!(
+            app.prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+                .expect("prompt owner should remain available")
+                .map(|prompt| prompt.status()),
+            Some(PromptStatus::Cancelling),
+            "process-exit reconciliation owns final cancellation settlement"
+        );
+    }
 
     #[test]
     fn workflow_cancellation_error_does_not_leave_a_settling_turn() {

@@ -116,6 +116,31 @@ impl KernelRuntimeState {
                 &workspace_context,
             )));
         }
+        let mut forwarded_arguments = arguments.clone();
+        if crate::transport::runtime_tools::canonical_agent_messaging_tool_name(tool_name)
+            == Some(crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL)
+        {
+            let worker_origin = arguments
+                .get("origin_prompt_id")
+                .and_then(serde_json::Value::as_str);
+            let origin_is_current = match provider_run.agent_instance_id().zip(worker_origin) {
+                Some((agent_id, prompt_id)) => self.agent_message_sender_prompt_is_running(
+                    provider_run.session_id(),
+                    agent_id,
+                    prompt_id,
+                )?,
+                None => false,
+            };
+            let Some(home_prompt_id) = remote_context.home_prompt_id.as_deref() else {
+                return Ok(Some(agent_message_origin_rejected()));
+            };
+            if !origin_is_current {
+                return Ok(Some(agent_message_origin_rejected()));
+            }
+            // The worker and home allocate different prompt IDs. Validate the
+            // worker's turn before translating it to the leased home turn.
+            forwarded_arguments["origin_prompt_id"] = serde_json::json!(home_prompt_id);
+        }
         let response = self
             .with_app_side_effect(|app| {
                 app.block_on_relay_future(
@@ -128,7 +153,7 @@ impl KernelRuntimeState {
                         RelayPeerRequest::ForwardCapabilityRuntimeTool {
                             context: remote_context.clone(),
                             tool_name: tool_name.to_string(),
-                            arguments: arguments.clone(),
+                            arguments: forwarded_arguments.clone(),
                         },
                     ),
                 )
@@ -179,6 +204,43 @@ impl KernelRuntimeState {
         ),
         DaemonError,
     > {
+        if crate::transport::runtime_tools::canonical_agent_messaging_tool_name(&tool_name)
+            == Some(crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL)
+        {
+            let session = self
+                .owned
+                .session_store
+                .get_session(&context.home_session_id)?;
+            let sender = self.owned.agent_store.get_agent(&context.home_agent_id)?;
+            let origin_is_current = sender.session_id() == context.home_session_id
+                && self.owned.config_projection.snapshot().daemon_id == context.home_kernel_id
+                && sender.remote_execution().is_some_and(|binding| {
+                    binding.leased_agent_id == context.leased_agent_id
+                        && binding.worker_kernel_id == context.worker_kernel_id
+                        && binding.worker_machine_id == context.worker_machine_id
+                        && binding.active_worker_provider_run_id.as_deref()
+                            == Some(context.worker_provider_run_id.as_str())
+                })
+                && context
+                    .home_prompt_id
+                    .as_deref()
+                    .is_some_and(|home_prompt_id| {
+                        self.owned
+                            .prompt_state_owner
+                            .active_prompt_for_agent(&session, sender.id())
+                            .is_some_and(|prompt| {
+                                prompt.id() == home_prompt_id
+                                    && prompt.status() == crate::session::PromptStatus::Running
+                            })
+                    });
+            if !origin_is_current {
+                return Err(DaemonError::LocalTransport {
+                    operation: "dispatch forwarded agent message",
+                    message: "sender prompt or leased worker binding is no longer current"
+                        .to_string(),
+                });
+            }
+        }
         let (result, package) = self
             .dispatch_capability_runtime_tool_call_for_agent(
                 &context.home_session_id,
@@ -300,5 +362,14 @@ impl KernelRuntimeState {
                 message: format!("unknown capability runtime tool `{tool_name}`"),
             }),
         }
+    }
+}
+
+fn agent_message_origin_rejected() -> crate::transport::runtime_tools::RuntimeToolResult {
+    crate::transport::runtime_tools::RuntimeToolResult {
+        ok: false,
+        payload: serde_json::json!({
+            "error": "agent message belongs to a different sender turn; message was not sent"
+        }),
     }
 }

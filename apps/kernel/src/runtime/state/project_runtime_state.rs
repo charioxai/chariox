@@ -114,6 +114,21 @@ impl KernelRuntimeState {
         Ok(project)
     }
 
+    pub(crate) fn update_project_environment_definition(
+        &self,
+        project_id: &str,
+        definition: crate::session::ProjectEnvironmentDefinition,
+        caller_user_id: &str,
+    ) -> Result<crate::session::RuntimeProject, DaemonError> {
+        let project = self
+            .owned
+            .session_store
+            .update_project_environment_definition(project_id, definition, caller_user_id)?;
+        self.append_project_durable_event("project.updated", &project)?;
+        self.owned.runtime_projection_changes.record_change();
+        Ok(project)
+    }
+
     pub(crate) async fn archive_project(
         &self,
         project_id: &str,
@@ -529,6 +544,8 @@ mod tests {
                 primary_repository_id: "repository-primary".to_string(),
                 repositories: vec![
                     crate::local::ManagedContextRepositoryLaunchTarget {
+                        workspace_kind:
+                            crate::managed_context::development::DevelopmentWorkspaceKind::Git,
                         repository_id: "repository-supporting".to_string(),
                         role: crate::managed_context::development::DevelopmentRepositoryRole::Supporting,
                         target_directory: "supporting".to_string(),
@@ -536,6 +553,8 @@ mod tests {
                         head_sha: "b".repeat(40),
                     },
                     crate::local::ManagedContextRepositoryLaunchTarget {
+                        workspace_kind:
+                            crate::managed_context::development::DevelopmentWorkspaceKind::Git,
                         repository_id: "repository-primary".to_string(),
                         role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
                         target_directory: "primary".to_string(),

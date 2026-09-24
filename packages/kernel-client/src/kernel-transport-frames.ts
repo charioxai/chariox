@@ -61,6 +61,12 @@ export type RelayResponseFrame<TResponse> = {
   error: KernelTransportError | null
 }
 
+// Protocol 317 import replies authenticate their request attempt inside encryption.
+export type BrowserImportRelayResponse<TResponse> = {
+  readonly request_nonce: string
+  readonly response: TResponse
+}
+
 export type RelaySubscribeFrame = {
   kind: "client_subscribe"
   request_id: string

@@ -218,6 +218,7 @@ impl KernelRuntimeOwnedState {
         workflow_node_run_id: &str,
         error: &DaemonError,
     ) {
+        let activity_mutation = self.begin_managed_activity_mutation();
         self.workflow_record_failure(
             session_id,
             workflow_run_id,
@@ -233,6 +234,22 @@ impl KernelRuntimeOwnedState {
             workflow_run_id,
             workflow_node_run_id,
         );
+        if let Err(persist_error) = self.persist_workflow_runtime_session_with_activity_mutation(
+            session_id,
+            "workflow_dispatch_failed",
+            activity_mutation,
+        ) {
+            crate::logging::warn_with_fields(
+                "daemon.runtime",
+                "workflow dispatch failure persistence failed",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "workflow_run_id": workflow_run_id,
+                    "workflow_node_run_id": workflow_node_run_id,
+                    "error": persist_error.to_string(),
+                }),
+            );
+        }
         self.workflow_maybe_start_next_queued_prompt(session_id);
         let _ = self.session_snapshot(session_id);
     }

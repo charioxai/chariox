@@ -16,17 +16,37 @@ const providerRuntimeBindUrl = new URL(
   "../deploy/managed-kernel/verify-provider-runtime-bind.sh",
   import.meta.url,
 )
+const providerLaunchProbeUrl = new URL(
+  "../deploy/managed-kernel/probe-provider-launch-ab.sh",
+  import.meta.url,
+)
+const publicationAccessDrillUrl = new URL(
+  "../deploy/managed-kernel/verify-slice-publication-access.sh",
+  import.meta.url,
+)
 const versionsUrl = new URL("../deploy/managed-kernel/provider-versions.env", import.meta.url)
 const publicationDockerfileUrl = new URL("../docker/publication/Dockerfile", import.meta.url)
 const sliceDockerfileUrl = new URL("../apps/kernel/slice-linux-docker/docker/Dockerfile", import.meta.url)
 const sliceToolchainPackageUrl = new URL("../apps/kernel/slice-linux-docker/toolchain/package.json", import.meta.url)
 const sliceToolchainLockUrl = new URL("../apps/kernel/slice-linux-docker/toolchain/package-lock.json", import.meta.url)
 const runbookUrl = new URL("../docs/MANAGED_REMOTE_KERNEL_IMAGE.md", import.meta.url)
+const bootstrapEntrypointUrl = new URL("../apps/kernel/src/bin/chariox-managed-bootstrap.rs", import.meta.url)
 const managedServiceUrl = new URL("../deploy/managed-kernel/chariox-managed-bootstrap.service", import.meta.url)
+const path1ManagedServiceUrl = new URL("../deploy/managed-kernel/chariox-path1-managed-bootstrap.service", import.meta.url)
+const workerServiceUrl = new URL("../deploy/managed-kernel/chariox-disposable-worker-bootstrap.service", import.meta.url)
+const workerKernelSourceUrl = new URL("../apps/kernel/src/managed_bootstrap/worker.rs", import.meta.url)
 const rootlessServiceUrl = new URL("../deploy/managed-kernel/chariox-rootless-docker.service", import.meta.url)
 const brokerServiceUrl = new URL("../deploy/managed-kernel/chariox-slice-broker.service", import.meta.url)
 const installerUrl = new URL("../deploy/managed-kernel/install-image.sh", import.meta.url)
 const publicationAccessUrl = new URL("../apps/kernel/slice-linux-docker/managed-publication-access.sh", import.meta.url)
+const sliceDevelopmentRuntimeStateUrl = new URL(
+  "../apps/kernel/src/runtime/state/slice_development_runtime_state.rs",
+  import.meta.url,
+)
+const sliceEmptyDevelopmentUrl = new URL(
+  "../apps/kernel/src/runtime/state/slice_empty_development.rs",
+  import.meta.url,
+)
 const managedBrokerUrl = new URL("../apps/kernel/slice-linux-docker/managed-docker-broker.mjs", import.meta.url)
 const rootlessNamespaceUrl = new URL(
   "../apps/kernel/slice-linux-docker/enter-rootless-docker-namespace.sh",
@@ -54,9 +74,13 @@ test("Hetzner image preparation is pinned, guarded, and leaves no runtime identi
   assert.match(script, /provider_toolchain_source=\/usr\/lib\/chariox\/slice-build-context\/apps\/kernel\/slice-linux-docker\/toolchain/)
   assert.match(script, /npm ci --omit=dev/)
   assert.doesNotMatch(script, /npm install -g/)
-  assert.match(script, /"\$script_root\/install-image\.sh" "\$release_rootfs" "\$release_digest" "\$trusted_public_key"/)
-  assert.match(script, /systemctl is-enabled --quiet chariox-managed-bootstrap\.service/)
-  assert.match(script, /systemctl is-active --quiet chariox-managed-bootstrap\.service/)
+  assert.match(script, /"\$script_root\/install-image\.sh" \\\s*"\$release_rootfs" "\$release_digest" "\$trusted_public_key" "\$managed_provider_topology"/)
+  assert.match(script, /migration_journal=\/var\/lib\/chariox\/home-migration\.json/)
+  assert.match(script, /migration_complete=\/var\/lib\/chariox\/home-migration-complete/)
+  assert.match(script, /\.required == false and \.rootIdentity == null and \.entries == \[\]/)
+  assert.match(script, /rm -f -- "\$migration_journal" "\$migration_complete"/)
+  assert.match(script, /systemctl is-enabled --quiet "\$managed_bootstrap_service"/)
+  assert.match(script, /systemctl is-active --quiet "\$managed_bootstrap_service"/)
   assert.match(script, /managed runtime state entered the image/)
   assert.match(script, /rootless Docker state entered the image/)
   assert.match(script, /managed slice state entered the image/)
@@ -78,6 +102,9 @@ test("Hetzner image preparation is pinned, guarded, and leaves no runtime identi
   assert.match(script, /configure_subid_range \/etc\/subgid --add-subgids/)
   assert.match(script, /requested subordinate ID range overlaps/)
   assert.match(script, /systemctl start chariox-rootless-docker\.service/)
+  assert.match(script, /^  dbus-user-session \\$/m)
+  assert.match(script, /^  docker-buildx \\$/m)
+  assert.match(script, /docker buildx version >\/dev\/null \|\| fail "Docker Buildx is unavailable"/)
   assert.match(script, /runuser -u chariox-docker -- env DOCKER_HOST=unix:\/\/\/run\/chariox-docker\/docker\.sock docker info/)
   assert.match(script, /slice_base_image=node:22\.17\.1-bookworm@sha256:37ff334612f77d8f999c10af8797727b731629c26f2e83caa6af390998bdc49c/)
   assert.match(script, /docker pull "\$slice_base_image"/)
@@ -91,6 +118,16 @@ test("Hetzner image preparation is pinned, guarded, and leaves no runtime identi
   assert.doesNotMatch(script, /usermod .*--groups docker chariox/)
   assert.doesNotMatch(script, /enable --now docker\.service/)
   assert.match(script, /cloud-init clean --logs --machine-id --seed/)
+  assert.match(script, /passwd --lock root/)
+  assert.match(script, /chage -d "\$\(date -u \+%Y-%m-%d\)" -M 99999 -I -1 -E -1 root/)
+  assert.match(script, /PasswordAuthentication no/)
+  assert.match(script, /KbdInteractiveAuthentication no/)
+  assert.match(script, /PermitRootLogin prohibit-password/)
+  assert.match(script, /sshd -T/)
+  assert.match(script, /grep -Fxq 'permitrootlogin prohibit-password'/)
+  assert.doesNotMatch(script, /grep -Fxq 'permitrootlogin without-password'/)
+  assert.doesNotMatch(script, /install[^\n]*\/dev\/stdin/)
+  assert.match(script, /managed_sshd_tmp=\$\(mktemp\)/)
   assert.match(
     script,
     /rm -rf \/var\/lib\/apt\/lists\/\* \/tmp\/chariox-managed-release \/root\/\.cache \/root\/\.npm \/root\/\.ssh/,
@@ -307,7 +344,7 @@ test("managed image and publication runtimes pin the same provider releases", as
   )
   const dockerfile = await readFile(publicationDockerfileUrl, "utf8")
   assert.deepEqual(versions, {
-    CHARIOX_CODEX_VERSION: "0.144.0",
+    CHARIOX_CODEX_VERSION: "0.144.5",
     CHARIOX_OPENCODE_VERSION: "1.18.23",
     CHARIOX_CLAUDE_VERSION: "2.1.212",
   })
@@ -333,11 +370,14 @@ test("managed slice image locks every network and compiler input", async () => {
   assert.match(dockerfile, /npm_config_cache=\/tmp\/chariox-npm-cache/)
   assert.match(dockerfile, /node_modules\/\.bin\/pnpm --version/)
   assert.match(dockerfile, /rm -rf \/tmp\/chariox-npm-cache \/root\/\.npm/)
-  assert.doesNotMatch(dockerfile, /^# syntax=/m)
+  assert.match(
+    dockerfile,
+    /^# syntax=docker\/dockerfile:1@sha256:[a-f0-9]{64}$/m,
+  )
   assert.doesNotMatch(dockerfile, /npm install|rustup\.rs|deb\.nodesource\.com/)
   assert.deepEqual(toolchainPackage.dependencies, {
     "@anthropic-ai/claude-code": "2.1.212",
-    "@openai/codex": "0.144.0",
+    "@openai/codex": "0.144.5",
     "opencode-ai": "1.18.23",
     pnpm: "11.22.0",
     ws: "8.21.3",
@@ -362,7 +402,11 @@ test("managed slices use builder-attested runtime binaries instead of compiling 
 })
 
 test("managed Docker authority and publication access remain narrowly separated", async () => {
+  const bootstrapEntrypoint = await readFile(bootstrapEntrypointUrl, "utf8")
   const managed = await readFile(managedServiceUrl, "utf8")
+  const worker = await readFile(workerServiceUrl, "utf8")
+  const workerKernel = await readFile(workerKernelSourceUrl, "utf8")
+  const providerLaunchProbe = await readFile(providerLaunchProbeUrl, "utf8")
   const rootless = await readFile(rootlessServiceUrl, "utf8")
   const broker = await readFile(brokerServiceUrl, "utf8")
   const installer = await readFile(installerUrl, "utf8")
@@ -370,17 +414,98 @@ test("managed Docker authority and publication access remain narrowly separated"
   const managedBroker = await readFile(managedBrokerUrl, "utf8")
   const rootlessNamespace = await readFile(rootlessNamespaceUrl, "utf8")
 
+  assert.match(bootstrapEntrypoint, /args\(\)\.any\(\|arg\| arg == "--disposable-worker"\)/)
+  assert.match(
+    bootstrapEntrypoint,
+    /args\(\)\.any\(\|arg\| arg == "--disposable-worker"\)[\s\S]*worker::run_from_env\(\)/,
+  )
   assert.match(managed, /Wants=network-online\.target chariox-rootless-docker\.service/)
   assert.doesNotMatch(managed, /(?:Wants|After)=.*chariox-slice-broker/)
   assert.match(managed, /ExecStartPre=-\+\/usr\/bin\/systemctl restart chariox-slice-broker\.service/)
-  assert.match(managed, /CHARIOX_CAPABILITY_ISOLATION_ROOT=\/var\/lib\/chariox\/home\/managed-context\/kernel/)
+  assert.match(managed, /Environment=HOME=\/home\/chariox/)
+  assert.match(managed, /Environment=CHARIOX_HOME=\/home\/chariox\/\.chariox/)
+  assert.match(managed, /CHARIOX_CAPABILITY_ISOLATION_ROOT=\/home\/chariox\/\.chariox\/managed-context\/kernel/)
+  assert.match(managed, /Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=shared_host/)
+  assert.match(managed, /Environment=CHARIOX_MANAGED_PROVIDER_ISOLATION=1/)
+  assert.match(managed, /CHARIOX_MANAGED_VAULT_PATH=\/home\/chariox\/\.chariox\/vault\/vault\.json/)
+  assert.match(managed, /CHARIOX_MANAGED_BOOTSTRAP_RECEIPT=\/var\/lib\/chariox\/managed\/bootstrap-receipt\.json/)
+  assert.match(managed, /ProtectHome=read-only/)
+  assert.match(managed, /ReadWritePaths=\/home\/chariox \/var\/lib\/chariox \/var\/lib\/chariox-slice-share/)
+  assert.match(managed, /Restart=always/)
+  assert.match(managed, /RestartSteps=8/)
+  assert.match(managed, /RestartMaxDelaySec=5min/)
   assert.match(managed, /^ProtectKernelTunables=false$/m)
+  for (const directive of [
+    "NoNewPrivileges=true",
+    "PrivateTmp=true",
+    "ProtectSystem=strict",
+    "ProtectHome=read-only",
+    "ProtectKernelModules=true",
+    "ProtectControlGroups=true",
+    "RestrictSUIDSGID=true",
+    "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
+    "UMask=0007",
+  ]) {
+    assert.match(managed, new RegExp(`^${directive}$`, "m"))
+  }
+  assert.match(worker, /Environment=HOME=\/home\/chariox/)
+  assert.match(worker, /Environment=CHARIOX_HOME=\/home\/chariox\/\.chariox/)
+  assert.match(worker, /Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1/)
+  assert.match(worker, /Environment=CHARIOX_DISPOSABLE_WORKER_RECEIPT=\/var\/lib\/chariox\/disposable-worker\/bootstrap-receipt\.json/)
+  assert.match(worker, /Environment=CHARIOX_MANAGED_PROVIDER_HOME=\/var\/lib\/chariox\/provider-home/)
+  assert.match(worker, /Environment=CHARIOX_MANAGED_VAULT_PATH=\/home\/chariox\/\.chariox\/vault\/vault\.json/)
+  // The supervisor needs this endpoint to claim the one-shot broker. Its
+  // child kernel receives only the scoped lease FD, never the socket path.
+  assert.match(worker, /^Environment=CHARIOX_SLICE_DOCKER_BROKER_SOCKET=\/var\/lib\/chariox-slice-share\/\.broker-private\/control\/control\.sock$/m)
+  assert.match(workerKernel, /for name in PATH1_SHARED_HOST_SELECTOR_ENVS\s*\{\s*command\.env_remove\(name\);/)
+  assert.match(workerKernel, /super::supervisor::spawn_with_broker_lease\(&mut command\)/)
+  for (const sharedHostSelector of [
+    "CHARIOX_CAPABILITY_ISOLATION_ROOT=",
+    "CHARIOX_MANAGED_PROVIDER_ISOLATION=",
+    "CHARIOX_MANAGED_PROVIDER_BWRAP=",
+    "CHARIOX_MANAGED_SLICE_SERVICE_ROOT=",
+    "CHARIOX_MANAGED_SLICE_PUBLICATION_ROOT=",
+    "CHARIOX_SLICE_ROOT=",
+    "CHARIOX_SLICE_DOCKER_BROKER_FD=",
+    "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED=",
+  ]) {
+    assert.doesNotMatch(worker, new RegExp(`^Environment=${sharedHostSelector}`, "m"))
+  }
+  assert.match(worker, /Restart=always/)
+  assert.match(worker, /RestartSteps=8/)
+  assert.match(worker, /RestartMaxDelaySec=5min/)
+  assert.match(worker, /Path 1 is one disposable VM per worker/)
+  assert.doesNotMatch(worker, /CHARIOX_MANAGED_PROVIDER_ISOLATION=/)
+  assert.doesNotMatch(worker, /CHARIOX_CAPABILITY_ISOLATION_ROOT=/)
+  assert.doesNotMatch(worker, /bwrap/i)
+  for (const directive of [
+    "NoNewPrivileges=",
+    "PrivateTmp=",
+    "ProtectSystem=",
+    "ProtectHome=",
+    "ProtectKernelTunables=",
+    "ProtectKernelModules=",
+    "ProtectControlGroups=",
+    "RestrictSUIDSGID=",
+    "RestrictAddressFamilies=",
+    "ReadWritePaths=",
+    "UMask=",
+  ]) {
+    assert.doesNotMatch(worker, new RegExp(`^${directive}`, "m"))
+  }
   assert.doesNotMatch(rootless, /SupplementaryGroups=chariox-slice/)
   assert.match(rootless, /Environment=PATH=\/usr\/local\/bin:\/usr\/bin:\/bin:\/usr\/sbin:\/sbin/)
   assert.match(rootless, /^ProtectKernelTunables=false$/m)
-  assert.match(rootless, /^RestrictSUIDSGID=false$/m)
-  assert.doesNotMatch(rootless, /^RestrictSUIDSGID=true$/m)
-  assert.match(rootless, /--exec-opt native\.cgroupdriver=cgroupfs/)
+  assert.match(rootless, /^RestrictSUIDSGID=true$/m)
+  assert.match(rootless, /ExecStart=.*managed-rootless-service\.sh start/)
+  assert.match(rootless, /ExecStopPost=.*managed-rootless-service\.sh stop/)
+  assert.match(rootless, /ExecStartPost=.*managed-rootless-service\.sh ready/)
+  const engine = await readFile(new URL("../apps/kernel/slice-linux-docker/chariox-rootless-engine.service", import.meta.url), "utf8")
+  assert.match(engine, /--exec-opt native\.cgroupdriver=systemd/)
+  assert.match(engine, /^Delegate=cpu cpuset io memory pids$/m)
+  assert.doesNotMatch(engine, /^User=/m)
+  assert.match(installer, /user@\$docker_uid\.service\.d/)
+  assert.match(installer, /loginctl enable-linger chariox-docker/)
   assert.match(rootless, /ReadWritePaths=.*\/var\/lib\/chariox-slice-share\/\.broker-private/)
   assert.match(rootless, /ReadWritePaths=.*\/var\/lib\/chariox-slice-share\/slices\/development/)
   assert.doesNotMatch(rootless, /ReadWritePaths=.*\/var\/lib\/chariox(?:\/home)?(?:\s|$)/)
@@ -390,7 +515,21 @@ test("managed Docker authority and publication access remain narrowly separated"
   assert.match(broker, /enter-rootless-docker-namespace\.sh \/usr\/bin\/node/)
   assert.match(broker, /CHARIOX_SLICE_DOCKER_BROKER_SOCKET=\/var\/lib\/chariox-slice-share\/\.broker-private\/control\/control\.sock/)
   assert.match(rootlessNamespace, /nsenter --target "\$child_pid" --user --mount/)
-  assert.doesNotMatch(rootlessNamespace, /nsenter[^\n]*--net/)
+  assert.match(rootlessNamespace, /nsenter --target "\$child_pid" --user --mount --net -- "\$@"/)
+  assert.match(rootlessNamespace, /\[ -L "\/proc\/\$child_pid\/ns\/net" \]/)
+  const preparation = await readFile(scriptUrl, "utf8")
+  assert.match(preparation, /CHARIOX_MANAGED_PROVIDER_TOPOLOGY-\}/)
+  assert.doesNotMatch(preparation, /CHARIOX_MANAGED_PROVIDER_TOPOLOGY:-path1/)
+  assert.match(preparation, /if \[ "\$managed_provider_topology" = shared_host \]; then[\s\S]*verify-provider-runtime-bind\.sh/)
+  assert.match(preparation, /Bubblewrap remains installed for Docker-slice inner defense/)
+  assert.match(providerLaunchProbe, /CHARIOX_MANAGED_PROVIDER_TOPOLOGY-\}/)
+  assert.doesNotMatch(providerLaunchProbe, /CHARIOX_MANAGED_PROVIDER_TOPOLOGY:-path1/)
+  assert.match(providerLaunchProbe, /provider launch A\/B probe skipped: Path 1 uses the ordinary VM kernel\/provider boundary/)
+  assert.match(providerLaunchProbe, /before checking or requiring Bubblewrap/)
+  assert.match(providerLaunchProbe, /shared_host\|legacy_shared_host/)
+  assert.match(preparation, /"\$broker_namespace" docker build --pull --tag chariox-broker-network-check:local -/)
+  assert.match(preparation, /DOCKER_BUILDKIT=1/)
+  assert.match(preparation, /# syntax=docker\/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32/)
   assert.doesNotMatch(installer, /usermod --append --groups chariox-slice chariox-docker/)
   assert.match(installer, /setfacl -P -m "u:chariox-docker:--x" -- "\$install_root\/var\/lib\/chariox-slice-share"/)
   assert.match(installer, /install -d -o chariox-docker -g chariox-slice -m 2710/)
@@ -410,13 +549,116 @@ test("managed Docker authority and publication access remain narrowly separated"
   assert.doesNotMatch(managedBroker, /CHARIOX_SLICE_CLOUD_RELAY_CONFIG/)
 })
 
+test("managed image validation requires an explicit topology and preserves both paths", async () => {
+  const [preparation, providerLaunchProbe, runbook, path1ManagedService] = await Promise.all([
+    readFile(scriptUrl, "utf8"),
+    readFile(providerLaunchProbeUrl, "utf8"),
+    readFile(runbookUrl, "utf8"),
+    readFile(path1ManagedServiceUrl, "utf8"),
+  ])
+
+  assert.match(
+    runbook,
+    /sudo env CHARIOX_MANAGED_PROVIDER_TOPOLOGY=shared_host \\\n+  deploy\/managed-kernel\/prepare-hetzner-image\.sh \\\n+  <release-rootfs>/,
+  )
+  assert.match(runbook, /For a disposable-VM Path-1 image, replace `shared_host` with `path1` and set/)
+  assert.match(runbook, /CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY=<external-pinned-builder-public-key>/)
+
+  for (const script of [preparation, providerLaunchProbe]) {
+    assert.match(script, /CHARIOX_MANAGED_PROVIDER_TOPOLOGY-\}/)
+    assert.doesNotMatch(script, /CHARIOX_MANAGED_PROVIDER_TOPOLOGY:-path1/)
+    assert.match(script, /CHARIOX_MANAGED_PROVIDER_TOPOLOGY must be explicitly set to path1 or shared_host/)
+    assert.match(script, /path1/)
+    assert.match(script, /shared_host/)
+  }
+  assert.match(
+    preparation,
+    /if \[ "\$managed_provider_topology" = shared_host \]; then[\s\S]*verify-provider-runtime-bind\.sh/,
+  )
+  assert.match(preparation, /path1[\s\S]*managed_bootstrap_service=chariox-path1-managed-bootstrap\.service/)
+  assert.match(preparation, /shared_host[\s\S]*managed_bootstrap_service=chariox-managed-bootstrap\.service/)
+  assert.match(preparation, /other_managed_bootstrap_service/)
+  assert.match(path1ManagedService, /Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1/)
+  assert.match(path1ManagedService, /Environment=CHARIOX_MANAGED_BOOTSTRAP_PATH=\/var\/lib\/chariox\/managed-bootstrap\.json/)
+  assert.match(path1ManagedService, /Environment=HOME=\/home\/chariox/)
+  assert.match(path1ManagedService, /Environment=CHARIOX_HOME=\/home\/chariox\/\.chariox/)
+  assert.match(path1ManagedService, /ExecStart=\/usr\/local\/bin\/chariox-managed-bootstrap\n/)
+  assert.doesNotMatch(path1ManagedService, /^UMask=/m, "Path-1 must use systemd's ordinary system-unit umask")
+  for (const forbidden of [
+    "CHARIOX_MANAGED_PROVIDER_ISOLATION",
+    "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+    "CHARIOX_MANAGED_PROVIDER_BWRAP",
+    "bwrap",
+    "NoNewPrivileges=",
+    "PrivateTmp=",
+    "ProtectSystem=",
+    "ProtectHome=",
+  ]) {
+    assert.doesNotMatch(path1ManagedService, new RegExp(forbidden))
+  }
+  assert.match(
+    providerLaunchProbe,
+    /provider launch A\/B probe skipped: Path 1 uses the ordinary VM kernel\/provider boundary/,
+  )
+
+  const probePath = fileURLToPath(providerLaunchProbeUrl)
+  const probeArguments = ["/nonexistent/chariox-rollback-kernel", "/nonexistent/chariox-candidate-kernel"]
+  const runProbe = (topology) => {
+    const env = { ...process.env }
+    if (topology === undefined) delete env.CHARIOX_MANAGED_PROVIDER_TOPOLOGY
+    else env.CHARIOX_MANAGED_PROVIDER_TOPOLOGY = topology
+    return spawnSync(probePath, probeArguments, { encoding: "utf8", env })
+  }
+
+  const missing = runProbe(undefined)
+  assert.equal(missing.status, 2, missing.stderr)
+  assert.match(missing.stderr, /must be explicitly set to path1 or shared_host/)
+
+  const invalid = runProbe("unknown-topology")
+  assert.equal(invalid.status, 2, invalid.stderr)
+  assert.match(invalid.stderr, /must be path1 or shared_host/)
+
+  const path1 = runProbe("path1")
+  assert.equal(path1.status, 0, path1.stderr)
+  assert.match(path1.stderr, /probe skipped: Path 1/)
+
+  const sharedHost = runProbe("shared_host")
+  assert.notEqual(sharedHost.status, 0)
+  assert.doesNotMatch(sharedHost.stderr, /probe skipped: Path 1/)
+})
+
+test("recovered managed development publications verify ACLs without rewriting content", async () => {
+  const accessHelper = await readFile(publicationAccessUrl, "utf8")
+  const runtimeState = await readFile(sliceDevelopmentRuntimeStateUrl, "utf8")
+  const emptyDevelopment = await readFile(sliceEmptyDevelopmentUrl, "utf8")
+  const accessDrill = await readFile(publicationAccessDrillUrl, "utf8")
+
+  assert.match(accessHelper, /\[ "\$action" = verify \]/)
+  assert.match(accessHelper, /verify_publication_access/)
+  assert.match(runtimeState, /expected_publication\.is_some\(\).*"verify"/s)
+  assert.match(emptyDevelopment, /expected\.is_some\(\).*"verify"/s)
+  assert.doesNotMatch(
+    accessHelper.match(/elif \[ "\$action" = verify \]; then(?<branch>.*?)\n  else/s)?.groups?.branch ?? "",
+    /setfacl/,
+  )
+  assert.match(accessDrill, /"\$helper" verify/)
+  assert.match(accessDrill, /\[ "\$before_verify" = "\$after_verify" \]/)
+  assert.match(
+    accessDrill,
+    /runuser -u chariox -- sh -c 'umask 077; test "\$\(cat "\$1\/mapped-created"\)" = mapped; mkdir "\$1\/host-directory"'/,
+  )
+})
+
 test("managed slice provider namespaces receive the required outer Docker compatibility policy", async () => {
   const provisioner = await readFile(sliceProvisionerUrl, "utf8")
 
   assert.match(provisioner, /--security-opt seccomp=unconfined/)
-  assert.match(provisioner, /--security-opt apparmor=unconfined/)
+  assert.match(provisioner, /SLICE_APPARMOR_PROFILE="\$\{CHARIOX_SLICE_APPARMOR_PROFILE:-unconfined\}"/)
+  assert.match(provisioner, /--security-opt apparmor="\$SLICE_APPARMOR_PROFILE"/)
   assert.match(provisioner, /--security-opt systempaths=unconfined/)
+  assert.match(provisioner, /SLICE_APPARMOR_PROFILE.*\^\[A-Za-z0-9\]/)
   assert.match(provisioner, /CHARIOX_SLICE_ALLOW_UNCONFINED_SECCOMP must be 0 or 1/)
+  assert.match(provisioner, /CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY must be 0 or 1/)
 })
 
 test("Hetzner snapshot labels preserve the complete release digest within provider limits", async () => {

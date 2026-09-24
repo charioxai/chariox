@@ -17,18 +17,24 @@ impl KernelRuntimeState {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let slice_ref = request.slice_ref.clone();
         let kernel_ref = request.kernel_ref.clone();
-        if slice_ref.is_some() && kernel_ref.is_some() {
-            return Err(DaemonError::LocalTransport {
-                operation: "session.create",
-                message: "use either kernel_ref or slice_ref, not both".to_string(),
-            });
-        }
         if request.metaagent {
             return Err(DaemonError::LocalTransport {
                 operation: "session.create",
                 message: "creating separate metaagents is deprecated; create a regular session and send `/meta <task>` to enter meta mode".to_string(),
             });
         }
+        let slice_admission = self.guard_slice_execution(
+            None,
+            [(slice_ref.as_deref(), kernel_ref.as_deref())],
+            "session.create",
+        )?;
+        let [slice_ref] = slice_admission.slice_ids.as_slice() else {
+            return Err(DaemonError::InternalInvariant {
+                operation: "session.create",
+                message: "slice admission target count mismatch".to_string(),
+            });
+        };
+        let slice_ref = slice_ref.clone();
         if slice_ref.is_none() && kernel_ref.is_none() {
             request = prepare_local_session_worktree_placement(request)?;
         }
@@ -521,51 +527,10 @@ impl KernelRuntimeState {
         .await
     }
 
-    pub(crate) async fn spawn_agents(
+    pub(super) fn normalize_local_kernel_ref(
         &self,
-        mut requests: Vec<crate::agent::CreateAgentRequest>,
-        caller_user_id: &str,
-    ) -> Result<Vec<crate::agent::AgentInstance>, DaemonError> {
-        for request in &mut requests {
-            self.normalize_local_kernel_ref(request);
-        }
-        if requests.iter().all(|request| request.kernel_ref.is_none()) {
-            let mut prepared_requests = Vec::with_capacity(requests.len());
-            for request in requests {
-                prepared_requests.push(self.prepare_local_agent_worktree_placement(request)?);
-            }
-            return self.owned.spawn_agents(prepared_requests);
-        }
-
-        let mut ordered_agents = vec![None; requests.len()];
-        let mut local_requests = Vec::new();
-        let mut local_indices = Vec::new();
-        for (index, request) in requests.into_iter().enumerate() {
-            if request.kernel_ref.is_none() {
-                local_requests.push(self.prepare_local_agent_worktree_placement(request)?);
-                local_indices.push(index);
-            } else {
-                ordered_agents[index] = Some(self.spawn_agent(request).await?);
-            }
-        }
-        if !local_requests.is_empty() {
-            let local_agents = self.owned.spawn_agents(local_requests)?;
-            for (index, agent) in local_indices.into_iter().zip(local_agents.into_iter()) {
-                ordered_agents[index] = Some(agent);
-            }
-        }
-        let agents = ordered_agents
-            .into_iter()
-            .collect::<Option<Vec<_>>>()
-            .expect("every batch spawn slot should be populated");
-        if let Some(last_agent) = agents.last() {
-            self.owned
-                .focus_agent(last_agent.session_id(), last_agent.id(), caller_user_id)?;
-        }
-        Ok(agents)
-    }
-
-    fn normalize_local_kernel_ref(&self, request: &mut crate::agent::CreateAgentRequest) {
+        request: &mut crate::agent::CreateAgentRequest,
+    ) {
         let Some(kernel_ref) = request.kernel_ref.as_deref() else {
             return;
         };
@@ -575,7 +540,7 @@ impl KernelRuntimeState {
         }
     }
 
-    fn prepare_local_agent_worktree_placement(
+    pub(super) fn prepare_local_agent_worktree_placement(
         &self,
         mut request: crate::agent::CreateAgentRequest,
     ) -> Result<crate::agent::CreateAgentRequest, DaemonError> {
@@ -682,6 +647,11 @@ impl KernelRuntimeState {
         let local_agent =
             self.owned
                 .ensure_agent_ref_owner(agent_ref, caller_user_id, "move agent to remote")?;
+        let _slice_guards = self.guard_slice_execution(
+            Some(session_id),
+            [(None, Some(machine_ref))],
+            "agent.move_remote",
+        )?;
         let terminated_run_ids = self
             .owned
             .terminate_idle_provider_runs_for_agent_before_remote_move(session_id, &local_agent)?;
@@ -789,17 +759,19 @@ impl KernelRuntimeState {
             .collect::<Vec<_>>();
         self.owned
             .ensure_agent_owner(agent.id(), caller_user_id, "destroy agent")?;
-        let destroyed = if agent.remote_execution().is_none() {
-            self.owned.destroy_agent(agent_id, caller_user_id)?
-        } else {
-            let destroyed = self
-                .with_app_side_effect(|app| {
-                    crate::app::KernelSessionService::new(app).destroy_agent(agent_id)
-                })
-                .await?;
-            self.owned.destroy_agent(agent_id, caller_user_id)?;
-            destroyed
-        };
+        if agent.remote_execution().is_some() {
+            self.with_app_side_effect(|app| {
+                crate::app::KernelSessionService::new(app).destroy_agent_worker_execution(&agent)
+            })
+            .await
+            .map_err(|error| DaemonError::AgentWorkerCleanup {
+                agent_id: agent_id.to_string(),
+                source: Box::new(error),
+            })?;
+        }
+        // The app and runtime share the agent store. Delete once, after worker
+        // cleanup, through the owner that also clears prompt and run state.
+        let destroyed = self.owned.destroy_agent(agent_id, caller_user_id)?;
         for slice_ref in slice_refs {
             let slice = self.owned.slice_store.detach_agent(
                 &slice_ref,
@@ -812,11 +784,9 @@ impl KernelRuntimeState {
                 serde_json::json!({ "slice": &slice }),
             )?;
         }
-        if agent.remote_execution().is_none() {
-            self.remove_destroyed_agent_provider_processes(local_provider_run_ids);
-            self.append_agent_durable_event("agent.deleted", &destroyed, None)
-                .await?;
-        }
+        self.remove_destroyed_agent_provider_processes(local_provider_run_ids);
+        self.append_agent_durable_event("agent.deleted", &destroyed, None)
+            .await?;
         Ok(destroyed)
     }
 
@@ -887,7 +857,18 @@ impl KernelRuntimeState {
         session_id: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
         let owned = &self.owned;
+        let durable_session = owned.session_end_snapshot(session_id)?;
+        self.append_session_durable_event(
+            "session.ended",
+            &durable_session,
+            "runtime_end_session",
+        )
+        .await?;
+        self.stop_managed_environment_for_session_lifecycle(session_id)
+            .await;
         let (session, terminated_run_ids) = owned.end_session(session_id)?;
+        owned.clear_session_prompt_runtime_state(session_id);
+        let session = owned.publish_session_after_durable_mutation(session);
         for provider_run_id in terminated_run_ids {
             let (_, process_key) = self
                 .with_app_side_effect(|app| {
@@ -898,8 +879,6 @@ impl KernelRuntimeState {
             owned.remove_provider_process_tracking_for_run(&provider_run_id, process_key);
         }
         self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
-        self.append_session_durable_event("session.ended", &session, "runtime_end_session")
-            .await?;
         self.detach_session_slices(&session).await?;
         Ok(session)
     }
@@ -909,9 +888,31 @@ impl KernelRuntimeState {
         session_ref: &str,
         workspace_id: Option<&str>,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let session_id = self
+            .resolve_session_ref_id(session_ref, workspace_id)
+            .await?;
         let owned = &self.owned;
+        let durable_session = owned.session_end_snapshot(&session_id)?;
+        let durable_project_delete = owned.project_removed_by_session_delete(&session_id);
+        self.append_session_durable_event(
+            "session.deleted",
+            &durable_session,
+            "runtime_delete_session",
+        )
+        .await?;
+        if let Some(project) = durable_project_delete.as_ref() {
+            self.append_project_durable_event("project.deleted", project)?;
+        }
+        self.stop_managed_environment_for_session_lifecycle(&session_id)
+            .await;
         let (session, terminated_run_ids, removed_project) =
             owned.delete_session_ref(session_ref, workspace_id)?;
+        debug_assert_eq!(
+            removed_project.as_ref().map(|project| project.id()),
+            durable_project_delete.as_ref().map(|project| project.id()),
+        );
+        owned.clear_session_prompt_runtime_state(&session_id);
+        owned.remove_session_projection_after_durable_mutation(&session_id);
         for provider_run_id in terminated_run_ids {
             let (_, process_key) = self
                 .with_app_side_effect(|app| {
@@ -921,13 +922,32 @@ impl KernelRuntimeState {
                 .unwrap_or((false, None));
             owned.remove_provider_process_tracking_for_run(&provider_run_id, process_key);
         }
-        self.append_session_durable_event("session.deleted", &session, "runtime_delete_session")
-            .await?;
-        if let Some(project) = removed_project {
-            self.append_project_durable_event("project.deleted", &project)?;
-        }
         self.detach_session_slices(&session).await?;
         Ok(session)
+    }
+
+    async fn stop_managed_environment_for_session_lifecycle(&self, session_id: &str) {
+        if !self.browser_controller_enabled_for_room(session_id) {
+            return;
+        }
+        let result = match self.room_environment_snapshot(session_id) {
+            Ok(_) => self
+                .stop_managed_room_environment_runtime(session_id)
+                .await
+                .map(|_| ()),
+            Err(crate::session::EnvironmentError::EnvironmentNotFound { .. }) => Ok(()),
+            Err(error) => Err(DaemonError::LocalTransport {
+                operation: "environment.stop.session_lifecycle",
+                message: format!("{}: {error:?}", error.code()),
+            }),
+        };
+        if let Err(error) = result {
+            tracing::warn!(
+                session_id,
+                error = %error,
+                "managed browser environment cleanup failed during session teardown"
+            );
+        }
     }
 
     async fn detach_session_slices(
@@ -1229,6 +1249,442 @@ mod tests {
             metaagent_events,
             workspace_coordinator,
         )
+    }
+
+    fn create_activity_test_session(
+        runtime: &KernelRuntimeState,
+        label: &str,
+    ) -> crate::session::RuntimeSession {
+        SessionStateOwner::new(runtime.owned.session_store.clone())
+            .create_session(crate::session::CreateSessionRequest::new(
+                format!("workspace-{label}"),
+                format!("worktree-{label}"),
+            ))
+            .expect("activity test session should create")
+    }
+
+    fn install_durable_event_failure(
+        runtime: &KernelRuntimeState,
+        trigger_name: &str,
+        event_kind: &str,
+    ) -> rusqlite::Connection {
+        let connection = rusqlite::Connection::open(runtime.owned.durable_state_store.path())
+            .expect("durable database should open for failure injection");
+        connection
+            .execute_batch(&format!(
+                "CREATE TRIGGER {trigger_name}
+                 BEFORE INSERT ON durable_state_events
+                 WHEN NEW.kind = '{event_kind}'
+                 BEGIN
+                   SELECT RAISE(FAIL, 'injected durable mutation failure');
+                 END;"
+            ))
+            .expect("durable mutation failure trigger should install");
+        connection
+    }
+
+    #[tokio::test]
+    async fn workflow_persistence_failure_does_not_publish_projection_or_activity() {
+        let runtime = runtime_state_for_rollback_test().await;
+        runtime
+            .ensure_managed_activity_tracking("kernel-workflow-order")
+            .expect("managed activity tracking should activate before work");
+        let mut session = create_activity_test_session(&runtime, "workflow-order");
+        let session_id = session.id().to_string();
+        let mut workflow_run = crate::session::WorkflowRun::new(
+            "run-order",
+            "workflow-order",
+            "endpoint-order",
+            "node-order",
+            None,
+            None,
+            Vec::new(),
+            Vec::new(),
+        );
+        workflow_run.set_status(crate::session::WorkflowRunStatus::Running);
+        session.create_workflow_run(workflow_run);
+        runtime.owned.session_store.restore_session(session);
+        runtime.record_managed_activity_transition_for_test();
+        let projected = runtime
+            .owned
+            .session_snapshot(&session_id)
+            .expect("busy workflow projection should publish");
+        assert_eq!(
+            projected
+                .workflow_run("run-order")
+                .expect("workflow run should project")
+                .status(),
+            crate::session::WorkflowRunStatus::Running
+        );
+        let runtime_sequence = runtime.managed_activity_change_sequence();
+        let projection_sequence = runtime.owned.session_projection.change_sequence();
+
+        let mut completed = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("workflow session should exist");
+        completed
+            .workflow_run_mut("run-order")
+            .expect("workflow run should exist")
+            .set_status(crate::session::WorkflowRunStatus::Completed);
+        runtime.owned.session_store.restore_session(completed);
+        let connection = install_durable_event_failure(
+            &runtime,
+            "fail_workflow_runtime_update_order",
+            "workflow.runtime.updated",
+        );
+
+        let error = runtime
+            .owned
+            .persist_workflow_runtime_session(&session_id, "workflow_order_test")
+            .expect_err("workflow durable transition should fail");
+
+        connection
+            .execute_batch("DROP TRIGGER fail_workflow_runtime_update_order;")
+            .expect("workflow failure trigger should be removed");
+        assert!(error
+            .to_string()
+            .contains("injected durable mutation failure"));
+        assert_eq!(runtime.managed_activity_change_sequence(), runtime_sequence);
+        assert_eq!(
+            runtime.owned.session_projection.change_sequence(),
+            projection_sequence
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .session_projection
+                .get(&session_id)
+                .expect("last durable projection should remain")
+                .workflow_run("run-order")
+                .expect("projected workflow should remain")
+                .status(),
+            crate::session::WorkflowRunStatus::Running
+        );
+        assert!(runtime.managed_activity_report_snapshot().is_err());
+    }
+
+    #[tokio::test]
+    async fn metaagent_persistence_failure_does_not_publish_projection_or_activity() {
+        let runtime = runtime_state_for_rollback_test().await;
+        runtime
+            .ensure_managed_activity_tracking("kernel-metaagent-order")
+            .expect("managed activity tracking should activate before work");
+        let session = create_activity_test_session(&runtime, "metaagent-order");
+        let session_id = session.id().to_string();
+        runtime
+            .owned
+            .session_snapshot(&session_id)
+            .expect("idle session projection should publish");
+        let runtime_sequence = runtime.managed_activity_change_sequence();
+        let projection_sequence = runtime.owned.session_projection.change_sequence();
+        runtime
+            .owned
+            .session_store
+            .write()
+            .enqueue_metaagent_task(
+                &session_id,
+                "metaagent-order",
+                "attachment-order",
+                "perform ordered work",
+                Vec::new(),
+            )
+            .expect("metaagent task should enqueue");
+        let connection = install_durable_event_failure(
+            &runtime,
+            "fail_metaagent_session_update_order",
+            "session.updated",
+        );
+
+        let error = runtime
+            .persist_metaagent_task_session_update(&session_id, "metaagent_order_test")
+            .expect_err("metaagent durable transition should fail");
+
+        connection
+            .execute_batch("DROP TRIGGER fail_metaagent_session_update_order;")
+            .expect("metaagent failure trigger should be removed");
+        assert!(error
+            .to_string()
+            .contains("injected durable mutation failure"));
+        assert_eq!(runtime.managed_activity_change_sequence(), runtime_sequence);
+        assert_eq!(
+            runtime.owned.session_projection.change_sequence(),
+            projection_sequence
+        );
+        assert!(runtime
+            .owned
+            .session_projection
+            .get(&session_id)
+            .expect("last durable projection should remain")
+            .queued_metaagent_tasks()
+            .is_empty());
+        assert!(runtime.managed_activity_report_snapshot().is_err());
+    }
+
+    #[tokio::test]
+    async fn ending_last_active_session_persists_final_idle_transition() {
+        let runtime = runtime_state_for_rollback_test().await;
+        runtime
+            .ensure_managed_activity_tracking("kernel-end-session-order")
+            .expect("managed activity tracking should activate before work");
+        let session = create_activity_test_session(&runtime, "end-session-order");
+        let session_id = session.id().to_string();
+        runtime
+            .owned
+            .session_store
+            .write()
+            .enqueue_metaagent_task(
+                &session_id,
+                "metaagent-end",
+                "attachment-end",
+                "finish before shutdown",
+                Vec::new(),
+            )
+            .expect("session work should enqueue");
+        runtime.record_managed_activity_transition_for_test();
+        let (_, busy) = runtime
+            .managed_activity_report_snapshot()
+            .expect("busy activity should be durable");
+        assert_eq!(busy.running_agent_count, 1);
+        runtime
+            .owned
+            .session_snapshot(&session_id)
+            .expect("busy session projection should publish");
+        let projection_sequence = runtime.owned.session_projection.change_sequence();
+
+        let ended = runtime
+            .end_session(&session_id)
+            .await
+            .expect("last active session should end durably");
+
+        assert_eq!(ended.status(), crate::session::SessionStatus::Ended);
+        assert_eq!(
+            runtime
+                .owned
+                .durable_state_store
+                .load_events_by_kind("session.ended")
+                .expect("session end events should read")
+                .len(),
+            1
+        );
+        let (_, idle) = runtime
+            .managed_activity_report_snapshot()
+            .expect("final idle activity should be durable");
+        assert_eq!(idle.running_agent_count, 0);
+        assert!(idle.changed_at_ms >= busy.changed_at_ms);
+        assert!(runtime.owned.session_projection.change_sequence() > projection_sequence);
+        assert_eq!(
+            runtime
+                .owned
+                .session_projection
+                .get(&session_id)
+                .expect("ended session should project")
+                .status(),
+            crate::session::SessionStatus::Ended
+        );
+    }
+
+    #[tokio::test]
+    async fn session_end_persistence_failure_preserves_snapshot_activity_and_retry() {
+        let runtime = runtime_state_for_rollback_test().await;
+        runtime
+            .ensure_managed_activity_tracking("kernel-end-session-failure")
+            .expect("managed activity tracking should activate before work");
+        let session = create_activity_test_session(&runtime, "end-session-failure");
+        let session_id = session.id().to_string();
+        runtime
+            .owned
+            .session_store
+            .write()
+            .enqueue_metaagent_task(
+                &session_id,
+                "metaagent-end-failure",
+                "attachment-end-failure",
+                "remain busy until durable end",
+                Vec::new(),
+            )
+            .expect("session work should enqueue");
+        runtime.record_managed_activity_transition_for_test();
+        let (_, busy) = runtime
+            .managed_activity_report_snapshot()
+            .expect("busy activity should be durable");
+        assert_eq!(busy.running_agent_count, 1);
+        runtime
+            .owned
+            .session_snapshot(&session_id)
+            .expect("busy session projection should publish");
+        let runtime_sequence = runtime.managed_activity_change_sequence();
+        let projection_sequence = runtime.owned.session_projection.change_sequence();
+        let projected_status = runtime
+            .owned
+            .session_projection
+            .get(&session_id)
+            .expect("busy session should project")
+            .status();
+        let connection = install_durable_event_failure(
+            &runtime,
+            "fail_session_end_order",
+            "session.ended",
+        );
+
+        let error = runtime
+            .end_session(&session_id)
+            .await
+            .expect_err("session end durable transition should fail");
+
+        connection
+            .execute_batch("DROP TRIGGER fail_session_end_order;")
+            .expect("session end failure trigger should be removed");
+        assert!(error
+            .to_string()
+            .contains("injected durable mutation failure"));
+        assert_eq!(runtime.managed_activity_change_sequence(), runtime_sequence);
+        assert_eq!(
+            runtime.owned.session_projection.change_sequence(),
+            projection_sequence
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .session_projection
+                .get(&session_id)
+                .expect("last durable projection should remain")
+                .status(),
+            projected_status
+        );
+        let fresh = runtime
+            .session_snapshot(&session_id)
+            .await
+            .expect("failed durable end must leave the session readable");
+        assert_eq!(fresh.status(), projected_status);
+        assert!(fresh.has_pending_session_task());
+        runtime.record_managed_activity_transition_for_test();
+        let (_, still_busy) = runtime
+            .managed_activity_report_snapshot()
+            .expect("an unrelated activity hook must retain the durable busy state");
+        assert_eq!(still_busy.running_agent_count, 1);
+        assert!(runtime
+            .owned
+            .durable_state_store
+            .load_events_by_kind("session.ended")
+            .expect("session end events should read")
+            .is_empty());
+
+        let ended = runtime
+            .end_session(&session_id)
+            .await
+            .expect("session end should remain retryable");
+        assert_eq!(ended.status(), crate::session::SessionStatus::Ended);
+        let (_, idle) = runtime
+            .managed_activity_report_snapshot()
+            .expect("successful retry should persist idle activity");
+        assert_eq!(idle.running_agent_count, 0);
+        assert_eq!(
+            runtime
+                .owned
+                .durable_state_store
+                .load_events_by_kind("session.ended")
+                .expect("session end events should read")
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn session_delete_persistence_failure_preserves_retry_and_final_idle_transition() {
+        let runtime = runtime_state_for_rollback_test().await;
+        runtime
+            .ensure_managed_activity_tracking("kernel-delete-session-failure")
+            .expect("managed activity tracking should activate before work");
+        let session = create_activity_test_session(&runtime, "delete-session-failure");
+        let session_id = session.id().to_string();
+        runtime
+            .owned
+            .session_store
+            .write()
+            .enqueue_metaagent_task(
+                &session_id,
+                "metaagent-delete-failure",
+                "attachment-delete-failure",
+                "remain busy until durable delete",
+                Vec::new(),
+            )
+            .expect("session work should enqueue");
+        runtime.record_managed_activity_transition_for_test();
+        let (_, busy) = runtime
+            .managed_activity_report_snapshot()
+            .expect("busy activity should be durable");
+        assert_eq!(busy.running_agent_count, 1);
+        runtime
+            .owned
+            .session_snapshot(&session_id)
+            .expect("busy session projection should publish");
+        let runtime_sequence = runtime.managed_activity_change_sequence();
+        let projection_sequence = runtime.owned.session_projection.change_sequence();
+        let connection = install_durable_event_failure(
+            &runtime,
+            "fail_session_delete_order",
+            "session.deleted",
+        );
+
+        let error = runtime
+            .delete_session_ref(&session_id, None)
+            .await
+            .expect_err("session delete durable transition should fail");
+
+        connection
+            .execute_batch("DROP TRIGGER fail_session_delete_order;")
+            .expect("session delete failure trigger should be removed");
+        assert!(error
+            .to_string()
+            .contains("injected durable mutation failure"));
+        assert_eq!(runtime.managed_activity_change_sequence(), runtime_sequence);
+        assert_eq!(
+            runtime.owned.session_projection.change_sequence(),
+            projection_sequence
+        );
+        let fresh = runtime
+            .session_snapshot(&session_id)
+            .await
+            .expect("failed durable delete must leave the session readable");
+        assert!(fresh.has_pending_session_task());
+        runtime.record_managed_activity_transition_for_test();
+        let (_, still_busy) = runtime
+            .managed_activity_report_snapshot()
+            .expect("an unrelated activity hook must retain the durable busy state");
+        assert_eq!(still_busy.running_agent_count, 1);
+        assert!(runtime
+            .owned
+            .durable_state_store
+            .load_events_by_kind("session.deleted")
+            .expect("session delete events should read")
+            .is_empty());
+
+        let deleted = runtime
+            .delete_session_ref(&session_id, None)
+            .await
+            .expect("session delete should remain retryable");
+        assert_eq!(deleted.id(), session_id);
+        assert!(runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .is_err());
+        assert!(runtime.owned.session_projection.get(&session_id).is_none());
+        let (_, idle) = runtime
+            .managed_activity_report_snapshot()
+            .expect("deleting the final busy session should persist idle activity");
+        assert_eq!(idle.running_agent_count, 0);
+        assert_eq!(
+            runtime
+                .owned
+                .durable_state_store
+                .load_events_by_kind("session.deleted")
+                .expect("session delete events should read")
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -1577,6 +2033,7 @@ mod tests {
             name: "linux-slice".to_string(),
             owner_kernel_id: "kernel-home".to_string(),
             owner_machine_id: "machine-home".to_string(),
+            environment_session_id: None,
             session_id: None,
             session_ids: Vec::new(),
             agent_ids: Vec::new(),

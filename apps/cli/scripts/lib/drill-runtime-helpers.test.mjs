@@ -6,6 +6,7 @@ import path from "node:path"
 import test from "node:test"
 
 import {
+  childTerminationStatus,
   findMatchingProcessIdsFromPsOutput,
   formatDrillCommandLine,
   makeAvailablePorts,
@@ -21,6 +22,12 @@ import {
   withDevStubProviderInventory,
 } from "./drill-runtime-helpers.mjs"
 import { cleanupHostedCloudIdentity } from "./live-hosted-cloud-relay-drill-helpers.mjs"
+
+test("child termination status covers exit codes and signals", () => {
+  assert.equal(childTerminationStatus({ exitCode: null, signalCode: null }), null)
+  assert.equal(childTerminationStatus({ exitCode: 7, signalCode: null }), "exit code 7")
+  assert.equal(childTerminationStatus({ exitCode: null, signalCode: "SIGKILL" }), "signal SIGKILL")
+})
 
 test("hosted Cloud cleanup offlines kernels, revokes identities, and logs out without exposing the session", async () => {
   const calls = []
@@ -142,6 +149,31 @@ test("built binary resolution chooses the newest Cargo target candidate", async 
     await utimes(crateBinary, new Date(3_000), new Date(3_000))
     assert.equal(resolveBuiltBinarySync(crateBinary, manifestPath, "chariox-kernel"), crateBinary)
     assert.equal(await resolveBuiltBinary(crateBinary, manifestPath, "chariox-kernel"), crateBinary)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("built binary resolution honors an explicit shared Cargo target", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-shared-target-"))
+  const manifestPath = path.join(root, "repo", "apps", "kernel", "Cargo.toml")
+  const crateBinary = path.join(root, "repo", "apps", "kernel", "target", "debug", "chariox-kernel")
+  const sharedTarget = path.join(root, "shared-target")
+  const sharedBinary = path.join(sharedTarget, "debug", "chariox-kernel")
+  const options = {
+    env: { CARGO_TARGET_DIR: sharedTarget },
+    cwd: root,
+  }
+  try {
+    await mkdir(path.dirname(crateBinary), { recursive: true })
+    await mkdir(path.dirname(sharedBinary), { recursive: true })
+    await writeFile(crateBinary, "stale")
+    await writeFile(sharedBinary, "shared")
+    await utimes(sharedBinary, new Date(1_000), new Date(1_000))
+    await utimes(crateBinary, new Date(2_000), new Date(2_000))
+
+    assert.equal(resolveBuiltBinarySync(crateBinary, manifestPath, "chariox-kernel", options), sharedBinary)
+    assert.equal(await resolveBuiltBinary(crateBinary, manifestPath, "chariox-kernel", options), sharedBinary)
   } finally {
     await rm(root, { recursive: true, force: true })
   }

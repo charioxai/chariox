@@ -4,9 +4,10 @@ use super::*;
 fn launching_provider_via_app_marks_session_active() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("session-provider-active");
     let session = app
         .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
 
     let run = app
@@ -31,9 +32,10 @@ fn launching_provider_via_app_marks_session_active() {
 fn detaching_last_attachment_parks_and_reattaching_resumes_same_provider_run() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("session-provider-reattach");
     let session = app
         .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
 
     let attachment = crate::app::KernelSessionService::new(&mut app)
@@ -102,14 +104,15 @@ fn detaching_last_attachment_parks_and_reattaching_resumes_same_provider_run() {
 fn multi_agent_reattach_resumes_focused_run_before_focus_cycle() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("session-provider-multi-agent");
     let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let extra_agent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
                 .with_alias("extra")
-                .with_worktree("worktree-1"),
+                .with_worktree(worktree.path().display().to_string()),
         )
         .expect("extra agent should be created");
 
@@ -210,8 +213,9 @@ fn multi_agent_reattach_resumes_focused_run_before_focus_cycle() {
 fn launching_a_provider_run_persists_resume_state_back_to_the_agent() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("session-provider-resume");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
 
     let run = app
@@ -244,8 +248,9 @@ fn launching_a_provider_run_persists_resume_state_back_to_the_agent() {
 fn prompt_submission_queues_and_notifies_other_attachments() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("session-provider-queue");
     let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
 
     let first = crate::app::KernelSessionService::new(&mut app)
@@ -327,8 +332,9 @@ fn spawning_a_seventh_agent_in_one_session_succeeds() {
 fn ended_sessions_reopen_on_attach_and_preserve_history() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("session-provider-reopen");
     let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(
@@ -452,8 +458,9 @@ fn deleted_sessions_cannot_be_reattached() {
 fn terminal_flow_writes_input_resizes_and_fans_out_output() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("session-provider-terminal");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
 
     let source = crate::app::KernelSessionService::new(&mut app)
@@ -590,9 +597,10 @@ fn config_updates_are_versioned_and_notified() {
 fn failed_provider_switch_resumes_previous_run_and_records_notice() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let worktree = crate::test_support::TestWorktree::new("session-provider-switch");
     let session = app
         .sessions_mut()
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let _attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(

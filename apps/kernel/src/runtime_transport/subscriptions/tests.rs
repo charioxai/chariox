@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::*;
@@ -51,6 +53,85 @@ fn advance_subscription_deadline_skips_missed_intervals() {
     );
 
     assert!(advanced > Instant::now());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pending_subscription_work_keeps_emitting_heartbeats_without_restarting_work() {
+    let work_starts = Arc::new(AtomicUsize::new(0));
+    let heartbeats = Arc::new(AtomicUsize::new(0));
+    let work_starts_for_future = Arc::clone(&work_starts);
+    let heartbeats_for_callback = Arc::clone(&heartbeats);
+    let mut next_heartbeat_at = Instant::now();
+
+    let result = await_subscription_work_with_heartbeats(
+        async move {
+            work_starts_for_future.fetch_add(1, Ordering::SeqCst);
+            sleep(Duration::from_millis(65)).await;
+            "snapshot"
+        },
+        &mut next_heartbeat_at,
+        Duration::from_millis(20),
+        move || {
+            let heartbeats = Arc::clone(&heartbeats_for_callback);
+            async move {
+                heartbeats.fetch_add(1, Ordering::SeqCst);
+                true
+            }
+        },
+    )
+    .await;
+
+    assert_eq!(result, Some("snapshot"));
+    assert_eq!(work_starts.load(Ordering::SeqCst), 1);
+    assert!(
+        heartbeats.load(Ordering::SeqCst) > 0,
+        "a pending state read must not starve the subscription heartbeat"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn failed_heartbeat_stops_waiting_for_subscription_work() {
+    let heartbeats = Arc::new(AtomicUsize::new(0));
+    let heartbeats_for_callback = Arc::clone(&heartbeats);
+    let mut next_heartbeat_at = Instant::now();
+
+    let result = await_subscription_work_with_heartbeats(
+        std::future::pending::<()>(),
+        &mut next_heartbeat_at,
+        Duration::from_millis(20),
+        move || {
+            let heartbeats = Arc::clone(&heartbeats_for_callback);
+            async move { heartbeats.fetch_add(1, Ordering::SeqCst) < 1 }
+        },
+    )
+    .await;
+
+    assert!(result.is_none());
+    assert_eq!(heartbeats.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn due_heartbeat_precedes_ready_subscription_work() {
+    let heartbeats = Arc::new(AtomicUsize::new(0));
+    let heartbeats_for_callback = Arc::clone(&heartbeats);
+    let mut next_heartbeat_at = Instant::now();
+
+    let result = await_subscription_work_with_heartbeats(
+        std::future::ready("snapshot"),
+        &mut next_heartbeat_at,
+        Duration::from_millis(20),
+        move || {
+            let heartbeats = Arc::clone(&heartbeats_for_callback);
+            async move {
+                heartbeats.fetch_add(1, Ordering::SeqCst);
+                true
+            }
+        },
+    )
+    .await;
+
+    assert_eq!(result, Some("snapshot"));
+    assert_eq!(heartbeats.load(Ordering::SeqCst), 1);
 }
 
 #[test]

@@ -5,7 +5,7 @@ use crate::provider::{
     AgentEndpointMode, ProviderClientInterface, ProviderLaunchResult, ProviderPromptSignalBatch,
     ProviderResumeState, RuntimeProviderRun,
 };
-use crate::session::{CreateSessionRequest, SessionService, SessionStatus};
+use crate::session::{SessionService, SessionStatus};
 
 use super::{
     LaunchProviderRequest, ProviderProcessService, ProviderRunLivenessReconciliation,
@@ -39,9 +39,10 @@ fn launch_running_provider_run(
 
 #[test]
 fn launches_the_first_provider_run() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-first");
     let mut sessions = sessions();
     let session = sessions
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let mut providers = ProviderProcessService::new();
 
@@ -63,9 +64,10 @@ fn launches_the_first_provider_run() {
 
 #[test]
 fn rejects_workspace_live_sync_when_adapter_cannot_enforce_writes() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-managed-sync");
     let mut sessions = sessions();
     let session = sessions
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let mut providers = ProviderProcessService::new();
 
@@ -85,9 +87,10 @@ fn rejects_workspace_live_sync_when_adapter_cannot_enforce_writes() {
 
 #[test]
 fn tracked_workspace_live_sync_does_not_require_managed_write_enforcement() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-tracked-sync");
     let mut sessions = sessions();
     let session = sessions
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let mut providers = ProviderProcessService::new();
 
@@ -104,9 +107,10 @@ fn tracked_workspace_live_sync_does_not_require_managed_write_enforcement() {
 
 #[test]
 fn active_provider_run_lookup_prefers_deterministic_latest_highest_state_run() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-latest");
     let mut sessions = sessions();
     let session = sessions
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let agent_id = "agent-1".to_string();
     let mut providers = ProviderProcessService::new();
@@ -141,9 +145,10 @@ fn active_provider_run_lookup_prefers_deterministic_latest_highest_state_run() {
 
 #[test]
 fn active_provider_run_lookup_prefers_new_starting_run_over_parked_fallback() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-starting");
     let mut sessions = sessions();
     let session = sessions
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let agent_id = "agent-1".to_string();
     let mut providers = ProviderProcessService::new();
@@ -255,9 +260,10 @@ fn managed_structured_providers_use_structured_prompt_io() {
 
 #[test]
 fn provider_only_start_run_returns_outcome_without_session_mutation() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-start");
     let mut sessions = sessions();
     let session = sessions
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let mut providers = ProviderProcessService::new();
 
@@ -278,9 +284,10 @@ fn provider_only_start_run_returns_outcome_without_session_mutation() {
 
 #[test]
 fn liveness_reconciliation_without_process_observation_does_not_end_run() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-liveness-observed");
     let mut sessions = sessions();
     let session = sessions
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let mut providers = ProviderProcessService::new();
     let run = launch_running_provider_run(
@@ -315,9 +322,10 @@ fn liveness_reconciliation_without_process_observation_does_not_end_run() {
 
 #[test]
 fn provider_only_liveness_does_not_end_starting_run_before_launch_settles() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-liveness-starting");
     let mut sessions = sessions();
     let session = sessions
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let mut providers = ProviderProcessService::new();
     let outcome = providers
@@ -343,9 +351,10 @@ fn provider_only_liveness_does_not_end_starting_run_before_launch_settles() {
 
 #[test]
 fn provider_only_liveness_reconciliation_with_exited_process_marks_run_ended() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-liveness-exited");
     let mut sessions = sessions();
     let session = sessions
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let mut providers = ProviderProcessService::new();
     let run = launch_running_provider_run(
@@ -380,9 +389,10 @@ fn provider_only_liveness_reconciliation_with_exited_process_marks_run_ended() {
 
 #[test]
 fn provider_only_liveness_reconciliation_handles_already_ended_without_session_mutation() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-liveness-ended");
     let mut sessions = sessions();
     let session = sessions
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let mut providers = ProviderProcessService::new();
     let run = launch_running_provider_run(
@@ -421,9 +431,10 @@ fn provider_only_liveness_reconciliation_handles_already_ended_without_session_m
 
 #[test]
 fn provider_only_mark_run_ended_returns_outcome_without_session_mutation() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-mark-ended");
     let mut sessions = sessions();
     let session = sessions
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let mut providers = ProviderProcessService::new();
     let run = launch_running_provider_run(
@@ -456,9 +467,10 @@ fn provider_only_mark_run_ended_returns_outcome_without_session_mutation() {
 
 #[test]
 fn provider_only_terminate_run_returns_outcome_without_session_mutation() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-terminate");
     let mut sessions = sessions();
     let session = sessions
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let mut providers = ProviderProcessService::new();
     let run = launch_running_provider_run(
@@ -492,9 +504,10 @@ fn provider_only_terminate_run_returns_outcome_without_session_mutation() {
 
 #[test]
 fn provider_only_terminate_session_runs_returns_outcomes_without_session_mutation() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-terminate-session");
     let mut sessions = sessions();
     let session = sessions
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let mut providers = ProviderProcessService::new();
     let first = launch_running_provider_run(
@@ -543,9 +556,10 @@ fn provider_only_terminate_session_runs_returns_outcomes_without_session_mutatio
 
 #[test]
 fn provider_only_park_run_returns_outcome_without_session_mutation() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-park");
     let mut sessions = sessions();
     let session = sessions
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let mut providers = ProviderProcessService::new();
     let run = launch_running_provider_run(
@@ -571,9 +585,10 @@ fn provider_only_park_run_returns_outcome_without_session_mutation() {
 
 #[test]
 fn provider_only_park_run_is_idempotent_when_already_parked() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-park-idempotent");
     let mut sessions = sessions();
     let session = sessions
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let mut providers = ProviderProcessService::new();
     let run = launch_running_provider_run(
@@ -602,9 +617,10 @@ fn provider_only_park_run_is_idempotent_when_already_parked() {
 
 #[test]
 fn provider_only_resume_run_returns_outcome_without_session_mutation() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-resume");
     let mut sessions = sessions();
     let session = sessions
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let mut providers = ProviderProcessService::new();
     let run = launch_running_provider_run(
@@ -633,9 +649,10 @@ fn provider_only_resume_run_returns_outcome_without_session_mutation() {
 
 #[test]
 fn parks_existing_run_when_new_run_becomes_active() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-park-existing");
     let mut sessions = sessions();
     let session = sessions
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let mut providers = ProviderProcessService::new();
 
@@ -672,9 +689,10 @@ fn parks_existing_run_when_new_run_becomes_active() {
 
 #[test]
 fn provider_only_start_allows_new_run_after_ended_run() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-start-after-ended");
     let mut sessions = sessions();
     let session = sessions
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let mut providers = ProviderProcessService::new();
 
@@ -707,9 +725,10 @@ fn provider_only_start_allows_new_run_after_ended_run() {
 
 #[test]
 fn launch_run_preserves_resume_state_from_the_request() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-resume-state");
     let mut sessions = sessions();
     let session = sessions
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let mut providers = ProviderProcessService::new();
 
@@ -725,9 +744,10 @@ fn launch_run_preserves_resume_state_from_the_request() {
 
 #[test]
 fn structured_output_metadata_records_terminal_diagnostic() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-terminal-diagnostic");
     let mut sessions = sessions();
     let session = sessions
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let mut providers = ProviderProcessService::new();
     let run = launch_running_provider_run(
@@ -752,9 +772,10 @@ fn structured_output_metadata_records_terminal_diagnostic() {
 
 #[test]
 fn structured_output_metadata_records_completed_codex_resume_state() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-codex-resume");
     let mut sessions = sessions();
     let session = sessions
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let mut providers = ProviderProcessService::new();
     let run = launch_running_provider_run(

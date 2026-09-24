@@ -69,6 +69,7 @@ impl KernelRuntimeState {
         visible_user_prompt: String,
         hidden_system_context: String,
         timeout: tokio::time::Duration,
+        policy: crate::provider::ProviderUtilityExecutionPolicy,
     ) -> Result<String, DaemonError> {
         let provider_store = self.owned.provider_store.clone();
         tokio::task::spawn_blocking(move || {
@@ -77,6 +78,7 @@ impl KernelRuntimeState {
                 &visible_user_prompt,
                 &hidden_system_context,
                 timeout,
+                policy,
             )
         })
         .await

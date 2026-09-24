@@ -2,10 +2,11 @@ use super::*;
 
 #[test]
 fn terminal_output_drain_streams_parallel_agent_prompts_for_same_attachment() {
+    let worktree = crate::test_support::TestWorktree::new("terminal-parallel-prompts");
     let harness = LocalRouterTestHarness::new();
     let (session, default_agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session should be created")
     {

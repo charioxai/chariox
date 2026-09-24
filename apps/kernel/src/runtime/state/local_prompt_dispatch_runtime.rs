@@ -60,6 +60,20 @@ fn claude_headless_dispatch_failure_invalidates_resume(error: &DaemonError) -> b
     )
 }
 
+fn current_starting_workflow_provider_run(
+    provider_store: &crate::provider::ProviderProcessServiceStore,
+    provider_run_id: &str,
+) -> Option<crate::provider::RuntimeProviderRun> {
+    let run = provider_store.get_run(provider_run_id).ok()?;
+    if run.state() != crate::provider::ProviderRunState::Starting {
+        return None;
+    }
+    let agent_id = run.agent_instance_id()?;
+    provider_store
+        .get_run_for_agent(run.session_id(), agent_id)
+        .filter(|current| current.id() == provider_run_id)
+}
+
 impl KernelRuntimeOwnedState {
     fn prompt_dispatch_matches_active_prompt(
         &self,
@@ -71,10 +85,12 @@ impl KernelRuntimeOwnedState {
                 return false;
             }
             if dispatch.steering {
-                return dispatch
-                    .target_active_prompt_id
-                    .as_deref()
-                    .is_some_and(|target_prompt_id| target_prompt_id == prompt.id());
+                return dispatch.target_active_prompt_id.as_deref().is_some_and(
+                    |target_prompt_id| {
+                        target_prompt_id == prompt.id()
+                            && prompt.status() == crate::session::PromptStatus::Running
+                    },
+                );
             }
             prompt.id() == dispatch.prompt_id
         };
@@ -288,12 +304,11 @@ mod tests {
     async fn concurrent_workflow_provider_admission_creates_one_starting_run() {
         const INVOCATION_COUNT: usize = 32;
 
+        let worktree =
+            crate::test_support::TestWorktree::new("local-prompt-concurrent-workflow-provider");
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, _default_agent) = KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new(
-                "workspace-concurrent-workflow-provider",
-                "worktree-concurrent-workflow-provider",
-            ))
+            .create_session(worktree.session_request())
             .expect("session should create");
         let workflow_agent = KernelSessionService::new(&mut app)
             .spawn_agent(
@@ -414,13 +429,311 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn workflow_prompt_stays_bound_to_the_replacement_provider_run() {
-        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    async fn workflow_launch_retains_vaulted_environment_until_detached_spawn() {
+        let _env = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-workflow-provider-credentials-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("test root should exist");
+        std::env::set_var("CHARIOX_HOME", &root);
+        std::env::set_var("CHARIOX_TEST_CLAUDE_SETUP_TOKEN", "workflow-setup-token");
+
+        let mut app = DaemonApp::bootstrap(
+            DaemonConfig::for_tests().with_session_history_root(root.join("session-history")),
+        )
+        .expect("daemon should boot");
         let (session, _default_agent) = KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new(
-                "workspace-workflow-provider-binding",
-                "worktree-workflow-provider-binding",
+                root.to_string_lossy(),
+                root.to_string_lossy(),
             ))
+            .expect("session should create");
+        let profile = app
+            .provider_account_profile_registry()
+            .create_managed(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "claude",
+                "Workflow Claude",
+            )
+            .expect("managed Claude profile should create");
+        let credential_id = crate::provider::provider_account_credential_id(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "claude",
+            &profile.profile_id,
+        );
+        crate::credential::CharioxCredentialRegistry::user()
+            .expect("credential registry should resolve")
+            .upsert(crate::config::UserCredentialConfig {
+                id: credential_id,
+                description: None,
+                source: crate::config::UserCredentialSourceConfig::Env {
+                    name: "CHARIOX_TEST_CLAUDE_SETUP_TOKEN".to_string(),
+                },
+                allowed_hosts: Vec::new(),
+                allowed_uses: vec![crate::config::UserCredentialUse::Provider],
+                injection: crate::config::UserCredentialInjectionConfig::Provider,
+                metadata: None,
+            })
+            .expect("provider credential should register");
+        let workflow_agent = KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "claude")
+                    .with_model("claude-sonnet")
+                    .with_account_profile(profile.profile_id),
+            )
+            .expect("workflow agent should create");
+
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let (provider_run_id, retired_provider_run_id) = runtime
+            .owned
+            .workflow_ensure_provider_run(
+                session.id(),
+                workflow_agent.id(),
+                false,
+                false,
+                false,
+                false,
+                None,
+            )
+            .expect("workflow provider should start");
+        assert!(retired_provider_run_id.is_none());
+        let credential_probe = crate::provider::ProviderCredentialDeliveryProbe::install(
+            &provider_run_id,
+            &[("CLAUDE_CODE_OAUTH_TOKEN", "workflow-setup-token")],
+        );
+        let mut dispatches = WorkflowPromptDispatches::default();
+        dispatches
+            .starting_provider_runs
+            .push(provider_run_id.clone());
+        runtime.spawn_workflow_prompt_dispatches(dispatches);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if runtime
+                    .owned
+                    .provider_store
+                    .get_run(&provider_run_id)
+                    .is_ok_and(|run| run.state() == crate::provider::ProviderRunState::Running)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("detached workflow launch should finish");
+        assert!(credential_probe.observed_exactly("pty_spawn"));
+        assert!(credential_probe.observed_exactly("runtime_binding"));
+        assert!(runtime
+            .owned
+            .take_pending_provider_launch_credentials(&provider_run_id)
+            .is_empty());
+
+        std::env::remove_var("CHARIOX_TEST_CLAUDE_SETUP_TOKEN");
+        std::env::remove_var("CHARIOX_HOME");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn retired_workflow_run_does_not_spawn_after_vault_unlock() {
+        let _env = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-retired-workflow-vault-unlock-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("test root should exist");
+        std::env::set_var("CHARIOX_HOME", &root);
+        let vault_path = root.join("credentials.vault");
+        let mut config =
+            DaemonConfig::for_tests().with_session_history_root(root.join("session-history"));
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = vault_path.display().to_string();
+        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.history.operational.path =
+            Some(root.join("operational.db").display().to_string());
+        config.user_config.artifacts.operational.root =
+            Some(root.join("artifacts").display().to_string());
+        config.user_config.artifacts.operational.index_path =
+            Some(root.join("artifacts.db").display().to_string());
+
+        let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon should boot");
+        let (session, _default_agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                root.to_string_lossy(),
+                root.to_string_lossy(),
+            ))
+            .expect("session should create");
+        let profile = app
+            .provider_account_profile_registry()
+            .create_managed(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "claude",
+                "Retired workflow Claude",
+            )
+            .expect("managed Claude profile should create");
+        let workflow_agent = KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "claude")
+                    .with_model("claude-sonnet")
+                    .with_account_profile(profile.profile_id.clone()),
+            )
+            .expect("workflow Claude agent should create");
+        crate::secret::unlock_chariox_encrypted_vault(
+            &vault_path,
+            "correct horse battery staple",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .expect("vault should initialize");
+        crate::provider::store_provider_account_credential(
+            &config,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "claude",
+            &profile.profile_id,
+            "setup-token-secret",
+            false,
+        )
+        .expect("provider credential should store");
+        crate::secret::lock_chariox_encrypted_vault(&vault_path).expect("vault should lock");
+        crate::secret::clear_vault_secret_process_cache().expect("secret cache should clear");
+
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let (provider_run_id, retired_provider_run_id) = runtime
+            .owned
+            .workflow_ensure_provider_run(
+                session.id(),
+                workflow_agent.id(),
+                false,
+                false,
+                false,
+                false,
+                None,
+            )
+            .expect("workflow provider should be admitted while vault is locked");
+        assert!(retired_provider_run_id.is_none());
+        let credential_probe = crate::provider::ProviderCredentialDeliveryProbe::install(
+            &provider_run_id,
+            &[("CLAUDE_CODE_OAUTH_TOKEN", "setup-token-secret")],
+        );
+        let mut dispatches = WorkflowPromptDispatches::default();
+        dispatches
+            .starting_provider_runs
+            .push(provider_run_id.clone());
+        runtime.spawn_workflow_prompt_dispatches(dispatches);
+
+        let passphrase_interaction =
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    if let Some(interaction) = runtime
+                        .owned
+                        .session_store
+                        .get_session(session.id())
+                        .expect("session should remain available")
+                        .active_interaction_for_agent(workflow_agent.id())
+                    {
+                        break interaction.clone();
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("workflow vault unlock interaction should appear");
+        runtime
+            .resolve_runtime_interaction(
+                session.id(),
+                passphrase_interaction.id(),
+                "passphrase",
+                Some("correct horse battery staple"),
+            )
+            .await
+            .expect("vault passphrase interaction should resolve");
+        let interaction = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Some(interaction) = runtime
+                    .owned
+                    .session_store
+                    .get_session(session.id())
+                    .expect("session should remain available")
+                    .active_interaction_for_agent(workflow_agent.id())
+                {
+                    if interaction
+                        .choices()
+                        .iter()
+                        .any(|choice| choice.id() == "unlock_operation")
+                    {
+                        break interaction.clone();
+                    }
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("workflow vault unlock duration interaction should appear");
+        let ended = runtime
+            .owned
+            .provider_store
+            .terminate_run_provider_only(session.id(), &provider_run_id)
+            .expect("pending workflow run should retire");
+        runtime
+            .owned
+            .provider_run_projection
+            .update(ended.into_run());
+        runtime
+            .resolve_runtime_interaction(session.id(), interaction.id(), "unlock_operation", None)
+            .await
+            .expect("vault unlock interaction should resolve");
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if !runtime
+                    .detached_workflow_provider_launches
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .contains(&provider_run_id)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("retired workflow launch should settle after vault unlock");
+
+        assert_eq!(
+            runtime
+                .owned
+                .provider_store
+                .get_run(&provider_run_id)
+                .expect("retired run should remain represented")
+                .state(),
+            crate::provider::ProviderRunState::Ended
+        );
+        assert!(!credential_probe.observed_exactly("pty_spawn"));
+        assert!(!credential_probe.observed_exactly("runtime_binding"));
+        assert!(!runtime
+            .owned
+            .provider_process_tracking
+            .snapshot()
+            .run_processes
+            .contains_key(&provider_run_id));
+
+        let _ = crate::secret::lock_chariox_encrypted_vault(&vault_path);
+        let _ = crate::secret::clear_vault_secret_process_cache();
+        std::env::remove_var("CHARIOX_HOME");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn workflow_prompt_stays_bound_to_the_replacement_provider_run() {
+        let worktree = crate::test_support::TestWorktree::new("local-prompt-provider-binding");
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request())
             .expect("session should create");
         let workflow_agent = KernelSessionService::new(&mut app)
             .spawn_agent(
@@ -570,12 +883,11 @@ mod tests {
 
     #[tokio::test]
     async fn failed_launch_settles_all_queued_workflow_nodes_and_advances_once() {
+        let worktree =
+            crate::test_support::TestWorktree::new("local-prompt-workflow-launch-failure");
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, _default_agent) = KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new(
-                "workspace-workflow-launch-failure",
-                "worktree-workflow-launch-failure",
-            ))
+            .create_session(worktree.session_request())
             .expect("session should create");
         let source = KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
@@ -858,6 +1170,7 @@ mod tests {
                 &crate::app::StartedProviderLaunch {
                     run: provider_run,
                     previous_active_run_id: None,
+                    provider_credential_env: Default::default(),
                 },
                 &DaemonError::LocalTransport {
                     operation: "initialize workflow provider runtime",
@@ -940,14 +1253,19 @@ mod tests {
         );
     }
 
-    async fn runtime_with_active_prompt(
-    ) -> (KernelRuntimeState, String, String, String, String, String) {
+    async fn runtime_with_active_prompt() -> (
+        crate::test_support::TestWorktree,
+        KernelRuntimeState,
+        String,
+        String,
+        String,
+        String,
+        String,
+    ) {
+        let worktree = crate::test_support::TestWorktree::new("local-prompt-active");
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, agent) = KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new(
-                "workspace-steering-dispatch",
-                "worktree-steering-dispatch",
-            ))
+            .create_session(worktree.session_request())
             .expect("session should create");
         let attachment = KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
@@ -989,6 +1307,7 @@ mod tests {
         let provider_run_id = provider_run.id().to_string();
         let app = Arc::new(Mutex::new(app));
         (
+            worktree,
             owned_runtime_state(&app).await,
             session_id,
             agent_id,
@@ -999,6 +1318,7 @@ mod tests {
     }
 
     async fn runtime_with_admitted_prompt() -> (
+        crate::test_support::TestWorktree,
         KernelRuntimeState,
         String,
         String,
@@ -1006,12 +1326,10 @@ mod tests {
         String,
         crate::app::KernelPromptDispatch,
     ) {
+        let worktree = crate::test_support::TestWorktree::new("local-prompt-admitted");
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, agent) = KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new(
-                "workspace-prompt-dispatch",
-                "worktree-prompt-dispatch",
-            ))
+            .create_session(worktree.session_request())
             .expect("session should create");
         let source = KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
@@ -1063,6 +1381,7 @@ mod tests {
             .expect("prompt should be admitted");
         let dispatch = submission.dispatch.expect("prompt should require dispatch");
         (
+            worktree,
             runtime,
             session_id,
             agent_id,
@@ -1073,6 +1392,7 @@ mod tests {
     }
 
     async fn runtime_with_claude_headless_active_prompt() -> (
+        crate::test_support::TestWorktree,
         KernelRuntimeState,
         String,
         String,
@@ -1082,11 +1402,9 @@ mod tests {
     ) {
         let mut app = crate::test_support::bootstrap_authenticated_app(DaemonConfig::for_tests())
             .expect("daemon should boot");
+        let worktree = crate::test_support::TestWorktree::new("local-prompt-claude-headless");
         let (session, agent) = KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new(
-                "workspace-claude-ack-failure",
-                "worktree-claude-ack-failure",
-            ))
+            .create_session(worktree.session_request())
             .expect("session should create");
         let source = KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
@@ -1191,6 +1509,7 @@ mod tests {
         let source_id = source.id().to_string();
         let app = Arc::new(Mutex::new(app));
         (
+            worktree,
             owned_runtime_state(&app).await,
             session_id,
             agent_id,
@@ -1230,8 +1549,15 @@ mod tests {
 
     #[tokio::test]
     async fn steering_dispatch_matches_target_active_prompt() {
-        let (runtime, session_id, agent_id, attachment_id, active_prompt_id, provider_run_id) =
-            runtime_with_active_prompt().await;
+        let (
+            _worktree,
+            runtime,
+            session_id,
+            agent_id,
+            attachment_id,
+            active_prompt_id,
+            provider_run_id,
+        ) = runtime_with_active_prompt().await;
         let steering_dispatch = dispatch(
             &session_id,
             &agent_id,
@@ -1251,8 +1577,15 @@ mod tests {
 
     #[tokio::test]
     async fn local_dispatch_persists_delivered_phase_after_provider_write() {
-        let (runtime, session_id, agent_id, attachment_id, active_prompt_id, provider_run_id) =
-            runtime_with_active_prompt().await;
+        let (
+            _worktree,
+            runtime,
+            session_id,
+            agent_id,
+            attachment_id,
+            active_prompt_id,
+            provider_run_id,
+        ) = runtime_with_active_prompt().await;
         let prompt_dispatch = dispatch(
             &session_id,
             &agent_id,
@@ -1291,8 +1624,15 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_match_uses_prompt_owner_when_session_mirror_is_stale() {
-        let (runtime, session_id, agent_id, attachment_id, active_prompt_id, provider_run_id) =
-            runtime_with_active_prompt().await;
+        let (
+            _worktree,
+            runtime,
+            session_id,
+            agent_id,
+            attachment_id,
+            active_prompt_id,
+            provider_run_id,
+        ) = runtime_with_active_prompt().await;
         runtime
             .owned
             .session_store
@@ -1332,7 +1672,7 @@ mod tests {
 
     #[tokio::test]
     async fn stale_steering_dispatch_is_rejected() {
-        let (runtime, session_id, agent_id, attachment_id, _, provider_run_id) =
+        let (_worktree, runtime, session_id, agent_id, attachment_id, _, provider_run_id) =
             runtime_with_active_prompt().await;
         let steering_dispatch = dispatch(
             &session_id,
@@ -1359,8 +1699,15 @@ mod tests {
 
     #[tokio::test]
     async fn steering_dispatch_records_provider_input() {
-        let (runtime, session_id, agent_id, attachment_id, active_prompt_id, provider_run_id) =
-            runtime_with_active_prompt().await;
+        let (
+            _worktree,
+            runtime,
+            session_id,
+            agent_id,
+            attachment_id,
+            active_prompt_id,
+            provider_run_id,
+        ) = runtime_with_active_prompt().await;
         let steering_text = "STEERING_DELIVERY_PROOF";
         let steering_dispatch = dispatch(
             &session_id,
@@ -1390,7 +1737,7 @@ mod tests {
 
     #[tokio::test]
     async fn local_prompt_is_echoed_once_across_admission_and_dispatch() {
-        let (runtime, session_id, _, observer_id, _, dispatch) =
+        let (_worktree, runtime, session_id, _, observer_id, _, dispatch) =
             runtime_with_admitted_prompt().await;
         let prompt_id = dispatch.prompt_id.clone();
 
@@ -1417,7 +1764,7 @@ mod tests {
 
     #[tokio::test]
     async fn local_prompt_admission_clears_prior_agent_error() {
-        let (runtime, session_id, agent_id, _, provider_run_id, first_dispatch) =
+        let (_worktree, runtime, session_id, agent_id, _, provider_run_id, first_dispatch) =
             runtime_with_admitted_prompt().await;
         runtime
             .owned
@@ -1462,7 +1809,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_local_dispatch_emits_completion_and_marks_agent_error() {
-        let (runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
+        let (_worktree, runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
             runtime_with_admitted_prompt().await;
 
         runtime
@@ -1528,7 +1875,7 @@ mod tests {
 
     #[tokio::test]
     async fn claude_headless_ack_failure_retires_poisoned_provider_run() {
-        let (runtime, session_id, agent_id, source_id, provider_run, dispatch) =
+        let (_worktree, runtime, session_id, agent_id, source_id, provider_run, dispatch) =
             runtime_with_claude_headless_active_prompt().await;
         let PromptSubmissionOutcome::Queued {
             prompt: queued_prompt,
@@ -1619,7 +1966,7 @@ mod tests {
 
     #[tokio::test]
     async fn claude_headless_ack_failure_intent_finishes_resume_clear_after_restart() {
-        let (runtime, session_id, agent_id, _, provider_run, dispatch) =
+        let (_worktree, runtime, session_id, agent_id, _, provider_run, dispatch) =
             runtime_with_claude_headless_active_prompt().await;
         let durable_path = runtime.owned.durable_state_store.path().to_path_buf();
         let connection = rusqlite::Connection::open(&durable_path)
@@ -1736,7 +2083,7 @@ mod tests {
 
     #[tokio::test]
     async fn claude_headless_ack_failure_does_not_clear_resume_without_durable_intent() {
-        let (runtime, session_id, agent_id, _, provider_run, dispatch) =
+        let (_worktree, runtime, session_id, agent_id, _, provider_run, dispatch) =
             runtime_with_claude_headless_active_prompt().await;
         let durable_path = runtime.owned.durable_state_store.path().to_path_buf();
         let connection = rusqlite::Connection::open(&durable_path)
@@ -1845,7 +2192,7 @@ mod tests {
 
     #[tokio::test]
     async fn claude_headless_late_resume_update_wins_before_delivery_phase_commit() {
-        let (runtime, session_id, agent_id, _, provider_run, dispatch) =
+        let (_worktree, runtime, session_id, agent_id, _, provider_run, dispatch) =
             runtime_with_claude_headless_active_prompt().await;
         let current_resume_state =
             crate::provider::ProviderResumeState::from_claude_session_id("claude-session-current");
@@ -1944,7 +2291,7 @@ mod tests {
 
     #[tokio::test]
     async fn claude_headless_delivered_phase_wins_over_late_timeout() {
-        let (runtime, session_id, agent_id, _, provider_run, dispatch) =
+        let (_worktree, runtime, session_id, agent_id, _, provider_run, dispatch) =
             runtime_with_claude_headless_active_prompt().await;
         runtime
             .owned
@@ -1996,7 +2343,7 @@ mod tests {
 
     #[tokio::test]
     async fn claude_headless_delivery_settlement_claim_blocks_timeout_retirement() {
-        let (runtime, session_id, agent_id, _, provider_run, dispatch) =
+        let (_worktree, runtime, session_id, agent_id, _, provider_run, dispatch) =
             runtime_with_claude_headless_active_prompt().await;
         let session = runtime
             .owned
@@ -2076,7 +2423,7 @@ mod tests {
 
     #[tokio::test]
     async fn stale_claude_headless_ack_failure_preserves_replacement_prompt_and_provider() {
-        let (runtime, session_id, agent_id, source_id, provider_run, stale_dispatch) =
+        let (_worktree, runtime, session_id, agent_id, source_id, provider_run, stale_dispatch) =
             runtime_with_claude_headless_active_prompt().await;
         runtime
             .owned
@@ -2202,7 +2549,7 @@ mod tests {
 
     #[tokio::test]
     async fn stale_dispatch_failure_does_not_settle_the_current_prompt() {
-        let (runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
+        let (_worktree, runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
             runtime_with_admitted_prompt().await;
 
         let settlement = runtime
@@ -2236,8 +2583,15 @@ mod tests {
 
     #[tokio::test]
     async fn stale_dispatch_failure_does_not_cancel_replacement_prompt() {
-        let (runtime, session_id, agent_id, _observer_id, provider_run_id, stale_dispatch) =
-            runtime_with_admitted_prompt().await;
+        let (
+            _worktree,
+            runtime,
+            session_id,
+            agent_id,
+            _observer_id,
+            provider_run_id,
+            stale_dispatch,
+        ) = runtime_with_admitted_prompt().await;
 
         runtime
             .owned
@@ -2403,6 +2757,10 @@ impl KernelRuntimeState {
                 dispatch.provider_run_id.clone(),
                 dispatch.agent_id.clone(),
                 dispatch.prompt_id.clone(),
+                dispatch
+                    .target_active_prompt_id
+                    .as_deref()
+                    .unwrap_or(&dispatch.prompt_id),
                 &provider_run,
                 &prompt_with_handoff,
                 &hidden_system_context,
@@ -3127,17 +3485,58 @@ impl KernelRuntimeState {
                     );
                 }
             }
-            let run = match state.owned.provider_store.get_run(&provider_run_id) {
-                Ok(run) if run.state() == crate::provider::ProviderRunState::Starting => run,
-                _ => return,
+            let mut provider_credential_env = state
+                .owned
+                .take_pending_provider_launch_credentials(&provider_run_id);
+            let run = match current_starting_workflow_provider_run(
+                &state.owned.provider_store,
+                &provider_run_id,
+            ) {
+                Some(run) => run,
+                None => return,
             };
+            let resolved_provider_credentials = if provider_credential_env.is_empty() {
+                Some(
+                    state
+                        .resolve_provider_account_credentials_for_run_with_vault(
+                            &run,
+                            "launch workflow provider run",
+                        )
+                        .await,
+                )
+            } else {
+                None
+            };
+            let run = match current_starting_workflow_provider_run(
+                &state.owned.provider_store,
+                &provider_run_id,
+            ) {
+                Some(run) => run,
+                None => return,
+            };
+            if let Some(resolved_provider_credentials) = resolved_provider_credentials {
+                match resolved_provider_credentials {
+                    Ok(credentials) => provider_credential_env = credentials,
+                    Err(error) => {
+                        let started = crate::app::StartedProviderLaunch {
+                            run,
+                            previous_active_run_id: None,
+                            provider_credential_env,
+                        };
+                        state.fail_provider_launch(&started, &error).await;
+                        return;
+                    }
+                }
+            }
             let started = crate::app::StartedProviderLaunch {
                 run: run.clone(),
                 previous_active_run_id: None,
+                provider_credential_env,
             };
             let spawn_result = state
                 .with_app_side_effect(|app| {
-                    crate::app::ProviderLaunchProcessRuntime::new(app).spawn_for_launch(&run)
+                    crate::app::ProviderLaunchProcessRuntime::new(app)
+                        .spawn_for_launch_with_credentials(&run, &started.provider_credential_env)
                 })
                 .await;
             if let Err(error) = spawn_result {
@@ -3153,8 +3552,12 @@ impl KernelRuntimeState {
             if runtime_init_delay_ms > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(runtime_init_delay_ms)).await;
             }
+            let provider_credential_env = started.provider_credential_env.clone();
             let binding = tokio::task::spawn_blocking(move || {
-                crate::provider::ProviderProcessService::initialize_runtime_binding(&run)
+                crate::provider::ProviderProcessService::initialize_runtime_binding_with_credentials(
+                    &run,
+                    &provider_credential_env,
+                )
             })
             .await
             .map_err(|error| DaemonError::LocalTransport {

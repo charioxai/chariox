@@ -1,6 +1,120 @@
 use super::*;
 
 #[test]
+fn public_session_state_preserves_failed_settlement_termination_after_late_completion() {
+    let worktree = crate::test_support::TestWorktree::new("turn-actions-settlement");
+    let harness = LocalRouterTestHarness::new();
+    let (session, agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            worktree.session_request(),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    harness.with_app(|app| {
+        let registry = app.provider_account_profile_registry();
+        for profile in registry
+            .list_all()
+            .expect("synthetic provider profiles should list")
+        {
+            crate::test_support::authenticate_provider_account(
+                &registry,
+                &profile.owner_user_id,
+                &profile.provider,
+                &profile.profile_id,
+            )
+            .expect("synthetic provider account should be authenticated");
+        }
+    });
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "settlement-termination-client".to_string(),
+                capability_level: ClientCapabilityLevel::InteractiveStructured,
+            },
+        ))
+        .expect("attachment should attach")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    let prompt = match harness
+        .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session.id().to_string(),
+            attachment_id: attachment.id().to_string(),
+            target_agent_id: Some(agent.id().to_string()),
+            prompt: "preserve the failed turn evidence".to_string(),
+            attachments: Vec::new(),
+        }))
+        .expect("prompt submit should be admitted")
+    {
+        LocalDaemonResponse::PromptSubmitted {
+            outcome: PromptSubmissionOutcome::Started { prompt },
+            ..
+        }
+        | LocalDaemonResponse::PromptSubmitted {
+            outcome: PromptSubmissionOutcome::Queued { prompt },
+            ..
+        } => prompt,
+        other => panic!("unexpected prompt submit response: {other:?}"),
+    };
+    let termination = crate::provider::ProviderRunTermination::process_exit(137, 9_999);
+    harness.with_app_mut(|app| {
+        app.completed_git_turn_snapshot_store()
+            .record_prompt_settlement_with_termination(
+                session.id(),
+                agent.id(),
+                "provider-run-settlement-termination",
+                &prompt,
+                400,
+                Some(300),
+                crate::git_observer::CompletedTurnSettlementStatus::Failed,
+                Some(termination.clone()),
+            );
+        app.completed_git_turn_snapshot_store()
+            .record_prompt_settlement_with_termination(
+                session.id(),
+                agent.id(),
+                "provider-run-settlement-termination",
+                &prompt,
+                450,
+                Some(300),
+                crate::git_observer::CompletedTurnSettlementStatus::Completed,
+                None,
+            );
+    });
+
+    let agent_activity = match harness
+        .dispatch(LocalDaemonRequest::GetSessionState(
+            GetSessionStateRequest {
+                session_id: session.id().to_string(),
+            },
+        ))
+        .expect("public session state should project settlement")
+    {
+        LocalDaemonResponse::SessionState { agent_activity, .. } => agent_activity,
+        other => panic!("unexpected state response: {other:?}"),
+    };
+    let completed_turn = agent_activity
+        .get(agent.id())
+        .and_then(|activity| activity.last_completed_turn.as_ref())
+        .expect("settled prompt should be publicly projected");
+    assert_eq!(
+        completed_turn.settlement_status,
+        crate::git_observer::CompletedTurnSettlementStatus::Failed,
+        "a late completion must not replace the authoritative failed status"
+    );
+    assert_eq!(
+        completed_turn.provider_termination,
+        Some(termination),
+        "a late completion without termination must not erase the earlier exit evidence"
+    );
+}
+
+#[test]
 fn completed_native_tui_turn_projects_undo_action_for_tracked_session() {
     let root = temp_git_repo("native-tui-turn-actions");
     let proof_path = root.join("web-terminal-undo-proof.txt");
@@ -683,10 +797,11 @@ fn undo_turn_request_conflict_fails_without_partial_writes_inner() {
 
 #[test]
 fn turn_actions_without_agent_ref_require_focused_agent() {
+    let worktree = crate::test_support::TestWorktree::new("turn-actions-no-focus");
     let harness = LocalRouterTestHarness::new();
     let (session, _agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-no-focus", "worktree-no-focus"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {

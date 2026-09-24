@@ -6,6 +6,12 @@ import type {
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import {
+  DEFAULT_HEADED_SLICE_DISPLAY_BACKEND,
+  getRoomEnvironmentSliceRequest,
+} from "@chariox/kernel-client/ipc-requests"
+import type { RoomEnvironmentSliceResponse } from "@chariox/kernel-client/kernel-types"
+import { scopedSliceViewerTarget } from "@chariox/kernel-client/slice-screen-viewer"
+import {
   formatSliceProviderAuthActionResult,
   formatSliceProviderLogin,
 } from "./slice-auth-format.js"
@@ -69,7 +75,11 @@ export async function handleSliceSlashCommand(
     return
   }
   if (subcommand === "backup") {
-    await createSliceBackup(deps, args)
+    if (args[0] === "restore") {
+      await restoreSliceBackup(deps, args.slice(1))
+    } else {
+      await createSliceBackup(deps, args)
+    }
     return
   }
   if (subcommand === "start" || subcommand === "stop") {
@@ -96,7 +106,7 @@ export async function handleSliceSlashCommand(
     await startSliceAuthLogin(deps, args)
     return
   }
-  deps.flashFooter("usage: /slice list | /slice create <name> [--headed|--headless] [--from-state <state-ref>] | /slice status [slice-ref] | /slice doctor [slice-ref] | /slice logs [slice-ref] [--tail <lines>] | /slice audit [slice-ref] [--limit <count>] | /slice state [slice-ref] | /slice save-state [slice-ref] --restart-agents|--shutdown | /slice backup [slice-ref] [--name <name>] | /slice reset-state [slice-ref] | /slice start [slice-ref] | /slice stop [slice-ref] | /slice delete <slice-ref> | /slice screen [slice-ref] | /slice auth import [slice-ref] <provider> <account-profile> | /slice auth remove [slice-ref] <provider> <account-profile> | /slice auth login [slice-ref] <provider> <account-profile>", "error")
+  deps.flashFooter("usage: /slice list | /slice create <name> [--headed [--display-backend selkies|novnc]|--headless] [--from-state <state-ref>] | /slice status [slice-ref] | /slice doctor [slice-ref] | /slice logs [slice-ref] [--tail <lines>] | /slice audit [slice-ref] [--limit <count>] | /slice state [slice-ref] | /slice save-state [slice-ref] --restart-agents|--shutdown | /slice backup [create] [slice-ref] [--name <name>] | /slice backup restore [slice-ref] <backup-ref> | /slice reset-state [slice-ref] | /slice start [slice-ref] | /slice stop [slice-ref] | /slice delete <slice-ref> | /slice screen [slice-ref] | /slice auth import [slice-ref] <provider> <account-profile> | /slice auth remove [slice-ref] <provider> <account-profile> | /slice auth login [slice-ref] <provider> <account-profile>", "error")
 }
 
 function formatSliceLabel(slice: SliceRecord): string {
@@ -129,7 +139,7 @@ function formatSliceStateStatus(slice: SliceRecord, state: SliceSavedStateRecord
   ].filter(Boolean).join("\n")
 }
 
-function formatSliceStateSaved(slice: SliceRecord, state: SliceSavedStateRecord): string {
+export function formatSliceStateSaved(slice: SliceRecord, state: SliceSavedStateRecord): string {
   return [
     `saved slice state ${formatSliceLabel(slice)} (${slice.id})`,
     `state=${state.id}`,
@@ -156,6 +166,14 @@ function formatSliceBackupCreated(
     `home_archive=${backup.home_archive_path}`,
     instructions,
   ].filter(Boolean).join("\n")
+}
+
+function formatSliceBackupRestored(slice: SliceRecord, backup: SliceBackupRecord): string {
+  return [
+    `restored slice backup ${formatSliceLabel(slice)} (${slice.id})`,
+    `backup=${backup.id}`,
+    "status=stopped",
+  ].join("\n")
 }
 
 function formatSliceLogs(slice: SliceRecord, entries: SliceLogEntry[]): string {
@@ -479,6 +497,29 @@ async function createSliceBackup(deps: SliceCommandHandlerDeps, args: string[]):
   }
 }
 
+async function restoreSliceBackup(deps: SliceCommandHandlerDeps, args: string[]): Promise<void> {
+  if (!deps.restoreSliceBackup) {
+    deps.flashFooter("slice backup restore is unavailable in this build", "error")
+    return
+  }
+  const parsed = parseSliceBackupRestoreArgs(args)
+  if (parsed.error) {
+    deps.flashFooter(parsed.error, "error")
+    return
+  }
+  const resolvedRef = await explicitOrFocusedSliceRef(deps, parsed.sliceRef)
+  if (await rejectSliceLifecycleWithAttachedAgents(deps, "restore backup for", resolvedRef)) {
+    return
+  }
+  try {
+    const payload = await deps.restoreSliceBackup(resolvedRef, parsed.backupRef!)
+    deps.appendNotice(formatSliceBackupRestored(payload.slice, payload.backup))
+    deps.flashFooter(`restored slice backup ${payload.backup.id}`, "info")
+  } catch (error) {
+    deps.flashFooter(error instanceof Error ? error.message : "slice backup restore failed", "error")
+  }
+}
+
 function parseSliceBackupArgs(args: string[]): {
   sliceRef?: string
   name?: string
@@ -503,6 +544,26 @@ function parseSliceBackupArgs(args: string[]): {
   return { ...(sliceRef ? { sliceRef } : {}), ...(name ? { name } : {}) }
 }
 
+function parseSliceBackupRestoreArgs(args: string[]): {
+  sliceRef?: string
+  backupRef?: string
+  error?: string
+} {
+  if (args.length === 1 && args[0] && !args[0].startsWith("--")) {
+    return { backupRef: args[0] }
+  }
+  if (
+    args.length === 2
+    && args[0]
+    && args[1]
+    && !args[0].startsWith("--")
+    && !args[1].startsWith("--")
+  ) {
+    return { sliceRef: args[0], backupRef: args[1] }
+  }
+  return { error: "usage: /slice backup restore [slice-ref] <backup-ref>" }
+}
+
 function parseSliceCreateOptions(
   deps: SliceCommandHandlerDeps,
   args: string[],
@@ -515,6 +576,7 @@ function parseSliceCreateOptions(
   workspaceId?: string | null
   worktreeId?: string | null
   displayMode?: "headless" | "headed"
+  displayBackend?: "novnc" | "selkies"
   fromSavedState?: string | null
   base?: "default" | "clean" | null
   error?: string
@@ -527,6 +589,7 @@ function parseSliceCreateOptions(
   let worktreeId: string | null | undefined = deps.currentWorktreeTarget()
   let workspaceMount: string | null | undefined = deps.currentWorktreeTarget()
   let displayMode: "headless" | "headed" | undefined
+  let displayBackend: "novnc" | "selkies" | undefined
   let fromSavedState: string | null | undefined
   let base: "default" | "clean" | null | undefined
   let error: string | undefined
@@ -535,7 +598,7 @@ function parseSliceCreateOptions(
     const value = args[index + 1]
     if (arg === "--backend") {
       if (value !== "local_docker" && value !== "ssh_docker") {
-        error = "usage: /slice create <name> [--headed|--headless] [--backend local_docker|ssh_docker] [--kernel <worker-kernel-ref>] [--display-url <url>] [--mount <path|none>]"
+        error = "usage: /slice create <name> [--headed [--display-backend selkies|novnc]|--headless] [--backend local_docker|ssh_docker] [--kernel <worker-kernel-ref>] [--display-url <url>] [--mount <path|none>]"
         break
       }
       backend = value
@@ -548,6 +611,15 @@ function parseSliceCreateOptions(
     }
     if (arg === "--headless" || arg === "--no-display") {
       displayMode = "headless"
+      continue
+    }
+    if (arg === "--display-backend") {
+      if (value !== "selkies" && value !== "novnc") {
+        error = "usage: /slice create <name> --headed --display-backend selkies|novnc"
+        break
+      }
+      displayBackend = value
+      index += 1
       continue
     }
     if (arg === "--kernel") {
@@ -598,6 +670,9 @@ function parseSliceCreateOptions(
     error = `unknown /slice create option ${arg}`
     break
   }
+  if (!error && displayBackend !== undefined && displayMode !== "headed") {
+    error = "--display-backend requires --headed"
+  }
   return {
     ...(name !== undefined ? { name } : {}),
     ...(backend !== undefined ? { backend } : {}),
@@ -607,6 +682,7 @@ function parseSliceCreateOptions(
     ...(worktreeId !== undefined ? { worktreeId } : {}),
     ...(workspaceMount !== undefined ? { workspaceMount } : {}),
     ...(displayMode !== undefined ? { displayMode } : {}),
+    ...(displayBackend !== undefined ? { displayBackend } : {}),
     ...(fromSavedState !== undefined ? { fromSavedState } : {}),
     ...(base !== undefined ? { base } : {}),
     ...(error !== undefined ? { error } : {}),
@@ -633,13 +709,18 @@ async function createSlice(
   }
   const parsed = parseSliceCreateOptions(deps, args)
   if (!parsed.name || parsed.error) {
-    deps.flashFooter(parsed.error ?? "usage: /slice create <name> [--headed|--headless] [--kernel <worker-kernel-ref>] [--display-url <url>] [--mount <path|none>]", "error")
+    deps.flashFooter(parsed.error ?? "usage: /slice create <name> [--headed [--display-backend selkies|novnc]|--headless] [--kernel <worker-kernel-ref>] [--display-url <url>] [--mount <path|none>]", "error")
     return
   }
   const createOptions = {
     name: parsed.name,
     ...(parsed.backend !== undefined ? { backend: parsed.backend } : {}),
     ...(parsed.displayMode !== undefined ? { displayMode: parsed.displayMode } : {}),
+    ...(parsed.displayMode === "headed"
+      ? { displayBackend: parsed.displayBackend ?? DEFAULT_HEADED_SLICE_DISPLAY_BACKEND }
+      : parsed.displayBackend !== undefined
+        ? { displayBackend: parsed.displayBackend }
+        : {}),
     ...(parsed.workspaceId !== undefined ? { workspaceId: parsed.workspaceId } : {}),
     ...(parsed.worktreeId !== undefined ? { worktreeId: parsed.worktreeId } : {}),
     ...(parsed.workspaceMount !== undefined ? { workspaceMount: parsed.workspaceMount } : {}),
@@ -844,7 +925,7 @@ async function deleteSlice(
 
 async function rejectSliceLifecycleWithAttachedAgents(
   deps: SliceCommandHandlerDeps,
-  action: "stop" | "delete" | "save-state" | "reset-state" | "backup",
+  action: "stop" | "delete" | "save-state" | "reset-state" | "backup" | "restore backup for",
   sliceRef: string,
 ): Promise<boolean> {
   const slice = await loadSliceForLifecycleGuard(deps, sliceRef)
@@ -882,11 +963,64 @@ async function openSliceScreen(
   deps: SliceCommandHandlerDeps,
   sliceRef: string | undefined,
 ): Promise<void> {
-  if (!deps.getSliceDisplayEndpoint) {
+  if (!deps.getSliceDisplayEndpoint || !deps.getSlice) {
     deps.flashFooter("slice screen is unavailable in this build", "error")
     return
   }
-  const endpoint = await deps.getSliceDisplayEndpoint(await explicitOrFocusedSliceRef(deps, sliceRef))
+  const resolvedRef = await explicitOrFocusedSliceRef(deps, sliceRef)
+  const slice = await deps.getSlice(resolvedRef)
+  const endpoint = slice.display_endpoint?.kind === "selkies"
+    ? null
+    : await deps.getSliceDisplayEndpoint(resolvedRef)
+  if (!endpoint || endpoint.kind === "selkies") {
+    if (!deps.isAttached?.()) {
+      deps.flashFooter("Selkies slice screen requires an active Room session, attachment, and focused agent", "error")
+      return
+    }
+    const agentId = deps.focusedAgentId()
+    const attachmentId = deps.attachmentId?.()
+    if (!agentId || !attachmentId) {
+      deps.flashFooter("Selkies slice screen requires an active Room session, attachment, and focused agent", "error")
+      return
+    }
+    if (!deps.sendRoomEnvironmentRequest) {
+      deps.flashFooter("Room slice binding is unavailable in this client", "error")
+      return
+    }
+    const sessionId = deps.sessionId?.()
+    if (!sessionId) {
+      deps.flashFooter("Selkies slice screen requires an active Room session, attachment, and focused agent", "error")
+      return
+    }
+    const response = await deps.sendRoomEnvironmentRequest<RoomEnvironmentSliceResponse>(
+      getRoomEnvironmentSliceRequest(sessionId),
+    )
+    if (!response || typeof response !== "object" || !("RoomEnvironmentSlice" in response)) {
+      throw new Error("Room Environment slice response is malformed")
+    }
+    const scoped = scopedSliceViewerTarget({
+      sessionId,
+      attachmentId,
+      agentId,
+      sliceId: slice.id,
+      binding: response.RoomEnvironmentSlice.binding,
+    })
+    if (scoped.error !== null) {
+      deps.flashFooter(scoped.error, "error")
+      return
+    }
+    const opened = await deps.openRoomViewer?.(scoped.target)
+    if (!opened) {
+      deps.flashFooter("Chariox Cloud Web View is not configured; run /cloud link first", "error")
+      return
+    }
+    deps.appendNotice([
+      "Opening slice screen in Chariox Cloud.",
+      `url=${opened.url}`,
+      opened.opened ? "browser=opened" : "browser=manual",
+    ].join("\n"))
+    return
+  }
   deps.appendNotice(endpoint.url)
   const opened = await deps.openExternalUrl?.(endpoint.url)
   deps.flashFooter(`${opened ? "opened" : "screen"} ${endpoint.url}`, "info")

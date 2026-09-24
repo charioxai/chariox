@@ -319,8 +319,18 @@ impl PromptStateOwner {
     pub(crate) fn submit_prepared_prompt(
         &self,
         session: &RuntimeSession,
+        prompt: PromptQueueItem,
+        force_queue: bool,
+    ) -> Result<PromptSubmissionOutcome, DaemonError> {
+        self.submit_prepared_prompt_with_queue_policy(session, prompt, force_queue, true)
+    }
+
+    pub(crate) fn submit_prepared_prompt_with_queue_policy(
+        &self,
+        session: &RuntimeSession,
         mut prompt: PromptQueueItem,
         force_queue: bool,
+        allow_queue: bool,
     ) -> Result<PromptSubmissionOutcome, DaemonError> {
         let agent_id = prompt.target_agent_id().to_string();
         let mut owner = self
@@ -356,6 +366,12 @@ impl PromptStateOwner {
             state.active_prompt = Some(prompt.clone());
             Ok(PromptSubmissionOutcome::Started { prompt })
         } else {
+            if !allow_queue {
+                return Err(DaemonError::LocalTransport {
+                    operation: "send agent message",
+                    message: "target agent is busy; retry when its provider is ready".to_string(),
+                });
+            }
             let pending_prompt_id = owner.next_pending_prompt_id();
             let state = owner.ensure_agent_state(session, &agent_id);
             if state.queued_prompts.len() >= PROMPT_QUEUE_LIMIT {
@@ -530,6 +546,25 @@ impl PromptStateOwner {
             return false;
         }
         *active = Some(replacement);
+        true
+    }
+
+    pub(crate) fn restore_reserved_prompt_if_unclaimed(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        prompt: PromptQueueItem,
+        expected_queue: &VecDeque<PromptQueueItem>,
+    ) -> bool {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = owner.ensure_agent_state(session, agent_id);
+        if state.active_prompt.is_some() || &state.queued_prompts != expected_queue {
+            return false;
+        }
+        state.active_prompt = Some(prompt);
         true
     }
 
@@ -1141,6 +1176,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn no_queue_admission_rejects_a_busy_target_without_mutation() {
+        let owner = PromptStateOwner::default();
+        let session = RuntimeSession::new(
+            "session-direct-message",
+            None,
+            "workspace-direct-message",
+            "worktree-direct-message",
+            "machine-direct-message",
+            "daemon-direct-message",
+        );
+        let active = PromptQueueItem::new(
+            "active-prompt",
+            "attachment-1",
+            "agent-1",
+            "active task",
+            PromptStatus::Queued,
+        );
+        assert!(matches!(
+            owner
+                .submit_prepared_prompt(&session, active, false)
+                .expect("first prompt should start"),
+            PromptSubmissionOutcome::Started { .. }
+        ));
+
+        let message = PromptQueueItem::new(
+            "agent-message",
+            "attachment-2",
+            "agent-1",
+            "new information",
+            PromptStatus::Queued,
+        );
+        assert!(owner
+            .submit_prepared_prompt_with_queue_policy(&session, message, false, false)
+            .is_err());
+        assert_eq!(owner.queued_prompt_count_for_agent(&session, "agent-1"), 0);
+        assert_eq!(
+            owner
+                .active_prompt_for_agent(&session, "agent-1")
+                .expect("first prompt should remain active")
+                .id(),
+            "active-prompt"
+        );
+    }
+
+    #[test]
     fn submit_prepared_prompt_rejects_queue_overflow() {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
@@ -1722,6 +1802,82 @@ mod tests {
                 .map(|prompt| prompt.id()),
             Some("fresh-prompt")
         );
+    }
+
+    #[test]
+    fn reserved_prompt_restore_preserves_other_agents_and_rejects_replacement() {
+        let owner = PromptStateOwner::default();
+        let mut session = RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        );
+        let original = PromptQueueItem::new(
+            "original",
+            "attachment-1",
+            "agent-1",
+            "first",
+            PromptStatus::Running,
+        );
+        session.mirror_agent_prompt_state("agent-1", Some(original.clone()), VecDeque::new());
+        owner.restore_session_state(&session);
+        owner
+            .complete_active_prompt_if_matches(&session, "agent-1", Some("original"))
+            .expect("first prompt should be reserved");
+        owner
+            .submit_prepared_prompt(
+                &session,
+                PromptQueueItem::new(
+                    "other",
+                    "attachment-2",
+                    "agent-2",
+                    "other",
+                    PromptStatus::Queued,
+                ),
+                false,
+            )
+            .expect("another agent should accept work");
+        let other_before = owner.state_parts(&session, "agent-2");
+        assert!(owner.restore_reserved_prompt_if_unclaimed(
+            &session,
+            "agent-1",
+            original.clone(),
+            &VecDeque::new(),
+        ));
+        assert_eq!(owner.state_parts(&session, "agent-2"), other_before);
+        assert_eq!(
+            owner.state_parts(&session, "agent-1").0,
+            Some(original.clone())
+        );
+
+        owner
+            .complete_active_prompt_if_matches(&session, "agent-1", Some("original"))
+            .expect("first prompt should be reserved again");
+        owner
+            .submit_prepared_prompt(
+                &session,
+                PromptQueueItem::new(
+                    "replacement",
+                    "attachment-1",
+                    "agent-1",
+                    "new",
+                    PromptStatus::Queued,
+                ),
+                false,
+            )
+            .expect("replacement prompt should start");
+        let replacement = owner.state_parts(&session, "agent-1");
+        assert!(!owner.restore_reserved_prompt_if_unclaimed(
+            &session,
+            "agent-1",
+            original,
+            &VecDeque::new(),
+        ));
+        assert_eq!(owner.state_parts(&session, "agent-1"), replacement);
+        assert_eq!(owner.state_parts(&session, "agent-2"), other_before);
     }
 
     #[test]

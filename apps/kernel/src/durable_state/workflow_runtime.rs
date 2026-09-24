@@ -24,7 +24,7 @@ pub(crate) struct DurableWorkflowRunPage {
 }
 
 impl DurableKernelStateStore {
-    pub(crate) fn with_workflow_runtime_transition_lock<T>(
+    pub(crate) fn with_projection_transition_lock<T>(
         &self,
         transition: impl FnOnce() -> Result<T, DaemonError>,
     ) -> Result<T, DaemonError> {
@@ -32,10 +32,17 @@ impl DurableKernelStateStore {
             .workflow_runtime_transition_lock
             .lock()
             .map_err(|error| DaemonError::LocalTransport {
-                operation: "durable_state.lock_workflow_runtime_transition",
+                operation: "durable_state.lock_projection_transition",
                 message: error.to_string(),
             })?;
         transition()
+    }
+
+    pub(crate) fn with_workflow_runtime_transition_lock<T>(
+        &self,
+        transition: impl FnOnce() -> Result<T, DaemonError>,
+    ) -> Result<T, DaemonError> {
+        self.with_projection_transition_lock(transition)
     }
 
     pub(crate) fn persist_workflow_runtime_transition(
@@ -51,6 +58,36 @@ impl DurableKernelStateStore {
                 "session_id": session.id(),
                 "reason": reason,
             }),
+            None,
+        )
+    }
+
+    /// Commit a workflow transition and its provider prompt ownership together.
+    /// Both records use the existing replay formats and one SQLite transaction.
+    pub(crate) fn persist_workflow_prompt_transition(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        reason: &str,
+    ) -> Result<u64, DaemonError> {
+        let prompt_state_json = serde_json::to_string(
+            &crate::durable_prompt_state::DurablePromptStateEventPayload::capture(
+                session, agent_id,
+            ),
+        )
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "durable_state.encode_workflow_prompt_transition",
+            message: error.to_string(),
+        })?;
+        self.persist_workflow_runtime_event(
+            session,
+            "workflow.runtime.updated",
+            serde_json::json!({
+                "owner_id": session.host_daemon_id(),
+                "session_id": session.id(),
+                "reason": reason,
+            }),
+            Some(prompt_state_json),
         )
     }
 
@@ -66,6 +103,7 @@ impl DurableKernelStateStore {
             serde_json::json!({
                 "session": session,
             }),
+            None,
         )
     }
 
@@ -74,6 +112,7 @@ impl DurableKernelStateStore {
         session: &RuntimeSession,
         event_kind: &'static str,
         payload: serde_json::Value,
+        prompt_state_json: Option<String>,
     ) -> Result<u64, DaemonError> {
         let timestamp_ms = unix_epoch_ms();
         let event_id = format!("state_evt_{timestamp_ms}_{}", super::rand_suffix());
@@ -94,6 +133,7 @@ impl DurableKernelStateStore {
                 hot_entities: encoded.hot_entities,
                 workflow_runs: encoded.workflow_runs,
                 delivery_receipts: encoded.delivery_receipts,
+                prompt_state_json,
             })
     }
 
@@ -434,6 +474,7 @@ pub(super) struct WorkflowRuntimeTransitionWrite<'a> {
     pub(super) hot_entities: &'a [DurableWorkflowHotEntityWrite],
     pub(super) workflow_runs: &'a [DurableWorkflowRunWrite],
     pub(super) delivery_receipts: &'a [DurableDeliveryReceiptWrite],
+    pub(super) prompt_state_json: Option<&'a str>,
 }
 
 pub(super) fn write_workflow_runtime_transition(
@@ -487,6 +528,21 @@ pub(super) fn write_workflow_runtime_transition(
         write.session_id,
         write.delivery_receipts,
     )?;
+    if let Some(prompt_state_json) = write.prompt_state_json {
+        transaction.execute(
+            "INSERT INTO durable_state_events (
+                event_id, kind, subject_id, timestamp_ms, payload_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                format!("{}:prompt", write.event_id),
+                crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND,
+                write.session_id,
+                write.timestamp_ms as i64,
+                prompt_state_json,
+            ],
+        )?;
+        return Ok(transaction.last_insert_rowid().max(0) as u64);
+    }
     Ok(sequence)
 }
 

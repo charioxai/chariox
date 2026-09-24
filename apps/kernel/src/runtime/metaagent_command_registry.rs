@@ -336,7 +336,7 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
                 Some(MetaCommandExecutionPolicy::Routed)
             }
             _ => Some(MetaCommandExecutionPolicy::NotRouted {
-                message: "routed slice commands: `slice list`, `slice show`, `slice start`, `slice stop`, `slice save-state`, `slice status`, and `slice backup`; create slices with `agent spawn <alias> --slice new`".to_string(),
+                message: "routed slice commands: `slice list`, `slice show`, `slice start`, `slice stop`, `slice save-state`, `slice status`, `slice backup`, and `slice backup restore`; create slices with `agent spawn <alias> --slice new`".to_string(),
             }),
         },
         "credential" | "credentials" => match tokens.get(1).map(String::as_str) {

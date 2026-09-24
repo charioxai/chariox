@@ -136,6 +136,9 @@ pub(super) async fn replay_recent_relay_events(
         if persisted.event_id <= cursor {
             continue;
         }
+        if matches!(&persisted.event, KernelEvent::TransportResumed { .. }) {
+            continue;
+        }
         if !event_is_relevant_to_attachment(&persisted.event, attachment_id) {
             continue;
         }

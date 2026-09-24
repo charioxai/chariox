@@ -60,7 +60,7 @@ use envelope_io::{
     send_outgoing_event_envelope,
 };
 use events::{emit_relay_event, replay_recent_relay_events, RelayEventRuntime};
-use incoming_envelopes::{handle_incoming_envelope, IncomingEnvelopeContext};
+use incoming_envelopes::{handle_incoming_envelope, IncomingEnvelopeContext, RelayReconnectGate};
 #[cfg(test)]
 pub use peer_client::send_peer_request_via_relay;
 use peer_client::{resolve_pending_peer_response, RelayPeerResponseEnvelope};
@@ -75,6 +75,8 @@ pub use peer_client::{
 };
 use peer_events::{handle_daemon_peer_event, pump_leased_projection_events};
 use peer_requests::handle_daemon_peer_request;
+#[cfg(test)]
+pub(crate) use peer_requests::send_authenticated_peer_request_for_test;
 pub(crate) use remote_inventory::refresh_remote_inventory_projection;
 use remote_inventory::{
     abort_inventory_refresh_task, clear_remote_inventory_projection,
@@ -87,9 +89,13 @@ use subscriptions::{
 
 pub use connection_state::RelayClientState;
 pub(crate) use connection_state::RelayDisplayTunnelClientEvent;
-pub(crate) use connection_state::RelayDisplayTunnelTarget;
 #[cfg(test)]
-pub use connector::run_daemon_relay_connector;
+pub(crate) use connection_state::TestPeerRequestObservation;
+pub(crate) use connection_state::{RelayDisplayTunnelTarget, RelayDisplayTunnelTargetKind};
+#[cfg(test)]
+pub use connector::{
+    run_daemon_relay_connector, run_daemon_relay_connector_with_router_and_static_relay,
+};
 pub use connector::{
     run_daemon_relay_connector_with_router, run_daemon_relay_connector_with_static_relay,
 };

@@ -8,7 +8,7 @@ use crate::provider::{
     AgentEndpointMode, ProviderProcessInfo, ProviderRunState, RuntimeProviderRun,
 };
 
-use super::provider_liveness::poll_provider_run_process_running;
+use super::provider_liveness::{poll_provider_run_process_exit, ProviderProcessExit};
 
 pub(crate) struct ProviderLaunchProcessRuntime<'a> {
     app: &'a mut DaemonApp,
@@ -26,10 +26,41 @@ impl<'a> ProviderLaunchProcessRuntime<'a> {
     }
 
     pub(crate) fn spawn_for_launch(&mut self, run: &RuntimeProviderRun) -> Result<(), DaemonError> {
+        self.spawn_for_launch_with_credentials(
+            run,
+            &crate::provider::ProviderCredentialEnvironment::default(),
+        )
+    }
+
+    pub(crate) fn spawn_for_launch_with_credentials(
+        &mut self,
+        run: &RuntimeProviderRun,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
+    ) -> Result<(), DaemonError> {
+        #[cfg(test)]
+        if crate::provider::take_provider_lifecycle_failure_for_test(
+            run.id(),
+            crate::provider::ProviderLifecycleFailureStage::Spawn,
+        ) {
+            return Err(DaemonError::PtySpawn {
+                provider_run_id: run.id().to_string(),
+                message: "injected provider restart spawn failure".to_string(),
+            });
+        }
+        #[cfg(test)]
+        if crate::provider::record_provider_credential_delivery_for_test(
+            run.id(),
+            "pty_spawn",
+            credentials,
+        ) {
+            return Ok(());
+        }
         if run.endpoint_mode() != AgentEndpointMode::Managed {
             return Ok(());
         }
-        self.app.pty.spawn_for_run(run)?;
+        self.app
+            .pty
+            .spawn_for_run_with_credentials(run, credentials)?;
         ProviderProcessTracker::new(self.app).register_managed_run(run)
     }
 
@@ -40,8 +71,11 @@ impl<'a> ProviderLaunchProcessRuntime<'a> {
         remove_provider_pty_process(self.app, provider_run_id)
     }
 
-    pub(crate) fn poll_running(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {
-        poll_provider_run_process_running(self.app, provider_run_id)
+    pub(crate) fn poll_exit(
+        &mut self,
+        provider_run_id: &str,
+    ) -> Result<Option<ProviderProcessExit>, DaemonError> {
+        poll_provider_run_process_exit(self.app, provider_run_id)
     }
 }
 
@@ -516,6 +550,7 @@ fn owned_orphan_provider_process_ids_from_ps_output(
         .map(|process| process.process_group_id)
         .filter(|process_group_id| *process_group_id > 0)
         .collect::<BTreeSet<_>>();
+    let current_process_ancestors = process_ancestor_ids(current_pid, &processes);
 
     processes
         .values()
@@ -523,6 +558,7 @@ fn owned_orphan_provider_process_ids_from_ps_output(
             if process.pid == current_pid
                 || tracked_pids.contains(&process.pid)
                 || tracked_process_group_ids.contains(&process.process_group_id)
+                || current_process_ancestors.contains(&process.pid)
                 || has_protected_process_ancestor(process, &processes, tracked_pids, current_pid)
                 || process.age_secs < min_age_secs
                 || !process.command.contains("codex app-server")
@@ -534,6 +570,24 @@ fn owned_orphan_provider_process_ids_from_ps_output(
             Some(process.pid)
         })
         .collect()
+}
+
+fn process_ancestor_ids(
+    current_pid: u32,
+    processes: &BTreeMap<u32, ProviderProcessSnapshot>,
+) -> BTreeSet<u32> {
+    let mut ancestors = BTreeSet::new();
+    let mut parent_pid = processes
+        .get(&current_pid)
+        .map(|process| process.parent_pid)
+        .unwrap_or_default();
+    while parent_pid > 0 && ancestors.insert(parent_pid) {
+        let Some(parent) = processes.get(&parent_pid) else {
+            break;
+        };
+        parent_pid = parent.parent_pid;
+    }
+    ancestors
 }
 
 fn has_protected_process_ancestor(
@@ -670,6 +724,28 @@ mod tests {
         );
 
         assert_eq!(orphan_ids, vec![400]);
+    }
+
+    #[test]
+    fn orphan_scan_preserves_processes_ancestors_of_the_current_kernel() {
+        let ps_output = format!(
+            "600 1 600 45 /usr/bin/node\n\
+             601 600 601 44 /opt/codex {}\n\
+             999 601 999 1 test-kernel\n\
+             700 1 700 43 /opt/codex {}\n",
+            codex_command(50001),
+            codex_command(50002),
+        );
+
+        let orphan_ids = owned_orphan_provider_process_ids_from_ps_output(
+            &ps_output,
+            999,
+            &BTreeSet::new(),
+            30_000,
+            MCP_URL,
+        );
+
+        assert_eq!(orphan_ids, vec![700]);
     }
 
     #[test]
