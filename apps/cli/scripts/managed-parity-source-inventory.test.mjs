@@ -166,7 +166,12 @@ test("assume-unchanged worktree edits do not replace committed source bytes", ()
   const oldSource = 'let selector = "CHARIOX_MANAGED_OLD_REF_SOURCE";\n';
   const committedSource = 'let selector = "CHARIOX_MANAGED_COMMITTED_SOURCE";\n';
   const modifiedSource = 'let selector = "CHARIOX_MANAGED_WORKTREE_DECOY";\n';
-  const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
+  const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+  delete gitEnv.GIT_NO_REPLACE_OBJECTS;
+  const git = (...args) => execFileSync("git", args, {
+    cwd: root, encoding: "utf8",
+    env: gitEnv,
+  });
   try {
     mkdirSync(dirname(join(root, sourcePath)), { recursive: true });
     writeFileSync(join(root, sourcePath), oldSource);
@@ -188,6 +193,14 @@ test("assume-unchanged worktree edits do not replace committed source bytes", ()
     const oldRefReport = collectSourceInventory({ sourceRoot: root, sourceRef: oldCommit });
     assert.ok(oldRefReport.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_OLD_REF_SOURCE"));
     assert.equal(oldRefReport.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_WORKTREE_DECOY"), false);
+    const committedBlob = git("rev-parse", `HEAD:${sourcePath}`).trim();
+    const decoyBlob = git("hash-object", "-w", sourcePath).trim();
+    git("replace", committedBlob, decoyBlob);
+    // Prove the replacement is active in the fixture, then ensure inventory ignores it.
+    assert.equal(git("cat-file", "blob", committedBlob), modifiedSource);
+    const replacedReport = collectSourceInventory({ sourceRoot: root });
+    assert.ok(replacedReport.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_COMMITTED_SOURCE"));
+    assert.equal(replacedReport.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_WORKTREE_DECOY"), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -217,6 +230,16 @@ test("lifetimes and regex quotes cannot hide executable selectors after URLs", (
     for (const selector of ["CHARIOX_MANAGED_LIFETIME", "CHARIOX_MANAGED_REGEXP"]) {
       assert.ok(report.entries.some(entry => entry.selector === selector), selector);
     }
+  });
+});
+
+test("code between block comments remains visible", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("apps/kernel/src/comments.rs",
+      '/* a */ let x = std::env::var("CHARIOX_MANAGED_BETWEEN"); /* b */\n/* CHARIOX_MANAGED_COMMENT_ONLY */\n');
+    const report = collect(fixture);
+    assert.ok(report.entries.some(entry => entry.selector === "CHARIOX_MANAGED_BETWEEN"));
+    assert.equal(report.entries.some(entry => entry.selector === "CHARIOX_MANAGED_COMMENT_ONLY"), false);
   });
 });
 

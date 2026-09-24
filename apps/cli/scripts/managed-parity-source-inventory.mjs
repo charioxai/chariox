@@ -372,7 +372,10 @@ function redact(value) {
 }
 
 function defaultRunGit(args, cwd) {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+  const result = spawnSync("git", args, {
+    cwd, encoding: "utf8", maxBuffer: 16 * 1024 * 1024,
+    env: { ...process.env, GIT_NO_REPLACE_OBJECTS: "1" },
+  });
   if (result.error) throw result.error;
   if (result.status !== 0) {
     throw new Error(`git ${args.join(" ")} failed with status ${result.status}`);
@@ -428,11 +431,12 @@ function readGitBlobBatch(sourceRoot, blobIds) {
   if (blobIds.length === 0) return new Map();
   const result = spawnSync("git", ["cat-file", "--batch"], {
     cwd: sourceRoot,
+    env: { ...process.env, GIT_NO_REPLACE_OBJECTS: "1" },
     input: `${blobIds.join("\n")}\n`,
     encoding: null,
     maxBuffer: MAX_BLOB_BATCH_OUTPUT_BYTES,
   });
-  if (result.error) throw new Error(`git cat-file --batch failed: ${result.error.message}`);
+  if (result.error) throw new Error(`git cat-file --batch failed (batch output limit ${MAX_BLOB_BATCH_OUTPUT_BYTES} bytes): ${result.error.message}`);
   if (result.status !== 0) throw new Error(`git cat-file --batch failed with status ${result.status}`);
   return parseCatFileBatch(result.stdout, blobIds);
 }
@@ -501,7 +505,7 @@ function stripComments(text, format) {
   return text.split("\n").map(line => {
     const trimmed = line.trim();
     const commentOnly = (slashComments && (trimmed.startsWith("//")
-      || /^\/\*[^]*?\*\/$/.test(trimmed)))
+      || /^\/\*(?:(?!\*\/)[^])*\*\/$/.test(trimmed)))
       || (hashComments && trimmed.startsWith("#"));
     return commentOnly ? line.replace(/[^\r]/g, " ") : line;
   }).join("\n");
