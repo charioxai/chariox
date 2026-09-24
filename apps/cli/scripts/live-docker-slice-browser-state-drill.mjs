@@ -753,8 +753,15 @@ async function assertFixtureAlive() {
 }
 
 async function removeContainerAndHomeVolume() {
-  await docker(["rm", "-f", containerName]).catch(() => undefined)
-  await docker(["volume", "rm", "-f", homeVolume]).catch(() => undefined)
+  let removalError = null
+  for (const args of [["rm", "-f", containerName], ["volume", "rm", "-f", homeVolume]]) {
+    try {
+      await docker(args)
+    } catch (error) {
+      removalError ??= error
+    }
+  }
+  if (removalError) throw removalError
 }
 
 async function buildKernel() {
