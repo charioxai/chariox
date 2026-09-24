@@ -128,6 +128,13 @@ impl AppControlService {
             .is_ok_and(|dormant| dormant.contains_key(&(owner.to_owned(), installation.to_owned())))
     }
 
+    pub(crate) fn dormant_app_keys(&self) -> Vec<(String, String)> {
+        self.workers
+            .1
+            .lock()
+            .map_or_else(|_| Vec::new(), |dormant| dormant.keys().cloned().collect())
+    }
+
     /// Dormant (idle-stopped) catalogs for this owner, at most 64.
     pub(crate) fn dormant_app_catalogs(&self, owner: &str) -> Vec<Arc<EventCatalog>> {
         self.workers.1.lock().map_or_else(

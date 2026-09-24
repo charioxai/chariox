@@ -70,14 +70,14 @@ impl AppLifecycleService {
         // Completed owners with uncommitted manual-stop intent retain an entry
         // until maintenance persists it. Bound those entries as well as workers.
         if entries.len() >= LIVE_LIMIT {
-            return Err(LifecycleError::Busy);
+            return Err(LifecycleError::LiveLimit);
         }
         let live = self
             .0
             .live
             .clone()
             .try_acquire_owned()
-            .map_err(|_| LifecycleError::Busy)?;
+            .map_err(|_| LifecycleError::LiveLimit)?;
         let preparation = self
             .0
             .preparation

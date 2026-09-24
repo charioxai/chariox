@@ -38,6 +38,10 @@ type Key = (String, String);
 pub(crate) enum LifecycleError {
     #[error("app_lifecycle_busy")]
     Busy,
+    /// Every live worker slot is taken; only this is relieved by stopping an
+    /// idle worker. Other `Busy` causes clear by themselves.
+    #[error("app_lifecycle_live_limit")]
+    LiveLimit,
     #[error("app_lifecycle_stopped")]
     Stopped,
     #[error("app_lifecycle_authority")]

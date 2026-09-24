@@ -287,6 +287,19 @@ fn per_installation_operation_guard_and_shared_admission_prevent_duplicate_prepa
         Err(LifecycleError::Busy)
     ));
     drop(permits);
+    // Only a full live-worker set reports LiveLimit, the one Busy cause that
+    // stopping an idle worker can relieve.
+    let live = service
+        .0
+        .live
+        .clone()
+        .try_acquire_many_owned(LIVE_LIMIT as u32)
+        .unwrap();
+    assert!(matches!(
+        service.start_active_blocking("alice", "installed", runtime.handle().clone()),
+        Err(LifecycleError::LiveLimit)
+    ));
+    drop(live);
     // No verified stored archive exists. Failure must precede any worker
     // publication; the durable row explains why the generation is not running.
     service
@@ -675,14 +688,19 @@ fn idle_stop_keeps_the_catalog_dormant_skips_recovery_and_restarts_on_demand() {
         .unwrap();
     assert!(control.active_app_lease("alice", "installed").is_some());
     assert!(!control.is_app_dormant("alice", "installed"));
-    service.idle_stop_blocking("alice", catalog, || true).unwrap();
+    service
+        .idle_stop_blocking("alice", catalog, || true)
+        .unwrap();
     wait(|| all_reaped(&observations));
     assert!(control.active_app_lease("alice", "installed").is_none());
     assert!(control.is_app_dormant("alice", "installed"));
     assert_eq!(control.dormant_app_catalogs("alice").len(), 1);
     assert!(control.dormant_app_catalogs("bob").is_empty());
     // Idle stop keeps restart intent; recovery leaves the dormant App stopped.
-    let status = store.app_worker_status("alice", "installed").unwrap().unwrap();
+    let status = store
+        .app_worker_status("alice", "installed")
+        .unwrap()
+        .unwrap();
     assert_eq!(status.phase, WorkerPhase::Stopped);
     assert!(status.desired_running);
     service.0.maintenance.lock().unwrap().next = Instant::now();

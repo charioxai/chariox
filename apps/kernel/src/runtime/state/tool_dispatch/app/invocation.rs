@@ -127,8 +127,7 @@ impl KernelRuntimeState {
             }
             if !started {
                 let lifecycle = control.lifecycle().clone();
-                let (start_owner, start_installation) =
-                    (owner.to_owned(), installation.to_owned());
+                let (start_owner, start_installation) = (owner.to_owned(), installation.to_owned());
                 let handle = tokio::runtime::Handle::current();
                 match tokio::task::spawn_blocking(move || {
                     lifecycle.start_on_demand_blocking(&start_owner, &start_installation, handle)
@@ -137,8 +136,11 @@ impl KernelRuntimeState {
                 .map_err(|_| unavailable())?
                 {
                     Ok(_) => started = true,
-                    // Admission is busy: make room once, then keep retrying.
-                    Err(crate::runtime::app_lifecycle::LifecycleError::Busy) => {
+                    // Transient contention (a concurrent start, preparation or
+                    // admission) clears by itself: retry without evicting.
+                    Err(crate::runtime::app_lifecycle::LifecycleError::Busy) => {}
+                    // Every live slot is taken: make room once, then retry.
+                    Err(crate::runtime::app_lifecycle::LifecycleError::LiveLimit) => {
                         if !evicted {
                             evicted = true;
                             self.evict_idle_app(owner, installation).await;
@@ -162,17 +164,22 @@ impl KernelRuntimeState {
     async fn evict_idle_app(&self, owner: &str, installation: &str) {
         let control = self.app_control().clone();
         let now = crate::session::unix_epoch_ms();
-        let Some(lease) = control
-            .active_app_leases(None, 16)
-            .into_iter()
-            .filter(|lease| {
-                !(lease.owner() == owner && lease.catalog().installation_id() == installation)
-                    && lease.idle_ms(now) >= EVICTABLE_IDLE_MS
+        let mut leases = control.active_app_leases(None, 16);
+        let candidates: Vec<_> = leases
+            .iter()
+            .map(|lease| {
+                (
+                    lease.owner(),
+                    lease.catalog().installation_id(),
+                    lease.idle_ms(now),
+                )
             })
-            .max_by_key(|lease| lease.idle_ms(now))
-        else {
+            .collect();
+        let Some(index) = eviction_victim(&candidates, (owner, installation)) else {
             return;
         };
+        let lease = leases.swap_remove(index);
+        drop(leases);
         let lifecycle = control.lifecycle().clone();
         let victim_owner = lease.owner().to_owned();
         let catalog = lease.catalog().clone();
@@ -180,9 +187,11 @@ impl KernelRuntimeState {
         let _ = tokio::task::spawn_blocking(move || {
             let installation = catalog.installation_id().to_owned();
             lifecycle.idle_stop_blocking(&victim_owner, catalog, || {
-                control.active_app_lease(&victim_owner, &installation).is_some_and(|lease| {
-                    lease.idle_ms(crate::session::unix_epoch_ms()) >= EVICTABLE_IDLE_MS
-                })
+                control
+                    .active_app_lease(&victim_owner, &installation)
+                    .is_some_and(|lease| {
+                        lease.idle_ms(crate::session::unix_epoch_ms()) >= EVICTABLE_IDLE_MS
+                    })
             })
         })
         .await;
@@ -227,4 +236,39 @@ fn require_binding(
         }
     }
     Ok(())
+}
+
+/// The longest-idle worker other than `target`, if idle for at least
+/// `EVICTABLE_IDLE_MS`. Candidates are `(owner, installation, idle_ms)`.
+fn eviction_victim(candidates: &[(&str, &str, u64)], target: (&str, &str)) -> Option<usize> {
+    candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, (owner, installation, idle))| {
+            (*owner, *installation) != target && *idle >= EVICTABLE_IDLE_MS
+        })
+        .max_by_key(|(_, (_, _, idle))| *idle)
+        .map(|(index, _)| index)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn eviction_picks_the_longest_idle_other_worker_past_the_threshold() {
+        let old = EVICTABLE_IDLE_MS;
+        let candidates = [
+            ("alice", "todo", old * 5),
+            ("alice", "docs", old - 1),
+            ("bob", "slack", old * 2),
+            ("bob", "todo", old * 3),
+        ];
+        // The target itself is never chosen, even when it is the idlest.
+        assert_eq!(eviction_victim(&candidates, ("alice", "todo")), Some(3));
+        assert_eq!(eviction_victim(&candidates, ("bob", "todo")), Some(0));
+        // Nothing idle long enough: no eviction.
+        assert_eq!(eviction_victim(&candidates[1..2], ("x", "y")), None);
+        assert_eq!(eviction_victim(&[], ("x", "y")), None);
+    }
 }

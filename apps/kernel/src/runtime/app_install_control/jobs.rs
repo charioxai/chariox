@@ -230,7 +230,7 @@ pub(super) async fn run(
                 } else {
                     Outcome::Done
                 }),
-                Err(LifecycleError::Busy) => Err(Error::Busy),
+                Err(LifecycleError::Busy | LifecycleError::LiveLimit) => Err(Error::Busy),
                 Err(LifecycleError::CommitUnknown) => Err(Error::Unknown),
                 Err(LifecycleError::Storage) => Err(Error::Storage),
                 Err(_) => Err(Error::Failed("app_install_start_rejected")),
