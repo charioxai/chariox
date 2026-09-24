@@ -31,9 +31,8 @@ impl KernelRuntimeState {
                 observe.load(Ordering::Acquire)
             });
         let lease = self
-            .app_control()
-            .active_app_lease(agent.owner_user_id(), &tool.name)
-            .ok_or_else(unavailable)?;
+            .app_lease_on_demand(agent.owner_user_id(), &tool.name)
+            .await?;
         let expected_version = format!(
             "{}:{}",
             lease.catalog().generation(),
@@ -93,6 +92,45 @@ impl KernelRuntimeState {
         .await
         .map_err(|_| unavailable())??;
         Ok(RuntimeToolResult { ok: true, payload })
+    }
+}
+
+const ON_DEMAND_START: Duration = Duration::from_secs(20);
+
+impl KernelRuntimeState {
+    /// A dormant (idle-stopped) App starts on its next tool call. Only an App
+    /// whose verified catalog is already dormant can be started this way.
+    async fn app_lease_on_demand(
+        &self,
+        owner: &str,
+        installation: &str,
+    ) -> Result<crate::runtime::app_worker::AppWorkerLease, DaemonError> {
+        let control = self.app_control();
+        if let Some(lease) = control.active_app_lease(owner, installation) {
+            return Ok(lease);
+        }
+        if !control.is_app_dormant(owner, installation) {
+            return Err(unavailable());
+        }
+        let lifecycle = control.lifecycle().clone();
+        let (start_owner, start_installation) = (owner.to_owned(), installation.to_owned());
+        let handle = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || {
+            lifecycle.start_on_demand_blocking(&start_owner, &start_installation, handle)
+        })
+        .await
+        .map_err(|_| unavailable())?
+        .map_err(|_| unavailable())?;
+        let deadline = tokio::time::Instant::now() + ON_DEMAND_START;
+        loop {
+            if let Some(lease) = control.active_app_lease(owner, installation) {
+                return Ok(lease);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(unavailable());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 }
 

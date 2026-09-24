@@ -49,6 +49,7 @@ pub(crate) struct AppToolReply {
 impl AppWorkerLease {
     pub(crate) fn reserve_call(&self, timeout: Duration) -> Result<AppCallSlot, AppWorkerError> {
         self.0.available()?;
+        self.touch();
         let slot = self.0.peer.reserve(timeout).map_err(peer_error)?;
         Ok(AppCallSlot {
             live: self.0.clone(),
@@ -175,6 +176,7 @@ impl AppWorkerLease {
         timeout: Duration,
     ) -> Result<(), AppWorkerError> {
         self.0.available()?;
+        self.touch();
         let slot = self.0.peer.reserve(timeout).map_err(peer_error)?;
         let params = serde_json::json!({
             "id": wake.id, "dueAtMs": wake.due_at_ms, "revision": wake.revision, "overdue": overdue,

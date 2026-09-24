@@ -173,6 +173,8 @@ impl AppLifecycleService {
         }
         let key = (owner.into(), installation.into());
         let _operation_guard = self.0.operation(key.clone())?;
+        // A manual stop ends on-demand use too; its tools leave the catalog.
+        self.0.publisher.forget_dormant(owner, installation);
         let entry = self
             .0
             .entries
@@ -241,6 +243,45 @@ impl AppLifecycleService {
                 AppOperationBudget::from_supervisor(|| false),
             )
             .map_err(Into::into)
+    }
+    /// Stop an idle worker while keeping its restart intent. Its verified
+    /// catalog stays dormant so tools remain discoverable; the next tool call,
+    /// wake or event starts it on demand. Nothing durable changes.
+    pub(crate) fn idle_stop_blocking(
+        &self,
+        owner: &str,
+        catalog: Arc<chariox_app_runtime::app_outbox::EventCatalog>,
+    ) -> Result<()> {
+        if self.0.stopped.load(Ordering::Acquire) {
+            return Err(LifecycleError::Stopped);
+        }
+        let key = (owner.to_owned(), catalog.installation_id().to_owned());
+        let _operation_guard = self.0.operation(key.clone())?;
+        let Some(entry) = self
+            .0
+            .entries
+            .lock()
+            .map_err(|_| LifecycleError::Supervisor)?
+            .get(&key)
+            .cloned()
+        else {
+            return Ok(());
+        };
+        self.0.publisher.retain_dormant(owner, catalog);
+        entry.control.cancel(false);
+        entry.join();
+        let mut entries = self
+            .0
+            .entries
+            .lock()
+            .map_err(|_| LifecycleError::Supervisor)?;
+        if entries
+            .get(&key)
+            .is_some_and(|current| Arc::ptr_eq(current, &entry))
+        {
+            entries.remove(&key);
+        }
+        Ok(())
     }
     /// Must be called from bounded blocking shutdown ownership before runtime
     /// teardown. A Drop fallback retains the same no-orphan guarantee.

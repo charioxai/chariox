@@ -44,9 +44,11 @@ impl AppControlService {
         _permit: &tokio::sync::OwnedSemaphorePermit,
     ) -> Result<Vec<RemoteExtensionTool>, AppToolsError> {
         let leases = self.bound_app_leases(agent);
+        let dormant = self.bound_dormant_catalogs(agent);
         let catalogs = leases
             .iter()
             .map(|lease| lease.catalog().clone())
+            .chain(dormant.iter().cloned())
             .collect::<Vec<_>>();
         if catalogs.is_empty() {
             return Ok(Vec::new());
@@ -54,11 +56,23 @@ impl AppControlService {
         let current = self
             .store
             .current_app_catalogs(agent.owner_user_id(), &catalogs)?;
-        self.project_app_tools(current, leases, occupied)
+        self.project_app_tools(current, leases, &dormant, occupied)
     }
 
     pub(crate) fn has_active_apps_for_agent(&self, agent: &AgentInstance) -> bool {
-        !self.bound_app_leases(agent).is_empty()
+        !self.bound_app_leases(agent).is_empty() || !self.bound_dormant_catalogs(agent).is_empty()
+    }
+
+    fn bound_dormant_catalogs(
+        &self,
+        agent: &AgentInstance,
+    ) -> Vec<std::sync::Arc<chariox_app_runtime::app_outbox::EventCatalog>> {
+        self.dormant_app_catalogs(agent.owner_user_id())
+            .into_iter()
+            .filter(|catalog| {
+                agent.has_extension_grant(ExtensionKind::App, catalog.installation_id())
+            })
+            .collect()
     }
 
     fn bound_app_leases(
@@ -95,6 +109,7 @@ impl AppControlService {
         &self,
         current: Vec<std::sync::Arc<chariox_app_runtime::app_outbox::EventCatalog>>,
         leases: Vec<crate::runtime::app_worker::AppWorkerLease>,
+        dormant: &[std::sync::Arc<chariox_app_runtime::app_outbox::EventCatalog>],
         occupied: &BTreeSet<String>,
     ) -> Result<Vec<RemoteExtensionTool>, AppToolsError> {
         let mut names = occupied.clone();
@@ -103,7 +118,10 @@ impl AppControlService {
         for catalog in current {
             if !leases.iter().any(|lease| {
                 std::sync::Arc::ptr_eq(lease.catalog(), &catalog) && !lease.is_stopped()
-            }) {
+            }) && !dormant
+                .iter()
+                .any(|stopped| std::sync::Arc::ptr_eq(stopped, &catalog))
+            {
                 continue;
             }
             for tool in catalog.app_catalog().tools() {

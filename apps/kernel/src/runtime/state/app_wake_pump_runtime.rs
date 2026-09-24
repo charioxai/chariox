@@ -14,6 +14,9 @@ const DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 const START_WAIT_MS: u64 = 2_000;
 /// A user-stopped App keeps its wakes until the user starts it again.
 const STOPPED_WAIT_MS: u64 = 60_000;
+/// A worker with no tool call or wake for this long stops; its tools stay
+/// discoverable and its next use starts it again.
+const IDLE_AFTER_MS: u64 = 10 * 60_000;
 
 /// Outcome of one on-demand start request for an installation.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -78,7 +81,27 @@ impl KernelRuntimeState {
         tokio::spawn(async move {
             let _pass = pass;
             runtime.app_wake_pass(now_ms).await;
+            runtime.stop_idle_apps(now_ms).await;
         });
+    }
+
+    async fn stop_idle_apps(&self, now_ms: u64) {
+        let control = self.app_control();
+        let idle: Vec<_> = control
+            .active_app_leases(None, 16)
+            .into_iter()
+            .filter(|lease| lease.idle_ms(now_ms) >= IDLE_AFTER_MS)
+            .collect();
+        for lease in idle {
+            let lifecycle = control.lifecycle().clone();
+            let owner = lease.owner().to_owned();
+            let catalog = lease.catalog().clone();
+            drop(lease);
+            let _ = tokio::task::spawn_blocking(move || {
+                lifecycle.idle_stop_blocking(&owner, catalog)
+            })
+            .await;
+        }
     }
 
     async fn app_wake_pass(&self, now_ms: u64) {
