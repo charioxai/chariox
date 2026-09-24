@@ -1759,7 +1759,7 @@ Workflow trigger and deployment direction:
   routes one App event to one workflow endpoint and queue, resolved under
   workflow ownership. The kernel derives the owner; requests name only the
   installation and cannot supply an owner, generation or host path. Automation
-  requests use the App's verified catalog, starting a dormant App on demand.
+  requests use the active release's verified catalog and need no running worker.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic
