@@ -18,6 +18,7 @@ import {
   createExistingKernelWorkspaceFixture,
   parseArgs,
   requiresDirectDockerAccess,
+  startSliceAndWaitForRunning,
 } from "./live-room-drill-c-setup.mjs"
 import { removeRoomDirectDockerWorkspaceFixture } from "./lib/room-rootless-workspace-fixture.mjs"
 
@@ -94,6 +95,48 @@ const baseline = buildRoomBaseline({
 })
 
 const priorKernelState = { sessionCount: 0, sliceCount: 0 }
+
+test("cold slice start survives a client response timeout and observes the running slice", async () => {
+  const requests = {
+    startSliceRequest: () => ({ StartSlice: { slice_ref: "slice-1" } }),
+    getSliceRequest: () => ({ GetSlice: { slice_ref: "slice-1" } }),
+  }
+  const client = {
+    async send(request) {
+      if (request.StartSlice) throw Object.assign(new Error("handle kernel response timed out"), { code: "request_timeout" })
+      return { Slice: { slice: { id: "slice-1", status: "running" } } }
+    },
+  }
+  const slice = await startSliceAndWaitForRunning(client, requests, "slice-1", [])
+  assert.equal(slice.status, "running")
+})
+
+test("slice start still rejects an actual transport failure", async () => {
+  const requests = { startSliceRequest: () => ({ StartSlice: {} }) }
+  let polled = false
+  const client = {
+    async send(request) {
+      if (!request.StartSlice) polled = true
+      throw Object.assign(new Error("connection closed"), { code: "connection_closed" })
+    },
+  }
+  await assert.rejects(startSliceAndWaitForRunning(client, requests, "slice-1", []), /connection closed/)
+  assert.equal(polled, false)
+})
+
+test("timed-out slice start does not conceal a failed slice", async () => {
+  const requests = {
+    startSliceRequest: () => ({ StartSlice: {} }),
+    getSliceRequest: () => ({ GetSlice: {} }),
+  }
+  const client = {
+    async send(request) {
+      if (request.StartSlice) throw Object.assign(new Error("timed out"), { code: "request_timeout" })
+      return { Slice: { slice: { id: "slice-1", status: "failed", error: "image build failed" } } }
+    },
+  }
+  await assert.rejects(startSliceAndWaitForRunning(client, requests, "slice-1", []), /image build failed/)
+})
 
 function manifestInput(overrides = {}) {
   return {

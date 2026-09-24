@@ -24,6 +24,9 @@ const devRoot = path.join(os.homedir(), ".chariox", "dev", "browser-computer-use
 const defaultLocalCloudUrl = "http://127.0.0.1:4321"
 const defaultLocalRelayToken = "local-browser-terminal-relay-token"
 const protocolClientRoomReadyTimeoutMs = 180_000
+// A two-core local Docker VM can need more than the client's 10-minute
+// acknowledgement deadline to compile a changed release image.
+const coldSliceProvisionTimeoutMs = 20 * 60_000
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -812,8 +815,7 @@ async function main() {
 
     // The worker reads its Room binding when the slice starts. Binding an
     // already-running slice leaves that worker without the provisioned scope.
-    await state.client.send(requests.startSliceRequest(state.sliceId))
-    slice = await waitForSliceRunning(state.client, requests, state.sliceId, children)
+    slice = await startSliceAndWaitForRunning(state.client, requests, state.sliceId, children)
     slice = assertNewSliceIdentity({
       slice,
       expectedDaemonId: daemonId,
@@ -1197,7 +1199,20 @@ async function waitForSliceRunning(client, requests, sliceId, children) {
       throw new Error(`local Docker slice entered ${slice.status}: ${slice.error ?? slice.message ?? "no diagnostic"}`)
     }
     return slice.status === "running" ? slice : false
-  }, 300_000, `headed local Docker slice ${sliceId} did not become running`)
+  }, coldSliceProvisionTimeoutMs, `headed local Docker slice ${sliceId} did not become running`)
+}
+
+export async function startSliceAndWaitForRunning(client, requests, sliceId, children) {
+  try {
+    await client.send(requests.startSliceRequest(sliceId))
+  } catch (error) {
+    // Cold release builds may outlive the IPC response deadline while the
+    // kernel's accepted start operation continues. Its slice state, not the
+    // lost acknowledgement, determines whether setup can proceed.
+    if (error?.code !== "request_timeout") throw error
+    console.warn("[drill-c-setup] slice start acknowledgement timed out; checking slice state")
+  }
+  return await waitForSliceRunning(client, requests, sliceId, children)
 }
 
 async function waitForRoomReady(client, requests, sessionId, slice, daemonId, children) {
