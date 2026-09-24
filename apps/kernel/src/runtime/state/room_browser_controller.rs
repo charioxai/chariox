@@ -684,6 +684,9 @@ async fn execute_local(
                 setting,
             },
         ),
+        Command::AppView { request } => processes
+            .app_view(&session_id, &request)
+            .map(|result| Response::AppView { result }),
         Command::PollEvents {
             browser_generation,
             cursor,

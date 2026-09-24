@@ -34,6 +34,7 @@ pub(crate) struct AppControlService {
     admission: Arc<Semaphore>,
     event_pump: super::app_event_pump::AppEventPump,
     wake_pump: super::app_wake_pump::AppWakePump,
+    views: super::app_views::AppViews,
     publishers: super::app_publisher_control::AppPublisherControl,
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
     workers: workers::ActiveWorkers,
@@ -82,6 +83,7 @@ impl AppControlService {
             admission,
             event_pump,
             wake_pump: Default::default(),
+            views: Default::default(),
             publishers,
             #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
             workers,
@@ -114,6 +116,10 @@ impl AppControlService {
 
     pub(crate) fn wake_pump(&self) -> &super::app_wake_pump::AppWakePump {
         &self.wake_pump
+    }
+
+    pub(crate) fn views(&self) -> &super::app_views::AppViews {
+        &self.views
     }
 
     pub(crate) fn try_admit(
@@ -266,6 +272,6 @@ pub(crate) fn registry_error(error: AppRegistryError) -> AppRequestErrorCode {
     }
 }
 
-fn failed(code: AppRequestErrorCode) -> LocalDaemonResponse {
+pub(crate) fn failed(code: AppRequestErrorCode) -> LocalDaemonResponse {
     LocalDaemonResponse::AppRequestFailed { code }
 }

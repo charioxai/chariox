@@ -13,6 +13,7 @@ pub enum LocalDaemonResponse {
     AppWorker { worker: AppWorkerSummary, },
     AppAutomations { installation_id: String, automations: Vec<AppAutomationSummary>, },
     AppAutomation { installation_id: String, automation: AppAutomationSummary, },
+    AppViewOpened { installation_id: String, target_id: String, origin: String, },
     SessionCreated { session: RuntimeSession, agent: AgentInstance, },
     SessionAttached { attachment: RuntimeAttachment, },
     SessionDetached { attachment: RuntimeAttachment, },

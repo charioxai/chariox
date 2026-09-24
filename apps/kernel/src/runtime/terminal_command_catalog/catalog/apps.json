@@ -80,6 +80,15 @@
         ]
       },
       {
+        "id": "app-open",
+        "label": "open",
+        "description": "Open an App's view as a Tab in this session's Room browser",
+        "value": "/app open ",
+        "surfaces": [
+          "session"
+        ]
+      },
+      {
         "id": "app-automation",
         "label": "automation",
         "description": "Route an App event to a workflow",

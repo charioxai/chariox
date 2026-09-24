@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { BrowserCdpClient, BrowserControllerError } from "./browser-controller-cdp.mjs";
 import { BrowserActionError } from "./browser-controller-actions.mjs";
+import { AppTabs } from "./browser-controller-apps.mjs";
 import {
   BrowserResourceInventoryError,
   observeBrowserResources,
@@ -110,6 +111,13 @@ export async function handleBrowserControllerRequest(
         request.id,
         await browser.setPermission(request.params, { signal }),
       );
+    }
+    if (request.method.startsWith?.("browser.app.")) {
+      browser.appTabs ??= new AppTabs(browser);
+      const apps = browser.appTabs;
+      if (request.method === "browser.app.open") return successResponse(request.id, await apps.open(request.params));
+      if (request.method === "browser.app.calls") return successResponse(request.id, apps.takeCalls());
+      if (request.method === "browser.app.respond") return successResponse(request.id, await apps.respond(request.params));
     }
     if (request.method === "browser.events.poll") {
       return successResponse(

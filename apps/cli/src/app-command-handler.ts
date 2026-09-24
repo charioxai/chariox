@@ -55,7 +55,7 @@ export async function handleAppSlashCommand(
     }
     return
   }
-  const result = await executeAppCommand(command.args, { send: deps.sendAppRequest })
+  const result = await executeAppCommand(command.args, { send: deps.sendAppRequest }, { sessionId: deps.currentAppSessionId?.() })
   if (!result.ok) {
     deps.flashFooter(result.message ?? "App command failed", "error")
     return

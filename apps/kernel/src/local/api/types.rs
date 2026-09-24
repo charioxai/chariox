@@ -107,4 +107,6 @@ pub use workspace::*;
 /// approvals and publisher enrollment) onto the main protocol line.
 /// Version 345 adds owner-scoped App worker control (status/start/stop/restart)
 /// and App automation list/configure/disable requests.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 345;
+/// Version 346 opens App views as managed Room Tabs (`OpenAppView`) and adds
+/// the room-controller `app_view` command.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 346;

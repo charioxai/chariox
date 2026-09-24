@@ -1762,6 +1762,18 @@ Workflow trigger and deployment direction:
   workflow ownership. The kernel derives the owner; requests name only the
   installation and cannot supply an owner, generation or host path. Automation
   requests use the active release's verified catalog and need no running worker.
+- protocol 346 adds `OpenAppView {session_id, installation_id}`, which returns
+  `AppViewOpened {installation_id, target_id, origin}`. The view is a managed
+  Tab in the session's Room browser, so people and agents share one DOM and
+  profile. The kernel re-verifies the active release and serves only its signed
+  `ui/` files on a per-owner, per-installation `https://<label>.app.chariox.internal`
+  origin through browser request interception. All other requests from the Tab
+  are blocked, a strict CSP applies, and popups are closed. The room-controller
+  relay command `app_view` (`open`, `calls`, `respond`) carries this between
+  the home and worker kernels. `window.chariox.call(tool, input)` runs the App's
+  own tool as the human owner through the same catalog validation and durable
+  path as agent tool calls; the kernel binds each call to the Tab's
+  installation, never to page-supplied identity.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

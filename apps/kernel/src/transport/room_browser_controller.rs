@@ -285,6 +285,9 @@ pub(crate) enum RoomBrowserControllerCommand {
         permission: crate::runtime::browser_controller_permission::BrowserPermissionName,
         setting: crate::runtime::browser_controller_permission::BrowserPermissionSetting,
     },
+    AppView {
+        request: crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
+    },
     PollEvents {
         browser_generation: u64,
         cursor: u64,
@@ -411,6 +414,9 @@ pub(crate) enum RoomBrowserControllerResult {
         result: Option<
             crate::runtime::browser_controller_permission::BrowserControllerPermissionResult,
         >,
+    },
+    AppView {
+        result: Option<serde_json::Value>,
     },
     Events {
         batch: Option<crate::runtime::browser_controller_event::BrowserControllerEventBatch>,

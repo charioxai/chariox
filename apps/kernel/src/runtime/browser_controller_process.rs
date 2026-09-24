@@ -217,6 +217,9 @@ pub(crate) trait BrowserControllerProcessBackend {
     ) -> Result<BrowserControllerPermissionResult, String> {
         Err("browser controller backend does not support permissions".to_string())
     }
+    fn app_view(&mut self, _request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest) -> Result<serde_json::Value, String> {
+        Err("browser controller backend does not support App views".to_string())
+    }
     fn poll_browser_events(
         &mut self,
         _browser_generation: u64,
@@ -898,6 +901,13 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         Ok(result)
     }
 
+    fn app_view(&mut self, request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest) -> Result<serde_json::Value, String> {
+        let method = request.method();
+        let timeout = self.timeout;
+        self.request_serializable(method, &request.params(), timeout)?
+            .into_result(method)
+    }
+
     fn poll_browser_events(
         &mut self,
         browser_generation: u64,
@@ -1366,6 +1376,15 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
             .set_browser_permission(target_id, document_id, permission, setting)
     }
 
+    pub(crate) fn app_view(
+        &mut self,
+        session_id: &str,
+        request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
+    ) -> Result<serde_json::Value, String> {
+        self.require_lease(session_id)?;
+        self.supervisor.app_view(request)
+    }
+
     pub(crate) fn poll_browser_events(
         &mut self,
         session_id: &str,
@@ -1617,6 +1636,20 @@ impl BrowserControllerProcessStore {
         ownership
             .cancel_browser_download(session_id, cancellation)
             .map(Some)
+    }
+
+    pub(crate) fn app_view(
+        &self,
+        session_id: &str,
+        request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let Some(ownership) = &self.ownership else {
+            return Ok(None);
+        };
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        ownership.app_view(session_id, request).map(Some)
     }
 
     pub(crate) fn poll_browser_events(
@@ -1905,6 +1938,11 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         self.ensure_started_without_transparent_restart()?;
         self.backend
             .set_browser_permission(target_id, document_id, permission, setting)
+    }
+
+    fn app_view(&mut self, request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest) -> Result<serde_json::Value, String> {
+        self.ensure_started_without_transparent_restart()?;
+        self.backend.app_view(request)
     }
 
     fn poll_browser_events(

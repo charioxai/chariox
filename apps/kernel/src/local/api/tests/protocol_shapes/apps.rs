@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 345);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 346);
     let release = AppReleaseSummary {
         version: "1.0.0".into(),
         publisher_id: "publisher".into(),
@@ -85,7 +85,7 @@ fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
 
 #[test]
 fn app_package_upload_protocol_shapes_bind_retry_bytes_and_opaque_handles() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 345);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 346);
     let handle = format!("upload_{}", "a".repeat(64));
     let digest = format!("sha256:{:064x}", 1);
     let requests = vec![
@@ -167,7 +167,7 @@ fn app_package_upload_protocol_shapes_bind_retry_bytes_and_opaque_handles() {
 
 #[test]
 fn app_worker_control_and_automation_shapes_are_versioned_and_owner_free() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 345);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 346);
     let requests = vec![
         LocalDaemonRequest::GetAppWorker(AppWorkerRequest {
             installation_id: "todo".into(),
@@ -228,14 +228,23 @@ fn app_worker_control_and_automation_shapes_are_versioned_and_owner_free() {
     ];
     for request in &requests {
         let encoded = serde_json::to_vec(request).unwrap();
-        assert_eq!(&serde_json::from_slice::<LocalDaemonRequest>(&encoded).unwrap(), request);
+        assert_eq!(
+            &serde_json::from_slice::<LocalDaemonRequest>(&encoded).unwrap(),
+            request
+        );
     }
     for response in &responses {
         let encoded = serde_json::to_vec(response).unwrap();
-        assert_eq!(&serde_json::from_slice::<LocalDaemonResponse>(&encoded).unwrap(), response);
+        assert_eq!(
+            &serde_json::from_slice::<LocalDaemonResponse>(&encoded).unwrap(),
+            response
+        );
     }
     let snapshot = serde_json::json!({"requests": requests, "responses": responses});
-    let digest = format!("{:x}", Sha256::digest(serde_json::to_vec(&snapshot).unwrap()));
+    let digest = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+    );
     assert_eq!(
         digest,
         "40c9cc0fbdc28d6edaa0aa068d4a8654b3e95fd008a49af19a36e08913335b1a"
@@ -244,4 +253,63 @@ fn app_worker_control_and_automation_shapes_are_versioned_and_owner_free() {
         serde_json::json!({"ControlAppWorker": {"installation_id": "todo", "action": "start", "owner_id": "other"}})
     )
     .is_err());
+}
+
+#[test]
+fn app_view_shapes_are_versioned_and_name_no_owner_or_asset() {
+    use crate::runtime::browser_controller_app_view::{BrowserAppViewError, BrowserAppViewRequest};
+    use crate::transport::room_browser_controller::RoomBrowserControllerCommand;
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 346);
+    let request = LocalDaemonRequest::OpenAppView(OpenAppViewRequest {
+        session_id: "session-1".into(),
+        installation_id: "todo".into(),
+    });
+    let response = LocalDaemonResponse::AppViewOpened {
+        installation_id: "todo".into(),
+        target_id: "target-1".into(),
+        origin: "https://a0.app.chariox.internal".into(),
+    };
+    let commands = vec![
+        RoomBrowserControllerCommand::AppView {
+            request: BrowserAppViewRequest::Calls,
+        },
+        RoomBrowserControllerCommand::AppView {
+            request: BrowserAppViewRequest::Respond {
+                target_id: "target-1".into(),
+                call_id: "1".into(),
+                result: None,
+                error: Some(BrowserAppViewError {
+                    code: "APP_ERROR".into(),
+                    message: "failed".into(),
+                }),
+            },
+        },
+    ];
+    let encoded = serde_json::to_vec(&request).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<LocalDaemonRequest>(&encoded).unwrap(),
+        request
+    );
+    let snapshot =
+        serde_json::json!({"request": request, "response": response, "commands": commands});
+    let digest = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+    );
+    assert_eq!(
+        digest,
+        "e5e8710a63575b1ef4b396f85ed611181868356c261a45050b605ad55e4964ad"
+    );
+    assert!(
+        serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({
+            "OpenAppView": {"session_id": "s", "installation_id": "todo", "owner_id": "other"}
+        }))
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({
+            "OpenAppView": {"session_id": "s", "installation_id": "todo", "assets": []}
+        }))
+        .is_err()
+    );
 }

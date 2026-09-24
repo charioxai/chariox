@@ -1,6 +1,7 @@
 import {
   configureAppAutomationRequest, controlAppWorkerRequest, disableAppAutomationRequest, getAppInstallationJournalRequest,
   getAppInstallationRequest, getAppWorkerRequest, listAppAutomationsRequest, listAppInstallationsRequest,
+  openAppViewRequest,
 } from "./ipc-app-requests.js"
 import type { AppAutomationSummary, AppInstallationSummary, AppUpdateSummary, AppWorkerSummary } from "./kernel-types-apps.js"
 import type { ShellCommandResult } from "./shell-core.js"
@@ -9,12 +10,17 @@ type Client = { send(request: Record<string, unknown>): Promise<Record<string, u
 const usage = [
   "usage: app list [--after <installation-id>] [--limit <1..100>] | status <installation-id> | journal <installation-id>",
   "       app worker <installation-id> | start <installation-id> | stop <installation-id> | restart <installation-id>",
+  "       app open <installation-id> [--session <session-id>]",
   "       app automation list <installation-id>",
   "       app automation add <installation-id> <automation-id> <event> <session-id> <workflow> [--queue <queue>] [--scheduled] [--revision <n>]",
   "       app automation disable <installation-id> <automation-id> <revision>",
 ].join("\n")
 
-export async function executeAppCommand(args: string[], client: Client): Promise<ShellCommandResult> {
+export async function executeAppCommand(
+  args: string[],
+  client: Client,
+  defaults: { sessionId?: string | undefined } = {},
+): Promise<ShellCommandResult> {
   const [action = "list", ...rest] = args
   let request: Record<string, unknown>
   if (action === "list") {
@@ -34,6 +40,10 @@ export async function executeAppCommand(args: string[], client: Client): Promise
     request = getAppWorkerRequest(rest[0])
   } else if ((action === "start" || action === "stop" || action === "restart") && rest.length === 1 && rest[0]) {
     request = controlAppWorkerRequest(rest[0], action)
+  } else if (action === "open" && rest[0] && (rest.length === 1 || (rest.length === 3 && rest[1] === "--session" && rest[2]))) {
+    const sessionId = rest[2] ?? defaults.sessionId
+    if (!sessionId) return { ok: false, message: "Attach to a session or pass --session to open an App view." }
+    request = openAppViewRequest(sessionId, rest[0])
   } else if (action === "automation") {
     const parsed = automationRequest(rest)
     if (!parsed) return { ok: false, message: usage }
@@ -65,6 +75,10 @@ export async function executeAppCommand(args: string[], client: Client): Promise
   if (action === "status") {
     const data = expect<{ installation: AppInstallationSummary }>(response, "AppInstallation")
     return { ok: true, message: formatInstallation(data.installation), data }
+  }
+  if (response.AppViewOpened) {
+    const data = expect<{ installation_id: string; target_id: string; origin: string }>(response, "AppViewOpened")
+    return { ok: true, message: `Opened ${data.installation_id} as a Room browser Tab (${data.origin}). Use /room view to see it.`, data }
   }
   if (response.AppWorker) {
     const data = expect<{ worker: AppWorkerSummary }>(response, "AppWorker")

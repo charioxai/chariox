@@ -31,6 +31,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::CancelBrowserImport(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::OpenAppView(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::ListSessions(_) => Some(SessionMembershipScope::AllSessions),
         LocalDaemonRequest::ResolveSession(request) => Some(SessionMembershipScope::SessionRef {
             session_ref: request.session_ref.clone(),

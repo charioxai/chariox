@@ -1,0 +1,100 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { APP_CSP, AppTabs, appOrigin } from "./browser-controller-apps.mjs";
+
+function fakeBrowser() {
+  const sent = [];
+  let listener;
+  const connection = {
+    sent,
+    subscribe(fn) { listener = fn; return () => { listener = null; }; },
+    async send(method, params, sessionId) {
+      sent.push({ method, params, sessionId });
+      return method === "Target.createTarget" ? { targetId: "t1" } : {};
+    },
+    async emit(message) { listener?.(message); await new Promise((r) => setImmediate(r)); },
+  };
+  return {
+    connection,
+    browser: {
+      ensureConnection: async () => connection,
+      ensureTargetSession: async () => "s1",
+    },
+  };
+}
+
+const asset = (path, body, type = "text/html") => ({ path, content_type: type, body_base64: Buffer.from(body).toString("base64") });
+
+async function opened() {
+  const { browser, connection } = fakeBrowser();
+  const tabs = new AppTabs(browser);
+  const result = await tabs.open({ origin_label: "todo-1", installation_id: "inst-1",
+    assets: [asset("index.html", "<p>hi</p>"), asset("app.js", "1", "text/javascript")] });
+  return { tabs, connection, result };
+}
+
+test("app origin labels are DNS labels", () => {
+  assert.equal(appOrigin("todo-1"), "https://todo-1.app.chariox.internal");
+  for (const bad of ["", "A", "a.b", "-a", "a/b"]) assert.throws(() => appOrigin(bad));
+});
+
+test("open intercepts every request, installs the bridge, and navigates to the App origin", async () => {
+  const { connection, result } = await opened();
+  assert.deepEqual(result, { target_id: "t1", origin: "https://todo-1.app.chariox.internal" });
+  assert.deepEqual(connection.sent.map((m) => m.method), ["Target.createTarget", "Fetch.enable",
+    "Runtime.addBinding", "Page.addScriptToEvaluateOnNewDocument", "Page.navigate"]);
+  assert.equal(connection.sent.at(-1).params.url, "https://todo-1.app.chariox.internal/");
+});
+
+test("rejects unsafe asset paths and missing entries", async () => {
+  const { browser } = fakeBrowser();
+  const tabs = new AppTabs(browser);
+  for (const assets of [[asset("../x", "")], [asset("a//b", "")], [asset("app.js", "")], []]) {
+    await assert.rejects(tabs.open({ origin_label: "a", installation_id: "i", assets }));
+  }
+});
+
+test("serves verified assets with CSP and blocks everything else", async () => {
+  const { connection } = await opened();
+  connection.sent.length = 0;
+  const pause = (requestId, url, method = "GET") => connection.emit({ method: "Fetch.requestPaused", sessionId: "s1",
+    params: { requestId, request: { url, method } } });
+  await pause("r1", "https://todo-1.app.chariox.internal/");
+  await pause("r2", "https://todo-1.app.chariox.internal/app.js?v=1");
+  await pause("r3", "https://todo-1.app.chariox.internal/missing");
+  await pause("r4", "https://evil.test/steal");
+  await pause("r5", "https://todo-1.app.chariox.internal/", "POST");
+  const [root, js, missing, other, post] = connection.sent;
+  assert.equal(root.method, "Fetch.fulfillRequest");
+  assert.equal(Buffer.from(root.params.body, "base64").toString(), "<p>hi</p>");
+  assert.ok(root.params.responseHeaders.some((h) => h.name === "Content-Security-Policy" && h.value === APP_CSP));
+  assert.equal(js.params.responseCode, 200);
+  assert.equal(missing.params.responseCode, 404);
+  assert.deepEqual([other.method, other.params.errorReason], ["Fetch.failRequest", "BlockedByClient"]);
+  assert.equal(post.method, "Fetch.failRequest");
+});
+
+test("closes popups opened by an App tab", async () => {
+  const { connection } = await opened();
+  connection.sent.length = 0;
+  await connection.emit({ method: "Target.targetCreated", params: { targetInfo: { targetId: "p", openerId: "t1" } } });
+  await connection.emit({ method: "Target.targetCreated", params: { targetInfo: { targetId: "q" } } });
+  assert.deepEqual(connection.sent, [{ method: "Target.closeTarget", params: { targetId: "p" }, sessionId: undefined }]);
+});
+
+test("queues bridge calls bound to the installation and resolves responses", async () => {
+  const { tabs, connection } = await opened();
+  const bind = (payload, name = "__charioxAppCall") => connection.emit({ method: "Runtime.bindingCalled", sessionId: "s1", params: { name, payload } });
+  await bind(JSON.stringify({ id: "1", method: "list_todos", params: { open_only: true } }));
+  await bind("not json");
+  await bind(JSON.stringify({ id: "2", method: "x" }), "other");
+  assert.deepEqual(tabs.takeCalls().calls, [{ installation_id: "inst-1", target_id: "t1", call_id: "1",
+    method: "list_todos", params: { open_only: true } }]);
+  assert.deepEqual(tabs.takeCalls().calls, []);
+  connection.sent.length = 0;
+  await tabs.respond({ target_id: "t1", call_id: "1", result: { todos: [] } });
+  assert.equal(connection.sent[0].method, "Runtime.evaluate");
+  assert.equal(connection.sent[0].params.expression, 'globalThis.__charioxAppResolve("1", true, {"todos":[]})');
+  await assert.rejects(tabs.respond({ target_id: "nope", call_id: "1" }));
+});

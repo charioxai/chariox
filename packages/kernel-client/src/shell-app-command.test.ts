@@ -75,3 +75,20 @@ test("App automation errors describe revision conflicts, missing targets and lim
   assert.match((await run("not_found")).message!, /session, workflow or automation/)
   assert.equal((await run("limit_exceeded")).message, "An App limit was reached.")
 })
+
+test("App open targets the attached session unless one is given", async () => {
+  const opened = { AppViewOpened: { installation_id: "todo", target_id: "t1", origin: "https://a1.app.chariox.internal" } }
+  const sent: Record<string, unknown>[] = []
+  const client = { send: async (request: Record<string, unknown>) => { sent.push(request); return opened } }
+  const attached = await executeAppCommand(["open", "todo"], client, { sessionId: "s1" })
+  assert.equal(attached.ok, true)
+  assert.match(attached.message!, /Room browser Tab/)
+  await executeAppCommand(["open", "todo", "--session", "s2"], client, { sessionId: "s1" })
+  assert.deepEqual(sent, [
+    { OpenAppView: { session_id: "s1", installation_id: "todo" } },
+    { OpenAppView: { session_id: "s2", installation_id: "todo" } },
+  ])
+  const detached = await executeAppCommand(["open", "todo"], { send: async () => { throw new Error("unexpected request") } })
+  assert.equal(detached.ok, false)
+  assert.match(detached.message!, /Attach to a session/)
+})

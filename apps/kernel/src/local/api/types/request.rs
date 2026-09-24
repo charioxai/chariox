@@ -20,6 +20,7 @@ pub enum LocalDaemonRequest {
     ListAppAutomations(AppWorkerRequest),
     ConfigureAppAutomation(ConfigureAppAutomationRequest),
     DisableAppAutomation(DisableAppAutomationRequest),
+    OpenAppView(OpenAppViewRequest),
     CreateSession(CreateSessionRequest),
     AttachToSession(AttachToSessionRequest),
     DetachFromSession(DetachFromSessionRequest),

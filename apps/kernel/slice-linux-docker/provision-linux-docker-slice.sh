@@ -421,6 +421,8 @@ refresh_slice_support_files() {
     || fail "failed to refresh required slice support overlay: Browser Controller dialogs"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-compatibility.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-compatibility.mjs" \
     || fail "failed to refresh required slice support overlay: Browser Controller compatibility"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-apps.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-apps.mjs" \
+    || fail "failed to refresh required slice support overlay: Browser Controller App views"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-events.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-events.mjs" \
     || fail "failed to refresh required slice support overlay: Browser Controller events"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-files.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-files.mjs" \
@@ -457,6 +459,7 @@ refresh_slice_support_files() {
     /opt/chariox-slice/browser-controller-cookie-fence.mjs \
     /opt/chariox-slice/browser-controller-dialogs.mjs \
     /opt/chariox-slice/browser-controller-compatibility.mjs \
+    /opt/chariox-slice/browser-controller-apps.mjs \
     /opt/chariox-slice/browser-controller-events.mjs \
     /opt/chariox-slice/browser-controller-files.mjs \
     /opt/chariox-slice/browser-controller-frames.mjs \
