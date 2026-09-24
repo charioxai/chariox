@@ -159,7 +159,7 @@ test('the production signer refuses darwin bundles before writing any output', a
   const root = await mkdtemp(join(await realpath(parent), 'runtime-release-darwin-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, 'input/bundle'), { recursive: true, mode: 0o700 });
-  await writeFile(join(root, 'input/bundle/bundle-manifest.json'), JSON.stringify({ target: 'darwin-arm64' }));
+  await writeFile(join(root, 'input/bundle/bundle-manifest.json'), JSON.stringify({ target: 'darwin-arm64' }), { mode: 0o600 });
   await assert.rejects(signRuntimeRelease({ inputDirectory: join(root, 'input'), builderAttestation: join(root, 'b.json'),
     builderSignature: join(root, 'b.sig'), trustedBuilderKey: join(root, 'b.pem'), signingKey: join(root, 'r.pem'),
     output: join(root, 'release') }), /Developer ID signing path/);

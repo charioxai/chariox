@@ -31,6 +31,8 @@ export async function signRuntimeRelease({ inputDirectory, builderAttestation, b
   if (String(declared.target).startsWith('darwin-') && !developerRuntime)
     throw new Error('macOS releases require the Developer ID signing path');
   const bundle = await verifyBundle(bundleRoot);
+  if (bundle.target.startsWith('darwin-') && !developerRuntime)
+    throw new Error('macOS releases require the Developer ID signing path');
   // Historical native evidence is useful for debugging, but cannot become a
   // release by attaching a new signature to the old manifest.
   if (bundle.native.inputStatus !== 'matches-current-source') throw new Error('historical native artifact cannot be released');
