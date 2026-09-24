@@ -66,12 +66,17 @@ impl AppWorkerPublisher {
             .is_ok_and(|dormant| dormant.contains_key(&(owner.to_owned(), installation.to_owned())))
     }
     /// Recorded before an idle stop so tools stay discoverable while stopped.
-    pub(crate) fn retain_dormant(&self, owner: &str, catalog: Arc<EventCatalog>) {
-        if let Ok(mut dormant) = self.workers.1.lock() {
-            if dormant.len() < MAX_PROJECTIONS {
-                dormant.insert((owner.to_owned(), catalog.installation_id().to_owned()), catalog);
-            }
+    /// False when the bounded set is full; the caller then keeps the worker.
+    pub(crate) fn retain_dormant(&self, owner: &str, catalog: Arc<EventCatalog>) -> bool {
+        let Ok(mut dormant) = self.workers.1.lock() else {
+            return false;
+        };
+        let key = (owner.to_owned(), catalog.installation_id().to_owned());
+        if !dormant.contains_key(&key) && dormant.len() >= MAX_PROJECTIONS {
+            return false;
         }
+        dormant.insert(key, catalog);
+        true
     }
     pub(crate) fn forget_dormant(&self, owner: &str, installation: &str) {
         if let Ok(mut dormant) = self.workers.1.lock() {
@@ -106,6 +111,14 @@ impl AppControlService {
             .get(&(owner.to_owned(), installation.to_owned()))?
             .lease(owner)
             .ok()
+    }
+
+    /// A refused or failed on-demand start withdraws the dormant catalog, so
+    /// agents stop seeing tools that cannot start.
+    pub(crate) fn forget_app_dormant(&self, owner: &str, installation: &str) {
+        if let Ok(mut dormant) = self.workers.1.lock() {
+            dormant.remove(&(owner.to_owned(), installation.to_owned()));
+        }
     }
 
     pub(crate) fn is_app_dormant(&self, owner: &str, installation: &str) -> bool {

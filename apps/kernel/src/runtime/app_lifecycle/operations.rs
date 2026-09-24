@@ -247,10 +247,13 @@ impl AppLifecycleService {
     /// Stop an idle worker while keeping its restart intent. Its verified
     /// catalog stays dormant so tools remain discoverable; the next tool call,
     /// wake or event starts it on demand. Nothing durable changes.
+    /// `still_idle` is re-evaluated under the operation guard, so use that
+    /// arrived after candidate selection keeps the worker running.
     pub(crate) fn idle_stop_blocking(
         &self,
         owner: &str,
         catalog: Arc<chariox_app_runtime::app_outbox::EventCatalog>,
+        still_idle: impl Fn() -> bool,
     ) -> Result<()> {
         if self.0.stopped.load(Ordering::Acquire) {
             return Err(LifecycleError::Stopped);
@@ -267,7 +270,14 @@ impl AppLifecycleService {
         else {
             return Ok(());
         };
-        self.0.publisher.retain_dormant(owner, catalog);
+        // A concurrent manual stop, a finished owner or new use wins.
+        if entry.control.stopped()
+            || entry.control.pending_manual_stop()
+            || !still_idle()
+            || !self.0.publisher.retain_dormant(owner, catalog)
+        {
+            return Ok(());
+        }
         entry.control.cancel(false);
         entry.join();
         let mut entries = self
@@ -275,10 +285,9 @@ impl AppLifecycleService {
             .entries
             .lock()
             .map_err(|_| LifecycleError::Supervisor)?;
-        if entries
-            .get(&key)
-            .is_some_and(|current| Arc::ptr_eq(current, &entry))
-        {
+        if entries.get(&key).is_some_and(|current| {
+            Arc::ptr_eq(current, &entry) && !entry.control.pending_manual_stop()
+        }) {
             entries.remove(&key);
         }
         Ok(())

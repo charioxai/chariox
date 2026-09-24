@@ -617,35 +617,6 @@ fn on_demand_start_respects_user_stop_explicit_start_and_revocation() {
         Err(LifecycleError::Stopped)
     ));
     // An explicit start re-enables on-demand use.
-fn idle_stop_keeps_the_catalog_dormant_skips_recovery_and_restarts_on_demand() {
-    let scratch = Scratch::new();
-    let runtime = runtime();
-    let native = Arc::new(NativeFixture::compile().unwrap());
-    let store = scratch.store();
-    fixture_event_catalog(&store);
-    stage(&store);
-    let (control, observations) = make_control(&store, native.clone());
-    let service = control.lifecycle();
-    service.schedule_recovery(runtime.handle().clone());
-    wait(|| control.active_app_lease("alice", "installed").is_some());
-    let lease = control.active_app_lease("alice", "installed").unwrap();
-    let catalog = lease.catalog().clone();
-    drop(lease);
-    service.idle_stop_blocking("alice", catalog).unwrap();
-    wait(|| all_reaped(&observations));
-    assert!(control.active_app_lease("alice", "installed").is_none());
-    assert!(control.is_app_dormant("alice", "installed"));
-    assert_eq!(control.dormant_app_catalogs("alice").len(), 1);
-    assert!(control.dormant_app_catalogs("bob").is_empty());
-    // Idle stop keeps restart intent; recovery leaves the dormant App stopped.
-    let status = store.app_worker_status("alice", "installed").unwrap().unwrap();
-    assert_eq!(status.phase, WorkerPhase::Stopped);
-    service.0.maintenance.lock().unwrap().next = Instant::now();
-    service.schedule_recovery(runtime.handle().clone());
-    std::thread::sleep(Duration::from_millis(300));
-    assert!(control.active_app_lease("alice", "installed").is_none());
-    assert_eq!(observations.lock().unwrap().len(), 1);
-    // On-demand use starts it again and publication clears the dormant entry.
     service
         .start_active_blocking("alice", "installed", runtime.handle().clone())
         .unwrap();
@@ -680,6 +651,50 @@ fn idle_stop_keeps_the_catalog_dormant_skips_recovery_and_restarts_on_demand() {
         service.start_on_demand_blocking("bob", "installed", runtime.handle().clone()),
         Err(LifecycleError::Authority)
     ));
+    service.shutdown_blocking().unwrap();
+}
+
+#[test]
+fn idle_stop_keeps_the_catalog_dormant_skips_recovery_and_restarts_on_demand() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let native = Arc::new(NativeFixture::compile().unwrap());
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    stage(&store);
+    let (control, observations) = make_control(&store, native.clone());
+    let service = control.lifecycle();
+    service.schedule_recovery(runtime.handle().clone());
+    wait(|| control.active_app_lease("alice", "installed").is_some());
+    let lease = control.active_app_lease("alice", "installed").unwrap();
+    let catalog = lease.catalog().clone();
+    drop(lease);
+    // Use that arrives before the guarded recheck keeps the worker running.
+    service
+        .idle_stop_blocking("alice", catalog.clone(), || false)
+        .unwrap();
+    assert!(control.active_app_lease("alice", "installed").is_some());
+    assert!(!control.is_app_dormant("alice", "installed"));
+    service.idle_stop_blocking("alice", catalog, || true).unwrap();
+    wait(|| all_reaped(&observations));
+    assert!(control.active_app_lease("alice", "installed").is_none());
+    assert!(control.is_app_dormant("alice", "installed"));
+    assert_eq!(control.dormant_app_catalogs("alice").len(), 1);
+    assert!(control.dormant_app_catalogs("bob").is_empty());
+    // Idle stop keeps restart intent; recovery leaves the dormant App stopped.
+    let status = store.app_worker_status("alice", "installed").unwrap().unwrap();
+    assert_eq!(status.phase, WorkerPhase::Stopped);
+    assert!(status.desired_running);
+    service.0.maintenance.lock().unwrap().next = Instant::now();
+    service.schedule_recovery(runtime.handle().clone());
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(control.active_app_lease("alice", "installed").is_none());
+    assert_eq!(observations.lock().unwrap().len(), 1);
+    // The production on-demand path starts it again; publication clears dormancy.
+    service
+        .start_on_demand_blocking("alice", "installed", runtime.handle().clone())
+        .unwrap();
+    wait(|| control.active_app_lease("alice", "installed").is_some());
     assert!(!control.is_app_dormant("alice", "installed"));
     // A manual stop ends on-demand use.
     service.stop_blocking("alice", "installed").unwrap();

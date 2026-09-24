@@ -96,6 +96,9 @@ impl KernelRuntimeState {
 }
 
 const ON_DEMAND_START: Duration = Duration::from_secs(20);
+/// When the live-worker limit is full, a worker idle at least this long may
+/// be stopped (and kept dormant) to admit an on-demand start.
+const EVICTABLE_IDLE_MS: u64 = 60_000;
 
 impl KernelRuntimeState {
     /// A dormant (idle-stopped) App starts on its next tool call. Only an App
@@ -112,16 +115,9 @@ impl KernelRuntimeState {
         if !control.is_app_dormant(owner, installation) {
             return Err(unavailable());
         }
-        let lifecycle = control.lifecycle().clone();
-        let (start_owner, start_installation) = (owner.to_owned(), installation.to_owned());
-        let handle = tokio::runtime::Handle::current();
-        tokio::task::spawn_blocking(move || {
-            lifecycle.start_on_demand_blocking(&start_owner, &start_installation, handle)
-        })
-        .await
-        .map_err(|_| unavailable())?
-        .map_err(|_| unavailable())?;
         let deadline = tokio::time::Instant::now() + ON_DEMAND_START;
+        let mut started = false;
+        let mut evicted = false;
         loop {
             if let Some(lease) = control.active_app_lease(owner, installation) {
                 return Ok(lease);
@@ -129,8 +125,80 @@ impl KernelRuntimeState {
             if tokio::time::Instant::now() >= deadline {
                 return Err(unavailable());
             }
+            if !started {
+                let lifecycle = control.lifecycle().clone();
+                let (start_owner, start_installation) =
+                    (owner.to_owned(), installation.to_owned());
+                let handle = tokio::runtime::Handle::current();
+                match tokio::task::spawn_blocking(move || {
+                    lifecycle.start_on_demand_blocking(&start_owner, &start_installation, handle)
+                })
+                .await
+                .map_err(|_| unavailable())?
+                {
+                    Ok(_) => started = true,
+                    // Admission is busy: make room once, then keep retrying.
+                    Err(crate::runtime::app_lifecycle::LifecycleError::Busy) => {
+                        if !evicted {
+                            evicted = true;
+                            self.evict_idle_app(owner, installation).await;
+                        }
+                    }
+                    Err(_) => {
+                        control.forget_app_dormant(owner, installation);
+                        return Err(unavailable());
+                    }
+                }
+            } else if self.app_start_failed(owner, installation).await {
+                control.forget_app_dormant(owner, installation);
+                return Err(unavailable());
+            }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+    }
+
+    /// Stop the least-recently-used idle worker (other than the target),
+    /// keeping it dormant, so an on-demand start can take its live slot.
+    async fn evict_idle_app(&self, owner: &str, installation: &str) {
+        let control = self.app_control().clone();
+        let now = crate::session::unix_epoch_ms();
+        let Some(lease) = control
+            .active_app_leases(None, 16)
+            .into_iter()
+            .filter(|lease| {
+                !(lease.owner() == owner && lease.catalog().installation_id() == installation)
+                    && lease.idle_ms(now) >= EVICTABLE_IDLE_MS
+            })
+            .max_by_key(|lease| lease.idle_ms(now))
+        else {
+            return;
+        };
+        let lifecycle = control.lifecycle().clone();
+        let victim_owner = lease.owner().to_owned();
+        let catalog = lease.catalog().clone();
+        drop(lease);
+        let _ = tokio::task::spawn_blocking(move || {
+            let installation = catalog.installation_id().to_owned();
+            lifecycle.idle_stop_blocking(&victim_owner, catalog, || {
+                control.active_app_lease(&victim_owner, &installation).is_some_and(|lease| {
+                    lease.idle_ms(crate::session::unix_epoch_ms()) >= EVICTABLE_IDLE_MS
+                })
+            })
+        })
+        .await;
+    }
+
+    async fn app_start_failed(&self, owner: &str, installation: &str) -> bool {
+        let store = self.owned.durable_state_store.clone();
+        let (owner, installation) = (owner.to_owned(), installation.to_owned());
+        tokio::task::spawn_blocking(move || store.app_worker_status(&owner, &installation))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .flatten()
+            .is_some_and(|status| {
+                status.phase == crate::durable_state::app_worker_lifecycle::WorkerPhase::Failed
+            })
     }
 }
 

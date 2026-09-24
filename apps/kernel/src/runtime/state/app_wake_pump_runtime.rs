@@ -97,8 +97,14 @@ impl KernelRuntimeState {
             let owner = lease.owner().to_owned();
             let catalog = lease.catalog().clone();
             drop(lease);
+            let current = control.clone();
             let _ = tokio::task::spawn_blocking(move || {
-                lifecycle.idle_stop_blocking(&owner, catalog)
+                let installation = catalog.installation_id().to_owned();
+                lifecycle.idle_stop_blocking(&owner, catalog, || {
+                    current
+                        .active_app_lease(&owner, &installation)
+                        .is_some_and(|lease| lease.idle_ms(crate::session::unix_epoch_ms()) >= IDLE_AFTER_MS)
+                })
             })
             .await;
         }
@@ -136,7 +142,10 @@ impl KernelRuntimeState {
                 ) {
                     Ok(_) | Err(LifecycleError::Busy) => Start::Pending,
                     Err(LifecycleError::Stopped) => Start::UserStopped,
-                    Err(_) => Start::Refused,
+                    Err(_) => {
+                        planning.forget_app_dormant(&wake.owner_id, &wake.installation_id);
+                        Start::Refused
+                    }
                 },
             )
         })
