@@ -54,22 +54,25 @@ function emptyCategory(category, root = null) {
   }
 }
 
-async function collectFiles(directory, relative = "") {
-  const entries = await readdir(directory, { withFileTypes: true })
+export async function collectFiles(directory, { maxFiles = MAX_ARTIFACT_FILES_PER_CATEGORY } = {}) {
   const files = []
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    const absolute = path.join(directory, entry.name)
-    const childRelative = relative ? path.join(relative, entry.name) : entry.name
-    if (entry.isSymbolicLink()) throw new Error("unavailable artifact class")
-    if (entry.isDirectory()) {
-      files.push(...await collectFiles(absolute, childRelative))
-    } else if (entry.isFile()) {
-      files.push({ absolute, relative: childRelative })
-      if (files.length > MAX_ARTIFACT_FILES_PER_CATEGORY) throw new Error("unavailable artifact class")
-    } else {
-      throw new Error("unavailable artifact class")
+  async function visit(current, relative) {
+    const entries = await readdir(current, { withFileTypes: true })
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      const absolute = path.join(current, entry.name)
+      const childRelative = relative ? path.join(relative, entry.name) : entry.name
+      if (entry.isSymbolicLink()) throw new Error("unavailable artifact class")
+      if (entry.isDirectory()) {
+        await visit(absolute, childRelative)
+      } else if (entry.isFile()) {
+        if (files.length >= maxFiles) throw new Error("unavailable artifact class")
+        files.push({ absolute, relative: childRelative })
+      } else {
+        throw new Error("unavailable artifact class")
+      }
     }
   }
+  await visit(directory, "")
   return files
 }
 
@@ -87,7 +90,7 @@ async function countCanaryBytes(handle, canaries) {
       let offset = 0
       let match = data.indexOf(needle, offset)
       while (match !== -1) {
-        counts[index] += 1
+        if (match + needle.length > carry.length) counts[index] += 1
         offset = match + 1
         match = data.indexOf(needle, offset)
       }

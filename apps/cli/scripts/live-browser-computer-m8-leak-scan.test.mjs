@@ -6,6 +6,8 @@ import { spawnSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import test from "node:test"
 
+import { collectFiles } from "./live-browser-computer-m8-leak-scan.mjs"
+
 const scriptPath = fileURLToPath(new URL("./live-browser-computer-m8-leak-scan.mjs", import.meta.url))
 const categories = ["log", "history", "trace", "screenshot-metadata", "clipboard", "helper-output"]
 
@@ -87,4 +89,56 @@ test("public checker passes only when every required artifact class is present a
   assert.equal(result.stdout.includes(fixtureData.canary), false)
   assert.equal(result.stdout.includes(fixtureData.root), false)
   assert.equal(result.stderr, "")
+})
+
+test("nested artifact directories share one file-count limit", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-m8-file-limit-test-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await mkdir(path.join(root, "nested"))
+  await writeFile(path.join(root, "first"), "a")
+  await writeFile(path.join(root, "nested", "second"), "b")
+  await writeFile(path.join(root, "nested", "third"), "c")
+
+  await assert.rejects(collectFiles(root, { maxFiles: 2 }), /unavailable artifact class/)
+})
+
+test("a short canary wholly inside the previous stream chunk is counted once", async (t) => {
+  const shortCanary = "m8-short-canary-4d89c1"
+  const longCanary = "m8-other-longest-canary-5d90b2-extended"
+  const fixtureData = await fixture(t, { canary: shortCanary })
+  await writeFile(fixtureData.canaryFile, JSON.stringify({ canary_values: [shortCanary, longCanary] }))
+  const artifact = Buffer.concat([
+    Buffer.alloc(65_536 - Buffer.byteLength(shortCanary), "x"),
+    Buffer.from(shortCanary),
+    Buffer.from("next chunk"),
+  ])
+  await writeFile(path.join(fixtureData.artifactRoots.log, "boundary.bin"), artifact)
+
+  const result = invoke(fixtureData)
+  assert.ifError(result.error)
+  assert.equal(result.status, 1)
+  const report = JSON.parse(result.stdout)
+  assert.equal(report.leak_count, 1)
+  assert.equal(report.matches.length, 1)
+  assert.equal(report.matches[0].occurrence_count, 1)
+  assert.equal(result.stdout.includes(shortCanary), false)
+  assert.equal(result.stdout.includes(longCanary), false)
+})
+
+test("a canary split across stream chunks is still detected", async (t) => {
+  const fixtureData = await fixture(t)
+  const artifact = Buffer.concat([
+    Buffer.alloc(65_536 - 3, "x"),
+    Buffer.from(fixtureData.canary),
+  ])
+  await writeFile(path.join(fixtureData.artifactRoots.log, "boundary.bin"), artifact)
+
+  const result = invoke(fixtureData)
+  assert.ifError(result.error)
+  assert.equal(result.status, 1)
+  const report = JSON.parse(result.stdout)
+  assert.equal(report.leak_count, 1)
+  assert.equal(report.matches.length, 1)
+  assert.equal(report.matches[0].occurrence_count, 1)
+  assert.equal(result.stdout.includes(fixtureData.canary), false)
 })
