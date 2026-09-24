@@ -561,7 +561,8 @@ test("managed image validation requires an explicit topology and preserves both 
     runbook,
     /sudo env CHARIOX_MANAGED_PROVIDER_TOPOLOGY=shared_host \\\n+  deploy\/managed-kernel\/prepare-hetzner-image\.sh \\\n+  <release-rootfs>/,
   )
-  assert.match(runbook, /For a disposable-VM Path-1 image, replace `shared_host` with `path1`\./)
+  assert.match(runbook, /For a disposable-VM Path-1 image, replace `shared_host` with `path1` and set/)
+  assert.match(runbook, /CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY=<external-pinned-builder-public-key>/)
 
   for (const script of [preparation, providerLaunchProbe]) {
     assert.match(script, /CHARIOX_MANAGED_PROVIDER_TOPOLOGY-\}/)

@@ -35,6 +35,11 @@ case "$managed_provider_topology" in
 esac
 if [ "$managed_provider_topology" = path1 ]; then
   service_name=chariox-path1-managed-bootstrap.service
+  trusted_builder_public_key=${CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY:-}
+  if [ -z "$trusted_builder_public_key" ]; then
+    echo "Path-1 upgrade requires CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY outside the image" >&2
+    exit 1
+  fi
 else
   service_name=chariox-managed-bootstrap.service
 fi
@@ -119,7 +124,9 @@ select_supervisor_service() {
 }
 
 verify_selected_release() {
-  if [ "$service_name" = chariox-disposable-worker-bootstrap.service ]; then
+  if [ "$managed_provider_topology" = path1 ]; then
+    node "$script_root/verify-image-release.mjs" "$@" path1 "$trusted_builder_public_key"
+  elif [ "$service_name" = chariox-disposable-worker-bootstrap.service ]; then
     node "$script_root/verify-image-release.mjs" "$@"
   else
     node "$script_root/verify-image-release.mjs" "$@" "$managed_provider_topology"
@@ -586,6 +593,18 @@ if [ -L "$image_root" ] || [ ! -d "$image_root" ]; then
   echo "managed kernel image root must be a directory, not a symlink" >&2
   exit 1
 fi
+if [ "$managed_provider_topology" = path1 ]; then
+  require_root_owned_private_regular_file "$trusted_builder_public_key" "trusted builder public key"
+  require_root_owned_ancestor_chain "$trusted_builder_public_key" "trusted builder public key"
+  image_canonical=$(realpath "$image_root")
+  builder_key_canonical=$(realpath "$trusted_builder_public_key")
+  case "$builder_key_canonical" in
+    "$image_canonical"|"$image_canonical"/*)
+      echo "trusted builder public key must be supplied outside the image" >&2
+      exit 1
+      ;;
+  esac
+fi
 require_root_owned_private_regular_file "$trusted_public_key" "trusted release public key"
 require_root_owned_ancestor_chain "$trusted_public_key" "trusted release public key"
 require_root_owned_private_regular_file "$next_trusted_public_key" "next trusted release public key"
@@ -594,6 +613,10 @@ mkdir "$staging_root/image"
 (umask 000; cp -RP "$image_root/." "$staging_root/image/")
 cp "$trusted_public_key" "$staging_root/trusted-public-key"
 cp "$next_trusted_public_key" "$staging_root/next-trusted-public-key"
+if [ "$managed_provider_topology" = path1 ]; then
+  cp "$trusted_builder_public_key" "$staging_root/trusted-builder-public-key"
+  trusted_builder_public_key=$staging_root/trusted-builder-public-key
+fi
 image_root=$staging_root/image
 trusted_public_key=$staging_root/trusted-public-key
 next_trusted_public_key=$staging_root/next-trusted-public-key

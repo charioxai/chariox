@@ -15,7 +15,14 @@ expected_release_digest=$2
 trusted_public_key=$3
 managed_provider_topology=${4:-shared_host}
 case "$managed_provider_topology" in
-  path1) selected_bootstrap_service=chariox-path1-managed-bootstrap.service ;;
+  path1)
+    selected_bootstrap_service=chariox-path1-managed-bootstrap.service
+    trusted_builder_public_key=${CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY:-}
+    if [ -z "$trusted_builder_public_key" ]; then
+      echo "Path-1 install requires CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY outside the image" >&2
+      exit 1
+    fi
+    ;;
   shared_host) selected_bootstrap_service=chariox-managed-bootstrap.service ;;
   *)
     echo "managed provider topology must be path1 or shared_host" >&2
@@ -53,10 +60,28 @@ if [ -L "$image_root" ] || [ ! -d "$image_root" ]; then
   echo "managed kernel image root must be a directory, not a symlink" >&2
   exit 1
 fi
+if [ "$managed_provider_topology" = path1 ]; then
+  if [ -L "$trusted_builder_public_key" ] || [ ! -f "$trusted_builder_public_key" ]; then
+    echo "trusted builder public key must be a regular file outside the image" >&2
+    exit 1
+  fi
+  image_canonical=$(realpath "$image_root")
+  builder_key_canonical=$(realpath "$trusted_builder_public_key")
+  case "$builder_key_canonical" in
+    "$image_canonical"|"$image_canonical"/*)
+      echo "trusted builder public key must be supplied outside the image" >&2
+      exit 1
+      ;;
+  esac
+fi
 
 mkdir "$staging_root/image"
 (umask 000; cp -RP "$image_root/." "$staging_root/image/")
 cp -P "$trusted_public_key" "$staging_root/trusted-public-key"
+if [ "$managed_provider_topology" = path1 ]; then
+  cp -P "$trusted_builder_public_key" "$staging_root/trusted-builder-public-key"
+  trusted_builder_public_key=$staging_root/trusted-builder-public-key
+fi
 image_root=$staging_root/image
 trusted_public_key=$staging_root/trusted-public-key
 
@@ -77,8 +102,14 @@ require_directory() {
 }
 
 require_regular_file "$trusted_public_key"
-node "$script_root/verify-image-release.mjs" \
-  "$image_root" "$expected_release_digest" "$trusted_public_key" "$managed_provider_topology"
+verify_selected_release() {
+  if [ "$managed_provider_topology" = path1 ]; then
+    node "$script_root/verify-image-release.mjs" "$@" path1 "$trusted_builder_public_key"
+  else
+    node "$script_root/verify-image-release.mjs" "$@" shared_host
+  fi
+}
+verify_selected_release "$image_root" "$expected_release_digest" "$trusted_public_key"
 
 require_regular_file "$image_root/usr/local/bin/chariox-kernel"
 require_regular_file "$image_root/usr/local/bin/chariox-managed-bootstrap"
@@ -423,7 +454,7 @@ install -d -o root -g root -m 0755 \
   "$releases_root"
 rm -rf -- "$pending_release"
 if [ -e "$published_release" ] || [ -L "$published_release" ]; then
-  if ! node "$script_root/verify-image-release.mjs" "$published_release" "$expected_release_digest" "$trusted_public_key" "$managed_provider_topology"; then
+  if ! verify_selected_release "$published_release" "$expected_release_digest" "$trusted_public_key"; then
     echo "existing digest-named managed release is invalid; refusing to replace immutable release: $published_release" >&2
     exit 1
   fi
@@ -457,8 +488,7 @@ if [ ! -e "$published_release" ]; then
   install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-rootless-docker.service" "$pending_release/etc/systemd/system/chariox-rootless-docker.service"
   install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-slice-broker.service" "$pending_release/etc/systemd/system/chariox-slice-broker.service"
   (umask 000; cp -RP "$image_root/usr/lib/chariox/slice-build-context" "$pending_release/usr/lib/chariox/slice-build-context")
-  node "$script_root/verify-image-release.mjs" \
-    "$pending_release" "$expected_release_digest" "$trusted_public_key" "$managed_provider_topology"
+  verify_selected_release "$pending_release" "$expected_release_digest" "$trusted_public_key"
   node "$script_root/managed-kernel-upgrade-state.mjs" sync-tree "$pending_release"
   mv "$pending_release" "$published_release"
   node "$script_root/managed-kernel-upgrade-state.mjs" sync-directory "$releases_root"

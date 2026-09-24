@@ -148,10 +148,10 @@ function runPackager(options, umask = "022", extraEnvironment = {}) {
   )
 }
 
-function runVerifier(rootfs, digest, trustedPublicKey, topology) {
+function runVerifier(rootfs, digest, trustedPublicKey, topology, trustedBuilderPublicKey) {
   return spawnSync(
     process.execPath,
-    [verifier, rootfs, digest, trustedPublicKey, ...(topology ? [topology] : [])],
+    [verifier, rootfs, digest, trustedPublicKey, ...(topology ? [topology] : []), ...(trustedBuilderPublicKey ? [trustedBuilderPublicKey] : [])],
     { encoding: "utf8" },
   )
 }
@@ -595,7 +595,7 @@ test("Path-1 managed-home bootstrap is signed and selected by image install", as
   }
 
   const releaseRoot = join(output, "rootfs")
-  assert.equal(runVerifier(releaseRoot, packaged.stdout.trim(), fixture.trustedPublicKey, "path1").status, 0)
+  assert.equal(runVerifier(releaseRoot, packaged.stdout.trim(), fixture.trustedPublicKey, "path1", fixture.trustedBuilderPublicKey).status, 0)
   const manifestPath = join(releaseRoot, "usr/lib/chariox/release-manifest.json")
   const signaturePath = join(releaseRoot, "usr/lib/chariox/release-manifest.sig")
   const originalManifestBytes = await readFile(manifestPath)
@@ -612,7 +612,7 @@ test("Path-1 managed-home bootstrap is signed and selected by image install", as
     sign(null, mismatchedManifestBytes, fixture.releasePrivateKey).toString("base64"),
   )
   const mismatchedDigest = `sha256:${createHash("sha256").update(mismatchedManifestBytes).digest("hex")}`
-  const mismatched = runVerifier(releaseRoot, mismatchedDigest, fixture.trustedPublicKey, "path1")
+  const mismatched = runVerifier(releaseRoot, mismatchedDigest, fixture.trustedPublicKey, "path1", fixture.trustedBuilderPublicKey)
   assert.equal(mismatched.status, 1)
   assert.match(mismatched.stderr, /does not declare the selected path1 managed bootstrap service/)
   await writeFile(path1UnitPath, path1Unit)
@@ -636,7 +636,7 @@ test("Path-1 managed-home bootstrap is signed and selected by image install", as
     sign(null, disconnectedBrokerManifestBytes, fixture.releasePrivateKey).toString("base64"),
   )
   const disconnectedBrokerDigest = `sha256:${createHash("sha256").update(disconnectedBrokerManifestBytes).digest("hex")}`
-  const disconnectedBroker = runVerifier(releaseRoot, disconnectedBrokerDigest, fixture.trustedPublicKey, "path1")
+  const disconnectedBroker = runVerifier(releaseRoot, disconnectedBrokerDigest, fixture.trustedPublicKey, "path1", fixture.trustedBuilderPublicKey)
   assert.equal(disconnectedBroker.status, 1)
   assert.match(disconnectedBroker.stderr, /must restart the one-shot broker before launch/)
   await writeFile(path1UnitPath, path1Unit)
@@ -660,7 +660,7 @@ test("Path-1 managed-home bootstrap is signed and selected by image install", as
     sign(null, wrongTopologyManifestBytes, fixture.releasePrivateKey).toString("base64"),
   )
   const wrongTopologyDigest = `sha256:${createHash("sha256").update(wrongTopologyManifestBytes).digest("hex")}`
-  const wrongTopology = runVerifier(releaseRoot, wrongTopologyDigest, fixture.trustedPublicKey, "path1")
+  const wrongTopology = runVerifier(releaseRoot, wrongTopologyDigest, fixture.trustedPublicKey, "path1", fixture.trustedBuilderPublicKey)
   assert.equal(wrongTopology.status, 1)
   assert.match(wrongTopology.stderr, /missing or overrides Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1/)
   await writeFile(path1UnitPath, path1Unit)
@@ -684,7 +684,7 @@ test("Path-1 managed-home bootstrap is signed and selected by image install", as
     sign(null, restrictedUmaskManifestBytes, fixture.releasePrivateKey).toString("base64"),
   )
   const restrictedUmaskDigest = `sha256:${createHash("sha256").update(restrictedUmaskManifestBytes).digest("hex")}`
-  const restrictedUmask = runVerifier(releaseRoot, restrictedUmaskDigest, fixture.trustedPublicKey, "path1")
+  const restrictedUmask = runVerifier(releaseRoot, restrictedUmaskDigest, fixture.trustedPublicKey, "path1", fixture.trustedBuilderPublicKey)
   assert.equal(restrictedUmask.status, 1)
   assert.match(restrictedUmask.stderr, /contains UMask=/)
   await writeFile(path1UnitPath, path1Unit)
@@ -703,6 +703,7 @@ test("Path-1 managed-home bootstrap is signed and selected by image install", as
     HARNESS_STATE: harness.state,
     CHARIOX_IMAGE_INSTALL_ROOT: harness.installRoot,
     CHARIOX_IMAGE_INSTALL_LOCK: join(harness.state, "install.lock"),
+    CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY: fixture.trustedBuilderPublicKey,
   }
   const installed = spawnSync(installer, [
     join(output, "rootfs"),
@@ -1855,7 +1856,7 @@ test("managed image installer has no runtime start or network path", async () =>
   assert.match(contents, /useradd --system --gid chariox --home-dir \/home\/chariox/)
   assert.match(contents, /useradd --system --gid chariox-docker --home-dir \/var\/lib\/chariox-docker\/home/)
   assert.match(contents, /systemctl daemon-reload/)
-  assert.match(contents, /path1\) selected_bootstrap_service=chariox-path1-managed-bootstrap\.service/)
+  assert.match(contents, /path1\)[\s\S]*selected_bootstrap_service=chariox-path1-managed-bootstrap\.service/)
   assert.match(contents, /shared_host\) selected_bootstrap_service=chariox-managed-bootstrap\.service/)
   assert.match(contents, /systemctl enable "\$selected_bootstrap_service"/)
   const lockIndex = contents.indexOf("flock 9")

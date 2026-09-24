@@ -17,7 +17,7 @@ test("install refuses to replace an invalid digest-named release", () => {
     indexOf(installSource, 'if [ ! -e "$published_release" ]; then', "new release branch"),
   )
 
-  assert.match(publishedBranch, /verify-image-release\.mjs/)
+  assert.match(publishedBranch, /verify_selected_release/)
   assert.match(publishedBranch, /refus(?:e|ing).*immutable.*release/i)
   assert.match(publishedBranch, /exit 1/)
   assert.doesNotMatch(publishedBranch, /rm -rf.*published_release/)
@@ -26,8 +26,10 @@ test("install refuses to replace an invalid digest-named release", () => {
 test("install names releases from the validated manifest digest", () => {
   assert.ok(installSource.includes("release_name=${expected_release_digest#sha256:}"))
   assert.ok(installSource.includes("published_release=$releases_root/$release_name"))
-  assert.ok(installSource.includes('"$image_root" "$expected_release_digest" "$trusted_public_key" "$managed_provider_topology"'))
-  assert.ok(installSource.includes('"$published_release" "$expected_release_digest" "$trusted_public_key" "$managed_provider_topology"'))
+  assert.ok(installSource.includes('verify_selected_release "$image_root" "$expected_release_digest" "$trusted_public_key"'))
+  assert.ok(installSource.includes('verify_selected_release "$published_release" "$expected_release_digest" "$trusted_public_key"'))
+  assert.ok(installSource.includes('"$@" path1 "$trusted_builder_public_key"'))
+  assert.ok(upgradeSource.includes('"$@" path1 "$trusted_builder_public_key"'))
 })
 
 test("install durably publishes the verified release before activating current", () => {

@@ -31,6 +31,11 @@ case "${CHARIOX_MANAGED_PROVIDER_TOPOLOGY-}" in
     managed_provider_topology=path1
     managed_bootstrap_service=chariox-path1-managed-bootstrap.service
     other_managed_bootstrap_service=chariox-managed-bootstrap.service
+    [ -n "${CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY:-}" ] \
+      || fail "Path-1 preparation requires CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY outside the release rootfs"
+    [ -f "$CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY" ] \
+      && [ ! -L "$CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY" ] \
+      || fail "trusted builder public key must be a regular file"
     ;;
   shared_host|legacy_shared_host)
     managed_provider_topology=shared_host

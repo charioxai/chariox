@@ -26,6 +26,7 @@ const RELEASE_DIGEST = `sha256:${"a".repeat(64)}`
 const KERNEL_RELEASE_ROOT = "/release/rootfs"
 const KERNEL_BINARY = `${KERNEL_RELEASE_ROOT}/usr/local/bin/chariox-kernel`
 const KERNEL_RELEASE_PUBLIC_KEY = "/release/trusted-release-public-key"
+const KERNEL_BUILDER_PUBLIC_KEY = "/release/trusted-builder-public-key"
 
 function memoryFilesystem() {
   const files = new Map()
@@ -219,6 +220,7 @@ function makeHarness(topology, overrides = {}) {
     kernelReleaseRoot: KERNEL_RELEASE_ROOT,
     kernelReleaseDigest: RELEASE_DIGEST,
     kernelReleasePublicKey: KERNEL_RELEASE_PUBLIC_KEY,
+    kernelBuilderPublicKey: topology === "path1" ? KERNEL_BUILDER_PUBLIC_KEY : undefined,
     boundary: "official-provider-turn",
     outputPath: `/evidence/${topology}.json`,
     evidenceDir: `/evidence/${topology}-commands`,
@@ -259,6 +261,19 @@ test("collects a fresh Path-1 managed snapshot and the comparator accepts ordina
   assert.equal(report.status, "pass", JSON.stringify(report, null, 2))
   assert.equal(path1.manifest.rows["MP-07"].checks.signed_release_activation.result.signed_release, true)
   assert.equal(path1.manifest.rows["MP-09"].checks.shutdown_idle_15m.result.managed_policy, true)
+  const releaseVerification = path1.calls.find(([command, args]) =>
+    command === process.execPath && args[0].endsWith("verify-image-release.mjs"),
+  )
+  assert.deepEqual(releaseVerification[1].slice(-2), ["path1", KERNEL_BUILDER_PUBLIC_KEY])
+})
+
+test("Path-1 capture requires an external builder trust root", async () => {
+  const harness = makeHarness("path1")
+  delete harness.options.kernelBuilderPublicKey
+  await assert.rejects(() => harness.collector.collect(harness.options), (error) => {
+    assert.equal(error.code, "builder_key_missing")
+    return true
+  })
 })
 
 test("exact-path collector capture binds the target to its invocation cwd and probe cwd", async () => {

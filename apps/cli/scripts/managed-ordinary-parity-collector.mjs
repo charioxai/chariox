@@ -459,6 +459,12 @@ function validateOptions(options, processApi) {
   for (const [key, label] of [["kernelBinary", "kernel binary"], ["kernelReleaseRoot", "kernel release root"], ["kernelReleasePublicKey", "kernel release public key"]]) {
     if (!isAbsolute(options[key])) throw new CollectorError("path_invalid", `${label} must be an absolute path`)
   }
+  if (options.topology === "path1" && !nonEmptyString(options.kernelBuilderPublicKey)) {
+    throw new CollectorError("builder_key_missing", "Path-1 capture requires an independently supplied trusted builder public key")
+  }
+  if (options.kernelBuilderPublicKey && !isAbsolute(options.kernelBuilderPublicKey)) {
+    throw new CollectorError("path_invalid", "trusted builder public key must be an absolute path")
+  }
   if (options.expectedCwd !== undefined && !isAbsolute(options.expectedCwd)) {
     throw new CollectorError("path_invalid", "expected provider working directory must be absolute")
   }
@@ -596,7 +602,7 @@ export function createParityCollector({
   }
 
   async function collect(options) {
-    for (const [key, label] of [["kernelBinary", "kernel binary"], ["kernelReleaseRoot", "kernel release root"], ["kernelReleasePublicKey", "kernel release public key"]]) {
+    for (const [key, label] of [["kernelBinary", "kernel binary"], ["kernelReleaseRoot", "kernel release root"], ["kernelReleasePublicKey", "kernel release public key"], ["kernelBuilderPublicKey", "trusted builder public key"]]) {
       if (nonEmptyString(options[key]) && !isAbsolute(options[key])) throw new CollectorError("path_invalid", `${label} must be an absolute path`)
     }
     if (
@@ -635,6 +641,7 @@ export function createParityCollector({
       kernelBinary: options.kernelBinary ? resolve(options.kernelBinary) : "",
       kernelReleaseRoot: options.kernelReleaseRoot ? resolve(options.kernelReleaseRoot) : "",
       kernelReleasePublicKey: options.kernelReleasePublicKey ? resolve(options.kernelReleasePublicKey) : "",
+      kernelBuilderPublicKey: options.kernelBuilderPublicKey ? resolve(options.kernelBuilderPublicKey) : "",
       timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     }
     validateOptions(normalizedOptions, processApi)
@@ -670,7 +677,7 @@ export function createParityCollector({
       "source_protocol_identity",
       "kernel-release-verification",
       process.execPath,
-      [ctx.releaseVerifierPath, ctx.kernelReleaseRoot, ctx.kernelReleaseDigest, ctx.kernelReleasePublicKey],
+      [ctx.releaseVerifierPath, ctx.kernelReleaseRoot, ctx.kernelReleaseDigest, ctx.kernelReleasePublicKey, ...(ctx.topology === "path1" ? ["path1", ctx.kernelBuilderPublicKey] : [])],
       { allowEmpty: true, cwd: ctx.sourceRoot },
     )
     const expectedKernelPath = resolve(ctx.kernelReleaseRoot, "usr/local/bin/chariox-kernel")
@@ -822,7 +829,7 @@ function parseArgs(argv) {
   const allowed = new Set([
     "topology", "reviewed-commit", "build-id", "kernel-protocol", "relay-protocol", "provider",
     "provider-command", "kernel-binary", "kernel-release-root", "kernel-release-digest",
-    "kernel-release-public-key", "boundary", "output", "evidence-dir", "source-root",
+    "kernel-release-public-key", "kernel-builder-public-key", "boundary", "output", "evidence-dir", "source-root",
     "expected-cwd", "relay-protocol-file", "signing-key-env", "timeout-ms", "help",
   ])
   for (let index = 0; index < argv.length; index += 1) {
@@ -848,6 +855,7 @@ export function usage() {
     "  --provider-command <official-provider> --kernel-binary <chariox-kernel> \\",
     "  --kernel-release-root <verified-rootfs> --kernel-release-digest <sha256:digest> \\",
     "  --kernel-release-public-key <trusted-public-key> --boundary official-provider-turn|remote-command \\",
+    "  --kernel-builder-public-key <external-trusted-builder-key> (required for path1) \\",
     "  --source-root <reviewed-checkout> --expected-cwd <provider-working-directory> \\",
     "  --output <manifest.json> \\",
     "  --signing-key-env CHARIOX_PARITY_SIGNING_KEY",
@@ -902,6 +910,7 @@ export async function runCli(argv = process.argv.slice(2), {
       kernelReleaseRoot: values.kernel_release_root,
       kernelReleaseDigest: values.kernel_release_digest,
       kernelReleasePublicKey: values.kernel_release_public_key,
+      kernelBuilderPublicKey: values.kernel_builder_public_key,
       boundary: values.boundary,
       outputPath: values.output,
       evidenceDir: values.evidence_dir,

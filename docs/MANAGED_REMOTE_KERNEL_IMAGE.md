@@ -73,9 +73,14 @@ node scripts/package-managed-kernel-release.mjs \
 ```
 
 Record the printed `sha256:` release digest. Keep both private keys private.
-Copy only the generated root filesystem and a separate copy of its release
-public key to the image builder. The packager verifies the detached builder
-signature, exact commit and tree IDs, target, and all three staged binary digests
+Copy only the generated root filesystem and separate copies of its release
+public key and the pinned OpenShip builder public key to the image builder.
+Keep the builder key outside the release root filesystem and supply it as
+`CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY` for Path-1 preparation and upgrade.
+The installer checks it independently against the packaged key and verifies
+the builder attestation at every Path-1 release activation. The packager
+verifies the detached builder signature, exact commit and tree IDs, target,
+and all three staged binary digests
 before it reads the release-signing key. The signed release retains the builder
 attestation and records the full Git commit and tree IDs. Its systemd units and
 slice context come from that exact Git object; working-tree changes and
@@ -113,7 +118,14 @@ sudo env CHARIOX_MANAGED_PROVIDER_TOPOLOGY=shared_host \
   <trusted-public-key>
 ```
 
-For a disposable-VM Path-1 image, replace `shared_host` with `path1`.
+For a disposable-VM Path-1 image, replace `shared_host` with `path1` and set
+`CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY=<external-pinned-builder-public-key>` in
+the `sudo env` command. Keep that file root-owned with mode `0600` for upgrades.
+The key path must be outside the release rootfs;
+omitting it fails before package installation or image mutation. Use the same
+external pin for Path-1 `upgrade-image.sh` and parity collection's
+`--kernel-builder-public-key` argument. The shared-host rollback path does not
+require the new builder pin.
 
 The preparation script refuses an unmarked host or the wrong OS and
 architecture. It installs Node.js 22, Docker, Git and GitHub tooling, the exact
