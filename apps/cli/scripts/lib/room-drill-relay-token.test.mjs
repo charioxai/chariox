@@ -40,3 +40,17 @@ test("long-lived fixture credentials require a companion and a bounded budget", 
       CHARIOX_ROOM_DRILL_COMPANION_TIMEOUT_MS: value }), /must be an integer/)
   }
 })
+
+test("a bounded local observer lifetime does not change ordinary token defaults", () => {
+  const common = { issuer: "fixture", secret: "test-only-secret", machineId: "machine",
+    subject: "kernel", subjectKind: "kernel", actions: ["daemon_register"], nowMs: 1_000 }
+  const issueWithLifetime = (minimumLifetimeMs) => {
+    const token = roomDrillRelayToken({ ...common, minimumLifetimeMs })
+    return JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString("utf8"))
+  }
+  assert.equal(issueWithLifetime(2 * 60 * 60_000).expires_at_ms, 1_000 + 2 * 60 * 60_000)
+  assert.equal(issueWithLifetime(0).expires_at_ms, 1_000 + setupAllowanceMs)
+  for (const value of [-1, Infinity, 25 * 60 * 60_000]) {
+    assert.throws(() => issueWithLifetime(value), /minimumLifetimeMs must be an integer/)
+  }
+})

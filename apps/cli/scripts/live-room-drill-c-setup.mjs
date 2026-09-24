@@ -30,6 +30,21 @@ const coldSliceProvisionTimeoutMs = 20 * 60_000
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
+export function mintDrillCKernelRelayToken({ issuer, secret, machineId, daemonId, nowMs = Date.now() }) {
+  return roomDrillRelayToken({
+    issuer,
+    secret,
+    machineId,
+    subject: daemonId,
+    subjectKind: "kernel",
+    actions: ["daemon_register", "daemon_heartbeat", "packet_route", "peer_request", "peer_event"],
+    // This isolated loopback relay has no hosted kernel-token renewal. Keep
+    // the manual TUI/Web observer session live, then tear it down with setup.
+    minimumLifetimeMs: 2 * 60 * 60_000,
+    nowMs,
+  })
+}
+
 export function parseArgs(argv, env = process.env) {
   const homeDir = env.HOME?.trim() ? path.resolve(env.HOME) : os.homedir()
   const taskDevRoot = path.join(homeDir, ".chariox", "dev", "browser-computer-use")
@@ -654,13 +669,11 @@ async function main() {
     machineAlias = machineId
     kernelUrl = `ws://127.0.0.1:${ports.kernel}/kernel`
     if (options.scopedRelayIssuer) {
-      options.relayToken = roomDrillRelayToken({
+      options.relayToken = mintDrillCKernelRelayToken({
         issuer: options.scopedRelayIssuer,
         secret: options.scopedRelaySecret,
         machineId,
-        subject: daemonId,
-        subjectKind: "kernel",
-        actions: ["daemon_register", "daemon_heartbeat", "packet_route", "peer_request", "peer_event"],
+        daemonId,
       })
     }
   }

@@ -2,12 +2,17 @@ import { createHmac } from "node:crypto"
 import { roomDrillCompanionTimeoutMs } from "./room-drill-companion-budget.mjs"
 
 export function roomDrillRelayToken({ issuer, secret, machineId, subject, subjectKind,
-  actions, userId = null, env = process.env, nowMs = Date.now() }) {
+  actions, userId = null, env = process.env, nowMs = Date.now(), minimumLifetimeMs = 0 }) {
   // Static fixture credentials have no hosted renewal service. Cover the
   // bounded companion wait plus provisioning and cleanup, not just setup.
   // Browser-issued credentials retain their normal expiry/renewal behavior.
   const companionMs = env.CHARIOX_ROOM_DRILL_COORDINATION_DIR?.trim()
     ? roomDrillCompanionTimeoutMs(env) : 0
+  const maximumLifetimeMs = 24 * 60 * 60_000 + 25 * 60_000
+  if (!Number.isSafeInteger(minimumLifetimeMs) || minimumLifetimeMs < 0
+    || minimumLifetimeMs > maximumLifetimeMs) {
+    throw new Error(`Room drill token minimumLifetimeMs must be an integer from 0 to ${maximumLifetimeMs}`)
+  }
   const claims = {
     issuer,
     subject,
@@ -16,7 +21,7 @@ export function roomDrillRelayToken({ issuer, secret, machineId, subject, subjec
     allowed_actions: actions,
     allowed_targets: null,
     issued_at_ms: nowMs,
-    expires_at_ms: nowMs + 15 * 60_000 + companionMs,
+    expires_at_ms: nowMs + Math.max(15 * 60_000 + companionMs, minimumLifetimeMs),
     token_id: `${subject}-${nowMs}`,
     account_id: "local-dev-account",
     organization_id: null,

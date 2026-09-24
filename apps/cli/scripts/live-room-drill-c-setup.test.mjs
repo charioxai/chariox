@@ -16,6 +16,7 @@ import {
   buildSetupManifest,
   cleanupOwnedResources,
   createExistingKernelWorkspaceFixture,
+  mintDrillCKernelRelayToken,
   parseArgs,
   requiresDirectDockerAccess,
   startSliceAndWaitForRunning,
@@ -26,6 +27,24 @@ const workspace = "/home/test/.chariox/dev/browser-computer-use/drill-c/workspac
 // The existing-kernel mount fixture deliberately requires Linux's real /var/tmp.
 // macOS normally resolves /var through /private/var, which the production guard rejects.
 const linuxMountFixture = { skip: process.platform !== "linux" }
+
+test("isolated Drill C kernel credential covers the bounded local observer window", () => {
+  const nowMs = 1_000
+  const token = mintDrillCKernelRelayToken({
+    issuer: "fixture",
+    secret: "test-only-secret",
+    machineId: "machine-1",
+    daemonId: "kernel-1",
+    nowMs,
+  })
+  const [format, payload] = token.split(".")
+  assert.equal(format, "chariox-scoped-v1")
+  const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"))
+  assert.equal(claims.machine_id, "machine-1")
+  assert.equal(claims.subject, "kernel-1")
+  assert.ok(claims.expires_at_ms >= nowMs + 2 * 60 * 60_000)
+  assert.ok(claims.expires_at_ms <= nowMs + 2 * 60 * 60_000 + 15 * 60_000)
+})
 
 const setup = {
   session: {
