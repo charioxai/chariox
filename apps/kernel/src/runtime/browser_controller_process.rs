@@ -1244,18 +1244,14 @@ impl BrowserControllerProcessStore {
             return Ok(None);
         };
         let mut operation = Some(operation);
-        let observed_generation;
-        let observed_health;
         {
             let ownership = ownership
                 .read()
                 .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
             ownership.require_lease(session_id)?;
             let supervisor = &ownership.supervisor;
-            observed_generation = supervisor.snapshot.runtime_generation;
             if !supervisor.recovery_pending {
-                let health = supervisor.backend.health_request();
-                if let Ok(health) = &health {
+                if let Ok(health) = supervisor.backend.health_request() {
                     if health.state == BrowserControllerProcessState::Ready
                         && health.process_id == supervisor.snapshot.process_id
                         && health.diagnostic_code == supervisor.snapshot.diagnostic_code
@@ -1269,9 +1265,6 @@ impl BrowserControllerProcessStore {
                             .map(Some);
                     }
                 }
-                observed_health = Some(health);
-            } else {
-                observed_health = None;
             }
         }
         let mut ownership = ownership
@@ -1279,15 +1272,10 @@ impl BrowserControllerProcessStore {
             .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
         ownership.require_lease(session_id)?;
         let supervisor = &mut ownership.supervisor;
-        let generation = supervisor.snapshot.runtime_generation;
-        if !supervisor.recovery_pending && observed_generation == generation {
-            supervisor.ensure_started_without_transparent_restart_from_health(
-                generation,
-                observed_health.expect("health check result is available for recovery"),
-            )?;
-        } else {
-            supervisor.ensure_started_without_transparent_restart()?;
-        }
+        // A health error observed under shared access can be stale by the time
+        // this caller obtains exclusive access: queued work may have drained.
+        // Reprobe under the write lock before deciding that restart is needed.
+        supervisor.ensure_started_without_transparent_restart()?;
         operation
             .take()
             .expect("browser request operation is available")(&supervisor.backend)
