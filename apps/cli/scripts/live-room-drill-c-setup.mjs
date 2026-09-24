@@ -14,6 +14,7 @@ import {
   removeRoomDirectDockerWorkspaceFixture,
   roomDirectDockerWorkspaceRootEnvironment,
 } from "./lib/room-rootless-workspace-fixture.mjs"
+import { roomDrillRelayToken } from "./lib/room-drill-relay-token.mjs"
 
 const execFileAsync = promisify(execFile)
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
@@ -50,6 +51,8 @@ export function parseArgs(argv, env = process.env) {
     relayToken: null,
     relayUrlArgumentProvided: false,
     relayTokenArgumentProvided: false,
+    scopedRelayIssuer: env.CHARIOX_RELAY_SCOPED_ISSUER?.trim() || null,
+    scopedRelaySecret: env.CHARIOX_RELAY_SCOPED_HMAC_SECRET?.trim() || null,
     activeKernelRegistryDir: env.CHARIOX_ACTIVE_KERNEL_REGISTRY_DIR
       ?? (env.XDG_CONFIG_HOME?.trim()
         ? path.join(path.resolve(env.XDG_CONFIG_HOME), "chariox", "kernels", "active")
@@ -100,6 +103,12 @@ export function parseArgs(argv, env = process.env) {
   options.relayBinary = path.resolve(options.relayBinary)
   options.mode = options.existingKernelUrl ? "existing_kernel" : "isolated_local"
   if (options.mode === "isolated_local") {
+    assert.equal(Boolean(options.scopedRelayIssuer), Boolean(options.scopedRelaySecret),
+      "isolated scoped relay requires both issuer and HMAC secret")
+    if (options.scopedRelayIssuer) {
+      assert.equal(options.relayTokenArgumentProvided, false,
+        "isolated scoped relay mints its own kernel token; do not pass --relay-token")
+    }
     if (!options.relayUrlArgumentProvided) options.relayUrl = env.CHARIOX_LOCAL_RELAY_URL ?? null
     if (!options.relayTokenArgumentProvided) {
       options.relayToken = env.CHARIOX_LOCAL_RELAY_TOKEN ?? defaultLocalRelayToken
@@ -202,10 +211,21 @@ export function assertLoopbackUrl(value, label, protocols) {
   return url
 }
 
-export function assertCloudRelayBootstrap({ bootstrap, relayUrl, relayToken, daemonId, machineId, sessionId, sessions }) {
+export function assertCloudRelayBootstrap({ bootstrap, relayUrl, relayToken, daemonId, machineId, sessionId, sessions, scopedThumbprint = null }) {
   assert.ok(bootstrap && typeof bootstrap === "object", "local Cloud omitted relay bootstrap")
   assert.ok(bootstrap.relayUrl === relayUrl, "local Cloud bootstrap selected a different relay")
-  assert.ok(bootstrap.relayToken === relayToken, "local Cloud bootstrap token does not match the isolated local relay")
+  if (scopedThumbprint) {
+    assert.notEqual(bootstrap.relayToken, relayToken, "Cloud must issue a distinct scoped browser credential")
+    const tokenParts = bootstrap.relayToken?.split(".")
+    assert.equal(tokenParts?.length, 3, "Cloud omitted a signed scoped browser credential")
+    const claims = JSON.parse(Buffer.from(tokenParts[1], "base64url").toString("utf8"))
+    assert.equal(claims.public_key_thumbprint, scopedThumbprint,
+      "Cloud browser credential does not bind the viewer key")
+    assert.deepEqual(claims.allowed_targets, [daemonId],
+      "Cloud browser credential selected a different kernel")
+  } else {
+    assert.ok(bootstrap.relayToken === relayToken, "local Cloud bootstrap token does not match the isolated local relay")
+  }
   assert.ok(bootstrap.target?.daemonId === daemonId, "local Cloud bootstrap selected a different kernel")
   assert.ok(bootstrap.target?.machineId === machineId, "local Cloud bootstrap selected a different machine")
   assert.ok(Array.isArray(sessions), "relay kernel session list is malformed")
@@ -630,6 +650,16 @@ async function main() {
     machineId = `drill-c-machine-${process.pid}-${Date.now()}`
     machineAlias = machineId
     kernelUrl = `ws://127.0.0.1:${ports.kernel}/kernel`
+    if (options.scopedRelayIssuer) {
+      options.relayToken = roomDrillRelayToken({
+        issuer: options.scopedRelayIssuer,
+        secret: options.scopedRelaySecret,
+        machineId,
+        subject: daemonId,
+        subjectKind: "kernel",
+        actions: ["daemon_register", "daemon_heartbeat", "packet_route", "peer_request", "peer_event"],
+      })
+    }
   }
   await assertKernelClientBuilt()
   if (requiresDirectDockerAccess(options.mode)) await assertDockerReady()
@@ -701,7 +731,7 @@ async function main() {
       const relayHost = relayEndpoint.hostname.replace(/^\[|\]$/g, "")
       const relayPort = Number(relayEndpoint.port || "80")
       children.push(spawnLogged("relay", options.relayBinary,
-        relayProcessEnvironment(relayUrl, relayHost, relayPort, options.relayToken), logDir))
+        relayProcessEnvironment(relayUrl, relayHost, relayPort, options), logDir))
       await waitForTcp(relayHost, relayPort, 15_000, children[0])
 
       children.push(spawnLogged("kernel", options.kernelBinary, kernelProcessEnvironment({
@@ -826,6 +856,7 @@ async function main() {
           machineId,
           relayUrl,
           relayToken: options.relayToken,
+          scopedThumbprint: options.scopedRelayIssuer ? "a".repeat(64) : null,
           sessionId: state.sessionId,
           LocalIpcClient,
           requests,
@@ -983,10 +1014,10 @@ async function connectLocalCloud(rawUrl) {
     async dashboard() {
       return await requestJson("/dashboard")
     },
-    async bootstrap(targetDaemonId) {
+    async bootstrap(targetDaemonId, publicKeyThumbprint = null) {
       return await requestJson("/browser/relay-kernel/bootstrap", {
         method: "POST",
-        body: { targetDaemonId },
+        body: { targetDaemonId, ...(publicKeyThumbprint ? { publicKeyThumbprint } : {}) },
       })
     },
   }
@@ -1034,9 +1065,10 @@ async function assertDockerReady() {
   }
 }
 
-function relayProcessEnvironment(relayUrl, relayHost, relayPort, relayToken) {
+function relayProcessEnvironment(relayUrl, relayHost, relayPort, options) {
   const env = { ...process.env }
   for (const name of [
+    "CHARIOX_RELAY_TOKEN",
     "CHARIOX_RELAY_SCOPED_ISSUER",
     "CHARIOX_RELAY_SCOPED_HMAC_SECRET",
     "CHARIOX_RELAY_ALLOW_OPEN_ACCESS",
@@ -1048,7 +1080,12 @@ function relayProcessEnvironment(relayUrl, relayHost, relayPort, relayToken) {
     CHARIOX_RELAY_HOST: relayHost,
     CHARIOX_RELAY_PORT: String(relayPort),
     CHARIOX_RELAY_URL: relayUrl,
-    CHARIOX_RELAY_TOKEN: relayToken,
+    ...(options.scopedRelayIssuer
+      ? {
+          CHARIOX_RELAY_SCOPED_ISSUER: options.scopedRelayIssuer,
+          CHARIOX_RELAY_SCOPED_HMAC_SECRET: options.scopedRelaySecret,
+        }
+      : { CHARIOX_RELAY_TOKEN: options.relayToken }),
   }
 }
 
@@ -1104,7 +1141,9 @@ async function portIsAvailable(port, host = "127.0.0.1") {
 
 function spawnLogged(label, binary, env, logDir) {
   const log = createWriteStream(path.join(logDir, `${label}.log`), { flags: "wx", mode: 0o600 })
-  const child = spawn(binary, [], { cwd: repoRoot, env, stdio: ["ignore", "pipe", "pipe"] })
+  // A terminal Ctrl+C must reach the harness but not kill its kernel before
+  // scoped Room and slice cleanup can complete over the local socket.
+  const child = spawn(binary, [], { cwd: repoRoot, env, stdio: ["ignore", "pipe", "pipe"], detached: true })
   child.setupLabel = label
   child.setupLog = log
   child.spawnError = null
@@ -1205,10 +1244,12 @@ async function waitForCloudBootstrap(input) {
         await sleep(500)
         continue
       }
-      const bootstrap = await input.cloud.bootstrap(input.daemonId)
+      const bootstrap = await input.cloud.bootstrap(input.daemonId, input.scopedThumbprint)
       assert.ok(bootstrap.relayUrl === input.relayUrl, "local Cloud bootstrap selected a different relay")
-      assert.ok(bootstrap.relayToken === input.relayToken,
-        "local Cloud bootstrap token does not match the isolated local relay")
+      if (!input.scopedThumbprint) {
+        assert.ok(bootstrap.relayToken === input.relayToken,
+          "local Cloud bootstrap token does not match the isolated local relay")
+      }
       assert.ok(bootstrap.target?.daemonId === input.daemonId, "local Cloud bootstrap selected a different kernel")
       assert.ok(bootstrap.target?.machineId === input.machineId, "local Cloud bootstrap selected a different machine")
       const relayClient = new input.LocalIpcClient(bootstrap.relayUrl, {
@@ -1227,6 +1268,7 @@ async function waitForCloudBootstrap(input) {
           machineId: input.machineId,
           sessionId: input.sessionId,
           sessions,
+          scopedThumbprint: input.scopedThumbprint,
         })
         return { ...transport, verifiedAt: new Date().toISOString(), cloudApiUrl: input.cloud.baseUrl }
       } finally {

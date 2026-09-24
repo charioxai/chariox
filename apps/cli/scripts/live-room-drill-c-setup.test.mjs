@@ -136,6 +136,21 @@ test("Drill C setup modes require loopback endpoints and explicit existing-kerne
   assert.equal(isolated.mode, "isolated_local")
   assert.doesNotThrow(() => assertModeOptions(isolated))
   assert.equal(requiresDirectDockerAccess(isolated.mode), true)
+  const scoped = parseArgs([], {
+    HOME: "/home/test",
+    CHARIOX_RELAY_SCOPED_ISSUER: "local-test-issuer",
+    CHARIOX_RELAY_SCOPED_HMAC_SECRET: "local-test-secret",
+  })
+  assert.doesNotThrow(() => assertModeOptions(scoped))
+  assert.throws(() => assertModeOptions(parseArgs([], {
+    HOME: "/home/test",
+    CHARIOX_RELAY_SCOPED_ISSUER: "local-test-issuer",
+  })), /requires both issuer and HMAC secret/)
+  assert.throws(() => assertModeOptions(parseArgs(["--relay-token", "shared-token"], {
+    HOME: "/home/test",
+    CHARIOX_RELAY_SCOPED_ISSUER: "local-test-issuer",
+    CHARIOX_RELAY_SCOPED_HMAC_SECRET: "local-test-secret",
+  })), /do not pass --relay-token/)
 
   const existingEnv = {
     HOME: "/home/test",
@@ -397,6 +412,36 @@ test("isolated mode only claims Cloud visibility after exact relay bootstrap and
     sessionId: "room-1",
     sessions: [{ id: "other-room" }],
   }), /cannot see the setup Room session/)
+})
+
+test("scoped isolated mode requires Cloud to bind the viewer key and exact kernel", () => {
+  const thumbprint = "a".repeat(64)
+  const claims = { public_key_thumbprint: thumbprint, allowed_targets: ["kernel-1"] }
+  const browserToken = `header.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.signature`
+  const bootstrap = {
+    relayUrl: "ws://127.0.0.1:47000",
+    relayToken: browserToken,
+    target: { daemonId: "kernel-1", machineId: "machine-1" },
+  }
+  const input = {
+    bootstrap,
+    relayUrl: bootstrap.relayUrl,
+    relayToken: "kernel-only-token",
+    daemonId: "kernel-1",
+    machineId: "machine-1",
+    sessionId: "room-1",
+    sessions: [{ id: "room-1" }],
+    scopedThumbprint: thumbprint,
+  }
+  assert.equal(assertCloudRelayBootstrap(input).status, "verified")
+  assert.throws(() => assertCloudRelayBootstrap({
+    ...input,
+    scopedThumbprint: "b".repeat(64),
+  }), /does not bind the viewer key/)
+  assert.throws(() => assertCloudRelayBootstrap({
+    ...input,
+    bootstrap: { ...bootstrap, relayToken: "kernel-only-token" },
+  }), /distinct scoped browser credential/)
 })
 
 test("existing-kernel preflight proves daemon and machine identity before any mutation", () => {
