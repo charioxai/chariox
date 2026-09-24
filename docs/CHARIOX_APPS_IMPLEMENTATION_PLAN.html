@@ -1,0 +1,1773 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Chariox Apps implementation plan</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --canvas: #0c0e0d;
+        --paper: #121512;
+        --paper-raised: #191d18;
+        --paper-soft: #20251e;
+        --ink: #f4f0e8;
+        --muted: #aaa99d;
+        --faint: #777b70;
+        --line: #30362d;
+        --line-strong: #4c5546;
+        --orange: #ff8d4d;
+        --orange-soft: #3c2518;
+        --green: #b6df77;
+        --green-soft: #213019;
+        --blue: #88c7d4;
+        --blue-soft: #172b30;
+        --yellow: #f2cc6c;
+        --red: #ff8f83;
+        --mono: "SFMono-Regular", "Cascadia Code", "Liberation Mono", Menlo, monospace;
+        --display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+        --body: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        background:
+          linear-gradient(90deg, rgba(255, 141, 77, 0.035) 1px, transparent 1px) 0 0 / 56px 56px,
+          linear-gradient(rgba(255, 141, 77, 0.025) 1px, transparent 1px) 0 0 / 56px 56px,
+          var(--canvas);
+        color: var(--ink);
+        font-family: var(--body);
+        font-size: 16px;
+        line-height: 1.58;
+      }
+
+      a {
+        color: var(--blue);
+        text-decoration-thickness: 1px;
+        text-underline-offset: 3px;
+      }
+
+      a:hover {
+        color: var(--ink);
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(220px, 280px) minmax(0, 1180px);
+        justify-content: center;
+        gap: 36px;
+        padding: 0 28px 88px;
+      }
+
+      .rail {
+        position: sticky;
+        top: 0;
+        align-self: start;
+        height: 100vh;
+        overflow-y: auto;
+        padding: 34px 4px 40px;
+        scrollbar-width: thin;
+      }
+
+      .rail-mark {
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+        margin: 0 0 26px 10px;
+        color: var(--ink);
+        font-family: var(--mono);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+      }
+
+      .rail-mark::before {
+        width: 10px;
+        height: 10px;
+        border-radius: 2px;
+        background: var(--orange);
+        box-shadow: 6px 6px 0 var(--green);
+        content: "";
+      }
+
+      .rail ol {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        counter-reset: rail;
+      }
+
+      .rail li {
+        counter-increment: rail;
+      }
+
+      .rail a {
+        display: grid;
+        grid-template-columns: 28px 1fr;
+        gap: 5px;
+        border-left: 2px solid transparent;
+        padding: 7px 10px;
+        color: var(--muted);
+        font-size: 13px;
+        text-decoration: none;
+      }
+
+      .rail a::before {
+        color: var(--faint);
+        content: counter(rail, decimal-leading-zero);
+        font-family: var(--mono);
+        font-size: 10px;
+        padding-top: 3px;
+      }
+
+      .rail a:hover,
+      .rail a[data-active="true"] {
+        border-color: var(--orange);
+        background: rgba(255, 141, 77, 0.06);
+        color: var(--ink);
+      }
+
+      main {
+        min-width: 0;
+        padding-top: 56px;
+      }
+
+      .hero {
+        position: relative;
+        overflow: hidden;
+        border: 1px solid var(--line-strong);
+        border-radius: 3px;
+        padding: clamp(32px, 6vw, 76px);
+        background:
+          radial-gradient(circle at 94% 8%, rgba(182, 223, 119, 0.13), transparent 32%),
+          radial-gradient(circle at 5% 95%, rgba(255, 141, 77, 0.11), transparent 34%),
+          var(--paper);
+      }
+
+      .hero::after {
+        position: absolute;
+        right: -52px;
+        bottom: -70px;
+        width: 240px;
+        height: 240px;
+        border: 1px solid rgba(255, 141, 77, 0.25);
+        border-radius: 50%;
+        box-shadow: 0 0 0 38px rgba(255, 141, 77, 0.035), 0 0 0 76px rgba(182, 223, 119, 0.025);
+        content: "";
+      }
+
+      .eyebrow {
+        margin: 0 0 18px;
+        color: var(--orange);
+        font-family: var(--mono);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+
+      h1,
+      h2,
+      h3,
+      h4 {
+        color: var(--ink);
+        line-height: 1.12;
+      }
+
+      h1 {
+        max-width: 850px;
+        margin: 0;
+        font-family: var(--display);
+        font-size: clamp(46px, 7vw, 86px);
+        font-weight: 500;
+        letter-spacing: -0.045em;
+      }
+
+      h2 {
+        margin: 0;
+        font-family: var(--display);
+        font-size: clamp(31px, 4vw, 48px);
+        font-weight: 500;
+        letter-spacing: -0.025em;
+      }
+
+      h3 {
+        margin: 0;
+        font-size: 20px;
+      }
+
+      h4 {
+        margin: 0;
+        font-size: 16px;
+      }
+
+      p {
+        margin: 13px 0 0;
+      }
+
+      .lede {
+        max-width: 820px;
+        margin-top: 26px;
+        color: #d2d0c6;
+        font-size: clamp(18px, 2.2vw, 23px);
+        line-height: 1.5;
+      }
+
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 30px;
+      }
+
+      .chip,
+      .phase-tag,
+      .status {
+        display: inline-flex;
+        align-items: center;
+        border: 1px solid var(--line-strong);
+        border-radius: 999px;
+        padding: 5px 10px;
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+
+      .chip {
+        color: var(--muted);
+        background: rgba(12, 14, 13, 0.52);
+      }
+
+      .phase-tag[data-phase="1"] {
+        border-color: #536936;
+        background: var(--green-soft);
+        color: var(--green);
+      }
+
+      .phase-tag[data-phase="2"] {
+        border-color: #315762;
+        background: var(--blue-soft);
+        color: var(--blue);
+      }
+
+      .section {
+        scroll-margin-top: 24px;
+        margin-top: 74px;
+      }
+
+      .section-head {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 20px;
+        align-items: end;
+        border-bottom: 1px solid var(--line-strong);
+        padding-bottom: 17px;
+      }
+
+      .section-kicker {
+        margin: 0 0 8px;
+        color: var(--orange);
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      .section-intro {
+        max-width: 840px;
+        color: var(--muted);
+        font-size: 18px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(12, minmax(0, 1fr));
+        gap: 14px;
+        margin-top: 20px;
+      }
+
+      .card,
+      .callout,
+      details {
+        border: 1px solid var(--line);
+        border-radius: 3px;
+        background: var(--paper);
+      }
+
+      .card {
+        grid-column: span 4;
+        min-width: 0;
+        padding: 20px;
+      }
+
+      .card.wide {
+        grid-column: span 6;
+      }
+
+      .card.full {
+        grid-column: 1 / -1;
+      }
+
+      .card p,
+      .card li {
+        color: var(--muted);
+      }
+
+      .callout {
+        margin-top: 20px;
+        padding: 20px 22px;
+      }
+
+      .callout.good {
+        border-left: 4px solid var(--green);
+        background: linear-gradient(90deg, rgba(182, 223, 119, 0.07), transparent 55%), var(--paper);
+      }
+
+      .callout.warn {
+        border-left: 4px solid var(--yellow);
+      }
+
+      .callout.stop {
+        border-left: 4px solid var(--red);
+      }
+
+      ul,
+      ol {
+        margin: 12px 0 0;
+        padding-left: 22px;
+      }
+
+      li {
+        margin: 6px 0;
+      }
+
+      code,
+      kbd {
+        border-radius: 3px;
+        padding: 2px 5px;
+        background: #24271f;
+        color: var(--green);
+        font-family: var(--mono);
+        font-size: 0.91em;
+      }
+
+      pre {
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-left: 3px solid var(--orange);
+        border-radius: 3px;
+        margin: 18px 0 0;
+        padding: 18px 20px;
+        background: #090b0a;
+        color: #d9dacd;
+        font: 13px/1.65 var(--mono);
+      }
+
+      pre code {
+        padding: 0;
+        background: transparent;
+        color: inherit;
+      }
+
+      .flow {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(120px, 1fr));
+        gap: 24px;
+        margin-top: 22px;
+      }
+
+      .flow-step {
+        position: relative;
+        display: flex;
+        min-height: 116px;
+        flex-direction: column;
+        justify-content: space-between;
+        border: 1px solid var(--line-strong);
+        padding: 14px;
+        background: var(--paper);
+      }
+
+      .flow-step:not(:last-child)::after {
+        position: absolute;
+        top: 50%;
+        right: -19px;
+        color: var(--orange);
+        content: "→";
+        font-family: var(--mono);
+        font-size: 20px;
+        transform: translateY(-50%);
+      }
+
+      .flow-step b {
+        font-size: 14px;
+      }
+
+      .flow-step span {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      #app-kernel > h3 {
+        margin-top: 28px;
+      }
+
+      .section > .table-wrap + h3,
+      .section > .callout + h3 {
+        margin-top: 30px;
+      }
+
+      .table-wrap {
+        overflow-x: auto;
+        margin-top: 20px;
+        border: 1px solid var(--line);
+        background: var(--paper);
+      }
+
+      table {
+        width: 100%;
+        min-width: 760px;
+        border-collapse: collapse;
+      }
+
+      th,
+      td {
+        border-bottom: 1px solid var(--line);
+        padding: 12px 14px;
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        background: var(--paper-raised);
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      td {
+        color: #d0d0c6;
+        font-size: 14px;
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      tbody tr:hover td {
+        background: rgba(255, 255, 255, 0.018);
+      }
+
+      .id {
+        color: var(--orange);
+        font-family: var(--mono);
+        font-size: 11px;
+        white-space: nowrap;
+      }
+
+      .must {
+        color: var(--green);
+        font-weight: 700;
+      }
+
+      .na {
+        color: var(--faint);
+      }
+
+      details {
+        margin-top: 12px;
+      }
+
+      summary {
+        cursor: pointer;
+        padding: 15px 18px;
+        color: var(--ink);
+        font-weight: 700;
+      }
+
+      details > div {
+        border-top: 1px solid var(--line);
+        padding: 5px 18px 18px;
+      }
+
+      .workstream {
+        display: grid;
+        grid-template-columns: 68px minmax(0, 1fr);
+        gap: 20px;
+        border-top: 1px solid var(--line);
+        padding: 24px 0;
+      }
+
+      .workstream:first-of-type {
+        margin-top: 20px;
+      }
+
+      .workstream-id {
+        color: var(--orange);
+        font: 700 13px var(--mono);
+      }
+
+      .exit {
+        margin-top: 14px;
+        border-left: 2px solid var(--green);
+        padding: 7px 0 7px 14px;
+        color: var(--green);
+        font-size: 14px;
+      }
+
+      .decision-list {
+        display: grid;
+        grid-template-columns: minmax(180px, 0.35fr) minmax(0, 1fr);
+        margin-top: 20px;
+        border-top: 1px solid var(--line);
+      }
+
+      .decision-list dt,
+      .decision-list dd {
+        margin: 0;
+        border-bottom: 1px solid var(--line);
+        padding: 13px 0;
+      }
+
+      .decision-list dt {
+        padding-right: 22px;
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+
+      .decision-list dd {
+        color: #d6d5cc;
+      }
+
+      .gate-list {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 20px;
+        padding: 0;
+        list-style: none;
+      }
+
+      .gate-list li {
+        position: relative;
+        min-height: 88px;
+        margin: 0;
+        border: 1px solid var(--line);
+        padding: 16px 16px 16px 46px;
+        background: var(--paper);
+      }
+
+      .gate-list li::before {
+        position: absolute;
+        top: 17px;
+        left: 16px;
+        color: var(--green);
+        content: "□";
+        font: 20px var(--mono);
+      }
+
+      .gate-list b {
+        display: block;
+        margin-bottom: 5px;
+      }
+
+      .gate-list span {
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      footer {
+        margin-top: 80px;
+        border-top: 1px solid var(--line-strong);
+        padding: 25px 0 60px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      @media (max-width: 980px) {
+        .layout {
+          display: block;
+          padding: 0 20px 70px;
+        }
+
+        .rail {
+          position: relative;
+          height: auto;
+          padding: 24px 0 0;
+        }
+
+        .rail-mark {
+          margin-left: 0;
+          margin-bottom: 10px;
+        }
+
+        .rail ol {
+          display: flex;
+          gap: 4px;
+          overflow-x: auto;
+          padding-bottom: 10px;
+        }
+
+        .rail li {
+          flex: 0 0 auto;
+        }
+
+        .rail a {
+          display: block;
+          border: 1px solid var(--line);
+          padding: 6px 10px;
+        }
+
+        .rail a::before {
+          display: none;
+        }
+
+        main {
+          padding-top: 22px;
+        }
+
+        .card,
+        .card.wide {
+          grid-column: span 6;
+        }
+
+        .flow {
+          grid-template-columns: 1fr;
+        }
+
+        .flow-step:not(:last-child)::after {
+          top: auto;
+          right: 50%;
+          bottom: -26px;
+          transform: rotate(90deg) translateY(-50%);
+        }
+      }
+
+      @media (max-width: 660px) {
+        .layout {
+          padding-inline: 12px;
+        }
+
+        .hero {
+          padding: 28px 22px 38px;
+        }
+
+        h1 {
+          font-size: 44px;
+        }
+
+        .section {
+          margin-top: 58px;
+        }
+
+        .section-head {
+          display: block;
+        }
+
+        .section-head .phase-tag {
+          margin-top: 14px;
+        }
+
+        .card,
+        .card.wide {
+          grid-column: 1 / -1;
+        }
+
+        .decision-list {
+          display: block;
+        }
+
+        .decision-list dt {
+          border-bottom: 0;
+          padding-bottom: 0;
+        }
+
+        .gate-list {
+          grid-template-columns: 1fr;
+        }
+
+        .workstream {
+          grid-template-columns: 1fr;
+          gap: 5px;
+        }
+      }
+
+      @media print {
+        :root {
+          color-scheme: light;
+          --canvas: #fff;
+          --paper: #fff;
+          --paper-raised: #f3f2ec;
+          --ink: #111;
+          --muted: #4b4b46;
+          --faint: #777;
+          --line: #ccc;
+          --line-strong: #999;
+        }
+
+        body {
+          background: #fff;
+        }
+
+        .layout {
+          display: block;
+          padding: 0;
+        }
+
+        .rail {
+          display: none;
+        }
+
+        main {
+          padding: 0;
+        }
+
+        .hero,
+        .card,
+        .callout,
+        details,
+        .flow-step,
+        .gate-list li {
+          break-inside: avoid;
+          background: #fff;
+        }
+
+        .section {
+          break-before: auto;
+        }
+
+        th {
+          position: static;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="layout">
+      <nav class="rail" aria-label="Document sections">
+        <div class="rail-mark">Implementation contract</div>
+        <ol>
+          <li><a href="#outcome">Required outcome</a></li>
+          <li><a href="#decisions">Product decisions</a></li>
+          <li><a href="#model">Domain model</a></li>
+          <li><a href="#architecture">Architecture</a></li>
+          <li><a href="#package">Package and lifecycle</a></li>
+          <li><a href="#sdk">SDK and files</a></li>
+          <li><a href="#ui">App views</a></li>
+          <li><a href="#app-kernel">Apps, kernel and agents</a></li>
+          <li><a href="#workflows">Agents and workflows</a></li>
+          <li><a href="#phase-1">Phase 1</a></li>
+          <li><a href="#phase-1-validation">Phase 1 validation</a></li>
+          <li><a href="#phase-2">Phase 2</a></li>
+          <li><a href="#phase-2-validation">Phase 2 validation</a></li>
+          <li><a href="#release-gates">Completion gates</a></li>
+        </ol>
+      </nav>
+
+      <main>
+        <header class="hero">
+          <p class="eyebrow">Chariox Apps</p>
+          <h1>Apps as first-class programs in the agent OS</h1>
+          <p class="lede">
+            This plan turns the existing notification path and Slack-specific kernel behavior into a general App system. Each App has a Node backend in an operating-system sandbox and a frontend Tab in the Room's kernel-managed Chromium Environment. Apps keep private data, expose tools through the single Chariox runtime MCP, and activate agents only through workflow triggers. Every terminal presents the same frontend Tab.
+          </p>
+          <div class="chips" aria-label="Plan properties">
+            <span class="chip">Two independently verified releases</span>
+            <span class="chip">Package: .cxapp</span>
+            <span class="chip">Runtime: sandboxed Node</span>
+            <span class="chip">UI: managed Chromium Tab</span>
+            <span class="chip">Authority: kernel</span>
+            <span class="chip">Status: implementation plan</span>
+          </div>
+        </header>
+
+        <section class="section" id="outcome">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker">Definition of done</p>
+              <h2>Required outcome</h2>
+            </div>
+          </div>
+          <p class="section-intro">
+            The project is implemented only when a third-party-style App can be packaged, installed, run, updated, bound to an agent, used by that agent through the runtime MCP, opened by a person, and connected to a workflow trigger without privileged App-specific kernel code.
+          </p>
+
+          <ul class="gate-list">
+            <li><b>No privileged reference Apps.</b><span>Slack, Todo, and Documents use the same package, SDK, supervisor, file, UI, event, and binding paths available to a local developer App.</span></li>
+            <li><b>Every conforming App runs.</b><span>Chariox ships and tests the App sandbox on every supported kernel OS. App developers target one package and capability contract rather than platform-specific containment APIs.</span></li>
+            <li><b>No legacy Slack exception.</b><span>The temporary Slack logic leaves the kernel. Slack notification ingress and Slack actions run through the installed Slack App.</span></li>
+            <li><b>One MCP.</b><span>Models see one Chariox runtime MCP. Bound App tools appear as namespaced functions inside it. Apps never expose a second MCP server to the model.</span></li>
+            <li><b>One trigger authority.</b><span>Only workflow triggers activate agents without a user prompt. App bindings select tool discovery and cannot start an agent or arbitrary workflow node.</span></li>
+            <li><b>A bad App cannot stall Chariox.</b><span>A hung, crashing, memory-hungry, malformed, or non-acknowledging App remains isolated. The kernel, other Apps, workflows, terminals, and event queues continue.</span></li>
+            <li><b>Every applicable matrix cell passes.</b><span>Each feature declares its surfaces. Every applicable cell has automated or drill evidence. A blank cell, unexplained exclusion, placeholder or unsupported assertion blocks completion. Dated human accessibility and authentication drills count where the acceptance criterion requires them.</span></li>
+          </ul>
+
+          <div class="callout stop">
+            <h3>What does not count as implemented</h3>
+            <p>A demo that runs one trusted App in the web client is not Phase 1. Neither is a package installer without updates, stock Node started outside the App supervisor, a client that executes a second copy of the App frontend, a viewer without authenticated input, or an event callback that bypasses workflow queues.</p>
+          </div>
+        </section>
+
+        <section class="section" id="decisions">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker">Agreed shape</p>
+              <h2>Product and architecture decisions</h2>
+            </div>
+          </div>
+
+          <dl class="decision-list">
+            <dt>Runtime</dt><dd>A maintained Node LTS release embedded in a signed Chariox App worker. A versioned, tested Node API subset is the developer contract; embedding alone is not containment. The security boundary is a separate operating-system sandbox. Phase 1 ships Seatbelt on macOS plus namespaces and seccomp on Linux. Phase 2 adds restricted tokens, AppContainer or LPAC, Job objects, and process mitigations on Windows.</dd>
+            <dt>Conforming backend</dt><dd>Phase 1 accepts JavaScript and TypeScript plus pure-JavaScript or portable WebAssembly npm dependencies. It supports standard Node APIs that remain inside the installation and brokered service access. The compatibility table below names the APIs that require adaptation or later platform packages.</dd>
+            <dt>Package</dt><dd>A deterministic <code>.cxapp</code> archive containing a manifest, bundled Node backend with a locked pure-JavaScript dependency graph, responsive web UI bundle, assets, integrity records, and migrations when needed. Chariox supplies the pinned Node runtime.</dd>
+            <dt>UI</dt><dd>One HTML, CSS, and TypeScript implementation executes in an installation-scoped origin inside the Room's kernel-managed Chromium Environment. Web, TUI, desktop, and mobile terminals embed or open an authenticated projection of that same Tab.</dd>
+            <dt>Styling</dt><dd>Chariox does not require React, a design system, or a visual style. Apps may use plain HTML or any browser framework. The SDK provides capability access and host information.</dd>
+            <dt>Files</dt><dd>Standard Node filesystem APIs work inside read-only package and writable installation data and temporary directories. Chariox sets the data directory as the working directory and the OS sandbox denies unrelated host paths. A narrow documented read-only allowlist covers trusted runtime support files required by Node and the OS. A provisioned quota-capable private volume or equivalent enforced storage bounds direct writes. <code>chariox.files</code> adds atomic single-file replacement, import, export, snapshots, and user-selected external grants. <code>chariox.state</code> supplies structured transactions. General multi-file transactions are deferred beyond the committed releases.</dd>
+            <dt>Timers</dt><dd>Scheduled App work uses kernel-owned wakes. An App registers durable wake requests (ID, due time, schedule revision) through <code>chariox.schedule</code>; the kernel persists them, starts the App worker when one falls due and delivers the wake at least once. Overdue wakes after sleep, shutdown or restart are delivered on recovery and marked overdue. The release defines a lateness budget while the kernel runs. Standard Node timers remain available for short in-process work while the worker is running, but no App worker stays running only to wait for a due time.</dd>
+            <dt>Network</dt><dd>Apps declare destinations and reasons. The App sandbox blocks raw sockets. A fetch-compatible kernel broker enforces approved hosts, ports, redirects, DNS resolution, TLS policy, and opaque connection credentials.</dd>
+            <dt>Agent access</dt><dd>Humans and authorized Room agents can use the same App operations through its view or tools. One binding mechanism supports explicit user selection, automatic binding when an installed App is foregrounded, and agent self-grant through the existing extension request path. The existing effective permission mode governs routine access; binding does not restrict the interaction medium or increase authority beyond that policy. Critical operations pause for kernel-owned human validation regardless of who initiated them.</dd>
+            <dt>Notifications</dt><dd>The kernel retains durable delivery, deduplication, retry, ordering, and workflow queue authority. The installed App receives the event and emits an App event through its configured automation.</dd>
+            <dt>App automation</dt><dd>One App automation points to one workflow endpoint and queue. The App holds an opaque automation ID, not a workflow ID. Automatic fan-out is out of scope.</dd>
+            <dt>Freeform</dt><dd>Binding Apps or Extensions to a Freeform agent creates no workflow. Adding a trigger or deploying that agent creates a visible one-node workflow with origin metadata and completes the requested flow directly.</dd>
+            <dt>Publish</dt><dd>There is no separate user-facing Publish action. HTTP, schedule, and notification are workflow triggers. Deploy remains a separate direct action.</dd>
+            <dt>Distribution</dt><dd>Phase 1 is an independently shippable release for built-in and local developer Apps, including local .cxapp installation and file associations on macOS and Linux. Phase 2 is a later release adding the public Library, publisher management, review and distribution, Windows kernel support, and native terminal integration. Phase 1 has no dependency on an unfinished Phase 2 capability.</dd>
+          </dl>
+        </section>
+
+        <section class="section" id="model">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker">Shared language</p>
+              <h2>Domain model</h2>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Term</th><th>Meaning</th><th>Identity and ownership</th></tr></thead>
+              <tbody>
+                <tr><td>App</td><td>A packaged App backend and App view that extend Chariox without privileged App-specific kernel code.</td><td>Stable reverse-domain App ID, such as <code>com.chariox.todo</code>.</td></tr>
+                <tr><td>App backend</td><td>The Node program that implements service integration, agent tools, events, and private data access.</td><td>One sandboxed App worker process per active installation near the kernel, shared by that installation's Room-scoped views.</td></tr>
+                <tr><td>App supervisor</td><td>The trusted kernel component that applies containment, starts workers, enforces resource limits, and routes bounded IPC. It never executes App code.</td><td>One kernel-owned supervisor for all installations, with policy and accounting isolated per installation.</td></tr>
+                <tr><td>App worker</td><td>The sandboxed process that embeds Chariox's pinned Node runtime and executes an App backend.</td><td>One worker identity and process per active installation.</td></tr>
+                <tr><td>Service backend</td><td>The external API and data service that an App backend connects to.</td><td>Owned and hosted by the service provider. It is outside Chariox.</td></tr>
+                <tr><td>App release</td><td>One immutable packaged version.</td><td>App ID, semantic version, package digest, publisher identity, signatures and attestations.</td></tr>
+                <tr><td>App installation</td><td>One release activated for one kernel with approved capabilities and private state.</td><td>Kernel-scoped installation ID. A machine may cache package bytes but cannot share mutable installation state.</td></tr>
+                <tr><td>Open App</td><td>An installed App whose worker is running for a human, an agent, an inbound event or a due wake, whether or not its view is visible.</td><td>Kernel-owned runtime lifecycle. The kernel starts the worker on demand and stops it when idle; an enabled integration keeps the App reachable, not running.</td></tr>
+                <tr><td>App binding</td><td>Makes one installation's tools available to an agent through the existing permission policy.</td><td>One agent/installation relationship, established by the user, foreground activation or policy-allowed self-grant. Automation uses the same binding. Its origin does not create a new permission category or restrict UI versus tool operation.</td></tr>
+                <tr><td>App automation</td><td>Routes one App event source to one workflow endpoint and queue.</td><td>Opaque automation ID stored by the App. Kernel stores the target and lifecycle state.</td></tr>
+                <tr><td>App event</td><td>An occurrence emitted by an App for workflow delivery.</td><td>Automation ID plus App-defined occurrence ID, schema version, timestamp, and payload.</td></tr>
+                <tr><td>App view</td><td>The App's responsive web frontend.</td><td>Immutable UI assets from the active release. One shared App Tab per Room and installation executes in managed Chromium and is projected to that Room's terminals. Different Rooms may have separate views backed by the same installation.</td></tr>
+                <tr><td>App conversation panel</td><td>Trusted Chariox conversation display in a fixed terminal-owned region beside the App view.</td><td>Kernel history and terminal rendering; the App receives no conversation content.</td></tr>
+                <tr><td>App data</td><td>Private files and structured state owned by one installation.</td><td>The backend uses standard Node file APIs inside its private data root and SDK operations for atomic single-file replacement, snapshots, import, export, and external grants. Structured transactions belong to chariox.state. Package files and workflow workspaces are separate.</td></tr>
+                <tr><td>App set</td><td>A versioned description used when copying a kernel.</td><td>Packages, versions, approved capabilities, configuration and, when selected, App data.</td></tr>
+                <tr><td>Generated one-node workflow</td><td>A normal visible workflow created when a Freeform agent gains a trigger or deployment.</td><td>Workflow metadata records source agent, reason, timestamp, and originating surface. Alias remains an ordinary editable alias.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="section" id="architecture">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker">Kernel-owned execution</p>
+              <h2>Target architecture</h2>
+            </div>
+          </div>
+
+          <h3 style="margin-top:24px">External event path</h3>
+          <div class="flow" aria-label="External event path">
+            <div class="flow-step"><b>External service</b><span>Slack, GitHub or another source</span></div>
+            <div class="flow-step"><b>AEDS and AEGS</b><span>Existing hosted ingress and generator path</span></div>
+            <div class="flow-step"><b>Kernel App inbox</b><span>Durable receipt, dedupe, retry and ordering</span></div>
+            <div class="flow-step"><b>Installed App</b><span>Validate, transform, store, acknowledge and emit</span></div>
+            <div class="flow-step"><b>Workflow trigger queue</b><span>Resolve automation and enqueue the configured endpoint</span></div>
+          </div>
+
+          <h3 style="margin-top:34px">Agent return path</h3>
+          <div class="flow" aria-label="Agent return path">
+            <div class="flow-step"><b>Agent model</b><span>Calls a namespaced App tool</span></div>
+            <div class="flow-step"><b>Runtime MCP</b><span>Single catalog and authorization point</span></div>
+            <div class="flow-step"><b>Kernel App bridge</b><span>Resolve binding, validate input, apply deadline</span></div>
+            <div class="flow-step"><b>Sandboxed Node App backend</b><span>Run tool handler through the App SDK</span></div>
+            <div class="flow-step"><b>App or external service</b><span>Managed files, state or approved HTTP call</span></div>
+          </div>
+
+          <h3 style="margin-top:34px">Local App event path</h3>
+          <div class="flow" aria-label="Local App event path">
+            <div class="flow-step"><b>Kernel wake or person</b><span>Due <code>chariox.schedule</code> wake or App view action</span></div>
+            <div class="flow-step"><b>App state</b><span>Persist schedule and occurrence before emission</span></div>
+            <div class="flow-step"><b>SDK event call</b><span>Opaque automation and occurrence IDs</span></div>
+            <div class="flow-step"><b>Kernel binding resolver</b><span>Validate App, automation, workflow and endpoint</span></div>
+            <div class="flow-step"><b>Workflow trigger queue</b><span>Use existing delivery and run semantics</span></div>
+          </div>
+
+          <h3 style="margin-top:34px">Human and service interaction path</h3>
+          <div class="flow" aria-label="Human and service interaction path">
+            <div class="flow-step"><b>Terminal viewer</b><span>Web iframe, default browser, or native client</span></div>
+            <div class="flow-step"><b>Managed App Tab</b><span>One frontend in the Room Environment</span></div>
+            <div class="flow-step"><b>Kernel App bridge</b><span>Authenticate installation, Tab, and operation</span></div>
+            <div class="flow-step"><b>Sandboxed App backend</b><span>Node integration code and private data</span></div>
+            <div class="flow-step"><b>Service backend</b><span>Provider API and database, reached through the HTTP broker</span></div>
+          </div>
+
+          <div class="grid">
+            <article class="card wide">
+              <h3>App supervisor module</h3>
+              <p>A trusted kernel module owns installation policy and worker lifecycle. It creates one signed App worker for each installation, applies the platform sandbox, and verifies lockdown before allowing the worker to load App code. The worker embeds pinned Node and receives only package, data, temporary, IPC, and resource handles granted to that installation. Callers request an operation and receive a typed result. They never manage a process directly.</p>
+            </article>
+            <article class="card wide">
+              <h3>App event module</h3>
+              <p>This module owns inbox persistence, acknowledgement, replay, deduplication, occurrence identity, App delivery, automation resolution, broken-binding state, and workflow queue insertion. A slow App cannot hold the event ingestion request open.</p>
+            </article>
+            <article class="card wide">
+              <h3>App tool module</h3>
+              <p>This module projects bound tools into the runtime MCP, resolves calls to the correct installation, validates schemas, applies permissions and deadlines, and returns structured errors. App IPC remains an internal adapter.</p>
+            </article>
+            <article class="card wide">
+              <h3>App view bridge module</h3>
+              <p>This module loads each App view in its installation-scoped origin inside the Room's kernel-managed Chromium, authenticates its SDK messages, and binds it to its App backend. Each terminal uses the normal Environment viewer and input protocols to present the same Tab.</p>
+            </article>
+          </div>
+
+          <div class="callout warn" id="sandbox-persistence">
+            <h3>Phase 1 dependency: sandboxed Chromium with persistent sessions</h3>
+            <p>The existing Linux slice launch and recovery paths use <code>--no-sandbox</code>. Replace them with a production configuration that keeps renderer isolation active, including inside supported containers. Investigate the reported relationship between sandbox flags and lost Google sessions as a hypothesis; do not assume a Chromium defect without reproducing it. Trace profile persistence, cookie encryption, keyring/password-store availability, browser shutdown and save/restore generations.</p>
+            <p>Run a deterministic authenticated fixture and a real Google-session regression through save, full container and home-volume removal, restore, browser restart and fallback launch. Preserve the required profile and key material securely. Distinguish Chariox state loss from provider-driven reauthentication. A repeatable Chariox-caused login loss or disabled renderer sandbox blocks Phase 1. Keep any unsafe launch exception restricted to explicit development diagnostics; it cannot host production App views.</p>
+          </div>
+
+          <h3>Resource implementation and release budgets</h3>
+          <p>P1.03 must name the supported OS/distribution floor, installer-provisioned privileges and delegation, actual storage quota mechanism, and total-resource enforcement for each platform. Record numeric limits on named reference machines before validation: total memory including external buffers and browser work, CPU, threads, descriptors, queued bytes, logs, disk, broker concurrency, startup, event lateness and input latency. Distinguish hard limits from monitored thresholds and bound reaction delay and overshoot. Aggregate admission preserves host and kernel reserves across many Apps. Browser sandboxing alone does not promise these resource ceilings. Each supported installation provisions the required facilities for developers automatically. On Linux this is one privileged step when Chariox itself is installed (package post-install or a single <code>sudo</code> prompt); installing, updating and running Apps never requires root or a new prompt.</p>
+
+          <h3>Durable event contract</h3>
+          <p>The kernel durably records an incoming occurrence before acknowledging receipt. App handler delivery is at least once. <code>chariox.state</code> can commit App state and an outgoing occurrence record together; raw-file Apps implement the documented durable outbox pattern. The kernel atomically records the dedupe key and workflow enqueue. Keys include installation, automation, event version and stable occurrence identity; scheduled occurrences include schedule revision. Receipt retention covers the advertised replay window. Expired or poison events receive a visible terminal classification; queues and retries are bounded.</p>
+          <p>Receipts and delivered-occurrence tombstones survive App-data rollback. A timeout after a remote mutation may have an unknown result; cancellation cannot undo an accepted service operation. Use provider idempotency and reconciliation where supported, and do not automatically retry an ambiguous non-idempotent mutation. Pending human validation has its own durable operation state and cannot hold a kernel request handler open.</p>
+
+          <h3>Versioned AEGS/AEDS cutover</h3>
+          <p>Define the new generic contract before migrating Slack: installation-scoped connection grants, source-interest subscriptions, normalized occurrences and artifact references, installation inbox routes, automation targets, acknowledgements and generation fencing. The App transforms source content into the existing canonical workflow prompt/artifact model. An automation has one endpoint; separate automations may intentionally receive the same source occurrence. Version every changed event, management and client wire contract.</p>
+          <p>Each connection declares where its service credentials are held and which actions the App can request. Existing AEGS-held credentials remain usable during migration without exporting tokens; the new contract may retain or deliberately replace that mechanism after validation. Opaque handles are scoped to installation, connection, destination and operation. Chariox agent-provider harness credentials never enter this facility.</p>
+          <p>Slack is the first third-party-style implementation of the new contract, with no privileged exception. Keep current behavior operational until new clean-install and upgrade flows pass live and fault-injection verification. Migrate connection, route and dedupe identities with one active route generation, then remove obsolete Slack-specific code, adapters and configuration. Phase 1 cannot ship with a permanent dual execution path.</p>
+
+          <h3 style="margin-top:30px">App worker enforcement</h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Host OS</th><th>Delivery</th><th>Process boundary</th><th>Installation storage</th><th>Resource boundary</th></tr></thead>
+              <tbody>
+                <tr><td>macOS</td><td>Phase 1</td><td>Signed helper applies a parameterized, default-deny Seatbelt profile before embedded Node initializes. Hardened runtime and the V8 JIT entitlement ship with the helper.</td><td>Seatbelt permits the immutable package and quota-limited private data and temporary storage for that installation.</td><td>Specify total-memory monitoring/enforcement, CPU policy, thread/descriptor limits, bounded IPC, and aggregate admission in the shipped launcher. Publish measured termination delay and overshoot where limits are monitored; Seatbelt and a V8 heap limit do not establish a hard total-memory ceiling.</td></tr>
+                <tr><td>Linux</td><td>Phase 1</td><td>Launcher enters user, mount, PID, and network namespaces, drops privileges, then installs a Node-specific seccomp-BPF policy before App code.</td><td>The mount namespace exposes an immutable package plus quota-limited data and temporary mounts.</td><td>A one-time privileged Chariox installation step provisions the storage helper, cgroup v2 delegation and namespace access (including any required AppArmor profile) on supported distributions. Hard per-installation disk quotas use this helper. CPU, memory, process, descriptor and aggregate budgets include App-induced broker work. Ordinary users do not configure this per App.</td></tr>
+                <tr><td>Windows</td><td>Phase 2</td><td>The App supervisor takes Chromium's broker role and starts the App worker with a restricted token, LPAC or AppContainer identity, Job object, integrity level, and process mitigations before App code.</td><td>Per-installation SID and ACLs permit the immutable package and quota-limited private data and temporary storage.</td><td>Job limits, supervisor deadlines, bounded IPC, and process-tree termination apply per installation.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="callout warn">
+            <h3>Mandatory sandbox rule</h3>
+            <p>Chariox does not load third-party JavaScript into the kernel or App supervisor. Every App backend starts in its own App worker process. No App code runs before the supervisor proves that the default-deny OS policy is active. Runtime permission flags add diagnostics and defense but never replace the OS boundary. Phase 1 must pass on macOS and Linux. Windows joins the same contract in Phase 2.</p>
+          </div>
+        </section>
+
+        <section class="section" id="package">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker">Installable program</p>
+              <h2>Package, installation, updates and migrations</h2>
+            </div>
+          </div>
+
+          <h3 id="compiled-backends">Compiled proprietary backends (Phase 2)</h3>
+          <p>Phase 1 packages ship a bundled JavaScript backend; the compiled format below is Phase 2 work delivered with the Library. Phase 2 supports distributing a proprietary App backend without its JavaScript or TypeScript source text. Developers keep using the supported Node SDK and libraries; Chariox release tooling compiles before distribution and signing. Development mode can execute source. Open-source packages may deliberately include source. Minification, obfuscation, archive packing, encryption and a single-executable wrapper alone do not satisfy the proprietary compiled-backend contract. Compiled instructions can still be reverse-engineered; source confidentiality from a determined machine owner is not promised.</p>
+          <p>Evaluate a Chariox-owned V8 bytecode compiler/loader inside the existing sandboxed Node worker first. Select and version the production format only after proving supported ESM/CJS dependencies, SDK callbacks, asynchronous execution and all supported macOS/Linux targets. Do not treat Bytenode or a V8 code cache as an already-approved drop-in solution. Record unsupported source-introspection or dynamic-loading behavior explicitly. Compiled loading must begin after containment, use the same bounded IPC and grants, and must not enable arbitrary native executables, FFI, subprocesses or a second per-App Node runtime.</p>
+          <p>The signed manifest binds backend artifact format, compiler/runtime build identity, supported target variants and their exact digests. The loader rejects incompatible or malformed artifacts before App execution. The build tool produces required variants from one developer source project. Include backend dependencies and migration code in source-exclusion checks; source maps, source-bearing caches, inline sources, private symbols, development files and secrets must not leak into proprietary packages. Keep publisher debugging material private and preserve required third-party notices. UI HTML/CSS/JavaScript remains a web bundle and may be minified or obfuscated without a compiled-UI requirement.</p>
+          <p>Before shipping this format, prove a runtime security-update path: compatible artifacts remain usable, or the publisher rebuilds and signs replacements against the new runtime through the same release tooling. Installation never compiles supplied source or runs npm hooks; never silently ship a source fallback or retain a vulnerable runtime indefinitely to accommodate old bytecode. State the supported compatibility window and recovery policy, including offline upgrades. This compiler/loader decision and its tests are a Phase 2 release gate. Phase 1 JavaScript packages remain valid after the compiled format ships.</p>
+          <p>Background and sources: <a href="https://github.com/bytenode/bytenode">Node bytecode compatibility</a>, <a href="https://nodejs.org/api/single-executable-applications.html">Node executable packaging</a>, and <a href="https://reactnative.dev/docs/hermes">JavaScript compilation in Hermes</a>. These establish candidate mechanisms; Chariox must validate its own loader.</p>
+          <h3 style="margin-top:24px">Minimum package layout</h3>
+          <p>Phase 1 packages carry bundled JavaScript. A Phase 2 compiled package replaces the <code>.js</code> backend and migration entries with compiled artifacts and binds their runtime build and target variants in the manifest.</p>
+          <pre><code>com.chariox.todo-1.0.0.cxapp
+├── manifest.json
+├── integrity.json
+├── signatures/
+│   └── publisher.sig
+├── runtime/
+│   └── main.js
+├── ui/
+│   ├── index.html
+│   ├── app.js
+│   └── app.css
+├── assets/
+├── schemas/
+│   ├── tools.json
+│   ├── events.json
+│   └── actions.json
+└── migrations/
+    ├── 001.js
+    └── 002.js</code></pre>
+
+          <p>Sign an RFC 8785 canonical manifest and file inventory with the publisher's Ed25519 key, reusing the existing signature conventions. The inventory records exact paths, byte sizes and content digests and excludes signature files themselves. Verify the signed inventory before extraction and reject unexpected files. The package contract versions this envelope. Local developer key enrollment and trust decisions are implemented in Phase 1; Library attestations add separate trust in Phase 2.</p>
+          <h3 style="margin-top:30px">Manifest contract</h3>
+          <pre><code>{
+  "schema": "chariox.app.v1",
+  "appId": "com.chariox.todo",
+  "version": "1.0.0",
+  "minKernelProtocol": 282,
+  "runtime": { "engine": "node", "entry": "runtime/main.js" },
+  "ui": { "entry": "ui/index.html" },
+  "tools": "schemas/tools.json",
+  "events": "schemas/events.json",
+  "actions": "schemas/actions.json",
+  "capabilities": {
+    "network": [],
+    "clipboard": ["write"],
+    "externalFiles": ["user_selected"]
+  },
+  "migrations": { "directory": "migrations" }
+}</code></pre>
+
+          <p>This manifest is illustrative. The packer derives the supported SDK, App contract and kernel protocol requirements from the selected SDK/runtime contract; it does not stamp an arbitrary historic protocol floor. The actions file declares action identity, closed input schema, critical-validation requirements and protected effect routes. Resource policy defaults are versioned by Chariox and visible in package validation.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Lifecycle step</th><th>Required behavior</th><th>Failure contract</th></tr></thead>
+              <tbody>
+                <tr><td>Recognize</td><td>OS file association and Chariox command handling identify <code>.cxapp</code>. Inspecting a package shows identity, publisher, version, capabilities and review state without executing it.</td><td>Malformed archives never execute. Parsers have size, depth, path, compression-ratio and count limits.</td></tr>
+                <tr><td>Verify</td><td>Validate deterministic archive shape, integrity digest, signatures, schema, protocol floor, tool and event schemas, UI entry, migration graph and capability syntax.</td><td>One failed check rejects the full package with a stable error code and no installation residue.</td></tr>
+                <tr><td>Approve</td><td>Record installation capabilities for the exact release. Updates that expand access or critical-action authority require a new decision before activation. Built-in Apps use the same model.</td><td>Declining a new installation leaves it uninstalled. Declining an update preserves the working old release. No new capability becomes usable before approval.</td></tr>
+                <tr><td>Stage</td><td>Extract to a content-addressed read-only release directory. Allocate separate installation configuration, private data and logs.</td><td>Interrupted staging is garbage-collected and never becomes active.</td></tr>
+                <tr><td>Activate</td><td>The App supervisor creates an installation-scoped App worker, applies the platform sandbox, proves lockdown over inherited IPC, initializes embedded Node, validates health, and atomically switches the installation's active release.</td><td>No App code runs before containment. Health failure keeps the prior release active or leaves a new installation inactive.</td></tr>
+                <tr><td>Update</td><td>Verify and stage the new release beside the old one. Journal the update, pause admission, fence the old worker including timers and open writers, checkpoint state, and snapshot data. Run migrations and health checks in a staged generation without external effects, then commit the release, schema, capability decision, tool catalog and view generation together.</td><td>Pre-commit failure restores the prior generation. After activation accepts new writes, downgrade requires an explicit compatible recovery path; restoring an old snapshot must not erase accepted work. Queued events and dedupe receipts remain durable outside rollbackable App data.</td></tr>
+                <tr><td>Migrate</td><td>Run ordered migrations through a restricted SDK against staged installation data while the old worker is fenced. Record schema version and package digest transactionally.</td><td>Migration cannot access network, agents, workflows or another App. Timeout, crash or invalid output rolls back the data snapshot.</td></tr>
+                <tr><td>Uninstall</td><td>Stop worker, disable bindings and automations, revoke runtime tokens, remove package activation, and ask whether to retain or delete App data.</td><td>Uninstall never deletes workflows or agents. Active automation events receive a terminal disabled classification.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="callout good">
+            <h3>Update completion rule (Phase 1 local replacement)</h3>
+            <p>An update is complete only after its durable installation generation agrees across worker, data schema, capability decision, tool catalog, and views. Old workers, bridge sessions and cached UI generations cannot issue operations. Events resume with deduplicated enqueue. Fault injection proves pre-commit rollback; post-commit recovery preserves newly accepted writes and external-effect history.</p>
+          </div>
+          <h3 id="app-open-lifecycle">The kernel runs an App only while there is work for it</h3>
+          <p>Running an App is a kernel decision, independent of whether its view is visible. Human use and agent use keep the App worker running. An enabled notification integration does not keep it running: the kernel owns the waiting. When an inbound event for the installation arrives or a registered wake falls due, the kernel starts the worker if needed and delivers the event or wake; the App then emits App events, which trigger the configured workflow through the existing queue. The App needs no visible view and no separate background-job permission. This follows the operating-system model: the kernel owns timers and event delivery, the program runs when there is work.</p>
+          <p>Closing a view or detaching a terminal does not stop an agent's work or disable an integration. The kernel persists enabled integrations and registered wakes, and restores them after restart using the existing durable delivery rules. Disabling an integration prevents new triggers through it and does not silently cancel already accepted workflow work or delete the workflow. When no human, agent, event or wake work remains, the kernel stops the App backend through its bounded lifecycle after a short idle period. Installation alone, an unused tool binding or an App's own in-process timer cannot keep it running.</p>
+          <p>Humans and agents use the same App operations. Agents retain their existing, potentially narrower permissions, and opening an App grants no additional authority. App events can activate agents only through configured workflow triggers. A closed App cannot run unsolicited jobs or invoke agents. Phase 2 Library delivery can download and stage updates for a closed App through trusted Chariox services without starting the App or calling an agent; any App migration runs only in the sandboxed update lifecycle.</p>
+          <h3 id="distribution-updates">One App release, two distribution routes</h3>
+          <p>Keep backend and view architecturally separate but publish one signed App release, with one developer-facing version and one coherent activation record. The view's executable assets, backend artifacts, migrations, capabilities and backend/view API compatibility are identified by that release. A UI-code change is a new release even if it reuses the same backend artifact. Separate frontend release channels are not required. Phase 1 implements this boundary, local package replacement, migration and recovery. Phase 2 adds automatic discovery, delivery, channels and rollout for both distribution routes; it does not defer safe local replacement out of Phase 1.</p>
+          <p><strong>Library route:</strong> the publisher uploads each release without supplying source code, Chariox automatically checks its artifacts for detectable security vulnerabilities and critical failures, and the Library distributes approved releases to enrolled installations on the user's kernels. The Library offers discoverability, managed delivery and auto-updates for users who enable them, plus optional beta channels. It has one publishing and review flow, with no source-based review tiers. The Library owns release discovery and delivery; the kernel owns local signature/integrity/compatibility verification, accepted permissions, staging and activation. This distribution service is separate from the encrypted runtime relay and receives no authority over sessions, agents or conversations.</p>
+          <p><strong>Direct route:</strong> the publisher hosts a signed release feed and packages. A declared publisher channel supplies updates on App opening and through resource-bounded checks while the App remains open, including agent-only or notification-integration use. A closed App does not run a publisher update job. Chariox provides the shared updater and installer, so developers do not write their own signature verifier, self-modifying worker or recovery process. Direct packages do not require Library review and must not display a Library review attestation they do not possess. Channel changes and signing-key rotation preserve publisher identity and require the appropriate authenticated trust transition.</p>
+          <p>Phase 2 uses the same local update contract for both routes: fetch/stage in the background, retain a working offline release, respect user update policy, and activate at a safe point that preserves drafts and accepted human/agent work. Unchanged permissions do not cause repeated prompts; expanded permissions use existing consent rules. Retain the conservative Phase 1 fenced replacement as the default. A view-only optimization may leave the backend running only when artifact, API, schema, grants and tool catalog are unchanged; define backend generation and view revision separately, invalidate stale view bridges, and test operation continuity before enabling that optimization.</p>
+          <h3 id="live-app-content">Live content and App-view delivery</h3>
+          <p>The sandboxed App backend serves the view through a kernel-owned, authenticated installation route. It supplies packaged web assets and typed dynamic responses without binding an arbitrary listening port. The view executes once in the Room's managed Chromium; Web/TUI/native terminals project it. JavaScript execution in Chromium is distinct from the developer's release build and backend compilation.</p>
+          <p>Campaign text, images, schedules, service data and configuration for already-shipped behavior can refresh through the backend's approved network access without a code release or a new Library review. Support opening-time refresh, bounded refresh while the App is in use and enabled notification integrations; update an open view without discarding edits. Give cached content explicit expiry/offline behavior. Executable JavaScript, backend logic and migrations are release artifacts, including when described as templates or configuration: do not intentionally bypass release review by replacing executable code at a mutable URL. Review and sandboxing remain complementary; data-driven behavior cannot be assumed harmless and the runtime boundary applies to all execution.</p>
+        </section>
+
+        <section class="section" id="sdk">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker">TypeScript interface</p>
+              <h2>SDK, private files and capabilities</h2>
+            </div>
+          </div>
+
+          <p class="section-intro">The SDK hides kernel topology, MCP, workflow IDs, relay connections, host paths, and terminal transport. App backends use normal Node APIs inside their private directories and Chariox APIs for operations that cross the sandbox.</p>
+
+          <div class="grid">
+            <article class="card">
+              <h3><code>chariox.files</code></h3>
+              <p>Add atomic single-file replacement, snapshots with a declared consistency level, import, export, and user-selected external grants. Ordinary private file I/O uses <code>node:fs</code>. General multi-file transactions are deferred.</p>
+            </article>
+            <article class="card">
+              <h3><code>chariox.state</code></h3>
+              <p>Structured values with compare-and-set, multi-record transactions and schema version, backed by kernel-owned transactional persistence. State changes and outgoing occurrence records can commit together. These guarantees do not cover independent node:fs writes. Browser IndexedDB retains its normal transactions for view-local state.</p>
+            </article>
+            <article class="card">
+              <h3><code>chariox.events</code></h3>
+              <p>Emit an occurrence through an opaque automation ID, inspect delivery status and retry only when the kernel classifies a failure as retryable.</p>
+            </article>
+            <article class="card">
+              <h3><code>chariox.schedule</code></h3>
+              <p>Register, replace and cancel durable kernel-owned wakes with an ID, due time and revision. The kernel starts the worker when a wake falls due and delivers it at least once, marking overdue wakes. Registration can commit with <code>chariox.state</code> changes.</p>
+            </article>
+            <article class="card">
+              <h3><code>chariox.tools</code></h3>
+              <p>Register implementations for package-declared tools and receive validated calls with cancellation, deadline and invoking-agent context.</p>
+            </article>
+            <article class="card">
+              <h3><code>chariox.http</code></h3>
+              <p>Back the App's global <code>fetch</code> and explicit SDK calls under the installation's approved destination policy. A connection handle names one explicit credential authority and permitted service operations. The broker enforces that authority; AEGS-held credentials are never silently exported into a local token store.</p>
+            </article>
+            <article class="card">
+              <h3><code>chariox.paths</code></h3>
+              <p>Expose the package, data, and temporary roots using normal platform paths. The data root is the worker's initial working directory.</p>
+            </article>
+            <article class="card">
+              <h3><code>chariox.host</code></h3>
+              <p>View lifecycle, surface dimensions, safe areas, color scheme, input mode, links, clipboard, notifications and system file pickers.</p>
+            </article>
+            <article class="card">
+              <h3><code>chariox.log</code></h3>
+              <p>Structured App logs with levels, fields, redaction and bounded retention. Apps cannot write kernel logs directly.</p>
+            </article>
+            <article class="card">
+              <h3><code>chariox.lifecycle</code></h3>
+              <p>Startup, suspend, resume, shutdown, update preparation and configuration-change notifications with strict deadlines.</p>
+            </article>
+          </div>
+
+          <div class="callout good" id="human-validation">
+            <h3>One App operation model for humans and agents</h3>
+            <p>Agents can operate App views and tools at the same functional level as humans under the Room's policy. Bindings choose tool availability through explicit selection, foreground activation or self-grant under the existing permission mode; they do not create a privileged tool lane or prohibit UI operation. Kernel-issued context identifies the installation, Room, actor or background caller, operation and active generation. The App cannot supply an authoritative actor identity or infer human approval from a page click.</p>
+            <p><code>chariox.validation.request</code> is the proposed SDK entry for a kernel-owned human-validation interaction. An App may require validation for a declared critical action; kernel policy may require it independently and cannot be weakened by the App. The operation remains durably pending until an authorized human approves. Waiting returns a pending operation ID and releases kernel/worker request capacity; a human reply resumes through the same operation state without replaying earlier effects. Denial, expiry or revocation prevents execution. All callers, including humans using the App view, go through the same rule.</p>
+            <p>The trusted terminal shows the actual action and canonical parameters outside App-controlled content and outside the agent-operated Environment. Bind the decision to operation ID, installation and release generation, requester, connection, parameter digest, expiry and a single use. Changing an amount, recipient, account or relevant parameter requires new validation. Reuse the kernel's RuntimeInteraction machinery through a versioned extension where needed; all terminals project one pending interaction and concurrent replies settle it once.</p>
+            <p>Phase 1 confirmation uses the authenticated human terminal channel through kernel approvals, outside App content and the agent-operated Environment. Phase 2 adds step-up user verification for policy-selected high-risk actions, preferably a passkey verified against a trusted Chariox relying-party origin and fresh challenge, together with third-party Library Apps; a TUI can open the trusted confirmation page in the user's browser. Do not introduce an App-visible root password or deliver secrets to App JavaScript. Agent actions and synthetic App messages cannot satisfy human validation.</p>
+            <p>The trusted action executor or credential/network broker checks and consumes the exact approval receipt before a protected effect. An equivalent unchecked route using the same authority must not exist. App-defined business semantics still need correct App integration: arbitrary allowed HTTP cannot be classified automatically as a payment. The manifest declares protected actions and their effect routes so kernel enforcement has a concrete boundary. Kernel-enforced critical effects use managed handlers or scoped service credentials. Declaring an action cannot make arbitrary direct private-file mutations approval-enforced. After an ambiguous external effect, receipt consumption prevents blind retries and the operation enters reconciliation.</p>
+          </div>
+
+          <h3 style="margin-top:30px">Private filesystem rules</h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Concern</th><th>Kernel guarantee</th><th>Validation</th></tr></thead>
+              <tbody>
+                <tr><td>Visible roots</td><td>The worker starts in its writable data directory. It can read its immutable package and use its temporary directory. The OS sandbox denies unrelated host paths outside the documented runtime-support allowlist, including traversal through symlinks, junctions, reparse points, inherited descriptors, and race renames.</td><td>Use standard <code>node:fs</code> calls against a cross-platform adversarial path corpus. Verify that package, data, and temporary access work while home, workspace, credential, device, and other-installation access fails.</td></tr>
+                <tr><td>Writes</td><td>Ordinary <code>node:fs</code> writes keep normal filesystem crash semantics. Apps use <code>chariox.files</code> for atomic single-file replacement and <code>chariox.state</code> for structured compare-and-set and transactions. Multi-file filesystem transactions are deferred.</td><td>Kill the App at every SDK write checkpoint and verify old or new content, never torn content. Verify and document normal Node behavior separately.</td></tr>
+                <tr><td>Concurrency</td><td>Ordinary file access follows normal filesystem concurrency. App backends coordinate ordinary writers. Structured state transactions protect only their managed store. SDK locks cannot isolate against arbitrary node:fs writes; migrations fence all old-generation writers.</td><td>Parallel App view, tool call, migration, and event handler writes through both paths.</td></tr>
+                <tr><td>Quota</td><td>The shipped storage mechanism enforces byte ceilings on installation data and temporary storage and accounts for metadata, browser storage, logs, staged releases and retained snapshots against aggregate host reserves. Standard writes may return partial progress or <code>ENOSPC</code> as Node documents. An SDK atomic operation leaves the prior file intact.</td><td>Exact-boundary, over-boundary, sparse-file, compression, concurrent reservation, and host-disk reserve drills on macOS and Linux in Phase 1 and Windows in Phase 2.</td></tr>
+                <tr><td>External access</td><td>A terminal shows the system picker and returns an opaque, revocable grant. The kernel brokers operations against that grant; the App worker does not gain a general host path.</td><td>Revoke handles, rename targets, restart clients and attempt access from another installation.</td></tr>
+                <tr><td>Snapshot and backup</td><td>Checkpoint and fence writers for an application-consistent snapshot, or explicitly label it crash-consistent. Keep package, mutable data, and non-rollbackable delivery receipts separate.</td><td>Snapshot a busy installation and restore it in an isolated test fixture, verifying tool, UI and schedule state. User-facing App-set copying remains Phase 2.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="callout warn">
+            <h3>Phase 1 security ceiling</h3>
+            <p>App code cannot inspect other processes, inherit ambient descriptors, access unrelated host paths outside its package, data, temporary roots and documented read-only runtime-support allowlist, or obtain unrestricted network access. Node permission mode mirrors these denials for clear errors, while the OS sandbox enforces them against malicious code.</p>
+          </div>
+
+          <h3 style="margin-top:30px">Node compatibility in Phase 1</h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Node feature</th><th>Phase 1 status</th><th>Practical effect</th></tr></thead>
+              <tbody>
+                <tr><td>ES modules, CommonJS, <code>package.json</code>, and pure-JavaScript npm packages</td><td>Supported within the tested API subset</td><td>Document and test resolution, package assets, dynamic require, worker threads and transports against the packaged graph. Pure JavaScript alone does not imply compatibility; server frameworks require adaptation to the App backend/view contract.</td></tr>
+                <tr><td>Timers, Buffer, URL, crypto, streams, and portable WebAssembly without WASI</td><td>Supported</td><td>Runs inside the App worker under the installation's CPU and memory limits.</td></tr>
+                <tr><td><code>node:fs</code></td><td>Supported inside private roots</td><td>Package is read-only. Data and temporary roots are writable. Unrelated host paths are denied; trusted runtime support files have a narrow read-only allowlist.</td></tr>
+                <tr><td>Global <code>fetch</code> and <code>chariox.http</code></td><td>Supported through the broker</td><td>HTTP and HTTPS requests obey declared destinations, redirect rules, DNS checks, and opaque connection credentials.</td></tr>
+                <tr><td><code>node:http</code>, <code>node:https</code>, and packages with a custom transport</td><td>Adapter may be required</td><td>They work only when routed through the Chariox HTTP broker. Publish common tested adapters. Imported Undici, custom dispatchers, HTTP/2 and WebSocket do not inherit global fetch replacement automatically. The release contract explicitly lists supported transports.</td></tr>
+                <tr><td><code>node:net</code>, <code>node:dgram</code>, inbound servers, direct database drivers, SSH, and SMTP</td><td>Unavailable directly</td><td>The App uses a service HTTP API or a future protocol-specific broker. It cannot listen on a port or open arbitrary TCP or UDP connections.</td></tr>
+                <tr><td>Native <code>.node</code> add-ons such as <code>sharp</code> or <code>better-sqlite3</code></td><td>Deferred candidate</td><td>They need platform/architecture artifacts, declared Node-API level or legacy native ABI checks as applicable, dynamic-library policy, review and sandbox tests. This is a candidate beyond the committed scope, not a Phase 2 release requirement.</td></tr>
+                <tr><td><code>child_process</code> and packaged executables such as <code>ffmpeg</code> or <code>git</code></td><td>Deferred candidate when declared</td><td>The App supervisor must launch a reviewed packaged executable inside the installation sandbox. Shells and arbitrary host executables remain prohibited.</td></tr>
+                <tr><td>FFI, unrestricted WASI, runtime package install, and npm lifecycle scripts during installation</td><td>Unavailable</td><td>Build scripts may run before packing. Installed Apps do not run npm lifecycle hooks or install dependencies. Allowed HTTP can return executable text, and ordinary JavaScript can interpret it; immutable packages do not prove reviewed-code-only execution. The OS boundary contains all executed code.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="callout good">
+            <h3>Why this matches Chromium</h3>
+            <p>Chromium does not give web content native add-ons, FFI, process spawning, install hooks, raw sockets, or arbitrary files. Renderers send approved requests to browser-controlled services. Chariox follows that model for the App backend, then deliberately adds standard Node file access inside the installation's private roots and background tool and event handlers.</p>
+          </div>
+        </section>
+
+        <section class="section" id="ui">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker">Write once</p>
+              <h2>App views on every client</h2>
+            </div>
+          </div>
+
+          <p class="section-intro">Each App ships one responsive web UI. The Room's kernel-managed Chromium executes it once as an App Tab. Every terminal embeds or opens a viewer for that exact Tab, so a person and an agent act on the same DOM, browser profile, authentication state, and <code>tab_id</code>.</p>
+
+          <div class="callout good">
+            <h3>Execution stays in the Environment</h3>
+            <p>Chromium supplies the App view's renderer sandbox. Chariox assigns an installation-scoped origin, partitions browser storage, applies CSP and navigation policy, authenticates the App bridge, and owns Tab lifecycle and permissions. A terminal surface only presents the authenticated projection and returns attributed input. Its iframe, browser tab, desktop shell, or mobile viewer does not execute the App package or become an App security authority.</p>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Client</th><th>Host</th><th>Isolation</th><th>Required interaction</th></tr></thead>
+              <tbody>
+                <tr><td>Web</td><td>Environment viewer embedded in an iframe and focused on the App Tab.</td><td>Scoped viewer session bound to user, Room, Environment, installation, Tab, and expiry. The iframe receives rendered output and sends attributed input. It does not execute a second App view.</td><td>Embedded App area, standalone viewer, responsive layouts, human takeover, reconnect, and explicit Tab close.</td></tr>
+                <tr><td>Local TUI</td><td>Viewer URL opened in the user's default browser.</td><td>Short-lived local viewer session bound to the App Tab. The default browser presents the stream and forwards attributed input; it does not own the App origin, DOM, profile, or <code>tab_id</code>.</td><td><code>/app open</code> asks the kernel to create or focus the managed App Tab, then opens or focuses its viewer. Closing the default-browser tab only detaches that viewer.</td></tr>
+                <tr><td>Remote TUI</td><td>The same viewer opened in the user's default browser through the encrypted relay path.</td><td>Scoped relay and viewer sessions. The remote browser receives no package URL, App credential, host path, or separate browser authority.</td><td>Same App Tab, SDK behavior, actor state, and reconnect behavior as Web and local TUI.</td></tr>
+                <tr><td>macOS, Windows, and Linux clients</td><td>Embedded Environment viewer supplied by the native client.</td><td>The client holds a scoped viewer session. The App origin, DOM, and browser profile remain in managed Chromium.</td><td>Keyboard, pointer, high DPI, file picker, clipboard, links, accessibility, reconnect, and human takeover.</td></tr>
+                <tr><td>iOS and Android</td><td>Embedded Environment viewer supplied by the mobile client.</td><td>The mobile WebView or native viewer presents the stream only. App execution remains in the Environment attached to the Room's kernel.</td><td>Touch, keyboard resize, safe areas, file picker, links, accessibility, reconnect, and human takeover.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3 style="margin-top:30px">App view identity, state and accessibility</h3>
+          <p>The Browser Controller assigns a unique installation site/origin and a dedicated browser storage partition scoped to kernel, Room and installation, with no shared parent-cookie scope. Its persisted browser context is registered in the same Room Tab registry. URL paths alone are not isolation. Browser storage, worker lifecycle and cache generations have explicit quota, backup, restore and uninstall policies. Environment save/restore preserves browser authentication state; App durable shared business data belongs in the backend. App UI caches must be recoverable after invalidation, and a package update cannot run old cached code against a new backend generation.</p>
+          <p>The shared viewer transports accessibility roles, names, values, focus, live updates and authorized actions as well as rendered output. Each terminal maps that projection into its local accessibility interfaces without executing a second App bundle. Verify actual terminal screen readers, IME composition, selection, keyboard resize and clipboard round trips. Phase 1 includes the browser viewer's implementation; Phase 2 adds native mappings. Agent and human actions remain bound to the same Tab, document and viewport revisions.</p>
+          <p>Constrain App-origin requests at the browser-controlled network boundary as well as through CSP. Cover workers, frames, redirects, navigation, popups, WebRTC and downloads. An App view cannot bypass installation destination or credential policy by performing the same request outside its backend. Approved external links and authentication flows open through a typed kernel request with scoped return state.</p>
+
+          <h3 style="margin-top:30px">UI SDK contract</h3>
+          <ul>
+            <li>No required React package, CSS, typography, spacing, colors or component appearance.</li>
+            <li>Apps may use plain HTML, React, Vue, Svelte, Lit or any build tool that emits static browser assets.</li>
+            <li>The managed App origin uses a strict CSP. It cannot read Chariox pages, viewer pages, another installation, or arbitrary network destinations. Service calls go through the authenticated App bridge to the sandboxed backend.</li>
+            <li>Browser storage is partitioned by App installation. Cookies, IndexedDB, Cache Storage, and service workers cannot cross into Chariox, another App installation, or a terminal viewer origin.</li>
+            <li>The App Tab uses the Environment's canonical viewport. The authorized input owner requests viewport changes through the kernel with revision checks. Other viewers scale or letterbox that layout. Ownership transfer defines resize behavior; scaling alone does not create a mobile layout.</li>
+            <li>Viewer clients integrate platform presentation, input, accessibility, file pickers, clipboard, downloads, and external links. Each privileged operation is a typed request checked against the authenticated context and capability. Human validation is a separate trusted kernel interaction; App JavaScript cannot assert a human gesture or approve its own action.</li>
+            <li>The bridge provides lifecycle events and typed capability calls. It never exposes raw kernel IPC, relay credentials, Chariox DOM or conversation content.</li>
+            <li>The development viewer changes the canonical test viewport through the kernel and simulates suspend, reconnect, permission denial, slow bridge calls, and host-version mismatch.</li>
+          </ul>
+        </section>
+
+        <section class="section" id="app-kernel">
+          <div class="section-head"><div><p class="section-kicker">Core App experience</p><h2>The App presents the user's work with Chariox</h2></div></div>
+          <p class="section-intro">An App gives humans another presentation of their kernel-owned work. Users bring their focus agent, conversation and automations into the App. The kernel supplies generic execution, permission, state and delivery mechanisms; App functions supply all App-specific meaning. There is one Chariox prompt area, addressing the zero-or-one focus agent, regardless of which App is foregrounded.</p>
+
+          <h3>One binding mechanism, existing permission modes</h3>
+          <p>The user can bind an installed App explicitly, opening it in the foreground can bind it to the focus agent, and an agent can request the same binding through the existing MCP/extension self-grant path extended to Apps. These are three entry points to one kernel mechanism. The user does not configure separate interactive, tool-selection, automation and service permission systems. Workflows retain the bindings they need for unattended execution.</p>
+          <p>Use the current effective agent/session permission mode. YOLO allows routine self-grants and operations within the user's existing authority; Ask uses the existing kernel permission interaction when approval is required. An explicit foreground user action is binding intent, so do not ask a redundant binding question when existing policy already authorizes it. An App cannot foreground itself to mint authority. Installation sandbox limits and mandatory human validation remain enforced under YOLO. A possible Sandbox YOLO mode would be one additional global policy, not an App-specific permission matrix; it is not required for Phase 1.</p>
+          <p>At request submission, capture the focus agent, App installation, Room, task/turn and active generation. Focus changes do not redirect an accepted operation. With no focus agent, use normal Chariox agent selection/creation. Closing a view does not cancel work or strip bindings needed by an in-flight task. Explicit revocation is respected and must not trigger an automatic regrant loop. Catalog changes follow existing provider-adapter refresh semantics while preserving the agent's conversation; pending refresh is visible rather than silently claiming tools are ready.</p>
+
+          <h3>One private conversation panel</h3>
+          <p>The trusted Chariox terminal renders the normal human-facing conversation/progress panel in a fixed terminal-owned region beside the App view; the App view receives the remaining viewport. Phase 1 starts with this fixed region; App-chosen placement may be revisited if it proves too rigid. This is the only conversation integration. There is no transcript API, App-rendered message subscription or App-configurable workflow-style message-level system. The sole prompt area remains in Chariox terminal chrome; the App does not create its own chat or provider session.</p>
+          <p>Because the App view runs in remote managed Chromium, the terminal renders this panel outside App-controlled DOM, canvas, browser storage and the App's display stream. The App receives only its own viewport size, not message text, selection, accessible text or conversation-dependent measurements. Input and accessibility for this region belong to the trusted terminal. App CSS, scripts, nested frames, screenshot/export calls and browser observations cannot read the panel or route its input to the App. The panel uses kernel history and authorization directly, and the same isolation applies to Web, TUI browser viewers and Phase 2 native terminals.</p>
+          <p>The panel follows the normal Chariox focus-agent conversation and history navigation through trusted terminal controls. Switching agents uses their existing distinct histories rather than merging them into an App-owned conversation. It reconnects from kernel-owned durable history. Showing the conversation next to the App does not grant the App access to it. The App sees its own kernel-routed function calls/results and ordinary App state changes, not the surrounding conversation.</p>
+
+          <h3>Functions are sufficient for App semantics</h3>
+          <p>Use ordinary declared functions such as <code>app.linear.list_issues</code>, <code>get_selected_issues</code>, <code>create_project</code>, <code>get_task_state</code> or <code>validate_project</code>. The kernel does not need a universal issue/project/object taxonomy or an App-specific semantic checker. Current selection is App data accessible through an ordinary function. Task templates and resume state may be returned by functions too.</p>
+          <p>The additional generic contracts are limited to what ordinary data functions cannot establish themselves: the trusted conversation panel and policy-controlled bindings. The kernel does not interpret App business meaning.</p>
+
+          <h3>Workflows and agents are user-owned assets (Phase 2)</h3>
+          <div class="callout warn"><p><strong>Phase 2, to revisit:</strong> postponed from Phase 1 on 2026-09-24. Re-examine whether this contract is still needed and in what form before implementing it.</p></div>
+          <p>Apps may request typed kernel operations to select, inspect, create or modify workflows and agents under the same existing permission policy. A grouped grant or existing YOLO authority can cover routine operations within a bounded scope. Ask mode uses normal kernel interactions. Critical effects use the previously defined human-validation contract. There is no blanket raw-kernel access, per-service permission dashboard or second App-owned scheduler.</p>
+          <p>Created assets are normal visible Chariox assets owned by the user, editable outside the App. The kernel enforces generic ownership, schema, execution policy and resource bounds; it does not decide how a Linear project should be organized. Activation is explicit in the authorized request. Later automatic execution still uses workflow triggers. App removal disables broken dependencies and reports them without silently deleting the user's workflows or agents.</p>
+
+          <h3>Start with one agent, resume with another (Phase 2)</h3>
+          <div class="callout warn"><p><strong>Phase 2, to revisit:</strong> postponed from Phase 1 on 2026-09-24. Re-examine whether this contract is still needed and in what form before implementing it.</p></div>
+          <p>An App stores domain task state through its own functions. A second user-selected or policy-authorized agent can read that App state and continue through the same functions. The kernel correlates an opaque App task reference with existing agent, turn and operation IDs, handles delivery and ownership, and preserves attribution. This is a generic correlation record, not a new App-specific task engine. It does not synthesize a semantic handoff from private conversation history or take responsibility for App-specific completion checks. Changing agents never changes the one-prompt-area rule.</p>
+
+          <h3>Phase 1 acceptance experience</h3>
+          <p>In Todo or a developer project-work fixture, foreground the App and submit a task through the single prompt area. Automatic binding makes its functions available under the existing policy. Show the work in the private conversation panel. Verify that closing/reopening the App view preserves kernel history while App code still cannot read the conversation.</p>
+
+          <h3>Cross-App coordination belongs to Phase 2</h3>
+          <p>Phase 2 adds tracked tasks spanning multiple Apps, such as issue to code change to document to calendar event. Reuse bindings, normal App functions, kernel task correlation and workflow execution. Possession of data in one App is not consent to send it to another. Keep transfer provenance, recipient consent, cancellation, partial outcomes and retry semantics explicit. Phase 1 delivers the single-App mechanisms this depends on; it does not claim the coordinated cross-App experience is complete.</p>
+        </section>
+
+        <section class="section" id="workflows">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker">Clear authority</p>
+              <h2>Apps, agents, Freeform and workflows</h2>
+            </div>
+          </div>
+
+          <div class="grid">
+            <article class="card wide">
+              <h3>Bind an App or Extension</h3>
+              <p>The user may bind an installed App in agent configuration. Foreground App activation can bind it to the focus agent automatically, and an agent can request the same binding through the existing self-grant mechanism. The kernel applies the effective permission mode and projects actual catalog readiness. No separate user-facing access categories or workflow are created.</p>
+            </article>
+            <article class="card wide">
+              <h3>Add a trigger from Freeform</h3>
+              <p>Chariox creates a visible one-node workflow using the current agent configuration, adds origin metadata, opens trigger configuration and completes it. HTTP, schedule and notification are the available trigger classes.</p>
+            </article>
+            <article class="card wide">
+              <h3>Deploy from Freeform</h3>
+              <p>Chariox creates the visible one-node workflow and immediately runs the complete deployment walkthrough. The user does not have to find or click the generated workflow first.</p>
+            </article>
+            <article class="card wide">
+              <h3>Create automation from an App</h3>
+              <p>The system workflow configurator asks for provider account, model, effort, instructions, permissions, slice, project, workspace, worktree, Apps and Extensions. It creates or selects one workflow endpoint and returns an opaque automation ID to the App.</p>
+            </article>
+          </div>
+
+          <h3 style="margin-top:30px">Generated workflow metadata</h3>
+          <pre><code>{
+  "origin": {
+    "kind": "freeform_agent",
+    "agentId": "agent-1",
+    "reason": "trigger" | "deployment" | "app_automation",
+    "appInstallationId": null,
+    "createdFromSurface": "web" | "tui"
+  }
+}</code></pre>
+          <p>The alias remains a normal editable workflow alias. The workflow appears in Workflows, publication and deployment views. System-generated workflows may be collapsed behind a "Show generated workflows" control, but they are never inaccessible or semantically hidden.</p>
+
+          <h3 style="margin-top:30px">Automation lifecycle</h3>
+          <ul>
+            <li>One automation resolves to one workflow endpoint and queue. Enabling its notification integration opens the App and keeps it open while waiting for events, without requiring a visible App view.</li>
+            <li>The App emits the opaque automation ID and its own stable occurrence ID.</li>
+            <li>Deleting or changing the workflow does not let the App choose a replacement. The kernel marks the automation broken and reports it to the App and user.</li>
+            <li>Deleting an App disables its automations but does not delete workflows.</li>
+            <li>Deleting an agent follows existing workflow lifecycle rules. Chariox warns about generated workflows that remain triggered or deployed.</li>
+            <li>A Todo App reuses one configured workflow for many Todo occurrences. It never creates one workflow per Todo.</li>
+          </ul>
+        </section>
+
+        <section class="section" id="phase-1">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker">Build the operating system functions</p>
+              <h2>Phase 1</h2>
+            </div>
+            <span class="phase-tag" data-phase="1">Local and first-party development</span>
+          </div>
+          <p class="section-intro">Phase 1 ships the complete local App platform with built-in and locally developed Apps. All architecture, package/update lifecycle, sandbox, human validation and released-terminal requirements must be implemented, verified and validated before its release.</p>
+
+          <div class="callout good">
+            <h3>Phase 1 ships a new version</h3>
+            <p>Finish and verify every Phase 1 feature and every required Phase 1 matrix cell on the release candidate before publishing this version. macOS and Linux are kernel targets; Web, local TUI viewer and remote TUI viewer are terminal targets. Native desktop/mobile terminals and Windows kernels belong to Phase 2. The release ledger identifies exact revisions, artifacts, protocol/SDK/runtime versions, platforms and evidence. A Phase 2 roadmap item cannot substitute for a missing Phase 1 requirement.</p>
+          </div>
+
+          <article class="workstream">
+            <div class="workstream-id">P1.01</div>
+            <div><h3>Protocol and persistent model</h3><p>Define App, release, installation, existing-policy binding, automation, event inbox, file metadata, active release, migration state, worker health and App-set records. Add protocol shapes for CLI, TUI, web and remote clients with the required version bump and snapshots.</p><p class="exit">Exit: local and remote clients can inspect identical installation, binding, event and worker state through one protocol.</p></div>
+          </article>
+          <article class="workstream">
+            <div class="workstream-id">P1.02</div>
+            <div><h3>Package and local installer</h3><p>Implement deterministic signed <code>.cxapp</code> packages with a bundled JavaScript backend, developer identity, file associations, staging, activation, uninstall and stable error codes.</p><p class="exit">Exit: a package downloaded or built locally reaches a fully active installation on supported macOS/Linux targets without installation-time compilation, manual file placement or kernel restart.</p></div>
+          </article>
+          <article class="workstream">
+            <div class="workstream-id">P1.03</div>
+            <div><h3>macOS and Linux App supervisor and worker</h3><p>Build the trusted App supervisor and a separate signed App worker with pinned embedded Node. Launch one sandboxed worker per open installation under the App lifecycle contract, including agent-only use and on-demand starts for inbound events and due wakes without a view. Stop idle workers; recover enabled integrations and registered wakes after restart. Implement Seatbelt policy on macOS and namespaces, seccomp, and cgroups on Linux. Add bounded IPC, heartbeat, cancellation, CPU, memory, process and handle limits, log limits, restart policy, quarantine, and clean shutdown.</p><p class="exit">Exit: the same malicious package and conformance suite passes on signed macOS and production Linux builds. Every valid Phase 1 App starts on both without platform-specific App code.</p></div>
+          </article>
+          <article class="workstream">
+            <div class="workstream-id">P1.04</div>
+            <div><h3>Node SDK, private filesystem, and network broker</h3><p>Ship versioned SDK modules for lifecycle, tools, events, state, approved HTTP, logs, and host capabilities. Allow standard <code>node:fs</code> inside package, data, and temporary directories. Add structured-state transactions, single-file atomic replacement, enforced quotas, external file grants, generation-safe snapshots, and a fetch-compatible broker for approved service destinations and opaque credentials.</p><p class="exit">Exit: representative Node API integrations use unchanged ordinary private file I/O and global fetch where supported, with explicit adapters and measured source changes for other transports, and escape tests cannot reach another host path, process, or network destination.</p></div>
+          </article>
+          <article class="workstream">
+            <div class="workstream-id">P1.05</div>
+            <div><h3>Single runtime MCP integration</h3><p>Compile bound App tool declarations into each agent's Chariox runtime MCP catalog. Namespace tools by App ID or stable short name, route calls over internal IPC and enforce operation policy, authenticated caller context, schema, deadline, cancellation and any required human-validation receipt. Bindings control catalog selection, not a separate class of agent authority.</p><p class="exit">Exit: two agents with different bindings see their configured catalogs while both may operate an accessible App view. The same operation has the same validation requirement through every route. No App requires a separate MCP server.</p></div>
+          </article>
+          <article class="workstream">
+            <div class="workstream-id">P1.06</div>
+            <div><h3>Durable App events and notification migration</h3><p>Insert the App inbox between existing AEDS and AEGS delivery and workflow queues. Add local App emission, automation resolution, occurrence dedupe, replay, broken target state and App acknowledgement without holding kernel request handlers.</p><p class="exit">Exit: external Slack events and local Todo timers use the same App-to-workflow event module and existing workflow trigger queue.</p></div>
+          </article>
+          <article class="workstream">
+            <div class="workstream-id">P1.07</div>
+            <div><h3>Managed Chromium App Tabs and viewer</h3><p>Serve the backend-provided view through kernel-owned installation routes: immutable release code/assets plus approved dynamic content and responses. Bind App Tab SDK messages to the correct backend. Web and local/remote TUI viewers project the same managed Tab; native viewers remain Phase 2. Add responsive preview tooling and campaign refresh/offline behavior.</p><p class="exit">Exit: one UI execution is visible and operable from Web and local and remote TUI; user and agent actions share tab_id, DOM and profile, while content refresh preserves drafts and existing network/bridge restrictions.</p></div>
+          </article>
+          <article class="workstream">
+            <div class="workstream-id">P1.08</div>
+            <div><h3>CLI, TUI, and local development</h3><p>Implement <code>chariox app create</code>, <code>dev</code>, <code>build</code>, <code>validate</code>, <code>pack</code>, <code>install</code>, <code>list</code>, <code>open</code>, <code>status</code>, <code>logs</code>, <code>restart</code>, and <code>uninstall</code>. Mirror every operation as <code>/app ...</code>. <code>/app open</code> opens the managed App Tab projection in the default browser. Add watch-mode reload while preserving test data when requested.</p><p class="exit">Exit: a developer can create, run, inspect, package, and reinstall a familiar Node App without editing JSON by hand or writing platform-specific sandbox code.</p></div>
+          </article>
+          <article class="workstream">
+            <div class="workstream-id">P1.09</div>
+            <div><h3>Freeform and workflow integration</h3><p>Add installed-App and Extension selectors to agent configuration. Add direct Trigger and Deploy actions to Freeform. Create visible one-node workflows only for those workflow capabilities and attach origin metadata.</p><p class="exit">Exit: App binding creates no workflow, while Trigger and Deploy finish in one guided action and produce ordinary inspectable workflows.</p></div>
+          </article>
+          <article class="workstream">
+            <div class="workstream-id">P1.10</div>
+            <div><h3>Local replacement, migrations and recovery</h3><p>Implement the joint App-release contract, staged local package replacement, data snapshots, restricted migrations, atomic activation, rollback, crash recovery, view reconnection and queued-event recovery. Keep backend/view artifact identities explicit. Automatic update discovery and distribution belong to Phase 2.</p><p class="exit">Exit: forced failure at each local replacement checkpoint preserves a usable generation and all accepted writes/occurrence identities; a new view never silently runs against an incompatible backend.</p></div>
+          </article>
+          <article class="workstream">
+            <div class="workstream-id">P1.11</div>
+            <div><h3>Slack App</h3><p>Use Slack as the third-party App proof for the new contract. Implement notification configuration, event handling, replies and service actions entirely through the generic package, SDK, connection and event paths. Keep the existing contract working until the replacement is verified; then migrate identities and remove the privileged Slack path.</p><p class="exit">Exit: a clean install and an upgrade from the old Slack path pass equivalent live behavior and failure recovery. Only after that evidence passes, delete old Slack-specific execution and configuration code. The final release has one generic App path and no permanent Slack exception.</p></div>
+          </article>
+          <article class="workstream">
+            <div class="workstream-id">P1.12</div>
+            <div><h3>Todo App</h3><p>Build local Todo storage and UI, agent tools for reading and editing Todos, reminders through kernel-owned wakes, overdue recovery after restart, and one reusable App automation to a configured workflow.</p><p class="exit">Exit: a Todo created by a person or agent appears on every open view and records one durable enqueue per due occurrence within the running-kernel lateness budget and recovers overdue work after sleep or restart.</p></div>
+          </article>
+          <article class="workstream">
+            <div class="workstream-id">P1.13</div>
+            <div><h3>Markdown and HTML Documents App</h3><p>Build managed document storage, folders, preview, HTML isolation, editing, import and export, plus agent tools for listing, reading, creating and updating planning documents.</p><p class="exit">Exit: the App proves managed files, concurrent human and agent edits, responsive UI, safe HTML preview and external file grants.</p></div>
+          </article>
+          <article class="workstream">
+            <div class="workstream-id">P1.14</div>
+            <div><h3>Sandboxed Chromium and authenticated-state persistence</h3><p>Fix production and fallback browser launch containment and the reported save/restore login regression. Integrate the shared Environment viewer, storage partitions, semantic accessibility and canonical viewport ownership required by App views.</p><p class="exit">Exit: renderer isolation remains active through save/restore and recovery; deterministic authenticated state and the live Google regression are verified on local and managed environments. The released viewer passes terminal accessibility and concurrent viewport/input tests.</p></div>
+          </article>
+          <article class="workstream">
+            <div class="workstream-id">P1.15</div>
+            <div><h3>Kernel-owned human validation</h3><p>Implement declared critical actions, durable pending operations, trusted terminal confirmation, single-use parameter-bound receipts and enforcement at the actual effect boundary. Extend existing RuntimeInteraction and protocol contracts.</p><p class="exit">Exit: the same action initiated by UI, MCP or background code pauses consistently. Only an authorized human can approve the exact effect; changed parameters, agent replies, stale generations, replay and unchecked effect routes cannot execute it.</p></div>
+          </article>
+          <article class="workstream">
+            <div class="workstream-id">P1.16</div>
+            <div><h3>Foreground bindings and existing authority</h3><p>Extend the existing extension self-grant and effective permission resolver to Apps. Explicit user selection, foreground activation and agent requests establish the same binding. Capture focus/task context on submission and use existing provider catalog-refresh paths.</p><p class="exit">Exit: foreground an installed App and use it through the current focus agent without a manual configuration detour. YOLO/Ask, no focus, provider refresh, focus changes, revocation and unattended workflow bindings behave consistently.</p></div>
+          </article>
+          <article class="workstream">
+            <div class="workstream-id">P1.17</div>
+            <div><h3>Private conversation panel beside App views</h3><p>Render the kernel-owned human conversation panel in a fixed trusted terminal region beside the App view, outside App content and browser observations. Reuse durable history, focus/task selection, accessibility and the single prompt area.</p><p class="exit">Exit: Web and local/remote TUI viewers show the same conversation to the user while hostile App code cannot obtain it through DOM, stream capture, accessibility, storage or SDK requests.</p></div>
+          </article>
+          <article class="workstream">
+            <div class="workstream-id">P1.18</div>
+            <div><h3>Managed kernel App provisioning (deferred within Phase 1)</h3><p>Deferred until P1.01–P1.17 are complete and the Path-1 managed-home topology is finished, but still part of the Phase 1 release. Extend App worker, storage and cgroup provisioning from the shared-host managed image to every managed kernel topology, including Path-1, through the same signed release, one-time privileged installer step and verifier contract.</p><p class="exit">Exit: an App installs and runs on each supported managed kernel topology with the same containment, storage quota and lifecycle evidence as a local Linux kernel.</p></div>
+          </article>
+        </section>
+
+        <section class="section" id="implementation-order">
+          <div class="section-head"><div><p class="section-kicker">Resolve dependencies early</p><h2>Implementation order and maintenance</h2></div></div>
+          <ol>
+            <li>Specify installation generations, operation and human-validation contracts, transactional state/outbox behavior, and event/credential migration using existing kernel services and versioned protocols.</li>
+            <li>Deliver the macOS/Linux launcher and resource mechanisms, sandbox-enabled Chromium with session persistence, and tested HTTP transports as production components. Pin a maintained Node LTS and Chromium build; name patch owners and maximum supported version age.</li>
+            <li>Complete Todo through install, UI, MCP, persisted schedules, validation, events, update and recovery. Run an API/streaming fixture alongside it, then Slack migration and Documents storage/hostile-content acceptance. Publish actual package adapters and source changes required by representative Node integrations.</li>
+            <li>Finish the developer commands and all Phase 1 validation, publish the Phase 1 release, then build Phase 2 against those proven contracts. Runtime/security updates rerun the relevant compatibility and containment corpus.</li>
+          </ol>
+          <p>General multi-file filesystem transactions and native add-ons/helpers are deferred candidates, not requirements for either committed release. Standard browser transactional storage remains available through IndexedDB, and backend structured transactions through chariox.state. See the <a href="https://www.w3.org/TR/IndexedDB/">IndexedDB specification</a> and <a href="https://www.w3.org/TR/webauthn-3/">WebAuthn specification</a> for the browser contracts used here.</p>
+        </section>
+
+        <section class="section" id="phase-1-validation">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker">No demo exceptions</p>
+              <h2>Phase 1 verification and validation</h2>
+            </div>
+            <span class="phase-tag" data-phase="1">Required before Phase 1 release</span>
+          </div>
+
+          <div class="callout good">
+            <h3>Evidence rule</h3>
+            <p>Every row below needs an automated test, an end-to-end drill, or both. Hosted and visual claims need dated evidence under <code>/Users/miguel/.codex/evidence/chariox-apps/&lt;release&gt;/</code>. Screenshots must show the relevant state, not merely that the page loaded.</p>
+          </div>
+
+
+          <h3>Phase 1 terminal verification matrix</h3>
+          <p>Every required cell belongs to the first shipped release. A TUI presents App views through the authenticated browser projection; human confirmations open a separate trusted terminal page outside the agent-operated Environment. Native desktop/mobile terminals and Windows kernels are not part of this release. Core state tests run per implementation; protocol tests cover local and relayed transport; viewer behavior is verified on each released terminal. Pairwise topology coverage supplements complete reference-App flows without multiplying every unit test across every terminal.</p>
+<div class="table-wrap"><table><thead><tr><th>Feature</th><th>Web terminal</th><th>Local TUI</th><th>Remote TUI</th></tr></thead><tbody>
+<tr><td>Install, inspect, update, restart and uninstall</td><td>Required</td><td>Required</td><td>Required</td></tr>
+<tr><td>Local developer .cxapp package installation</td><td>Required</td><td>Required</td><td>Required</td></tr>
+<tr><td>Shared App Tab, reconnect and human takeover</td><td>Required</td><td>Required</td><td>Required</td></tr>
+<tr><td>Tool discovery and medium-independent operation policy</td><td>Required</td><td>Required</td><td>Required</td></tr>
+<tr><td>Critical-action validation through trusted terminal confirmation</td><td>Required</td><td>Required</td><td>Required</td></tr>
+<tr><td>Events, automation health and workflow configuration</td><td>Required</td><td>Required</td><td>Required</td></tr>
+<tr><td>File picker, import/export, clipboard and links</td><td>Required</td><td>Required via viewer</td><td>Required via viewer</td></tr>
+<tr><td>Canonical viewport, text input and accessibility</td><td>Required</td><td>Required in browser viewer</td><td>Required in browser viewer</td></tr>
+<tr><td>Logs, denied operations and crash recovery</td><td>Required</td><td>Required</td><td>Required</td></tr>
+<tr><td>Foreground/self-grant binding with existing permission modes</td><td>Required</td><td>Required</td><td>Required</td></tr>
+<tr><td>Private conversation panel and single prompt area</td><td>Required</td><td>Required</td><td>Required</td></tr>
+<tr><td>Slack replacement, Todo and Documents acceptance</td><td>Required</td><td>Required</td><td>Required</td></tr>
+</tbody></table></div>
+          <h3>Phase 1 kernel and Environment matrix</h3>
+          <p>Kernel OS and terminal platform are separate axes. Record the actual Environment host and browser topology for each kernel, including nested containers. Every supported topology must pass its sandbox and persistence gates.</p>
+<div class="table-wrap"><table><thead><tr><th>Subsystem</th><th>macOS kernel</th><th>Linux kernel</th></tr></thead><tbody>
+<tr><td>Installer provisions sandbox and resource facilities</td><td>Signed/notarized release artifact</td><td>Production installer with one-time privileged provisioning and delegated resources</td></tr>
+<tr><td>App worker containment and native probe</td><td>Required</td><td>Required</td></tr>
+<tr><td>Private filesystem quota, snapshot and update recovery</td><td>Required</td><td>Required</td></tr>
+<tr><td>Supported Node transports and critical-effect enforcement</td><td>Required</td><td>Required</td></tr>
+<tr><td>Managed Chromium sandbox and profile persistence</td><td>Actual supported Environment topology</td><td>Local and managed container topology</td></tr>
+<tr><td>Offline, sleep/reboot, multiple Rooms/kernels and aggregate pressure</td><td>Required</td><td>Required</td></tr>
+</tbody></table></div>
+          <h3>Phase 1 integration and adversarial verification</h3>
+          <p>These cases extend the package, runtime, SDK and UX tables below. Each row requires named assertions, expected outcomes, exact artifacts and reproducible evidence. "Required" is a release obligation, not a claim that a test has passed.</p>
+<div class="table-wrap"><table><thead><tr><th>ID</th><th>Boundary</th><th>Required cases</th><th>Acceptance evidence</th></tr></thead><tbody>
+<tr><td class="id">V1-INT-01</td><td>Chromium sandbox and login persistence</td><td>Verify primary/fallback/recovery launches and renderer sandbox state. Save authenticated fixture and Google session, destroy container and home volume, restore, and repeat. Diagnose profile/keyring/encryption state separately from provider reauthentication.</td><td>Production launch evidence, deterministic state assertions, redacted live service drill</td></tr>
+<tr><td class="id">V1-INT-02</td><td>Independent OS boundary</td><td>Native test probe uses the production launcher/policy independently of Node permissions. Files, sockets, signals, devices, inherited descriptors and runtime preloads remain confined. Deliberately weakened test policy is detected.</td><td>macOS/Linux artifact and policy digests; stable supervisor termination classification</td></tr>
+<tr><td class="id">V1-INT-03</td><td>Total and aggregate resources</td><td>Grow Buffer/native/WASM memory, thread pools, browser workers and caches; create many Apps and slow broker consumers. Enforce declared limits, total host reserves and bounded termination delay/overshoot.</td><td>Measured CPU, total memory, disk, queue and latency budgets on named hardware</td></tr>
+<tr><td class="id">V1-INT-04</td><td>Raw files and state transactions</td><td>Race node:fs against SDK operations. Confirm only the documented isolation. Kill and fence old writers, timers and open descriptors around checkpoint, snapshot and staged migration.</td><td>Fault-injection checkpoints and old/new generation data validation</td></tr>
+<tr><td class="id">V1-INT-05</td><td>Storage exhaustion</td><td>Exhaust quota and host reserves during import, log writes, browser cache growth, staging, snapshot and rollback. Account for retained snapshots and metadata.</td><td>No cross-installation exhaustion or loss of accepted state</td></tr>
+<tr><td class="id">V1-INT-06</td><td>Event crash windows</td><td>Kill after receipt, App mutation, outbox commit, emit, enqueue and before each acknowledgement. Replay accepted occurrences and expired/poison events.</td><td>One durable enqueue per scoped occurrence; visible terminal outcomes and bounded queues</td></tr>
+<tr><td class="id">V1-INT-07</td><td>Rollback dedupe and generations</td><td>Emit a reminder, update, fail or restore old App data, then replay it. Test stale worker/UI/MCP calls and service-worker caches after generation switch.</td><td>Dedupe receipts survive rollback; incompatible generations cannot operate</td></tr>
+<tr><td class="id">V1-INT-08</td><td>Ambiguous service effects</td><td>Remote mutation commits but response is lost; caller cancels or kernel restarts. Apply provider idempotency or reconciliation.</td><td>Unknown outcome is visible; no unsafe automatic replay</td></tr>
+<tr><td class="id">V1-INT-09</td><td>Equivalent human and agent operation</td><td>Perform the same operation through UI, MCP and background request where permitted. Change tool bindings. Agents can still operate the accessible view and all routes apply the same operation rules.</td><td>Attributed action evidence; no tool/view privilege split</td></tr>
+<tr><td class="id">V1-INT-10</td><td>Human validation lifecycle</td><td>Request critical action from every route. Approve, deny, expire, cancel, disconnect/reconnect and restart. Competing terminal replies settle once. Agent/synthetic replies cannot approve.</td><td>One durable RuntimeInteraction and operation state; execution waits for human decision</td></tr>
+<tr><td class="id">V1-INT-11</td><td>Approval parameter and effect binding</td><td>Change recipient, amount, account, payload, installation, release or connection; replay or concurrently consume receipts; attempt equivalent unvalidated broker calls.</td><td>Only the exact approved effect can execute; stale/changed/reused authority is denied</td></tr>
+<tr><td class="id">V1-INT-12</td><td>Capability-expanding update</td><td>Add network/file access or critical-action authority; accept and decline. Test pre-commit crash and post-commit recovery after new user writes.</td><td>Decline keeps old release; recovery preserves accepted work; no early capability use</td></tr>
+<tr><td class="id">V1-INT-13</td><td>App-origin escape</td><td>Attack cookies, IndexedDB, cache, nested frames, workers, popups, navigation, direct fetch, WebSocket, WebRTC and downloads across Apps/Rooms.</td><td>Browser-controlled origin and network policy holds; host loopback and metadata are not ambient authority</td></tr>
+<tr><td class="id">V1-INT-14</td><td>Concurrent viewer semantics</td><td>Attach two differently sized browser viewers including mobile-sized layout. Transfer canonical viewport ownership; type IME text, select, paste and use the actual terminal screen reader.</td><td>Same Tab/document/viewport revisions; accessible names, focus and live updates reach terminal</td></tr>
+<tr><td class="id">V1-INT-15</td><td>Transport conformance and SSRF</td><td>Test pinned service SDKs, Fetch and documented adapters, SSE, multipart, large streams, abort, compression expansion, DNS changes, mixed IPv4/IPv6, redirects, proxy settings and credential binding.</td><td>Measured source adaptations; bounded trusted-side memory and actual connected-address checks</td></tr>
+<tr><td class="id">V1-INT-16</td><td>Slack contract cutover</td><td>Clean install and upgrade old Slack connections/routes/actions. Lose callbacks and acknowledgements, replay old deliveries, preserve deliberate automation fan-out and fence old route generation.</td><td>Live third-party-style App parity before old code removal; final artifact has no privileged Slack fallback</td></tr>
+<tr><td class="id">V1-INT-17</td><td>Schedule correctness</td><td>Schedule beyond 25 days, jump wall clock, sleep/wake, change time zone/DST-sensitive rules, edit/delete Todo, and update across due time.</td><td>Persisted wake revision controls enqueue; overdue wakes recover within declared budget with the worker stopped beforehand</td></tr>
+<tr><td class="id">V1-INT-18</td><td>Rooms and kernels</td><td>Open one installation in two Rooms; exercise separate view partitions and shared backend data. Run two kernels with independent installations, grants and receipts.</td><td>Update/uninstall/backup isolation matches documented ownership; no credential or handle inheritance</td></tr>
+<tr><td class="id">V1-INT-19</td><td>Package and review independence</td><td>Attempt fetched-text evaluation, imports from private data, hidden hooks, modified packages, case/Unicode collisions, malicious Documents HTML and parser/IPC fuzz cases.</td><td>Code remains contained regardless of review; exact signed bytes and extraction rules are verified</td></tr>
+<tr><td class="id">V1-INT-20</td><td>Fresh installation and upgrade</td><td>Provision each supported OS topology through the normal Chariox installer (one privileged step on Linux), then operate as an ordinary user; migrate existing kernels and mixed supported clients, test protocol/SDK incompatibility, reboot and offline operation.</td><td>No hidden manual sandbox setup, no root prompt after Chariox installation, no Cloud requirement for local Apps, actionable version failures</td></tr>
+<tr><td class="id">V1-INT-21</td><td>Runtime lifecycle and throughput</td><td>Exercise 1 and many active Apps, headless backend without view startup, restart storms, network stalls and display saturation while agents/workflows run. Repeat relevant corpus for runtime security updates.</td><td>Declared startup/idle/event/input budgets; relay and kernel authority remain responsive</td></tr>
+<tr><td class="id">V1-INT-22</td><td>One binding and existing permissions</td><td>Explicit user binding, foreground activation and self-grant in YOLO/Ask. App tries to fake foreground intent; revoke and replay activation. Check provider reload readiness.</td><td>One effective binding path; no redundant prompts, auto-regrant loop or invented authority</td></tr>
+<tr><td class="id">V1-INT-23</td><td>Focus and single prompt area</td><td>Zero/one focus agent, change focus during calls, close/reopen App, and attach another terminal.</td><td>No retargeted accepted work; one terminal prompt area; no App-owned provider conversation</td></tr>
+<tr><td class="id">V1-INT-24</td><td>Private panel isolation</td><td>Show, hide and resize the fixed panel region. Attack DOM, canvas, screenshots, browser/AX observations, message bridges, clipboard and App backend APIs.</td><td>Only trusted terminal renders/reads panel content; App gets no transcript-dependent data</td></tr>
+<tr><td class="id">V1-INT-25</td><td>Panel accessibility and recovery</td><td>Use the real browser viewer screen reader, keyboard focus and selection. Disconnect and reconnect the panel while the App worker is hostile or stopped.</td><td>Human conversation remains usable from kernel history and is absent from App accessibility tree and stream</td></tr>
+<tr><td class="id">V1-INT-26</td><td>App-owned semantics</td><td>Use ordinary list/select/read/write functions; replace the App schema/domain without changing kernel implementation.</td><td>Kernel enforces generic envelopes and policy; domain logic executes only in sandboxed App code</td></tr>
+<tr><td class="id">V1-INT-27</td><td>Complete App work acceptance</td><td>Foreground reference App, prompt focus agent, invoke functions, display private conversation, create automation and reconnect.</td><td>All required Phase 1 terminal/kernel combinations pass the same task; cross-App coordination remains Phase 2</td></tr>
+</tbody></table></div>
+          <details open>
+            <summary>Package, install, update and migration validation</summary>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>ID</th><th>Case</th><th>Required result</th><th>Evidence</th></tr></thead>
+                <tbody>
+                  <tr><td class="id">V-PKG-01</td><td>Valid built-in and local developer packages</td><td>Same parser, verifier, staging and activation path. Package digest and active release match on CLI, TUI and web.</td><td>Contract tests plus local and managed-kernel drill.</td></tr>
+                  <tr><td class="id">V-PKG-02</td><td>Archive attacks</td><td>Reject traversal, absolute paths, duplicate normalized paths, symlinks, device files, excess depth, excess entries, oversized files and compression bombs before extraction.</td><td>Adversarial package corpus on macOS and Linux.</td></tr>
+                  <tr><td class="id">V-PKG-03</td><td>Manifest and protocol mismatch</td><td>Reject unknown required fields, invalid schemas, duplicate tool names, incompatible SDK or kernel protocol and undeclared entries with stable error codes.</td><td>Parser snapshots and client rendering tests.</td></tr>
+                  <tr><td class="id">V-PKG-04</td><td>Interrupted installation</td><td>Kill during download, verification, extraction, approval, health check and active switch. No partial active installation remains.</td><td>Checkpoint fault-injection suite.</td></tr>
+                  <tr><td class="id">V-PKG-05</td><td>Update success</td><td>Open views reconnect, tools change atomically, queued events pause and resume, and configuration and data remain.</td><td>End-to-end update across local TUI, remote TUI and web.</td></tr>
+                  <tr><td class="id">V-PKG-06</td><td>Update failure</td><td>Pre-commit migration, health, crash and power-loss failures restore the old generation. After commit, recovery preserves newly accepted writes and external-effect receipts.</td><td>Fault injection at every update checkpoint.</td></tr>
+                  <tr><td class="id">V-PKG-07</td><td>Concurrent operations</td><td>Install, update, uninstall and restart serialize per installation. Competing clients receive current operation state rather than starting duplicates.</td><td>Four-client concurrency test.</td></tr>
+                  <tr><td class="id">V-PKG-08</td><td>Uninstall and reinstall</td><td>Retain-data and delete-data choices work. Bindings and automations disable. Reinstall cannot inherit deleted permissions silently.</td><td>Lifecycle drill with all three reference Apps.</td></tr>
+<tr><td class="id">V-PKG-09</td><td>Live view content and joint release</td><td>Refresh a timed campaign in an open App and offline cache without changing installed code. Replace view code through a local joint release; test API mismatch, drafts, in-flight agent operations and stale bridge/cache requests.</td><td>Live content needs no binary update; executable changes retain signed release identity and safe activation.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </details>
+
+          <details open>
+            <summary>Supervisor, containment and resilience validation</summary>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>ID</th><th>Fault</th><th>Required result</th><th>Surfaces checked</th></tr></thead>
+                <tbody>
+                  <tr><td class="id">V-RUN-01</td><td>Infinite loop and CPU saturation</td><td>CPU ceiling applies, call deadline expires, App becomes unhealthy or quarantined, kernel latency and other App latency remain within budget.</td><td>Kernel health, local TUI, remote TUI, web terminal.</td></tr>
+                  <tr><td class="id">V-RUN-02</td><td>Memory growth</td><td>The declared platform resource policy contains or terminates the App within measured delay and overshoot bounds; total-memory pressure cannot invalidate the kernel and other Apps' release budgets. Durable event remains pending. Supervisor restarts within policy and exposes the cause.</td><td>macOS and Linux App worker tests in Phase 1; Windows repeats them in Phase 2.</td></tr>
+                  <tr><td class="id">V-RUN-03</td><td>Crash loop</td><td>Bounded exponential restart ends in quarantine. Manual restart requires an explicit action. Other Apps remain ready.</td><td>CLI, slash command and web status.</td></tr>
+                  <tr><td class="id">V-RUN-04</td><td>Malformed or oversized IPC</td><td>Frame is rejected, connection closes, worker is blamed, kernel memory remains bounded and no message reaches another installation.</td><td>IPC contract and fuzz tests.</td></tr>
+                  <tr><td class="id">V-RUN-05</td><td>Ignored cancellation or acknowledgement</td><td>Kernel returns timeout, preserves event state and never blocks its authority loop.</td><td>Tool call, external event, local event and lifecycle callback.</td></tr>
+                  <tr><td class="id">V-RUN-06</td><td>Kernel restart and machine reboot</td><td>Installations recover, registered wakes restore, overdue wakes deliver and occurrences dedupe, bindings return and views reconnect.</td><td>Local and managed machine drills.</td></tr>
+                  <tr><td class="id">V-RUN-07</td><td>Sandbox escape attempts</td><td>Deny host filesystem, sensitive environment, subprocess, FFI, native add-ons, WASI, devices, process inspection, inherited descriptors, and raw network access. Test Node denials and the OS policy independently using a test-only native probe through the production launcher. If the OS kills the process, the supervisor reports a stable classification. Installed Apps cannot select the probe mode.</td><td>One malicious package on macOS and Linux Phase 1 release builds. Windows reuses the corpus in Phase 2.</td></tr>
+                  <tr><td class="id">V-RUN-08</td><td>Log flooding</td><td>Rate and storage limits apply, dropped count appears, secrets redact and kernel logs remain usable.</td><td>CLI, TUI and web logs.</td></tr>
+                  <tr><td class="id">V-RUN-09</td><td>Sandbox active before App code</td><td>Instrument process startup and attempt access from preload, module resolution, migration, lifecycle, and first handler execution.</td><td>Every attempt observes the final default-deny OS policy. No unconfined startup window exists.</td></tr>
+                  <tr><td class="id">V-RUN-10</td><td>Cross-installation isolation</td><td>Run two hostile Apps under the same kernel and attempt file, IPC, process, cache, credential, and timing interference.</td><td>Neither installation reads, writes, signals, impersonates, or exhausts the other's worker, supervisor, or HTTP budget.</td></tr>
+                  <tr><td class="id">V-RUN-11</td><td>Open App lifecycle</td><td>Exercise human-only, agent-only and notification-only use on macOS and Linux. Close all viewers, let the worker go idle, receive a notification and a due wake, restart the kernel, disable one of several integrations, then end the final use. Test an unused binding and an in-process timer attempting to keep an otherwise idle App alive.</td><td>The kernel starts the stopped worker for inbound events and due wakes and enqueues through the configured workflow without a view. Restart restores enabled integrations and wakes with deduplication. Idle workers stop; installation alone runs no App code. Agent permissions remain unchanged and disabling an integration neither deletes workflows nor silently cancels accepted work.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </details>
+
+          <details open>
+            <summary>SDK, files, tools and events validation</summary>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>ID</th><th>Feature</th><th>Required cases</th><th>Completion test</th></tr></thead>
+                <tbody>
+                  <tr><td class="id">V-SDK-01</td><td>Files</td><td>Standard <code>node:fs</code> CRUD in data and temporary directories, read-only package access, atomic single-file replace, append, watch, quota, import, export, external grants, revoke, snapshot, backup, and restore. Test structured-state transactions separately and raw/SDK write races without assuming cross-API isolation.</td><td>Documents App passes on case-sensitive and case-insensitive filesystems without a Chariox-specific wrapper for ordinary private I/O.</td></tr>
+                  <tr><td class="id">V-SDK-02</td><td>Path safety</td><td>Traversal, symlink, race rename, Unicode collision, and deleted-parent races. Windows Phase 2 adds junction and reparse-point cases.</td><td>Zero escape from installation root across macOS and Linux in Phase 1, then Windows in Phase 2.</td></tr>
+                  <tr><td class="id">V-SDK-03</td><td>Tool catalog</td><td>Bind, unbind, update schemas, duplicate short names, invalid input, invalid output, deadline, cancellation and App restart.</td><td>Catalog matches the active generation and configured bindings; execution checks the same operation policy as App view calls.</td></tr>
+                  <tr><td class="id">V-SDK-04</td><td>Tool authorization</td><td>Bound and unbound agents, deleted agent, copied agent, workflow node, Freeform and concurrent runs.</td><td>Authenticated human, agent and background identities cannot be forged. Agents may use UI or tools. Critical-action validation is identical across routes, and binding changes affect discovery rather than creating an App view prohibition.</td></tr>
+                  <tr><td class="id">V-SDK-05</td><td>External event delivery</td><td>Duplicate, delayed, reordered, malformed, revoked connection, App offline, kernel offline and App update in flight.</td><td>One workflow enqueue per accepted occurrence, no loss after accepted receipt.</td></tr>
+                  <tr><td class="id">V-SDK-06</td><td>Local event delivery</td><td>On-time, overdue after reboot, deleted Todo, changed schedule, disabled automation and broken workflow target.</td><td>Todo occurrence reaches exactly one configured endpoint or a visible terminal state.</td></tr>
+                  <tr><td class="id">V-SDK-07</td><td>HTTP</td><td>Fetch-compatible allowed and denied DNS names, ports, redirects, DNS rebinding, IP literals, TLS failure, timeout, credential-handle revocation, and attempted raw sockets.</td><td>Pinned representative API clients pass their declared transport contract. Streaming, abort, multipart, SSE, decompression, redirects, DNS and credential scope tests bound trusted-side resources. WebSocket is explicitly supported or documented as excluded in Phase 1; it is never silently bypassed.</td></tr>
+                  <tr><td class="id">V-SDK-08</td><td>Lifecycle</td><td>Start, suspend, resume, configuration change, update preparation, shutdown and forced termination.</td><td>Deadlines and ordering match on local and managed kernels.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </details>
+
+          <details open>
+            <summary>Web, TUI and workflow validation</summary>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>ID</th><th>Area</th><th>Required cases</th><th>Evidence</th></tr></thead>
+                <tbody>
+                  <tr><td class="id">V-UX-01</td><td>App Tab and viewer isolation</td><td>Installation-scoped App origin, Chromium renderer sandbox, CSP, cross-origin denial, navigation and popup policy, scoped viewer session, stale session, and token redaction. The viewer iframe cannot read the App DOM or obtain App backend credentials.</td><td>Managed Chromium security tests, viewer protocol tests, and DevTools capture from the Environment.</td></tr>
+                  <tr><td class="id">V-UX-02</td><td>Responsive App view</td><td>1440, 1024, 768, 430 and 390 CSS-pixel widths; 200 percent zoom; long content; reduced motion; light and dark mode.</td><td>Screenshot set for Slack, Todo and Documents with no clipped primary action.</td></tr>
+                  <tr><td class="id">V-UX-03</td><td>Accessibility</td><td>Keyboard-only, visible focus, headings, names, errors, live regions, contrast, screen reader and touch target size.</td><td>Automated audit plus manual VoiceOver pass for every App view.</td></tr>
+                  <tr><td class="id">V-UX-04</td><td>Local TUI commands</td><td>Every CLI App command has matching slash behavior, help, completion, errors, cancellation and structured result.</td><td>Command parity snapshot and interactive drill.</td></tr>
+                  <tr><td class="id">V-UX-05</td><td>Remote TUI</td><td>List, status, logs, install where allowed, open App view, relay reconnect, token refresh and detached terminal.</td><td>Fresh remote connection, not a reused client session.</td></tr>
+                  <tr><td class="id">V-UX-06</td><td>Agent App selector</td><td>Only installed Apps appear, binding saves with other agent configuration, tool catalog refreshes and uninstall shows missing binding.</td><td>Freeform and workflow agent screenshots plus runtime catalog assertion.</td></tr>
+                  <tr><td class="id">V-UX-07</td><td>Freeform trigger</td><td>Create one-node workflow, origin metadata, direct HTTP/schedule/notification setup, visible workflow, editable alias and normal lifecycle.</td><td>Web right-click and TUI slash-command drill.</td></tr>
+                  <tr><td class="id">V-UX-08</td><td>Freeform deploy</td><td>One uninterrupted walkthrough, workflow creation, connected ingress or hosted container, rollback and visibility in Deployed.</td><td>Hosted and connected-ingress drill.</td></tr>
+                  <tr><td class="id">V-UX-09</td><td>Broken automation</td><td>Delete workflow, endpoint or queue; stop deployment; uninstall App; restore target.</td><td>App view, workflow and TUI all show the same state and recovery action.</td></tr>
+                  <tr><td class="id">V-UX-10</td><td>One App Tab, many terminals</td><td>Attach Web, local TUI viewer, and remote TUI viewer at once. Alternate human and agent actions, refresh one viewer, and close another.</td><td>Every client reports the same Environment and <code>tab_id</code>. Closing or refreshing a viewer neither duplicates nor closes the managed App Tab.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </details>
+
+          <details open>
+            <summary>Reference App acceptance</summary>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>App</th><th>Human path</th><th>Agent path</th><th>Event path</th><th>Release blocker</th></tr></thead>
+                <tbody>
+                  <tr><td>Slack</td><td>Authorize connection, choose notifications, inspect state and disconnect.</td><td>Read allowed context and send or update messages through bound runtime MCP tools.</td><td>AEGS event reaches App, then one workflow endpoint; duplicate delivery stays single.</td><td>Any remaining Slack-specific kernel execution path.</td></tr>
+                  <tr><td>Todo</td><td>Create, edit, complete, schedule, filter and reopen after restart.</td><td>List, read, create, update and complete through App tools with concurrent human edits.</td><td>Kernel wake starts the App and it emits through one automation; overdue restart recovery deduplicates durable workflow enqueue even after App-data rollback.</td><td>A worker kept running only to wait for reminders, or one workflow per Todo.</td></tr>
+                  <tr><td>Documents</td><td>Create folders, edit Markdown and HTML, preview, import, export and recover versions.</td><td>List, read, create and update planning files through App tools and standard private Node file I/O.</td><td>Optional document event uses the same automation model, but no event is required for basic use.</td><td>Any read or write outside installation storage, or unsafe HTML access to the viewer or Chariox UI.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </details>
+        </section>
+
+        <section class="section" id="phase-2">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker">Open the ecosystem</p>
+              <h2>Phase 2</h2>
+            </div>
+            <span class="phase-tag" data-phase="2">Distribution and native clients</span>
+          </div>
+          <p class="section-intro">Phase 2 adds public discovery, publishing, trust signals, side installation and native hosts. It builds on the Phase 1 package and runtime contract rather than creating a separate marketplace runtime.</p>
+
+          <article class="workstream">
+            <div class="workstream-id">P2.01</div>
+            <div><h3>Chariox App Library</h3><p>Build browse, search, categories, App detail, publisher identity, requested capabilities, compatibility, release history, review attestations, install, update, uninstall, rating or report intake, region availability and revocation state.</p><p class="exit">Exit: a user can discover and install a reviewed App without visiting the Developer Center or handling a package file.</p></div>
+          </article>
+          <article class="workstream">
+            <div class="workstream-id">P2.02</div>
+            <div><h3>Developer Center</h3><p>Provide publisher onboarding, App ID registration, team roles, signing keys, release upload, preflight, review runs, findings, version management, staged rollout, withdrawal, telemetry policy, support metadata and developer AEGS registration.</p><p class="exit">Exit: an external developer can manage an App from first identity through a reviewed release without Chariox staff editing production records.</p></div>
+          </article>
+          <article class="workstream">
+            <div class="workstream-id">P2.03</div>
+            <div><h3>Automatic security review for every Library release</h3><p>Provide an LLM-led security service on initial publication and every update, including UI-only releases. Scope blocking findings to security vulnerabilities and critical failures such as data loss, broken installation or unusable startup. Use deterministic package/signature checks, dependency vulnerability analysis and targeted sandboxed probes to support the model. Design preferences, cosmetic/accessibility suggestions, product choices and noncritical quality findings are advisory rather than release vetoes. There is no routine human approval queue or editorial gate.</p><p class="exit">Exit: each distributed Library digest has a matching automatic security-review attestation; actionable findings arrive through the publishing flow with measured near-immediate latency and explicit failure/retry states, without claiming that an LLM proves the absence of vulnerabilities.</p></div>
+          </article>
+          <div class="callout">
+            <h3 id="library-review-service">Immediate-feedback security service</h3>
+            <p>Instant publishing feedback is the product goal. Measure upload-to-verdict p50/p95 latency against numeric budgets fixed before Phase 2 validation, with separate cold and unchanged-artifact paths; do not promise literal zero execution time. Reuse digest-bound results for unchanged components but assess every new release and changed integration. Queue pressure, scanner/model failure or timeout yields a visible pending/retry result, never an unreviewed automatic pass or a hidden human queue. Only blocking security or critical findings hold publication; developers receive evidence, a repair path and automatic resubmission. Optional support for disputed findings is not a routine release dependency.</p>
+            <p>Bind attestations to the final signed package and component digests, reviewer/policy versions, vulnerability-data freshness, scope, date and result. The trusted review coordinator validates structured findings and required checks before signing; package text and model output cannot directly issue attestations. Review runs in disposable environments, treating source, assets, comments and instructions as untrusted. Review the exact compiled artifacts, manifest and dependency inventory, with isolated execution probes and LLM-assisted interpretation. Publishing requires neither public nor private source disclosure. One review flow applies to every Library release. Dependency declarations may be incomplete; artifact checks and probes cannot establish the absence of vulnerabilities or replace the runtime sandbox. Reports state what was checked and what remains unknown, without implying a source-code audit. Reassess affected releases when new critical vulnerabilities become known.</p>
+          </div>
+          <article class="workstream">
+            <div class="workstream-id">P2.04</div>
+            <div><h3>Side installation and autoinstaller</h3><p>Associate <code>.cxapp</code> with Chariox on desktop and supported mobile share/open flows. Show publisher, digest, review state and capabilities, then complete installation. Allow policy to prohibit or warn on unreviewed packages.</p><p class="exit">Exit: opening a downloaded package results in an active, visible App or a precise rejection, with no terminal steps.</p></div>
+          </article>
+          <article class="workstream">
+            <div class="workstream-id">P2.05</div>
+            <div><h3>Shared automatic updates, channels and revocation</h3><p>Add Library-managed delivery and publisher-hosted signed feeds using one kernel updater. Provide automatic/manual policy, stable/preview channels, staged rollout, compatibility holds, safe activation, TUF-based trust metadata, signing-key rotation, withdrawal, revocation and offline catch-up. Library releases require their own automatic security review before distribution; direct releases retain their distinct review status.</p><p class="exit">Exit: publishers can deliver a joint backend/view release through either route without implementing installation or recovery; routine updates need no repeated consent, and bad releases stop or recover without lost writes or silently expanded access.</p></div>
+          </article>
+          <article class="workstream">
+            <div class="workstream-id">P2.06</div>
+            <div><h3>Native Environment viewers</h3><p>Embed the Phase 1 Environment viewer and input protocol in macOS, Windows, Linux, iOS, and Android clients. Match App Tab lifecycle, file picker, clipboard, links, safe areas, accessibility, downloads, viewer authentication, human takeover, reconnect, and crash recovery.</p><p class="exit">Exit: every native client presents and controls the same managed App Tab without executing another copy of its UI.</p></div>
+          </article>
+          <article class="workstream">
+            <div class="workstream-id">P2.07</div>
+            <div><h3>Kernel App-set inheritance</h3><p>Let users create a clean kernel or copy another kernel's App set. Offer packages and configuration only, or packages, configuration and App data. Remap installation and automation identities, preserve capability decisions explicitly and exclude machine credentials.</p><p class="exit">Exit: clean and inherited kernels remain independent after creation, and changing one never mutates another.</p></div>
+          </article>
+          <article class="workstream">
+            <div class="workstream-id">P2.08</div>
+            <div><h3>Remaining notification Apps</h3><p>Move every current notification generator into a Chariox-developed App and remove the generic notification-service-without-an-App concept from user configuration. Keep the existing durable infrastructure underneath.</p><p class="exit">Exit: every notification source visible to users corresponds to an installed App and one of its declared event types.</p></div>
+          </article>
+          <article class="workstream">
+            <div class="workstream-id">P2.09</div>
+            <div><h3>Windows App backend sandbox</h3><p>Port the Phase 1 App supervisor and worker contract to Windows using restricted tokens, AppContainer or LPAC identity, Job objects, process mitigations, installation-specific ACLs, and bounded private storage. Reuse the same package envelope, IPC, HTTP broker, lifecycle, and hostile-package corpus. Compiled-backend release tooling also generates and signs Windows variants from the same supported App source.</p><p class="exit">Exit: every portable JavaScript App accepted on macOS and Linux runs unchanged on Windows, compiled Apps run through a compatible signed Windows variant, and the complete containment suite passes on the signed Windows release build.</p></div>
+          </article>
+          <article class="workstream">
+            <div class="workstream-id">P2.10</div>
+            <div><h3>Tracked work across Apps</h3><p>Compose normal App functions through existing kernel agents/workflows, with operation correlation, scoped binding, recipient consent and transfer provenance. Cover partial completion, cancellation, duplicate delivery and recovery across App boundaries.</p><p class="exit">Exit: one task can coordinate issue, code, document and calendar/notification functions through multiple Apps. It retains one prompt/conversation authority and exposes only approved structured data to each App.</p></div>
+          </article>
+          <article class="workstream">
+            <div class="workstream-id">P2.11</div>
+            <div><h3>Compiled proprietary backends</h3><p>Implement the compiled-backend build/loader contract above, including target/runtime binding, compiled dependencies/migrations, private debugging material and source-exclusion checks. Select the compiler only after conformance and runtime-upgrade validation.</p><p class="exit">Exit: a locally built proprietary package runs on supported targets without backend source text or installation-time compilation, JavaScript packages keep working, and ordinary source development remains available.</p></div>
+          </article>
+          <article class="workstream">
+            <div class="workstream-id">P2.12</div>
+            <div><h3>App outputs, agent continuation and App-created assets (to revisit)</h3><p>Postponed from Phase 1 on 2026-09-24 and to be revisited before implementation: structured agent outputs delivered to Apps, resuming an App task with a second agent through App-owned state, and policy-checked workflow/agent asset operations requested by Apps. Information sets were removed as redundant with ordinary App functions and existing permissions.</p><p class="exit">Exit: defined when the contract is revisited.</p></div>
+          </article>
+          <article class="workstream">
+            <div class="workstream-id">P2.13</div>
+            <div><h3>Step-up authentication for high-risk actions</h3><p>Moved from Phase 1 on 2026-09-24. Add step-up user verification to kernel human validation for policy-selected high-risk actions, preferably a passkey against a trusted Chariox relying-party origin. Define that origin for Cloud-connected, local-only and remote-TUI kernels, plus enrollment and recovery. Do not introduce an App-visible secret.</p><p class="exit">Exit: V2-AUTH-01 passes on every released terminal; agents and synthetic App messages cannot satisfy step-up.</p></div>
+          </article>
+        </section>
+
+        <section class="section" id="phase-2-validation">
+          <div class="section-head"><div><p class="section-kicker">Second release</p><h2>Phase 2 verification and validation</h2></div><span class="phase-tag" data-phase="2">Independent release gate</span></div>
+          <p class="section-intro">Phase 2 starts from the shipped and verified Phase 1 contract. Its release must pass the complete Phase 1 regression suite plus every requirement below. This section contains only Phase 2 additions and extensions; it cannot defer an unfinished Phase 1 guarantee.</p>
+          <h3>Phase 2 feature and platform verification</h3>
+<div class="table-wrap"><table><thead><tr><th>ID</th><th>Area</th><th>Required cases</th><th>Acceptance evidence</th></tr></thead><tbody>
+<tr><td class="id">V2-DIST-01</td><td>Publisher and signing trust</td><td>Publisher identity, team least privilege, removal, recovery, App-ID ownership/confusables, exact signed bytes, key rotation and transfer.</td><td>No silent publisher substitution; trust bound to package digest</td></tr>
+<tr><td class="id">V2-DIST-02</td><td>Library and package acquisition</td><td>Search/paging, compatibility, withdrawn/unavailable releases, resumable upload/download, concurrent versions, tampering and local/mobile open flows.</td><td>All routes use the same kernel installation state and capabilities</td></tr>
+<tr><td class="id">V2-DIST-03</td><td>Automated review isolation</td><td>Run static/dynamic and agent-led review in disposable environments without production credentials. Attack reviewer prompts, harness files, network access and attestation generation.</td><td>Only trusted verifier signs the tested digest; agent text cannot manufacture a pass</td></tr>
+<tr><td class="id">V2-DIST-04</td><td>Metadata and update attacks</td><td>Use TUF-based metadata verification for replay/rollback, freeze, expiry, mixed metadata, threshold/key rotation and offline recovery. Distinguish authorized downgrade.</td><td>No unsigned substitution or stale trust accepted outside explicit offline policy</td></tr>
+<tr><td class="id">V2-DIST-05</td><td>Rollout and revocation</td><td>Stage, pause, withdraw, revoke release/key, appeal, replace and catch up offline clients. Test old/new data schemas and capability expansion.</td><td>Recoverable user data and explicit incident state; no silent restoration of revoked authority</td></tr>
+<tr><td class="id">V2-DIST-06</td><td>External developer ingress</td><td>Register a new App and service connection/generator without staff database edits. Test tenant separation, schema negotiation, replay limits and deletion.</td><td>Same generic App/event contract used by Slack in Phase 1</td></tr>
+<tr><td class="id">V2-DIST-07</td><td>Every-release security review</td><td>Initial, backend, UI-only and dependency updates; known vulnerable, critically broken and harmless cosmetic fixtures; reviewer injection, timeout and retry.</td><td>Every Library release has its own digest-bound verdict; security/critical defects block, cosmetic choices do not; failures cannot manufacture approval.</td></tr>
+<tr><td class="id">V2-DIST-08</td><td>Review speed and compiled artifacts</td><td>Measure p50/p95 publish latency at declared load, warm/cold artifact reuse, changed integration and model/scanner outage; publish a compiled proprietary package without source and verify artifact binding and clearly reported inspection limits.</td><td>Published numeric latency budgets pass; no source prerequisite, review tiers, routine human queue or false instant-success or security-assurance claim.</td></tr>
+<tr><td class="id">V2-DIST-09</td><td>Library and direct update parity</td><td>Publish through Library and developer feed; check on human/agent opening and while the App runs for events or wakes; deliver a Library update while the App is closed without App startup or agent invocation; ensure closed direct Apps perform no update polling; test interrupted delivery, replay, channel/key substitution, offline catch-up, expanded permissions and concurrent kernels.</td><td>Same verifier/installer/recovery; only Library route requires Library review; independent installations keep state and unchanged grants.</td></tr>
+<tr><td class="id">V2-DIST-10</td><td>Joint release activation continuity</td><td>Update with drafts, running workflows and agent operations; reject incompatible backend/view combinations. If view-only activation is optimized, prove unchanged backend identity and stale-view fencing.</td><td>One coherent release, no forced loss of work, no mixed executable assets or silent privilege expansion; conservative replacement remains valid.</td></tr>
+<tr><td class="id">V2-DIST-11</td><td>Compiled proprietary artifact</td><td>Inspect final package and installed files for original backend/dependency/migration source, inline/external maps, source-bearing caches, symbols and secrets. Run supported SDK/Node fixtures on every macOS/Linux target with standard sandbox restrictions.</td><td>No backend source-text fallback; signed compiler/runtime/target binding; same functional behavior and measured budgets.</td></tr>
+<tr><td class="id">V2-DIST-12</td><td>Compiled runtime compatibility and recovery</td><td>Wrong target/runtime, malformed bytecode, security runtime upgrade, offline restart, interrupted replacement and migration rollback.</td><td>Deterministic rejection/recovery without host escape, source disclosure, lost writes or indefinite use of a vulnerable runtime.</td></tr>
+<tr><td class="id">V2-PLAT-01</td><td>Windows App worker</td><td>Provision production Windows containment and quota facilities; run all applicable Phase 1 native and JS probes, filesystem edge cases, Node fixtures and resource tests.</td><td>Portable JavaScript packages run unchanged; compiled Apps run through Windows target variants with correct compiler/runtime binding; installer, sandbox, Job and ACL evidence</td></tr>
+<tr><td class="id">V2-VIEW-01</td><td>Native terminal projection</td><td>macOS/Windows/Linux/iOS/Android present the same managed Tab, authenticated session and canonical viewport. Reconnect/crash without duplicating UI execution.</td><td>Native viewer/platform matrix below passes</td></tr>
+<tr><td class="id">V2-VIEW-02</td><td>Native accessibility and input</td><td>VoiceOver, TalkBack, Narrator and Linux accessibility; IME, touch, safe areas, keyboard resize, selection, clipboard, downloads, links and pickers.</td><td>Real terminal semantics/actions and viewport revision agree with managed Tab</td></tr>
+<tr><td class="id">V2-AUTH-01</td><td>Step-up authentication</td><td>Verify relying-party origin, challenge, intended account, user verification and recovery on trusted confirmation pages opened from Web/local TUI/remote TUI. Agent Environment cannot operate that page as the human.</td><td>Authenticator integration tests plus real human verification drill; test mocks never count as production authentication</td></tr>
+<tr><td class="id">V2-VIEW-03</td><td>Native human validation</td><td>Critical actions, trusted confirmation and step-up authentication on all native clients, including denial/recovery and cross-terminal races.</td><td>Same kernel operation/receipt contract; agents cannot approve as humans</td></tr>
+<tr><td class="id">V2-COPY-01</td><td>App-set inheritance</td><td>Clean, package-only, configuration and data copies; deliberate grant decisions, remapped identities/automations, unavailable connections and busy snapshots.</td><td>Independent kernels; no silent credential, receipt or validation-token cloning</td></tr>
+<tr><td class="id">V2-COPY-02</td><td>Independent lifecycle</td><td>Update, uninstall, corrupt or revoke one copied installation while another operates; replace managed machine and restore.</td><td>Only selected kernel state changes; deliberate new occurrence identities prevent accidental duplicate automation</td></tr>
+<tr><td class="id">V2-MIG-01</td><td>Remaining notification Apps</td><td>Migrate every source using the verified generic contract, then remove obsolete service-only configuration and execution.</td><td>Parity and fault-recovery evidence precede cleanup; no permanent legacy route</td></tr>
+<tr><td class="id">V2-OPS-01</td><td>Production operations</td><td>Telemetry consent/privacy, safe support bundles, retention, dependency inventory, incident response, runtime patching and rollback controls.</td><td>Versioned operational drills and package/runtime evidence; no user secrets in logs or reports</td></tr>
+<tr><td class="id">V2-CROSS-01</td><td>Cross-App consent and provenance</td><td>Transfer structured data between Apps with different recipient grants; revoke recipient access, request extra fields and attempt an unapproved route.</td><td>Only approved recipient data flows; every transfer links source and destination operation identities</td></tr>
+<tr><td class="id">V2-CROSS-02</td><td>Cross-App recovery</td><td>Issue-to-code-to-document/calendar task fails halfway, times out after an external effect, changes focus/agent or restarts a kernel.</td><td>Recoverable partial state and explicit ambiguous effects; no duplicate mutations or global-transaction promise</td></tr>
+<tr><td class="id">V2-CROSS-03</td><td>Cross-App interaction continuity</td><td>Run a task across different Apps and terminals while changing the foreground App and resuming with a second agent.</td><td>One focus-agent prompt area and kernel-owned agent histories; each App sees only its own calls and results</td></tr>
+<tr><td class="id">V2-VIEW-04</td><td>Native private conversation panel</td><td>Repeat Phase 1 panel privacy, composition, selection, input and accessibility checks in every native terminal.</td><td>Native App/view code cannot read the trusted panel or obtain it through screenshot/export APIs</td></tr>
+<tr><td class="id">V2-REG-01</td><td>Phase 1 regression and upgrade</td><td>Upgrade the shipped Phase 1 version to Phase 2. Rerun Phase 1 gates on macOS/Linux and released Web/TUI paths; extend applicable tests to Windows/native clients.</td><td>No feature, permission, data, event or persistence regression</td></tr>
+</tbody></table></div>
+          <h3>Phase 2 terminal matrix</h3>
+          <p>Each required cell needs the appropriate automated assertions, live drill or visual/accessibility evidence for that terminal. Core kernel guarantees reuse the platform suite; native presentation and privileged host integration are verified on the actual client. Any platform shipped later moves to a separately declared release scope before implementation, not an unexplained exclusion at acceptance.</p>
+<div class="table-wrap"><table><thead><tr><th>Feature</th><th>Web</th><th>Local TUI</th><th>Remote TUI</th><th>macOS terminal</th><th>Windows terminal</th><th>Linux terminal</th><th>iOS</th><th>Android</th></tr></thead><tbody>
+<tr><td>Install, update, uninstall and Library acquisition</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td></tr>
+<tr><td>Shared App Tab, reconnect, input ownership and viewport</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td></tr>
+<tr><td>Agent tool discovery and equivalent App operation</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td></tr>
+<tr><td>Critical-action confirmation and step-up authentication</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td></tr>
+<tr><td>File picker, clipboard, download and external links</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td></tr>
+<tr><td>Accessibility, text composition, touch and keyboard</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td></tr>
+<tr><td>Events, workflows, logs and recovery</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td></tr>
+<tr><td>Private conversation panel</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td></tr>
+<tr><td>Tracked coordination across multiple Apps</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td></tr>
+<tr><td>App-set copy and connection recovery</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td><td>Required</td></tr>
+</tbody></table></div>
+          <h3>Phase 2 release evidence</h3>
+          <p>Record exact Phase 1 source version, upgrade path, candidate revisions, package and runtime digests, kernel OS and terminal versions, protocol versions, trust metadata, automated results and dated human/visual drills. No Phase 2 gate passes on a screenshot alone when persistence, authorization or containment is the claim. Carry forward Phase 1 evidence only where unchanged behavior is covered by a justified regression run.</p>
+        </section>
+
+        <section class="section" id="release-gates">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker">Ship criteria</p>
+              <h2>What must be true before either phase is complete</h2>
+            </div>
+          </div>
+
+          <h3 style="margin-top:25px">Phase 1 completion gates</h3>
+          <ol class="gate-list">
+            <li><b>Architecture gate</b><span>App backends use the supervisor and bounded IPC; App views use sandbox-enabled managed Chromium. Agent tools use the single runtime MCP. Every Phase 1 review obligation has an implemented contract and passing evidence; Phase 2 obligations remain in their own release gate.</span></li>
+            <li><b>Workflow gate</b><span>App events enter only through workflow triggers. App bindings never activate an agent. One automation has one target.</span></li>
+            <li><b>Migration gate</b><span>Slack runs as an installed App and the privileged Slack kernel path is deleted.</span></li>
+            <li><b>Reference gate</b><span>Slack, Todo and Documents pass their full human, agent, event, update and recovery scenarios.</span></li>
+            <li><b>Isolation gate</b><span>The signed macOS and production Linux builds pass CPU, memory, crash, IPC, permission, filesystem, network, and log-flood drills. A bad App cannot stall the kernel or another App.</span></li>
+            <li><b>Browser persistence gate</b><span>Production, fallback and restored Chromium retain renderer isolation. Deterministic authenticated state and the Google-session regression pass with root causes recorded; no Chariox-caused session loss is waived.</span></li>
+            <li><b>Human validation gate</b><span>Human, agent and background callers share one operation model. Critical effects wait for trusted human confirmation; receipts are exact, single-use and enforced at the effect boundary.</span></li>
+            <li><b>App work gate</b><span>Foreground and self-granted bindings use existing policy. The private conversation panel and one prompt area pass V1-INT-22 through V1-INT-27.</span></li>
+            <li><b>Client gate</b><span>CLI and TUI command parity passes. Web iframe, local default-browser viewer, and remote relayed viewer all present the same managed App Tab with responsive and accessibility evidence.</span></li>
+            <li><b>Lifecycle gate</b><span>Install, update, migration, rollback, uninstall, reboot and kernel restart fault injection is green.</span></li>
+            <li><b>Storage gate</b><span>Documents proves standard Node file access inside installation storage, denial outside it, concurrent edits, snapshots, quota, and external file grants.</span></li>
+            <li><b>Freeform gate</b><span>Binding creates no workflow. Trigger and Deploy create visible metadata-linked one-node workflows and finish in a single guided action.</span></li>
+            <li><b>Evidence gate</b><span>The Phase 1 release candidate passes every required core, terminal, kernel and V1-INT row. The ledger contains exact revisions, SDK/protocol/runtime versions, package digests, numeric budgets and dated drill evidence. Publish the Phase 1 version only after this independent gate passes.</span></li>
+          </ol>
+
+          <h3 style="margin-top:35px">Phase 2 completion gates</h3>
+          <p>Before the second release, pass all Phase 2 matrices and rerun the Phase 1 regression/upgrade contract against the published Phase 1 version.</p>
+          <ol class="gate-list">
+            <li><b>Compiled distribution gate</b><span>Proprietary backend packages omit executable backend source text and pass compiler/loader, SDK/dependency, target, containment and runtime-security-upgrade tests. Bytecode selection remains an implementation decision until this evidence exists.</span></li>
+            <li><b>Library gate</b><span>Discovery, review information, install, update, withdrawal and revocation work under user and organization policy.</span></li>
+            <li><b>Publisher gate</b><span>An external developer can register, upload, preflight, fix findings, release, stage and withdraw without staff database changes.</span></li>
+            <li><b>Review gate</b><span>Every Library release receives automatic LLM-led security/critical-issue review, supported by deterministic checks and targeted probes. A trusted coordinator signs the exact digest. Numeric latency budgets and outage/retry behavior pass; no editorial approval or routine human queue is required.</span></li>
+            <li><b>Side-install gate</b><span>Opening a <code>.cxapp</code> on supported OSes launches the authenticated Chariox installer and never executes before approval.</span></li>
+            <li><b>Native parity gate</b><span>macOS, Windows, Linux, iOS, and Android clients pass the same managed App Tab projection, input, lifecycle, accessibility, security, and visual matrices.</span></li>
+            <li><b>Windows sandbox gate</b><span>The Windows App supervisor and worker run every portable Phase 1 App without developer source changes, using signed Windows-compatible artifacts, and pass the same hostile-package corpus under the signed release build.</span></li>
+            <li><b>Cross-App gate</b><span>Tracked work across Apps passes recipient consent, provenance, partial failure, continuation and same-conversation tests without giving Apps transcript access.</span></li>
+            <li><b>Inheritance gate</b><span>Clean and copied kernels behave as specified and remain isolated after creation.</span></li>
+            <li><b>Notification gate</b><span>Every supported notification source appears through an installed App. No user-facing service-only notification configuration remains.</span></li>
+            <li><b>Operations gate</b><span>Metrics, support bundles, safe logs, rollout controls, key rotation, incident revocation and recovery drills are production-ready.</span></li>
+          </ol>
+
+          <div class="callout stop">
+            <h3>Final acceptance rule</h3>
+            <p>A phase stays incomplete when any required path relies on a hard-coded App ID, hidden manual setup, an unbounded process, an unversioned protocol, a client-only behavior, unconfined host filesystem access, an unexplained matrix exclusion, or a screenshot that does not prove the claimed state.</p>
+          </div>
+        </section>
+
+        <footer>
+          <p><strong>Document status:</strong> implementation contract updated from the 2026-09-05 review and user decisions. Requirements and matrices are not evidence of completed implementation. Phase 1 and Phase 2 each ship only after their own verification and validation gates pass. Update this file when a domain decision changes, not merely when a task finishes. Includes the agreed App/kernel interaction model: one binding and existing permissions, a private conversation panel in a fixed trusted region and App-owned semantics in Phase 1; cross-App coordination in Phase 2. On 2026-09-24 information sets were removed, and App outputs, agent continuation and App-created assets moved to Phase 2 for revisit. Includes the kernel-run App lifecycle: kernel-owned wakes and on-demand starts for events, independent of view visibility (2026-09-24). Step-up authentication moved to Phase 2 on 2026-09-24. Managed kernel App provisioning, including Path-1, is deferred within Phase 1 as P1.18 (2026-09-24). Includes the 2026-09-24 distribution decisions: compiled proprietary backends (moved to Phase 2 on 2026-09-24), web views and live content, joint App releases, Phase 2 Library and direct automatic updates through one kernel updater, and automatic security/critical-issue review for every Library release. Track execution in milestone and release evidence linked to exact revisions and package digests.</p>
+        </footer>
+      </main>
+    </div>
+
+    <script>
+      const links = [...document.querySelectorAll(".rail a")]
+      const sections = links
+        .map((link) => document.querySelector(link.getAttribute("href")))
+        .filter(Boolean)
+
+      const observer = new IntersectionObserver((entries) => {
+        const visible = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((left, right) => right.intersectionRatio - left.intersectionRatio)[0]
+        if (!visible) return
+        for (const link of links) {
+          link.dataset.active = link.getAttribute("href") === `#${visible.target.id}` ? "true" : "false"
+        }
+      }, { rootMargin: "-15% 0px -70% 0px", threshold: [0, 0.2, 0.6] })
+
+      sections.forEach((section) => observer.observe(section))
+    </script>
+  </body>
+</html>
