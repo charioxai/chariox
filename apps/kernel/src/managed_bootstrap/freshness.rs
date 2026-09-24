@@ -61,6 +61,7 @@ pub(super) struct FreshnessHostPaths {
     pub(super) boot_id: PathBuf,
     pub(super) machine_id: PathBuf,
     pub(super) proc_root: PathBuf,
+    pub(super) proc_self_exe: PathBuf,
     pub(super) service_unit: PathBuf,
     pub(super) service_wants: PathBuf,
 }
@@ -71,6 +72,7 @@ impl Default for FreshnessHostPaths {
             boot_id: PathBuf::from(LINUX_BOOT_ID_PATH),
             machine_id: PathBuf::from(OS_MACHINE_ID_PATH),
             proc_root: PathBuf::from(PROC_ROOT),
+            proc_self_exe: PathBuf::from("/proc/self/exe"),
             service_unit: PathBuf::from(MANAGED_BOOTSTRAP_SERVICE_PATH),
             service_wants: PathBuf::from(MANAGED_BOOTSTRAP_WANTS_PATH),
         }
@@ -171,6 +173,7 @@ pub(super) fn capture_old_generation_runtime_identity_report_with_paths(
         observed_at: observed_at.to_rfc3339_opts(SecondsFormat::Millis, true),
     };
     verify_managed_bootstrap_service_binding(release, &paths.service_unit, &paths.service_wants)?;
+    verify_running_kernel_release(release, &paths.proc_self_exe)?;
     validate_old_generation_runtime_identity_report(
         &report,
         environment_id,
@@ -180,6 +183,50 @@ pub(super) fn capture_old_generation_runtime_identity_report_with_paths(
         release,
     )
     .map(|()| report)
+}
+
+fn verify_running_kernel_release(
+    release: &VerifiedReleaseEvidence,
+    proc_self_exe: &Path,
+) -> Result<(), DaemonError> {
+    if !release.manifest_signature_verified
+        || !release.manifest_digest_verified
+        || !release.kernel_artifact_verified
+    {
+        return Err(freshness_error(
+            "running kernel release evidence is not verified",
+        ));
+    }
+
+    let expected_kernel = release
+        .active_release_path
+        .join("usr/local/bin/chariox-kernel");
+    let metadata = fs::symlink_metadata(&expected_kernel).map_err(|error| {
+        freshness_error(&format!(
+            "verified kernel artifact cannot be inspected: {error}"
+        ))
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(freshness_error(
+            "verified kernel artifact is not a regular file",
+        ));
+    }
+    let expected_kernel = fs::canonicalize(expected_kernel).map_err(|error| {
+        freshness_error(&format!(
+            "verified kernel artifact cannot be resolved: {error}"
+        ))
+    })?;
+    let running_kernel = fs::canonicalize(proc_self_exe).map_err(|error| {
+        freshness_error(&format!(
+            "running kernel executable cannot be inspected: {error}"
+        ))
+    })?;
+    if running_kernel != expected_kernel {
+        return Err(freshness_error(
+            "running kernel executable is not the verified managed release artifact",
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn validate_old_generation_runtime_identity_report(
@@ -548,6 +595,17 @@ mod tests {
     use crate::managed_bootstrap::release::VerifiedReleaseEvidence;
     use std::path::PathBuf;
 
+    #[cfg(target_os = "linux")]
+    use super::{capture_old_generation_runtime_identity_report_with_paths, FreshnessHostPaths};
+    #[cfg(target_os = "linux")]
+    use sha2::{Digest, Sha256};
+    #[cfg(target_os = "linux")]
+    use std::{
+        fs,
+        path::Path,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
     #[test]
     fn identity_and_release_fields_are_strictly_canonical() {
         assert!(is_linux_boot_id("01234567-89ab-cdef-0123-456789abcdef"));
@@ -709,5 +767,157 @@ mod tests {
             &release,
         )
         .is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pre_reimage_report_rejects_running_kernel_outside_verified_release() {
+        use std::os::unix::fs::symlink;
+
+        let root = FreshnessTestDirectory::new();
+        let release_path = root.path().join("releases/sha256-test-release");
+        let kernel_path = release_path.join("usr/local/bin/chariox-kernel");
+        let service_path =
+            release_path.join("etc/systemd/system/chariox-managed-bootstrap.service");
+        let service_contents = b"[Service]\nExecStart=/usr/local/bin/chariox-managed-bootstrap\n";
+        fs::create_dir_all(kernel_path.parent().expect("kernel parent"))
+            .expect("create release kernel directory");
+        fs::write(&kernel_path, b"signed kernel fixture").expect("write release kernel");
+        fs::create_dir_all(service_path.parent().expect("service parent"))
+            .expect("create release service directory");
+        fs::write(&service_path, service_contents).expect("write release service");
+
+        let manifest_path = release_path.join("usr/lib/chariox/release-manifest.json");
+        fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
+            .expect("create release manifest directory");
+        let service_digest = format!("sha256:{:x}", Sha256::digest(service_contents));
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec(&serde_json::json!({
+                "schemaVersion": 2,
+                "sourceCommit": "c".repeat(40),
+                "sourceTree": "d".repeat(40),
+                "artifacts": [{
+                    "name": "chariox-managed-bootstrap.service",
+                    "path": "/etc/systemd/system/chariox-managed-bootstrap.service",
+                    "sha256": service_digest,
+                }],
+            }))
+            .expect("serialize release manifest"),
+        )
+        .expect("write release manifest");
+
+        let boot_id = root.path().join("host/boot-id");
+        let machine_id = root.path().join("host/machine-id");
+        fs::create_dir_all(boot_id.parent().expect("host parent")).expect("create host paths");
+        fs::write(&boot_id, "01234567-89ab-cdef-0123-456789abcdef\n").expect("write boot ID");
+        fs::write(&machine_id, format!("{}\n", "a".repeat(32))).expect("write machine ID");
+
+        let service_unit = root
+            .path()
+            .join("systemd/system/chariox-managed-bootstrap.service");
+        let service_wants = root
+            .path()
+            .join("systemd/wants/chariox-managed-bootstrap.service");
+        fs::create_dir_all(service_unit.parent().expect("unit parent"))
+            .expect("create service unit directory");
+        fs::create_dir_all(service_wants.parent().expect("wants parent"))
+            .expect("create service wants directory");
+        symlink(&service_path, &service_unit).expect("link active service unit");
+        symlink(&service_path, &service_wants).expect("link enabled service unit");
+
+        let hotfix_path = root.path().join("dev-hotfix/chariox-kernel");
+        fs::create_dir_all(hotfix_path.parent().expect("hotfix parent"))
+            .expect("create hotfix directory");
+        fs::write(&hotfix_path, b"unsigned hotfix kernel").expect("write hotfix kernel");
+        let proc_self_exe = root.path().join("proc/self/exe");
+        fs::create_dir_all(proc_self_exe.parent().expect("proc self parent"))
+            .expect("create proc fixture");
+        symlink(&kernel_path, &proc_self_exe).expect("point current executable at release");
+
+        let paths = FreshnessHostPaths {
+            boot_id,
+            machine_id,
+            proc_root: root.path().join("proc"),
+            proc_self_exe: proc_self_exe.clone(),
+            service_unit,
+            service_wants,
+        };
+        let release = VerifiedReleaseEvidence {
+            digest: format!("sha256:{}", "b".repeat(64)),
+            source_commit: "c".repeat(40),
+            source_tree: "d".repeat(40),
+            target: "x86_64-unknown-linux-gnu".to_string(),
+            active_release_path: release_path,
+            manifest_signature_verified: true,
+            manifest_digest_verified: true,
+            kernel_artifact_verified: true,
+        };
+
+        let report = capture_old_generation_runtime_identity_report_with_paths(
+            "environment-1",
+            "machine-1",
+            "kernel-1",
+            4,
+            &format!("mcred_{}", "x".repeat(40)),
+            &release,
+            Utc.with_ymd_and_hms(2026, 9, 22, 1, 2, 3)
+                .single()
+                .expect("valid test timestamp"),
+            &paths,
+        )
+        .expect("matching running release should be reportable");
+        assert_eq!(report.environment_id, "environment-1");
+        assert_eq!(report.machine_id, "machine-1");
+        assert_eq!(report.kernel_id, "kernel-1");
+        assert_eq!(report.generation, 4);
+        assert_eq!(report.linux_boot_id, "01234567-89ab-cdef-0123-456789abcdef");
+        assert_eq!(report.os_machine_id, "a".repeat(32));
+
+        fs::remove_file(&proc_self_exe).expect("remove matching executable fixture");
+        symlink(&hotfix_path, &proc_self_exe).expect("point current executable at hotfix");
+        assert!(capture_old_generation_runtime_identity_report_with_paths(
+            "environment-1",
+            "machine-1",
+            "kernel-1",
+            4,
+            &format!("mcred_{}", "x".repeat(40)),
+            &release,
+            Utc.with_ymd_and_hms(2026, 9, 22, 1, 2, 3)
+                .single()
+                .expect("valid test timestamp"),
+            &paths,
+        )
+        .is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    struct FreshnessTestDirectory(PathBuf);
+
+    #[cfg(target_os = "linux")]
+    impl FreshnessTestDirectory {
+        fn new() -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock after epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "chariox-managed-freshness-{}-{unique}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).expect("create freshness test directory");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Drop for FreshnessTestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
     }
 }
