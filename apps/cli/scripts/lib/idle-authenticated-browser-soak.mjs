@@ -12,6 +12,7 @@ export function parseIdleAuthenticatedBrowserSoakArgs(argv, { repoRoot, homeDir 
     "--duration-seconds", "--health-interval-seconds", "--sample-interval-seconds",
     "--max-cpu-percent", "--max-rss-mb", "--max-processes", "--min-free-disk-mb",
     "--evidence-root", "--run-dir", "--display-number", "--debug-port",
+    "--image-ref", "--image-signature-key", "--container-engine", "--runtime-container-id",
   ])
   const booleanFlags = new Set(["--smoke", "--preflight", "--detach", "--internal-run", "--help", "-h"])
   for (let index = 0; index < argv.length; index += 1) {
@@ -47,6 +48,8 @@ export function parseIdleAuthenticatedBrowserSoakArgs(argv, { repoRoot, homeDir 
   const internalRun = flags.has("--internal-run")
   if (preflight && detach) throw new Error("--preflight cannot be combined with --detach")
   if (internalRun && (preflight || detach)) throw new Error("--internal-run cannot be combined with --preflight or --detach")
+  const containerEngine = values.get("--container-engine") ?? process.env.CHARIOX_CONTAINER_ENGINE ?? "docker"
+  if (!new Set(["docker", "podman"]).has(containerEngine)) throw new Error("container-engine must be docker or podman")
   return {
     mode: preflight ? "preflight" : detach ? "detach" : "run",
     idleAuthenticated: true,
@@ -61,6 +64,10 @@ export function parseIdleAuthenticatedBrowserSoakArgs(argv, { repoRoot, homeDir 
     minFreeDiskMb: integer(values.get("--min-free-disk-mb") ?? "1024", "min-free-disk-mb", 1, 1_048_576),
     evidenceRoot,
     runDir,
+    imageRef: values.get("--image-ref") ?? process.env.CHARIOX_SLICE_IMAGE ?? null,
+    imageSignatureKey: values.get("--image-signature-key") ?? process.env.CHARIOX_SLICE_IMAGE_SIGNATURE_KEY ?? null,
+    containerEngine,
+    runtimeContainerId: values.get("--runtime-container-id") ?? process.env.CHARIOX_SOAK_RUNTIME_CONTAINER_ID ?? null,
     displayNumber: optionalInteger(values.get("--display-number"), "display-number", 60, 199),
     debugPort: optionalInteger(values.get("--debug-port"), "debug-port", 1024, 65_535),
     internalRun,
@@ -128,6 +135,40 @@ export function assertRetainedEvidenceRedacted(texts, forbiddenValues) {
   return true
 }
 
+export function validateIdleSoakProvenance(value, source = value?.source) {
+  if (value?.schema !== "chariox.idle_authenticated_browser_soak_provenance.v1"
+    || !validSource(value?.source) || !validSource(source) || !sameSource(value.source, source)) {
+    throw new Error("idle soak provenance lacks the exact clean commit/tree source identity")
+  }
+  const image = value.image
+  if (!/^sha256:[0-9a-f]{64}$/i.test(image?.digest ?? "")
+    || !/^.+@sha256:[0-9a-f]{64}$/i.test(image?.identity ?? "")
+    || image.identity !== `${image.identity.slice(0, image.identity.lastIndexOf("@"))}@${image.digest}`
+    || !new Set(["docker", "podman"]).has(image?.engine)
+    || !/^sha256:[0-9a-f]{64}$/i.test(image?.engineImageId ?? "")
+    || !/^[0-9a-f]{40}$/i.test(image?.sourceRevision ?? "") || image.sourceRevision !== source.commit
+    || image.signature?.verified !== true || image.signature?.verifier !== "cosign"
+    || !/^[0-9a-f]{64}$/i.test(image.signature?.keySha256 ?? "")
+    || !/^[0-9a-f]{64}$/i.test(image.signature?.bundleSha256 ?? "")
+    || image.attestation?.verified !== true || image.attestation?.type !== "slsaprovenance"
+    || !/^[0-9a-f]{64}$/i.test(image.attestation?.bundleSha256 ?? "")) {
+    throw new Error("idle soak provenance lacks a verified immutable image, Cosign signature, or SLSA attestation")
+  }
+  const runtime = value.runtimeImage
+  if (!/^[0-9a-f]{64}$/i.test(runtime?.containerId ?? "")
+    || runtime.imageId !== image.engineImageId || runtime.identity !== image.identity
+    || runtime.sourceRevision !== source.commit || runtime.running !== true) {
+    throw new Error("idle soak provenance lacks an exact running runtime-container/image binding")
+  }
+  const network = value.networkNamespace
+  if (network?.exclusive !== true || typeof network.namespace !== "string" || network.namespace === ""
+    || (network.foreignPids?.length ?? 0) !== 0 || (network.unreadablePids?.length ?? 0) !== 0
+    || (network.mismatchedOwnedPids?.length ?? 0) !== 0) {
+    throw new Error("idle soak provenance lacks exclusive network-namespace ownership")
+  }
+  return value
+}
+
 export function validateCompletedIdleSoakResult(value) {
   if (!value || value.schema !== "chariox.idle_authenticated_browser_soak.v1" || value.status !== "passed") {
     throw new Error("idle soak result must be passed")
@@ -182,11 +223,12 @@ export function validateCompletedIdleSoakResult(value) {
     || !Number.isFinite(value.resources?.peakOwnedCpuPercent) || value.resources.peakOwnedCpuPercent < 0) {
     throw new Error("idle soak result lacks finite resource peaks")
   }
-  if (!/^[0-9a-f]{40}$/i.test(value.source?.commit ?? "") || !value.source?.branch || value.source?.dirty !== false) {
+  if (!validSource(value.source)) {
     throw new Error("idle soak result lacks clean source provenance")
   }
-  if (value.image?.available !== true || !value.image?.imageDigest
-    || value.image?.sourceCommit !== value.source.commit) throw new Error("idle soak result lacks matching image provenance")
+  validateIdleSoakProvenance(value.provenance, value.source)
+  if (value.image?.identity !== value.provenance.image.identity
+    || value.image?.digest !== value.provenance.image.digest) throw new Error("idle soak result lacks matching image provenance")
   if (value.profile?.browserObserved !== true || value.profile?.cookiePersistedAfterRestart !== true
     || value.profile?.controlledRestartCompleted !== true || value.profile?.checks < value.checkpoints.count
     || !/^[0-9a-f]{64}$/i.test(value.profile?.markerDigest ?? "")) {
@@ -217,11 +259,34 @@ export function validateIdleSoakDetachContract(contract, { source, childPid }) {
   }
   if (contract?.smoke?.status !== "passed" || contract.smoke?.smoke !== true
     || !sameSource(contract.smoke.source, source)) throw new Error("idle soak detach requires same-source smoke")
+  validateIdleSoakProvenance(contract.preflight.provenance, source)
+  validateIdleSoakProvenance(contract.smoke.provenance, source)
+  if (provenanceFingerprint(contract.preflight.provenance) !== provenanceFingerprint(contract.smoke.provenance)) {
+    throw new Error("idle soak detach requires matching preflight and smoke provenance")
+  }
   return contract
 }
 
 function sameSource(actual, expected) {
-  return actual?.commit === expected?.commit && actual?.dirty === false && expected?.dirty === false
+  return actual?.commit === expected?.commit && actual?.tree === expected?.tree
+    && actual?.dirty === false && expected?.dirty === false
+}
+
+function validSource(source) {
+  return /^[0-9a-f]{40}$/i.test(source?.commit ?? "")
+    && /^[0-9a-f]{40}$/i.test(source?.tree ?? "")
+    && (source?.branch == null || typeof source.branch === "string")
+    && source?.dirty === false
+}
+
+function provenanceFingerprint(value) {
+  return stableJson({ source: value?.source, image: value?.image, runtimeImage: value?.runtimeImage, networkNamespace: value?.networkNamespace })
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`
+  if (value && typeof value === "object") return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`
+  return JSON.stringify(value)
 }
 
 function assertResourceEvidence(sample, label) {

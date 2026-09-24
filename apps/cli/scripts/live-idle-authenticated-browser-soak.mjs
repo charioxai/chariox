@@ -28,6 +28,10 @@ function usage() {
     "  --max-processes N                 Owned process-tree ceiling (default: 32)",
     "  --min-free-disk-mb N              Evidence-filesystem free-space floor (default: 1024)",
     "  --evidence-root PATH              External evidence root",
+    "  --image-ref IMAGE                 Engine-local image tag or digest with a RepoDigest",
+    "  --image-signature-key PATH        Cosign public key for signature and SLSA attestation",
+    "  --container-engine NAME           docker (default) or podman",
+    "  --runtime-container-id ID         Current digest-bound runtime container ID",
     "  --debug-port N                    Private Chromium CDP port (automatic by default)",
     "  --help                            Show this help",
   ].join("\n"))
