@@ -177,6 +177,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-cdp.mjs /
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-actions.mjs /opt/chariox-slice/browser-controller-actions.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-cdp.mjs /opt/chariox-slice/browser-controller-cdp.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-resources.mjs /opt/chariox-slice/browser-controller-resources.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-scheduler.mjs /opt/chariox-slice/browser-controller-scheduler.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-cookie-fence.mjs /opt/chariox-slice/browser-controller-cookie-fence.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-dialogs.mjs /opt/chariox-slice/browser-controller-dialogs.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-compatibility.mjs /opt/chariox-slice/browser-controller-compatibility.mjs

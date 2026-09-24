@@ -13,6 +13,7 @@ import {
   observeBrowserResources,
   validateBrowserResourceInventory,
 } from "./browser-controller-resources.mjs";
+import { BrowserControllerRequestScheduler } from "./browser-controller-scheduler.mjs";
 
 let browserImportModule;
 
@@ -179,7 +180,7 @@ export class BrowserControllerStdioServer {
   async run() {
     const actions = new Map();
     const pendingRequestIds = new Set();
-    let pending = Promise.resolve();
+    const scheduler = new BrowserControllerRequestScheduler();
     let queued = 0;
     const lines = readline.createInterface({
       input: this.input,
@@ -249,7 +250,7 @@ export class BrowserControllerStdioServer {
       if (action) actions.set(request.id, action);
       pendingRequestIds.add(request.id);
       queued += 1;
-      pending = pending.then(async () => {
+      const scheduled = scheduler.schedule(request, async () => {
         try {
           const response = await handleBrowserControllerRequest(request, {
             processId: this.processId,
@@ -266,12 +267,13 @@ export class BrowserControllerStdioServer {
           queued -= 1;
         }
       });
+      void scheduled.catch(() => {});
       if (request.method === "shutdown") {
         lines.close();
         break;
       }
     }
-    await pending;
+    await scheduler.drain();
   }
 
   write(response) {
