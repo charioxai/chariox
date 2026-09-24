@@ -31,9 +31,9 @@ use freshness::{
 };
 use release::{verify_release, verify_release_evidence, VerifiedRelease};
 use state::{
-    default_managed_bootstrap_receipt_path, remove_envelope, valid_identifier, valid_secret,
-    BootstrapConfig, BootstrapEnvelope, BootstrapReceipt, BootstrapReceiptDocument,
-    BootstrapReceiptStatus, ManagedBootstrapEnvelope,
+    default_managed_bootstrap_receipt_path, remove_envelope, trusted_builder_public_key_path,
+    valid_identifier, valid_secret, BootstrapConfig, BootstrapEnvelope, BootstrapReceipt,
+    BootstrapReceiptDocument, BootstrapReceiptStatus, ManagedBootstrapEnvelope,
 };
 
 const MIN_PREPARE_RETRY_DELAY: Duration = Duration::from_secs(1);
@@ -253,6 +253,7 @@ pub(crate) fn authoritative_managed_release_evidence_from_env(
         &config.public_key_path,
         &receipt.runtime_release_digest,
         &config.kernel_binary,
+        trusted_builder_public_key_path()?.as_deref(),
     )?;
     if verified.digest != receipt.runtime_release_digest {
         return Err(bootstrap_error(
@@ -478,6 +479,7 @@ fn confirm_registration(
                 &config.public_key_path,
                 &receipt.runtime_release_digest,
                 &config.kernel_binary,
+                trusted_builder_public_key_path()?.as_deref(),
             )?;
             if evidence.runtime_source_commit != verified.source_commit
                 || evidence.runtime_source_tree != verified.source_tree
@@ -559,6 +561,7 @@ fn report_pre_reimage_runtime_identity(
         &config.public_key_path,
         &release.digest,
         &config.kernel_binary,
+        trusted_builder_public_key_path()?.as_deref(),
     )?;
     let report = capture_old_generation_runtime_identity_report(
         environment_id,
@@ -688,6 +691,7 @@ fn capture_rebuild_freshness_evidence(
         &config.public_key_path,
         &release.digest,
         &config.kernel_binary,
+        trusted_builder_public_key_path()?.as_deref(),
     )?;
     Ok(Some(capture_freshness_evidence(config, &verified)?))
 }
@@ -725,6 +729,7 @@ fn ensure_rebuild_freshness_evidence(
         &config.public_key_path,
         &release.digest,
         &config.kernel_binary,
+        trusted_builder_public_key_path()?.as_deref(),
     )?;
     if receipt.status == BootstrapReceiptStatus::Confirmed {
         let evidence = receipt.freshness_evidence.as_ref().ok_or_else(|| {

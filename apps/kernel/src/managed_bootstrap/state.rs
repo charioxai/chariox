@@ -18,6 +18,7 @@ use super::freshness::{
 
 const MAX_STATE_BYTES: u64 = 96 * 1024;
 pub(super) const DEFAULT_MANAGED_REPOSITORY_ROOT: &str = "/home/chariox";
+pub(super) const TRUSTED_BUILDER_PUBLIC_KEY_ENV: &str = "CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct BootstrapConfig {
@@ -157,6 +158,7 @@ pub(super) enum BootstrapReceiptDocument {
 
 impl BootstrapConfig {
     pub(super) fn from_env() -> Result<Self, DaemonError> {
+        trusted_builder_public_key_path()?;
         let (process_home, chariox_home) = managed_home_paths()?;
         let envelope_path = absolute_env_path(
             "CHARIOX_MANAGED_BOOTSTRAP_PATH",
@@ -209,6 +211,17 @@ impl BootstrapConfig {
             kernel_host: kernel_host.trim().to_string(),
             kernel_port,
         })
+    }
+}
+
+pub(super) fn trusted_builder_public_key_path() -> Result<Option<PathBuf>, DaemonError> {
+    match super::managed_provider_topology()? {
+        super::ManagedProviderTopology::Path1 => {
+            let path = required_absolute_env_path(TRUSTED_BUILDER_PUBLIC_KEY_ENV)?;
+            validate_managed_state_path(&path, TRUSTED_BUILDER_PUBLIC_KEY_ENV)?;
+            Ok(Some(path))
+        }
+        super::ManagedProviderTopology::SharedHost => Ok(None),
     }
 }
 
@@ -667,6 +680,7 @@ fn state_error(message: &str) -> DaemonError {
 
 #[cfg(test)]
 mod tests {
+    use super::super::MANAGED_PROVIDER_TOPOLOGY_ENV;
     use super::*;
 
     fn restore_env(name: &str, value: Option<std::ffi::OsString>) {
@@ -682,6 +696,7 @@ mod tests {
         let previous_home = env::var_os("HOME");
         let previous_chariox_home = env::var_os("CHARIOX_HOME");
         let previous_receipt = env::var_os("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT");
+        let previous_topology = env::var_os(MANAGED_PROVIDER_TOPOLOGY_ENV);
         let root = env::temp_dir().join(format!(
             "chariox-managed-home-paths-{}-{}",
             std::process::id(),
@@ -691,6 +706,7 @@ mod tests {
         let chariox_home = process_home.join(".chariox");
         env::set_var("HOME", &process_home);
         env::set_var("CHARIOX_HOME", &chariox_home);
+        env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "shared_host");
         env::remove_var("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT");
 
         let (observed_process_home, observed_chariox_home) =
@@ -727,6 +743,35 @@ mod tests {
         restore_env("HOME", previous_home);
         restore_env("CHARIOX_HOME", previous_chariox_home);
         restore_env("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT", previous_receipt);
+        restore_env(MANAGED_PROVIDER_TOPOLOGY_ENV, previous_topology);
+    }
+
+    #[test]
+    fn path1_requires_an_explicit_external_builder_key_path() {
+        let _lock = crate::env_lock::lock();
+        let previous_topology = env::var_os(MANAGED_PROVIDER_TOPOLOGY_ENV);
+        let previous_key = env::var_os(TRUSTED_BUILDER_PUBLIC_KEY_ENV);
+        env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "path1");
+        env::remove_var(TRUSTED_BUILDER_PUBLIC_KEY_ENV);
+        assert!(trusted_builder_public_key_path().is_err());
+        env::set_var(TRUSTED_BUILDER_PUBLIC_KEY_ENV, "relative/key");
+        assert!(trusted_builder_public_key_path().is_err());
+        env::set_var(
+            TRUSTED_BUILDER_PUBLIC_KEY_ENV,
+            "/etc/chariox/trusted-builder-public-key",
+        );
+        assert_eq!(
+            trusted_builder_public_key_path().expect("Path-1 trust path"),
+            Some(PathBuf::from("/etc/chariox/trusted-builder-public-key"))
+        );
+        env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "shared_host");
+        env::remove_var(TRUSTED_BUILDER_PUBLIC_KEY_ENV);
+        assert_eq!(
+            trusted_builder_public_key_path().expect("shared host"),
+            None
+        );
+        restore_env(MANAGED_PROVIDER_TOPOLOGY_ENV, previous_topology);
+        restore_env(TRUSTED_BUILDER_PUBLIC_KEY_ENV, previous_key);
     }
 
     #[test]

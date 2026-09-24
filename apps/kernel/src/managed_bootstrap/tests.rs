@@ -1406,6 +1406,72 @@ fn managed_release_evidence_is_kernel_verified_from_active_release_and_receipt()
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
+fn path1_release_evidence_requires_the_external_builder_key() {
+    use std::os::unix::fs::symlink;
+
+    let _env = crate::env_lock::lock();
+    let fixture = AttestedReleaseFixture::new(
+        "external-builder-key",
+        &"a".repeat(40),
+        &"b".repeat(40),
+        "x86_64-unknown-linux-gnu",
+    );
+    let names = [
+        "HOME",
+        "CHARIOX_HOME",
+        "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT",
+        "CHARIOX_MANAGED_RELEASE_MANIFEST",
+        "CHARIOX_MANAGED_RELEASE_SIGNATURE",
+        "CHARIOX_MANAGED_RELEASE_PUBLIC_KEY",
+        "CHARIOX_MANAGED_KERNEL_BINARY",
+        MANAGED_PROVIDER_TOPOLOGY_ENV,
+        super::state::TRUSTED_BUILDER_PUBLIC_KEY_ENV,
+    ];
+    let previous = names
+        .iter()
+        .map(|name| (*name, std::env::var_os(name)))
+        .collect::<Vec<_>>();
+    set_release_evidence_env(&fixture);
+    std::env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "path1");
+    std::env::remove_var(super::state::TRUSTED_BUILDER_PUBLIC_KEY_ENV);
+    assert!(super::authoritative_managed_release_evidence_from_env().is_err());
+
+    let packaged_key = fixture.release_root.join("usr/lib/chariox/builder-public-key");
+    let external_key = fixture.root.join("etc/chariox/trusted-builder-public-key");
+    fs::create_dir_all(external_key.parent().expect("external key parent"))
+        .expect("create external key directory");
+    fs::copy(&packaged_key, &external_key).expect("persist external key");
+    std::env::set_var(super::state::TRUSTED_BUILDER_PUBLIC_KEY_ENV, &external_key);
+    super::authoritative_managed_release_evidence_from_env()
+        .expect("matching external builder key")
+        .expect("confirmed release evidence");
+
+    let other_key = SigningKey::from_bytes(&[9_u8; 32]);
+    fs::write(
+        &external_key,
+        base64::engine::general_purpose::STANDARD.encode(other_key.verifying_key().to_bytes()),
+    )
+    .expect("replace external key");
+    let mismatch = super::authoritative_managed_release_evidence_from_env()
+        .expect_err("mismatched builder trust must fail");
+    assert!(mismatch.to_string().contains("does not match"));
+
+    fs::remove_file(&external_key).expect("remove test key");
+    symlink(&packaged_key, &external_key).expect("link external key to package");
+    assert!(super::authoritative_managed_release_evidence_from_env().is_err());
+    std::env::set_var(super::state::TRUSTED_BUILDER_PUBLIC_KEY_ENV, &packaged_key);
+    let image_key = super::authoritative_managed_release_evidence_from_env()
+        .expect_err("key inside release image must fail");
+    assert!(image_key.to_string().contains("outside the managed release image"));
+
+    for (name, value) in previous {
+        restore_env(name, value);
+    }
+    fixture.cleanup();
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
 fn managed_release_evidence_fails_closed_for_attestation_target_source_signature_artifact_receipt_and_layout_mismatch(
 ) {
     let _env = crate::env_lock::lock();
@@ -1545,6 +1611,7 @@ fn managed_release_evidence_fails_closed_for_attestation_target_source_signature
         &legacy.config.public_key_path,
         &legacy.release_digest,
         &legacy.config.kernel_binary,
+        None,
     )
     .expect_err("unversioned release layout must not produce authoritative evidence");
     assert!(layout_error.to_string().contains("active versioned layout"));

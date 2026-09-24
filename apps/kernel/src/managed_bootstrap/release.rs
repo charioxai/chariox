@@ -1,6 +1,6 @@
 use std::fs::{self, File};
 use std::io::{self, Read};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use base64::Engine;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
@@ -164,6 +164,7 @@ pub(super) fn verify_release_evidence(
     public_key_path: &Path,
     expected_digest: &str,
     expected_kernel_binary: &Path,
+    trusted_builder_public_key_path: Option<&Path>,
 ) -> Result<VerifiedReleaseEvidence, DaemonError> {
     let verified = verify_release(
         manifest_path,
@@ -221,7 +222,53 @@ pub(super) fn verify_release_evidence(
     )?;
     let public_key_bytes =
         read_bounded_regular_file(&builder_public_key, MAX_KEY_BYTES, "builder public key")?;
-    let verifying_key = decode_verifying_key(&public_key_bytes)?;
+    let packaged_verifying_key = decode_verifying_key(&public_key_bytes)?;
+    let verifying_key = if let Some(trusted_path) = trusted_builder_public_key_path {
+        if !trusted_path.is_absolute()
+            || trusted_path == Path::new("/")
+            || trusted_path
+                .components()
+                .any(|component| matches!(component, Component::ParentDir))
+        {
+            return Err(release_error(
+                "trusted builder public key path must be absolute and normalized",
+            ));
+        }
+        let metadata = fs::symlink_metadata(trusted_path)
+            .map_err(|error| release_io_error("trusted builder public key", error))?;
+        if metadata.file_type().is_symlink() {
+            return Err(release_error(
+                "trusted builder public key must not be a symlink",
+            ));
+        }
+        if !metadata.is_file() || metadata.len() > MAX_KEY_BYTES {
+            return Err(release_error(
+                "trusted builder public key is not a bounded regular file",
+            ));
+        }
+        let trusted_path = fs::canonicalize(trusted_path)
+            .map_err(|error| release_io_error("trusted builder public key", error))?;
+        let managed_image_root = resolved
+            .managed_image_root
+            .as_deref()
+            .ok_or_else(|| release_error("installed release has no managed image root"))?;
+        if trusted_path.starts_with(managed_image_root) {
+            return Err(release_error(
+                "trusted builder public key must be outside the managed release image",
+            ));
+        }
+        let trusted_bytes =
+            read_bounded_regular_file(&trusted_path, MAX_KEY_BYTES, "trusted builder public key")?;
+        let trusted_key = decode_verifying_key(&trusted_bytes)?;
+        if trusted_key.to_bytes() != packaged_verifying_key.to_bytes() {
+            return Err(release_error(
+                "trusted builder public key does not match the signed release key",
+            ));
+        }
+        trusted_key
+    } else {
+        packaged_verifying_key
+    };
     let signature = decode_signature(&signature_bytes)?;
     verifying_key
         .verify(&attestation_bytes, &signature)
@@ -373,6 +420,7 @@ struct ResolvedReleasePaths {
     public_key: PathBuf,
     kernel: PathBuf,
     active_release_root: Option<PathBuf>,
+    managed_image_root: Option<PathBuf>,
 }
 
 fn resolve_release_paths(
@@ -398,6 +446,7 @@ fn resolve_release_paths(
             public_key: public_key.to_path_buf(),
             kernel: kernel.to_path_buf(),
             active_release_root: None,
+            managed_image_root: None,
         });
     }
     if !symlinked.iter().all(|value| *value) {
@@ -436,12 +485,19 @@ fn resolve_release_paths(
             "installed release path is outside the pinned release",
         ));
     }
+    let managed_image_root = fs::canonicalize(
+        manifest
+            .parent()
+            .ok_or_else(|| release_error("release manifest path has no parent"))?,
+    )
+    .map_err(|error| release_io_error("release image root", error))?;
     Ok(ResolvedReleasePaths {
         manifest: resolved[0].clone(),
         signature: resolved[1].clone(),
         public_key: resolved[2].clone(),
         kernel: resolved[3].clone(),
         active_release_root: Some(release_root),
+        managed_image_root: Some(managed_image_root),
     })
 }
 
