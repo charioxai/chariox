@@ -39,6 +39,14 @@ impl WorkerPhase {
         }
     }
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StartGate {
+    Allowed,
+    /// The user stopped this generation; use waits for an explicit start.
+    UserStopped,
+    /// Failed generation, revoked publisher, or inactive/paused installation.
+    Refused,
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorkerStatus {
     pub(crate) generation: u64,
@@ -236,6 +244,19 @@ impl DurableKernelStateStore {
             .lock_connection("durable_state.app_worker_status")
             .map_err(|_| LifecycleStoreError::Storage)?;
         store::status(&connection, owner, installation)
+    }
+    /// Whether use may start this App now. It mirrors the start claim: the
+    /// installation must be active with current publisher trust, and the
+    /// current generation must be neither user-stopped nor Failed.
+    pub(crate) fn app_worker_start_gate(
+        &self,
+        owner: &str,
+        installation: &str,
+    ) -> Result<StartGate> {
+        let mut connection = self
+            .lock_connection("durable_state.app_worker_start_gate")
+            .map_err(|_| LifecycleStoreError::Storage)?;
+        store::start_gate(&mut connection, owner, installation)
     }
     /// Kernel recovery scans a bounded page of its own authoritative records;
     /// owner IDs are selected from the database, never supplied by an App.

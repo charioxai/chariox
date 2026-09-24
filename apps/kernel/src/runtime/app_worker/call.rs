@@ -164,3 +164,31 @@ fn peer_error(error: PeerError) -> AppWorkerError {
         _ => AppWorkerError::Unavailable,
     }
 }
+
+impl AppWorkerLease {
+    /// Deliver one kernel-owned wake. Success means the App's wake handler
+    /// returned; delivery is at least once and never implies an external effect.
+    pub(crate) async fn deliver_wake(
+        &self,
+        wake: &chariox_app_runtime::managed_state::Wake,
+        overdue: bool,
+        timeout: Duration,
+    ) -> Result<(), AppWorkerError> {
+        self.0.available()?;
+        let slot = self.0.peer.reserve(timeout).map_err(peer_error)?;
+        let params = serde_json::json!({
+            "id": wake.id, "dueAtMs": wake.due_at_ms, "revision": wake.revision, "overdue": overdue,
+        });
+        match slot
+            .request("schedule.wake", params, None)
+            .await
+            .map_err(peer_error)?
+        {
+            Message::Response {
+                outcome: chariox_app_runtime::wire::Outcome::Success(_),
+                ..
+            } => Ok(()),
+            _ => Err(AppWorkerError::Unavailable),
+        }
+    }
+}

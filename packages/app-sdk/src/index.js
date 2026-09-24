@@ -62,6 +62,24 @@ function registry(declared, label) {
   };
 }
 
+function wakeRecord(wake) {
+  record(wake, 'wake');
+  const revision = wake.revision ?? '';
+  // The kernel bounds revisions in UTF-8 bytes, like other identities.
+  if (!Number.isSafeInteger(wake.dueAtMs) || wake.dueAtMs < 0 || typeof revision !== 'string'
+    || Buffer.byteLength(revision) > 128) {
+    throw new AppError('INVALID_ARGUMENT', 'Invalid wake');
+  }
+  return { id: name(wake.id, 'wake identity'), dueAtMs: wake.dueAtMs, revision };
+}
+
+function wakeChange(change) {
+  record(change, 'wake change');
+  if (change.op === 'cancel') return { op: 'cancel', id: name(change.id, 'wake identity') };
+  if (change.op === 'set') return { op: 'set', ...wakeRecord(change) };
+  throw new AppError('INVALID_ARGUMENT', 'Invalid wake change');
+}
+
 /** Called by the trusted worker bootstrap after containment, never by a launcher. */
 export function createAppSdk({ transport, generation, paths, declarations = {}, limits }) {
   for (const path of ['package', 'data', 'temporary']) {
@@ -78,6 +96,7 @@ export function createAppSdk({ transport, generation, paths, declarations = {}, 
   const lifecycle = registry(lifecycleNames, 'lifecycle event');
   let lifecycleBusy = false;
   let ready = false;
+  let wakeHandler = null;
   const peer = new AppPeer({
     transport, generation, limits,
     async handleRequest(method, params, context) {
@@ -92,6 +111,11 @@ export function createAppSdk({ transport, generation, paths, declarations = {}, 
           name(params.occurrence_id, 'occurrence identity');
           if (!Object.hasOwn(params, 'payload')) throw new AppError('INVALID_ARGUMENT', 'Missing event payload');
           return events.get(params.name)(Object.freeze({ occurrenceId: params.occurrence_id, payload: params.payload }), context);
+        case 'schedule.wake': {
+          if (!wakeHandler) throw new AppError('METHOD_NOT_FOUND', 'No App wake handler is registered');
+          const wake = wakeRecord(params);
+          return wakeHandler(Object.freeze({ ...wake, overdue: params.overdue === true }), context);
+        }
         case 'lifecycle.dispatch':
           if (!lifecycleNames.includes(params.event)) throw new AppError('INVALID_ARGUMENT', 'Unknown lifecycle event');
           if (lifecycleBusy) throw new AppError('BUSY', 'An App lifecycle handler is still running', { retryable: true });
@@ -125,7 +149,24 @@ export function createAppSdk({ transport, generation, paths, declarations = {}, 
         if (transaction.occurrences !== undefined) {
           validateOccurrences(transaction.occurrences);
         }
+        if (transaction.wakes !== undefined) {
+          if (!Array.isArray(transaction.wakes) || transaction.wakes.length > 16) {
+            throw new AppError('INVALID_ARGUMENT', 'Invalid wake changes');
+          }
+          transaction = { ...transaction, wakes: transaction.wakes.map(wakeChange) };
+        }
         return call('state.transaction', transaction, options);
+      },
+    }),
+    schedule: Object.freeze({
+      set: (wake, options) => call('schedule.set', wakeRecord(wake), options),
+      cancel: (id, options) => call('schedule.cancel', { id: name(id, 'wake identity') }, options),
+      list: (options) => call('schedule.list', {}, options),
+      onWake(handler) {
+        if (ready) throw new AppError('ALREADY_READY', 'App registration has finished');
+        if (typeof handler !== 'function') throw new TypeError('Expected an App wake handler');
+        if (wakeHandler) throw new AppError('DUPLICATE_HANDLER', 'A wake handler is already registered');
+        wakeHandler = handler;
       },
     }),
     files: Object.freeze({

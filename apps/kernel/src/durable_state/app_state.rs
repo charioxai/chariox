@@ -8,7 +8,9 @@ use crate::runtime::app_operation_budget::{AppOperationBudget, AppOperationStopp
 use chariox_app_runtime::{
     app_catalog::CatalogError,
     app_outbox::{AppOutbox, EventCatalog, Occurrence, OutboxError, Receipt},
-    managed_state::{ManagedStateStore, StateChanges, StateError, StateRecord, StateScope},
+    managed_state::{
+        ManagedStateStore, StateChanges, StateError, StateRecord, StateScope, Wake, WakeChange,
+    },
 };
 use rusqlite::{Connection, TransactionBehavior};
 use std::sync::{mpsc, Arc};
@@ -34,8 +36,12 @@ pub(crate) enum AppStateOperation {
     Transaction {
         changes: StateChanges,
         occurrences: Vec<Occurrence>,
+        wakes: Vec<WakeChange>,
     },
     Emit(Occurrence),
+    /// Kernel-owned wakes; see `managed_state::wakes`.
+    Schedule(Vec<WakeChange>),
+    ScheduleList,
     Status {
         receipt_id: String,
     },
@@ -49,6 +55,8 @@ impl AppStateOperation {
             Self::Get { .. } => "get",
             Self::Transaction { .. } => "transaction",
             Self::Emit(_) => "emit",
+            Self::Schedule(_) => "schedule",
+            Self::ScheduleList => "schedule_list",
             Self::Status { .. } => "status",
             Self::Retry { .. } => "retry",
         }
@@ -68,6 +76,7 @@ pub(crate) enum AppStateOutcome {
         receipts: Vec<Receipt>,
     },
     Receipt(Receipt),
+    Wakes(Vec<Wake>),
 }
 
 pub(super) struct AppStateRequest {
@@ -183,10 +192,19 @@ fn apply(
         AppStateOperation::Transaction {
             changes,
             occurrences,
+            wakes,
         } => {
             let revision = ManagedStateStore::apply_in(&mut transaction, scope, &changes)?;
             let receipts = events::accept(&mut transaction, catalog, owner, &occurrences)?;
+            ManagedStateStore::apply_wakes_in(&mut transaction, scope, &wakes)?;
             AppStateOutcome::Transaction { revision, receipts }
+        }
+        AppStateOperation::Schedule(wakes) => {
+            ManagedStateStore::apply_wakes_in(&mut transaction, scope, &wakes)?;
+            AppStateOutcome::Wakes(ManagedStateStore::wakes_in(&transaction, scope)?)
+        }
+        AppStateOperation::ScheduleList => {
+            AppStateOutcome::Wakes(ManagedStateStore::wakes_in(&transaction, scope)?)
         }
         event => AppStateOutcome::Receipt(events::apply(&mut transaction, catalog, owner, event)?),
     };

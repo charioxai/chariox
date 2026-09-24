@@ -94,7 +94,10 @@ impl Broker for BackendBroker {
         let delegate = self.clone();
         Box::pin(async move {
             match request.method.as_str() {
-                name if name.starts_with("state.") || name.starts_with("events.") => {
+                name if name.starts_with("state.")
+                    || name.starts_with("events.")
+                    || name.starts_with("schedule.") =>
+                {
                     delegate.state.dispatch(request).await
                 }
                 name if name.starts_with("http.") => delegate.http.dispatch(request).await,

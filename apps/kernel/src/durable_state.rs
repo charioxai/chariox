@@ -15,24 +15,25 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
 
-pub(crate) mod app_bindings;
-pub(crate) mod app_automations;
 pub(crate) mod app_activation;
-pub(crate) mod app_worker_lifecycle;
+pub(crate) mod app_automations;
+pub(crate) mod app_bindings;
 pub(crate) mod app_event_delivery;
 pub(crate) mod app_event_maintenance;
-pub(crate) mod app_installation_staging;
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-pub(crate) mod app_installation_operations;
-pub(crate) mod app_publishers;
-pub(crate) mod app_publisher_operations;
-pub(crate) mod app_state;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_files;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_http;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(crate) mod app_installation_operations;
+pub(crate) mod app_installation_staging;
+pub(crate) mod app_publisher_operations;
+pub(crate) mod app_publishers;
+pub(crate) mod app_state;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_tools;
+pub(crate) mod app_wakes;
+pub(crate) mod app_worker_lifecycle;
 pub(crate) mod apps;
 #[cfg(test)]
 mod apps_tests;
@@ -40,9 +41,9 @@ pub(crate) mod browser_import;
 mod owner;
 mod writer_fence;
 use writer_fence::fenced_writer_error;
-pub(crate) mod workflow_runtime;
 pub(crate) mod workflow_dispatch_intents;
 pub(crate) mod workflow_queue_start;
+pub(crate) mod workflow_runtime;
 
 #[derive(Debug, Clone)]
 pub struct DurableKernelStateStore {
@@ -150,6 +151,7 @@ enum DurableWriterRequest {
     AppPublisherOperation(Box<app_publisher_operations::PublisherOperationRequest>),
     VerifiedApp(Box<app_installation_staging::AppVerifiedInstallationRequest>),
     AppState(Box<app_state::AppStateRequest>),
+    AppWake(Box<app_wakes::AppWakeRequest>),
     AppBinding(Box<app_bindings::AppBindingRequest>),
     AppAutomation(Box<app_automations::AppAutomationRequest>),
     AppActivation(Box<app_activation::AppActivationRequest>),
@@ -338,9 +340,11 @@ impl DurableKernelStateStore {
         app_worker_lifecycle::initialize(&connection)?;
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         app_installation_operations::initialize(&connection)?;
-        workflow_dispatch_intents::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
-            operation: "durable_state.workflow_dispatch_intents",
-            message: error.to_string(),
+        workflow_dispatch_intents::initialize(&connection).map_err(|error| {
+            DaemonError::LocalTransport {
+                operation: "durable_state.workflow_dispatch_intents",
+                message: error.to_string(),
+            }
         })?;
         let writer = DurableStateWriter::start(&path)?;
         connection
@@ -1242,7 +1246,11 @@ impl DurableKernelStateStore {
 
 impl DurableStateWriter {
     fn require_healthy(&self) -> Result<(), DaemonError> {
-        if self.health.fatal.load(Ordering::Acquire) { Err(fenced_writer_error()) } else { Ok(()) }
+        if self.health.fatal.load(Ordering::Acquire) {
+            Err(fenced_writer_error())
+        } else {
+            Ok(())
+        }
     }
     fn start(path: &Path) -> Result<Self, DaemonError> {
         let connection = Connection::open(path).map_err(|error| DaemonError::LocalTransport {
@@ -1367,12 +1375,16 @@ fn run_durable_writer(
 ) {
     struct MarkStopped(Arc<DurableWriterHealth>);
     impl Drop for MarkStopped {
-        fn drop(&mut self) { self.0.fatal.store(true, Ordering::Release); }
+        fn drop(&mut self) {
+            self.0.fatal.store(true, Ordering::Release);
+        }
     }
     let _stopped = MarkStopped(health.clone());
     let mut pending = None;
     while let Some(first) = pending.take().or_else(|| receiver.recv().ok()) {
-        if health.fatal.load(Ordering::Acquire) { break; }
+        if health.fatal.load(Ordering::Acquire) {
+            break;
+        }
         let first = match first {
             DurableWriterRequest::Ordinary(request) => request,
             DurableWriterRequest::App(request) => {
@@ -1401,6 +1413,10 @@ fn run_durable_writer(
                 app_state::execute(&mut connection, *request);
                 continue;
             }
+            DurableWriterRequest::AppWake(request) => {
+                app_wakes::execute(&mut connection, *request);
+                continue;
+            }
             DurableWriterRequest::AppBinding(request) => {
                 app_bindings::execute(&mut connection, *request);
                 continue;
@@ -1419,7 +1435,10 @@ fn run_durable_writer(
             }
             #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
             DurableWriterRequest::AppInstallationOperation(request) => {
-                if matches!(app_installation_operations::execute(&mut connection, *request), app_event_delivery::WriterDisposition::Stop) {
+                if matches!(
+                    app_installation_operations::execute(&mut connection, *request),
+                    app_event_delivery::WriterDisposition::Stop
+                ) {
                     health.fatal.store(true, Ordering::Release);
                     break;
                 }
@@ -1458,7 +1477,10 @@ fn run_durable_writer(
                 continue;
             }
             DurableWriterRequest::WorkflowQueueStart(request) => {
-                if matches!(workflow_queue_start::execute(&mut connection, *request), app_event_delivery::WriterDisposition::Stop) {
+                if matches!(
+                    workflow_queue_start::execute(&mut connection, *request),
+                    app_event_delivery::WriterDisposition::Stop
+                ) {
                     health.fatal.store(true, Ordering::Release);
                     break;
                 }
@@ -1468,14 +1490,21 @@ fn run_durable_writer(
         let mut batch = vec![first];
         let deadline = Instant::now() + batch_window;
         while batch.len() < DURABLE_WRITE_BATCH_LIMIT {
-            if health.fatal.load(Ordering::Acquire) { break; }
+            if health.fatal.load(Ordering::Acquire) {
+                break;
+            }
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 break;
             };
             match receiver.recv_timeout(remaining) {
                 Ok(DurableWriterRequest::Ordinary(request)) => batch.push(request),
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-                Ok(request @ (DurableWriterRequest::AppTools(_) | DurableWriterRequest::AppFile(_) | DurableWriterRequest::AppHttp(_) | DurableWriterRequest::AppInstallationOperation(_))) => {
+                Ok(
+                    request @ (DurableWriterRequest::AppTools(_)
+                    | DurableWriterRequest::AppFile(_)
+                    | DurableWriterRequest::AppHttp(_)
+                    | DurableWriterRequest::AppInstallationOperation(_)),
+                ) => {
                     pending = Some(request);
                     break;
                 }
@@ -1485,6 +1514,7 @@ fn run_durable_writer(
                     | DurableWriterRequest::AppPublisherOperation(_)
                     | DurableWriterRequest::VerifiedApp(_)
                     | DurableWriterRequest::AppState(_)
+                    | DurableWriterRequest::AppWake(_)
                     | DurableWriterRequest::AppBinding(_)
                     | DurableWriterRequest::AppAutomation(_)
                     | DurableWriterRequest::AppActivation(_)
@@ -1553,7 +1583,10 @@ fn commit_durable_write_batch(
                 .and_then(|_| {
                     let sequence = transaction.last_insert_rowid().max(0) as u64;
                     if kind == crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND {
-                        workflow_dispatch_intents::record_prompt_state_in(&transaction, payload_json)?;
+                        workflow_dispatch_intents::record_prompt_state_in(
+                            &transaction,
+                            payload_json,
+                        )?;
                     }
                     Ok(sequence)
                 }),
@@ -1692,7 +1725,6 @@ fn send_durable_batch_error(batch: Vec<DurableWriteRequest>, message: String) {
         let _ = request.response.send(Err(message.clone()));
     }
 }
-
 
 fn write_entity_checkpoint(
     transaction: &rusqlite::Transaction<'_>,

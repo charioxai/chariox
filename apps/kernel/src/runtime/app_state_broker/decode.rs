@@ -1,6 +1,9 @@
 use super::{errors, events, AppStateOperation};
 use chariox_app_runtime::{
-    managed_state::{StateChanges, StateCheck, StateWrite, MAX_CHANGES, MAX_CHECKS, MAX_KEY_BYTES},
+    managed_state::{
+        StateChanges, StateCheck, StateWrite, WakeChange, MAX_CHANGES, MAX_CHECKS, MAX_KEY_BYTES,
+        MAX_WAKE_CHANGES,
+    },
     wire::RemoteError,
 };
 use serde_json::{Map, Value};
@@ -18,7 +21,7 @@ pub(super) fn operation(method: &str, params: Value) -> Result<AppStateOperation
         "state.transaction" => {
             let mut object = fields(
                 params,
-                &["schemaVersion", "checks", "writes", "occurrences"],
+                &["schemaVersion", "checks", "writes", "occurrences", "wakes"],
             )?;
             let schema = take(&mut object, "schemaVersion")?
                 .as_u64()
@@ -26,6 +29,10 @@ pub(super) fn operation(method: &str, params: Value) -> Result<AppStateOperation
                 .ok_or_else(errors::invalid)?;
             let occurrences = match object.remove("occurrences") {
                 Some(value) => events::occurrences(value)?,
+                None => Vec::new(),
+            };
+            let wakes = match object.remove("wakes") {
+                Some(value) => wake_changes(value)?,
                 None => Vec::new(),
             };
             let checks = array(take(&mut object, "checks")?, MAX_CHECKS)?
@@ -56,10 +63,35 @@ pub(super) fn operation(method: &str, params: Value) -> Result<AppStateOperation
             Ok(AppStateOperation::Transaction {
                 changes,
                 occurrences,
+                wakes,
             })
+        }
+        "schedule.set" => {
+            let object = fields(params, &["id", "dueAtMs", "revision"])?;
+            let mut change = Map::new();
+            change.insert("op".into(), Value::String("set".into()));
+            change.extend(object);
+            Ok(AppStateOperation::Schedule(wake_changes(Value::Array(
+                vec![Value::Object(change)],
+            ))?))
+        }
+        "schedule.cancel" => {
+            let mut object = fields(params, &["id"])?;
+            let id = key(take(&mut object, "id")?)?;
+            Ok(AppStateOperation::Schedule(vec![WakeChange::Cancel { id }]))
+        }
+        "schedule.list" => {
+            fields(params, &[])?;
+            Ok(AppStateOperation::ScheduleList)
         }
         _ => events::operation(method, params),
     }
+}
+fn wake_changes(value: Value) -> Result<Vec<WakeChange>> {
+    array(value, MAX_WAKE_CHANGES)?
+        .into_iter()
+        .map(|change| serde_json::from_value(change).map_err(|_| errors::invalid()))
+        .collect()
 }
 pub(super) fn fields(value: Value, allowed: &[&str]) -> Result<Map<String, Value>> {
     let Value::Object(object) = value else {

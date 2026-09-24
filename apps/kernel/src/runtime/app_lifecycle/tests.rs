@@ -594,3 +594,62 @@ fn validated_manual_stop_retry_holds_foreground_gate_until_durable_completion() 
     service.shutdown_blocking().unwrap();
     assert!(all_reaped(&observations));
 }
+
+#[test]
+fn on_demand_start_respects_user_stop_explicit_start_and_revocation() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    fixture_event_catalog(&store);
+    stage(&store);
+    let (control, _observations) =
+        make_control(&store, Arc::new(NativeFixture::compile().unwrap()));
+    let service = control.lifecycle();
+    // A never-started active installation may start on demand.
+    service
+        .start_on_demand_blocking("alice", "installed", runtime.handle().clone())
+        .unwrap();
+    wait(|| control.active_app_lease("alice", "installed").is_some());
+    // A user stop is not overridden by use.
+    service.stop_blocking("alice", "installed").unwrap();
+    assert!(matches!(
+        service.start_on_demand_blocking("alice", "installed", runtime.handle().clone()),
+        Err(LifecycleError::Stopped)
+    ));
+    // An explicit start re-enables on-demand use.
+    service
+        .start_active_blocking("alice", "installed", runtime.handle().clone())
+        .unwrap();
+    wait(|| control.active_app_lease("alice", "installed").is_some());
+    service.stop_blocking("alice", "installed").unwrap();
+    service
+        .start_active_blocking("alice", "installed", runtime.handle().clone())
+        .unwrap();
+    wait(|| control.active_app_lease("alice", "installed").is_some());
+    // A revoked publisher is refused synchronously, not left pending.
+    store
+        .mutate_app_publisher(
+            "alice",
+            AppPublisherMutation::Revoke {
+                publisher_id: "com.example".into(),
+                key_id: "state-key".into(),
+                expected_revision: 1,
+                decision: TrustDecision {
+                    decision_id: "revoke-on-demand".into(),
+                    authority_ref: "kernel-test".into(),
+                },
+                now_ms: 2,
+            },
+        )
+        .unwrap();
+    wait(|| control.active_app_lease("alice", "installed").is_none());
+    assert!(matches!(
+        service.start_on_demand_blocking("alice", "installed", runtime.handle().clone()),
+        Err(LifecycleError::Authority)
+    ));
+    assert!(matches!(
+        service.start_on_demand_blocking("bob", "installed", runtime.handle().clone()),
+        Err(LifecycleError::Authority)
+    ));
+    service.shutdown_blocking().unwrap();
+}

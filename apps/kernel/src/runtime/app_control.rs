@@ -33,6 +33,7 @@ pub(crate) struct AppControlService {
     preparation: super::app_package_preparation::AppPackagePreparation,
     admission: Arc<Semaphore>,
     event_pump: super::app_event_pump::AppEventPump,
+    wake_pump: super::app_wake_pump::AppWakePump,
     publishers: super::app_publisher_control::AppPublisherControl,
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
     workers: workers::ActiveWorkers,
@@ -80,6 +81,7 @@ impl AppControlService {
             store,
             admission,
             event_pump,
+            wake_pump: Default::default(),
             publishers,
             #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
             workers,
@@ -108,6 +110,10 @@ impl AppControlService {
 
     pub(crate) fn event_pump(&self) -> &super::app_event_pump::AppEventPump {
         &self.event_pump
+    }
+
+    pub(crate) fn wake_pump(&self) -> &super::app_wake_pump::AppWakePump {
+        &self.wake_pump
     }
 
     pub(crate) fn try_admit(

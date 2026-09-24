@@ -17,6 +17,6 @@ fn fetch_sdk_contract_is_pinned_to_its_kernel_and_runtime_release() {
     // the HTTP decoder/encoder fixture separately checks the underlying calls.
     assert_eq!(
         format!("{:x}", Sha256::digest(BYTES)),
-        "379fb9102708420307c726daba28105793bdc54a618cf7d4abc221a67733903b"
+        "3095cae044055534353465c32d4f36e8a6c853a205693d41b7410ffded0d0014"
     );
 }
