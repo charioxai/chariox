@@ -3,9 +3,12 @@ use serde::{Deserialize, Serialize};
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ListExtensionsArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apps_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,13 +76,18 @@ pub fn extension_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     let canonical = vec![
         RuntimeToolSpec {
             name: LIST_EXTENSIONS_TOOL.to_string(),
-            description: "List Chariox-managed extensions available in this workspace, including whether they are already granted to the current agent. Use this before requesting an extension.".to_string(),
+            description: "List Chariox-managed extensions available in this workspace, including whether they are already granted to the current agent. Use this before requesting an extension. App inventory returns at most 100 installations; pass apps_next_cursor as apps_cursor with kind app to fetch the next page.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["mcp", "skill", "script", "connector", "all"]
+                        "enum": ["mcp", "skill", "script", "connector", "app", "all"]
+                    },
+                    "apps_cursor": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
                     }
                 },
                 "additionalProperties": false
@@ -94,7 +102,7 @@ pub fn extension_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["mcp", "skill", "script", "connector"]
+                        "enum": ["mcp", "skill", "script", "connector", "app"]
                     },
                     "name": {"type": "string"},
                     "reason": {"type": "string"},

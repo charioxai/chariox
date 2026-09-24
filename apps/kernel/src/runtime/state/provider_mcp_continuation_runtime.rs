@@ -1,17 +1,6 @@
 use super::*;
 
 impl KernelRuntimeState {
-    pub(super) async fn activate_agent_mcp_grants_if_idle(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        requested_mcp_name: &str,
-    ) -> Result<ProviderReloadOutcome, DaemonError> {
-        let reason = format!("MCP `{requested_mcp_name}`");
-        self.reload_agent_provider_if_idle(session_id, agent_id, &reason)
-            .await
-    }
-
     pub(super) fn remember_pending_mcp_continuation(
         &self,
         session_id: &str,
@@ -20,7 +9,49 @@ impl KernelRuntimeState {
         mcp_name: &str,
         previous_prompt: &str,
     ) {
-        self.owned.pending_mcp_continuations.write().insert(
+        self.remember_mcp_continuation_with_reason(
+            session_id,
+            agent_id,
+            source_attachment_id,
+            mcp_name,
+            previous_prompt,
+            ProviderReloadReason::LaunchInputs(format!("MCP `{mcp_name}`")),
+        );
+    }
+
+    pub(super) fn remember_pending_runtime_tools_continuation(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        source_attachment_id: &str,
+        previous_prompt: &str,
+    ) {
+        self.remember_mcp_continuation_with_reason(
+            session_id,
+            agent_id,
+            source_attachment_id,
+            "chariox-runtime",
+            previous_prompt,
+            ProviderReloadReason::RuntimeToolCatalog,
+        );
+    }
+
+    fn remember_mcp_continuation_with_reason(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        source_attachment_id: &str,
+        mcp_name: &str,
+        previous_prompt: &str,
+        reload_reason: ProviderReloadReason,
+    ) {
+        let mut pending = self.owned.pending_mcp_continuations.write();
+        let reload_reason = pending
+            .get(agent_id)
+            .map_or(reload_reason.clone(), |previous| {
+                reload_reason.merge(&previous.reload_reason)
+            });
+        pending.insert(
             agent_id.to_string(),
             PendingMcpContinuation {
                 session_id: session_id.to_string(),
@@ -28,29 +59,28 @@ impl KernelRuntimeState {
                 source_attachment_id: source_attachment_id.to_string(),
                 mcp_name: mcp_name.to_string(),
                 previous_prompt: previous_prompt.to_string(),
+                reload_reason,
             },
         );
-        self.schedule_pending_mcp_continuation_when_idle(
-            session_id.to_string(),
-            agent_id.to_string(),
-        );
+        drop(pending);
+        self.ensure_pending_mcp_continuation_poller(session_id, agent_id);
     }
 
-    fn requeue_pending_mcp_continuation(&self, continuation: PendingMcpContinuation) {
-        let session_id = continuation.session_id.clone();
-        let agent_id = continuation.agent_id.clone();
-        self.owned
-            .pending_mcp_continuations
-            .write()
-            .entry(agent_id.clone())
-            .or_insert(continuation);
-        self.schedule_pending_mcp_continuation_when_idle(session_id, agent_id);
-    }
-
-    fn schedule_pending_mcp_continuation_when_idle(&self, session_id: String, agent_id: String) {
+    fn ensure_pending_mcp_continuation_poller(&self, session_id: &str, agent_id: &str) {
+        let pending = self.owned.pending_mcp_continuations.write();
+        if !pending.contains_key(agent_id) {
+            return;
+        }
+        let poller = self.owned.pending_mcp_continuations.pollers.claim(agent_id);
+        drop(pending);
+        let Some(mut poller) = poller else {
+            return;
+        };
         let state = self.clone();
+        let session_id = session_id.to_string();
+        let agent_id = agent_id.to_string();
         tokio::spawn(async move {
-            for _ in 0..240 {
+            while poller.next().await {
                 let is_idle = state
                     .owned
                     .session_store
@@ -78,9 +108,21 @@ impl KernelRuntimeState {
                             }),
                         );
                     }
+                }
+                let queued = state.owned.pending_mcp_continuations.write();
+                if !queued.contains_key(&agent_id) {
+                    poller.release();
                     return;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            let queued = state.owned.pending_mcp_continuations.write();
+            poller.release();
+            if queued.contains_key(&agent_id) {
+                crate::logging::warn_with_fields(
+                    "daemon.provider",
+                    "pending MCP continuation polling expired",
+                    serde_json::json!({"session_id": session_id, "agent_id": agent_id}),
+                );
             }
         });
     }
@@ -120,27 +162,37 @@ impl KernelRuntimeState {
                     Some(run.id().to_string())
                 }
             });
-        match self
-            .activate_agent_mcp_grants_if_idle(
+        let outcome = self
+            .reload_agent_provider_if_idle_for_reason(
                 &continuation.session_id,
                 &continuation.agent_id,
-                &continuation.mcp_name,
+                &continuation.reload_reason,
             )
-            .await?
-        {
-            ProviderReloadOutcome::Deferred => {
-                self.requeue_pending_mcp_continuation(continuation);
-                return Ok(());
+            .await?;
+        if outcome == ProviderReloadOutcome::Deferred {
+            let mut queued = self.owned.pending_mcp_continuations.write();
+            if let Some(newer) = queued.get_mut(agent_id) {
+                newer.reload_reason = newer
+                    .reload_reason
+                    .clone()
+                    .merge(&continuation.reload_reason);
+            } else {
+                queued.insert(agent_id.to_owned(), continuation);
             }
-            ProviderReloadOutcome::Reloaded => {
-                self.wait_for_agent_provider_relaunch(
-                    &continuation.session_id,
-                    &continuation.agent_id,
-                    previous_provider_run_id.as_deref(),
-                )
-                .await?;
-            }
-            ProviderReloadOutcome::Unaffected => {}
+            drop(queued);
+            // Usually the existing poller still owns the original budget. A
+            // prompt-completion callback may restart previously expired work,
+            // but a Deferred poll attempt never spawns a replacement task.
+            self.ensure_pending_mcp_continuation_poller(session_id, agent_id);
+            return Ok(());
+        }
+        if outcome == ProviderReloadOutcome::Reloaded {
+            self.wait_for_agent_provider_relaunch(
+                &continuation.session_id,
+                &continuation.agent_id,
+                previous_provider_run_id.as_deref(),
+            )
+            .await?;
         }
 
         let (hidden_system_context, _manifest) =

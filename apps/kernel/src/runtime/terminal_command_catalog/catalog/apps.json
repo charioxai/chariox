@@ -1,0 +1,14 @@
+[
+  {
+    "id": "app",
+    "label": "/app",
+    "description": "Inspect your App installations and update history",
+    "value": "/app",
+    "surfaces": ["session", "waiting_room"],
+    "children": [
+      { "id": "app-list", "label": "list", "description": "List App installations with bounded paging", "value": "/app list", "surfaces": ["session", "waiting_room"] },
+      { "id": "app-status", "label": "status", "description": "Inspect one installation's active and pending release", "value": "/app status ", "surfaces": ["session", "waiting_room"] },
+      { "id": "app-journal", "label": "journal", "description": "Show retained installation update history", "value": "/app journal ", "surfaces": ["session", "waiting_room"] }
+    ]
+  }
+]

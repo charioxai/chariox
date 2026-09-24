@@ -1,0 +1,161 @@
+//! Read-only admission of an installed, signed App runtime. Trust comes from a
+//! separately installed root-owned enrollment, never a key in an App or bundle.
+//! This verifies bytes and retains installer leases; it does not establish the
+//! process sandbox or replace macOS code-signature/notarization verification.
+mod filesystem;
+mod graph;
+#[cfg(any(target_os = "linux", test))]
+pub mod installer;
+mod manifest;
+#[cfg(test)]
+mod tests;
+
+use ed25519_dalek::VerifyingKey;
+use filesystem::Directory;
+use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use sha2::{Digest, Sha256};
+use std::{
+    collections::BTreeMap,
+    fs::File,
+    path::{Path, PathBuf},
+};
+
+const MAX_MANIFEST: u64 = 262_144;
+const MAX_BUNDLE: u64 = 536_870_912;
+pub(crate) const MAX_INVENTORY_FILES: usize = 40;
+const INVENTORY: &str = "runtime-inventory.json";
+const SIGNATURE: &str = "runtime-inventory.sig";
+const LEASE: &str = ".runtime-lease";
+
+#[derive(Debug, thiserror::Error)]
+pub enum EnrollmentError {
+    #[error("app_runtime_enrollment_io")]
+    Io(#[from] std::io::Error),
+    #[error("app_runtime_enrollment_identity")]
+    Identity,
+    #[error("app_runtime_enrollment_signature")]
+    Signature,
+    #[error("app_runtime_enrollment_contract")]
+    Contract,
+    #[error("app_runtime_enrollment_busy")]
+    Busy,
+    #[error("app_runtime_enrollment_limit")]
+    Limit,
+}
+type Result<T> = std::result::Result<T, EnrollmentError>;
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Enrollment {
+    schema: String,
+    revision: u64,
+    target: String,
+    runtime_root: PathBuf,
+    inventory_sha256: String,
+    public_key_hex: String,
+}
+
+/// Not Clone: the concrete platform domain must own this through native reap
+/// and outstanding broker drain. Cloning an FD is not an independent enrollment.
+pub struct EnrolledRuntime {
+    root: Directory,
+    _lease: File,
+    files: BTreeMap<String, File>,
+    _enrollment_file: File,
+    _inventory_file: File,
+    _signature_file: File,
+    inventory_digest: String,
+    revision: u64,
+    target: String,
+}
+
+impl EnrolledRuntime {
+    /// Only the system installer's fixed trust location is accepted. Neither an
+    /// App request nor an environment variable can supply an alternate key/path.
+    pub fn open_installed() -> Result<Self> {
+        #[cfg(target_os = "linux")]
+        let path = Path::new("/etc/chariox/apps/runtime-enrollment.json");
+        #[cfg(target_os = "macos")]
+        let path =
+            Path::new("/Library/Application Support/Chariox/AppRuntime/runtime-enrollment.json");
+        Self::open(path, 0)
+    }
+
+    fn open(path: &Path, trusted_uid: u32) -> Result<Self> {
+        let parent = Directory::open(path.parent().ok_or(EnrollmentError::Identity)?, trusted_uid)?;
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(EnrollmentError::Identity)?;
+        let mut enrollment_file = parent.file(name, None)?;
+        let bytes = filesystem::small(&mut enrollment_file, 4096)?;
+        let enrollment: Enrollment =
+            serde_json::from_slice(&bytes).map_err(|_| EnrollmentError::Contract)?;
+        if enrollment.schema != "chariox.app-runtime-enrollment.v1"
+            || enrollment.revision == 0
+            || enrollment.revision > i64::MAX as u64
+            || enrollment.target != manifest::target()?
+            || !manifest::hex(&enrollment.inventory_sha256, 64)
+        {
+            return Err(EnrollmentError::Contract);
+        }
+        let key = VerifyingKey::from_bytes(&decode_hex::<32>(&enrollment.public_key_hex)?)
+            .map_err(|_| EnrollmentError::Signature)?;
+        let root = Directory::open(&enrollment.runtime_root, trusted_uid)?;
+        let graph = graph::VerifiedGraph::open(
+            root,
+            &key,
+            &enrollment.inventory_sha256,
+            &enrollment.target,
+            graph::Modes::Installed,
+        )?;
+        // Re-read held trust input after bounded hashing. The installer's change
+        // protocol retains exclusive ownership of this generation's lease; it
+        // publishes a new generation/enrollment instead of mutating old bytes.
+        if filesystem::small(&mut enrollment_file, 4096)? != bytes {
+            return Err(EnrollmentError::Identity);
+        }
+        Ok(Self {
+            root: graph.root,
+            _lease: graph.lease,
+            files: graph.files,
+            _enrollment_file: enrollment_file,
+            _inventory_file: graph.inventory_file,
+            _signature_file: graph.signature_file,
+            inventory_digest: enrollment.inventory_sha256,
+            revision: enrollment.revision,
+            target: enrollment.target,
+        })
+    }
+
+    pub fn inventory_digest(&self) -> &str {
+        &self.inventory_digest
+    }
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+    pub fn target(&self) -> &str {
+        &self.target
+    }
+    /// Descriptor-only access for the platform provisioner. Executing a path
+    /// from this lease still requires that provisioner's observed sandbox.
+    pub(crate) fn file(&self, name: &str) -> Option<&File> {
+        self.files.get(name)
+    }
+    pub(crate) fn root(&self) -> &File {
+        &self.root.file
+    }
+}
+
+fn decode_hex<const N: usize>(value: &str) -> Result<[u8; N]> {
+    if !manifest::hex(value, N * 2) {
+        return Err(EnrollmentError::Signature);
+    }
+    let mut bytes = [0; N];
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)
+            .map_err(|_| EnrollmentError::Signature)?;
+    }
+    Ok(bytes)
+}

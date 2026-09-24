@@ -17,7 +17,9 @@ pub(crate) fn summarize_provider_reload_outcomes(
     };
     for outcome in outcomes {
         match outcome {
-            ProviderReloadOutcome::Reloaded => summary.reloaded += 1,
+            ProviderReloadOutcome::Reloaded | ProviderReloadOutcome::ToolsRefreshed => {
+                summary.reloaded += 1
+            }
             ProviderReloadOutcome::Deferred => summary.deferred += 1,
             ProviderReloadOutcome::Unaffected => summary.unaffected += 1,
         }

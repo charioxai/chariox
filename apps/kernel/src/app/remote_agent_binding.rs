@@ -123,6 +123,18 @@ impl DaemonApp {
                 });
             }
         }
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        {
+            let occupied = tools.iter().map(|tool| tool.tool_name.clone()).collect();
+            tools.extend(
+                self.app_control_service()
+                    .app_extension_tools_for_agent(agent, &occupied)
+                    .map_err(|error| DaemonError::LocalTransport {
+                        operation: "remote App tool catalog",
+                        message: error.to_string(),
+                    })?,
+            );
+        }
         Ok(crate::extension::RemoteExtensionManifest { tools })
     }
 

@@ -1,0 +1,43 @@
+[Unit]
+Description=Chariox private App storage helper
+Before=chariox-managed-bootstrap.service
+ConditionPathExists=/etc/chariox/app-storage.json
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+NotifyAccess=main
+TimeoutStartSec=180s
+User=root
+Group=root
+ExecStart=/usr/libexec/chariox-app-storage
+Restart=always
+RestartSec=2s
+KillMode=control-group
+TimeoutStopSec=90s
+RuntimeDirectory=chariox-app-storage
+RuntimeDirectoryMode=0711
+StateDirectory=chariox-app-storage
+StateDirectoryMode=0711
+UMask=0077
+NoNewPrivileges=true
+# Mounts must propagate into the kernel's service namespace. Do not add settings
+# that create a private mount namespace (ProtectSystem, PrivateTmp/Devices, etc.).
+PrivateMounts=false
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER CAP_SETGID
+RestrictAddressFamilies=AF_UNIX
+RestrictSUIDSGID=true
+LockPersonality=true
+# 64 leases x (40 graph files + 12 retained roots/metadata/cgroup handles),
+# plus <=64 clients, 16 listeners and 128 reserved global/transient handles.
+# Budget3536 is conservative headroom, not a measured peak.
+# This bound is checked with the runtime inventory cap in the helper tests.
+LimitNOFILE=4096
+LimitCORE=0
+MemoryMax=256M
+MemorySwapMax=0
+CPUQuota=100%
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target

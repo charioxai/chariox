@@ -38,6 +38,7 @@ import { createWaitingRoomTransitionController } from "./waiting-room-transition
 type AnyFn = (...args: any[]) => any
 
 export type CliSessionLifecycleCompositionDeps = {
+  drainAppInstall?: () => Promise<void>
   client: any
   options: any
   appLogger: any
@@ -377,6 +378,7 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
     getSessionId: () => deps.sessionState().id,
     getPromptDraft: deps.persistablePromptDraft,
     syncPromptTextSnapshot: deps.syncPromptTextSnapshot,
+    ...(deps.drainAppInstall ? { beforeCleanup: deps.drainAppInstall } : {}),
     flushPromptDraftPersist: deps.flushPendingPromptDraftPersist,
     persistSessionPromptDraft: (sessionId, promptDraft) =>
       deps.persistSessionPromptState(sessionId, { promptDraft }),

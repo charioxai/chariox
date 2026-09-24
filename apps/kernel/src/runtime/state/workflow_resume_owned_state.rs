@@ -10,12 +10,20 @@ impl KernelRuntimeOwnedState {
     ) -> Result<(crate::session::WorkflowRun, WorkflowPromptDispatches), DaemonError> {
         let activity_mutation = self.begin_managed_activity_mutation();
         let durable_state_store = self.durable_state_store.clone();
-        let (workflow_run, resumable_node_ids) = durable_state_store
+        let (workflow_run, resumable_node_ids, pending_entry_node) = durable_state_store
             .with_workflow_runtime_transition_lock(|| {
                 let mut sessions = self.session_store.write();
                 let session_before_resume = sessions.get_session(session_id)?;
-                let resumable_node_ids = sessions
-                    .resolve_workflow_run_ref(session_id, workflow_run_ref)?
+                let original = sessions.resolve_workflow_run_ref(session_id, workflow_run_ref)?;
+                // Classify an unsubmitted original entry before publishing the run
+                // as runnable to the owned pump. A concurrent pump admission
+                // afterward must suppress this retry, not turn it into an
+                // intentional second user invocation.
+                let pending_entry_node = self
+                    .workflow_entry_intent(session_id, original.id())?
+                    .filter(|intent| !intent.submitted)
+                    .map(|intent| intent.node_id);
+                let resumable_node_ids = original
                     .node_runs()
                     .iter()
                     .filter(|node_run| {
@@ -37,7 +45,7 @@ impl KernelRuntimeOwnedState {
                     sessions.restore_session(session_before_resume);
                     return Err(error);
                 }
-                Ok((workflow_run, resumable_node_ids))
+                Ok((workflow_run, resumable_node_ids, pending_entry_node))
             })?;
         activity_mutation.record();
         // Prompt admission and provider dispatch must observe only a durably resumed run.
@@ -57,6 +65,18 @@ impl KernelRuntimeOwnedState {
             .collect::<Vec<_>>();
         let mut dispatches = WorkflowPromptDispatches::default();
         for (workflow_node_run_id, agent_id, prompt_text) in resumable {
+            if pending_entry_node.as_deref() == Some(workflow_node_run_id.as_str()) {
+                if let Some(prepared) = self.workflow_retry_durable_entry(
+                    session_id,
+                    workflow_run.id(),
+                    &workflow_node_run_id,
+                )? {
+                    dispatches.extend(prepared);
+                    continue;
+                }
+            }
+            // A deliberate user resume of previously submitted work is a new
+            // invocation; only an unsubmitted original entry reuses its intent.
             let prompt = crate::session::PromptQueueItem::new(
                 format!(
                     "pending-draft:workflow-resume:{}:{}",

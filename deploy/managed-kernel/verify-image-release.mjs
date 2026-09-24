@@ -11,6 +11,9 @@ const SLICE_RELAY_PATH = "/usr/lib/chariox/slice-build-context/apps/kernel/slice
 const EXPECTED_ARTIFACTS = new Map([
   ["chariox-kernel", { path: "/usr/local/bin/chariox-kernel", type: "file" }],
   ["chariox-managed-bootstrap", { path: "/usr/local/bin/chariox-managed-bootstrap", type: "file" }],
+  ["chariox-app-package", { path: "/usr/local/bin/chariox-app-package", type: "file" }],
+  ["chariox-app-storage", { path: "/usr/libexec/chariox-app-storage", type: "file" }],
+  ["chariox-app-storage.service", { path: "/etc/systemd/system/chariox-app-storage.service", type: "file" }],
   [
     "chariox-managed-bootstrap.service",
     { path: "/etc/systemd/system/chariox-managed-bootstrap.service", type: "file" },
@@ -182,7 +185,7 @@ async function verifyPath1BuilderAttestation(
     attestation.sourceTree !== manifest.sourceTree ||
     attestation.target !== MANAGED_BUILD_TARGET ||
     !Array.isArray(attestation.artifacts) ||
-    attestation.artifacts.length !== 3
+    attestation.artifacts.length !== 5
   ) {
     fail("builder attestation source identity or target does not match the signed release")
   }
@@ -193,6 +196,8 @@ async function verifyPath1BuilderAttestation(
     ["chariox-kernel", verifiedArtifactDigests.get("chariox-kernel")],
     ["chariox-managed-bootstrap", verifiedArtifactDigests.get("chariox-managed-bootstrap")],
     ["chariox-relay", await sha256File(relayPath)],
+    ["chariox-app-package", verifiedArtifactDigests.get("chariox-app-package")],
+    ["chariox-app-storage", verifiedArtifactDigests.get("chariox-app-storage")],
   ]
   for (const [index, artifact] of attestation.artifacts.entries()) {
     validateObjectKeys(artifact, ["name", "sha256"], "builder attestation artifact")

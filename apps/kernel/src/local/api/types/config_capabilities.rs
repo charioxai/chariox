@@ -354,6 +354,7 @@ pub enum ExtensionKind {
     Skill,
     Script,
     Connector,
+    App,
 }
 
 impl From<ExtensionKind> for crate::extension::ExtensionKind {
@@ -363,6 +364,7 @@ impl From<ExtensionKind> for crate::extension::ExtensionKind {
             ExtensionKind::Skill => Self::Skill,
             ExtensionKind::Script => Self::Script,
             ExtensionKind::Connector => Self::Connector,
+            ExtensionKind::App => Self::App,
         }
     }
 }

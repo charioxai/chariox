@@ -866,12 +866,12 @@ impl RuntimeSession {
     pub fn active_interaction_for_agent(&self, agent_id: &str) -> Option<&RuntimeInteraction> {
         self.active_interactions
             .iter()
-            .find(|interaction| interaction.agent_id() == agent_id)
+            .find(|interaction| interaction.agent_id() == Some(agent_id))
     }
 
     pub fn add_active_interaction(&mut self, interaction: RuntimeInteraction) {
         self.active_interactions
-            .retain(|existing| existing.agent_id() != interaction.agent_id());
+            .retain(|existing| existing.subject() != interaction.subject());
         self.active_interactions.push(interaction);
         self.active_interactions
             .sort_by(|left, right| left.requested_at_ms().cmp(&right.requested_at_ms()));

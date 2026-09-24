@@ -113,6 +113,18 @@ impl KernelRuntimeOwnedState {
         &self,
         retry: BlockedWorkflowClaimRetry,
     ) -> Option<WorkflowPromptDispatches> {
+        match self.workflow_retry_durable_entry(
+            &retry.session_id,
+            &retry.workflow_run_id,
+            &retry.workflow_node_run_id,
+        ) {
+            Ok(Some(dispatches)) => return Some(dispatches),
+            Ok(None) => {} // Existing downstream-node path below.
+            Err(error) => {
+                self.record_blocked_workflow_claim_retry_error(&retry, error);
+                return None;
+            }
+        }
         let claim_id = self.workflow_dispatch_claim_id(
             &retry.session_id,
             &retry.workflow_run_id,

@@ -9,6 +9,15 @@ import {
   type CapabilityCommandHandlerDeps,
 } from "./capability-command-handlers.js"
 
+test("App bindings use the existing slash grant path without a second remote confirmation", async () => {
+  const harness = capabilityHarness(agent({ remote: true }))
+  await handleExtensionSlashCommand(harness.deps, parseSlashCommand("/extension grant app agent-1 installed") as Extract<ReturnType<typeof parseSlashCommand>, { kind: "extension" }>)
+  await handleExtensionSlashCommand(harness.deps, parseSlashCommand("/extension grant app agent-1 installed --credential secret") as Extract<ReturnType<typeof parseSlashCommand>, { kind: "extension" }>)
+  assert.deepEqual(harness.grants, ["app:agent-1:installed"])
+  assert.deepEqual(harness.notices, [])
+  assert.deepEqual(harness.footers, ["info:bound App installed to agent-1", "error:App bindings take only an installation ID"])
+})
+
 test("extension slash command confirms active home-proxy grants before exposing home execution", async () => {
   const remote = agent({ remote: true })
   const harness = capabilityHarness(remote)
@@ -124,6 +133,7 @@ function capabilityHarness(agent: AgentInstance, options: {
   const auditRequests: Array<{ agentRef: string; limit: number | null | undefined }> = []
   let syncRetries = 0
   const deps: CapabilityCommandHandlerDeps = {
+    grantAgentApp: async (agentRef, name) => { grants.push(`app:${agentRef}:${name}`); return agent },
     appendNotice: (message) => notices.push(message),
     flashFooter: (message, tone) => footers.push(`${tone}:${message}`),
     resolveSessionAgent: (reference) => reference === agent.agent_ref || reference === agent.id

@@ -26,6 +26,7 @@ test("command center root items include static groups, misc commands, and focuse
   })
 
   assert.equal(items.some((item) => item.kind === "group" && item.value === "/provider "), true)
+  assert.equal(items.some((item) => item.kind === "group" && item.id === "app"), true)
   assert.equal(items.some((item) => item.kind === "group" && item.value === "/codex "), true)
   assert.equal(items.some((item) => item.kind === "group" && item.value === "/loop "), true)
   assert.equal(items.some((item) => item.kind === "group" && item.value === "/goal "), true)

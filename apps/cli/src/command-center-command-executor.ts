@@ -35,6 +35,7 @@ type CommandCenterCommandExecutorDeps = {
   onWorktree: CommandHandler<"worktree">
   onWorkflow: CommandHandler<"workflow">
   onNotifications?: CommandHandler<"notifications">
+  onApp?: CommandHandler<"app">
   onSettings?: CommandHandler<"settings">
   onLoop: CommandHandler<"loop">
   onGoal: CommandHandler<"goal">
@@ -102,6 +103,7 @@ export function createCommandCenterCommandExecutor(
       onWorktree: contained(deps.onWorktree),
       onWorkflow: contained(deps.onWorkflow),
       ...(deps.onNotifications ? { onNotifications: contained(deps.onNotifications) } : {}),
+      ...(deps.onApp ? { onApp: contained(deps.onApp) } : {}),
       ...(deps.onSettings ? { onSettings: contained(deps.onSettings) } : {}),
       onLoop: contained(deps.onLoop),
       onGoal: contained(deps.onGoal),

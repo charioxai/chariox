@@ -63,6 +63,7 @@ Do not merge protocol shape changes without the version bump and test update.
 - Keep coordinators as wiring only; move policy, state mutation, rendering, transport I/O, and protocol adapters into named responsibility modules before a file becomes a mega-file.
 - Always clean up temporary drill artifacts, orphaned provider processes, and large build outputs you no longer need before handing work back.
 - Store screenshots and other validation evidence under `/Users/miguel/.codex/evidence/<task>/`, never inside a repository or in Git.
+- Keep source checkouts and worktrees outside `~/.chariox` (for example under `~/chariox-worktrees/<task>/`). A kernel without an explicit `CHARIOX_HOME` protects all of `~/.chariox` and rejects provider working directories inside it.
 - Store persistent local development and drill state under `~/.chariox/dev/<task-or-kernel>/`. Set `CHARIOX_HOME` to an explicit absolute subdirectory there; use `mktemp -d` for disposable state. Never point `CHARIOX_HOME`, `CHARIOX_LOG_DIR`, kernel state, or drill scratch roots inside a repository.
 - Never create `.arroba` directories or other paths using the retired product name. A workspace `.chariox/` directory is allowed only for explicit user-authored workspace-scoped capabilities or source; automatic logs, runtime mailboxes, generated workflow code, test state, and drill artifacts must remain outside repositories.
 

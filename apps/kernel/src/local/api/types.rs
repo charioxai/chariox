@@ -13,6 +13,7 @@ use chariox_relay::protocol::RelayKernelPresence;
 mod agent_lifecycle;
 mod agent_prompt_schedule;
 mod agent_utility;
+mod apps;
 mod browser_import;
 mod capability;
 mod cloud_relay;
@@ -44,6 +45,7 @@ mod workspace;
 pub use agent_lifecycle::*;
 pub use agent_prompt_schedule::*;
 pub use agent_utility::*;
+pub use apps::*;
 pub use browser_import::*;
 pub use capability::*;
 pub use cloud_relay::*;
@@ -100,4 +102,7 @@ pub use workspace::*;
 /// Version 342 carries the create-selected trusted managed repository root and
 /// returns the persisted root in managed-environment summaries.
 /// Version 343 carries the originating home prompt in forwarded worker tool context.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 343;
+/// Version 344 merges the Chariox Apps contracts (branch protocols 288-297:
+/// App installation, upload, bindings, events, HTTP/Fetch, kernel operation
+/// approvals and publisher enrollment) onto the main protocol line.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 344;

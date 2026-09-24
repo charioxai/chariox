@@ -17,6 +17,7 @@ impl KernelRuntimeState {
                     tool.kind,
                     crate::extension::ExtensionKind::Script
                         | crate::extension::ExtensionKind::Connector
+                        | crate::extension::ExtensionKind::App
                 )
             })
             .cloned()

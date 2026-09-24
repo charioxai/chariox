@@ -10,6 +10,7 @@ type CliExitCleanupDecision = {
 }
 
 type CliExitControllerOptions = {
+  beforeCleanup?: () => Promise<void>
   isClosing: () => boolean
   setClosing: (closing: boolean) => void
   getCreatedSession: () => boolean
@@ -55,6 +56,7 @@ export function createCliExitController(options: CliExitControllerOptions): CliE
       options.setClosing(true)
       options.onExitRequested(options.getCreatedSession())
       try {
+        await options.beforeCleanup?.()
         options.syncPromptTextSnapshot()
         await options.flushPromptDraftPersist().catch((error) => {
           options.onPromptDraftFlushFailed(error)

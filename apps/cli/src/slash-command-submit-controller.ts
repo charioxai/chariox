@@ -46,6 +46,7 @@ export type SlashCommandSubmitControllerDeps = {
   handleWorktreeCommand: (command: SlashCommand<"worktree">) => Promise<unknown> | unknown
   handleWorkflowCommand: (command: SlashCommand<"workflow">) => Promise<unknown> | unknown
   handleNotificationsCommand?: (command: SlashCommand<"notifications">) => Promise<unknown> | unknown
+  handleAppCommand?: (command: SlashCommand<"app">) => Promise<unknown> | unknown
   handleSettingsCommand?: (command: SlashCommand<"settings">) => Promise<unknown> | unknown
   handleLoopCommand: (command: SlashCommand<"loop">) => Promise<unknown> | unknown
   handleGoalCommand: (command: SlashCommand<"goal">) => Promise<unknown> | unknown
@@ -169,6 +170,9 @@ export function createSlashCommandSubmitController(
         onWorkflow: (command) => runWithFooterError(deps.handleWorkflowCommand, command),
         ...(deps.handleNotificationsCommand
           ? { onNotifications: (command: SlashCommand<"notifications">) => runWithFooterError(deps.handleNotificationsCommand!, command) }
+          : {}),
+        ...(deps.handleAppCommand
+          ? { onApp: (command: SlashCommand<"app">) => runWithFooterError(deps.handleAppCommand!, command) }
           : {}),
         ...(deps.handleSettingsCommand
           ? { onSettings: (command: SlashCommand<"settings">) => runWithFooterError(deps.handleSettingsCommand!, command) }

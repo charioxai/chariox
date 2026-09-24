@@ -1,5 +1,6 @@
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
 import { executeShellLocalCommand } from "./shell-local-command.js"
+import { executeAppCommand } from "./shell-app-command.js"
 import { executeAgentCommand } from "./shell-agent-command.js"
 import {
   executeEnvironmentCommand,
@@ -61,6 +62,8 @@ export async function executeShellCommand(
     return executeShellLocalCommand(parsed, context)
   }
   switch (parsed.command) {
+    case "app":
+      return executeAppCommand(parsed.args, deps.client)
     case "session":
       return executeSessionCommand(parsed, context, deps)
     case "agent":

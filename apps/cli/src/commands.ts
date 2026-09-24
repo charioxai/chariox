@@ -34,6 +34,7 @@ export type ParsedSlashCommand =
   | { kind: "worktree"; raw: string; args: string[] }
   | { kind: "workflow"; raw: string; args: string[] }
   | { kind: "notifications"; raw: string; args: string[] }
+  | { kind: "app"; raw: string; args: string[] }
   | { kind: "settings"; raw: string; args: string[] }
   | { kind: "loop"; raw: string; prompt: string }
   | { kind: "goal"; raw: string; prompt: string }
@@ -81,6 +82,7 @@ export type SlashCommandHandlers = {
   onWorktree: (command: Extract<ParsedSlashCommand, { kind: "worktree" }>) => Promise<unknown> | unknown
   onWorkflow: (command: Extract<ParsedSlashCommand, { kind: "workflow" }>) => Promise<unknown> | unknown
   onNotifications?: (command: Extract<ParsedSlashCommand, { kind: "notifications" }>) => Promise<unknown> | unknown
+  onApp?: (command: Extract<ParsedSlashCommand, { kind: "app" }>) => Promise<unknown> | unknown
   onSettings?: (command: Extract<ParsedSlashCommand, { kind: "settings" }>) => Promise<unknown> | unknown
   onLoop: (command: Extract<ParsedSlashCommand, { kind: "loop" }>) => Promise<unknown> | unknown
   onGoal: (command: Extract<ParsedSlashCommand, { kind: "goal" }>) => Promise<unknown> | unknown
@@ -261,6 +263,9 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
       args: trimmed.replace(/^\/worktree\s*/, "").trim().split(/\s+/).filter(Boolean),
     }
   }
+  if (/^\/app(?:\s|$)/.test(trimmed)) {
+    return { kind: "app", raw: trimmed, args: trimmed.slice(4).trim().split(/\s+/).filter(Boolean) }
+  }
   if (trimmed === "/notifications" || trimmed.startsWith("/notifications ")) {
     return {
       kind: "notifications",
@@ -357,6 +362,9 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
 
 export function sharedShellCommandForSlashCommand(input: string): string | null {
   const command = input.trim()
+  // Local file bytes and retained transfer IDs belong to this terminal controller.
+  if (/^\/app\s+(?:install|operation|cancel)(?:\s|$)/.test(command)) return null
+  if (/^\/app(?:\s|$)/.test(command)) return command.slice(1)
   if (command === "/settings prompts" || command.startsWith("/settings prompts ")) {
     return command.slice(1)
   }
@@ -502,6 +510,9 @@ export async function executeSlashCommand(
     case "notifications":
       await handlers.onNotifications?.(command)
       break
+    case "app":
+      await handlers.onApp?.(command)
+      break
     case "settings":
       await handlers.onSettings?.(command)
       break
@@ -562,6 +573,7 @@ export function shouldClearCommandCenterForSlashCommand(command: ParsedSlashComm
     case "worktree":
     case "workflow":
     case "notifications":
+    case "app":
     case "settings":
     case "loop":
     case "goal":

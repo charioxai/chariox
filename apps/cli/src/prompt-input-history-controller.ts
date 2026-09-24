@@ -129,7 +129,9 @@ export function createPromptInputHistoryController(
         options.onPromptStatePersistFailed(sessionId, error)
       })
 
-      if (rawPrompt.trimStart().startsWith("/")) {
+      // The selected package path stays in this terminal's local history.
+      // Shared kernel history must receive no terminal filesystem path.
+      if (rawPrompt.trimStart().startsWith("/") && !/^\/app\s+install(?:\s|$)/.test(rawPrompt.trimStart())) {
         void options.recordPromptInputHistory(
           sessionId,
           options.getAttachmentId(),

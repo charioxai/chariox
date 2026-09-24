@@ -8,8 +8,15 @@ pub(crate) mod test_support;
 
 pub(crate) use api::redact_client_response_value;
 pub use api::{
+    AppInstallOperationPhase, AppInstallOperationRequest, AppInstallOperationSummary,
+    AppPublisherEnrollmentPhase, AppPublisherEnrollmentRequest, AppPublisherEnrollmentSummary,
+    BeginAppInstallRequest, BeginAppPublisherEnrollmentRequest,
+};
+pub use api::{
     deployment_credential_enrollment_interaction_id,
-    deployment_credential_enrollment_service_subject,
+    deployment_credential_enrollment_service_subject, AppPackageUploadPhase,
+    AppPackageUploadRequest, AppPackageUploadSummary, BeginAppPackageUploadRequest,
+    PutAppPackageUploadChunkRequest,
 };
 pub use api::{
     AbortMetaagentTaskRequest, AcceptCloudSessionInviteRequest, AckMetaagentEventsRequest,
@@ -240,6 +247,10 @@ pub use api::{
     KernelResourceTelemetryMemory, KernelResourceTelemetryMetadata, KernelResourceTelemetryProcess,
     KernelResourceTelemetryRelease, KernelResourceTelemetrySnapshot,
     KERNEL_RESOURCE_TELEMETRY_SCHEMA,
+};
+pub use api::{
+    AppCapabilityDecisionStatus, AppInstallationRequest, AppInstallationSummary, AppReleaseSummary,
+    AppRequestErrorCode, AppUpdatePhase, AppUpdateSummary, ListAppInstallationsRequest,
 };
 pub use client::LocalDaemonClient;
 pub use harness::{run_local_harness, LocalHarnessReport};

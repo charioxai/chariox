@@ -11,10 +11,12 @@ function createDeferred<T>() {
   return { promise, resolve }
 }
 
-test("requestExit persists prompt state, detaches the attachment, and exits cleanly", async () => {
+test("requestExit drains terminal work before persisting, detaching, and exiting", async () => {
   let closing = false
   const events: string[] = []
+  const drained = createDeferred<void>()
   const controller = createCliExitController({
+    beforeCleanup: async () => { events.push("draining"); await drained.promise },
     isClosing: () => closing,
     setClosing: (value) => {
       closing = value
@@ -62,11 +64,16 @@ test("requestExit persists prompt state, detaches the attachment, and exits clea
     },
   })
 
-  assert.equal(await controller.requestExit(), true)
+  const exiting = controller.requestExit()
+  await Promise.resolve()
+  assert.deepEqual(events, ["closing:true", "requested", "draining"])
+  drained.resolve()
+  assert.equal(await exiting, true)
 
   assert.deepEqual(events, [
     "closing:true",
     "requested",
+    "draining",
     "sync",
     "flush",
     "persist",

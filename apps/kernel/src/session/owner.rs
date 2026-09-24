@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
 
 use crate::error::DaemonError;
 
@@ -12,13 +12,25 @@ use super::{
 #[derive(Debug, Clone)]
 pub(crate) struct SessionStateStore {
     inner: Arc<RwLock<SessionService>>,
+    identity: Arc<()>,
 }
 
 impl SessionStateStore {
     pub(crate) fn new(sessions: SessionService) -> Self {
         Self {
             inner: Arc::new(RwLock::new(sessions)),
+            identity: Arc::new(()),
         }
+    }
+
+    /// Cloned handles share this process-local identity. Pending responders
+    /// retain only the weak token, never the session store or a persisted ID.
+    pub(crate) fn weak_identity(&self) -> Weak<()> {
+        Arc::downgrade(&self.identity)
+    }
+
+    pub(crate) fn matches_identity(&self, identity: &Weak<()>) -> bool {
+        Weak::ptr_eq(identity, &self.weak_identity())
     }
 
     pub(crate) fn read(&self) -> RwLockReadGuard<'_, SessionService> {

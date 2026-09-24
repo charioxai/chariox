@@ -83,6 +83,7 @@ apt-get update
 apt-get install -y --no-install-recommends \
   dbus-user-session \
   acl \
+  e2fsprogs \
   bash \
   bubblewrap \
   busybox-static \

@@ -129,6 +129,14 @@ impl KernelCommand {
 
 fn local_request_payload(request: &LocalDaemonRequest) -> Value {
     match request {
+        LocalDaemonRequest::PutAppPackageUploadChunk(request) => serde_json::json!({
+            "PutAppPackageUploadChunk": {
+                "handle": request.handle,
+                "offset": request.offset,
+                "chunk_sha256": request.chunk_sha256,
+                "encoded_bytes": request.data_base64.len(),
+            }
+        }),
         LocalDaemonRequest::SetCredentialSecret(request) => serde_json::json!({
             "SetCredentialSecret": {
                 "session_id": request.session_id,

@@ -1,0 +1,22 @@
+{
+  "schema": "chariox.app-sandbox-build.v1",
+  "bubblewrap": {
+    "version": "0.12.0",
+    "url": "https://github.com/containers/bubblewrap/releases/download/v0.12.0/bubblewrap-0.12.0.tar.xz",
+    "sha256": "9760d007363e3abba7c747489910f9f82d9fca53ba3bd3282e396fa3c97a3314",
+    "size": 126452,
+    "checksumUrl": "https://github.com/containers/bubblewrap/releases/download/v0.12.0/bubblewrap-0.12.0.tar.xz.sha256sum",
+    "observedAt": "2026-09-08",
+    "minimumKernel": "5.9.0"
+  },
+  "fixture": {
+    "target": "linux-x64",
+    "host": "ubuntu-24.04",
+    "memoryBytes": 1073741824,
+    "swapBytes": 0,
+    "cpuPercent": 100,
+    "tasks": 64,
+    "timeoutSeconds": 120,
+    "privateMountBytes": 8388608
+  }
+}

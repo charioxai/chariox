@@ -1,0 +1,24 @@
+{
+  "schema": "chariox.app-runtime-bundle-contract.v1",
+  "sdk": { "name": "@chariox/app-sdk", "version": "0.7.0", "appContractVersion": 1, "wireVersion": 1 },
+  "bootstrap": ["bootstrap.cjs", "bootstrap-config.cjs"],
+  "sdkFiles": [
+    "package.json",
+    "src/errors.js",
+    "src/fetch.js",
+    "src/fetch-request.js",
+    "src/fetch-response.js",
+    "src/fetch-transfer.js",
+    "src/http.js",
+    "src/index.d.ts",
+    "src/index.js",
+    "src/internal.d.ts",
+    "src/internal.js",
+    "src/json.js",
+    "src/occurrences.js",
+    "src/peer.js",
+    "src/protocol.js",
+    "src/transport.js"
+  ],
+  "limits": { "files": 32, "sourceFileBytes": 262144, "manifestBytes": 262144, "bundleBytes": 536870912 }
+}

@@ -1,5 +1,8 @@
 //! Inbound browser/client relay request dispatch to the kernel command router.
 
+#[cfg(test)]
+mod app_tests;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 

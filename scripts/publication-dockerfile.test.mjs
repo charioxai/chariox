@@ -44,6 +44,9 @@ test("publication Rust build consumes the workspace lock and every kernel path d
     "COPY Cargo.toml Cargo.lock ./",
     "COPY apps/relay apps/relay",
     "COPY packages/event-protocol packages/event-protocol",
+    "COPY packages/app-package packages/app-package",
+    "COPY packages/app-runtime packages/app-runtime",
+    "COPY packages/app-sdk packages/app-sdk",
   ]) {
     const copy = rustStage.indexOf(requiredCopy)
     assert.ok(copy >= 0, `the Rust stage must include ${requiredCopy}`)
@@ -52,7 +55,7 @@ test("publication Rust build consumes the workspace lock and every kernel path d
 
   const kernelPathDependencies = [...kernelCargo.matchAll(/^\s*[\w-]+\s*=\s*\{[^\n}]*path\s*=\s*"([^"]+)"/gm)]
     .map((match) => match[1])
-  assert.deepEqual(kernelPathDependencies.sort(), ["../../packages/event-protocol", "../relay"])
+  assert.deepEqual(kernelPathDependencies.sort(), ["../../packages/app-runtime", "../../packages/event-protocol", "../relay"])
   assert.match(
     rustStage,
     /test "\$\(target\/release\/chariox-kernel --print-local-daemon-protocol-version\)"/,

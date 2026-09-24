@@ -1,6 +1,10 @@
 use super::*;
 use std::sync::{Arc, Barrier};
 use tokio::sync::Mutex;
+#[path = "dispatch_recovery_tests.rs"]
+mod dispatch_recovery_tests;
+#[path = "pump_integration_tests.rs"]
+mod pump_integration_tests;
 
 #[test]
 fn concurrent_owned_workflow_launches_preserve_single_run_admission() {

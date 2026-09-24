@@ -464,6 +464,28 @@ test("executeShellCommand imports provider capabilities through extension comman
   }])
 })
 
+test("App binding shell commands reuse extension messages without an extra remote confirmation", async () => {
+  const agent = makeAgent({ extension_grants: [{ kind: "app", name: "installed" }], remote_execution: {
+    worker_kernel_id: "worker", worker_machine_id: "machine", execution_lease_id: "lease", leased_agent_id: "leased",
+  } })
+  const requests: Record<string, unknown>[] = []
+  const client = { send: async (request: Record<string, unknown>) => {
+    requests.push(request)
+    if ("GrantAgentExtension" in request) return { AgentExtensionGranted: { agent } }
+    if ("RevokeAgentExtension" in request) return { AgentExtensionRevoked: { agent } }
+    return { AgentsListed: { agents: [agent] } }
+  } }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1", agentId: "agent-1" })
+  const grant = await executeShellCommand(parseShellCommand("extension grant app agent-1 installed"), context, { client })
+  const revoke = await executeShellCommand(parseShellCommand("extension revoke app agent-1 installed"), context, { client })
+  assert.equal(grant.ok, true)
+  assert.equal(revoke.ok, true)
+  assert.deepEqual(requests, [
+    { GrantAgentExtension: { workspace_id: "/repo", agent_ref: "agent-1", kind: "app", name: "installed" } },
+    { RevokeAgentExtension: { agent_ref: "agent-1", kind: "app", name: "installed" } },
+  ])
+})
+
 test("executeShellCommand grants, revokes, and lists agent extensions", async () => {
   const agent = makeAgent({
     extension_grants: [

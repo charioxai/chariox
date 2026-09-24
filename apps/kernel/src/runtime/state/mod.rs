@@ -36,8 +36,14 @@ mod workspace_live_sync_workspace_context;
 use workspace_live_sync_workspace_context::*;
 mod context_handoff;
 use context_handoff::*;
+mod app_automation_owned_state;
+mod app_event_delivery_owned_state;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_event_pump_runtime;
+mod app_runtime_state;
 mod computer_secret_input_runtime_state;
 mod config_runtime_state;
+mod native_catalog_refresh;
 mod provider_output_deadline_store;
 mod provider_reload;
 use provider_output_deadline_store::ProviderOutputDeadlineStore;
@@ -75,6 +81,7 @@ pub(crate) struct KernelRuntimeState {
 
 #[derive(Clone)]
 struct KernelRuntimeOwnedState {
+    app_control: crate::runtime::app_control::AppControlService,
     config_projection: crate::runtime::projection::DaemonConfigProjectionStore,
     session_store: SessionStateStore,
     agent_store: AgentServiceStore,
@@ -87,6 +94,7 @@ struct KernelRuntimeOwnedState {
     >,
     workflow_provider_launch_lock: Arc<std::sync::Mutex<()>>,
     workflow_instance_provision_lock: Arc<std::sync::Mutex<()>>,
+    workflow_entry_claims: workflow_queue_durable::WorkflowEntryClaims,
     publication_activation: Arc<publication_activation::PublicationActivation>,
     provider_process_tracking: ProviderProcessTrackingStore,
     provider_launch_failure_retries: ProviderLaunchFailureRetryStore,
@@ -264,6 +272,7 @@ mod pending_runtime_state;
 mod remote_agent_profile_runtime;
 mod remote_profile_account_runtime;
 use pending_runtime_state::*;
+pub(in crate::runtime) use pending_runtime_state::PendingInteractionResolution;
 mod local_prompt_dispatch_runtime;
 mod local_prompt_submission_owned_state;
 mod managed_activity_persistence;
@@ -348,6 +357,7 @@ mod workflow_node_owned_state;
 mod workflow_output_tool;
 mod workflow_prompt_dispatches;
 mod workflow_prompt_queue_owned_state;
+mod workflow_queue_durable;
 use workflow_prompt_dispatches::*;
 mod workflow_prompt_failure_owned_state;
 pub(crate) mod workflow_publication_endpoint_runtime;
@@ -490,6 +500,7 @@ impl KernelRuntimeState {
             relay_state,
             legacy_workflow_history,
             agent_runtime_projection,
+            app_control,
             has_managed_kernel_registration,
         ) = {
             let started = Instant::now();
@@ -502,6 +513,7 @@ impl KernelRuntimeState {
                         app.relay_client_state(),
                         app.legacy_workflow_history_store(),
                         app.agent_runtime_projection_store(),
+                        app.app_control_service(),
                         app.managed_kernel_registration().is_some(),
                     );
                 }
@@ -559,6 +571,7 @@ impl KernelRuntimeState {
             leased_agent_operations: leased_agent_operations::LeasedAgentOperations::default(),
             detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             owned: KernelRuntimeOwnedState {
+                app_control,
                 config_projection,
                 session_store,
                 agent_store,
@@ -569,6 +582,7 @@ impl KernelRuntimeState {
                 )),
                 workflow_provider_launch_lock: Arc::new(std::sync::Mutex::new(())),
                 workflow_instance_provision_lock: Arc::new(std::sync::Mutex::new(())),
+                workflow_entry_claims: workflow_queue_durable::WorkflowEntryClaims::default(),
                 publication_activation,
                 provider_process_tracking,
                 provider_launch_failure_retries,

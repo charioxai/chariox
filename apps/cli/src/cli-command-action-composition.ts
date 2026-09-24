@@ -1,3 +1,5 @@
+import type { AppFileInstaller } from "./app-install-file.js"
+import type { AppPublisherEnrollment } from "./app-publisher-file.js"
 import type { BootstrapState, RuntimeSession } from "./cli-types.js"
 import type { CharioxLogger } from "./logging.js"
 import { createCommandActionHandlers } from "./command-actions.js"
@@ -7,6 +9,7 @@ import { buildHostedCloudViewUrl } from "./cloud-command-lifecycle.js"
 import { importExternalProviderAgent } from "./external-provider-session-api.js"
 import { openExternalUrl } from "./external-url.js"
 import { formatAgentLabel } from "./agent-label.js"
+import { grantAgentApp, revokeAgentApp } from "./app-binding-api.js"
 import {
   defaultRoomScreenshotOutputRoot,
   downloadRoomEnvironmentScreenshot,
@@ -186,6 +189,8 @@ import {
 type AnyFn = (...args: any[]) => any
 
 export type CliCommandActionCompositionDeps = {
+  appFileInstaller?: AppFileInstaller
+  appPublisherEnrollment?: AppPublisherEnrollment
   client: BootstrapState["client"]
   options: BootstrapState["options"]
   preferencesState: AnyFn
@@ -471,6 +476,10 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       })
     },
     sendWorkflowEventPublicationRequest: (request) => client.send(request),
+    sendAppRequest: (request) => client.send(request),
+    ...(deps.appFileInstaller ? { appFileInstaller: deps.appFileInstaller } : {}),
+    ...(deps.appPublisherEnrollment ? { appPublisherEnrollment: deps.appPublisherEnrollment } : {}),
+    currentAppSessionId: () => isAttached() ? sessionState().id : undefined,
     appendCloudNotice,
     formatError,
     createSession: (workspace, worktree, alias, agentDefaults, worktreePlacement) =>
@@ -676,6 +685,8 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     registerScript: (sourcePath, environment, name) => registerScript(client, pendingWorkspaceTarget(), sourcePath, environment, name),
     removeScript: (name) => removeScript(client, pendingWorkspaceTarget(), name),
     grantAgentScript: (agentRef, name, environment) => grantAgentScript(client, pendingWorkspaceTarget(), agentRef, name, environment),
+    grantAgentApp: (agentRef, installationId) => grantAgentApp(client, pendingWorkspaceTarget(), agentRef, installationId),
+    revokeAgentApp: (agentRef, installationId) => revokeAgentApp(client, agentRef, installationId),
     revokeAgentScript: (agentRef, name) => revokeAgentScript(client, agentRef, name),
     listCredentials: () => listCredentials(client),
     getCredential: (id) => getCredential(client, id),

@@ -150,6 +150,7 @@ mod detached_provider_run;
 mod diagnostics_timeouts;
 mod external_queue;
 mod history_projection;
+mod mcp_catalog_reload;
 mod large_codex_resume;
 mod leased_output;
 mod prompt_cancellation;

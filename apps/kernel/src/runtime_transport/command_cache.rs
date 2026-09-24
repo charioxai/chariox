@@ -99,12 +99,27 @@ pub(crate) enum CommandReservation {
 }
 
 pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
-    // Consent responses describe live authority, not historical command receipts.
-    // The import ledger owns one-use transitions and must revalidate every replay.
-    // Other commands retain in-memory deduplication; disk exclusions are separate.
+    // App requests and browser-import consent must reach owner authorization and
+    // current durable state. Their own owner-scoped ledgers deduplicate retries;
+    // this older transport fingerprint does not carry the caller, and cached
+    // results could outlive live authority. Other commands retain in-memory
+    // deduplication; disk exclusions are separate.
     !matches!(
         request,
-        LocalDaemonRequest::PrepareBrowserImport(_)
+        LocalDaemonRequest::ListAppInstallations(_)
+            | LocalDaemonRequest::BeginAppPublisherEnrollment(_)
+            | LocalDaemonRequest::GetAppPublisherEnrollment(_)
+            | LocalDaemonRequest::CancelAppPublisherEnrollment(_)
+            | LocalDaemonRequest::GetAppInstallation(_)
+            | LocalDaemonRequest::BeginAppInstall(_)
+            | LocalDaemonRequest::GetAppInstallOperation(_)
+            | LocalDaemonRequest::CancelAppInstallOperation(_)
+            | LocalDaemonRequest::GetAppInstallationJournal(_)
+            | LocalDaemonRequest::BeginAppPackageUpload(_)
+            | LocalDaemonRequest::PutAppPackageUploadChunk(_)
+            | LocalDaemonRequest::GetAppPackageUpload(_)
+            | LocalDaemonRequest::AbortAppPackageUpload(_)
+            | LocalDaemonRequest::PrepareBrowserImport(_)
             | LocalDaemonRequest::ApproveBrowserImport(_)
             | LocalDaemonRequest::ClaimBrowserImportSource(_)
             | LocalDaemonRequest::AuthorizeBrowserImportSource(_)

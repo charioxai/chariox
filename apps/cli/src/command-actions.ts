@@ -86,6 +86,7 @@ import {
   type NotificationCommandHandlerDeps,
 } from "./notification-command-handler.js"
 import { handlePromptSettingsSlashCommand } from "./prompt-settings-command-handler.js"
+import { handleAppSlashCommand, type AppCommandHandlerDeps } from "./app-command-handler.js"
 import type {
   LocalGitWorktreeOptions,
 } from "./command-worktree-placement.js"
@@ -117,6 +118,7 @@ type CommandActionDeps =
   & KernelCommandHandlerDeps
   & Omit<WorkflowCommandHandlerDeps, "currentWorkspaceTarget">
   & NotificationCommandHandlerDeps
+  & AppCommandHandlerDeps
   & {
   workspace: string
   worktree: string
@@ -405,6 +407,12 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     await handleNotificationSlashCommand(deps, command)
   }
 
+  const handleAppCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "app" }>,
+  ): Promise<void> => {
+    await handleAppSlashCommand(deps, command)
+  }
+
   const handleSettingsCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "settings" }>,
   ): Promise<void> => {
@@ -484,6 +492,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     handleWorktreeCommand,
     handleWorkflowCommand,
     handleNotificationsCommand,
+    handleAppCommand,
     handleSettingsCommand,
     handleLoopCommand,
     handleGoalCommand,

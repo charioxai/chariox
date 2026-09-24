@@ -1,0 +1,8 @@
+{
+  "minimumKernelProtocol": 296,
+  "sdkVersion": "0.7.0",
+  "api": ["globalThis.fetch", "chariox.http.fetch"],
+  "transportMethods": ["http.open", "http.write", "http.headers", "http.read", "http.cancel"],
+  "limits": { "redirects": 20, "decodedBytesPerStage": 268435456, "decodingStages": 3, "lifetimeMs": 3600000, "chunkBytes": 65536 },
+  "response": { "status": 200, "url": "https://api.example.test/resource", "redirected": false, "type": "basic", "body": { "ok": true } }
+}

@@ -21,11 +21,17 @@ type LeasedProviderRunProbe = Arc<dyn Fn(&str) + Send + Sync + 'static>;
 pub(crate) struct ProviderRunProjectionStore {
     runs: Arc<StdMutex<HashMap<String, RuntimeProviderRun>>>,
     leased_provider_run_ids: Arc<StdMutex<HashSet<String>>>,
+    catalog_changes: crate::runtime::runtime_tool_catalog::RuntimeToolCatalogChanges,
     #[cfg(test)]
     leased_provider_run_probe: Arc<StdMutex<Option<LeasedProviderRunProbe>>>,
 }
 
 impl ProviderRunProjectionStore {
+    pub(crate) fn catalog_changes(
+        &self,
+    ) -> &crate::runtime::runtime_tool_catalog::RuntimeToolCatalogChanges {
+        &self.catalog_changes
+    }
     pub(crate) fn mark_leased_provider_run(&self, provider_run_id: &str) {
         self.leased_provider_run_ids
             .lock()
@@ -126,10 +132,22 @@ impl ProviderRunProjectionStore {
     }
 
     pub(crate) fn update(&self, run: RuntimeProviderRun) {
-        self.runs
+        let run_id = run.id().to_owned();
+        let ended = run.state() == ProviderRunState::Ended;
+        let mut runs = self
+            .runs
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(run.id().to_string(), run);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let changed = runs.get(&run_id).is_some_and(|previous| {
+            previous.remote_extension_manifest() != run.remote_extension_manifest()
+        });
+        runs.insert(run_id.clone(), run);
+        drop(runs);
+        if ended {
+            self.catalog_changes.close(&run_id);
+        } else if changed {
+            self.catalog_changes.invalidate(&run_id);
+        }
     }
 
     pub(crate) fn update_remote_snapshot(&self, run: RuntimeProviderRun) -> RuntimeProviderRun {

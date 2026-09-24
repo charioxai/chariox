@@ -278,7 +278,7 @@ export async function executeWorkflowNodeCommand(
     const kind = hasExplicitWorkflow ? args[4] : args[3]
     const name = hasExplicitWorkflow ? args[5] : args[4]
     if ((extensionAction !== "grant" && extensionAction !== "revoke") || !workflowRef || !nodeId || !isExtensionKind(kind) || !name) {
-      return { ok: false, message: "usage: workflow node extension grant|revoke [workflow-ref] <node-id> <mcp|skill|script|connector> <name> [--environment <name>] [--credential <id>] [--allow read|write|destructive]" }
+      return { ok: false, message: "usage: workflow node extension grant|revoke [workflow-ref] <node-id> <mcp|skill|script|connector|app> <name> [--environment <name>] [--credential <id>] [--allow read|write|destructive]" }
     }
     const resolved = await resolveWorkflowNodeAgent(deps, sessionId, workflowRef, nodeId)
     if (!resolved.ok) return resolved
@@ -522,8 +522,8 @@ function readOption(args: readonly string[], name: string): string | null {
   return index >= 0 ? args[index + 1] ?? null : null
 }
 
-function isExtensionKind(value: unknown): value is "mcp" | "skill" | "script" | "connector" {
-  return value === "mcp" || value === "skill" || value === "script" || value === "connector"
+function isExtensionKind(value: unknown): value is "mcp" | "skill" | "script" | "connector" | "app" {
+  return value === "mcp" || value === "skill" || value === "script" || value === "connector" || value === "app"
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {

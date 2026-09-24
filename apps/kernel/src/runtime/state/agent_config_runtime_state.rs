@@ -1,5 +1,7 @@
 use super::*;
 
+mod app_bindings;
+
 impl KernelRuntimeState {
     pub(crate) async fn grant_agent_extension(
         &self,
@@ -8,6 +10,9 @@ impl KernelRuntimeState {
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         match grant.kind {
+            crate::extension::ExtensionKind::App => {
+                self.grant_agent_app(agent_ref, grant, caller_user_id).await
+            }
             crate::extension::ExtensionKind::Mcp => {
                 self.grant_agent_mcp(agent_ref, grant.name, caller_user_id)
                     .await
@@ -126,7 +131,9 @@ impl KernelRuntimeState {
                         reserved.extend(connector.allowed_operation_tool_names(max_safety));
                     }
                 }
-                crate::extension::ExtensionKind::Mcp | crate::extension::ExtensionKind::Skill => {}
+                crate::extension::ExtensionKind::Mcp
+                | crate::extension::ExtensionKind::Skill
+                | crate::extension::ExtensionKind::App => {}
             }
         }
         let proposed_names = match proposed.kind {
@@ -142,9 +149,9 @@ impl KernelRuntimeState {
                     crate::connector::ConnectorSafety::parse(proposed.max_safety.as_deref())?;
                 connector.allowed_operation_tool_names(max_safety)
             }
-            crate::extension::ExtensionKind::Mcp | crate::extension::ExtensionKind::Skill => {
-                Vec::new()
-            }
+            crate::extension::ExtensionKind::Mcp
+            | crate::extension::ExtensionKind::Skill
+            | crate::extension::ExtensionKind::App => Vec::new(),
         };
         for name in proposed_names {
             if reserved.contains(&name) {
@@ -166,6 +173,9 @@ impl KernelRuntimeState {
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         match kind {
+            crate::extension::ExtensionKind::App => {
+                self.revoke_agent_app(agent_ref, name, caller_user_id).await
+            }
             crate::extension::ExtensionKind::Mcp => {
                 self.revoke_agent_mcp(agent_ref, name, caller_user_id).await
             }

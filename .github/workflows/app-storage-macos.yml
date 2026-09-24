@@ -1,0 +1,43 @@
+name: App private APFS storage
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'packages/app-runtime/src/worker_process/storage_macos*'
+      - 'packages/app-runtime/src/worker_process/storage_macos/**'
+      - 'packages/app-runtime/src/private_fs*'
+      - 'packages/app-runtime/src/private_fs/**'
+      - 'scripts/test-app-storage-macos-ci.mjs'
+      - '.github/workflows/app-storage-macos.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: app-storage-macos-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  storage:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.20.0'
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - name: Exercise production storage preparation and recovery on disposable images
+        id: storage
+        run: node scripts/test-app-storage-macos-ci.mjs
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.storage.outputs.evidence != ''
+        with:
+          name: MACOS-APFS-STORAGE-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ steps.storage.outputs.evidence }}
+          if-no-files-found: error
+          retention-days: 7

@@ -1,0 +1,165 @@
+export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
+export interface CallOptions { signal?: AbortSignal; timeoutMs?: number }
+export interface InvocationContext {
+  readonly signal: AbortSignal;
+  readonly deadlineMs: number;
+  /** Context is issued by the kernel; it cannot establish a human approval. */
+  readonly installation_id?: string;
+  readonly room_id?: string;
+  readonly operation_id?: string;
+  readonly agent_id?: string;
+  readonly task_id?: string;
+  readonly turn_id?: string;
+  readonly actor?: Readonly<{ kind: 'human' | 'agent' | 'background'; id: string }>;
+}
+export type Handler<Input = Json, Output = Json | void> =
+  (input: Input, context: InvocationContext) => Output | Promise<Output>;
+export type LifecycleEvent = 'health_check' | 'startup' | 'suspend' | 'resume' | 'shutdown' | 'prepare_update' | 'configuration_change';
+
+export class AppError extends Error {
+  readonly code: string;
+  readonly retryable: boolean;
+  constructor(code: string, message: string, options?: { retryable?: boolean; cause?: unknown });
+}
+
+/** Stable source/time identity. Persist the result and original time before delivery or retry. */
+export function occurrenceId(sourceKey: string, occurredAtMs: number): string;
+
+export interface EventOccurrence {
+  automationId: string;
+  /** Generated once with occurrenceId(sourceKey, occurredAtMs), persisted and reused. */
+  occurrenceId: string;
+  eventVersion: number;
+  /** Original occurrence time, preserved when replaying a durable outbox. */
+  occurredAtMs: number;
+  /** Required for scheduled occurrences; persist it with the schedule. */
+  scheduleRevision?: string;
+  payload: Json;
+  /** Complete immutable workflow input; preserved with payload on every replay. */
+  invocation: EventInvocation;
+}
+export interface EventInvocation {
+  prompt: string;
+  /** Untrusted reference metadata. These entries confer no file, network or kernel asset access. */
+  artifacts: EventArtifact[];
+}
+export interface EventArtifact {
+  name: string;
+  mediaType: string;
+  reference: string;
+  sizeBytes?: number;
+  digest?: string;
+}
+export interface EventReceipt {
+  receiptId: string;
+  state: 'accepted' | 'queued' | 'delivered' | 'retryable' | 'failed' | 'expired';
+}
+export interface StateRecord { value: Json; version: number }
+export interface StateTransaction {
+  schemaVersion: number;
+  checks: { key: string; version: number | null }[];
+  writes: ({ key: string; value: Json } | { key: string; delete: true })[];
+  /** Kernel persistence commits these occurrences with the structured writes. */
+  occurrences?: EventOccurrence[];
+}
+export interface HttpRequest {
+  url: string;
+  method?: string;
+  headers?: [string, string][];
+  body?: string | Uint8Array;
+  connectionId?: string;
+  operationId?: string;
+}
+export interface HttpOpenRequest extends Omit<HttpRequest, 'body'> { hasBody?: boolean }
+export type HttpHeaders = { pending: true } | { pending: false; status: number; headers: [string,string][]; url: string };
+export type HttpChunk = { pending: true } | { pending: false; done: boolean; chunkBase64: string };
+export interface HttpResponse {
+  status: number;
+  headers: [string, string][];
+  bodyBase64: string;
+  url: string;
+}
+export interface ValidationOperation {
+  operationId: string;
+  state: 'pending' | 'approved' | 'denied' | 'expired' | 'cancelled' | 'reconciliation';
+}
+export interface OutputRequest {
+  informationSet: string;
+  version: number;
+  taskRef: string;
+  mode: 'intermediate' | 'final';
+}
+
+export interface AppSdk {
+  readonly paths: Readonly<{ package: string; data: string; temporary: string }>;
+  readonly tools: { register<Input = Json, Output = Json | void>(name: string, handler: Handler<Input, Output>): void };
+  readonly events: {
+    /** Only signed incoming/both events require a handler. */
+    register<Payload = Json>(name: string, handler: Handler<Readonly<{ occurrenceId: string; payload: Payload }>>): void;
+    emit(occurrence: EventOccurrence, options?: CallOptions): Promise<EventReceipt>;
+    status(receiptId: string, options?: CallOptions): Promise<EventReceipt>;
+    /** Reconcile a due, kernel-classified retryable receipt; never restart a terminal operation. */
+    retry(receiptId: string, options?: CallOptions): Promise<EventReceipt>;
+  };
+  readonly lifecycle: { on(event: LifecycleEvent, handler: Handler): void };
+  readonly state: {
+    get(key: string, options?: CallOptions): Promise<StateRecord | null>;
+    transaction(transaction: StateTransaction, options?: CallOptions): Promise<{ revision: number; receipts: EventReceipt[] }>;
+  };
+  readonly files: {
+    atomicReplace(path: string, contents: string | Uint8Array, options?: CallOptions): Promise<{ bytesWritten: number }>;
+    snapshot(request: { name: string; consistency: 'quiescent' | 'crash_consistent' }, options?: CallOptions): Promise<{ snapshotId: string }>;
+    import(grantId: string, destination: string, options?: CallOptions): Promise<{ bytesWritten: number }>;
+    export(path: string, options?: CallOptions): Promise<{ operationId: string }>;
+  };
+  readonly http: {
+    /** Same adapter installed as worker-global fetch. Network access stays in the kernel. */
+    fetch(input: string | URL | Request, init?: RequestInit): Promise<Response>;
+    /** Anonymous HTTPS only; no automatic redirects, decoding or body retries. */
+    open(request: HttpOpenRequest, options?: CallOptions): Promise<{ streamId: string }>;
+    /** At most 64 KiB; only one write may be in flight. Empty chunks require end=true. */
+    write(streamId: string, contents: string | Uint8Array, end?: boolean, options?: CallOptions): Promise<{ bytesWritten: number }>;
+    /** Bounded pull; pending=true consumes no body data. Headers may be requested again. */
+    headers(streamId: string, options?: CallOptions): Promise<HttpHeaders>;
+    /** A body chunk is consumed once. Never retry after unknown/lost completion. */
+    read(streamId: string, options?: CallOptions): Promise<HttpChunk>;
+    cancel(streamId: string, options?: CallOptions): Promise<null>;
+    /** Convenience composition with a 512 KiB body/response and one overall deadline. */
+    request(request: HttpRequest, options?: CallOptions): Promise<HttpResponse>;
+  };
+  readonly log: {
+    write(level: 'debug' | 'info' | 'warn' | 'error', message: string, fields?: Record<string, Json>, options?: CallOptions): Promise<null>;
+  };
+  readonly host: {
+    notify(request: { title: string; body?: string }, options?: CallOptions): Promise<{ notificationId: string }>;
+    openLink(url: string, options?: CallOptions): Promise<null>;
+    writeClipboard(text: string, options?: CallOptions): Promise<null>;
+    pickFile(request: { multiple?: boolean; accept?: string[] }, options?: CallOptions): Promise<{ grantIds: string[] }>;
+  };
+  readonly validation: {
+    request(request: { action: string; parameters: Json; operationId?: string; connectionId?: string }, options?: CallOptions): Promise<ValidationOperation>;
+    status(operationId: string, options?: CallOptions): Promise<ValidationOperation>;
+  };
+  readonly outputs: {
+    request(request: OutputRequest, options?: CallOptions): Promise<{ requestId: string; state: 'pending_consent' | 'pending_output' }>;
+    cancel(requestId: string, options?: CallOptions): Promise<null>;
+  };
+  /** Completes bootstrap registration. This never asserts sandbox lockdown. */
+  ready(options?: CallOptions): Promise<null>;
+  close(): void;
+}
+
+/** Injected into the one App registration function; bootstrap owns readiness and IPC lifetime. */
+export type AppBackendSdk = Omit<AppSdk, 'ready' | 'close'>;
+export type AppRegistration = (chariox: AppBackendSdk) => void | Promise<void>;
+
+/** Worker bootstrap options, supplied after the trusted launcher established containment. */
+export interface AppSdkOptions {
+  transport: import('./internal.js').AppTransport;
+  generation: string;
+  paths: { package: string; data: string; temporary: string };
+  /** incomingEvents contains only signed incoming/both event declarations. */
+  declarations?: { tools?: string[]; incomingEvents?: string[] };
+  limits?: { maxPending?: number; maxHandlers?: number; maxDeadlineMs?: number };
+}
+export function createAppSdk(options: AppSdkOptions): AppSdk;

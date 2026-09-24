@@ -30,7 +30,13 @@ impl ProviderNativeInteractionBridge for RuntimeStateNativeInteractionBridge {
         interaction: RuntimeInteraction,
     ) -> Result<ProviderNativeInteractionResolution, DaemonError> {
         let session_id = session_id.to_string();
-        let interaction_agent_id = interaction.agent_id().to_string();
+        let interaction_agent_id = interaction
+            .agent_id()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "provider_native_interaction_bridge",
+                message: "Provider interactions require an agent subject".into(),
+            })?
+            .to_string();
         let state = self.state.clone();
         let remote_target = self.handle.block_on(async {
             state

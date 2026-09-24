@@ -258,7 +258,7 @@ test("resolveInteractionChoiceKeyAction ignores releases and unrelated keys", ()
   })
 })
 
-function interaction(overrides: Partial<RuntimeInteraction> = {}): RuntimeInteraction {
+function interaction(overrides: Partial<Extract<RuntimeInteraction, { agent_id: string }>> = {}): RuntimeInteraction {
   return {
     id: "interaction-1",
     agent_id: "agent-1",

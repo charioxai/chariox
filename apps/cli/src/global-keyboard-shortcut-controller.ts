@@ -6,6 +6,7 @@ export type GlobalKeyboardShortcutEvent = {
 }
 
 export type GlobalKeyboardShortcutControllerDeps = {
+  handleKernelApprovalKey?: (event: GlobalKeyboardShortcutEvent) => boolean
   handleHotkeysToggleShortcut: (source: "keyboard", event: GlobalKeyboardShortcutEvent) => boolean
   dialogOverlayOpen: () => boolean
   closeActiveDialogOverlay: () => void
@@ -39,6 +40,7 @@ export function createGlobalKeyboardShortcutController(
       requestPromptStopOrExit()
     },
     handleKey(event) {
+      if (deps.handleKernelApprovalKey?.(event)) return true
       if (deps.handleHotkeysToggleShortcut("keyboard", event)) {
         return true
       }

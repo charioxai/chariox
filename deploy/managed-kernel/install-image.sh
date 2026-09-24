@@ -113,6 +113,9 @@ verify_selected_release "$image_root" "$expected_release_digest" "$trusted_publi
 
 require_regular_file "$image_root/usr/local/bin/chariox-kernel"
 require_regular_file "$image_root/usr/local/bin/chariox-managed-bootstrap"
+require_regular_file "$image_root/usr/local/bin/chariox-app-package"
+require_regular_file "$image_root/usr/libexec/chariox-app-storage"
+require_regular_file "$image_root/etc/systemd/system/chariox-app-storage.service"
 require_regular_file "$image_root/usr/lib/chariox/release-manifest.json"
 require_regular_file "$image_root/usr/lib/chariox/release-manifest.sig"
 require_regular_file "$image_root/usr/lib/chariox/release-public-key"
@@ -398,6 +401,45 @@ case "$docker_uid" in
 esac
 usermod --append --groups chariox-slice chariox
 
+# Root-installed authority is derived from the actual managed kernel OS user.
+# App requests cannot supply this UID/GID, cgroup root, quota, or filesystem path.
+app_storage_uid=$(id -u chariox)
+app_storage_gid=$(id -g chariox)
+for app_storage_id in "$app_storage_uid" "$app_storage_gid"; do
+  case "$app_storage_id" in
+    ''|*[!0-9]*|0) echo "invalid managed App storage owner" >&2; exit 1 ;;
+  esac
+done
+for app_storage_path in "$install_root/etc/chariox" "$install_root/var/lib/chariox-app-storage"; do
+  if [ -L "$app_storage_path" ] || { [ -e "$app_storage_path" ] && [ ! -d "$app_storage_path" ]; }; then
+    echo "managed App storage root is obstructed" >&2; exit 1
+  fi
+done
+install -d -o root -g root -m 0755 "$install_root/etc/chariox"
+install -d -o root -g root -m 0711 "$install_root/var/lib/chariox-app-storage"
+app_storage_config=$install_root/etc/chariox/app-storage.json
+if [ -L "$app_storage_config" ] || { [ -e "$app_storage_config" ] && [ ! -f "$app_storage_config" ]; }; then
+  echo "managed App storage enrollment is obstructed" >&2; exit 1
+fi
+app_storage_pending=$(mktemp "$install_root/etc/chariox/.app-storage.XXXXXXXX")
+printf '{"schema":"chariox.app-storage-enrollment.v1","owners":[{"uid":%s,"gid":%s,"cgroup_root":"/sys/fs/cgroup/system.slice/%s/apps","kernel_database_paths":["/home/chariox/.chariox/state/kernel.db"]}]}\n' "$app_storage_uid" "$app_storage_gid" "$selected_bootstrap_service" > "$app_storage_pending"
+chmod 0644 "$app_storage_pending"
+chown root:root "$app_storage_pending"
+if [ -e "$app_storage_config" ] && ! cmp -s "$app_storage_config" "$app_storage_pending"; then
+  rm -f -- "$app_storage_pending"
+  echo "managed App storage enrollment conflicts with the installed owner" >&2; exit 1
+fi
+node - "$app_storage_pending" "$app_storage_config" <<'NODE'
+const fs = require("node:fs")
+const path = require("node:path")
+const [from, to] = process.argv.slice(2)
+const file = fs.openSync(from, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+try { fs.fsyncSync(file) } finally { fs.closeSync(file) }
+fs.renameSync(from, to)
+const directory = fs.openSync(path.dirname(to), fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+try { fs.fsyncSync(directory) } finally { fs.closeSync(directory) }
+NODE
+
 install -d -o chariox -g chariox -m 0700 "$managed_home" "$managed_state"
 install -d -o chariox-docker -g chariox-docker -m 0700 \
   "$install_root/var/lib/chariox-docker" \
@@ -447,6 +489,7 @@ pending_release=$releases_root/.new-$release_name
 published_release=$releases_root/$release_name
 install -d -o root -g root -m 0755 \
   "$install_root/usr/local/bin" \
+  "$install_root/usr/libexec" \
   "$install_root/usr/lib/chariox" \
   "$install_root/etc/systemd/system" \
   "$install_root/etc/systemd/user" \
@@ -488,6 +531,7 @@ if [ ! -e "$published_release" ]; then
     "$pending_release/usr" \
     "$pending_release/usr/local" \
     "$pending_release/usr/local/bin" \
+    "$pending_release/usr/libexec" \
     "$pending_release/usr/lib" \
     "$pending_release/usr/lib/chariox" \
     "$pending_release/etc" \
@@ -495,6 +539,9 @@ if [ ! -e "$published_release" ]; then
     "$pending_release/etc/systemd/system"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-kernel" "$pending_release/usr/local/bin/chariox-kernel"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-managed-bootstrap" "$pending_release/usr/local/bin/chariox-managed-bootstrap"
+  install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-app-package" "$pending_release/usr/local/bin/chariox-app-package"
+  install -o root -g root -m 0755 "$image_root/usr/libexec/chariox-app-storage" "$pending_release/usr/libexec/chariox-app-storage"
+  install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-app-storage.service" "$pending_release/etc/systemd/system/chariox-app-storage.service"
   install -o root -g root -m 0644 "$image_root/usr/lib/chariox/release-manifest.json" "$pending_release/usr/lib/chariox/release-manifest.json"
   install -o root -g root -m 0644 "$image_root/usr/lib/chariox/release-manifest.sig" "$pending_release/usr/lib/chariox/release-manifest.sig"
   install -o root -g root -m 0644 "$image_root/usr/lib/chariox/release-public-key" "$pending_release/usr/lib/chariox/release-public-key"
@@ -517,6 +564,9 @@ fi
 
 atomic_symlink "../../../usr/lib/chariox/current/usr/local/bin/chariox-kernel" "$install_root/usr/local/bin/chariox-kernel"
 atomic_symlink "../../../usr/lib/chariox/current/usr/local/bin/chariox-managed-bootstrap" "$install_root/usr/local/bin/chariox-managed-bootstrap"
+atomic_symlink "../../../usr/lib/chariox/current/usr/local/bin/chariox-app-package" "$install_root/usr/local/bin/chariox-app-package"
+atomic_symlink "../lib/chariox/current/usr/libexec/chariox-app-storage" "$install_root/usr/libexec/chariox-app-storage"
+atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-app-storage.service" "$install_root/etc/systemd/system/chariox-app-storage.service"
 atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-managed-bootstrap.service" "$install_root/etc/systemd/system/chariox-managed-bootstrap.service"
 if path_exists "$image_root/etc/systemd/system/chariox-path1-managed-bootstrap.service"; then
   atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-path1-managed-bootstrap.service" "$install_root/etc/systemd/system/chariox-path1-managed-bootstrap.service"
@@ -563,6 +613,7 @@ if ! rm -f -- "$install_root/etc/systemd/system/multi-user.target.wants/chariox-
   || ! systemctl daemon-reload \
   || ! loginctl enable-linger chariox-docker \
   || ! systemctl enable chariox-rootless-docker.service \
+  || ! systemctl enable chariox-app-storage.service \
   || ! systemctl enable "$selected_bootstrap_service"; then
   if restore_previous_current; then
     systemctl daemon-reload >/dev/null 2>&1 || true

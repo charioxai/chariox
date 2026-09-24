@@ -29,6 +29,10 @@ pub(crate) fn capture_workflow_publication_requirements(
             crate::extension::ExtensionKind::Connector => {
                 connector_requirement(&name, &extension_uses)?
             }
+            crate::extension::ExtensionKind::App => {
+                return Err(extension_error(&name,
+                    "App-bound workflow publication requires installation dependency packaging, which is not available yet".into()));
+            }
         };
         let Some(requirement) = requirement else {
             return Err(extension_error(
