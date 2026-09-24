@@ -168,13 +168,10 @@ const PRODUCTION_PATH_PREFIXES = [
 // this MP source inventory; a new production suffix is not silently ignored.
 const NON_INVENTORIED_PRODUCTION_EXTENSIONS = new Set([
   ".chariox",
-  ".charioxignore",
   ".css",
   ".dockerignore",
   ".entitlements",
   ".example",
-  ".gitignore",
-  ".gitkeep",
   ".h",
   ".html",
   ".license",
@@ -195,6 +192,10 @@ const NON_INVENTORIED_PRODUCTION_EXTENSIONS = new Set([
 ]);
 
 const NON_INVENTORIED_PRODUCTION_BASENAMES = new Set([
+  // Exact metadata basenames: path.extname() returns an empty suffix.
+  ".charioxignore",
+  ".gitignore",
+  ".gitkeep",
   "tint2rc",
 ]);
 

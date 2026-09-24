@@ -288,6 +288,18 @@ test("an eligible production file with an unknown format fails closed", () => {
   });
 });
 
+test("tracked repository ignore dotfiles are excluded as bounded metadata", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("apps/ios/.gitignore", "DerivedData/\n");
+    fixture.addFile("apps/kernel/.charioxignore", "");
+    fixture.addFile("apps/kernel/slice-linux-docker/prebuilt/.gitkeep", "\n");
+    const report = collect(fixture);
+    assert.equal(report.entries.some((entry) => entry.path === "apps/ios/.gitignore"), false);
+    assert.equal(report.entries.some((entry) => entry.path === "apps/kernel/.charioxignore"), false);
+    assert.equal(report.entries.some((entry) => entry.path === "apps/kernel/slice-linux-docker/prebuilt/.gitkeep"), false);
+  });
+});
+
 test("a new hidden CHARIOX_MANAGED flag is a direct Path-1 removal finding", () => {
   withFixture({ hiddenManagedFlag: true }, (fixture) => {
     const report = collect(fixture);
