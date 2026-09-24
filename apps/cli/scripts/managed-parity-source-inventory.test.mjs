@@ -145,6 +145,17 @@ test("non-HEAD source blobs use the same binary exclusion as HEAD", () => {
   });
 });
 
+test("lifetimes and regex quotes cannot hide executable selectors after URLs", () => {
+  withFixture({}, (fixture) => {
+    fixture.addFile("apps/kernel/src/lifetime.rs", `const NAME: &'static str = "x";\nconst ROOT: &str = "it's";\nlet u = "https://h/p"; std::env::var("CHARIOX_MANAGED_LIFETIME");\n`);
+    fixture.addFile("apps/cli/src/regexp.ts", `const q = /["]/;\nconst u = "http://x"; process.env.CHARIOX_MANAGED_REGEXP;\n`);
+    const report = collect(fixture);
+    for (const selector of ["CHARIOX_MANAGED_LIFETIME", "CHARIOX_MANAGED_REGEXP"]) {
+      assert.ok(report.entries.some(entry => entry.selector === selector), selector);
+    }
+  });
+});
+
 test("MP row meanings stay aligned with the stable plan ledger", () => {
   assert.deepEqual(MP_ROWS.map(({ id, name }) => [id, name]), [
     ["MP-01", "remove Path-1 Bubblewrap and inherited managed sandboxing"],
@@ -313,10 +324,14 @@ test("an eligible production file with an unknown format fails closed", () => {
 test("tracked repository ignore dotfiles are excluded as bounded metadata", () => {
   withFixture({}, (fixture) => {
     fixture.addFile("apps/ios/.gitignore", "DerivedData/\n");
+    fixture.addFile("docker/.dockerignore", "build/\n");
+    fixture.addFile("deploy/.env", "CHARIOX_MANAGED_DOTENV=1\n");
     fixture.addFile("apps/kernel/.charioxignore", "");
     fixture.addFile("apps/kernel/slice-linux-docker/prebuilt/.gitkeep", "\n");
     const report = collect(fixture);
     assert.equal(report.entries.some((entry) => entry.path === "apps/ios/.gitignore"), false);
+    assert.equal(report.entries.some((entry) => entry.path === "docker/.dockerignore"), false);
+    assert.ok(report.entries.some((entry) => entry.path === "deploy/.env"));
     assert.equal(report.entries.some((entry) => entry.path === "apps/kernel/.charioxignore"), false);
     assert.equal(report.entries.some((entry) => entry.path === "apps/kernel/slice-linux-docker/prebuilt/.gitkeep"), false);
   });

@@ -192,6 +192,7 @@ const NON_INVENTORIED_PRODUCTION_EXTENSIONS = new Set([
 ]);
 
 const NON_INVENTORIED_PRODUCTION_BASENAMES = new Set([
+  ".dockerignore",
   // Exact metadata basenames: path.extname() returns an empty suffix.
   ".charioxignore",
   ".gitignore",
@@ -416,6 +417,7 @@ function classifyProductionPath(path) {
   const fileName = basename(path);
   const lowerPath = path.toLowerCase();
   const extension = extname(path).toLowerCase();
+  if (fileName === ".env") return "config";
   if (CONTAINER_FILE_RE.test(path) || COMPOSE_FILE_RE.test(path)) return "container";
   if (SCANNABLE_EXTENSIONLESS_BASENAMES.has(fileName)) return fileName === "Makefile" ? "shell" : "container";
   if (fileName === "chariox-open-url") return "shell";
@@ -441,65 +443,17 @@ function classifyProductionPath(path) {
 }
 
 function stripComments(text, format) {
+  // This inventory is not a language parser. Only remove whole-line comments;
+  // ambiguous inline/block/template content remains visible for review.
   const slashComments = ["c", "rust", "javascript", "swift"].includes(format);
   const hashComments = ["python", "shell", "unit", "container", "policy", "config"].includes(format);
-  if (!slashComments && !hashComments) return text;
-  const output = text.split("");
-  let blockComment = false;
-  let quote = null;
-  let escaped = false;
-  for (let index = 0; index < output.length; index += 1) {
-    const current = text[index];
-    const next = text[index + 1];
-    if (blockComment) {
-      if (current === "*" && next === "/") {
-        output[index] = " ";
-        output[index + 1] = " ";
-        index += 1;
-        blockComment = false;
-      } else if (current !== "\n" && current !== "\r") {
-        output[index] = " ";
-      }
-      continue;
-    }
-    if (quote) {
-      if (escaped) {
-        escaped = false;
-      } else if (current === "\\") {
-        escaped = true;
-      } else if (current === quote) {
-        quote = null;
-      }
-      continue;
-    }
-    if (current === "\"" || current === "'" || (format === "javascript" && current === "`")) {
-      quote = current;
-      continue;
-    }
-    if (slashComments && current === "/" && next === "*") {
-      output[index] = " ";
-      output[index + 1] = " ";
-      index += 1;
-      blockComment = true;
-      continue;
-    }
-    if (slashComments && current === "/" && next === "/") {
-      while (index < output.length && text[index] !== "\n" && text[index] !== "\r") {
-        output[index] = " ";
-        index += 1;
-      }
-      index -= 1;
-      continue;
-    }
-    if (hashComments && current === "#") {
-      while (index < output.length && text[index] !== "\n" && text[index] !== "\r") {
-        output[index] = " ";
-        index += 1;
-      }
-      index -= 1;
-    }
-  }
-  return output.join("");
+  return text.split("\n").map(line => {
+    const trimmed = line.trim();
+    const commentOnly = (slashComments && (trimmed.startsWith("//")
+      || /^\/\*[^]*?\*\/$/.test(trimmed)))
+      || (hashComments && trimmed.startsWith("#"));
+    return commentOnly ? line.replace(/[^\r]/g, " ") : line;
+  }).join("\n");
 }
 
 function readText(fsApi, absolutePath) {
@@ -665,7 +619,10 @@ export function collectSourceInventory({
       }
     }
   }
-  entries.sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  entries.sort((left, right) => {
+    const a = JSON.stringify(left), b = JSON.stringify(right);
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
   const observedCategories = [...new Set(entries.map((entry) => entry.category))].sort();
   const missingCategories = REQUIRED_CATEGORIES.filter((category) => !observedCategories.includes(category));
   const rowCoverage = buildRowCoverage(entries);
