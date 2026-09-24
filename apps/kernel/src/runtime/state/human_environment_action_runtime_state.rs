@@ -540,13 +540,19 @@ mod tests {
 
         let result = room
             .runtime
-            .execute_human_room_environment_action(human_pointer_move(&room, "human-success"), actor)
+            .execute_human_room_environment_action(
+                human_pointer_move(&room, "human-success"),
+                actor,
+            )
             .await;
         room.stop_browser_controller().await;
 
         let (_, environment) = result.expect("fake ComputerInputApplied should complete");
         assert_eq!(environment.tabs[0].title, "After input");
-        assert_eq!(environment.actions.last().unwrap().state, EnvironmentActionState::Completed);
+        assert_eq!(
+            environment.actions.last().unwrap().state,
+            EnvironmentActionState::Completed
+        );
     }
 
     #[tokio::test]
@@ -567,7 +573,10 @@ mod tests {
 
         let (_, environment) = result.expect("fake ComputerInputApplied should complete");
         assert_eq!(environment.tabs[0].title, "Before input");
-        assert_eq!(environment.actions.last().unwrap().state, EnvironmentActionState::Completed);
+        assert_eq!(
+            environment.actions.last().unwrap().state,
+            EnvironmentActionState::Completed
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -607,7 +616,9 @@ mod tests {
                 )
                 .await
         });
-        action_started_rx.await.expect("other action should be running");
+        action_started_rx
+            .await
+            .expect("other action should be running");
         let actor = human_actor();
         grant_desktop_to_human(&room, actor.clone());
 
@@ -625,13 +636,18 @@ mod tests {
             .any(|action| action.state == EnvironmentActionState::Running);
         let tab_title_after_input = after_input.tabs[0].title.clone();
 
-        release_action_tx.send(()).expect("blocking action should release");
+        release_action_tx
+            .send(())
+            .expect("blocking action should release");
         let action_result = action.await.expect("other action task should join");
         room.stop_browser_controller().await;
 
         result.expect("fake ComputerInputApplied should complete");
         action_result.expect("other action should complete");
-        assert!(another_action_running, "Room action must remain active at input completion");
+        assert!(
+            another_action_running,
+            "Room action must remain active at input completion"
+        );
         assert_eq!(tab_title_after_input, "Before input");
     }
 

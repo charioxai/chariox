@@ -484,8 +484,7 @@ pub(crate) mod computer_input_reconcile_test_support {
 
     impl TestRoot {
         fn new(label: &str) -> Self {
-            static SEQUENCE: std::sync::atomic::AtomicU64 =
-                std::sync::atomic::AtomicU64::new(0);
+            static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!(
                 "chariox-computer-input-reconcile-{label}-{}-{sequence}",
@@ -718,10 +717,8 @@ done
 
 #[cfg(test)]
 mod tests {
+    use super::computer_input_reconcile_test_support::{install_screen_tool, TestRoom, TestTools};
     use super::*;
-    use super::computer_input_reconcile_test_support::{
-        install_screen_tool, TestRoom, TestTools,
-    };
     use std::sync::Arc;
     use tokio::sync::{oneshot, Mutex};
 
@@ -749,7 +746,10 @@ mod tests {
         let result = result.expect("fake ComputerInputApplied should complete");
         assert_eq!(result.action_kind, "pointer_move");
         assert_eq!(environment.tabs[0].title, "After input");
-        assert_eq!(environment.actions.last().unwrap().state, EnvironmentActionState::Completed);
+        assert_eq!(
+            environment.actions.last().unwrap().state,
+            EnvironmentActionState::Completed
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -788,7 +788,9 @@ mod tests {
                 )
                 .await
         });
-        first_started_rx.await.expect("first action should be running");
+        first_started_rx
+            .await
+            .expect("first action should be running");
 
         let (second_started_tx, second_started_rx) = oneshot::channel();
         let (release_second_tx, release_second_rx) = oneshot::channel();
@@ -808,7 +810,9 @@ mod tests {
                     None,
                     async move {
                         second_started_tx.send(()).ok();
-                        release_second_rx.await.expect("second action should release");
+                        release_second_rx
+                            .await
+                            .expect("second action should release");
                         Ok::<_, DaemonError>(())
                     },
                 )
@@ -851,7 +855,9 @@ mod tests {
                 .any(|action| action.state == EnvironmentActionState::Queued);
         let tab_title_after_input = after_input.tabs[0].title.clone();
 
-        release_first_tx.send(()).expect("first action should release");
+        release_first_tx
+            .send(())
+            .expect("first action should release");
         let first_result = first.await.expect("first task should join");
         let second_started = tokio::time::timeout(Duration::from_secs(2), second_started_rx)
             .await
@@ -867,7 +873,10 @@ mod tests {
 
         input_result.expect("fake ComputerInputApplied should complete");
         first_result.expect("first mutation should complete");
-        assert!(running_and_queued_remain, "another action must still be active at input completion");
+        assert!(
+            running_and_queued_remain,
+            "another action must still be active at input completion"
+        );
         assert_eq!(tab_title_after_input, "Before input");
     }
 
