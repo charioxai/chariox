@@ -221,7 +221,7 @@ export function formatInstallOperation(value: AppInstallOperationSummary): strin
 export function formatInstallProgress(value: InstallProgress): string {
   return `${value.phase === "hashing" ? "Checking App file" : "Uploading App"}: ${Math.floor(value.bytes * 100 / value.total)}%`
 }
-function terminalCwd(): string {
+export function terminalCwd(): string {
   const captured = process.env.CHARIOX_CLI_ORIGINAL_CWD
   return captured && isAbsolute(captured) ? captured : process.cwd()
 }

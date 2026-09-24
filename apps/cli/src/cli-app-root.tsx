@@ -1,5 +1,6 @@
 import process from "node:process"
 import { AppFileInstaller, formatInstallProgress } from "./app-install-file.js"
+import { AppPublisherEnrollment } from "./app-publisher-file.js"
 import { randomBytes } from "node:crypto"
 import { homedir } from "node:os"
 import { clearTimeout, setTimeout as startTimeout } from "node:timers"
@@ -811,6 +812,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     (request) => client.send(request),
     (progress) => flashFooter(formatInstallProgress(progress), "info"),
   )
+  const appPublisherEnrollment = new AppPublisherEnrollment((request) => client.send(request), appendNotice)
   let recordDaemonActivity: (activityType: string) => void = () => {}
   const {
     hydrateCurrentAttachedSession, kernelEventSubscriptionController, syncKernelEventSubscription, recoverAttachedSessionAfterKernelRestart,
@@ -818,7 +820,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     requestExit, requestWaitingRoom,
   } = createCliSessionLifecycleComposition({
     client, options, appLogger, renderer,
-    drainAppInstall: () => appFileInstaller.dispose(),
+    drainAppInstall: async () => { await Promise.all([appFileInstaller.dispose(), appPublisherEnrollment.dispose()]) },
     sleep, formatError, supportsKernelEventStream, closingStateController,
     isAttached, daemonDisconnected, attachmentState, sessionState,
     providerRunState, createdSessionState, waitingRoomState, preferencesState,
@@ -865,7 +867,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     handleSigint, handleStdinData, requestPromptStop, submitFocusedInteractionChoice,
     submitPrompt, submitWorkspaceShellCommand,
   } = createCliAppCommandRoutingComposition({
-    client, options, appLogger, formatError, appFileInstaller,
+    client, options, appLogger, formatError, appFileInstaller, appPublisherEnrollment,
     preferencesState, setPreferencesState, initialWorkspaceTarget, initialWorktreeTarget,
     pendingWorkspaceTarget, pendingWorktreeTarget, setPendingWorkspaceTarget, setPendingWorktreeTarget,
     isAttached, sessionState, attachmentState, providerRunState,
