@@ -48,7 +48,17 @@ const kernelPort = Number.parseInt(process.env.M20_KERNEL_PORT ?? "", 10) || 550
 const kernelUrl = `ws://127.0.0.1:${kernelPort}/kernel`
 // A test-only loopback bridge exposes the host fixture inside the slice without
 // changing Chromium's normal secure-context restrictions.
-const fixturePort = 4321
+function parseFixturePort(args = process.argv.slice(2)) {
+  const usage = "fixture port must be a decimal TCP port from 1 through 65535; usage: --fixture-port PORT"
+  if (args.length === 0) return 4321
+  if (args.length !== 2 || args[0] !== "--fixture-port") throw new Error(usage)
+  if (typeof args[1] !== "string" || !/^[1-9]\d*$/.test(args[1])) throw new Error(usage)
+  const port = Number(args[1])
+  if (!Number.isSafeInteger(port) || port > 65535) throw new Error(usage)
+  return port
+}
+
+const fixturePort = parseFixturePort()
 const sliceName = `m20-${process.pid}`
 const containerName = `chariox-slice-${sliceName}`
 const homeVolume = `${containerName}-home`
@@ -1052,6 +1062,7 @@ async function cleanup() {
     if (!(await portIsAvailable(port))) occupiedPorts.push(port)
   }
   const result = {
+    fixturePort,
     dockerAvailable,
     containerGone,
     fixtureSidecarGone,
