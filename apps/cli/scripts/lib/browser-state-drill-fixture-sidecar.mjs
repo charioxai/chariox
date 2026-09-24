@@ -32,7 +32,8 @@ export function browserStateFixtureSidecarArgs({ name, image, runId }) {
 export async function startBrowserStateFixtureSidecar({
   docker, dockerText, runCommand, image, runId, port, account, password,
 }) {
-  assert.equal(port, 4321, "rootless M20 fixture uses the fixed slice loopback port")
+  assert.ok(Number.isInteger(port) && port >= 1 && port <= 65535, "fixture port must be a TCP port")
+  assert.notEqual(port, controlPort, "fixture port collides with private control port")
   assert.ok(account && password, "sidecar fixture requires synthetic test credentials")
   const name = `m20-fixture-${process.pid}-${randomUUID().slice(0, 8)}`
   const imageId = JSON.parse(await dockerText(["image", "inspect", image, "--format", "{{json .Id}}"])).trim()

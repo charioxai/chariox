@@ -79,6 +79,28 @@ test("sidecar control stays on container loopback and cleanup removes exact iden
   assert.equal(fake.calls.filter(({ args }) => args[0] === "cp").length, 3)
 })
 
+test("sidecar accepts a separate fixture port without moving its private control port", async () => {
+  const fake = harness()
+  const fixture = await startBrowserStateFixtureSidecar({
+    ...fake, image: "pinned:image", runId, port: 4323,
+    account: "agent@chariox.test", password: "synthetic-password",
+  })
+  assert.equal(fixture.origin, "http://127.0.0.1:4323")
+  const submittedConfig = fake.calls.find(({ options }) => options?.stdin)?.options.stdin
+  assert.equal(JSON.parse(submittedConfig).port, 4323)
+  assert.ok(fake.calls.some(({ args }) => args.includes("http://127.0.0.1:4322/health")))
+  await fixture.cleanup()
+})
+
+test("sidecar refuses a fixture port that collides with its private control port", async () => {
+  const fake = harness()
+  await assert.rejects(startBrowserStateFixtureSidecar({
+    ...fake, image: "pinned:image", runId, port: 4322,
+    account: "agent@chariox.test", password: "synthetic-password",
+  }), /control port/)
+  assert.equal(fake.calls.length, 0)
+})
+
 test("sidecar cleanup refuses a replaced container", async () => {
   const fake = harness({ replace: true })
   const fixture = await startBrowserStateFixtureSidecar({
