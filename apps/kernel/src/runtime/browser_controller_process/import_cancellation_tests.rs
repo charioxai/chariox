@@ -86,9 +86,26 @@ done
             }
         );
     });
+    let imported = fs::read_to_string(root.join("import-requests")).unwrap();
+    let imported: serde_json::Value = serde_json::from_str(imported.trim()).unwrap();
+    let import_id = imported
+        .get("id")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap();
     let cancelled = fs::read_to_string(root.join("cancel-requests")).unwrap();
-    assert!(cancelled.contains(r#""method":"browser.cancel""#));
-    assert!(cancelled.contains(r#""request_id":2"#));
+    let cancelled: serde_json::Value = serde_json::from_str(cancelled.trim()).unwrap();
+    assert_eq!(
+        cancelled.get("method").and_then(serde_json::Value::as_str),
+        Some("browser.cancel")
+    );
+    assert_eq!(
+        cancelled
+            .get("params")
+            .and_then(|params| params.get("request_id"))
+            .and_then(serde_json::Value::as_u64),
+        Some(import_id),
+        "cancellation must target the exact in-flight import request"
+    );
     store.shutdown().unwrap();
     fs::remove_dir_all(root).unwrap();
 }

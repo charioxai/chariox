@@ -1,5 +1,6 @@
 use super::*;
 use sha2::{Digest, Sha256};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
@@ -11,6 +12,34 @@ use crate::transport::room_browser_controller::RoomBrowserControllerResult as Re
 const COMPLETED_BROWSER_ACTION_LIMIT: usize = 256;
 type ExecutionKey = (String, String);
 type ExecutionOutcome = Result<Response, String>;
+
+thread_local! {
+    static ACTION_CANCELLATION: RefCell<Option<Arc<CancellationSignal>>> = const { RefCell::new(None) };
+}
+
+struct ActionCancellationContext(Option<Arc<CancellationSignal>>);
+
+impl Drop for ActionCancellationContext {
+    fn drop(&mut self) {
+        let previous = self.0.take();
+        ACTION_CANCELLATION.with(|context| {
+            context.replace(previous);
+        });
+    }
+}
+
+pub(super) fn with_action_cancellation<T>(
+    signal: Arc<CancellationSignal>,
+    operation: impl FnOnce() -> T,
+) -> T {
+    let previous = ACTION_CANCELLATION.with(|context| context.replace(Some(signal)));
+    let _context = ActionCancellationContext(previous);
+    operation()
+}
+
+pub(super) fn current_action_cancellation() -> Option<Arc<CancellationSignal>> {
+    ACTION_CANCELLATION.with(|context| context.borrow().clone())
+}
 
 #[derive(Default)]
 pub(super) struct CancellationSignal {
@@ -300,7 +329,7 @@ impl BrowserControllerProcessStore {
         request_id: &str,
     ) -> bool {
         let (signal, planned) = {
-            let mut state = self
+            let state = self
                 .executions
                 .state
                 .lock()
@@ -378,16 +407,9 @@ impl BrowserControllerProcessStore {
             execution_id,
             fingerprint,
             Response::Action { result: None },
-            |ownership| {
-                ownership
-                    .perform_browser_action(
-                        session_id,
-                        target_id,
-                        document_id,
-                        node_ref,
-                        action,
-                        timeout_ms,
-                    )
+            |backend| {
+                backend
+                    .perform_browser_action(target_id, document_id, node_ref, action, timeout_ms)
                     .map(|result| Response::Action {
                         result: Some(result),
                     })
@@ -410,9 +432,9 @@ impl BrowserControllerProcessStore {
             execution_id,
             fingerprint,
             Response::Upload { result: None },
-            |ownership| {
-                ownership
-                    .upload_browser_files(session_id, target_id, document_id, node_ref, files)
+            |backend| {
+                backend
+                    .upload_browser_files(target_id, document_id, node_ref, files)
                     .map(|result| Response::Upload {
                         result: Some(result),
                     })
@@ -456,10 +478,9 @@ impl BrowserControllerProcessStore {
             fingerprint,
             Response::CookieImportRolledBack,
             true,
-            |ownership| {
-                ownership
+            |backend| {
+                backend
                     .import_browser_cookies(
-                        session_id,
                         binding,
                         browser_generation,
                         target_id,
@@ -486,7 +507,7 @@ impl BrowserControllerProcessStore {
         execution_id: &str,
         fingerprint: [u8; 32],
         unavailable: Response,
-        operation: impl FnOnce(&mut StdioOwnership) -> ExecutionOutcome,
+        operation: impl FnOnce(&BrowserControllerProcessStdioBackend) -> ExecutionOutcome,
     ) -> ExecutionOutcome {
         self.perform_cancellable_operation_inner(
             session_id,
@@ -505,11 +526,11 @@ impl BrowserControllerProcessStore {
         fingerprint: [u8; 32],
         unavailable: Response,
         consume_pending_import_cancellation: bool,
-        operation: impl FnOnce(&mut StdioOwnership) -> ExecutionOutcome,
+        operation: impl FnOnce(&BrowserControllerProcessStdioBackend) -> ExecutionOutcome,
     ) -> ExecutionOutcome {
-        let Some(ownership) = &self.ownership else {
+        if self.ownership.is_none() {
             return Ok(unavailable);
-        };
+        }
         let active = match self.executions.register(
             session_id,
             execution_id,
@@ -520,12 +541,15 @@ impl BrowserControllerProcessStore {
             ExecutionAdmission::Wait(record) => return record.wait(),
             ExecutionAdmission::Start(active) => active,
         };
-        let mut ownership = ownership
-            .lock()
-            .map_err(|_| "browser controller supervisor lock poisoned")?;
-        ownership.supervisor.backend.action_cancellation = Some(Arc::clone(&active.signal));
-        let result = operation(&mut ownership);
-        ownership.supervisor.backend.action_cancellation = None;
+        let action_cancellation = Arc::clone(&active.signal);
+        let result = self.with_backend_operation(session_id, |backend| {
+            backend.with_action_cancellation(action_cancellation, || operation(backend))
+        });
+        let result = match result {
+            Ok(Some(result)) => Ok(result),
+            Ok(None) => Ok(unavailable),
+            Err(error) => Err(error),
+        };
         let outcome = if active.signal.stopped.load(Ordering::Acquire) && active.signal.accepted() {
             let controller_fenced = active.signal.fenced();
             Ok(Response::ActionCancelled { controller_fenced })
