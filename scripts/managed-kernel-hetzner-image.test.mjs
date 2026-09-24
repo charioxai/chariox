@@ -99,6 +99,8 @@ test("Hetzner image preparation is pinned, guarded, and leaves no runtime identi
   assert.match(script, /requested subordinate ID range overlaps/)
   assert.match(script, /systemctl start chariox-rootless-docker\.service/)
   assert.match(script, /^  dbus-user-session \\$/m)
+  assert.match(script, /^  docker-buildx \\$/m)
+  assert.match(script, /docker buildx version >\/dev\/null \|\| fail "Docker Buildx is unavailable"/)
   assert.match(script, /runuser -u chariox-docker -- env DOCKER_HOST=unix:\/\/\/run\/chariox-docker\/docker\.sock docker info/)
   assert.match(script, /slice_base_image=node:22\.17\.1-bookworm@sha256:37ff334612f77d8f999c10af8797727b731629c26f2e83caa6af390998bdc49c/)
   assert.match(script, /docker pull "\$slice_base_image"/)

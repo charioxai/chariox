@@ -85,6 +85,7 @@ apt-get install -y --no-install-recommends \
   ca-certificates \
   cloud-init \
   curl \
+  docker-buildx \
   docker.io \
   fuse-overlayfs \
   gh \
@@ -119,6 +120,7 @@ docker_socket_state=$(systemctl is-active docker.socket || true)
 
 node_major=$(node -p 'Number(process.versions.node.split(".")[0])')
 [ "$node_major" -eq 22 ] || fail "Ubuntu image did not provide the required Node.js 22 runtime"
+docker buildx version >/dev/null || fail "Docker Buildx is unavailable"
 
 "$script_root/install-image.sh" \
   "$release_rootfs" "$release_digest" "$trusted_public_key" "$managed_provider_topology"
