@@ -699,6 +699,7 @@ mod tests {
                 "slice-save-state-future-slices",
                 "slice-backup",
                 "slice-backup-name",
+                "slice-backup-restore",
                 "slice-reset-state",
                 "slice-start",
                 "slice-stop",
@@ -753,6 +754,14 @@ mod tests {
                 "app-list",
                 "app-status",
                 "app-journal",
+                "app-worker",
+                "app-start",
+                "app-stop",
+                "app-restart",
+                "app-automation",
+                "app-automation-list",
+                "app-automation-add",
+                "app-automation-disable",
             ]
         );
     }

@@ -32,3 +32,38 @@ test("App status and journal use the shared requests and stable errors", async (
     assert.equal(result.message, "App installation not found.")
   }
 })
+
+test("App worker control uses owner-free requests and shows dormant Apps", async () => {
+  const worker = { installation_id: "todo", phase: "dormant", enabled: true, failure: null, updated_at_ms: 1 }
+  for (const [args, request] of [
+    [["worker", "todo"], { GetAppWorker: { installation_id: "todo" } }],
+    [["restart", "todo"], { ControlAppWorker: { installation_id: "todo", action: "restart" } }],
+    [["stop", "todo"], { ControlAppWorker: { installation_id: "todo", action: "stop" } }],
+  ] as const) {
+    const result = await executeAppCommand([...args], { send: async sent => {
+      assert.deepEqual(sent, request)
+      return { AppWorker: { worker } }
+    } })
+    assert.equal(result.ok, true)
+    assert.equal(result.message, "todo · dormant")
+  }
+})
+
+test("App automation commands route one event to one workflow and validate arguments", async () => {
+  const automation = { automation_id: "reminders", revision: 1, event_name: "todo_due", event_version: 1, session_id: "s", publication_id: "p", endpoint_id: "e", queue_id: "q", scheduled: true, status: "active" }
+  const result = await executeAppCommand(["automation", "add", "todo", "reminders", "todo_due", "s", "todo-flow", "--scheduled", "--queue", "main"], { send: async sent => {
+    assert.deepEqual(sent, { ConfigureAppAutomation: { installation_id: "todo", automation_id: "reminders", expected_revision: 0, event_name: "todo_due", session_id: "s", publication_ref: "todo-flow", queue_ref: "main", scheduled: true } })
+    return { AppAutomation: { installation_id: "todo", automation } }
+  } })
+  assert.equal(result.ok, true)
+  assert.match(result.message!, /reminders · todo_due v1 → workflow p \(queue q\) · active · revision 1 · scheduled/)
+  const disabled = await executeAppCommand(["automation", "disable", "todo", "reminders", "1"], { send: async sent => {
+    assert.deepEqual(sent, { DisableAppAutomation: { installation_id: "todo", automation_id: "reminders", expected_revision: 1 } })
+    return { AppAutomations: { installation_id: "todo", automations: [] } }
+  } })
+  assert.equal(disabled.message, "No App automations.")
+  for (const args of [["automation", "add", "todo", "reminders"], ["automation", "disable", "todo", "reminders", "x"], ["automation", "add", "todo", "a", "e", "s", "w", "--bogus"], ["worker"]]) {
+    const invalid = await executeAppCommand(args, { send: async () => { throw new Error("unexpected request") } })
+    assert.equal(invalid.ok, false)
+  }
+})

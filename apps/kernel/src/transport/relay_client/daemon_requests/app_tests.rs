@@ -8,9 +8,9 @@ struct TestRoot(std::path::PathBuf);
 impl TestRoot {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
-            "chariox-app-relay-{}-{}",
+            "chariox-app-relay-{}-{:016x}",
             std::process::id(),
-            crate::session::unix_epoch_ms()
+            rand::random::<u64>()
         ));
         std::fs::create_dir(&path).unwrap();
         Self(std::fs::canonicalize(path).unwrap())
@@ -245,5 +245,104 @@ async fn app_relay_upload_replays_preserve_owner_offset_and_abort_receipt() {
     assert_eq!(
         dispatch(&router, &cache, Some("alice"), begin, "begin").await,
         aborted
+    );
+}
+
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+#[tokio::test]
+async fn app_worker_and_automation_requests_are_owner_scoped_and_need_no_worker() {
+    use crate::local::{
+        AppRequestErrorCode, AppWorkerPhase, AppWorkerRequest, ConfigureAppAutomationRequest,
+        DisableAppAutomationRequest,
+    };
+    use chariox_app_package::{verify, VerificationPolicy};
+    use chariox_app_runtime::release_store::{ReleaseStore, StageBudget};
+    let root = TestRoot::new();
+    let app = crate::DaemonApp::bootstrap(root.config()).unwrap();
+    let store = app.durable_state_store();
+    // An active, trusted, never-started installation with its stored release.
+    crate::durable_state::app_state::fixture_event_catalog(&store);
+    let (bytes, publisher) = crate::durable_state::app_state::fixture_event_package();
+    let verified = verify(
+        &bytes,
+        &VerificationPolicy::new(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, vec![publisher]),
+    )
+    .unwrap();
+    let budget = StageBudget {
+        max_stage_bytes: 1024 * 1024,
+        reserved_bytes: 1024 * 1024,
+        host_reserve_bytes: 1024 * 1024,
+    };
+    ReleaseStore::open_or_create(store.path())
+        .unwrap()
+        .stage(&verified, &bytes, budget)
+        .unwrap();
+    let router =
+        CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 8);
+    let cache = CommandResultCache::default();
+    let failed = |code| LocalDaemonResponse::AppRequestFailed { code };
+    let worker = LocalDaemonRequest::GetAppWorker(AppWorkerRequest {
+        installation_id: "installed".into(),
+    });
+    let LocalDaemonResponse::AppWorker { worker: status } =
+        dispatch(&router, &cache, Some("alice"), worker.clone(), "worker").await
+    else {
+        panic!("Alice reads her worker status")
+    };
+    assert_eq!(status.phase, AppWorkerPhase::NotStarted);
+    assert!(status.enabled);
+    assert_eq!(
+        dispatch(&router, &cache, Some("bob"), worker.clone(), "worker").await,
+        failed(AppRequestErrorCode::NotFound)
+    );
+    assert_eq!(
+        dispatch(&router, &cache, None, worker, "worker").await,
+        failed(AppRequestErrorCode::Unauthorized)
+    );
+    // Automations are durable configuration: no running worker is needed.
+    let list = LocalDaemonRequest::ListAppAutomations(AppWorkerRequest {
+        installation_id: "installed".into(),
+    });
+    assert_eq!(
+        dispatch(&router, &cache, Some("alice"), list.clone(), "list").await,
+        LocalDaemonResponse::AppAutomations {
+            installation_id: "installed".into(),
+            automations: vec![],
+        }
+    );
+    assert_eq!(
+        dispatch(&router, &cache, Some("bob"), list, "list").await,
+        failed(AppRequestErrorCode::NotFound)
+    );
+    // Errors keep their meaning instead of collapsing into Conflict.
+    let disable = |expected_revision| {
+        LocalDaemonRequest::DisableAppAutomation(DisableAppAutomationRequest {
+            installation_id: "installed".into(),
+            automation_id: "missing".into(),
+            expected_revision,
+        })
+    };
+    // A stale or unknown revision fails the compare-and-set: retryable Conflict.
+    assert_eq!(
+        dispatch(&router, &cache, Some("alice"), disable(1), "disable-1").await,
+        failed(AppRequestErrorCode::Conflict)
+    );
+    assert_eq!(
+        dispatch(&router, &cache, Some("alice"), disable(0), "disable-0").await,
+        failed(AppRequestErrorCode::InvalidRequest)
+    );
+    let configure = LocalDaemonRequest::ConfigureAppAutomation(ConfigureAppAutomationRequest {
+        installation_id: "installed".into(),
+        automation_id: "reminders".into(),
+        expected_revision: 0,
+        event_name: "missing_event".into(),
+        session_id: "missing-session".into(),
+        publication_ref: "missing".into(),
+        queue_ref: None,
+        scheduled: true,
+    });
+    assert_eq!(
+        dispatch(&router, &cache, Some("alice"), configure, "configure").await,
+        failed(AppRequestErrorCode::NotFound)
     );
 }

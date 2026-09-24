@@ -1,16 +1,16 @@
 //! Explicit App automation configuration through existing workflow ownership.
-//! This has no wire/SDK endpoint yet. A future App asset request must pass the
-//! existing Ask/YOLO permission path before invoking these kernel operations.
+//! Protocol 345 exposes these operations to the authenticated App owner only:
+//! the kernel derives the owner from the caller, never from request data, and
+//! workflow targets resolve under that owner's existing workflow ownership.
 
 use super::KernelRuntimeOwnedState;
-use crate::runtime::app_operation_budget::AppOperationBudget;
-use crate::{
-    durable_state::app_automations::{
-        AppAutomationError, AppAutomationMutation, AppAutomationOutcome, WorkflowAutomationTarget,
-    },
-    error::DaemonError,
+use crate::durable_state::app_automations::{
+    AppAutomationError, AppAutomationMutation, AppAutomationOutcome, WorkflowAutomationTarget,
 };
-use chariox_app_runtime::app_outbox::{AutomationConfiguration, AutomationStatus, EventCatalog};
+use crate::runtime::app_operation_budget::AppOperationBudget;
+use chariox_app_runtime::app_outbox::{
+    AutomationConfiguration, AutomationStatus, EventCatalog, OutboxError,
+};
 use std::sync::Arc;
 
 pub(super) struct ConfigureAppAutomation {
@@ -31,26 +31,25 @@ impl KernelRuntimeOwnedState {
         catalog: Arc<EventCatalog>,
         request: ConfigureAppAutomation,
         budget: AppOperationBudget,
-    ) -> Result<AutomationConfiguration, DaemonError> {
-        budget.check().map_err(|e| error(e.into()))?;
+    ) -> Result<AutomationConfiguration, AppAutomationError> {
+        budget.check()?;
         self.durable_state_store
             .with_workflow_runtime_transition_lock(|| {
-                budget.check().map_err(|e| error(e.into()))?;
-                // Holding only the transition mutex is insufficient: several current
-                // workflow mutations acquire SessionService directly. Retain this read
-                // guard until the writer's exact-target check and config CAS commit.
-                let sessions = self.session_store.read();
-                let target = WorkflowAutomationTarget::resolve(
-                    &sessions,
-                    trusted_owner,
-                    &request.session_id,
-                    &request.publication_ref,
-                    request.queue_ref.as_deref(),
-                )
-                .map_err(error)?;
-                let result = self
-                    .durable_state_store
-                    .mutate_app_automation(
+                Ok((|| {
+                    budget.check()?;
+                    // Holding only the transition mutex is insufficient: several
+                    // current workflow mutations acquire SessionService directly.
+                    // Retain this read guard until the writer's exact-target check
+                    // and config CAS commit.
+                    let sessions = self.session_store.read();
+                    let target = WorkflowAutomationTarget::resolve(
+                        &sessions,
+                        trusted_owner,
+                        &request.session_id,
+                        &request.publication_ref,
+                        request.queue_ref.as_deref(),
+                    )?;
+                    let result = self.durable_state_store.mutate_app_automation(
                         trusted_owner,
                         catalog,
                         AppAutomationMutation::Configure {
@@ -61,14 +60,12 @@ impl KernelRuntimeOwnedState {
                             scheduled: request.scheduled,
                         },
                         budget,
-                    )
-                    .map_err(error)?;
-                drop(sessions);
-                match result {
-                    AppAutomationOutcome::Configured(value) => Ok(value),
-                    _ => Err(invalid_response()),
-                }
+                    )?;
+                    drop(sessions);
+                    configured(result)
+                })())
             })
+            .map_err(AppAutomationError::Storage)?
     }
     pub(super) fn deactivate_app_automation(
         &self,
@@ -78,50 +75,40 @@ impl KernelRuntimeOwnedState {
         expected_revision: u64,
         status: AutomationStatus,
         budget: AppOperationBudget,
-    ) -> Result<AutomationConfiguration, DaemonError> {
-        let result = self
-            .durable_state_store
-            .mutate_app_automation(
-                trusted_owner,
-                catalog,
-                AppAutomationMutation::Deactivate {
-                    automation_id,
-                    expected_revision,
-                    status,
-                },
-                budget,
-            )
-            .map_err(error)?;
-        match result {
-            AppAutomationOutcome::Configured(value) => Ok(value),
-            _ => Err(invalid_response()),
-        }
+    ) -> Result<AutomationConfiguration, AppAutomationError> {
+        configured(self.durable_state_store.mutate_app_automation(
+            trusted_owner,
+            catalog,
+            AppAutomationMutation::Deactivate {
+                automation_id,
+                expected_revision,
+                status,
+            },
+            budget,
+        )?)
     }
     pub(super) fn list_app_automations(
         &self,
         trusted_owner: &str,
         catalog: Arc<EventCatalog>,
         budget: AppOperationBudget,
-    ) -> Result<Vec<AutomationConfiguration>, DaemonError> {
-        match self
-            .durable_state_store
-            .mutate_app_automation(trusted_owner, catalog, AppAutomationMutation::List, budget)
-            .map_err(error)?
-        {
+    ) -> Result<Vec<AutomationConfiguration>, AppAutomationError> {
+        match self.durable_state_store.mutate_app_automation(
+            trusted_owner,
+            catalog,
+            AppAutomationMutation::List,
+            budget,
+        )? {
             AppAutomationOutcome::Listed(values) => Ok(values),
-            _ => Err(invalid_response()),
+            _ => Err(OutboxError::Invalid.into()),
         }
     }
 }
-fn error(error: AppAutomationError) -> DaemonError {
-    DaemonError::LocalTransport {
-        operation: "app.automation",
-        message: error.to_string(),
-    }
-}
-fn invalid_response() -> DaemonError {
-    DaemonError::LocalTransport {
-        operation: "app.automation",
-        message: "Unexpected App automation response".into(),
+fn configured(
+    outcome: AppAutomationOutcome,
+) -> Result<AutomationConfiguration, AppAutomationError> {
+    match outcome {
+        AppAutomationOutcome::Configured(value) => Ok(value),
+        _ => Err(OutboxError::Invalid.into()),
     }
 }

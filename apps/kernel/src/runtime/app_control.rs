@@ -257,7 +257,7 @@ fn read(
     }
 }
 
-fn registry_error(error: AppRegistryError) -> AppRequestErrorCode {
+pub(crate) fn registry_error(error: AppRegistryError) -> AppRequestErrorCode {
     match error {
         AppRegistryError::Registry(InstallationError::NotFound) => AppRequestErrorCode::NotFound,
         // Caller fields were validated before the read. Residual invariant

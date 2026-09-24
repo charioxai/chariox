@@ -2,13 +2,125 @@
   {
     "id": "app",
     "label": "/app",
-    "description": "Inspect your App installations and update history",
+    "description": "Inspect, run and automate your installed Apps",
     "value": "/app",
-    "surfaces": ["session", "waiting_room"],
+    "surfaces": [
+      "session",
+      "waiting_room"
+    ],
     "children": [
-      { "id": "app-list", "label": "list", "description": "List App installations with bounded paging", "value": "/app list", "surfaces": ["session", "waiting_room"] },
-      { "id": "app-status", "label": "status", "description": "Inspect one installation's active and pending release", "value": "/app status ", "surfaces": ["session", "waiting_room"] },
-      { "id": "app-journal", "label": "journal", "description": "Show retained installation update history", "value": "/app journal ", "surfaces": ["session", "waiting_room"] }
+      {
+        "id": "app-list",
+        "label": "list",
+        "description": "List App installations with bounded paging",
+        "value": "/app list",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
+      },
+      {
+        "id": "app-status",
+        "label": "status",
+        "description": "Inspect one installation's active and pending release",
+        "value": "/app status ",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
+      },
+      {
+        "id": "app-journal",
+        "label": "journal",
+        "description": "Show retained installation update history",
+        "value": "/app journal ",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
+      },
+      {
+        "id": "app-worker",
+        "label": "worker",
+        "description": "Show whether an App is running, dormant or stopped",
+        "value": "/app worker ",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
+      },
+      {
+        "id": "app-start",
+        "label": "start",
+        "description": "Start an App now",
+        "value": "/app start ",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
+      },
+      {
+        "id": "app-stop",
+        "label": "stop",
+        "description": "Stop an App until you start it again",
+        "value": "/app stop ",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
+      },
+      {
+        "id": "app-restart",
+        "label": "restart",
+        "description": "Restart an App",
+        "value": "/app restart ",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
+      },
+      {
+        "id": "app-automation",
+        "label": "automation",
+        "description": "Route an App event to a workflow",
+        "value": "/app automation ",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ],
+        "children": [
+          {
+            "id": "app-automation-list",
+            "label": "list",
+            "description": "List an App's automations",
+            "value": "/app automation list ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          },
+          {
+            "id": "app-automation-add",
+            "label": "add",
+            "description": "Route an App event to a workflow endpoint",
+            "value": "/app automation add ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          },
+          {
+            "id": "app-automation-disable",
+            "label": "disable",
+            "description": "Disable an App automation",
+            "value": "/app automation disable ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          }
+        ]
+      }
     ]
   }
 ]
