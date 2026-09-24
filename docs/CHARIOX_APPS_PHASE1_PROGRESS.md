@@ -129,7 +129,7 @@ Every row below is **Unverified**. Existing related tests are useful starting po
 | V1-INT-28 | Correlated intermediate/final outputs *(Phase 2 since 2026-09-24)* | Authorized fields only; bounded repair, ordered idempotent delivery and explicit incomplete state; no transcript scraping | Unverified |
 | V1-INT-29 | App-owned semantics | Kernel enforces generic envelopes and policy; domain checks execute only in sandboxed App code | Unverified |
 | V1-INT-30 | Resume with a second agent *(Phase 2 since 2026-09-24)* | Same opaque App task relation with distinct attributed turns; no raw conversation exported or automatic focus retargeting | Unverified |
-| V1-INT-31 | Create user workflows and agents | Normal user-owned assets and one execution path; dependencies become visible/broken without silently deleting assets | Unverified |
+| V1-INT-31 | Create user workflows and agents *(Phase 2 since 2026-09-24)* | Normal user-owned assets and one execution path; dependencies become visible/broken without silently deleting assets | Unverified |
 | V1-INT-32 | Complete App work acceptance | All required Phase 1 terminal/kernel combinations pass the same task; cross-App coordination remains Phase 2 | Unverified |
 
 ### Package lifecycle matrix
