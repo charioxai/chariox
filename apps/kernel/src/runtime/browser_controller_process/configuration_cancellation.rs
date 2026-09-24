@@ -27,19 +27,18 @@ impl BrowserConfiguration {
 
     fn execute(
         self,
-        ownership: &mut StdioOwnership,
-        room: &str,
+        backend: &BrowserControllerProcessStdioBackend,
         target: &str,
         document: &str,
     ) -> Result<Response, String> {
         match self {
-            Self::Downloads => ownership
-                .configure_browser_downloads(room, target, document)
+            Self::Downloads => backend
+                .configure_browser_downloads(target, document)
                 .map(|result| Response::Downloads {
                     result: Some(result),
                 }),
-            Self::Permission { name, setting } => ownership
-                .set_browser_permission(room, target, document, name, setting)
+            Self::Permission { name, setting } => backend
+                .set_browser_permission(target, document, name, setting)
                 .map(|result| Response::Permission {
                     result: Some(result),
                 }),
@@ -61,7 +60,7 @@ impl BrowserControllerProcessStore {
             execution_id,
             configuration.fingerprint(target, document)?,
             configuration.unavailable(),
-            |ownership| configuration.execute(ownership, room, target, document),
+            |backend| configuration.execute(backend, target, document),
         )
     }
 

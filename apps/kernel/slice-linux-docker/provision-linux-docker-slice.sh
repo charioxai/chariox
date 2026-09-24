@@ -413,6 +413,7 @@ refresh_slice_support_files() {
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-cdp.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-cdp.mjs" "browser CDP helper"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-actions.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-actions.mjs" "Browser Controller actions module"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-cdp.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-cdp.mjs" "Browser Controller CDP module"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-scheduler.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-scheduler.mjs" "Browser Controller scheduler module"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-resources.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-resources.mjs" \
     || fail "failed to refresh required slice support overlay: Browser Controller resources"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-cookie-fence.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-cookie-fence.mjs" \
@@ -454,6 +455,7 @@ refresh_slice_support_files() {
     /opt/chariox-slice/browser-controller-actions.mjs \
     /opt/chariox-slice/browser-controller-cdp.mjs \
     /opt/chariox-slice/browser-controller-resources.mjs \
+    /opt/chariox-slice/browser-controller-scheduler.mjs \
     /opt/chariox-slice/browser-controller-cookie-fence.mjs \
     /opt/chariox-slice/browser-controller-dialogs.mjs \
     /opt/chariox-slice/browser-controller-compatibility.mjs \

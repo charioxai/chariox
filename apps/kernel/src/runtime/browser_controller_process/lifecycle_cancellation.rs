@@ -24,24 +24,24 @@ impl BrowserControllerProcessStore {
             execution_id,
             fingerprint(target, document, operation)?,
             unavailable,
-            |ownership| match operation {
-                Operation::Tab { action } => ownership
-                    .manage_browser_tab(room, target, document, *action)
+            |backend| match operation {
+                Operation::Tab { action } => backend
+                    .manage_browser_tab(target, document, *action)
                     .map(|result| Response::Tab {
                         result: Some(result),
                     }),
-                Operation::History { action } => ownership
-                    .navigate_browser_history(room, target, document, *action)
+                Operation::History { action } => backend
+                    .navigate_browser_history(target, document, *action)
                     .map(|result| Response::History {
                         result: Some(result),
                     }),
-                Operation::Navigate { url } => ownership
-                    .navigate_browser(room, target, document, url.as_str())
+                Operation::Navigate { url } => backend
+                    .navigate_browser(target, document, url.as_str())
                     .map(|result| Response::Navigation {
                         result: Some(result),
                     }),
-                Operation::Dialog { action } => ownership
-                    .handle_browser_dialog(room, target, document, action)
+                Operation::Dialog { action } => backend
+                    .handle_browser_dialog(target, document, action)
                     .map(|result| Response::Dialog {
                         result: Some(result),
                     }),
