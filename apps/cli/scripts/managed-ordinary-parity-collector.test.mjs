@@ -72,7 +72,13 @@ function genericResult(rowId, checkId, topology) {
     return { observed: true, managed_marker_absent: true, bwrap_environment_absent: true }
   }
   if (rowId === "MP-01" && checkId === "privilege_state") {
-    return { observed: true, no_new_privs: false, capabilities_match_ordinary: true, umask_matches_ordinary: true }
+    return {
+      observed: true,
+      no_new_privs: false,
+      capabilities_match_ordinary: true,
+      umask_matches_ordinary: true,
+      seccomp_matches_ordinary: true,
+    }
   }
   if (rowId === "MP-07") {
     return topology === "ordinary"
@@ -417,6 +423,25 @@ test("Bubblewrap ancestry is a product-boundary failure", async () => {
   await assert.rejects(() => harness.collector.collect(harness.options), (error) => {
     assert.equal(error.code, "probe_assertion_failed")
     assert.equal(error.rowId, "MP-01")
+    return true
+  })
+})
+
+test("Path-1 parity rejects an inherited seccomp restriction despite no-new-privileges being off", async () => {
+  const harness = makeHarness("path1", {
+    results: {
+      "MP-01/privilege_state": {
+        ...genericResult("MP-01", "privilege_state", "path1"),
+        seccomp_mode: 2,
+        seccomp_filters: 1,
+        seccomp_matches_ordinary: false,
+      },
+    },
+  })
+  await assert.rejects(() => harness.collector.collect(harness.options), (error) => {
+    assert.equal(error.code, "probe_assertion_failed")
+    assert.equal(error.rowId, "MP-01")
+    assert.equal(error.key, "seccomp_matches_ordinary")
     return true
   })
 })

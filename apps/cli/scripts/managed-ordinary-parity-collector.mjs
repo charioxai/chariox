@@ -232,6 +232,7 @@ function normalizeGenericResult(result, rowId, checkId) {
   for (const key of required) normalized[key] = result[key]
   if (rowId === "MP-01" && checkId === "privilege_state") {
     expectedBoolean(result, "no_new_privs", rowId, checkId, false)
+    expectedBoolean(result, "seccomp_matches_ordinary", rowId, checkId, true)
     normalized.no_new_privs = false
   }
   if (rowId === "MP-02" && checkId === "directory_discovery") {

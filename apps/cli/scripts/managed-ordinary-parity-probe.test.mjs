@@ -6,7 +6,11 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import { test } from "node:test"
-import { normalizeMountInfo } from "./managed-ordinary-parity-probe.mjs"
+import {
+  compareSeccompToOrdinary,
+  normalizeMountInfo,
+  seccompStateFromProcStatus,
+} from "./managed-ordinary-parity-probe.mjs"
 
 const execFileAsync = promisify(execFile)
 const probeSource = fileURLToPath(new URL("./managed-ordinary-parity-probe.mjs", import.meta.url))
@@ -263,4 +267,26 @@ test("mount normalization preserves comparable topology facts", () => {
   assert.equal(first.length, 1)
   assert.equal(first[0].mount_point, "/rw")
   assert.notDeepEqual(first, second)
+})
+
+test("inherited seccomp filters must match the ordinary kernel control", () => {
+  const ordinary = { seccomp_mode: 0, seccomp_filters: 0 }
+  assert.deepEqual(seccompStateFromProcStatus("Name:\tnode\nSeccomp:\t2\nSeccomp_filters:\t1\n"), {
+    seccomp_mode: 2,
+    seccomp_filters: 1,
+  })
+  assert.deepEqual(compareSeccompToOrdinary(ordinary, ordinary), {
+    seccomp_matches_ordinary: true,
+    seccomp_mode: 0,
+    seccomp_filters: 0,
+  })
+  assert.throws(() => compareSeccompToOrdinary(
+    { seccomp_mode: 2, seccomp_filters: 1 },
+    ordinary,
+  ), /seccomp restrictions differ from the observed ordinary baseline/)
+  assert.throws(() => compareSeccompToOrdinary(
+    { seccomp_mode: 2, seccomp_filters: 1 },
+    { seccomp_mode: 0 },
+  ), /observed and ordinary seccomp state are required/)
+  assert.throws(() => seccompStateFromProcStatus("Seccomp:\t0\n"), /Seccomp_filters is missing/)
 })

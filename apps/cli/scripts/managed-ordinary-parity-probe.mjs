@@ -483,11 +483,42 @@ async function observeMountVisibility(identity, values) {
   })
 }
 
+function parseProcStatusInteger(status, field) {
+  const value = new RegExp(`^${field}:\\s*(\\d+)$`, "m").exec(status)?.[1]
+  if (value === undefined) throw new ProbeError(`process restriction field ${field} is missing`)
+  return Number(value)
+}
+
+export function seccompStateFromProcStatus(status) {
+  return {
+    seccomp_mode: parseProcStatusInteger(status, "Seccomp"),
+    seccomp_filters: parseProcStatusInteger(status, "Seccomp_filters"),
+  }
+}
+
+export function compareSeccompToOrdinary(current, baseline) {
+  const seccompMode = current?.seccomp_mode
+  const seccompFilters = current?.seccomp_filters
+  const ordinaryMode = baseline?.seccomp_mode
+  const ordinaryFilters = baseline?.seccomp_filters
+  if (!Number.isSafeInteger(seccompMode) || seccompMode < 0 || seccompMode > 2
+    || !Number.isSafeInteger(seccompFilters) || seccompFilters < 0
+    || !Number.isSafeInteger(ordinaryMode) || ordinaryMode < 0 || ordinaryMode > 2
+    || !Number.isSafeInteger(ordinaryFilters) || ordinaryFilters < 0) {
+    throw new ProbeError("observed and ordinary seccomp state are required")
+  }
+  if (seccompMode !== ordinaryMode || seccompFilters !== ordinaryFilters) {
+    throw new ProbeError("process seccomp restrictions differ from the observed ordinary baseline")
+  }
+  return { seccomp_matches_ordinary: true, seccomp_mode: seccompMode, seccomp_filters: seccompFilters }
+}
+
 async function observePrivilegeState(identity) {
   const status = await readFile("/proc/self/status", "utf8")
   const noNewPrivs = /^NoNewPrivs:\s*(\d+)$/m.exec(status)?.[1]
   const capEff = /^CapEff:\s*([0-9a-f]+)$/im.exec(status)?.[1]?.toLowerCase()
   if (!noNewPrivs || !capEff) throw new ProbeError("privilege fields are missing")
+  const currentSeccomp = seccompStateFromProcStatus(status)
   const umask = process.umask().toString(8).padStart(4, "0")
   const uid = typeof process.getuid === "function" ? process.getuid() : null
   const gid = typeof process.getgid === "function" ? process.getgid() : null
@@ -498,6 +529,9 @@ async function observePrivilegeState(identity) {
   if (boundaryEvidence && typeof boundaryEvidence.no_new_privs !== "boolean") {
     throw new ProbeError("privilege state evidence is missing no_new_privs")
   }
+  const seccomp = compareSeccompToOrdinary(boundaryEvidence
+    ? { seccomp_mode: boundaryEvidence.seccomp_mode, seccomp_filters: boundaryEvidence.seccomp_filters }
+    : currentSeccomp, baseline)
   const comparableNoNewPrivs = boundaryEvidence ? boundaryEvidence.no_new_privs === true : noNewPrivs === "1"
   const capabilitiesMatch = capEff === String(baseline.cap_eff ?? "").toLowerCase()
   const umaskMatches = umask === baseline.umask && uid === baseline.uid && gid === baseline.gid
@@ -506,6 +540,9 @@ async function observePrivilegeState(identity) {
     no_new_privs: false,
     capabilities_match_ordinary: true,
     umask_matches_ordinary: true,
+    seccomp_matches_ordinary: seccomp.seccomp_matches_ordinary,
+    seccomp_mode: seccomp.seccomp_mode,
+    seccomp_filters: seccomp.seccomp_filters,
     cap_eff: capEff,
     umask,
     uid,
