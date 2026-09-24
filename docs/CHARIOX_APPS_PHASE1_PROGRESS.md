@@ -14,7 +14,8 @@ Baseline inspected 2026-09-07 in isolated `codex/` worktrees. This ledger covers
 > continuation and App-created assets move to Phase 2 for revisit; passkey
 > step-up and compiled backends move to Phase 2; wakes are kernel-owned and Apps
 > run on demand; the conversation panel uses a fixed trusted region; managed
-> kernel provisioning is deferred within Phase 1 (P1.18). Rows marked
+> kernel provisioning is deferred within Phase 1 (plan P1.18). Ledger IDs below
+> keep the 2026-09-07 baseline numbering. Rows marked
 > *(Phase 2 since 2026-09-24)* are no longer Phase 1 obligations.
 
 ## Existing integration seams
@@ -58,7 +59,7 @@ All kernel paths in the table are relative to `apps/kernel/src/` unless an expli
 | P1.16 | Foreground bindings/existing authority | Partial | Extend current extension self-grant/effective permission resolver; bind explicit/foreground/self-grant consistently, capture focus at submission, provider readiness, no stale regrant or focus retargeting. |
 | P1.17 | Private conversation panel | Missing | Trusted terminal composites kernel history outside App DOM, stream, AX and screenshot APIs. App receives geometry only; one prompt area, no transcript subscription. |
 | P1.18 | Consented outputs/agent continuation *(Phase 2 since 2026-09-24; information sets removed)* | Partial | Existing workflow outputs/handoffs only; named information sets with explicit consent, schema/version/source scope, correlated intermediate/final outputs, bounded repair/delivery, App validators and second-agent continuation. |
-| P1.19 | User assets/complete App work | Partial | Existing generic workflow/agent owners; add App-requested normal user assets under existing policy, visible automation/dependencies, full same-App acceptance through every released terminal. |
+| P1.19 | User assets/complete App work *(App-created assets are Phase 2 since 2026-09-24)* | Partial | Existing generic workflow/agent owners; add App-requested normal user assets under existing policy, visible automation/dependencies, full same-App acceptance through every released terminal. |
 
 ## Phase 1 verification baseline
 
@@ -80,7 +81,7 @@ Every row below is **Unverified**. Existing related tests are useful starting po
 | Foreground/self-grant binding with existing permission modes | Web terminal: Required; Local TUI: Required; Remote TUI: Required | Unverified |
 | Private conversation panel and single prompt area | Web terminal: Required; Local TUI: Required; Remote TUI: Required | Unverified |
 | Information-set consent, validated outputs and agent continuation *(Phase 2 since 2026-09-24)* | Web terminal: Required; Local TUI: Required; Remote TUI: Required | Unverified |
-| Generic user-asset creation and App work experience | Web terminal: Required; Local TUI: Required; Remote TUI: Required | Unverified |
+| Generic user-asset creation and App work experience *(Phase 2 since 2026-09-24)* | Web terminal: Required; Local TUI: Required; Remote TUI: Required | Unverified |
 | Slack replacement, Todo and Documents acceptance | Web terminal: Required; Local TUI: Required; Remote TUI: Required | Unverified |
 
 ### Kernel and Environment matrix
@@ -125,9 +126,9 @@ Every row below is **Unverified**. Existing related tests are useful starting po
 | V1-INT-25 | Private panel isolation | Only trusted terminal renders/reads panel content; App gets layout data without transcript-dependent callbacks | Unverified |
 | V1-INT-26 | Panel accessibility and recovery | Human conversation remains usable from kernel history and is absent from App accessibility tree and stream | Unverified |
 | V1-INT-27 | Information-set consent *(removed 2026-09-24)* | No data request/delivery before explicit consent; no repeated consent for an unchanged accepted set; no agent self-approval | Unverified |
-| V1-INT-28 | Correlated intermediate/final outputs | Authorized fields only; bounded repair, ordered idempotent delivery and explicit incomplete state; no transcript scraping | Unverified |
+| V1-INT-28 | Correlated intermediate/final outputs *(Phase 2 since 2026-09-24)* | Authorized fields only; bounded repair, ordered idempotent delivery and explicit incomplete state; no transcript scraping | Unverified |
 | V1-INT-29 | App-owned semantics | Kernel enforces generic envelopes and policy; domain checks execute only in sandboxed App code | Unverified |
-| V1-INT-30 | Resume with a second agent | Same opaque App task relation with distinct attributed turns; no raw conversation exported or automatic focus retargeting | Unverified |
+| V1-INT-30 | Resume with a second agent *(Phase 2 since 2026-09-24)* | Same opaque App task relation with distinct attributed turns; no raw conversation exported or automatic focus retargeting | Unverified |
 | V1-INT-31 | Create user workflows and agents | Normal user-owned assets and one execution path; dependencies become visible/broken without silently deleting assets | Unverified |
 | V1-INT-32 | Complete App work acceptance | All required Phase 1 terminal/kernel combinations pass the same task; cross-App coordination remains Phase 2 | Unverified |
 
@@ -219,7 +220,7 @@ Every row below is **Unverified**. Existing related tests are useful starting po
 2. Complete package trust/extraction and native worker sandbox/resource provisioning in parallel. Name supported macOS/Linux floors, installed privileges, quota mechanisms, numeric limits and hard versus monitored enforcement. Pin maintained Node/Chromium, assign patch owners and maximum supported age. A policy fixture or stock Node permission flags do not replace a production signed launcher.
 3. Connect private storage, bounded broker transports, lifecycle supervision and runtime MCP to an installed Todo App. Prove headless backend calls without opening Chromium, then durable events into normal workflow queues, update/crash recovery, and long-timer/sleep/wake behavior. API/streaming conformance can run with deterministic local fixtures; hostile resource drills need conservative ceilings.
 4. Integrate the Room Environment model into runtime ownership and shared protocol. Fix sandboxed Chromium persistence, origins/partitions/egress and same-Tab viewer/input/accessibility. Add Web/local/remote terminal App flows, private panel composition and one prompt area.
-5. Complete trusted human validation, foreground/self-grant bindings *(step-up, outputs and asset operations are Phase 2 since 2026-09-24)*. Prove an App task continues with a second agent while conversation remains private. Share provider harness paths already owned by the kernel.
+5. Complete trusted human validation, foreground/self-grant bindings *(step-up, outputs, second-agent continuation and asset operations are Phase 2 since 2026-09-24)*. Keep the conversation private from App code. Share provider harness paths already owned by the kernel.
 6. Complete Documents and Slack live parity/upgrade. Inspect private AEDS/Slack repositories and actual credentials/routes before deciding migration changes; do not fabricate a cutover claim from a dummy fixture. Delete obsolete paths only after replacement acceptance.
 7. Finish every developer command, file association, Freeform path and release artifact. Run Phase 1 matrices serially where practical, check resource headroom between heavy stages, capture dated evidence outside repositories, publish PRs and address reviewer comments. Unit/contract tests are necessary but cannot stand in for signed native containment, actual screen readers, trusted authenticator or live-service evidence.
 8. Audit every workstream, matrix row and gate against the candidate. Record incomplete or unavailable evidence explicitly. Release/build/distribution evidence must use the same candidate revisions that received review; no subset of passing foundation tests completes Phase 1.
