@@ -7,8 +7,8 @@ The existing generation-fenced `wire::Channel` uses FD3; startup control uses FD
 Only the one SDK stream can be taken. A native Ready reply means startup ordering,
 not independent proof of sandbox configuration or artifact trust.
 
-`PreparedWorker` has no public constructor and no production factory yet. The
-enrolled runtime verifier/platform provisioner must mint it after obtaining:
+`PreparedWorker` has no public constructor. `prepare_linux` and `prepare_macos`
+mint it from the enrolled runtime and platform provisioner after obtaining:
 
 - Verified immutable launcher/runtime/bootstrap objects and the verified App
   release, with held descriptors **and** generation/pinning ownership preventing
@@ -21,8 +21,13 @@ enrolled runtime verifier/platform provisioner must mint it after obtaining:
   namespaces and an owned cgroup. The resource domain must verify the spawned
   bubblewrap process **and every launcher descendant** before Continue. The
   direct child PID is not necessarily the nested launcher's PID.
-- On macOS, the signed/hardened launcher and JIT/runtime validation required by
-  the native launch contract, plus the platform's total resource accounting.
+- On macOS, the Seatbelt launcher with the platform's total resource accounting.
+  `prepare_macos` currently runs **developer runtimes** only: local releases are
+  ad-hoc signed and enrolled by the developer's one-time root installer. Open
+  macOS release gates: Developer ID signing/notarization with the hardened
+  runtime and JIT entitlement, the signed JIT/mprotect executable-memory
+  validation (Seatbelt alone does not deny it), and hosted recovery validation of
+  in-flight DiskImages operations across a kernel crash.
 
 The resource domain must terminate its entire owned tree and await its emptiness
 after direct-child reap. A POSIX process group alone cannot reach bubblewrap's

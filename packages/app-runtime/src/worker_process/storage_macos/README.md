@@ -2,8 +2,9 @@
 
 This private production module prepares and recovers the writable filesystem
 roots needed by `PreparedWorker`. Its methods are blocking and intended for the
-worker ownership thread. The signed runtime factory has not been connected yet;
-this module does not authorize an App or launch one.
+worker ownership thread. `prepare_macos` uses it for developer runtimes; the
+kernel runs `recover_all_blocking` once per storage root before its first
+preparation. This module does not authorize an App or launch one.
 
 `StorageRoot::open` accepts an existing kernel-owned private directory. The
 kernel supplies the owner, installation, and generation to `prepare`; none is an

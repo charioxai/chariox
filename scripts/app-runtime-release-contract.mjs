@@ -30,7 +30,8 @@ const COMMIT = /^[a-f0-9]{40}$/u;
 const equal = (a, b) => stableJson(a) === stableJson(b);
 
 export function platformFiles(target) {
-  // macOS workers load system libraries from the dyld shared cache.
+  // macOS workers load system libraries from the dyld shared cache. Production
+  // darwin releases still require the Developer ID signing path.
   if (darwin(target)) return [];
   const loader = { 'linux-x64': 'ld-linux-x86-64.so.2', 'linux-arm64': 'ld-linux-aarch64.so.1' }[target];
   if (!loader) throw new Error('Linux release target required; macOS needs its code-signing release path');

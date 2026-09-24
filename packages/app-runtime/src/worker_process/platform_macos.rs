@@ -12,7 +12,6 @@ use std::{
     fs::File,
     os::{fd::AsRawFd, unix::fs::MetadataExt},
     path::{Path, PathBuf},
-    time::{Duration, Instant},
 };
 
 type Result<T> = std::result::Result<T, WorkerError>;
@@ -71,22 +70,22 @@ pub(super) fn prepare(
         domain: Box::new(Domain {
             launcher: program_path,
             private_data,
-            storage: Some(storage),
-            _runtime: Some(runtime),
-            _release: Some(release),
-            launched: None,
+            _storage: storage,
+            _runtime: runtime,
+            _release: release,
         }),
     })
 }
 
-/// Field order: storage is released only after the worker group is reaped.
+/// Field drop order closes the held data descriptor before MountedStorage's
+/// Drop detaches the volumes. Leases stay here until WorkerProcess joins and
+/// brokers drain, as the ResourceDomain contract requires.
 struct Domain {
     launcher: PathBuf,
     private_data: File,
-    storage: Option<storage_macos::MountedStorage>,
-    _runtime: Option<EnrolledRuntime>,
-    _release: Option<VerifiedReleaseLease>,
-    launched: Option<libc::pid_t>,
+    _storage: storage_macos::MountedStorage,
+    _runtime: EnrolledRuntime,
+    _release: VerifiedReleaseLease,
 }
 
 impl ResourceDomain for Domain {
@@ -101,28 +100,13 @@ impl ResourceDomain for Domain {
         if unsafe { libc::getsid(pid) } != pid || process_path(pid)? != self.launcher {
             return Err(WorkerError::ResourceDomain);
         }
-        self.launched = Some(pid);
         Ok(())
     }
-    fn terminate(&mut self, pid: libc::pid_t) {
-        unsafe {
-            libc::killpg(pid, libc::SIGKILL);
-        }
-    }
-    fn reap_domain_blocking(&mut self) {
-        if let Some(pid) = self.launched {
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while unsafe { libc::killpg(pid, 0) } == 0 && Instant::now() < deadline {
-                unsafe {
-                    libc::killpg(pid, libc::SIGKILL);
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        }
-        if let Some(mut storage) = self.storage.take() {
-            let _ = storage.release_blocking();
-        }
-    }
+    // Seatbelt denies process-fork, so the launcher has no descendants. The
+    // monitor owns wait authority and signals only its unreaped direct child;
+    // this domain never signals a PID or group that may have been reused.
+    fn terminate(&mut self, _pid: libc::pid_t) {}
+    fn reap_domain_blocking(&mut self) {}
 }
 
 fn descriptor_path(file: &File) -> Result<PathBuf> {
@@ -182,10 +166,44 @@ fn bootstrap(package: &VerifiedReleaseLease, runtime_root: &Path) -> Result<Stri
         "declarations":{"tools":package.declarations().tools.iter().map(|tool| &tool.name).collect::<Vec<_>>(),
         "incomingEvents":package.declarations().events.iter().filter(|event| matches!(event.direction, EventDirection::Incoming | EventDirection::Both)).map(|event| &event.name).collect::<Vec<_>>()},
         "startupTimeoutMs":15000});
-    let config = serde_json::to_string(&config).map_err(|_| WorkerError::Preparation)?;
+    bootstrap_source(&config, runtime_root)
+}
+
+/// The trusted bootstrap path is a JSON string literal, so no runtime path can
+/// terminate the expression or inject code.
+fn bootstrap_source(config: &serde_json::Value, runtime_root: &Path) -> Result<String> {
+    let config = serde_json::to_string(config).map_err(|_| WorkerError::Preparation)?;
     let bootstrap = serde_json::to_string(&runtime_root.join("bootstrap.cjs"))
         .map_err(|_| WorkerError::Preparation)?;
     Ok(format!(
         "require('node:module').createRequire({bootstrap})({bootstrap}).start({config});"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bootstrap_quotes_the_enrolled_runtime_path() {
+        let source = bootstrap_source(
+            &serde_json::json!({"version":1}),
+            Path::new("/Library/Application Support/Chariox/AppRuntimes/a'b\"c"),
+        )
+        .unwrap();
+        assert_eq!(
+            source,
+            r#"require('node:module').createRequire("/Library/Application Support/Chariox/AppRuntimes/a'b\"c/bootstrap.cjs")("/Library/Application Support/Chariox/AppRuntimes/a'b\"c/bootstrap.cjs").start({"version":1});"#
+        );
+    }
+
+    #[test]
+    fn descriptor_paths_resolve_to_the_held_object() {
+        let root = std::env::temp_dir().join(format!("chariox-macos-path-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let held = File::open(&root).unwrap();
+        assert_eq!(descriptor_path(&held).unwrap(), root.canonicalize().unwrap());
+        std::fs::remove_dir(&root).unwrap();
+        assert!(descriptor_path(&held).is_err(), "a removed root no longer matches its identity");
+    }
 }

@@ -141,3 +141,14 @@ test('oversized substituted native input is rejected at its signed size before c
   await assert.rejects(signRuntimeRelease(f.options), /bounded regular file/);
   await assert.rejects(lstat(f.options.output), { code: 'ENOENT' });
 });
+
+test('darwin graphs contain only the Seatbelt launcher and require the developer path', async () => {
+  const { launcherInputs, nativeExecutables } = await import('./app-runtime-release-contract.mjs');
+  const bundle = { target: 'darwin-arm64', files: [{ path: 'libnode.137.dylib' }] };
+  assert.deepEqual(releasePaths(bundle), ['bundle-manifest.json', 'chariox-app-worker', 'libnode.137.dylib']);
+  assert.deepEqual(platformFiles('darwin-arm64'), []);
+  assert.deepEqual(nativeExecutables('darwin-x64'), ['chariox-app-worker']);
+  assert.ok(launcherInputs('darwin-arm64').includes('apps/app-worker/src/sandbox_macos.c'));
+  assert.ok(!launcherInputs('darwin-arm64').includes('apps/app-worker/src/sandbox_linux.c'));
+  assert.deepEqual(launcherInputs('linux-x64'), LAUNCHER_INPUTS);
+});

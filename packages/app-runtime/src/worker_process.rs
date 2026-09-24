@@ -78,6 +78,14 @@ impl PreparedWorker {
     ) -> Result<Self, WorkerError> {
         platform_macos::prepare(runtime, release, binding, storage_root)
     }
+    /// Kernel startup recovery for macOS storage, before any worker of this
+    /// kernel is prepared: detaches volumes and clears interrupted creations.
+    #[cfg(target_os = "macos")]
+    pub fn recover_macos_storage(storage_root: &std::path::Path) -> Result<(), WorkerError> {
+        storage_macos::StorageRoot::open(storage_root)
+            .and_then(|root| root.recover_all_blocking())
+            .map_err(|_| WorkerError::Preparation)
+    }
 }
 
 /// To be implemented by the enrolled platform provisioner, not by callers of

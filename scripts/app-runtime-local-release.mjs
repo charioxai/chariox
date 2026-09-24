@@ -40,6 +40,7 @@ function compileLauncher(output) {
 
 export async function localRelease({ nativeDirectory, output, target }) {
   if (!target.startsWith('darwin-')) throw new Error('local releases are macOS developer runtimes');
+  await mkdir(join(homedir(), '.chariox/dev'), { recursive: true, mode: 0o700 });
   const scratch = await mkdtemp(join(homedir(), '.chariox/dev/app-runtime-local-'));
   try {
     const input = join(scratch, 'input');
@@ -65,7 +66,7 @@ export async function localRelease({ nativeDirectory, output, target }) {
     await writeFile(join(scratch, 'builder.sig'), sign(null, proof, builderKey).toString('hex'));
     const receipt = await signRuntimeRelease({ inputDirectory: input, builderAttestation: join(scratch, 'builder.json'),
       builderSignature: join(scratch, 'builder.sig'), trustedBuilderKey: builderPublic,
-      signingKey: await localKey('local-release'), output: resolve(output) });
+      signingKey: await localKey('local-release'), output: resolve(output), developerRuntime: true });
     return { ...receipt, output: resolve(output),
       enroll: `sudo <chariox-app-runtime-install> install --source ${resolve(output)} --trusted-public-key-hex ${receipt.publicKeyHex} --inventory-sha256 ${receipt.inventorySha256}` };
   } finally {

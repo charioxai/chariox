@@ -253,8 +253,21 @@ fn macos_storage_root(store: &crate::durable_state::DurableKernelStateStore) -> 
         .ok_or(LifecycleError::Preparation)?
         .join("app-storage");
     match std::fs::DirBuilder::new().mode(0o700).create(&root) {
-        Ok(()) => Ok(root),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(root),
-        Err(_) => Err(LifecycleError::Preparation),
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(_) => return Err(LifecycleError::Preparation),
     }
+    // Recover once per kernel storage root before its first preparation, while
+    // no worker of this kernel can hold a volume. Failure retries next start.
+    static RECOVERED: std::sync::Mutex<std::collections::BTreeSet<std::path::PathBuf>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    let mut recovered = RECOVERED
+        .lock()
+        .map_err(|_| LifecycleError::Supervisor)?;
+    if !recovered.contains(&root) {
+        chariox_app_runtime::worker_process::PreparedWorker::recover_macos_storage(&root)
+            .map_err(|_| LifecycleError::Preparation)?;
+        recovered.insert(root.clone());
+    }
+    Ok(root)
 }
