@@ -8,6 +8,7 @@ import {
   DEFAULT_SOURCE_REF,
   MP_ROWS,
   parseArgs,
+  parseStatus,
   PRIOR_REVIEWED_SOURCE_COMMIT,
   PRIOR_REVIEWED_SOURCE_TREE,
   stableJson,
@@ -122,6 +123,27 @@ function makeFixture(options = {}) {
   };
   return { root, files, addFile, runGit };
 }
+
+test("porcelain NUL records retain both rename/copy paths and literal arrows", () => {
+  assert.deepEqual(parseStatus("R  new name\0old name\0 C copy\0original\0 M literal -> name\0"),
+    ["new name", "old name", "copy", "original", "literal -> name"]);
+  assert.throws(() => parseStatus("R  new\0"), /incomplete git status/);
+});
+
+test("non-HEAD source blobs use the same binary exclusion as HEAD", () => {
+  withFixture({}, (fixture) => {
+    const runGit = (args, cwd) => {
+      if (args[0] === "rev-parse") return args[1].endsWith("^{tree}") ? `${TREE}\n` : `${COMMIT}\n`;
+      if (args[0] === "show") {
+        const path = args[1].slice("snapshot:".length);
+        return path === "apps/kernel/src/selector-rust.rs" ? "\0CHARIOX_MANAGED_BINARY" : fixture.files[path];
+      }
+      return fixture.runGit(args, cwd);
+    };
+    const report = collect(fixture, { sourceRef: "snapshot", runGit });
+    assert.equal(report.entries.some(entry => entry.path === "apps/kernel/src/selector-rust.rs"), false);
+  });
+});
 
 test("MP row meanings stay aligned with the stable plan ledger", () => {
   assert.deepEqual(MP_ROWS.map(({ id, name }) => [id, name]), [
