@@ -201,3 +201,42 @@ fn cancelled_claim_cannot_replace_a_durable_attempt() {
         "original"
     );
 }
+
+#[test]
+fn start_gate_refuses_a_failed_current_generation_but_not_an_older_one() {
+    let fixture = Fixture::new();
+    let store = fixture.open();
+    fixture_event_catalog(&store);
+    assert_eq!(
+        store.app_worker_start_gate("alice", "installed").unwrap(),
+        StartGate::Allowed
+    );
+    let admission = claim(&store, "attempt-1");
+    store
+        .record_app_worker(
+            &admission,
+            WorkerPhase::Failed,
+            true,
+            Some("crash"),
+            budget(),
+        )
+        .unwrap();
+    assert_eq!(
+        store.app_worker_start_gate("alice", "installed").unwrap(),
+        StartGate::Refused
+    );
+    // A row left by an older generation (the App was since updated) does not
+    // fence the current one.
+    let changed = rusqlite::Connection::open(fixture.0.join("kernel.sqlite"))
+        .unwrap()
+        .execute(
+            "UPDATE app_worker_lifecycle SET generation=generation-1 WHERE generation>0",
+            [],
+        )
+        .unwrap();
+    assert_eq!(changed, 1);
+    assert_eq!(
+        store.app_worker_start_gate("alice", "installed").unwrap(),
+        StartGate::Allowed
+    );
+}

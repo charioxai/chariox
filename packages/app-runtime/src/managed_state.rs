@@ -7,12 +7,12 @@ mod store;
 mod wakes;
 
 pub use changes::{StateChanges, StateCheck, StateWrite};
-pub use wakes::{
-    complete_wake, defer_wake, due_wakes, postpone_wake, DueWake, Wake, WakeChange,
-    MAX_WAKES, MAX_WAKE_CHANGES,
-};
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 use serde_json::Value;
+pub use wakes::{
+    complete_wake, defer_wake, due_wakes, postpone_wake, DueWake, Wake, WakeChange, MAX_WAKES,
+    MAX_WAKE_CHANGES,
+};
 
 pub const MAX_KEYS: usize = 4096;
 pub const MAX_KEY_BYTES: usize = 128;

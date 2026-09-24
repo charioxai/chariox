@@ -104,10 +104,11 @@ SDK 0.8 adds kernel-owned wakes. `schedule.set` `{id,dueAtMs,revision}`,
 pending wakes `{wakes:[{id,dueAtMs,revision}]}`; `state.transaction` also accepts
 `wakes: [{op:"set",id,dueAtMs,revision}|{op:"cancel",id}]`, committed atomically
 with its writes. At most 256 wakes per installation and 16 changes per request.
-The kernel starts an idle-stopped worker when a wake falls due, so an App needs
-no resident process or long timer to wait. A user-stopped App keeps its wakes
-until the user starts it again; a failed or revoked App's wakes back off. Failed deliveries back off and are
-dropped after eight attempts; the App reconstructs schedules from its state.
+The kernel starts a worker that is not running when a wake falls due, so an App
+needs no resident process or long timer to wait. A user-stopped App keeps its
+wakes until the user starts it again; a failed or revoked App's wakes back off.
+Failed deliveries back off and are dropped after eight attempts; the App
+reconstructs schedules from its state.
 
 The optional context includes kernel-assigned installation, Room, operation,
 actor, agent, task and turn references. It is distinct from App tool parameters.

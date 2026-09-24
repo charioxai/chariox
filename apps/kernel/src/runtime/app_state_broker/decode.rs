@@ -71,9 +71,9 @@ pub(super) fn operation(method: &str, params: Value) -> Result<AppStateOperation
             let mut change = Map::new();
             change.insert("op".into(), Value::String("set".into()));
             change.extend(object);
-            Ok(AppStateOperation::Schedule(wake_changes(Value::Array(vec![
-                Value::Object(change),
-            ]))?))
+            Ok(AppStateOperation::Schedule(wake_changes(Value::Array(
+                vec![Value::Object(change)],
+            ))?))
         }
         "schedule.cancel" => {
             let mut object = fields(params, &["id"])?;

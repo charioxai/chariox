@@ -32,18 +32,32 @@ pub(super) fn first_committed(
     if binding.token().base_generation != 0 || binding.token().generation != 1 {
         return Err(LifecycleStoreError::Stale);
     }
-    binding.require_active(tx, owner, trust).map_err(|_| LifecycleStoreError::Stale)?;
+    binding
+        .require_active(tx, owner, trust)
+        .map_err(|_| LifecycleStoreError::Stale)?;
     let installation = &binding.token().installation_id;
     match status(tx, owner, installation)? {
-        Some(current) if current.generation != 1 || current.attempt != attempt
-            || current.phase != WorkerPhase::Starting || !current.desired_running => return Err(LifecycleStoreError::Stale),
-        Some(_) => {},
+        Some(current)
+            if current.generation != 1
+                || current.attempt != attempt
+                || current.phase != WorkerPhase::Starting
+                || !current.desired_running =>
+        {
+            return Err(LifecycleStoreError::Stale)
+        }
+        Some(_) => {}
         None => {
             sql(tx.execute("INSERT INTO app_worker_lifecycle(installation_id,owner_id,generation,attempt,phase,desired_running,failure,updated_ms)
                 VALUES(?1,?2,1,?3,'starting',1,NULL,?4)", params![installation,owner,attempt,checked(crate::session::unix_epoch_ms())?]))?;
         }
     }
-    Ok(ActiveStartAdmission { owner:owner.into(), installation:installation.into(), attempt:attempt.into(), binding:binding.clone(), trust:trust.clone() })
+    Ok(ActiveStartAdmission {
+        owner: owner.into(),
+        installation: installation.into(),
+        attempt: attempt.into(),
+        binding: binding.clone(),
+        trust: trust.clone(),
+    })
 }
 pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
     connection.execute_batch("CREATE TABLE IF NOT EXISTS app_worker_lifecycle (
@@ -253,7 +267,8 @@ pub(super) fn start_gate(
 ) -> Result<StartGate> {
     identity(owner)?;
     identity(installation)?;
-    let Ok(binding) = InstallationRegistry::new(connection).active_trust(owner, installation) else {
+    let Ok(binding) = InstallationRegistry::new(connection).active_trust(owner, installation)
+    else {
         return Ok(StartGate::Refused);
     };
     if PublisherTrustRegistry::new(connection)

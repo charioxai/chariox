@@ -29,7 +29,10 @@ impl std::fmt::Debug for AppWakeRequest {
 }
 
 impl DurableKernelStateStore {
-    pub(crate) fn app_wakes(&self, operation: AppWakeOperation) -> Result<AppWakeOutcome, StateError> {
+    pub(crate) fn app_wakes(
+        &self,
+        operation: AppWakeOperation,
+    ) -> Result<AppWakeOutcome, StateError> {
         let (response, receiver) = mpsc::channel();
         self.writer
             .enqueue(DurableWriterRequest::AppWake(Box::new(AppWakeRequest {
@@ -53,7 +56,8 @@ pub(super) fn execute(connection: &mut Connection, request: AppWakeRequest) {
             managed_state::defer_wake(connection, &wake, now_ms).map(|_| AppWakeOutcome::Recorded)
         }
         AppWakeOperation::Postponed { wake, until_ms } => {
-            managed_state::postpone_wake(connection, &wake, until_ms).map(|()| AppWakeOutcome::Recorded)
+            managed_state::postpone_wake(connection, &wake, until_ms)
+                .map(|()| AppWakeOutcome::Recorded)
         }
     };
     let _ = request.response.send(result);

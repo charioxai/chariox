@@ -2,7 +2,7 @@
 //! starts the worker when it falls due and delivers the wake at least once.
 //! Wakes are installation data, not a workflow trigger or a keep-alive grant.
 use super::*;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 pub const MAX_WAKES: usize = 256;
@@ -126,7 +126,8 @@ pub(super) fn list(transaction: &Connection, scope: StateScope<'_>) -> Result<Ve
          ORDER BY due_at_ms, wake_id LIMIT ?2",
     )?;
     let rows = statement.query_map(params![scope.installation, MAX_WAKES as i64], row_wake)?;
-    rows.collect::<std::result::Result<_, _>>().map_err(Into::into)
+    rows.collect::<std::result::Result<_, _>>()
+        .map_err(Into::into)
 }
 
 fn row_wake(row: &rusqlite::Row<'_>) -> rusqlite::Result<Wake> {
@@ -156,7 +157,8 @@ pub fn due_wakes(connection: &Connection, now_ms: u64, limit: usize) -> Result<V
             attempts: row.get::<_, i64>(5)?.max(0) as u32,
         })
     })?;
-    rows.collect::<std::result::Result<_, _>>().map_err(Into::into)
+    rows.collect::<std::result::Result<_, _>>()
+        .map_err(Into::into)
 }
 
 /// Remove a delivered wake. A wake replaced since delivery began keeps its

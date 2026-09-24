@@ -189,7 +189,12 @@ mod tests {
 
     #[test]
     fn user_stopped_apps_keep_their_wakes_without_spending_attempts() {
-        let (_, records) = plan(vec![due("stopped", "a")], 100, |_| false, |_| Start::UserStopped);
+        let (_, records) = plan(
+            vec![due("stopped", "a")],
+            100,
+            |_| false,
+            |_| Start::UserStopped,
+        );
         assert!(matches!(
             records[..],
             [AppWakeOperation::Postponed { until_ms, .. }] if until_ms == 100 + STOPPED_WAIT_MS

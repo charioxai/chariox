@@ -62,7 +62,8 @@ Wire control events never dispatch App event handlers.
 - `log.write`: bounded structured logging through the kernel's App log policy.
 - `schedule.set`, `cancel`, `list`, `onWake`: kernel-owned wakes. The kernel
   starts the App when a wake falls due and delivers it at least once, so the App
-  does not stay running to wait. A user stop holds wakes until the App starts. State transactions may commit wake changes.
+  does not stay running to wait. A user stop holds wakes until the App starts.
+  State transactions may commit wake changes.
 - `validation.request`, `status`: a pending operation reference returns promptly;
   an App cannot approve it or claim that an App-view click was human validation.
 - `outputs.request`, `cancel`: requests for declared information sets; the kernel

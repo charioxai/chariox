@@ -40,9 +40,9 @@ mod app_automation_owned_state;
 mod app_event_delivery_owned_state;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_event_pump_runtime;
+mod app_runtime_state;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_wake_pump_runtime;
-mod app_runtime_state;
 mod computer_secret_input_runtime_state;
 mod config_runtime_state;
 mod native_catalog_refresh;
@@ -273,8 +273,8 @@ mod owned;
 mod pending_runtime_state;
 mod remote_agent_profile_runtime;
 mod remote_profile_account_runtime;
-use pending_runtime_state::*;
 pub(in crate::runtime) use pending_runtime_state::PendingInteractionResolution;
+use pending_runtime_state::*;
 mod local_prompt_dispatch_runtime;
 mod local_prompt_submission_owned_state;
 mod managed_activity_persistence;
@@ -315,11 +315,11 @@ mod provider_prompt_failure_runtime;
 mod provider_prompt_settlement_runtime;
 mod provider_substitute_runtime;
 mod relay_peer_runtime_state;
+mod remote_native_provider_launch;
 mod remote_prompt_dispatch_runtime;
 mod remote_prompt_lifecycle_runtime;
 mod remote_prompt_owned_state;
 mod remote_prompt_worker_submission_runtime;
-mod remote_native_provider_launch;
 mod remote_provider_failure_runtime;
 mod restart_recovery_runtime;
 pub(crate) use restart_recovery_runtime::is_internal_recovery_prompt_attachment;
@@ -553,14 +553,11 @@ impl KernelRuntimeState {
             );
         let config = config_projection.snapshot();
         let managed_activity_kernel_id = (has_managed_kernel_registration
-            || (config.kernel_runtime_role
-                == crate::config::KernelRuntimeRole::RemoteLeaseWorker
-                && std::env::var_os(
-                    crate::managed_bootstrap::worker::ACTIVITY_RECEIPT_ENV,
-                )
-                .filter(|value| !value.is_empty())
-                .map(std::path::PathBuf::from)
-                .is_some_and(|path| path.exists())))
+            || (config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker
+                && std::env::var_os(crate::managed_bootstrap::worker::ACTIVITY_RECEIPT_ENV)
+                    .filter(|value| !value.is_empty())
+                    .map(std::path::PathBuf::from)
+                    .is_some_and(|path| path.exists())))
         .then(|| config.daemon_id.clone());
         let managed_activity_transitions =
             managed_activity_persistence::ManagedActivityTransitionState::new(
