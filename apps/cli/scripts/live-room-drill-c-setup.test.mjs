@@ -16,6 +16,7 @@ import {
   buildSetupManifest,
   cleanupOwnedResources,
   createExistingKernelWorkspaceFixture,
+  isolatedKernelUserConfig,
   mintDrillCKernelRelayToken,
   parseArgs,
   requiresDirectDockerAccess,
@@ -828,4 +829,24 @@ test("setup defaults to isolated dev state and never invokes build tools", () =>
   assert.equal(options.relayToken, "local-browser-terminal-relay-token")
   assert.match(options.kernelBinary, /target\/debug\/chariox-kernel$/)
   assert.match(options.relayBinary, /target\/debug\/chariox-relay$/)
+})
+
+test("Drill C slice image builds are opt-in for isolated kernels", () => {
+  const defaults = parseArgs([], { HOME: "/home/test" })
+  assert.equal(defaults.sliceImageBuildPolicy, "never")
+  assert.equal(isolatedKernelUserConfig(defaults), "[slices.linux]\nbuild_image = \"never\"\n")
+
+  const optIn = parseArgs(["--allow-slice-image-build"], { HOME: "/home/test" })
+  assert.equal(optIn.sliceImageBuildPolicy, "auto")
+  assert.equal(isolatedKernelUserConfig(optIn), "[slices.linux]\nbuild_image = \"auto\"\n")
+  assert.doesNotThrow(() => assertModeOptions(optIn))
+
+  const existing = parseArgs([
+    "--existing-kernel", "ws://127.0.0.1:52001/kernel",
+    "--expected-daemon-id", "kernel-1",
+    "--rootless-workspace-root", "/var/tmp",
+    "--allow-slice-image-build",
+  ], { HOME: "/home/test" })
+  assert.throws(() => assertModeOptions(existing), /only applies to isolated-local mode/)
+  assert.throws(() => isolatedKernelUserConfig(existing), /only applies to an isolated-local kernel/)
 })

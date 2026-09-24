@@ -71,6 +71,7 @@ export function parseArgs(argv, env = process.env) {
     relayTokenArgumentProvided: false,
     scopedRelayIssuer: env.CHARIOX_RELAY_SCOPED_ISSUER?.trim() || null,
     scopedRelaySecret: env.CHARIOX_RELAY_SCOPED_HMAC_SECRET?.trim() || null,
+    sliceImageBuildPolicy: "never",
     activeKernelRegistryDir: env.CHARIOX_ACTIVE_KERNEL_REGISTRY_DIR
       ?? (env.XDG_CONFIG_HOME?.trim()
         ? path.join(path.resolve(env.XDG_CONFIG_HOME), "chariox", "kernels", "active")
@@ -98,6 +99,7 @@ export function parseArgs(argv, env = process.env) {
     else if (arg === "--rootless-workspace-root") options.rootlessWorkspaceRoot = path.resolve(next())
     else if (arg === "--expected-daemon-id") options.expectedDaemonId = next()
     else if (arg === "--expected-machine-id") options.expectedMachineId = next()
+    else if (arg === "--allow-slice-image-build") options.sliceImageBuildPolicy = "auto"
     else if (arg === "--local-cloud-url") options.localCloudUrl = next()
     else if (arg === "--relay-url") {
       options.relayUrl = next()
@@ -143,8 +145,18 @@ export function parseArgs(argv, env = process.env) {
   return options
 }
 
+export function isolatedKernelUserConfig(options) {
+  assert.equal(options.mode, "isolated_local",
+    "slice image build policy only applies to an isolated-local kernel")
+  assert.ok(["never", "auto"].includes(options.sliceImageBuildPolicy),
+    "isolated slice image build policy must be never or auto")
+  return `[slices.linux]\nbuild_image = "${options.sliceImageBuildPolicy}"\n`
+}
+
 export function assertModeOptions(options, env = process.env) {
   if (options.mode === "existing_kernel") {
+    assert.equal(options.sliceImageBuildPolicy, "never",
+      "--allow-slice-image-build only applies to isolated-local mode")
     const endpoint = assertLoopbackUrl(options.existingKernelUrl, "--existing-kernel", ["ws:"])
     assert.ok(["", "/", "/kernel"].includes(endpoint.pathname),
       "--existing-kernel must address the local kernel WebSocket endpoint")
@@ -638,6 +650,7 @@ function printHelp() {
     "  --root-dir PATH",
     "  --manifest PATH",
     "  --existing-kernel URL              use the already-running local kernel; do not start or stop it",
+    "  --allow-slice-image-build          permit auto-building the isolated slice image; default requires a compatible cache",
     "  --rootless-workspace-root PATH     required for existing-kernel; safe root under /var/tmp",
     "  --expected-daemon-id ID             required with --existing-kernel",
     "  --expected-machine-id ID            optional additional identity check",
@@ -645,10 +658,11 @@ function printHelp() {
     "  --relay-url URL                   Cloud relay in isolated mode; same-host relay with --existing-kernel",
     "  --relay-token TOKEN               isolated mode only; existing-kernel reads CHARIOX_DRILL_C_RELAY_TOKEN",
     "  --active-kernel-registry-dir PATH defaults to ~/.chariox/kernels/active",
-    "  --kernel-binary PATH              prebuilt binary; this script never builds",
-    "  --relay-binary PATH               prebuilt binary; this script never builds",
+    "  --kernel-binary PATH              prebuilt binary; this script never builds it",
+    "  --relay-binary PATH               prebuilt binary; this script never builds it",
     "",
     "The script waits after setup so the attach-only TUI and Web observers can run.",
+    "Isolated mode defaults to slices.linux.build_image = never and fails before container mutation if the cached image is missing or stale. --allow-slice-image-build restores auto-build behavior and may trigger a costly release compile.",
     `Existing-kernel mode requires a loopback ws:// URL and an explicit --rootless-workspace-root (or ${roomDirectDockerWorkspaceRootEnvironment}); --relay-url additionally requires CHARIOX_DRILL_C_RELAY_TOKEN. Cloud/Web transport stays unobserved.`,
     "Ctrl+C cleans up only this run's Room and slice; its workspace is removed only after matching cleanup acknowledgements.",
   ].join("\n"))
@@ -759,6 +773,12 @@ async function main() {
     }
     await mkdir(logDir, { recursive: true, mode: 0o700 })
     if (!existingKernel) {
+      await mkdir(kernelHome, { recursive: false, mode: 0o700 })
+      await writeFile(path.join(kernelHome, "config.toml"), isolatedKernelUserConfig(options), {
+        encoding: "utf8",
+        mode: 0o600,
+        flag: "wx",
+      })
       await mkdir(path.dirname(options.activeKernelRegistryDir), { recursive: true, mode: 0o700 })
       await mkdir(options.activeKernelRegistryDir, { recursive: true, mode: 0o700 })
       const isolatedRegistryLink = path.join(kernelHome, "kernels", "active")
