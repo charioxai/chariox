@@ -212,7 +212,7 @@ export class BrowserControllerStdioServer {
         this.write(errorResponse(request.id, "controller_busy", "controller queue is full or request id is already pending"));
         continue;
       }
-      // Cancellation must be read while the serial browser operation is
+      // Cancellation must be read while a scheduled browser operation is
       // pending. Its acknowledgement is not the action's terminal response.
       if (request.method === "browser.cancel") {
         pendingRequestIds.add(request.id);
