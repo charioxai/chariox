@@ -12,6 +12,17 @@ const repoRoot = path.resolve(cliRoot, '..', '..')
 const defaultLatestManifest = path.join(repoRoot, 'target', 'live-tui-web-parity-visual-session', 'latest.json')
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
+function assertSameHostRelayUrl(value) {
+  const endpoint = new URL(value)
+  assert.ok(['ws:', 'wss:'].includes(endpoint.protocol), 'remote TUI relay URL is invalid')
+  const host = endpoint.hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  const isLoopbackIpv4 = /^127(?:\.\d{1,3}){3}$/.test(host)
+    && host.split('.').every((part) => Number(part) <= 255)
+  assert.ok(host === 'localhost' || host === '::1' || isLoopbackIpv4,
+    'Drill C requires a same-host loopback relay')
+  return endpoint
+}
+
 export async function captureDrillCRoomCheckpoint({ client, requests, sessionId, sliceId }) {
   assert.ok(sessionId && sliceId, 'Drill C checkpoint requires the real Room session and slice ids')
   const environment = unwrap(await client.send(requests.getRoomEnvironmentStateRequest(sessionId)), 'RoomEnvironmentState').environment
@@ -111,8 +122,7 @@ export function assertDrillCSharedRoomEvidence({ baseline, checkpoint, web, tui,
   assert.equal(remoteTui.transport?.kind, 'relay', 'remote TUI observer did not use the relay')
   assert.equal(remoteTui.transport.targetDaemonId, baseline.sliceBinding.owner_kernel_id,
     'remote TUI observer targeted a different home kernel')
-  const remoteRelayUrl = new URL(remoteTui.transport.relayUrl)
-  assert.ok(['ws:', 'wss:'].includes(remoteRelayUrl.protocol), 'remote TUI relay URL is invalid')
+  assertSameHostRelayUrl(remoteTui.transport.relayUrl)
   assertTuiRoomStatus(tui.statusNotice, checkpoint.environment, focusedTab)
   assertTuiActionVisible(tui.actionsNotice, computerAction)
   assertTuiActionVisible(tui.actionsNotice, takeoverAction)
@@ -757,8 +767,7 @@ export function assertDrillCLiveObserverManifest(manifest) {
   assert.equal(manifest.remoteRelay?.targetDaemonId, manifest.baseline.sliceBinding?.owner_kernel_id,
     'remote TUI relay must target the home kernel')
   assert.ok(typeof manifest.remoteRelay?.url === 'string', 'remote TUI relay URL is missing')
-  const relayEndpoint = new URL(manifest.remoteRelay.url)
-  assert.ok(['ws:', 'wss:'].includes(relayEndpoint.protocol), 'remote TUI relay URL is invalid')
+  const relayEndpoint = assertSameHostRelayUrl(manifest.remoteRelay.url)
   assert.notEqual(relayEndpoint.origin, endpoint.origin, 'remote TUI relay cannot be the direct kernel endpoint')
 }
 

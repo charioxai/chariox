@@ -175,6 +175,16 @@ test('Drill C verifier requires a distinct relay attachment to the home kernel',
   }), /home kernel/)
 })
 
+test('Drill C verifier rejects a hosted relay posing as the same-host relay', () => {
+  assert.throws(() => assertDrillCSharedRoomEvidence({
+    baseline, checkpoint, web, tui,
+    remoteTui: {
+      ...remoteTui,
+      transport: { ...remoteTui.transport, relayUrl: 'wss://relay.example.test/' },
+    },
+  }), /same-host loopback relay/)
+})
+
 test('Drill C verifier requires the remote TUI to show both actors and actions', () => {
   assert.throws(() => assertDrillCSharedRoomEvidence({
     baseline, checkpoint, web, tui,
@@ -230,6 +240,20 @@ test('Drill C live manifest rejects a direct-kernel endpoint posing as the relay
     remoteAutomationSocket: '/tmp/remote-observer.sock',
     remoteRelay: { url: 'ws://127.0.0.1:43118/relay', targetDaemonId: 'kernel-home' },
   }), /cannot be the direct kernel/)
+})
+
+test('Drill C live manifest rejects a hosted relay posing as the same-host relay', () => {
+  assert.throws(() => assertDrillCLiveObserverManifest({
+    schema: 'chariox.drill_c.live_observer_session.v1',
+    kernelUrl: 'ws://127.0.0.1:43118/kernel',
+    sessionId,
+    sliceId,
+    baseline,
+    webObservationPath: '/tmp/web-observer.json',
+    automationSocket: '/tmp/local-observer.sock',
+    remoteAutomationSocket: '/tmp/remote-observer.sock',
+    remoteRelay: { url: 'wss://relay.example.test/', targetDaemonId: 'kernel-home' },
+  }), /same-host loopback relay/)
 })
 
 test('Room checkpoint reads identity and action history from public kernel requests', async () => {
