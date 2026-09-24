@@ -248,13 +248,11 @@ impl KernelRuntimeState {
             }
         }
 
-        let room_has_environment = self
+        let room_browser_available = self
             .owned
             .slice_store
             .environment_slice(agent.session_id())
             .is_some();
-        let room_browser_available =
-            room_has_environment && self.browser_controller_enabled_for_room(agent.session_id());
         Ok(crate::extension::RemoteExtensionManifest {
             tools,
             room_browser_available,
