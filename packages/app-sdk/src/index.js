@@ -2,7 +2,7 @@ import { AppError } from './errors.js';
 import { object, token } from './protocol.js';
 import { AppPeer } from './peer.js';
 import { createHttp } from './http.js';
-import { validateOccurrence, validateOccurrences } from './occurrences.js';
+import { occurrenceId, validateOccurrence, validateOccurrences } from './occurrences.js';
 
 export { AppError } from './errors.js';
 export { occurrenceId } from './occurrences.js';
@@ -139,6 +139,7 @@ export function createAppSdk({ transport, generation, paths, declarations = {}, 
         return call('events.emit', validateOccurrence(occurrence), options);
       },
       status: (receiptId, options) => call('events.status', { receiptId: name(receiptId, 'receipt identity') }, options),
+      occurrenceId,
       retry: (receiptId, options) => call('events.retry', { receiptId: name(receiptId, 'receipt identity') }, options),
     }),
     lifecycle: Object.freeze({ on: lifecycle.register }),

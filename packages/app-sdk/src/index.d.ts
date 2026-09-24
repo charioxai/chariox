@@ -111,6 +111,8 @@ export interface AppSdk {
     register<Payload = Json>(name: string, handler: Handler<Readonly<{ occurrenceId: string; payload: Payload }>>): void;
     emit(occurrence: EventOccurrence, options?: CallOptions): Promise<EventReceipt>;
     status(receiptId: string, options?: CallOptions): Promise<EventReceipt>;
+    /** Stable replay identity for an occurrence; see WIRE.md. */
+    occurrenceId(sourceKey: string, occurredAtMs: number): string;
     /** Reconcile a due, kernel-classified retryable receipt; never restart a terminal operation. */
     retry(receiptId: string, options?: CallOptions): Promise<EventReceipt>;
   };
