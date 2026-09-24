@@ -6,6 +6,8 @@ import { lstat, readFile, readdir, realpath } from "node:fs/promises"
 import { basename, join, relative, resolve, sep } from "node:path"
 
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex")
+const MANAGED_BUILD_TARGET = "x86_64-unknown-linux-gnu"
+const SLICE_RELAY_PATH = "/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/prebuilt/chariox-relay"
 const EXPECTED_ARTIFACTS = new Map([
   ["chariox-kernel", { path: "/usr/local/bin/chariox-kernel", type: "file" }],
   ["chariox-managed-bootstrap", { path: "/usr/local/bin/chariox-managed-bootstrap", type: "file" }],
@@ -126,7 +128,112 @@ function validateObjectKeys(value, expected, label) {
   }
 }
 
-async function verifyImageRelease(rootfs, expectedDigest, trustedKeyPath, selectedTopology) {
+async function verifyPath1BuilderAttestation(
+  rootfs,
+  canonicalRootfs,
+  manifest,
+  verifiedArtifactDigests,
+  trustedBuilderPublicKeyPath,
+) {
+  if (!trustedBuilderPublicKeyPath) {
+    fail("Path-1 release verification requires an independently supplied trusted builder public key")
+  }
+  const canonicalTrustedBuilderKey = await realpath(trustedBuilderPublicKeyPath).catch((error) =>
+    fail(`trusted builder public key cannot be resolved: ${error.message}`),
+  )
+  if (
+    canonicalTrustedBuilderKey === canonicalRootfs ||
+    canonicalTrustedBuilderKey.startsWith(`${canonicalRootfs}${sep}`)
+  ) {
+    fail("trusted builder public key must be supplied outside the image root")
+  }
+
+  const trustedBuilderRawKey = decodePublicKey(
+    await readRegularFile(canonicalTrustedBuilderKey, "trusted builder public key", 1024),
+    "trusted builder public key",
+  )
+  const packagedBuilderRawKey = decodePublicKey(
+    await readRegularFile(join(rootfs, "/usr/lib/chariox/builder-public-key"), "packaged builder public key", 1024),
+    "packaged builder public key",
+  )
+  if (!trustedBuilderRawKey.equals(packagedBuilderRawKey)) {
+    fail("packaged builder public key is not independently trusted")
+  }
+
+  const attestationPath = join(rootfs, "/usr/lib/chariox/build-attestation.json")
+  const attestationBytes = await readRegularFile(attestationPath, "builder attestation", 64 * 1024)
+  let attestation
+  try {
+    attestation = JSON.parse(attestationBytes)
+  } catch {
+    fail("builder attestation is invalid JSON")
+  }
+  if (!Buffer.from(JSON.stringify(attestation)).equals(attestationBytes)) {
+    fail("builder attestation is not canonical JSON")
+  }
+  validateObjectKeys(
+    attestation,
+    ["artifacts", "schemaVersion", "sourceCommit", "sourceTree", "target"],
+    "builder attestation",
+  )
+  if (
+    attestation.schemaVersion !== 1 ||
+    attestation.sourceCommit !== manifest.sourceCommit ||
+    attestation.sourceTree !== manifest.sourceTree ||
+    attestation.target !== MANAGED_BUILD_TARGET ||
+    !Array.isArray(attestation.artifacts) ||
+    attestation.artifacts.length !== 3
+  ) {
+    fail("builder attestation source identity or target does not match the signed release")
+  }
+
+  const relayPath = artifactPath(rootfs, SLICE_RELAY_PATH)
+  await readRegularFile(relayPath, "builder-attested slice relay", Number.MAX_SAFE_INTEGER)
+  const expectedArtifacts = [
+    ["chariox-kernel", verifiedArtifactDigests.get("chariox-kernel")],
+    ["chariox-managed-bootstrap", verifiedArtifactDigests.get("chariox-managed-bootstrap")],
+    ["chariox-relay", await sha256File(relayPath)],
+  ]
+  for (const [index, artifact] of attestation.artifacts.entries()) {
+    validateObjectKeys(artifact, ["name", "sha256"], "builder attestation artifact")
+    const [expectedName, expectedDigest] = expectedArtifacts[index]
+    if (
+      artifact.name !== expectedName ||
+      !/^sha256:[a-f0-9]{64}$/.test(artifact.sha256 ?? "") ||
+      artifact.sha256 !== expectedDigest
+    ) {
+      fail("builder attestation artifacts do not match the signed release")
+    }
+  }
+
+  const signatureText = (
+    await readRegularFile(
+      join(rootfs, "/usr/lib/chariox/build-attestation.sig"),
+      "builder attestation signature",
+      1024,
+    )
+  ).toString("utf8").trim()
+  const signature = Buffer.from(signatureText, "base64")
+  if (signature.length !== 64 || signature.toString("base64") !== signatureText) {
+    fail("builder attestation signature is not canonical base64")
+  }
+  const builderPublicKey = createPublicKey({
+    key: Buffer.concat([ED25519_SPKI_PREFIX, trustedBuilderRawKey]),
+    format: "der",
+    type: "spki",
+  })
+  if (!verify(null, attestationBytes, builderPublicKey, signature)) {
+    fail("builder attestation signature is invalid")
+  }
+}
+
+async function verifyImageRelease(
+  rootfs,
+  expectedDigest,
+  trustedKeyPath,
+  selectedTopology,
+  trustedBuilderPublicKeyPath,
+) {
   if (!/^sha256:[a-f0-9]{64}$/.test(expectedDigest)) fail("expected release digest is invalid")
   if (selectedTopology !== undefined && !["path1", "shared_host"].includes(selectedTopology)) {
     fail("selected managed provider topology must be path1 or shared_host")
@@ -226,6 +333,7 @@ async function verifyImageRelease(rootfs, expectedDigest, trustedKeyPath, select
     fail("release manifest does not contain the exact image artifacts")
   }
   const seen = new Set()
+  const verifiedArtifactDigests = new Map()
   for (const artifact of manifest.artifacts) {
     validateObjectKeys(artifact, ["name", "path", "sha256"], "release artifact")
     const expected = EXPECTED_ARTIFACTS.get(artifact.name)
@@ -240,6 +348,22 @@ async function verifyImageRelease(rootfs, expectedDigest, trustedKeyPath, select
         .then(() => sha256File(path))
     if (actualDigest !== artifact.sha256) fail(`release artifact ${artifact.name} is corrupted`)
     seen.add(artifact.name)
+    verifiedArtifactDigests.set(artifact.name, actualDigest)
+  }
+
+  if (selectedTopology === "path1") {
+    await verifyPath1BuilderAttestation(
+      rootfs,
+      canonicalRootfs,
+      manifest,
+      verifiedArtifactDigests,
+      trustedBuilderPublicKeyPath,
+    )
+  } else if (trustedBuilderPublicKeyPath) {
+    fail("trusted builder public key is only accepted for Path-1 verification")
+  } else if (selectedTopology === "shared_host") {
+    // Keep release-signature verification for rollback to signed schema 2 shared-host releases
+    // created before the Path-1 builder trust-root requirement existed.
   }
 
   if (selectedTopology !== undefined) {
@@ -326,14 +450,18 @@ async function verifyImageRelease(rootfs, expectedDigest, trustedKeyPath, select
 }
 
 try {
-  if (process.argv.length !== 5 && process.argv.length !== 6) {
-    fail("usage: verify-image-release <rootfs> <expected-release-digest> <trusted-public-key> [path1|shared_host]")
+  if (process.argv.length < 5 || process.argv.length > 7) {
+    fail("usage: verify-image-release <rootfs> <expected-release-digest> <trusted-release-public-key> [path1|shared_host [trusted-builder-public-key]]")
+  }
+  if (process.argv.length === 7 && process.argv[5] !== "path1") {
+    fail("trusted builder public key is only accepted for Path-1 verification")
   }
   await verifyImageRelease(
     resolve(process.argv[2]),
     process.argv[3],
     resolve(process.argv[4]),
     process.argv[5],
+    process.argv[6] ? resolve(process.argv[6]) : undefined,
   )
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error)
