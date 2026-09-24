@@ -125,6 +125,7 @@ export async function runManagedBrowserComputerParityLive({
   const watchdogSamples = []
   const watchdogSamplingFailures = []
   let report = null
+  let placementEvaluation = null
   let resourcePreflight = null
   let activeCheckpoint = null
   let persistenceMutationSeam = null
@@ -403,6 +404,7 @@ export async function runManagedBrowserComputerParityLive({
           if (report.status !== "passed") {
             throw new Error(`managed parity harness failed: ${report.failure?.code ?? "unknown"}`)
           }
+          placementEvaluation = evaluateManagedParityPlacement(report, config.expected)
           if (watchdogError) throw watchdogError
         } finally {
           await stopWatchdog()
@@ -431,10 +433,12 @@ export async function runManagedBrowserComputerParityLive({
   const resourceEvaluation = evaluateBrowserComputerResourceCaps(samples, normalizedCaps, {
     additionalSamples: watchdogSamples,
   })
+  const placementFailure = report?.status === "passed" && placementEvaluation?.ok !== true
   const failed = faultGuard.status !== "passed"
     || !resourceEvaluation.ok
     || watchdogError !== null
     || report?.status !== "passed"
+    || placementFailure
   const failure = watchdogError
     ? { code: watchdogError.code ?? "browser_computer_watchdog_failed", step: "watchdog", message: watchdogError.message }
     : report?.failure
@@ -450,7 +454,13 @@ export async function runManagedBrowserComputerParityLive({
     }
     : !resourceEvaluation.ok
       ? { code: "browser_computer_resource_cap_failed", step: "resource-caps", violations: resourceEvaluation.violations }
-      : { code: "managed_parity_failed", step: "harness" })
+      : placementFailure
+        ? {
+          code: "browser_computer_placement_proof_required",
+          step: "placement",
+          violations: placementEvaluation.violations,
+        }
+        : { code: "managed_parity_failed", step: "harness" })
   const baseReport = report ?? {
     schema: "chariox.browser_computer.managed_parity.v1",
     runId: config.runId,
@@ -482,12 +492,70 @@ export async function runManagedBrowserComputerParityLive({
         error: watchdogError ? { code: watchdogError.code ?? null, message: watchdogError.message } : null,
       },
       resourceEvaluation,
+      placement: placementEvaluation,
       dockerPreconditions: declaredDockerPreconditions,
       persistenceMutationSeam,
     },
   }, { secretValues })
   assertSecretSafeBrowserComputerEvidence(finalReport, { secretValues })
   return finalReport
+}
+
+function evaluateManagedParityPlacement(report, expected) {
+  const violations = []
+  const steps = Array.isArray(report?.steps) ? report.steps : []
+  const proofFor = (name, label, kind, source, { client = null, action = false, visible = false } = {}) => {
+    const matches = steps.filter((step) => step?.name === name && step?.status === "passed"
+      && (client === null || step?.result?.client === client))
+    if (matches.length !== 1) {
+      violations.push(`${label}_step_missing_or_ambiguous`)
+      return null
+    }
+    const proof = matches[0].result?.placementProof
+    if (!proof || typeof proof !== "object" || Array.isArray(proof)
+      || proof.source !== source || proof.kind !== kind
+      || (action && !(typeof proof.actionId === "string" && proof.actionId.trim()))
+      || (action && !(typeof proof.actorId === "string" && /^agent:.+/.test(proof.actorId)))
+      || (visible && proof.visible !== true)) {
+      violations.push(`${label}_public_proof_required`)
+      return null
+    }
+    if (proof.roomId !== expected.roomId) violations.push(`${label}_room_mismatch`)
+    if (proof.environmentId !== expected.environmentId) violations.push(`${label}_environment_mismatch`)
+    if (!(typeof proof.tabId === "string" && proof.tabId.trim())) {
+      violations.push(`${label}_stable_tab_required`)
+      return null
+    }
+    return proof
+  }
+
+  const browser = proofFor("selkies.browser", "browser_action", "browser-action", "public-room-action", { action: true })
+  const computer = proofFor("selkies.computer", "computer_action", "computer-action", "public-room-action", { action: true })
+  const webView = proofFor("selkies.attach", "web_view", "web-view", "public-web-view", { client: "web", visible: true })
+
+  const proofs = [browser, computer, webView].filter(Boolean)
+  const sameEnvironment = proofs.length === 3
+    && proofs.every((proof) => proof.roomId === expected.roomId && proof.environmentId === expected.environmentId)
+  const sameTab = proofs.length === 3
+    && proofs.every((proof) => proof.tabId === proofs[0].tabId)
+  if (browser && computer && browser.actionId === computer.actionId) {
+    violations.push("browser_computer_action_identity_reused")
+  }
+  if (proofs.length === 3 && new Set(proofs.map((proof) => proof.environmentId)).size !== 1) {
+    violations.push("browser_computer_web_view_environment_mismatch")
+  }
+  if (proofs.length === 3 && new Set(proofs.map((proof) => proof.tabId)).size !== 1) {
+    violations.push("web_view_tab_mismatch")
+  }
+  return {
+    ok: violations.length === 0,
+    sameEnvironment,
+    sameStableTab: sameTab,
+    publicBrowserAction: Boolean(browser),
+    publicComputerAction: Boolean(computer),
+    publicWebView: Boolean(webView),
+    violations,
+  }
 }
 
 function assertConfiguredDockerPreconditions(preconditions) {

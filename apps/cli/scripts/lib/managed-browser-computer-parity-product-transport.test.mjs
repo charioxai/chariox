@@ -111,6 +111,232 @@ test("selkies.attach does not turn metadata into attachment success or read a wo
   assert.equal(sends, 0, "missing display binding must not fall back to worker Room metadata");
 });
 
+test("public Room action placement proof binds the action to the current Room Environment tab", async () => {
+  const imported = await importProductTransport();
+  let environment = {
+    session_id: "room-1",
+    environment_id: "environment-1",
+    runtime_generation: 1,
+    viewport: { revision: 1 },
+    actors: [
+      { actor_id: "agent:agent-1", kind: "agent" },
+      { actor_id: "agent:agent-worker-2", kind: "agent" },
+    ],
+    tabs: [{ tab_id: "tab-1", focused: true }],
+    focused_tab_id: "tab-1",
+    actions: [{
+      action_id: "browser-action-1",
+      actor_id: "agent:agent-1",
+      mode: "browser",
+      kind: "click",
+      state: "completed",
+      targets: [{ kind: "browser_tab", id: "tab-1" }],
+    }],
+  };
+  environment.actions.push({
+    action_id: "computer-action-1",
+    actor_id: "agent:agent-worker-2",
+    mode: "computer",
+    kind: "pointer_click",
+    state: "completed",
+    targets: [{ kind: "desktop" }, { kind: "browser_tab", id: "tab-1" }],
+  });
+  const requests = [];
+  const proof = await imported.captureManagedParityPublicActionPlacementProof({
+    client: {
+      async send(request) {
+        requests.push(request);
+        return { RoomEnvironmentState: { environment } };
+      },
+    },
+    requestApi: {
+      getRoomEnvironmentStateRequest(sessionId) {
+        return { GetRoomEnvironmentState: { session_id: sessionId } };
+      },
+    },
+    roomId: "room-1",
+    environmentId: "environment-1",
+    actionId: "browser-action-1",
+    actorId: "agent:agent-1",
+    mode: "browser",
+    actionKind: "click",
+  });
+
+  assert.deepEqual(proof, {
+    source: "public-room-action",
+    kind: "browser-action",
+    roomId: "room-1",
+    environmentId: "environment-1",
+    tabId: "tab-1",
+    actionId: "browser-action-1",
+    actorId: "agent:agent-1",
+  });
+  assert.deepEqual(requests, [{ GetRoomEnvironmentState: { session_id: "room-1" } }]);
+
+  const computerProof = await imported.captureManagedParityPublicActionPlacementProof({
+    client: { async send() { return { RoomEnvironmentState: { environment } }; } },
+    requestApi: {
+      getRoomEnvironmentStateRequest(sessionId) {
+        return { GetRoomEnvironmentState: { session_id: sessionId } };
+      },
+    },
+    roomId: "room-1",
+    environmentId: "environment-1",
+    actionId: "computer-action-1",
+    actorId: "agent:agent-worker-2",
+    mode: "computer",
+    actionKind: "pointer_click",
+  });
+  assert.deepEqual(computerProof, {
+    source: "public-room-action",
+    kind: "computer-action",
+    roomId: "room-1",
+    environmentId: "environment-1",
+    tabId: "tab-1",
+    actionId: "computer-action-1",
+    actorId: "agent:agent-worker-2",
+  });
+
+  environment = {
+    ...environment,
+    actions: environment.actions.map((action) => ({
+      ...action,
+      targets: [{ kind: "browser_tab", id: "tab-stale" }],
+    })),
+  };
+  await assert.rejects(
+    () => imported.captureManagedParityPublicActionPlacementProof({
+      client: { async send() { return { RoomEnvironmentState: { environment } }; } },
+      requestApi: {
+        getRoomEnvironmentStateRequest(sessionId) {
+          return { GetRoomEnvironmentState: { session_id: sessionId } };
+        },
+      },
+      roomId: "room-1",
+      environmentId: "environment-1",
+      actionId: "browser-action-1",
+      actorId: "agent:agent-1",
+      mode: "browser",
+      actionKind: "click",
+    }),
+    /does not target the focused stable Browser Tab/,
+  );
+
+  environment = {
+    ...environment,
+    actors: [],
+    actions: environment.actions.map((action) => ({
+      ...action,
+      actor_id: "agent:unregistered-agent",
+      targets: [{ kind: "browser_tab", id: "tab-1" }],
+    })),
+  };
+  await assert.rejects(
+    () => imported.captureManagedParityPublicActionPlacementProof({
+      client: { async send() { return { RoomEnvironmentState: { environment } }; } },
+      requestApi: {
+        getRoomEnvironmentStateRequest(sessionId) {
+          return { GetRoomEnvironmentState: { session_id: sessionId } };
+        },
+      },
+      roomId: "room-1",
+      environmentId: "environment-1",
+      actionId: "browser-action-1",
+      actorId: "agent:unregistered-agent",
+      mode: "browser",
+      actionKind: "click",
+    }),
+    /did not match the completed Room agent action/,
+  );
+})
+
+test("Selkies Web View placement proof uses the public Room's focused stable tab", async () => {
+  const imported = await importProductTransport();
+  const environment = {
+    session_id: "room-1",
+    environment_id: "environment-1",
+    runtime_generation: 1,
+    viewport: { revision: 1 },
+    tabs: [{ tab_id: "tab-1", focused: true }],
+    focused_tab_id: "tab-1",
+    actions: [],
+  };
+  const requests = [];
+  let frameIndex = 0;
+  const stream = {
+    endpoint: { stream_protocol: "selkies-v1", stream_id: "stream-1" },
+    async sendControl() {},
+    async receive() {
+      frameIndex += 1;
+      return frameIndex === 1
+        ? { kind: "text", data: new TextEncoder().encode("VIDEO_STARTED") }
+        : { kind: "binary", data: Uint8Array.from([4, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]) };
+    },
+    async close() {},
+  };
+  const transport = imported.createManagedBrowserComputerParityTransportFromPublicClient({
+    client: {
+      async send(request) {
+        requests.push(request);
+        if (Object.hasOwn(request, "RelayStatus")) {
+          return { RelayStatus: { status: {
+            configured: true,
+            connected: true,
+            daemon_id: "kernel-1",
+            machine_id: "machine-1",
+          } } };
+        }
+        if (Object.hasOwn(request, "GetRoomEnvironmentState")) {
+          return { RoomEnvironmentState: { environment } };
+        }
+        throw new Error(`unexpected Web View proof request: ${JSON.stringify(request)}`);
+      },
+    },
+    requestApi: {
+      getSliceDisplayEndpointRequest(sliceId, options) {
+        return { GetSliceDisplayEndpoint: { slice_ref: sliceId, ...options } };
+      },
+      relayStatusRequest() { return { RelayStatus: null }; },
+      getRoomEnvironmentStateRequest(sessionId) {
+        return { GetRoomEnvironmentState: { session_id: sessionId } };
+      },
+    },
+    displayTransport: {
+      async openSelkiesDisplayStream({ sessionId }) {
+        assert.equal(sessionId, "room-1");
+        return stream;
+      },
+    },
+  });
+
+  const result = await transport.run("selkies.attach", {
+    binding: {
+      kernelId: "kernel-1",
+      machineId: "machine-1",
+      roomId: "room-1",
+      environmentId: "environment-1",
+    },
+    client: "web",
+    displayBackend: "selkies",
+    sliceId: "slice-1",
+    attachmentId: "attachment-1",
+  });
+
+  assert.deepEqual(result.placementProof, {
+    source: "public-web-view",
+    kind: "web-view",
+    roomId: "room-1",
+    environmentId: "environment-1",
+    tabId: "tab-1",
+    visible: true,
+  });
+  assert.deepEqual(requests.map((request) => Object.keys(request)[0]), [
+    "RelayStatus",
+    "GetRoomEnvironmentState",
+    "GetRoomEnvironmentState",
+  ]);
+})
+
 test("selkies display authorization aborts an in-flight public request and closes its client", async () => {
   const imported = await importProductTransport();
   let sends = 0;
@@ -401,6 +627,10 @@ test("real LocalIpcClient authorizes and connects the encrypted Selkies display 
               environment: {
                 session_id: "room-1",
                 environment_id: "environment-1",
+                runtime_generation: 1,
+                viewport: { revision: 1 },
+                tabs: [{ tab_id: "tab-1", focused: true }],
+                focused_tab_id: "tab-1",
               },
             },
           };
@@ -469,6 +699,14 @@ test("real LocalIpcClient authorizes and connects the encrypted Selkies display 
     assert.equal(result.attached, true);
     assert.equal(result.displayProtocol, "chariox-display-v1");
     assert.equal(result.displayStreamId, "tunnel-1");
+    assert.deepEqual(result.placementProof, {
+      source: "public-web-view",
+      kind: "web-view",
+      roomId: "room-1",
+      environmentId: "environment-1",
+      tabId: "tab-1",
+      visible: true,
+    });
     assert.deepEqual(result.startupMessage, { kind: "text", byteLength: "VIDEO_STARTED".length });
     assert.deepEqual(result.firstFrame, { kind: "binary", byteLength: 12, recordType: 4 });
     assert.deepEqual(receivedFrames.map((frame) => frame.kind), [

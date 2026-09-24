@@ -16,9 +16,8 @@ const PERSISTENCE_TIMEOUT_MS = 30_000
 const CLEANUP_INSPECTION_TIMEOUT_MS = 15_000
 const DISCONNECT_TIMEOUT_MS = 5_000
 const MANAGED_PARITY_SCHEMA = "chariox.browser_computer_m0_guard.v1"
-// This is the released wire constant at the reviewed PR head. Production
-// construction also binds the value exported by kernel-client; the literal is
-// only the local fail-closed reference used when a test injects that seam.
+// Minimum kernel protocol for managed resource telemetry. The daemon's current
+// protocol may be newer and is reported separately by compatibility preflight.
 export const MANAGED_BROWSER_COMPUTER_PARITY_PROTOCOL = 336
 
 /**
@@ -1352,20 +1351,27 @@ async function runCompatibilityPreflight({
 }
 
 function resolveReleasedKernelProtocol(requestApi, protocolApi) {
-  const observed = [
+  const currentVersions = [
     protocolApi?.LOCAL_DAEMON_PROTOCOL_VERSION,
     requestApi?.LOCAL_DAEMON_PROTOCOL_VERSION,
-    requestApi?.kernelResourceTelemetryMinimumProtocolVersion,
   ].filter((value) => value !== undefined && value !== null)
-  if (observed.length === 0) {
+  const telemetryMinimum = requestApi?.kernelResourceTelemetryMinimumProtocolVersion
+    ?? MANAGED_BROWSER_COMPUTER_PARITY_PROTOCOL
+  if (currentVersions.length === 0 && requestApi?.kernelResourceTelemetryMinimumProtocolVersion == null) {
     throw new Error("managed parity compatibility preflight requires the released kernel protocol constant")
   }
-  if (observed.some((value) => value !== MANAGED_BROWSER_COMPUTER_PARITY_PROTOCOL)) {
+  if (telemetryMinimum !== MANAGED_BROWSER_COMPUTER_PARITY_PROTOCOL) {
     throw new Error(
-      `managed parity compatibility preflight requires released kernel protocol ${MANAGED_BROWSER_COMPUTER_PARITY_PROTOCOL}; observed ${observed.join(",")}`,
+      `managed parity compatibility preflight requires telemetry minimum protocol ${MANAGED_BROWSER_COMPUTER_PARITY_PROTOCOL}; observed ${telemetryMinimum}`,
     )
   }
-  return MANAGED_BROWSER_COMPUTER_PARITY_PROTOCOL
+  if (currentVersions.some((value) => !Number.isSafeInteger(value) || value < telemetryMinimum)
+    || new Set(currentVersions).size > 1) {
+    throw new Error(
+      `managed parity compatibility preflight requires one released kernel protocol at or above ${telemetryMinimum}; observed ${currentVersions.join(",")}`,
+    )
+  }
+  return currentVersions[0] ?? telemetryMinimum
 }
 
 async function runKernelPreflight({
@@ -1631,7 +1637,25 @@ async function runKernelProviderAction({
   }
   const base = { ...binding, displayBackend: "selkies" }
   if (mode === "browser") {
-    return { ...base, structuredActions: true, mutationCount: 1, browserCount: inventory.browser_ids.length, providerActionId: result.actionId }
+    const placementProof = await captureManagedParityPublicActionPlacementProof({
+      client,
+      requestApi,
+      roomId: binding.roomId,
+      environmentId: binding.environmentId,
+      actionId: result.actionId,
+      actorId: result.actorId,
+      mode,
+      actionKind: result.actionKind,
+      signal,
+    })
+    return {
+      ...base,
+      structuredActions: true,
+      mutationCount: 1,
+      browserCount: inventory.browser_ids.length,
+      providerActionId: result.actionId,
+      placementProof,
+    }
   }
   const state = await readRoomEnvironmentState({ client, requestApi, roomId: binding.roomId, signal, step: "selkies.computer" })
   const computerAction = await submitRoomInputAction({
@@ -1655,7 +1679,18 @@ async function runKernelProviderAction({
     "selkies.computer screenshot",
   )
   responseVariant(screenshot, "RoomEnvironmentScreenshotCaptured", "selkies.computer screenshot")
-  return { ...base, screenshot: true, pointer: result.actionKind === "pointer_click", keyboard: true }
+  const placementProof = await captureManagedParityPublicActionPlacementProof({
+    client,
+    requestApi,
+    roomId: binding.roomId,
+    environmentId: binding.environmentId,
+    actionId: result.actionId,
+    actorId: result.actorId,
+    mode,
+    actionKind: result.actionKind,
+    signal,
+  })
+  return { ...base, screenshot: true, pointer: result.actionKind === "pointer_click", keyboard: true, placementProof }
 }
 
 async function runKernelTakeover({ client, requestApi, request, signal }) {
@@ -2003,6 +2038,62 @@ async function readRoomEnvironmentState({ client, requestApi, roomId, signal, st
     throw new Error(`${step} returned an incomplete authoritative Room environment state`)
   }
   return environment
+}
+
+export async function captureManagedParityPublicActionPlacementProof({
+  client,
+  requestApi,
+  roomId,
+  environmentId,
+  actionId,
+  actorId,
+  mode,
+  actionKind,
+  signal,
+} = {}) {
+  if (!new Set(["browser", "computer"]).has(mode)
+    || !hasText(actorId) || !actorId.trim().startsWith("agent:")
+    || !hasText(actionId) || !hasText(actionKind)) {
+    throw new Error("managed parity public placement proof requires an attributed Room agent action")
+  }
+  const environment = await readRoomEnvironmentState({
+    client,
+    requestApi,
+    roomId,
+    signal,
+    step: `${mode} placement proof`,
+  })
+  if (environment.environment_id !== environmentId) {
+    throw new Error("managed parity public placement proof returned a foreign Environment")
+  }
+  const action = requireArray(environment.actions, `${mode} placement proof actions`)
+    .find((entry) => entry?.action_id === actionId)
+  if (!action || action.actor_id !== actorId || action.mode !== mode
+    || action.kind !== actionKind || action.state !== "completed"
+    || !requireArray(environment.actors, `${mode} placement proof actors`)
+      .some((actor) => actor?.actor_id === action.actor_id && actor.kind === "agent")) {
+    throw new Error("managed parity public placement proof did not match the completed Room agent action")
+  }
+  const targets = requireArray(action.targets, `${mode} placement proof targets`)
+    .filter((target) => target?.kind === "browser_tab")
+  if (targets.length !== 1) {
+    throw new Error("managed parity public placement proof must identify exactly one stable Browser Tab")
+  }
+  const tabId = requireText(targets[0].id, `${mode} placement proof tab id`)
+  if (environment.focused_tab_id !== tabId
+    || !requireArray(environment.tabs, `${mode} placement proof tabs`)
+      .some((tab) => tab?.tab_id === tabId && tab.focused === true)) {
+    throw new Error("managed parity public placement proof does not target the focused stable Browser Tab")
+  }
+  return {
+    source: "public-room-action",
+    kind: `${mode}-action`,
+    roomId: environment.session_id,
+    environmentId: environment.environment_id,
+    tabId,
+    actionId: action.action_id,
+    actorId: action.actor_id,
+  }
 }
 
 async function submitRoomInputAction({ client, requestApi, state, roomId, action, signal, step }) {
@@ -4289,11 +4380,34 @@ async function runSelkiesAttach({
           && message.data[0] === 4,
         "a valid Selkies video frame",
       )
+      const viewEnvironment = await readRoomEnvironmentState({
+        client: displayClient,
+        requestApi,
+        roomId,
+        signal,
+        step: "selkies.attach placement proof",
+      })
+      if (viewEnvironment.environment_id !== binding.environmentId) {
+        throw new Error("managed parity Selkies view returned a foreign Environment")
+      }
+      const tabId = requireText(viewEnvironment.focused_tab_id, "selkies.attach focused tab id")
+      if (!requireArray(viewEnvironment.tabs, "selkies.attach Room tabs")
+        .some((tab) => tab?.tab_id === tabId && tab.focused === true)) {
+        throw new Error("managed parity Selkies view has no focused stable Browser Tab")
+      }
       return {
         ...identity,
         client: request.client,
         displayBackend: request.displayBackend,
         attached: true,
+        placementProof: {
+          source: "public-web-view",
+          kind: "web-view",
+          roomId: viewEnvironment.session_id,
+          environmentId: viewEnvironment.environment_id,
+          tabId,
+          visible: true,
+        },
         sliceId,
         attachmentId,
         displayProtocol: stream.endpoint.stream_protocol,

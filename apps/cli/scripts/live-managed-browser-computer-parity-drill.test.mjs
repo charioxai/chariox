@@ -106,6 +106,21 @@ function target(displayBackend) {
   }
 }
 
+function placementProof(kind) {
+  const common = {
+    roomId: "room-managed-1",
+    environmentId: "environment-managed-1",
+    tabId: "tab-stable-1",
+  }
+  if (kind === "browser-action") {
+    return { ...common, source: "public-room-action", kind, actionId: "browser-action-1", actorId: "agent:browser-agent-1" }
+  }
+  if (kind === "computer-action") {
+    return { ...common, source: "public-room-action", kind, actionId: "computer-action-1", actorId: "agent:computer-agent-1" }
+  }
+  return { ...common, source: "public-web-view", kind: "web-view", visible: true }
+}
+
 function cleanInventory() {
   return {
     managedMachines: 0,
@@ -136,11 +151,29 @@ function transport({ persistenceMode = "docker" } = {}) {
       if (step === "preflight") return preflight()
       if (step === "selkies.create") return target("selkies")
       if (step === "novnc.create") return target("novnc")
-      if (step.endsWith(".attach")) return { ...target(input.displayBackend), client: input.client }
+      if (step.endsWith(".attach")) return {
+        ...target(input.displayBackend),
+        client: input.client,
+        ...(step === "selkies.attach" && input.client === "web"
+          ? { placementProof: placementProof("web-view") }
+          : {}),
+      }
       const binding = target(input.displayBackend)
       if (step.endsWith(".providers")) return { ...binding, providers: { codex: "official", opencode: "official", claude: "official" }, providerStateCopied: false }
-      if (step.endsWith(".browser")) return { ...binding, structuredActions: true, mutationCount: 1, browserCount: 1 }
-      if (step.endsWith(".computer")) return { ...binding, screenshot: true, pointer: true, keyboard: true }
+      if (step.endsWith(".browser")) return {
+        ...binding,
+        structuredActions: true,
+        mutationCount: 1,
+        browserCount: 1,
+        placementProof: placementProof("browser-action"),
+      }
+      if (step.endsWith(".computer")) return {
+        ...binding,
+        screenshot: true,
+        pointer: true,
+        keyboard: true,
+        placementProof: placementProof("computer-action"),
+      }
       if (step.endsWith(".takeover")) return { ...binding, overlayVisible: true, takeoverCompleted: true, actorAttributed: true }
       if (step.endsWith(".persistence")) {
         const evidence = persistenceMode === "kernel" ? kernelPersistenceEvidence() : persistenceEvidence()
@@ -197,6 +230,33 @@ test("live M0 runs compatibility preflight before the first telemetry sample or 
   assert.equal(injected.calls[0]?.step, "preflight")
 })
 
+test("live M0 rejects public Browser, Computer, and Web View evidence split across stable tabs", async () => {
+  const injected = transport()
+  const run = injected.run.bind(injected)
+  injected.run = async (step, input, options) => {
+    const result = await run(step, input, options)
+    if (step === "selkies.attach" && input.client === "web") {
+      return {
+        ...result,
+        placementProof: { ...placementProof("web-view"), tabId: "tab-stale-2" },
+      }
+    }
+    return result
+  }
+
+  const report = await runManagedBrowserComputerParityLive({
+    config: config(),
+    transport: injected,
+    evidenceRoot: EVIDENCE_ROOT,
+    collectResourceSnapshot: ({ phase }) => sample(phase),
+  })
+
+  assert.equal(report.status, "failed")
+  assert.equal(report.failure.code, "browser_computer_placement_proof_required")
+  assert.equal(report.browserComputerGuard.placement.ok, false)
+  assert.ok(report.browserComputerGuard.placement.violations.includes("web_view_tab_mismatch"))
+})
+
 test("live M0 wrapper validates the released kernel lifecycle plan without Docker argv assumptions", async () => {
   const kernelConfig = config()
   kernelConfig.browserComputerGuard.dockerPreconditions = []
@@ -227,7 +287,7 @@ test("live M0 binds released kernel-client source modules before managed telemet
   )
   const daemonProtocol = releasedSourceConstant(typesSource, "LOCAL_DAEMON_PROTOCOL_VERSION")
   assert.equal(telemetryProtocol, MANAGED_BROWSER_COMPUTER_PARITY_PROTOCOL)
-  assert.equal(daemonProtocol, MANAGED_BROWSER_COMPUTER_PARITY_PROTOCOL)
+  assert.equal(daemonProtocol, 343, "kernel-types.ts is authoritative for the current daemon protocol")
   assert.match(controlSource, /return \{ GetKernelResourceTelemetry: null \}/)
 
   const requestApi = {
@@ -285,7 +345,7 @@ test("live M0 binds released kernel-client source modules before managed telemet
     /requires compatibility preflight first/,
   )
   const compatibility = await released.assertCompatibilityPreflight()
-  assert.equal(compatibility.protocol.kernel, MANAGED_BROWSER_COMPUTER_PARITY_PROTOCOL)
+  assert.equal(compatibility.protocol.kernel, daemonProtocol)
   const telemetry = await released.collectManagedTargetResourceSnapshot({ phase: "before" })
   assert.equal(telemetry.telemetry.source, "managed-target-test")
   assert.deepEqual(requests.map((request) => Object.keys(request)[0]), [
