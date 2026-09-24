@@ -471,10 +471,405 @@ fn action_dispatch_error(message: String) -> DaemonError {
 }
 
 #[cfg(test)]
+pub(crate) mod computer_input_reconcile_test_support {
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex, MutexGuard};
+    use std::time::Duration;
+
+    use tokio::sync::Mutex as AsyncMutex;
+
+    use super::KernelRuntimeState;
+
+    pub(crate) struct TestRoot(PathBuf);
+
+    impl TestRoot {
+        fn new(label: &str) -> Self {
+            static SEQUENCE: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(0);
+            let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "chariox-computer-input-reconcile-{label}-{}-{sequence}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&path).expect("test root should be created");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    pub(crate) struct TestTools {
+        _root: TestRoot,
+        pub(crate) screen_tool: PathBuf,
+        pub(crate) controller_tool: PathBuf,
+    }
+
+    impl TestTools {
+        pub(crate) fn new(label: &str) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+
+            let root = TestRoot::new(label);
+            let screen_tool = root.path().join("screen-tool.sh");
+            let controller_tool = root.path().join("controller-tool.sh");
+            std::fs::write(&screen_tool, "#!/bin/sh\nset -eu\nexit 0\n")
+                .expect("fake screen tool should be written");
+            std::fs::write(
+                &controller_tool,
+                r##"#!/bin/sh
+set -eu
+while IFS= read -r request; do
+  id=${request#*:}
+  id=${id%%,*}
+  case "$request" in
+    *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+    *'"method":"browser.reconcile"'*) printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"tabs":[{"target_id":"target-a","document_id":"loader-after-input","url":"https://after-input.test","title":"After input"}],"focused_target_id":"target-a","resource_inventory":{"browser_ids":["browser-pid-41"],"profile_ids":["profile-sha256-41"]},"viewport":{"css_width":1280,"css_height":800,"device_scale_factor":1,"desktop_pixel_width":1280,"desktop_pixel_height":800}}}\n' "$id" ;;
+    *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
+  esac
+done
+"##,
+            )
+            .expect("fake controller tool should be written");
+            for path in [&screen_tool, &controller_tool] {
+                let mut permissions = std::fs::metadata(path)
+                    .expect("test tool metadata should be readable")
+                    .permissions();
+                permissions.set_mode(0o700);
+                std::fs::set_permissions(path, permissions)
+                    .expect("test tool should be executable");
+            }
+            Self {
+                _root: root,
+                screen_tool,
+                controller_tool,
+            }
+        }
+    }
+
+    static SCREEN_TOOL_ENVIRONMENT_LOCK: Mutex<()> = Mutex::new(());
+
+    pub(crate) struct ScreenToolEnvironment {
+        _lock: MutexGuard<'static, ()>,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    pub(crate) fn install_screen_tool(path: &Path) -> ScreenToolEnvironment {
+        let lock = SCREEN_TOOL_ENVIRONMENT_LOCK
+            .lock()
+            .expect("screen tool environment lock should not be poisoned");
+        let previous = std::env::var_os("CHARIOX_SLICE_SCREEN_TOOL");
+        std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL", path);
+        ScreenToolEnvironment {
+            _lock: lock,
+            previous,
+        }
+    }
+
+    impl Drop for ScreenToolEnvironment {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.take() {
+                std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL", previous);
+            } else {
+                std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
+            }
+        }
+    }
+
+    pub(crate) struct TestRoom {
+        _root: TestRoot,
+        pub(crate) runtime: KernelRuntimeState,
+        pub(crate) session_id: String,
+        pub(crate) agent_id: String,
+    }
+
+    impl TestRoom {
+        pub(crate) fn new(label: &str) -> Self {
+            let root = TestRoot::new(label);
+            let root_path = root.path().to_string_lossy().into_owned();
+            let mut app = crate::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+                .expect("daemon bootstrap should succeed");
+            let (session, _) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(crate::session::CreateSessionRequest::new(
+                    &root_path, &root_path,
+                ))
+                .expect("session should be created");
+            let agent = crate::app::KernelSessionService::new(&mut app)
+                .spawn_agent(
+                    crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                        .with_alias("computer-input-agent"),
+                )
+                .expect("agent should be created");
+            let session_id = session.id().to_string();
+            let agent_id = agent.id().to_string();
+            let mut runtime = runtime_state_from_test_app(app);
+            runtime.set_browser_controller_process_store_for_test(Default::default());
+            let viewport = crate::session::CanonicalViewport::new(1280, 800, 1, 1280, 800)
+                .expect("test viewport should be valid");
+            runtime
+                .owned
+                .session_store
+                .create_room_environment(&session_id, "environment-test", viewport.clone())
+                .expect("environment should be created");
+            runtime
+                .start_room_environment(&session_id, viewport)
+                .expect("environment should start");
+            runtime
+                .transition_room_environment(
+                    &session_id,
+                    crate::session::EnvironmentLifecycle::Ready,
+                )
+                .expect("environment should become ready");
+            runtime
+                .reconcile_room_environment_controller_tabs(
+                    &session_id,
+                    vec![crate::session::EnvironmentTabObservation {
+                        runtime_target_id: "target-a".to_string(),
+                        document_id: "loader-before-input".to_string(),
+                        url: "https://before-input.test".to_string(),
+                        title: "Before input".to_string(),
+                    }],
+                    Some("target-a"),
+                )
+                .expect("initial tab should be installed in the Room");
+            Self {
+                _root: root,
+                runtime,
+                session_id,
+                agent_id,
+            }
+        }
+
+        pub(crate) async fn enable_browser_controller(&mut self, tool: &TestTools) {
+            self.runtime.set_browser_controller_process_store_for_test(
+                crate::runtime::browser_controller_process::BrowserControllerProcessStore::from_script(
+                    tool.controller_tool.clone(),
+                    Duration::from_secs(2),
+                ),
+            );
+            self.runtime
+                .ensure_browser_controller_process_started(&self.session_id)
+                .await
+                .expect("test browser controller should start");
+        }
+
+        pub(crate) async fn stop_browser_controller(&self) {
+            if self.runtime.browser_controller_process_enabled() {
+                self.runtime
+                    .stop_browser_controller_process(&self.session_id)
+                    .await
+                    .expect("test browser controller should stop");
+            }
+        }
+    }
+
+    fn runtime_state_from_test_app(app: crate::DaemonApp) -> KernelRuntimeState {
+        let config_projection = app.config_projection_store();
+        let session_store = app.session_state_store();
+        let agent_store = app.agents().clone();
+        let attachment_store = app.attachments().clone();
+        let provider_store = app.providers().clone();
+        let provider_process_tracking = app.provider_process_tracking_store();
+        let slice_store = app.slices();
+        let session_projection = app.session_state_projection_store();
+        let provider_run_projection = app.provider_run_projection_store();
+        let operational_history_store = app.operational_history_store();
+        let durable_state_store = app.durable_state_store();
+        let prompt_state_owner = app.prompt_state_owner();
+        let active_turns = app.active_turn_store();
+        let prompt_activity = app.prompt_activity_store();
+        let prompt_workspace_claims = app.prompt_workspace_claim_store();
+        let structured_output_records = app.structured_output_record_store();
+        let terminal_stream = app.terminal_stream_store();
+        let workflow_design_events = app.workflow_design_event_store();
+        let metaagent_events = app.metaagent_event_store();
+        let workspace_coordinator = app.workspace_coordinator();
+        KernelRuntimeState::new_with_owned_state(
+            Arc::new(AsyncMutex::new(app)),
+            config_projection,
+            session_store,
+            agent_store,
+            attachment_store,
+            provider_store,
+            provider_process_tracking,
+            slice_store,
+            session_projection,
+            provider_run_projection,
+            operational_history_store,
+            durable_state_store,
+            prompt_state_owner,
+            active_turns,
+            prompt_activity,
+            prompt_workspace_claims,
+            structured_output_records,
+            terminal_stream,
+            workflow_design_events,
+            metaagent_events,
+            workspace_coordinator,
+        )
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use super::computer_input_reconcile_test_support::{
+        install_screen_tool, TestRoom, TestTools,
+    };
     use std::sync::Arc;
     use tokio::sync::{oneshot, Mutex};
+
+    #[tokio::test]
+    async fn completed_agent_computer_input_reconciles_enabled_browser_controller_tabs() {
+        let tools = TestTools::new("agent-success");
+        let _screen_tool = install_screen_tool(&tools.screen_tool);
+        let mut room = TestRoom::new("agent-success");
+        room.enable_browser_controller(&tools).await;
+
+        let result = room
+            .runtime
+            .execute_computer_input_as_agent(
+                &room.session_id,
+                &room.agent_id,
+                RoomComputerInputAction::PointerMove { x: 10, y: 10 },
+            )
+            .await;
+        let environment = room
+            .runtime
+            .room_environment_snapshot(&room.session_id)
+            .expect("Room snapshot should remain available");
+        room.stop_browser_controller().await;
+
+        let result = result.expect("fake ComputerInputApplied should complete");
+        assert_eq!(result.action_kind, "pointer_move");
+        assert_eq!(environment.tabs[0].title, "After input");
+        assert_eq!(environment.actions.last().unwrap().state, EnvironmentActionState::Completed);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn agent_computer_input_skips_reconcile_while_another_action_is_running_or_queued() {
+        let tools = TestTools::new("agent-busy");
+        let _screen_tool = install_screen_tool(&tools.screen_tool);
+        let mut room = TestRoom::new("agent-busy");
+        room.enable_browser_controller(&tools).await;
+        let initial = room
+            .runtime
+            .room_environment_snapshot(&room.session_id)
+            .expect("Room snapshot should be available");
+        let tab = initial.tabs[0].clone();
+
+        let (first_started_tx, first_started_rx) = oneshot::channel();
+        let (release_first_tx, release_first_rx) = oneshot::channel();
+        let first_runtime = room.runtime.clone();
+        let first_session_id = room.session_id.clone();
+        let first_agent_id = room.agent_id.clone();
+        let first_tab_id = tab.tab_id.clone();
+        let first_revision = tab.document_revision;
+        let first = tokio::spawn(async move {
+            first_runtime
+                .execute_browser_mutation_as_agent(
+                    &first_session_id,
+                    &first_agent_id,
+                    &first_tab_id,
+                    first_revision,
+                    "blocking-click",
+                    None,
+                    async move {
+                        first_started_tx.send(()).ok();
+                        release_first_rx.await.expect("first action should release");
+                        Ok::<_, DaemonError>(())
+                    },
+                )
+                .await
+        });
+        first_started_rx.await.expect("first action should be running");
+
+        let (second_started_tx, second_started_rx) = oneshot::channel();
+        let (release_second_tx, release_second_rx) = oneshot::channel();
+        let second_runtime = room.runtime.clone();
+        let second_session_id = room.session_id.clone();
+        let second_agent_id = room.agent_id.clone();
+        let second_tab_id = tab.tab_id.clone();
+        let second_revision = tab.document_revision;
+        let second = tokio::spawn(async move {
+            second_runtime
+                .execute_browser_mutation_as_agent(
+                    &second_session_id,
+                    &second_agent_id,
+                    &second_tab_id,
+                    second_revision,
+                    "queued-click",
+                    None,
+                    async move {
+                        second_started_tx.send(()).ok();
+                        release_second_rx.await.expect("second action should release");
+                        Ok::<_, DaemonError>(())
+                    },
+                )
+                .await
+        });
+        for _ in 0..100 {
+            let snapshot = room
+                .runtime
+                .room_environment_snapshot(&room.session_id)
+                .expect("Room snapshot should be available");
+            if snapshot
+                .actions
+                .iter()
+                .any(|action| action.state == EnvironmentActionState::Queued)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        let input_result = room
+            .runtime
+            .execute_computer_input_as_agent(
+                &room.session_id,
+                &room.agent_id,
+                RoomComputerInputAction::PointerMove { x: 12, y: 12 },
+            )
+            .await;
+        let after_input = room
+            .runtime
+            .room_environment_snapshot(&room.session_id)
+            .expect("Room snapshot should remain available");
+        let running_and_queued_remain = after_input
+            .actions
+            .iter()
+            .any(|action| action.state == EnvironmentActionState::Running)
+            && after_input
+                .actions
+                .iter()
+                .any(|action| action.state == EnvironmentActionState::Queued);
+        let tab_title_after_input = after_input.tabs[0].title.clone();
+
+        release_first_tx.send(()).expect("first action should release");
+        let first_result = first.await.expect("first task should join");
+        let second_started = tokio::time::timeout(Duration::from_secs(2), second_started_rx)
+            .await
+            .expect("second action should settle after its predecessor")
+            .is_ok();
+        if second_started {
+            release_second_tx
+                .send(())
+                .expect("second action should release");
+        }
+        let _second_result = second.await.expect("second task should join");
+        room.stop_browser_controller().await;
+
+        input_result.expect("fake ComputerInputApplied should complete");
+        first_result.expect("first mutation should complete");
+        assert!(running_and_queued_remain, "another action must still be active at input completion");
+        assert_eq!(tab_title_after_input, "Before input");
+    }
 
     #[test]
     fn browser_mutation_targets_only_its_room_tab() {

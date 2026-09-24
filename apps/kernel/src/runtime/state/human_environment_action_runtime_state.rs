@@ -491,6 +491,149 @@ fn human_clipboard_read_dispatch_error(code: &'static str, message: String) -> D
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::browser_controller_action_execution_runtime_state::
+        computer_input_reconcile_test_support::{install_screen_tool, TestRoom, TestTools};
+    use tokio::sync::oneshot;
+
+    fn human_actor() -> EnvironmentActor {
+        EnvironmentActor::new(
+            "human:computer-input-test",
+            crate::session::EnvironmentActorKind::Human,
+            "Operator",
+        )
+    }
+
+    fn grant_desktop_to_human(room: &TestRoom, actor: EnvironmentActor) {
+        let (outcome, _) = room
+            .runtime
+            .request_room_environment_takeover_as_actor(
+                &room.session_id,
+                actor,
+                InputTarget::Desktop,
+            )
+            .expect("human should take the idle desktop");
+        assert!(matches!(outcome, crate::session::TakeoverOutcome::Granted));
+    }
+
+    fn human_pointer_move(room: &TestRoom, key: &str) -> SubmitRoomEnvironmentActionRequest {
+        let environment = room
+            .runtime
+            .room_environment_snapshot(&room.session_id)
+            .expect("Room snapshot should be available");
+        SubmitRoomEnvironmentActionRequest {
+            session_id: room.session_id.clone(),
+            runtime_generation: environment.runtime_generation,
+            viewport_revision: environment.viewport.revision,
+            idempotency_key: key.to_string(),
+            action: RoomEnvironmentHumanAction::PointerMove { x: 10, y: 10 },
+        }
+    }
+
+    #[tokio::test]
+    async fn completed_human_computer_input_reconciles_enabled_browser_controller_tabs() {
+        let tools = TestTools::new("human-success");
+        let _screen_tool = install_screen_tool(&tools.screen_tool);
+        let mut room = TestRoom::new("human-success");
+        room.enable_browser_controller(&tools).await;
+        let actor = human_actor();
+        grant_desktop_to_human(&room, actor.clone());
+
+        let result = room
+            .runtime
+            .execute_human_room_environment_action(human_pointer_move(&room, "human-success"), actor)
+            .await;
+        room.stop_browser_controller().await;
+
+        let (_, environment) = result.expect("fake ComputerInputApplied should complete");
+        assert_eq!(environment.tabs[0].title, "After input");
+        assert_eq!(environment.actions.last().unwrap().state, EnvironmentActionState::Completed);
+    }
+
+    #[tokio::test]
+    async fn human_computer_input_skips_reconcile_when_browser_controller_is_disabled() {
+        let tools = TestTools::new("human-disabled");
+        let _screen_tool = install_screen_tool(&tools.screen_tool);
+        let room = TestRoom::new("human-disabled");
+        let actor = human_actor();
+        grant_desktop_to_human(&room, actor.clone());
+
+        let result = room
+            .runtime
+            .execute_human_room_environment_action(
+                human_pointer_move(&room, "human-disabled"),
+                actor,
+            )
+            .await;
+
+        let (_, environment) = result.expect("fake ComputerInputApplied should complete");
+        assert_eq!(environment.tabs[0].title, "Before input");
+        assert_eq!(environment.actions.last().unwrap().state, EnvironmentActionState::Completed);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn human_computer_input_skips_reconcile_while_another_room_action_is_running() {
+        let tools = TestTools::new("human-busy");
+        let _screen_tool = install_screen_tool(&tools.screen_tool);
+        let mut room = TestRoom::new("human-busy");
+        room.enable_browser_controller(&tools).await;
+        let initial = room
+            .runtime
+            .room_environment_snapshot(&room.session_id)
+            .expect("Room snapshot should be available");
+        let tab = initial.tabs[0].clone();
+        let (action_started_tx, action_started_rx) = oneshot::channel();
+        let (release_action_tx, release_action_rx) = oneshot::channel();
+        let runtime = room.runtime.clone();
+        let session_id = room.session_id.clone();
+        let agent_id = room.agent_id.clone();
+        let tab_id = tab.tab_id.clone();
+        let document_revision = tab.document_revision;
+        let action = tokio::spawn(async move {
+            runtime
+                .execute_browser_mutation_as_agent(
+                    &session_id,
+                    &agent_id,
+                    &tab_id,
+                    document_revision,
+                    "blocking-click",
+                    None,
+                    async move {
+                        action_started_tx.send(()).ok();
+                        release_action_rx
+                            .await
+                            .expect("blocking Room action should release");
+                        Ok::<_, DaemonError>(())
+                    },
+                )
+                .await
+        });
+        action_started_rx.await.expect("other action should be running");
+        let actor = human_actor();
+        grant_desktop_to_human(&room, actor.clone());
+
+        let result = room
+            .runtime
+            .execute_human_room_environment_action(human_pointer_move(&room, "human-busy"), actor)
+            .await;
+        let after_input = room
+            .runtime
+            .room_environment_snapshot(&room.session_id)
+            .expect("Room snapshot should remain available");
+        let another_action_running = after_input
+            .actions
+            .iter()
+            .any(|action| action.state == EnvironmentActionState::Running);
+        let tab_title_after_input = after_input.tabs[0].title.clone();
+
+        release_action_tx.send(()).expect("blocking action should release");
+        let action_result = action.await.expect("other action task should join");
+        room.stop_browser_controller().await;
+
+        result.expect("fake ComputerInputApplied should complete");
+        action_result.expect("other action should complete");
+        assert!(another_action_running, "Room action must remain active at input completion");
+        assert_eq!(tab_title_after_input, "Before input");
+    }
 
     #[test]
     fn oversized_worker_clipboard_result_fails_closed_without_exposing_content() {
