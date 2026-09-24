@@ -213,6 +213,7 @@ export function waitingRoomManagedMachineFocusTargets(
   return [
     { focus: "managed-compute" as const },
     { focus: "managed-region" as const },
+    { focus: "managed-repository-root" as const },
     { focus: "managed-kernel-context" as const },
     { focus: "managed-development" as const },
     ...managedRepositoryOptions.map((_, managedRepositoryIndex) => ({

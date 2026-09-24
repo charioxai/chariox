@@ -1,0 +1,811 @@
+import assert from "node:assert/strict"
+import { readFile } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+import test from "node:test"
+
+import {
+  combineBrowserComputerAbortSignals,
+  runManagedBrowserComputerParityLive,
+} from "./live-managed-browser-computer-parity-drill.mjs"
+import {
+  createManagedBrowserComputerParityTransportFromPublicClient,
+  MANAGED_BROWSER_COMPUTER_PARITY_PROTOCOL,
+} from "./lib/managed-browser-computer-parity-product-transport.mjs"
+
+const OSS_SHA = "1".repeat(40)
+const CLOUD_SHA = "2".repeat(40)
+const IMAGE_DIGEST = `sha256:${"3".repeat(64)}`
+const SOURCE_TREE = "5".repeat(40)
+const RELEASE_TARGET = "x86_64-unknown-linux-gnu"
+const EVIDENCE_ROOT = path.join(os.tmpdir(), "chariox-live-m0-guard-test")
+
+function config() {
+  return {
+    runId: "cha-16-managed-parity-live-guard-test",
+    ossSha: OSS_SHA,
+    cloudSha: CLOUD_SHA,
+    image: {
+      digest: IMAGE_DIGEST,
+      signature: Buffer.alloc(64, 7).toString("base64"),
+      signerFingerprint: `sha256:${"4".repeat(64)}`,
+      sourceTree: SOURCE_TREE,
+      target: RELEASE_TARGET,
+    },
+    expected: {
+      kernelId: "kernel-managed-1",
+      machineId: "machine-managed-1",
+      roomId: "room-managed-1",
+      environmentId: "environment-managed-1",
+    },
+    resourceCeilings: {
+      maximumRssBytes: 2_000_000_000,
+      maximumCpuPercent: 300,
+      minimumFreeMemoryBytes: 1_000_000_000,
+      minimumFreeDiskBytes: 10_000_000_000,
+      maximumHeartbeatAgeMs: 15_000,
+      maximumPostRunRssDeltaBytes: 50_000_000,
+      maximumPostRunDiskDeltaBytes: 10_000_000,
+    },
+    browserComputerGuard: {
+      caps: { diskBytes: 10, memoryBytes: 20, processCount: 4, logBytes: 5 },
+      preflight: { requiredMemoryBytes: 0, requiredDiskBytes: 0 },
+      watchdogIntervalMs: 1,
+      dockerPreconditions: persistenceDeclarations(),
+    },
+  }
+}
+
+function preflight() {
+  return {
+    image: {
+      digest: IMAGE_DIGEST,
+      signature: Buffer.alloc(64, 7).toString("base64"),
+      signerFingerprint: `sha256:${"4".repeat(64)}`,
+      sourceTree: SOURCE_TREE,
+      target: RELEASE_TARGET,
+      verified: true,
+    },
+    source: { ossSha: OSS_SHA, sourceTree: SOURCE_TREE, cloudShaExpected: CLOUD_SHA },
+    protocol: { kernel: 336, relay: 18, relayVersion: "chariox-relay 0.1.0" },
+    target: {
+      kernelId: "kernel-managed-1",
+      machineId: "machine-managed-1",
+      heartbeatAgeMs: 500,
+    },
+    capabilities: {
+      providers: { codex: "official", opencode: "official", claude: "official" },
+      gitAuth: true,
+      syntheticVault: true,
+      browserStructuredActions: true,
+      computerScreenshotInput: true,
+      actorTakeover: true,
+      persistence: true,
+      selkies: true,
+      novncRollback: true,
+    },
+    resources: {
+      rssBytes: 200_000_000,
+      cpuPercent: 5,
+      freeMemoryBytes: 8_000_000_000,
+      freeDiskBytes: 100_000_000_000,
+    },
+  }
+}
+
+function target(displayBackend) {
+  return {
+    kernelId: "kernel-managed-1",
+    machineId: "machine-managed-1",
+    roomId: "room-managed-1",
+    environmentId: "environment-managed-1",
+    displayBackend,
+    roomCount: 1,
+    browserCount: 1,
+    profileCount: 1,
+  }
+}
+
+function placementProof(kind) {
+  const common = {
+    roomId: "room-managed-1",
+    environmentId: "environment-managed-1",
+    tabId: "tab-stable-1",
+  }
+  if (kind === "browser-action") {
+    return { ...common, source: "public-room-action", kind, actionId: "browser-action-1", actorId: "agent:browser-agent-1" }
+  }
+  if (kind === "computer-action") {
+    return { ...common, source: "public-room-action", kind, actionId: "computer-action-1", actorId: "agent:computer-agent-1" }
+  }
+  return { ...common, source: "public-web-view", kind: "web-view", visible: true }
+}
+
+function cleanInventory() {
+  return {
+    managedMachines: 0,
+    rooms: 0,
+    environments: 0,
+    processes: 0,
+    listeners: 0,
+    containers: 0,
+    profiles: 0,
+    activeTargets: 0,
+    temporaryFiles: 0,
+    retainedEvidenceLeakCount: 0,
+    resources: { rssDeltaBytes: 1_000_000, diskDeltaBytes: 1_000 },
+  }
+}
+
+function transport({ persistenceMode = "docker" } = {}) {
+  const calls = []
+  return {
+    calls,
+    resourceScope: "managed",
+    async describePersistenceMutations() {
+      return persistenceMode === "kernel" ? kernelPersistencePlan() : persistencePlan()
+    },
+    async run(step, input, options = {}) {
+      calls.push({ step, input })
+      await new Promise((resolve) => setTimeout(resolve, 2))
+      if (step === "preflight") return preflight()
+      if (step === "selkies.create") return target("selkies")
+      if (step === "novnc.create") return target("novnc")
+      if (step.endsWith(".attach")) return {
+        ...target(input.displayBackend),
+        client: input.client,
+        ...(step === "selkies.attach" && input.client === "web"
+          ? { placementProof: placementProof("web-view") }
+          : {}),
+      }
+      const binding = target(input.displayBackend)
+      if (step.endsWith(".providers")) return { ...binding, providers: { codex: "official", opencode: "official", claude: "official" }, providerStateCopied: false }
+      if (step.endsWith(".browser")) return {
+        ...binding,
+        structuredActions: true,
+        mutationCount: 1,
+        browserCount: 1,
+        placementProof: placementProof("browser-action"),
+      }
+      if (step.endsWith(".computer")) return {
+        ...binding,
+        screenshot: true,
+        pointer: true,
+        keyboard: true,
+        placementProof: placementProof("computer-action"),
+      }
+      if (step.endsWith(".takeover")) return { ...binding, overlayVisible: true, takeoverCompleted: true, actorAttributed: true }
+      if (step.endsWith(".persistence")) {
+        const evidence = persistenceMode === "kernel" ? kernelPersistenceEvidence() : persistenceEvidence()
+        for (const mutation of evidence.persistenceMutations) {
+          await options.onPersistenceMutation?.({ phase: "before", mutation })
+          await options.onPersistenceMutation?.({ phase: "after", mutation })
+        }
+        return {
+          ...binding,
+          saved: true,
+          restarted: true,
+          sameRoom: true,
+          sameEnvironment: true,
+          sameProfile: true,
+          ...evidence,
+        }
+      }
+      if (step.endsWith(".vault")) return {
+        ...binding,
+        syntheticValueInserted: true,
+        valueObservedOnlyAtTarget: true,
+        leakScan: { arguments: 0, logs: 0, evidence: 0, prompts: 0, fixtures: 0 },
+      }
+      if (step.endsWith(".git")) return { ...binding, available: true, source: "product-managed" }
+      if (step.endsWith(".reconnect")) return { ...binding, faultInjected: true, reconnected: true, duplicateActions: 0, duplicateBrowsers: 0 }
+      if (step.endsWith(".destroy")) return { ...binding, destroyed: true }
+      if (step === "novnc.rollback") return { ...binding, rollbackReachable: true, finalAcceptance: false }
+      if (step === "cleanup.perform") return { attempted: true }
+      if (step === "cleanup.inspect") return cleanInventory()
+      throw new Error(`unexpected step ${step}`)
+    },
+  }
+}
+
+test("live M0 runs compatibility preflight before the first telemetry sample or harness action", async () => {
+  const injected = transport()
+  const order = []
+  injected.requiresCompatibilityPreflight = true
+  injected.assertCompatibilityPreflight = async () => {
+    order.push("compatibility")
+  }
+  const report = await runManagedBrowserComputerParityLive({
+    config: config(),
+    transport: injected,
+    evidenceRoot: EVIDENCE_ROOT,
+    collectResourceSnapshot: ({ phase }) => {
+      order.push(`telemetry:${phase}`)
+      return sample(phase)
+    },
+  })
+  assert.equal(report.status, "passed")
+  assert.equal(order[0], "compatibility")
+  assert.equal(order.some((entry) => entry.startsWith("telemetry:")), true)
+  assert.equal(injected.calls[0]?.step, "preflight")
+})
+
+test("live M0 rejects public Browser, Computer, and Web View evidence split across stable tabs", async () => {
+  const injected = transport()
+  const run = injected.run.bind(injected)
+  injected.run = async (step, input, options) => {
+    const result = await run(step, input, options)
+    if (step === "selkies.attach" && input.client === "web") {
+      return {
+        ...result,
+        placementProof: { ...placementProof("web-view"), tabId: "tab-stale-2" },
+      }
+    }
+    return result
+  }
+
+  const report = await runManagedBrowserComputerParityLive({
+    config: config(),
+    transport: injected,
+    evidenceRoot: EVIDENCE_ROOT,
+    collectResourceSnapshot: ({ phase }) => sample(phase),
+  })
+
+  assert.equal(report.status, "failed")
+  assert.equal(report.failure.code, "browser_computer_placement_proof_required")
+  assert.equal(report.browserComputerGuard.placement.ok, false)
+  assert.ok(report.browserComputerGuard.placement.violations.includes("web_view_tab_mismatch"))
+})
+
+test("live M0 wrapper validates the released kernel lifecycle plan without Docker argv assumptions", async () => {
+  const kernelConfig = config()
+  kernelConfig.browserComputerGuard.dockerPreconditions = []
+  const injected = transport({ persistenceMode: "kernel" })
+  const report = await runManagedBrowserComputerParityLive({
+    config: kernelConfig,
+    transport: injected,
+    evidenceRoot: EVIDENCE_ROOT,
+    collectResourceSnapshot: ({ phase }) => sample(phase),
+  })
+  assert.equal(report.status, "passed", report.failure?.code ?? "kernel persistence guard rejected the live wrapper")
+  assert.equal(report.browserComputerGuard.persistenceMutationSeam.ok, true)
+  assert.deepEqual(
+    report.browserComputerGuard.persistenceMutationSeam.mutations.map(({ action }) => action),
+    ["save", "remove", "restore"],
+  )
+  assert.equal(report.browserComputerGuard.dockerPreconditions.length, 0)
+})
+
+test("live M0 binds released kernel-client source modules before managed telemetry", async () => {
+  const [controlSource, typesSource] = await Promise.all([
+    readFile(new URL("../../../packages/kernel-client/src/ipc-kernel-control-requests.ts", import.meta.url), "utf8"),
+    readFile(new URL("../../../packages/kernel-client/src/kernel-types.ts", import.meta.url), "utf8"),
+  ])
+  const telemetryProtocol = releasedSourceConstant(
+    controlSource,
+    "kernelResourceTelemetryMinimumProtocolVersion",
+  )
+  const daemonProtocol = releasedSourceConstant(typesSource, "LOCAL_DAEMON_PROTOCOL_VERSION")
+  assert.equal(telemetryProtocol, MANAGED_BROWSER_COMPUTER_PARITY_PROTOCOL)
+  assert.equal(daemonProtocol, 343, "kernel-types.ts is authoritative for the current daemon protocol")
+  assert.match(controlSource, /return \{ GetKernelResourceTelemetry: null \}/)
+
+  const requestApi = {
+    kernelResourceTelemetryMinimumProtocolVersion: telemetryProtocol,
+    getSliceDisplayEndpointRequest(sliceId, options) {
+      return { GetSliceDisplayEndpoint: { slice_ref: sliceId, ...options } }
+    },
+    getKernelResourceTelemetryRequest() {
+      return { GetKernelResourceTelemetry: null }
+    },
+    relayStatusRequest() { return { RelayStatus: null } },
+    getRoomEnvironmentStateRequest(sessionId) {
+      return { GetRoomEnvironmentState: { session_id: sessionId } }
+    },
+  }
+  const requests = []
+  const client = {
+    async send(request) {
+      requests.push(request)
+      if (Object.hasOwn(request, "RelayStatus")) {
+        return { RelayStatus: { status: {
+          configured: true,
+          connected: true,
+          daemon_id: "kernel-managed-1",
+          machine_id: "machine-managed-1",
+          heartbeat_age_ms: 500,
+          relay_peer_protocol_version: 18,
+          relay_version: "chariox-relay 0.1.0",
+        } } }
+      }
+      if (Object.hasOwn(request, "GetRoomEnvironmentState")) {
+        return { RoomEnvironmentState: { environment: {
+          session_id: request.GetRoomEnvironmentState.session_id,
+          environment_id: "environment-managed-1",
+        } } }
+      }
+      throw new Error(`unexpected source-bound preflight request: ${JSON.stringify(request)}`)
+    },
+  }
+  const released = createManagedBrowserComputerParityTransportFromPublicClient({
+    client,
+    requestApi,
+    targetKernelRef: "kernel-managed-1",
+    targetMachineRef: "machine-managed-1",
+    protocolApi: { LOCAL_DAEMON_PROTOCOL_VERSION: daemonProtocol },
+    parityConfig: { expected: {
+      roomId: "room-managed-1",
+      environmentId: "environment-managed-1",
+    } },
+    resourceTelemetry: async () => sample("before"),
+  })
+
+  await assert.rejects(
+    () => released.collectManagedTargetResourceSnapshot({ phase: "before" }),
+    /requires compatibility preflight first/,
+  )
+  const compatibility = await released.assertCompatibilityPreflight()
+  assert.equal(compatibility.protocol.kernel, daemonProtocol)
+  const telemetry = await released.collectManagedTargetResourceSnapshot({ phase: "before" })
+  assert.equal(telemetry.telemetry.source, "managed-target-test")
+  assert.deepEqual(requests.map((request) => Object.keys(request)[0]), [
+    "RelayStatus",
+    "GetRoomEnvironmentState",
+  ])
+})
+
+function releasedSourceConstant(source, name) {
+  const match = source.match(new RegExp(`export const ${name} = (\\d+)`))
+  assert.ok(match, `released source must export ${name}`)
+  return Number(match[1])
+}
+
+function sample(phase, overrun = false) {
+  const values = {
+    before: { diskAvailableBytes: 90, memoryAvailableBytes: 90, processCount: 2, logBytes: 0 },
+    during: overrun
+      ? { diskAvailableBytes: 70, memoryAvailableBytes: 60, processCount: 6, logBytes: 10 }
+      : { diskAvailableBytes: 90, memoryAvailableBytes: 90, processCount: 2, logBytes: 2 },
+    watchdog: overrun
+      ? { diskAvailableBytes: 70, memoryAvailableBytes: 60, processCount: 6, logBytes: 10 }
+      : { diskAvailableBytes: 90, memoryAvailableBytes: 90, processCount: 2, logBytes: 2 },
+    after: { diskAvailableBytes: 95, memoryAvailableBytes: 95, processCount: 2, logBytes: 3 },
+  }[phase]
+  return {
+    phase,
+    capturedAt: "2026-09-20T00:00:00.000Z",
+    release: {
+      status: "verified",
+      runtimeReleaseDigest: IMAGE_DIGEST,
+      sourceCommit: OSS_SHA,
+      sourceTree: SOURCE_TREE,
+      target: RELEASE_TARGET,
+      activeReleasePath: `/usr/lib/chariox/releases/${IMAGE_DIGEST.slice("sha256:".length)}`,
+      manifestSignatureVerified: true,
+      manifestDigestVerified: true,
+      kernelArtifactVerified: true,
+      bootstrapReceiptVerified: true,
+    },
+    memory: {
+      totalBytes: 100,
+      usedBytes: 100 - values.memoryAvailableBytes,
+      availableBytes: values.memoryAvailableBytes,
+    },
+    disk: {
+      totalBytes: 100,
+      usedBytes: 100 - values.diskAvailableBytes,
+      availableBytes: values.diskAvailableBytes,
+    },
+    process: { count: values.processCount, rssBytes: 10 },
+    logs: { bytes: values.logBytes },
+    cpuPercent: 5,
+    cpuSampleWindowMs: 1_000,
+    docker: { containers: [], volumes: [], images: [] },
+    telemetry: {
+      scope: "managed-target",
+      authoritative: true,
+      source: "managed-target-test",
+      targetId: "machine-managed-1",
+    },
+  }
+}
+
+function persistenceInventory() {
+  return {
+    docker: {
+      containers: ["chariox-slice-owned"],
+      volumes: ["chariox-slice-owned-home"],
+      networks: ["chariox-slice-owned-net"],
+      images: ["chariox/browser:fixture"],
+    },
+  }
+}
+
+function persistenceEvidence() {
+  const saveArgv = ["docker", "save", "chariox/browser:fixture", "-o", "/tmp/browser-state.tar"]
+  const removeArgv = ["docker", "rm", "chariox-slice-owned"]
+  const restoreArgv = ["docker", "load", "-i", "/tmp/browser-state.tar"]
+  const saveReceipt = { ok: true, id: "save-receipt-1", archivePath: "/tmp/browser-state.tar" }
+  const removeReceipt = { ok: true, id: "remove-receipt-1", parentReceiptId: saveReceipt.id }
+  return {
+    persistenceMutations: [
+      {
+        action: "save",
+        argv: saveArgv,
+        request: { action: "save", argv: saveArgv },
+        before: persistenceInventory(),
+        receipt: saveReceipt,
+        checkpoints: { before: "before-docker-save", after: "after-docker-save" },
+      },
+      {
+        action: "remove",
+        argv: removeArgv,
+        request: { action: "remove", argv: removeArgv },
+        before: persistenceInventory(),
+        saveReceipt,
+        receipt: removeReceipt,
+        checkpoints: { before: "before-docker-remove", after: "after-docker-remove" },
+      },
+      {
+        action: "restore",
+        argv: restoreArgv,
+        request: { action: "restore", argv: restoreArgv },
+        before: persistenceInventory(),
+        saveReceipt,
+        removeReceipt,
+        receipt: { ok: true, id: "restore-receipt-1", parentReceiptId: removeReceipt.id, archivePath: "/tmp/browser-state.tar" },
+        checkpoints: { before: "before-docker-restore", after: "after-docker-restore" },
+      },
+    ],
+  }
+}
+
+function persistencePlan() {
+  return {
+    persistenceMutations: persistenceEvidence().persistenceMutations.map(({
+      action,
+      argv,
+      request,
+      checkpoints,
+    }) => ({ action, argv, request, checkpoints })),
+  }
+}
+
+function kernelSlice(status) {
+  return {
+    id: "slice-1",
+    status,
+    environment_session_id: "room-managed-1",
+    environment_id: "environment-managed-1",
+  }
+}
+
+function kernelObservation(status) {
+  const observation = { slice: kernelSlice(status) }
+  if (status !== "stopped") {
+    observation.inventory = {
+      session_id: "room-managed-1",
+      environment_id: "environment-managed-1",
+      slice_id: "slice-1",
+      browser_ids: ["browser-1"],
+      profile_ids: ["profile-1"],
+    }
+  } else {
+    observation.inventory = null
+  }
+  return observation
+}
+
+function kernelPersistenceEvidence() {
+  const requestVariants = { save: "SaveSliceState", remove: "StopSlice", restore: "StartSlice" }
+  const requests = {
+    save: { SaveSliceState: { slice_ref: "slice-1", mode: "shutdown", scope: "this_slice" } },
+    remove: { StopSlice: { slice_ref: "slice-1" } },
+    restore: { StartSlice: { slice_ref: "slice-1" } },
+  }
+  const savedState = {
+    id: "saved-state-1",
+    source_slice_id: "slice-1",
+    home_archive_path: "/tmp/managed-parity-slice-state.tar",
+  }
+  const responseSlice = (status) => kernelSlice(status)
+  const definitions = [
+    {
+      action: "save",
+      before: kernelObservation("running"),
+      after: kernelObservation("stopped"),
+      response: {
+        variant: "SliceStateSaved",
+        payload: { slice: responseSlice("stopped"), state: savedState },
+      },
+      receipt: {
+        ok: true,
+        id: savedState.id,
+        action: "save",
+        requestIdentity: JSON.stringify(requests.save),
+        responseVariant: "SliceStateSaved",
+        responseSliceId: "slice-1",
+        savedStateId: savedState.id,
+        archivePath: savedState.home_archive_path,
+        authoritative: true,
+      },
+    },
+    {
+      action: "remove",
+      before: kernelObservation("stopped"),
+      after: kernelObservation("stopped"),
+      response: {
+        variant: "SliceStopped",
+        payload: { slice: responseSlice("stopped") },
+      },
+      receipt: {
+        ok: true,
+        id: "remove-receipt-1",
+        action: "remove",
+        requestIdentity: JSON.stringify(requests.remove),
+        responseVariant: "SliceStopped",
+        responseSliceId: "slice-1",
+        savedStateId: savedState.id,
+        parentReceiptId: savedState.id,
+        archivePath: savedState.home_archive_path,
+        authoritative: true,
+      },
+    },
+    {
+      action: "restore",
+      before: kernelObservation("stopped"),
+      after: kernelObservation("running"),
+      response: {
+        variant: "SliceStarted",
+        payload: { slice: responseSlice("running") },
+      },
+      receipt: {
+        ok: true,
+        id: "restore-receipt-1",
+        action: "restore",
+        requestIdentity: JSON.stringify(requests.restore),
+        responseVariant: "SliceStarted",
+        responseSliceId: "slice-1",
+        savedStateId: savedState.id,
+        parentReceiptId: "remove-receipt-1",
+        archivePath: savedState.home_archive_path,
+        authoritative: true,
+      },
+    },
+  ]
+  return {
+    persistenceMutations: definitions.map((mutation) => ({
+      ...mutation,
+      argv: [
+        "kernel",
+        requestVariants[mutation.action],
+        "slice-1",
+        ...(mutation.action === "save" ? ["mode=shutdown", "scope=this_slice"] : []),
+      ],
+      request: requests[mutation.action],
+      requestIdentity: JSON.stringify(requests[mutation.action]),
+      responseVariant: mutation.response.variant,
+      checkpoints: {
+        before: `before-docker-${mutation.action}`,
+        after: `after-docker-${mutation.action}`,
+      },
+      ...(mutation.action === "remove"
+        ? { saveReceipt: definitions[0].receipt }
+        : mutation.action === "restore"
+          ? { saveReceipt: definitions[0].receipt, removeReceipt: definitions[1].receipt }
+          : {}),
+    })),
+  }
+}
+
+function kernelPersistencePlan() {
+  return {
+    persistenceMutations: kernelPersistenceEvidence().persistenceMutations.map((mutation) => {
+      const {
+        before,
+        after,
+        response,
+        receipt,
+        saveReceipt,
+        removeReceipt,
+        ...planMutation
+      } = mutation
+      return planMutation
+    }),
+  }
+}
+
+function persistenceDeclarations() {
+  const before = persistenceInventory()
+  return [
+    {
+      action: "save",
+      before,
+      imageRef: "chariox/browser:fixture",
+      savePath: "/tmp/browser-state.tar",
+      command: ["docker", "save", "chariox/browser:fixture", "-o", "/tmp/browser-state.tar"],
+    },
+    {
+      action: "remove",
+      before,
+      ownedContainers: ["chariox-slice-owned"],
+      targetContainers: ["chariox-slice-owned"],
+      saved: true,
+      command: ["docker", "rm", "chariox-slice-owned"],
+    },
+    {
+      action: "restore",
+      before,
+      imageRef: "chariox/browser:fixture",
+      saved: true,
+      removed: true,
+      restorePath: "/tmp/browser-state.tar",
+      command: [
+        "docker", "load", "-i", "/tmp/browser-state.tar",
+      ],
+    },
+  ]
+}
+
+test("live M0 watchdog aborts an executing resource overrun before unowned work can continue", async () => {
+  const injected = transport()
+  const report = await runManagedBrowserComputerParityLive({
+    config: config(),
+    transport: injected,
+    evidenceRoot: EVIDENCE_ROOT,
+    collectResourceSnapshot: ({ phase }) => sample(phase, true),
+  })
+
+  assert.equal(report.status, "failed")
+  assert.equal(report.failure.code, "browser_computer_watchdog_failed")
+  assert.equal(report.browserComputerGuard.resourceEvaluation.ok, false)
+  assert.equal(report.browserComputerGuard.resourcePreflight.ok, true)
+  assert.equal(report.browserComputerGuard.resourceSamples.map(({ phase }) => phase).join(","), "before,after")
+  assert.equal(report.browserComputerGuard.watchdogSamples.length > 0, true)
+  assert.equal(injected.calls.filter(({ step }) => step === "cleanup.inspect").length, 1)
+})
+
+test("live M0 watchdog bounds a hung telemetry probe and still completes owned cleanup", async () => {
+  const watchdogConfig = config()
+  watchdogConfig.browserComputerGuard.watchdogProbeTimeoutMs = 5
+  const injected = transport()
+  let probeAborted = false
+  const report = await runManagedBrowserComputerParityLive({
+    config: watchdogConfig,
+    transport: injected,
+    evidenceRoot: EVIDENCE_ROOT,
+    collectResourceSnapshot: ({ phase, signal }) => {
+      if (phase === "watchdog") {
+        return new Promise(() => {
+          signal.addEventListener("abort", () => {
+            probeAborted = true
+          }, { once: true })
+        })
+      }
+      return sample(phase)
+    },
+  })
+
+  assert.equal(report.status, "failed")
+  assert.equal(report.failure.code, "browser_computer_watchdog_sampling_failed")
+  assert.equal(report.browserComputerGuard.watchdog.samplingFailures.length, 1)
+  assert.equal(report.browserComputerGuard.watchdog.samplingFailures[0].code, "browser_computer_watchdog_sampling_timeout")
+  assert.equal(probeAborted, true)
+  assert.equal(injected.calls.filter(({ step }) => step === "cleanup.perform").length, 1)
+  assert.equal(injected.calls.filter(({ step }) => step === "cleanup.inspect").length, 1)
+})
+
+test("live M0 entry executes a fault checkpoint and fails the run while cleanup still executes", async () => {
+  const injected = transport()
+  const report = await runManagedBrowserComputerParityLive({
+    config: config(),
+    transport: injected,
+    evidenceRoot: EVIDENCE_ROOT,
+    faultAt: "during-browser",
+    collectResourceSnapshot: ({ phase }) => sample(phase),
+  })
+
+  assert.equal(report.status, "failed")
+  assert.equal(report.browserComputerGuard.fault.status, "failed")
+  assert.equal(report.browserComputerGuard.resourcePreflight.ok, true)
+  assert.deepEqual(report.browserComputerGuard.fault.faultCheckpoint, {
+    requested: "during-browser",
+    reached: 1,
+    exercised: true,
+  })
+  assert.equal(injected.calls.some(({ step }) => step === "cleanup.perform"), true)
+  assert.equal(injected.calls.some(({ step }) => step === "cleanup.inspect"), true)
+})
+
+test("runbook-shaped ceilings remain runnable without a duplicate guard cap declaration", async () => {
+  const runbookConfig = config()
+  delete runbookConfig.browserComputerGuard.caps
+  const report = await runManagedBrowserComputerParityLive({
+    config: runbookConfig,
+    transport: transport(),
+    evidenceRoot: EVIDENCE_ROOT,
+    collectResourceSnapshot: ({ phase }) => sample(phase),
+  })
+  assert.equal(report.status, "passed", report.failure?.code ?? "runbook-shaped config did not pass")
+  assert.equal(report.browserComputerGuard.resourceEvaluation.ok, true)
+  assert.equal(report.browserComputerGuard.resourceEvaluation.caps.memoryBytes, 2_000_000_000)
+})
+
+test("remote live entry fails closed when managed-target telemetry is absent", async () => {
+  const injected = transport()
+  const report = await runManagedBrowserComputerParityLive({
+    config: config(),
+    transport: injected,
+    evidenceRoot: EVIDENCE_ROOT,
+    collectResourceSnapshot: ({ phase }) => {
+      const value = sample(phase)
+      delete value.telemetry
+      return value
+    },
+  })
+  assert.equal(report.status, "failed")
+  assert.match(report.failure.message, /managed-target telemetry/)
+  assert.equal(injected.calls.some(({ step }) => step === "preflight"), false)
+})
+
+test("remote live entry fails closed when managed telemetry belongs to another target", async () => {
+  const injected = transport()
+  const report = await runManagedBrowserComputerParityLive({
+    config: config(),
+    transport: injected,
+    evidenceRoot: EVIDENCE_ROOT,
+    collectResourceSnapshot: ({ phase }) => ({
+      ...sample(phase),
+      telemetry: {
+        scope: "managed-target",
+        authoritative: true,
+        source: "foreign-managed-target",
+        targetId: "machine-foreign-1",
+      },
+    }),
+  })
+  assert.equal(report.status, "failed")
+  assert.match(report.failure.message, /does not match an expected machine/)
+  assert.equal(injected.calls.some(({ step }) => step === "preflight"), false)
+})
+
+test("live transport preserves caller cancellation while combining workload cancellation", () => {
+  const caller = new AbortController()
+  const workload = new AbortController()
+  assert.equal(combineBrowserComputerAbortSignals(caller.signal), caller.signal)
+  const combined = combineBrowserComputerAbortSignals(caller.signal, workload.signal)
+  assert.notEqual(combined, caller.signal)
+  caller.abort(new Error("caller cancelled"))
+  assert.equal(combined.aborted, true)
+  assert.equal(combined.reason.message, "caller cancelled")
+
+  const secondCaller = new AbortController()
+  const secondWorkload = new AbortController()
+  const secondCombined = combineBrowserComputerAbortSignals(secondCaller.signal, secondWorkload.signal)
+  secondWorkload.abort(new Error("watchdog cancelled"))
+  assert.equal(secondCombined.aborted, true)
+  assert.equal(secondCombined.reason.message, "watchdog cancelled")
+})
+
+test("explicitly local transport may use only an explicitly marked local fallback", async () => {
+  const localConfig = config()
+  localConfig.browserComputerGuard.resourceTelemetry = { mode: "local", allowLocalFallback: true }
+  const localTransport = transport()
+  localTransport.resourceScope = "local"
+  const report = await runManagedBrowserComputerParityLive({
+    config: localConfig,
+    transport: localTransport,
+    evidenceRoot: EVIDENCE_ROOT,
+    collectResourceSnapshot: ({ phase }) => ({
+      ...sample(phase),
+      telemetry: {
+        scope: "local-host",
+        authoritative: true,
+        fallback: true,
+        source: "explicit-local-test",
+      },
+    }),
+  })
+  assert.equal(report.status, "passed")
+  assert.equal(report.browserComputerGuard.watchdog.telemetryMode, "local-host")
+})

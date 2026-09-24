@@ -3,14 +3,14 @@ import { mergeExternalProviderSessionsSorted } from "@chariox/kernel-client/exte
 import { updateAgentConfig, updateAgentProfile } from "./agent-api.js"
 import { createDetachedKernelConnectController } from "./detached-kernel-connect-controller.js"
 import { importExternalProviderSession, listExternalProviderSessions } from "./external-provider-session-api.js"
-import type { SliceRecord } from "./cli-types.js"
+import type { RuntimeSession, SliceRecord } from "./cli-types.js"
 import {
   saveProviderPreferences,
   saveUiPreferences,
   mergeUiPreferences,
   relayCloudProfile,
 } from "./preferences.js"
-import { LocalIpcClient } from "./ipc.js"
+import { LocalIpcClient, LocalIpcError } from "./ipc.js"
 import { loadLocalKernelPresences, localKernelEndpoint } from "./local-kernel-presence.js"
 import {
   getProviderAuthStatus,
@@ -45,8 +45,11 @@ import {
   getManagedContextLaunchTarget,
   getManagedContextTransferStatus,
   getManagedEnvironment,
+  getManagedEnvironmentReimagePreflight,
+  observeManagedEnvironmentPreReimage,
   prepareManagedEnvironmentContextTransfer,
   requestManagedEnvironmentLifecycle,
+  requestManagedEnvironmentReimage,
   startManagedContextTransfer,
 } from "./managed-environment-api.js"
 import {
@@ -55,6 +58,10 @@ import {
 import { getWaitingRoomInventory } from "./waiting-room-inventory-api.js"
 import type { WaitingRoomInventory } from "./waiting-room-inventory-api.js"
 import { createWaitingRoomInventoryRefreshController } from "./waiting-room-inventory-refresh-controller.js"
+import {
+  createProjectEnvironmentSetupProjection,
+  setActiveProjectEnvironmentSetupProjection,
+} from "./project-environment-setup-projection.js"
 import {
   createWaitingRoomInventoryCache,
   waitingRoomInventoryCacheScopeKey,
@@ -78,7 +85,11 @@ import {
 import { existingProjectSelectionId } from "./waiting-room-projects.js"
 import {
   managedEnvironmentMachineRef,
+  selectedManagedEnvironment,
 } from "./waiting-room-managed-environments.js"
+import {
+  WaitingRoomManagedEnvironmentReimageController,
+} from "./waiting-room-managed-environment-reimage-controller.js"
 import {
   beginMutableLocalIpcClientPivot,
   type MutableLocalIpcClientPivot,
@@ -162,6 +173,32 @@ export type CliWaitingRoomCompositionDeps = {
   applySessionState: AnyFn
   setProviderRunState: AnyFn
   appendNotice: AnyFn
+}
+
+export async function createManagedSessionAfterProjectSetup(input: {
+  assertActive(): void
+  createSession(): Promise<RuntimeSession>
+  prepareProject(session: RuntimeSession): Promise<void>
+  deleteSession(session: RuntimeSession): Promise<void>
+  formatError(error: unknown): string
+}): Promise<RuntimeSession> {
+  input.assertActive()
+  const session = await input.createSession()
+  try {
+    input.assertActive()
+    await input.prepareProject(session)
+    input.assertActive()
+    return session
+  } catch (error) {
+    try {
+      await input.deleteSession(session)
+    } catch (cleanupError) {
+      throw new Error(
+        `${input.formatError(error)}; failed to remove unprepared managed session ${session.id}: ${input.formatError(cleanupError)}`,
+      )
+    }
+    throw error
+  }
 }
 
 export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionDeps) {
@@ -266,6 +303,20 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   })
   const reconcileWaitingRoom = waitingRoomReconcileController.reconcile
   const reconcileWaitingRoomProjection = waitingRoomReconcileController.reconcileProjection
+
+  const projectEnvironmentSetupProjection = createProjectEnvironmentSetupProjection({
+    client: deps.client,
+    onStatusChanged: () => {
+      reconcileWaitingRoomProjection(deps.waitingRoomState())
+    },
+    onError: (operation, error) => {
+      deps.appLogger?.debug?.("project environment setup projection request failed", {
+        operation,
+        error: deps.formatError(error),
+      })
+    },
+  })
+  setActiveProjectEnvironmentSetupProjection(projectEnvironmentSetupProjection)
 
   const waitingRoomInventoryRefreshController = createWaitingRoomInventoryRefreshController({
     isKernelConnected: deps.kernelConnected,
@@ -402,7 +453,13 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
         directTargetKernelId = targetInventory.kernelId
         connected?.(targetInventory)
         retainPrevious({
-          commit: () => pivot.commit(),
+          commit: async () => {
+            try {
+              await pivot.commit()
+            } finally {
+              projectEnvironmentSetupProjection.clear()
+            }
+          },
           rollback: async () => {
             try {
               await pivot.rollback()
@@ -422,6 +479,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       }
     } else {
       await deps.client.replaceClient(nextClient)
+      projectEnvironmentSetupProjection.clear()
       directTargetKernelId = targetInventory.kernelId
       connected?.(targetInventory)
     }
@@ -499,11 +557,27 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       contextId,
       planDigest,
     ),
+    ensureProjectSetup: (input, attempt) => projectEnvironmentSetupProjection.ensureReady(input, {
+      assertActive: attempt.assertActive,
+      delay: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      nowMs: Date.now,
+      isRetryableTransportError: (error) => error instanceof LocalIpcError && error.retryable,
+    }),
     createIdempotencyKey: randomUUID,
     environmentName: () => "Managed agent",
     delay: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     nowMs: Date.now,
   })
+
+  type PendingManagedProjectPreparation = {
+    readonly token: symbol
+    readonly workspacePath: string
+    readonly worktreePath: string
+    readonly assertActive: () => void
+    readonly prepareProject: (session: RuntimeSession) => Promise<void>
+    claimed: boolean
+  }
+  let pendingManagedProjectPreparation: PendingManagedProjectPreparation | null = null
 
   const prepareManagedSessionLaunch = async (
     launch: WaitingRoomLaunchConfig,
@@ -540,6 +614,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       deps.setWaitingRoomState({
         ...deps.waitingRoomState(),
         selectedMachineRef: expectedMachineRef,
+        managedRepositoryRoot: environment.managedRepositoryRoot,
         ...(environment.runtimeKernelId ? { selectedKernelRef: environment.runtimeKernelId } : {}),
       })
       expectedOwnershipRevision = deps.waitingRoomLaunchOwnershipRevision()
@@ -576,6 +651,20 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       })
       expectedOwnershipRevision = deps.waitingRoomLaunchOwnershipRevision()
       deps.rebuildTranscript()
+      const projectPreparation: PendingManagedProjectPreparation = {
+        token: Symbol("managed Project preparation"),
+        workspacePath: prepared.workspacePath,
+        worktreePath: prepared.worktreePath,
+        assertActive,
+        prepareProject: prepared.prepareProject,
+        claimed: false,
+      }
+      pendingManagedProjectPreparation = projectPreparation
+      const clearProjectPreparation = () => {
+        if (pendingManagedProjectPreparation?.token === projectPreparation.token) {
+          pendingManagedProjectPreparation = null
+        }
+      }
       return {
         launch: {
           ...ordinaryLaunch,
@@ -584,8 +673,14 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
           projectSelection: prepared.projectSelection,
         },
         assertActive,
-        commit: prepared.commit,
-        rollback: prepared.rollback,
+        commit: async () => {
+          clearProjectPreparation()
+          await prepared.commit()
+        },
+        rollback: async () => {
+          clearProjectPreparation()
+          await prepared.rollback()
+        },
       }
     } catch (error) {
       try {
@@ -629,14 +724,35 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     syncCommandCenter: deps.syncCommandCenter,
     openTerminalPairingDialog: deps.openTerminalPairingDialog,
     openSessionBrowserDialog: deps.openSessionBrowserDialog,
-    createSession: (workspacePath, worktreePath, launch) => createSession(deps.client, workspacePath, worktreePath, undefined, {
-      provider: launch.provider,
-      model: launch.model,
-      effort: launch.effort,
-      account_profile: launch.account_profile,
-      execution_mode: launch.execution_mode,
-      permission_level: launch.permission_level,
-    }, launch.sliceRef, launch.workspaceLiveSyncMode, launch.sliceRef ? null : (launch.workerKernelRef ?? null), null, launch.projectSelection),
+    createSession: async (workspacePath, worktreePath, launch) => {
+      const create = () => createSession(deps.client, workspacePath, worktreePath, undefined, {
+        provider: launch.provider,
+        model: launch.model,
+        effort: launch.effort,
+        account_profile: launch.account_profile,
+        execution_mode: launch.execution_mode,
+        permission_level: launch.permission_level,
+      }, launch.sliceRef, launch.workspaceLiveSyncMode, launch.sliceRef ? null : (launch.workerKernelRef ?? null), null, launch.projectSelection)
+      const preparation = pendingManagedProjectPreparation
+      if (!preparation) {
+        return await create()
+      }
+      if (preparation.workspacePath !== workspacePath
+        || preparation.worktreePath !== worktreePath) {
+        throw new Error("managed Project setup no longer matches the staged workspace")
+      }
+      if (preparation.claimed) {
+        throw new Error("managed Project setup is already preparing this launch")
+      }
+      preparation.claimed = true
+      return await createManagedSessionAfterProjectSetup({
+        assertActive: preparation.assertActive,
+        createSession: create,
+        prepareProject: preparation.prepareProject,
+        deleteSession: (session) => deleteSessionByRef(deps.client, session.id, workspacePath).then(() => {}),
+        formatError: deps.formatError,
+      })
+    },
     deleteCreatedSession: async (sessionId, workspacePath) => {
       await deleteSessionByRef(deps.client, sessionId, workspacePath)
     },
@@ -666,6 +782,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     },
     createSlice: (options) => createSlice(deps.client, cliWaitingRoomSliceApiOptions(options)),
     startSlice: (sliceRef) => startSlice(deps.client, sliceRef),
+    deleteSlice: (sliceRef) => deleteSlice(deps.client, sliceRef),
     updateSlices: (slice) => {
       deps.setSlicesState((current: any[] = []) => [
         slice,
@@ -688,6 +805,150 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   })
   const activateWaitingRoom = waitingRoomActivationController.activate
   const startSessionFromWaitingRoomDefaults = waitingRoomActivationController.startSessionFromWaitingRoomDefaults
+  const assertLocalReimageAuthority = () => {
+    if (directTargetKernelId) {
+      throw new Error("Return to the local kernel before controlling a managed-machine reimage.")
+    }
+  }
+
+  const managedEnvironmentReimageController = new WaitingRoomManagedEnvironmentReimageController({
+    getPreflight: (environmentId) => {
+      assertLocalReimageAuthority()
+      return getManagedEnvironmentReimagePreflight(deps.client, environmentId)
+    },
+    observePreviousKernel: async ({ environmentId, expectedGeneration, machineId, kernelId }) => {
+      assertLocalReimageAuthority()
+      const sourceRelay = deps.relayStatusState()
+      let pivot: MutableLocalIpcClientPivot | null = null
+      let observedIdentity = false
+      try {
+        const connected = await replaceClientForKernel(
+          kernelId,
+          machineId,
+          () => true,
+          (inventory) => {
+            observedIdentity = inventory.kernelId === kernelId && inventory.machineId === machineId
+            if (!observedIdentity) {
+              throw new Error("The old kernel identity does not match the managed reimage preflight.")
+            }
+          },
+          (nextPivot) => { pivot = nextPivot },
+        )
+        if (!connected || !observedIdentity || !pivot) {
+          throw new Error("The old kernel observation did not leave local-kernel authority.")
+        }
+        return await observeManagedEnvironmentPreReimage(deps.client, {
+          environmentId,
+          expectedGeneration,
+        })
+      } finally {
+        const previousPivot = pivot as MutableLocalIpcClientPivot | null
+        if (previousPivot) {
+          await previousPivot.rollback()
+          deps.setRelayStatusState(sourceRelay)
+        }
+      }
+    },
+    requestReimage: (input) => {
+      assertLocalReimageAuthority()
+      return requestManagedEnvironmentReimage(deps.client, input)
+    },
+    getEnvironment: (environmentId) => {
+      assertLocalReimageAuthority()
+      return getManagedEnvironment(deps.client, environmentId)
+    },
+    launchReplacement: async (environment) => {
+      if (managedEnvironmentCatalog) {
+        managedEnvironmentCatalog = {
+          ...managedEnvironmentCatalog,
+          environments: [
+            environment,
+            ...managedEnvironmentCatalog.environments.filter((candidate) => (
+              candidate.environmentId !== environment.environmentId
+            )),
+          ],
+        }
+      }
+      deps.setWaitingRoomState({
+        ...deps.waitingRoomState(),
+        selectedMachineRef: managedEnvironmentMachineRef(environment.environmentId),
+        selectedKernelRef: environment.runtimeKernelId ?? "",
+      })
+      deps.rebuildTranscript()
+      await startSessionFromWaitingRoomDefaults()
+    },
+    createIdempotencyKey: randomUUID,
+    delay: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    nowMs: Date.now,
+  })
+
+  const reimageManagedEnvironment = async (
+    environmentId: string,
+    action: "prepare" | "confirm" | "cancel",
+  ): Promise<{ message: string; tone: "info" | "error" }> => {
+    if (deps.isAttached()) {
+      throw new Error("Return to the Waiting Room before reimaging a managed machine.")
+    }
+    const selected = selectedManagedEnvironment(deps.waitingRoomState(), managedWaitingRoomRemote())
+    if (!selected || selected.environmentId !== environmentId) {
+      throw new Error("Select the managed machine in the Waiting Room before reimaging it.")
+    }
+    const attempt = {
+      assertActive: () => {
+        assertLocalReimageAuthority()
+        const current = selectedManagedEnvironment(deps.waitingRoomState(), managedWaitingRoomRemote())
+        if (deps.isAttached() || current?.environmentId !== environmentId) {
+          throw new Error("Managed reimage control returned safely to the local kernel because the selection changed.")
+        }
+      },
+      progress: (message: string) => deps.flashFooter(message, "info"),
+    }
+    if (action === "cancel") {
+      const result = managedEnvironmentReimageController.cancel(environmentId)
+      if (result.status === "irreversible") {
+        return {
+          message: `Reimage of ${environmentId} was already accepted and cannot be cancelled; use /machine reimage ${environmentId} confirm to resume it.`,
+          tone: "error",
+        }
+      }
+      return {
+        message: result.status === "cancelled"
+          ? `Cancelled reimage of ${environmentId} before any destructive mutation.`
+          : `No prepared reimage exists for ${environmentId}.`,
+        tone: result.status === "cancelled" ? "info" : "error",
+      }
+    }
+    if (action === "confirm") {
+      await managedEnvironmentReimageController.confirm(environmentId, attempt)
+      return {
+        message: `Reimaged ${environmentId}, transferred its selected context, pivoted to the fresh kernel, and passed Project setup.`,
+        tone: "info",
+      }
+    }
+    const contextPlan = {
+      sourceTargetId: selected.contextPlan.source?.sourceTargetId ?? null,
+      kernelContext: selected.contextPlan.kernelContext,
+      developmentSetup: selected.contextPlan.developmentSetup,
+      providerAccounts: selected.contextPlan.providerAccounts,
+      gitCredentials: selected.contextPlan.gitCredentials,
+    }
+    const prepared = await managedEnvironmentReimageController.prepare(
+      environmentId,
+      contextPlan,
+      attempt,
+    )
+    const confirmation = prepared.confirmation
+    const prefix = prepared.status === "resume_required"
+      ? "This reimage is already irreversible; resume"
+      : "Destructive confirmation required"
+    const suffix = prepared.status === "resume_required"
+      ? `Run /machine reimage ${environmentId} confirm to resume the same accepted operation.`
+      : `Run /machine reimage ${environmentId} confirm, or /machine reimage ${environmentId} cancel before confirmation.`
+    return {
+      message: `${prefix}: provider server ${confirmation.providerServerId}, generation ${confirmation.generation}, old machine ${confirmation.runtimeMachineId}, old kernel ${confirmation.runtimeKernelId}, image ${confirmation.providerImageId}, release ${confirmation.runtimeReleaseDigest}. ${suffix}`,
+      tone: prepared.status === "resume_required" ? "error" : "info",
+    }
+  }
 
   const waitingRoomLifecycleConfirmationController = createWaitingRoomLifecycleConfirmationController()
   const waitingRoomLifecycleActionController = createWaitingRoomLifecycleActionController({
@@ -843,8 +1104,10 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     promptUsageMeta: providerPromptProjectionController.promptUsageMeta,
     reconcileWaitingRoom,
     reconcileWaitingRoomProjection,
+    projectEnvironmentSetupProjection,
     refreshWaitingRoomData,
     refreshWaitingRoomDataNow,
+    reimageManagedEnvironment,
     startSessionFromWaitingRoomDefaults,
     waitingRoomTargets,
   }

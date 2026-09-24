@@ -11,7 +11,8 @@ while [ "$attempt" -lt 100 ]; do
     if printf '%s\n' "$child_pid" | grep -Eq '^[1-9][0-9]*$' \
       && [ -r "/proc/$child_pid/status" ] \
       && [ -L "/proc/$child_pid/ns/user" ] \
-      && [ -L "/proc/$child_pid/ns/mnt" ]; then
+      && [ -L "/proc/$child_pid/ns/mnt" ] \
+      && [ -L "/proc/$child_pid/ns/net" ]; then
       target_uid=$(awk '$1 == "Uid:" { print $2; exit }' "/proc/$child_pid/status")
       [ "$target_uid" = "$(id -u)" ] && break
     fi
@@ -29,4 +30,6 @@ done
   exit 1
 }
 
-exec /usr/bin/nsenter --target "$child_pid" --user --mount -- "$@"
+# The mount namespace supplies RootlessKit's private resolv.conf. Keep its
+# network namespace paired with it, including Docker CLI registry-auth calls.
+exec /usr/bin/nsenter --target "$child_pid" --user --mount --net -- "$@"

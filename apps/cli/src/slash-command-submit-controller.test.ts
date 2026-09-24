@@ -75,6 +75,20 @@ test("App slash commands work while no session is attached", async () => {
   assert.equal(harness.commandCenterClearCount(), 1)
 })
 
+test("slash command submit dispatches Room environment commands", async () => {
+  const harness = createHarness({ attached: true })
+  const controller = createSlashCommandSubmitController(harness.deps)
+
+  const command = await controller.submit("/room status", {
+    allowSlashCommandSubmission: true,
+  })
+
+  assert.equal(command?.kind, "room")
+  assert.deepEqual(harness.calls(), ["room:status"])
+  assert.equal(harness.clearPromptCount(), 1)
+  assert.equal(harness.commandCenterClearCount(), 1)
+})
+
 test("slash command submit delegates catalog-only kernel commands to shared shell", async () => {
   const harness = createHarness({
     attached: true,
@@ -209,6 +223,7 @@ function createHarness(options: {
     handleKernelCommand: (command) => calls.push(`kernel:${command.args.join(" ")}`),
     handleMachineCommand: (command) => calls.push(`machine:${command.args.join(" ")}`),
     handleSliceCommand: (command) => calls.push(`slice:${command.args.join(" ")}`),
+    handleRoomCommand: (command) => calls.push(`room:${command.args.join(" ")}`),
     handleRelayCommand: (command) => calls.push(`relay:${command.args.join(" ")}`),
     handleCloudCommand: (command) => calls.push(`cloud:${command.args.join(" ")}`),
     handleCollabCommand: (command) => calls.push(`collab:${command.args.join(" ")}`),

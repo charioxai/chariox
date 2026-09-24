@@ -1,9 +1,10 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::DaemonError;
 use crate::mcp::CharioxMcpServerConfig;
 use crate::session::unix_epoch_ms;
 
@@ -90,6 +91,16 @@ pub struct RuntimeProviderRun {
     write_access_mode: ProviderWriteAccessMode,
     #[serde(skip)]
     workspace_live_sync_roots: Vec<PathBuf>,
+    /// The provider's ordinary PATH before any worker-preparation projection.
+    /// Preparation rebinds must rebuild from this stable base so a previous
+    /// definition's derived directories cannot leak into a later definition.
+    #[serde(skip)]
+    preparation_base_path: Option<String>,
+    /// Runtime-only marker for the provider process used for read-only
+    /// discovery. Ordinary provider turns must retain explicitly selected
+    /// Git/SSH bindings, while discovery must scrub ambient parent controls.
+    #[serde(skip)]
+    read_only_discovery: bool,
     #[serde(default, skip_serializing_if = "AgentExecutionMode::is_build")]
     execution_mode: AgentExecutionMode,
     #[serde(default, skip_serializing_if = "AgentPermissionLevel::is_yolo")]
@@ -115,6 +126,7 @@ impl RuntimeProviderRun {
         launch_result: ProviderLaunchResult,
     ) -> Self {
         let now = unix_epoch_ms();
+        let preparation_base_path = provider_preparation_base_path(&launch_result);
         Self {
             id: id.into(),
             session_id: request.session_id.clone(),
@@ -160,6 +172,8 @@ impl RuntimeProviderRun {
             provider_config_overrides: request.provider_config_overrides.clone(),
             write_access_mode: request.write_access_mode,
             workspace_live_sync_roots: request.workspace_live_sync_roots.clone(),
+            preparation_base_path,
+            read_only_discovery: false,
             execution_mode: request.execution_mode.unwrap_or_default(),
             permission_level: request.permission_level.unwrap_or_default(),
             control_capabilities: default_provider_control_capabilities(
@@ -226,6 +240,8 @@ impl RuntimeProviderRun {
             provider_config_overrides: BTreeMap::new(),
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
             workspace_live_sync_roots: Vec::new(),
+            preparation_base_path: None,
+            read_only_discovery: false,
             execution_mode: AgentExecutionMode::default(),
             permission_level: AgentPermissionLevel::default(),
             control_capabilities: default_provider_control_capabilities(
@@ -334,6 +350,10 @@ impl RuntimeProviderRun {
         &self.pty_env
     }
 
+    pub(crate) fn preparation_base_path(&self) -> Option<&str> {
+        self.preparation_base_path.as_deref()
+    }
+
     pub fn pty_env_remove(&self) -> &[String] {
         &self.pty_env_remove
     }
@@ -417,6 +437,53 @@ impl RuntimeProviderRun {
         self.touch_activity();
     }
 
+    pub(crate) fn read_only_discovery(&self) -> bool {
+        self.read_only_discovery
+    }
+
+    pub(crate) fn set_read_only_discovery(&mut self, enabled: bool) {
+        self.read_only_discovery = enabled;
+        self.touch_activity();
+    }
+
+    pub(crate) fn set_preparation_environment(
+        &mut self,
+        home: impl Into<String>,
+        path: impl Into<String>,
+    ) -> Result<(), DaemonError> {
+        let home = home.into();
+        let path = path.into();
+        let mut pty_args = self.pty_args.clone();
+        super::managed_isolation::apply_preparation_home_to_managed_launch(
+            &mut pty_args,
+            Path::new(&home),
+            &path,
+        )?;
+        self.pty_args = pty_args;
+        self.pty_env.insert("HOME".to_string(), home);
+        self.pty_env.insert("PATH".to_string(), path);
+        self.touch_activity();
+        Ok(())
+    }
+
+    pub(crate) fn preparation_environment_matches(&self, home: &str, path: &str) -> bool {
+        self.pty_env.get("HOME").is_some_and(|value| value == home)
+            && self.pty_env.get("PATH").is_some_and(|value| value == path)
+            && super::managed_isolation::managed_launch_has_preparation_home(
+                &self.pty_args,
+                Path::new(home),
+            )
+    }
+
+    pub(crate) fn preparation_environment(&self) -> Option<(String, String)> {
+        let home = self.pty_env.get("HOME")?;
+        if !super::managed_isolation::is_kernel_preparation_home(Path::new(home)) {
+            return None;
+        }
+        let path = self.pty_env.get("PATH")?;
+        Some((home.clone(), path.clone()))
+    }
+
     pub fn requires_workspace_live_sync(&self) -> bool {
         self.write_access_mode.requires_workspace_live_sync()
     }
@@ -459,6 +526,7 @@ impl RuntimeProviderRun {
 
     pub fn set_terminal_diagnostic(&mut self, diagnostic: impl Into<String>) {
         let diagnostic = diagnostic.into();
+        let diagnostic = super::termination::sanitize_provider_diagnostic(&diagnostic);
         if !diagnostic.trim().is_empty() {
             self.terminal_diagnostic = Some(diagnostic);
         }
@@ -581,6 +649,23 @@ impl RuntimeProviderRun {
     }
 }
 
+fn provider_preparation_base_path(launch_result: &ProviderLaunchResult) -> Option<String> {
+    if let Some(path) = launch_result.pty_env.get("PATH") {
+        return Some(path.clone());
+    }
+    if launch_result
+        .pty_env_remove
+        .iter()
+        .any(|name| name == "PATH")
+    {
+        // An explicitly removed PATH is still a stable preparation base: use
+        // an empty value so a later rebind cannot fall back to its prior
+        // projected PATH and retain definition-derived directories.
+        return Some(String::new());
+    }
+    std::env::var_os("PATH").map(|path| path.to_string_lossy().into_owned())
+}
+
 pub(crate) fn projected_leased_provider_run_id(
     leased_agent_id: &str,
     worker_provider_run_id: &str,
@@ -695,6 +780,39 @@ mod tests {
         run.clear_terminal_diagnostic();
 
         assert!(run.terminal_diagnostic().is_none());
+    }
+
+    #[test]
+    fn runtime_provider_run_redacts_secret_bearing_diagnostic_fields() {
+        let request =
+            LaunchProviderRequest::new("session-1", "codex", "codex", "default", "default");
+        let launch_result = ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "codex".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        };
+        let mut run = RuntimeProviderRun::new("provider-run-1", &request, launch_result);
+
+        run.set_terminal_diagnostic(
+            "provider error stderr=raw-stderr api_key=sk-live-secret prompt=private prompt command=rm -rf",
+        );
+
+        let diagnostic = run
+            .terminal_diagnostic()
+            .expect("sanitized provider diagnostic should remain available");
+        assert!(diagnostic.contains("provider error"));
+        assert!(diagnostic.contains("[redacted]"));
+        assert!(!diagnostic.contains("raw-stderr"));
+        assert!(!diagnostic.contains("sk-live-secret"));
+        assert!(!diagnostic.contains("private prompt"));
+        assert!(!diagnostic.contains("rm -rf"));
+        assert!(diagnostic.chars().count() <= 256);
     }
 
     #[test]

@@ -99,10 +99,11 @@ pub(crate) enum CommandReservation {
 }
 
 pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
-    // App reads and upload retries must reach owner authorization and current
-    // durable state. Uploads deduplicate in their own owner-scoped ledger with
-    // original expiries and abort receipts. This older transport fingerprint
-    // does not carry the caller, and cached results could outlive the upload.
+    // App requests and browser-import consent must reach owner authorization and
+    // current durable state. Their own owner-scoped ledgers deduplicate retries;
+    // this older transport fingerprint does not carry the caller, and cached
+    // results could outlive live authority. Other commands retain in-memory
+    // deduplication; disk exclusions are separate.
     !matches!(
         request,
         LocalDaemonRequest::ListAppInstallations(_)
@@ -118,6 +119,11 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::PutAppPackageUploadChunk(_)
             | LocalDaemonRequest::GetAppPackageUpload(_)
             | LocalDaemonRequest::AbortAppPackageUpload(_)
+            | LocalDaemonRequest::PrepareBrowserImport(_)
+            | LocalDaemonRequest::ApproveBrowserImport(_)
+            | LocalDaemonRequest::ClaimBrowserImportSource(_)
+            | LocalDaemonRequest::AuthorizeBrowserImportSource(_)
+            | LocalDaemonRequest::CancelBrowserImport(_)
     )
 }
 

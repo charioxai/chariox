@@ -38,7 +38,7 @@ pub fn initialize_codex_runtime(
     let socket = client.connect_initialized()?;
     let next_request_id = 1;
     let resumable_thread_id = run.resume_state().codex_thread_id().map(str::to_string);
-    let (state, selection) = match resumable_thread_id {
+    let (mut state, selection) = match resumable_thread_id {
         Some(thread_id) if run.endpoint_mode() == AgentEndpointMode::External => {
             crate::logging::info_with_fields(
                 "daemon.provider.codex",
@@ -84,6 +84,9 @@ pub fn initialize_codex_runtime(
             )
         }
     };
+    if run.read_only_discovery() {
+        state.set_read_only_discovery_permissions(true);
+    }
     Ok(CodexRuntimeBinding { state, selection })
 }
 

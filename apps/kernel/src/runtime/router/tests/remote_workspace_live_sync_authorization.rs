@@ -411,6 +411,7 @@ fn remote_workspace_live_sync_context(
         home_kernel_id: "home-kernel".to_string(),
         home_session_id: session_id.to_string(),
         home_agent_id: agent_id.to_string(),
+        home_prompt_id: None,
         leased_agent_id: "leased-agent-1".to_string(),
         worker_kernel_id: "worker-kernel".to_string(),
         worker_machine_id: "worker-machine".to_string(),

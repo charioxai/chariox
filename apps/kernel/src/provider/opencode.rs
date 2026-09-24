@@ -10,6 +10,7 @@ use self::ports::resolve_opencode_launch_port;
 use super::executable_resolution::ExecutableResolutionState;
 
 mod catalog_endpoint;
+mod discovery;
 mod mcp_config;
 mod ports;
 
@@ -17,6 +18,10 @@ pub use catalog_endpoint::opencode_catalog_endpoint;
 pub(crate) use catalog_endpoint::{
     ensure_opencode_account_endpoint, invalidate_opencode_account_endpoint,
     shutdown_opencode_account_endpoints,
+};
+pub(crate) use discovery::{
+    apply_opencode_discovery_environment, isolate_opencode_discovery_configuration,
+    OpenCodeDiscoveryConfigDirectory,
 };
 
 const OPENCODE_ENV_OVERRIDE: &str = "CHARIOX_OPENCODE_BIN";

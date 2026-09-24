@@ -68,6 +68,7 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error("Kernel operation decision expired"));
         }
+        let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();
         let mut session = sessions.get_session(session_id)?.clone();
         let interaction = session
@@ -140,6 +141,7 @@ impl KernelRuntimeOwnedState {
             })?;
         let _ = session.remove_active_interaction(interaction_id);
         sessions.restore_session(session);
+        activity_mutation.record();
         drop(sessions);
         self.session_snapshot(session_id)?;
         self.terminal_stream
@@ -212,12 +214,14 @@ impl KernelRuntimeOwnedState {
                 .remove(interaction_id)
                 .expect("checked pending interaction")
         };
+        let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();
         let mut session = sessions.get_session(session_id)?.clone();
         let Some(interaction) = session.remove_active_interaction(interaction_id) else {
             return Ok(());
         };
         sessions.restore_session(session);
+        activity_mutation.record();
         drop(sessions);
         self.session_snapshot(session_id)?;
         self.terminal_stream

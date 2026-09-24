@@ -184,6 +184,7 @@ impl<'a> ProviderPromptDispatcher<'a> {
                 provider_run_id.to_string(),
                 agent_id,
                 prompt_id.to_string(),
+                prompt_id,
                 &provider_run,
                 prompt,
                 hidden_system_context,
@@ -564,6 +565,21 @@ impl DaemonApp {
             session_id,
             agent_id,
             provider_run_id,
+        )
+    }
+
+    pub(crate) fn fail_active_prompt_with_termination(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: Option<&str>,
+        provider_termination: Option<crate::provider::ProviderRunTermination>,
+    ) -> Result<PromptCompletion, DaemonError> {
+        crate::app::KernelAgentService::new(self).fail_active_prompt_with_termination(
+            session_id,
+            agent_id,
+            provider_run_id,
+            provider_termination,
         )
     }
 

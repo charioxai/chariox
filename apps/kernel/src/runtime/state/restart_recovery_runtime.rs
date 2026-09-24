@@ -1329,13 +1329,16 @@ mod tests {
         assert_eq!(material.attachments, vec![attachment]);
     }
 
-    fn runtime_with_queued_metaagent_task() -> (KernelRuntimeState, String, String) {
+    fn runtime_with_queued_metaagent_task() -> (
+        crate::test_support::TestWorktree,
+        KernelRuntimeState,
+        String,
+        String,
+    ) {
+        let worktree = crate::test_support::TestWorktree::new("restart-recovery-meta-queue");
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, agent) = KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new(
-                "workspace-restart-meta-queue",
-                "worktree-restart-meta-queue",
-            ))
+            .create_session(worktree.session_request())
             .expect("session should create");
         let attachment = KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
@@ -1365,7 +1368,7 @@ mod tests {
             app,
             crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
         );
-        (router.runtime_state(), session_id, agent_id)
+        (worktree, router.runtime_state(), session_id, agent_id)
     }
 
     fn runtime_with_queued_prompt() -> (KernelRuntimeState, String, String) {
@@ -1486,7 +1489,7 @@ mod tests {
 
     #[tokio::test]
     async fn queued_metaagent_task_starts_after_restart_without_an_active_prompt() {
-        let (runtime, session_id, agent_id) = runtime_with_queued_metaagent_task();
+        let (_worktree, runtime, session_id, agent_id) = runtime_with_queued_metaagent_task();
 
         let summary = runtime.recover_durable_runtime_after_restart().await;
 
@@ -1587,14 +1590,13 @@ mod tests {
 
     #[tokio::test]
     async fn restart_recovery_skips_local_prompt_when_its_workspace_is_gone() {
-        let missing_worktree = std::env::temp_dir().join(format!(
-            "chariox-missing-restart-recovery-{}",
-            std::process::id()
-        ));
+        let missing_worktree =
+            crate::test_support::TestWorktree::new("restart-recovery-missing-workspace");
         let (runtime, session_id, agent_id, prompt_id) = runtime_with_active_prompt_in_worktree(
             crate::session::DurablePromptDeliveryPhase::Delivered,
-            missing_worktree.to_string_lossy().as_ref(),
+            missing_worktree.path().to_string_lossy().as_ref(),
         );
+        drop(missing_worktree);
 
         let summary = runtime.recover_durable_runtime_after_restart().await;
 

@@ -53,10 +53,15 @@ chariox-app-package = { path = "../../packages/app-package" }
 [dev-dependencies]
 # Fixed unsandboxed ABI fixtures; excluded from production dependency graphs.
 chariox-app-runtime = { path = "../../packages/app-runtime", features = ["test-fixtures"] }
+anyhow = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
 
 [lib]
 name = "chariox_kernel"
 path = "src/lib.rs"
+
 
 [[bin]]
 name = "chariox-kernel"

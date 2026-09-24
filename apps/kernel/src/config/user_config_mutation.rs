@@ -233,6 +233,12 @@ impl CharioxUserConfig {
                     &value,
                 )?)
             }
+            "slices.linux.allow_provider_sandbox_compatibility" => {
+                self.slices.linux.allow_provider_sandbox_compatibility = Some(parse_config_bool(
+                    "slices.linux.allow_provider_sandbox_compatibility",
+                    &value,
+                )?)
+            }
             "slices.linux.memory_mb" => {
                 self.slices.linux.memory_mb =
                     Some(parse_config_u32("slices.linux.memory_mb", &value, true)?)
@@ -502,6 +508,9 @@ impl CharioxUserConfig {
             "slices.linux.extension_dockerfile" => self.slices.linux.extension_dockerfile = None,
             "slices.linux.allow_unconfined_seccomp" => {
                 self.slices.linux.allow_unconfined_seccomp = None
+            }
+            "slices.linux.allow_provider_sandbox_compatibility" => {
+                self.slices.linux.allow_provider_sandbox_compatibility = None
             }
             "slices.linux.memory_mb" => self.slices.linux.memory_mb = None,
             "slices.linux.cpus" => self.slices.linux.cpus = None,

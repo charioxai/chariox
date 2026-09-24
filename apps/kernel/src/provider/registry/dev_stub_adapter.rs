@@ -21,6 +21,9 @@ impl DevStubAdapter {
 
 const DISTRIBUTED_SCALE_SHARED_PTY_MODEL: &str = "distributed-scale-shared-pty";
 
+#[cfg(test)]
+const RUNTIME_MCP_IDLE_MODEL: &str = "runtime-mcp-idle";
+
 pub(super) static DEV_STUB_ADAPTER: DevStubAdapter = DevStubAdapter;
 
 impl AgentEndpointAdapter for DevStubAdapter {
@@ -131,6 +134,27 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn managed_runtime_mcp_idle_stub_uses_a_non_final_keepalive() {
+        let launch = MANAGED_DEV_STUB_ADAPTER
+            .connect(&LaunchProviderRequest::new(
+                "session-1",
+                "managed-dev-stub",
+                "dev-stub",
+                "default",
+                RUNTIME_MCP_IDLE_MODEL,
+            ))
+            .expect("managed runtime MCP idle launch should plan");
+        let script = launch
+            .pty_args
+            .get(1)
+            .expect("managed runtime MCP idle launch should include a shell script");
+        assert!(script.starts_with("stty -echo 2>/dev/null || true; trap 'exit 0' TERM INT HUP;"));
+        assert!(script.contains("while :"));
+        assert!(script.contains("printf '\\033[0m'"));
+        assert!(script.contains("sleep 0.02"));
+    }
 }
 
 #[cfg(test)]
@@ -164,6 +188,15 @@ impl AgentEndpointAdapter for ManagedDevStubAdapter {
         request: &LaunchProviderRequest,
     ) -> Result<ProviderLaunchResult, DaemonError> {
         let mut launch = DEV_STUB_ADAPTER.connect(request)?;
+        if request.model == RUNTIME_MCP_IDLE_MODEL {
+            // Keep the synthetic prompt active while a long-running runtime MCP call is in
+            // flight. The short SGR reset heartbeat is deliberately non-final output;
+            // this is a managed-dev-stub-only fixture, never a production provider behavior.
+            launch.pty_args = vec![
+                "-lc".to_string(),
+                "stty -echo 2>/dev/null || true; trap 'exit 0' TERM INT HUP; while :; do printf '\\033[0m'; sleep 0.02; done".to_string(),
+            ];
+        }
         launch.process_label = format!(
             "managed-dev-stub:{}:{}:{}",
             request.provider, request.account_profile, request.model

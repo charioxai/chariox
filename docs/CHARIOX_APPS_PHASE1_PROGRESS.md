@@ -1489,3 +1489,42 @@ corrections are applied to the newer publisher scope before its hosted run.
 These fixes are source-reviewed; kernel compilation/execution remains pending
 the rerun. Review `5138264573` reports no actionable finding through the Fetch,
 publisher-owner, Chromium correction and TUI file-install commits.
+
+### Main merge and protocol 344 (2026-09-24)
+
+`origin/main` at `9dd3f8e2e` (protocol 343, Browser/Computer/VM Path-1 and
+runtime retention consolidations) is merged into this branch. The combined
+local daemon protocol is 344; it adds no shape beyond the two merged lines.
+Resolution decisions:
+
+- Main's Chromium launcher, seccomp profile, Selkies desktop and profile path
+  replace the branch versions. The branch's legacy-container Chromium migration
+  subsystem (`chromium_migration`, `saved_state_persistence`, slice saved-state
+  writer, restore tests and shell fixture) is removed; main's transactional
+  saved-state path remains. Migrating pre-seccomp containers is not provided.
+  The chromium-profile drill and its sandbox probe stay for the App browser
+  controller gate.
+- The branch App browser controller (`runtime/browser_controller.rs`) and
+  main's `browser_controller_*` modules both remain; consolidating them onto
+  main's controller is follow-up work.
+- Provider reload keeps the branch's typed catalog/launch reasons and single
+  poller ownership, plus main's vault-backed launch preparation and run-identity
+  revalidation. Workflow queue admission keeps the branch's durable entry intents
+  and recovery, plus main's managed-activity recording and publication.
+- Managed images move to main's `/home/chariox/.chariox` home. App storage
+  enrollment follows the selected bootstrap service. The Path-1 unit is
+  unchanged, so Apps are not yet provisioned on Path-1 managed kernels. The
+  image verifier now requires the five builder-attested binaries.
+
+Checks: `cargo check -p chariox-kernel --lib --bins --tests` passes; kernel-client
+typecheck and 986 tests pass; Chromium sandbox JS tests (14) and managed release
+tests (15 pass, 5 skipped) pass. Focused kernel tests (protocol shapes, provider
+reload, runtime interactions, workflow queue/resume, App events, lib tests) pass
+282 of 285 with a temporary `CHARIOX_HOME`. Main's new protected-state guard
+rejects provider working directories under the default `~/.chariox`, which
+contains this worktree, so these tests need an explicit `CHARIOX_HOME` here.
+The three remaining failures are unchanged by the merge: two tests with a
+nonexistent relative `worktree` fixture path (identical on main) and the App
+event contract hash (its fixture, crates and serde_json are unchanged). Main's
+four relay peer shape tests are updated from 56 to 57. The CLI typecheck reports
+one error in the unfinished publisher-file WIP carried into this merge.

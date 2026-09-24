@@ -77,11 +77,52 @@ pub(super) async fn pump_leased_projection_events(
 
 pub(super) async fn handle_daemon_peer_event(
     router: &Arc<CommandRouter>,
+    state: &Arc<RwLock<RelayClientState>>,
+    from_daemon_id: &str,
+    caller_identity: Option<chariox_relay::protocol::RelayCallerIdentity>,
     encrypted_event: EncryptedRelayPayload,
 ) -> Result<(), DaemonError> {
+    super::sender_identity::validate_optional_daemon_sender(
+        caller_identity.as_ref(),
+        &encrypted_event,
+    )
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "validate relay peer event sender",
+        message: error.message,
+    })?;
+    let authenticated_sender = super::sender_identity::require_bound_daemon_sender(
+        caller_identity.as_ref(),
+        &encrypted_event,
+    )
+    .is_ok();
     let daemon_private_key = router.relay_private_key();
     let decrypted =
         relay_crypto::decrypt_payload_for_private_key(&daemon_private_key, &encrypted_event)?;
+    let sender_public_key = decrypted.sender_public_key.clone();
+    let stable_sender_id = stable_peer_daemon_id(from_daemon_id);
+    if authenticated_sender && !stable_sender_id.trim().is_empty() {
+        let already_pinned = state
+            .read()
+            .await
+            .pinned_peer_public_key(stable_sender_id)
+            .as_deref()
+            == Some(sender_public_key.as_str());
+        if !already_pinned
+            && !crate::config::DaemonConfig::claim_relay_peer_public_key(
+                stable_sender_id,
+                &sender_public_key,
+            )?
+        {
+            return Err(peer_identity_changed(stable_sender_id));
+        }
+        if !state
+            .write()
+            .await
+            .claim_peer_public_key(stable_sender_id, &sender_public_key)
+        {
+            return Err(peer_identity_changed(stable_sender_id));
+        }
+    }
     let event =
         serde_json::from_slice::<RelayPeerEvent>(&decrypted.plaintext).map_err(|error| {
             DaemonError::LocalTransport {
@@ -115,6 +156,19 @@ pub(super) async fn handle_daemon_peer_event(
         }
     }
     Ok(())
+}
+
+fn stable_peer_daemon_id(from_daemon_id: &str) -> &str {
+    from_daemon_id
+        .split_once(":peer-tmp:daemon-peer-tmp-")
+        .map_or(from_daemon_id, |(daemon_id, _)| daemon_id)
+}
+
+fn peer_identity_changed(stable_sender_id: &str) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "bind relay peer event sender",
+        message: format!("authenticated relay peer `{stable_sender_id}` changed its public key"),
+    }
 }
 
 pub(super) async fn emit_leased_projection_event(

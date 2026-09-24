@@ -98,6 +98,7 @@ fn write(tx: &Transaction<'_>, encoded: &Encoded) -> Result<()> {
         event_id:&format!("workflow_queue_{}_{:016x}",now,rand::random::<u64>()),event_kind:"workflow.runtime.updated",timestamp_ms:now,
         payload_json:&serde_json::json!({"owner_id":session.host_daemon_id(),"session_id":session.id(),"reason":"workflow_queue_run_created"}).to_string(),
         owner_id:session.host_daemon_id(),session_id:session.id(),hot_entities:&encoded.after.hot_entities,workflow_runs:&encoded.after.workflow_runs,delivery_receipts:&encoded.after.delivery_receipts,
+        prompt_state_json:None,
     })?;
     Ok(())
 }

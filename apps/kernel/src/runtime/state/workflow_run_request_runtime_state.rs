@@ -1,6 +1,10 @@
 //! Runtime request handlers for workflow run invoke, cancel, and resume operations.
 
 use super::workflow_request_runtime_state::workflow_response_session;
+#[cfg(test)]
+#[path = "workflow_interrupt_durability_tests.rs"]
+mod workflow_interrupt_durability_tests;
+
 use super::*;
 
 impl KernelRuntimeState {
@@ -13,7 +17,6 @@ impl KernelRuntimeState {
         Option<crate::session::RuntimeSession>,
     ) {
         let owned = &self.owned;
-        let session_id = request.session_id.clone();
         let result = match owned.ensure_workflow_endpoint_owner(
             &request.session_id,
             &request.workflow_ref,
@@ -31,7 +34,7 @@ impl KernelRuntimeState {
                     request.publication_invocation.clone(),
                 ) {
                     Ok(outcome) => outcome,
-                    Err(error) => return (Err(error), owned.session_snapshot(&session_id).ok()),
+                    Err(error) => return (Err(error), None),
                 };
                 let dev_stub_workflow_run_id = match &outcome {
                     crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
@@ -87,11 +90,7 @@ impl KernelRuntimeState {
             }
             Err(error) => Err(error),
         };
-        let session = result
-            .as_ref()
-            .ok()
-            .and_then(workflow_response_session)
-            .or_else(|| owned.session_snapshot(&session_id).ok());
+        let session = result.as_ref().ok().and_then(workflow_response_session);
         (result, session)
     }
 
@@ -140,7 +139,6 @@ impl KernelRuntimeState {
         Result<LocalDaemonResponse, DaemonError>,
         Option<crate::session::RuntimeSession>,
     ) {
-        let session_id = request.session_id.clone();
         let result = self
             .execute_workflow_interrupt_run(&request.session_id, &request.workflow_run_ref, false)
             .await
@@ -150,12 +148,7 @@ impl KernelRuntimeState {
                     session,
                 },
             );
-        let owned = &self.owned;
-        let session = result
-            .as_ref()
-            .ok()
-            .and_then(workflow_response_session)
-            .or_else(|| owned.session_snapshot(&session_id).ok());
+        let session = result.as_ref().ok().and_then(workflow_response_session);
         (result, session)
     }
 
@@ -166,7 +159,6 @@ impl KernelRuntimeState {
         Result<LocalDaemonResponse, DaemonError>,
         Option<crate::session::RuntimeSession>,
     ) {
-        let session_id = request.session_id.clone();
         let result = self
             .execute_workflow_interrupt_run(&request.session_id, &request.workflow_run_ref, true)
             .await
@@ -176,11 +168,7 @@ impl KernelRuntimeState {
                     session,
                 },
             );
-        let session = result
-            .as_ref()
-            .ok()
-            .and_then(workflow_response_session)
-            .or_else(|| self.owned.session_snapshot(&session_id).ok());
+        let session = result.as_ref().ok().and_then(workflow_response_session);
         (result, session)
     }
 
@@ -232,21 +220,58 @@ impl KernelRuntimeState {
         for provider_run_id in provider_run_ids {
             _provider_run_permits.push(self.provider_runtime_lanes.acquire(&provider_run_id).await);
         }
-        let session_before_interrupt = owned.session_store.get_session(session_id)?;
+        let activity_mutation = owned.begin_managed_activity_mutation();
+        let durable_state_store = owned.durable_state_store.clone();
+        let (workflow_run, archived_runs) = durable_state_store
+            .with_workflow_runtime_transition_lock(|| {
+                let mut sessions = owned.session_store.write();
+                let session_before_interrupt = sessions.get_session(session_id)?;
+                let workflow_run = if pause {
+                    sessions.pause_workflow_run(session_id, workflow_run_ref)
+                } else {
+                    sessions.cancel_workflow_run(session_id, workflow_run_ref)
+                };
+                let workflow_run = match workflow_run {
+                    Ok(workflow_run) => workflow_run,
+                    Err(error) => {
+                        sessions.restore_session(session_before_interrupt);
+                        return Err(error);
+                    }
+                };
+                let durable_session = sessions.get_session(session_id)?;
+                if let Err(error) = durable_state_store.persist_workflow_runtime_transition(
+                    &durable_session,
+                    if pause {
+                        "workflow_run_paused"
+                    } else {
+                        "workflow_run_cancelled"
+                    },
+                ) {
+                    // Restore before releasing the write guard, so unrelated session mutations
+                    // cannot be overwritten by a stale pre-interrupt value.
+                    sessions.restore_session(session_before_interrupt);
+                    return Err(error);
+                }
+                let archived_runs = sessions.archive_terminal_workflow_runs(session_id)?;
+                Ok((workflow_run, archived_runs))
+            })?;
+        if !archived_runs.is_empty() {
+            let recipient_attachment_ids = owned
+                .attachment_store
+                .list_session_attachment_ids(session_id);
+            for archived_run in archived_runs {
+                owned.terminal_stream.record_workflow_run_update(
+                    session_id,
+                    recipient_attachment_ids.clone(),
+                    archived_run,
+                );
+            }
+        }
+        activity_mutation.record();
+        let committed_session = owned.session_store.get_session(session_id)?;
         let _ = owned
             .prompt_state_owner
-            .remove_queued_prompts_by_workflow_run(&session_before_interrupt, &workflow_run_id);
-        let workflow_run = if pause {
-            owned
-                .session_store
-                .write()
-                .pause_workflow_run(session_id, workflow_run_ref)?
-        } else {
-            owned
-                .session_store
-                .write()
-                .cancel_workflow_run(session_id, workflow_run_ref)?
-        };
+            .remove_queued_prompts_by_workflow_run(&committed_session, &workflow_run_id);
         let workflow_claim_owner_prefix = format!("{workflow_run_id}:");
         let _ = owned.prompt_workspace_claims.remove_matching(|claim| {
             claim.session_id == session_id
@@ -336,13 +361,9 @@ impl KernelRuntimeState {
                     }
                 })
             }
-            Err(error) => Err(error),
+            Err(error) => return (Err(error), None),
         };
-        let session = result
-            .as_ref()
-            .ok()
-            .and_then(workflow_response_session)
-            .or_else(|| owned.session_snapshot(&session_id).ok());
+        let session = result.as_ref().ok().and_then(workflow_response_session);
         (result, session)
     }
 

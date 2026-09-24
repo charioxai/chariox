@@ -2,10 +2,11 @@ use super::*;
 
 #[test]
 fn local_request_api_exposes_queue_config_and_notices() {
+    let worktree = crate::test_support::TestWorktree::new("queue-notices");
     let harness = LocalRouterTestHarness::new();
     let (session, agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {
@@ -238,11 +239,12 @@ fn local_request_api_exposes_queue_config_and_notices() {
 
 #[test]
 fn local_request_api_can_cancel_an_active_prompt() {
+    let worktree = crate::test_support::TestWorktree::new("queue-cancel");
     let harness = LocalRouterTestHarness::new();
 
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "worktree-1"),
+            worktree.session_request(),
         ))
         .expect("session create should succeed")
     {

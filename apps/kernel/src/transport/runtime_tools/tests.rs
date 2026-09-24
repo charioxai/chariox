@@ -331,6 +331,69 @@ mod workspace_live_sync_tests {
         assert!(specs.iter().any(|spec| spec.name == SLICE_FIND_TEXT_TOOL));
         assert!(specs.iter().any(|spec| spec.name == SLICE_MOUSE_TOOL));
         assert!(specs.iter().any(|spec| spec.name == SLICE_KEYBOARD_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == SLICE_CLIPBOARD_WRITE_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == SLICE_CLIPBOARD_WRITE_TOOL_ALIAS));
+        let mouse = specs
+            .iter()
+            .find(|spec| spec.name == SLICE_MOUSE_TOOL)
+            .expect("mouse tool spec");
+        assert_eq!(
+            mouse.input_schema["properties"]["button"]["enum"],
+            serde_json::json!(["left", "middle", "right"])
+        );
+        assert_eq!(
+            mouse.input_schema["properties"]["horizontal_steps"]["type"],
+            "integer"
+        );
+        let keyboard = specs
+            .iter()
+            .find(|spec| spec.name == SLICE_KEYBOARD_TOOL)
+            .expect("keyboard tool spec");
+        assert_eq!(keyboard.input_schema["properties"]["repeat"]["minimum"], 1);
+        assert_eq!(keyboard.input_schema["properties"]["repeat"]["maximum"], 32);
+        let clipboard_write = specs
+            .iter()
+            .find(|spec| spec.name == SLICE_CLIPBOARD_WRITE_TOOL)
+            .expect("clipboard write tool spec");
+        assert_eq!(
+            clipboard_write.input_schema["properties"]["text"]["maxLength"],
+            262_144
+        );
+        assert!(clipboard_write.description.contains("write-only"));
+        let status = specs
+            .iter()
+            .find(|spec| spec.name == SLICE_SCREEN_STATUS_TOOL)
+            .expect("screen status tool spec");
+        assert!(status.description.contains("canonical Room dimensions"));
+        assert!(!status.description.contains("noVNC"));
+        let ocr = specs
+            .iter()
+            .find(|spec| spec.name == SLICE_OCR_TOOL)
+            .expect("OCR tool spec");
+        assert_eq!(
+            ocr.input_schema["properties"]["artifact_id"]["type"],
+            "string"
+        );
+        let find_text = specs
+            .iter()
+            .find(|spec| spec.name == SLICE_FIND_TEXT_TOOL)
+            .expect("find text tool spec");
+        assert_eq!(
+            find_text.input_schema["properties"]["query"]["minLength"],
+            1
+        );
+        assert_eq!(
+            find_text.input_schema["properties"]["query"]["maxLength"],
+            4096
+        );
+        assert_eq!(
+            find_text.input_schema["properties"]["artifact_id"]["type"],
+            "string"
+        );
         assert!(specs.iter().any(|spec| spec.name == SLICE_OPEN_URL_TOOL));
         assert!(specs
             .iter()
@@ -338,6 +401,28 @@ mod workspace_live_sync_tests {
         assert!(specs
             .iter()
             .any(|spec| spec.name == SLICE_BROWSER_STATUS_TOOL_ALIAS));
+        let tab = specs
+            .iter()
+            .find(|spec| spec.name == SLICE_BROWSER_TAB_TOOL)
+            .expect("browser tab tool spec");
+        assert_eq!(
+            tab.input_schema["properties"]["action"]["enum"],
+            serde_json::json!(["activate", "close"])
+        );
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == SLICE_BROWSER_TAB_TOOL_ALIAS));
+        let history = specs
+            .iter()
+            .find(|spec| spec.name == SLICE_BROWSER_HISTORY_TOOL)
+            .expect("browser history tool spec");
+        assert_eq!(
+            history.input_schema["properties"]["action"]["enum"],
+            serde_json::json!(["back", "forward", "reload"])
+        );
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == SLICE_BROWSER_HISTORY_TOOL_ALIAS));
         assert!(specs
             .iter()
             .any(|spec| spec.name == SLICE_BROWSER_FIND_TOOL));
@@ -356,6 +441,40 @@ mod workspace_live_sync_tests {
         assert!(specs
             .iter()
             .any(|spec| spec.name == SLICE_BROWSER_DIALOG_TOOL_ALIAS));
+        for name in [
+            "chariox.slice_browser_events",
+            "slice_browser_events",
+            "chariox.slice_browser_downloads",
+            "slice_browser_downloads",
+            "chariox.slice_browser_upload",
+            "slice_browser_upload",
+            "chariox.slice_browser_permission",
+            "slice_browser_permission",
+        ] {
+            assert!(
+                specs.iter().any(|spec| spec.name == name),
+                "missing runtime browser tool {name}"
+            );
+        }
+        let permission = specs
+            .iter()
+            .find(|spec| spec.name == SLICE_BROWSER_PERMISSION_TOOL)
+            .expect("browser permission tool spec");
+        assert_eq!(
+            permission.input_schema["properties"]["permission"]["enum"],
+            serde_json::json!([
+                "camera",
+                "clipboard-read-write",
+                "clipboard-sanitized-write",
+                "display-capture",
+                "geolocation",
+                "local-fonts",
+                "microphone",
+                "midi",
+                "midi-sysex",
+                "notifications"
+            ])
+        );
         assert!(specs
             .iter()
             .any(|spec| spec.name == SLICE_BROWSER_TEXT_TOOL));
@@ -374,7 +493,7 @@ mod workspace_live_sync_tests {
     }
 
     #[test]
-    fn credential_specs_expose_browser_secret_paste_tool() {
+    fn credential_specs_expose_browser_and_computer_secret_paste_tools() {
         let specs = credential_runtime_tool_specs();
         assert!(specs
             .iter()
@@ -382,6 +501,12 @@ mod workspace_live_sync_tests {
         assert!(specs
             .iter()
             .any(|spec| spec.name == PASTE_SECRET_TO_SLICE_TOOL_ALIAS));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == PASTE_SECRET_TO_COMPUTER_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == PASTE_SECRET_TO_COMPUTER_TOOL_ALIAS));
         assert!(specs
             .iter()
             .any(|spec| spec.name == CREATE_GENERATED_CREDENTIAL_TOOL));
@@ -394,6 +519,71 @@ mod workspace_live_sync_tests {
         assert!(specs
             .iter()
             .any(|spec| spec.name == REQUEST_CREDENTIAL_SECRET_TOOL_ALIAS));
+        let create = specs
+            .iter()
+            .find(|spec| spec.name == CREATE_GENERATED_CREDENTIAL_TOOL)
+            .expect("generated credential tool spec");
+        assert!(
+            create.input_schema["properties"]["credential"]["properties"]["allowed_uses"]["items"]
+                ["enum"]
+                .as_array()
+                .is_some_and(|uses| uses.contains(&serde_json::json!("computer")))
+        );
+        assert!(
+            create.input_schema["properties"]["credential"]["properties"]["injection"]
+                ["properties"]["kind"]["enum"]
+                .as_array()
+                .is_some_and(|kinds| kinds.contains(&serde_json::json!("computer")))
+        );
+    }
+
+    #[test]
+    fn controller_browser_tool_arguments_are_closed_bounded_and_path_redacted() {
+        let events: SliceBrowserEventsArgs = serde_json::from_value(serde_json::json!({
+            "browser_generation": 7
+        }))
+        .expect("minimal event poll arguments");
+        assert_eq!(events.cursor, 0);
+        assert_eq!(events.limit, 100);
+        assert!(
+            serde_json::from_value::<SliceBrowserEventsArgs>(serde_json::json!({
+                "browser_generation": 7,
+                "unexpected": true
+            }))
+            .is_err()
+        );
+
+        let upload: SliceBrowserUploadArgs = serde_json::from_value(serde_json::json!({
+            "field_id": "element-1",
+            "files": ["/private/must-not-appear.txt"]
+        }))
+        .expect("bounded upload arguments");
+        let debug = format!("{upload:?}");
+        assert!(debug.contains("file_count"));
+        assert!(!debug.contains("must-not-appear"));
+    }
+
+    #[test]
+    fn clipboard_write_arguments_are_redacted_and_zeroizing() {
+        fn assert_zeroize<T: zeroize::Zeroize>() {}
+
+        assert_zeroize::<SliceClipboardWriteArgs>();
+        let mut args: SliceClipboardWriteArgs = serde_json::from_value(serde_json::json!({
+            "text": "clipboard-review-canary"
+        }))
+        .expect("clipboard write arguments");
+        let debug = format!("{args:?}");
+        assert!(debug.contains("[redacted clipboard text]"));
+        assert!(!debug.contains("clipboard-review-canary"));
+        zeroize::Zeroize::zeroize(&mut args);
+        assert!(args.text.is_empty());
+
+        let args: SliceClipboardWriteArgs = serde_json::from_value(serde_json::json!({
+            "text": "clipboard-review-canary"
+        }))
+        .expect("clipboard write arguments");
+        let text = args.into_zeroizing();
+        assert_eq!(text.as_str(), "clipboard-review-canary");
     }
 
     #[test]
@@ -441,6 +631,10 @@ mod workspace_live_sync_tests {
             Some(SLICE_MOUSE_TOOL)
         );
         assert_eq!(
+            canonical_slice_tool_name("mcp__chariox__slice_clipboard_write"),
+            Some(SLICE_CLIPBOARD_WRITE_TOOL)
+        );
+        assert_eq!(
             canonical_slice_tool_name("slice_open_url"),
             Some(SLICE_OPEN_URL_TOOL)
         );
@@ -453,6 +647,14 @@ mod workspace_live_sync_tests {
             Some(SLICE_BROWSER_STATUS_TOOL)
         );
         assert_eq!(
+            canonical_slice_tool_name("mcp__chariox__slice_browser_tab"),
+            Some(SLICE_BROWSER_TAB_TOOL)
+        );
+        assert_eq!(
+            canonical_slice_tool_name("mcp__chariox__slice_browser_history"),
+            Some(SLICE_BROWSER_HISTORY_TOOL)
+        );
+        assert_eq!(
             canonical_slice_tool_name("mcp__chariox__slice_browser_wait_for_text"),
             Some(SLICE_BROWSER_WAIT_FOR_TEXT_TOOL)
         );
@@ -463,6 +665,22 @@ mod workspace_live_sync_tests {
         assert_eq!(
             canonical_slice_tool_name("mcp__chariox__slice_browser_dialog"),
             Some(SLICE_BROWSER_DIALOG_TOOL)
+        );
+        assert_eq!(
+            canonical_slice_tool_name("mcp__chariox__slice_browser_events"),
+            Some("chariox.slice_browser_events")
+        );
+        assert_eq!(
+            canonical_slice_tool_name("slice_browser_downloads"),
+            Some("chariox.slice_browser_downloads")
+        );
+        assert_eq!(
+            canonical_slice_tool_name("mcp__chariox__slice_browser_upload"),
+            Some("chariox.slice_browser_upload")
+        );
+        assert_eq!(
+            canonical_slice_tool_name("slice_browser_permission"),
+            Some("chariox.slice_browser_permission")
         );
         assert_eq!(canonical_slice_tool_name("unknown"), None);
     }
@@ -484,6 +702,14 @@ mod workspace_live_sync_tests {
         assert_eq!(
             canonical_credential_tool_name("mcp__chariox__paste_secret_to_slice"),
             Some(PASTE_SECRET_TO_SLICE_TOOL)
+        );
+        assert_eq!(
+            canonical_credential_tool_name("paste_secret_to_computer"),
+            Some(PASTE_SECRET_TO_COMPUTER_TOOL)
+        );
+        assert_eq!(
+            canonical_credential_tool_name("mcp__chariox__paste_secret_to_computer"),
+            Some(PASTE_SECRET_TO_COMPUTER_TOOL)
         );
         assert_eq!(
             canonical_credential_tool_name("manage_credential_vault"),

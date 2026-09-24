@@ -416,8 +416,12 @@ impl KernelRuntimeState {
                         .into(),
                 })?;
         }
-        self.with_app_side_effect(|app| app.shutdown_cleanup())
-            .await
+        let controller_result = self.shutdown_browser_controller_process().await;
+        let app_result = self
+            .with_app_side_effect(|app| app.shutdown_cleanup())
+            .await;
+        controller_result?;
+        app_result
     }
 
     pub(crate) fn session_snapshot_projection(

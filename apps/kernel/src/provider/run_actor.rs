@@ -37,7 +37,7 @@ use crate::prompt_assembly::PromptEnvelope;
 
 use super::{
     opencode_runtime::OpenCodeRuntimeState, ClaudeRuntimeState, CodexRuntimeState,
-    RuntimeProviderRun,
+    ProviderUtilityExecutionPolicy, RuntimeProviderRun,
 };
 
 #[derive(Clone)]

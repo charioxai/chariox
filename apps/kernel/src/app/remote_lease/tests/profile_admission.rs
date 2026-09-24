@@ -89,6 +89,7 @@ async fn assert_run_profile_reconciliation(field: &str, queued_work: Option<bool
             Vec::new(),
             None,
             crate::extension::RemoteExtensionManifest::default(),
+            None,
         )
         .await;
     let mut app = app.lock().await;
@@ -172,6 +173,7 @@ async fn leased_prompt_admission_prevents_interleaved_profile_changes() {
         Vec::new(),
         None,
         crate::extension::RemoteExtensionManifest::default(),
+        None,
     );
     tokio::pin!(submission);
     poll_fn(|cx| {
@@ -238,6 +240,7 @@ async fn cancelling_leased_prompt_admission_releases_profile_operations() {
         Vec::new(),
         None,
         crate::extension::RemoteExtensionManifest::default(),
+        None,
     ));
     poll_fn(|cx| {
         assert!(submission.as_mut().poll(cx).is_pending());
@@ -317,6 +320,7 @@ async fn leased_prompt_reconciles_durable_home_profile_after_lost_ack_and_restar
             Vec::new(),
             None,
             crate::extension::RemoteExtensionManifest::default(),
+            None,
         )
         .await
         .unwrap();

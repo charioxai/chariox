@@ -2,14 +2,12 @@ use super::*;
 
 #[tokio::test]
 async fn unavailable_provider_account_defers_explicit_queue_advances_without_losing_work() {
+    let worktree = crate::test_support::TestWorktree::new("external-queue-unavailable-account");
     let mut app =
         crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
             .expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-unavailable-account-queue",
-            "worktree-unavailable-account-queue",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -137,13 +135,11 @@ async fn unavailable_provider_account_defers_explicit_queue_advances_without_los
 
 #[tokio::test]
 async fn completed_metaagent_task_starts_queued_task_despite_stale_session_prompt_mirror() {
+    let worktree = crate::test_support::TestWorktree::new("external-queue-metaagent");
     let mut app =
         DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-metaagent-fifo",
-            "worktree-metaagent-fifo",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -190,13 +186,11 @@ async fn completed_metaagent_task_starts_queued_task_despite_stale_session_promp
 
 #[tokio::test]
 async fn paused_workflow_prompt_cannot_be_promoted_after_provider_launch() {
+    let worktree = crate::test_support::TestWorktree::new("external-queue-paused-workflow");
     let mut app =
         DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-paused-workflow-queue",
-            "worktree-paused-workflow-queue",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let run = app
         .launch_provider(
@@ -293,13 +287,11 @@ async fn paused_workflow_prompt_cannot_be_promoted_after_provider_launch() {
 
 #[tokio::test]
 async fn external_active_prompt_blocks_queue_until_observer_settles_it() {
+    let worktree = crate::test_support::TestWorktree::new("external-queue-settlement");
     let mut app =
         DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-external-queue-settlement",
-            "worktree-external-queue-settlement",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -391,13 +383,11 @@ async fn external_active_prompt_blocks_queue_until_observer_settles_it() {
 
 #[tokio::test]
 async fn external_active_prompt_rejects_queued_prompt_steering() {
+    let worktree = crate::test_support::TestWorktree::new("external-queue-steering");
     let mut app =
         DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-external-steering",
-            "worktree-external-steering",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(

@@ -2,13 +2,18 @@ import type {
   ManagedContextLaunchTarget,
   ManagedContextTransferStatus,
 } from "@chariox/kernel-client/ipc-managed-context-requests"
-import type {
-  ManagedContextTransferTicket,
-  ManagedEnvironmentCatalog,
-  ManagedEnvironmentContextPlanInput,
-  ManagedEnvironmentLifecycleAction,
-  ManagedEnvironmentResult,
-  ManagedEnvironmentSummary,
+import {
+  managedEnvironmentCreateMinimumProtocolVersion,
+  managedEnvironmentReimagePreflightMinimumProtocolVersion,
+  type ManagedContextTransferTicket,
+  type ManagedEnvironmentCatalog,
+  type ManagedEnvironmentContextPlanInput,
+  type ManagedEnvironmentLifecycleAction,
+  type ManagedEnvironmentPreReimageObservationAcknowledgement,
+  type ManagedEnvironmentReimagePreflight,
+  type ManagedEnvironmentReimageResult,
+  type ManagedEnvironmentResult,
+  type ManagedEnvironmentSummary,
 } from "@chariox/kernel-client/ipc-managed-environment-requests"
 import type { LocalIpcClient } from "./ipc.js"
 import {
@@ -16,12 +21,16 @@ import {
   getManagedContextLaunchTargetRequest,
   getManagedContextTransferStatusRequest,
   getManagedEnvironmentRequest,
+  getManagedEnvironmentReimagePreflightRequest,
   listManagedEnvironmentCatalogRequest,
+  observeManagedEnvironmentPreReimageRequest,
   prepareManagedEnvironmentContextTransferRequest,
   requestManagedEnvironmentLifecycleRequest,
+  requestManagedEnvironmentReimageRequest,
   startManagedContextTransferRequest,
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
+import { sendWithProtocolMinimum } from "./protocol-minimum-diagnostic.js"
 
 export async function listManagedEnvironmentCatalog(
   client: LocalIpcClient,
@@ -48,6 +57,29 @@ export async function getManagedEnvironment(
   return environment
 }
 
+export async function getManagedEnvironmentReimagePreflight(
+  client: LocalIpcClient,
+  environmentId: string,
+): Promise<ManagedEnvironmentReimagePreflight> {
+  const response = await sendWithProtocolMinimum<Record<string, unknown>>(
+    client.send.bind(client),
+    getManagedEnvironmentReimagePreflightRequest(environmentId),
+    {
+      capability: "Managed environment reimage preflight",
+      requestVariant: "GetManagedEnvironmentReimagePreflight",
+      minimumProtocolVersion: managedEnvironmentReimagePreflightMinimumProtocolVersion,
+    },
+  )
+  const preflight = expectVariant<{ preflight: ManagedEnvironmentReimagePreflight }>(
+    response,
+    "ManagedEnvironmentReimagePreflight",
+  ).preflight
+  if (preflight.environmentId !== environmentId) {
+    throw new Error("kernel returned reimage preflight for a different managed environment")
+  }
+  return preflight
+}
+
 export async function createManagedEnvironment(
   client: LocalIpcClient,
   input: {
@@ -55,11 +87,24 @@ export async function createManagedEnvironment(
     name: string
     region: string
     computeClass: string
+    managedRepositoryRoot?: string
     autoStopPolicy: { minimumRuntimeSeconds: number; idleDelaySeconds: number | null }
     contextPlan: ManagedEnvironmentContextPlanInput
   },
 ): Promise<ManagedEnvironmentResult> {
-  const response = await client.send<Record<string, unknown>>(createManagedEnvironmentRequest(input))
+  const request = createManagedEnvironmentRequest(input)
+  const response = input.managedRepositoryRoot === undefined
+    ? await client.send<Record<string, unknown>>(request)
+    : await sendWithProtocolMinimum<Record<string, unknown>>(
+        client.send.bind(client),
+        request,
+        {
+          capability: "Custom managed repository root",
+          requestVariant: "CreateManagedEnvironment",
+          unknownField: "managedRepositoryRoot",
+          minimumProtocolVersion: managedEnvironmentCreateMinimumProtocolVersion,
+        },
+      )
   const result = expectVariant<{ result: ManagedEnvironmentResult }>(
     response,
     "ManagedEnvironmentCreated",
@@ -85,6 +130,54 @@ export async function requestManagedEnvironmentLifecycle(
   ).result
   validateManagedEnvironmentResult(result, input.environmentId)
   return result
+}
+
+export async function requestManagedEnvironmentReimage(
+  client: LocalIpcClient,
+  input: {
+    environmentId: string
+    expectedGeneration: number
+    expectedProviderServerId: string
+    expectedProviderImageId: string
+    expectedProviderProfileId: string
+    expectedProviderProfileDigest: string
+    expectedRuntimeReleaseDigest: string
+    expectedRuntimeSourceCommit: string
+    expectedRuntimeSourceTree: string
+    contextPlan: ManagedEnvironmentContextPlanInput
+    idempotencyKey: string
+  },
+): Promise<ManagedEnvironmentReimageResult> {
+  const response = await client.send<Record<string, unknown>>(
+    requestManagedEnvironmentReimageRequest(input),
+  )
+  const result = expectVariant<{ result: ManagedEnvironmentReimageResult }>(
+    response,
+    "ManagedEnvironmentReimageRequested",
+  ).result
+  validateManagedEnvironmentReimageResult(result, input)
+  return result
+}
+
+export async function observeManagedEnvironmentPreReimage(
+  client: LocalIpcClient,
+  input: {
+    environmentId: string
+    expectedGeneration: number
+  },
+): Promise<ManagedEnvironmentPreReimageObservationAcknowledgement> {
+  const response = await client.send<Record<string, unknown>>(
+    observeManagedEnvironmentPreReimageRequest(input),
+  )
+  const acknowledgement = expectVariant<{
+    acknowledgement: ManagedEnvironmentPreReimageObservationAcknowledgement
+  }>(response, "ManagedEnvironmentPreReimageObserved").acknowledgement
+  if (acknowledgement.environmentId !== input.environmentId
+    || acknowledgement.generation !== input.expectedGeneration
+    || acknowledgement.observedAt.trim() === "") {
+    throw new Error("kernel returned a mismatched managed pre-reimage observation acknowledgement")
+  }
+  return acknowledgement
 }
 
 export async function prepareManagedEnvironmentContextTransfer(
@@ -150,4 +243,64 @@ function validateManagedEnvironmentResult(
     || (expectedEnvironmentId !== undefined && result.environment.environmentId !== expectedEnvironmentId)) {
     throw new Error("kernel returned a mismatched managed environment result")
   }
+}
+
+function validateManagedEnvironmentReimageResult(
+  result: ManagedEnvironmentReimageResult,
+  input: {
+    environmentId: string
+    expectedGeneration: number
+    expectedProviderServerId: string
+    expectedProviderImageId: string
+    expectedProviderProfileId: string
+    expectedProviderProfileDigest: string
+    expectedRuntimeReleaseDigest: string
+    expectedRuntimeSourceCommit: string
+    expectedRuntimeSourceTree: string
+    idempotencyKey: string
+  },
+): void {
+  const receipt = result.receipt
+  if (result.environment.environmentId !== input.environmentId
+    || result.operation.environmentId !== input.environmentId
+    || result.operation.kind !== "reimage"
+    || result.operation.idempotencyKey !== input.idempotencyKey
+    || receipt.environmentId !== input.environmentId
+    || receipt.operationId !== result.operation.operationId
+    || receipt.previousGeneration !== input.expectedGeneration
+    || receipt.generation !== input.expectedGeneration + 1
+    || receipt.receiptId.trim() === ""
+    || receipt.providerServerId !== input.expectedProviderServerId
+    || receipt.providerImageId !== input.expectedProviderImageId
+    || receipt.providerProfileId !== input.expectedProviderProfileId
+    || receipt.providerProfileDigest !== input.expectedProviderProfileDigest
+    || receipt.runtimeReleaseDigest !== input.expectedRuntimeReleaseDigest
+    || !sourceEvidenceMatchesRequest(receipt.sourceEvidence, input)) {
+    throw new Error(
+      "kernel returned managed reimage evidence that does not match the requested generation or exact provider identity",
+    )
+  }
+}
+
+function sourceEvidenceMatchesRequest(
+  sourceEvidence: unknown,
+  input: {
+    expectedProviderImageId: string
+    expectedProviderProfileId: string
+    expectedProviderProfileDigest: string
+    expectedRuntimeReleaseDigest: string
+    expectedRuntimeSourceCommit: string
+    expectedRuntimeSourceTree: string
+  },
+): boolean {
+  if (sourceEvidence === null || typeof sourceEvidence !== "object" || Array.isArray(sourceEvidence)) {
+    return false
+  }
+  const evidence = sourceEvidence as Record<string, unknown>
+  return evidence.providerImageId === input.expectedProviderImageId
+    && evidence.providerProfileId === input.expectedProviderProfileId
+    && evidence.providerProfileDigest === input.expectedProviderProfileDigest
+    && evidence.runtimeReleaseDigest === input.expectedRuntimeReleaseDigest
+    && evidence.runtimeSourceCommit === input.expectedRuntimeSourceCommit
+    && evidence.runtimeSourceTree === input.expectedRuntimeSourceTree
 }

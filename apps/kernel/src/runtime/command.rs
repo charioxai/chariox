@@ -145,6 +145,16 @@ fn local_request_payload(request: &LocalDaemonRequest) -> Value {
                 "value": "[redacted]"
             }
         }),
+        LocalDaemonRequest::SetProviderAccountCredential(request) => serde_json::json!({
+            "SetProviderAccountCredential": {
+                "session_id": request.session_id,
+                "agent_id": request.agent_id,
+                "provider": request.provider,
+                "account_profile": request.account_profile,
+                "value": "[redacted]",
+                "overwrite": request.overwrite
+            }
+        }),
         LocalDaemonRequest::RespondToInteraction(request) => serde_json::json!({
             "RespondToInteraction": {
                 "session_id": request.session_id,
@@ -179,8 +189,8 @@ mod tests {
         AliasSessionRequest, AttachToSessionRequest, DestroyAgentRequest, EndSessionRequest,
         FocusAgentRequest, GetDaemonHealthRequest, LocalDaemonRequest, PollRuntimeNoticesRequest,
         RequestCredentialEnrollmentInteractionRequest, RespondToInteractionRequest,
-        SetCredentialSecretRequest, SpawnAgentRequest, SubmitPromptRequest,
-        UpdateSessionConfigRequest,
+        SetCredentialSecretRequest, SetProviderAccountCredentialRequest, SpawnAgentRequest,
+        SubmitPromptRequest, UpdateSessionConfigRequest,
     };
     use crate::runtime::command::{
         KernelCaller, KernelCallerKind, KernelCommand, KernelCommandPriority, KernelCommandSource,
@@ -211,6 +221,32 @@ mod tests {
         assert_eq!(command.session_id.as_deref(), Some("session-1"));
         assert_eq!(command.attachment_id.as_deref(), Some("attachment-1"));
         assert_eq!(command.agent_id.as_deref(), Some("agent-1"));
+    }
+
+    #[test]
+    fn normalizes_pre_reimage_observation_to_distinct_interactive_metadata() {
+        let request = LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(
+            crate::local::ObserveManagedEnvironmentPreReimageRequest {
+                environment_id: "environment-1".to_string(),
+                expected_generation: 4,
+            },
+        );
+        let command = KernelCommand::from_local_request("observe-1", None, None, &request);
+
+        assert_eq!(
+            command.command_type,
+            "managed_environment.reimage.observe"
+        );
+        assert_eq!(command.priority, KernelCommandPriority::Interactive);
+        assert_eq!(
+            command.payload,
+            serde_json::json!({
+                "ObserveManagedEnvironmentPreReimage": {
+                    "environmentId": "environment-1",
+                    "expectedGeneration": 4,
+                }
+            })
+        );
     }
 
     #[test]
@@ -415,6 +451,35 @@ mod tests {
         assert!(!serde_json::to_string(&command.payload)
             .unwrap()
             .contains("super-secret"));
+    }
+
+    #[test]
+    fn redacts_provider_account_credential_payloads() {
+        let request =
+            LocalDaemonRequest::SetProviderAccountCredential(SetProviderAccountCredentialRequest {
+                session_id: Some("session-1".to_string()),
+                agent_id: Some("agent-1".to_string()),
+                provider: "claude".to_string(),
+                account_profile: "work".to_string(),
+                value: "super-secret-setup-token".to_string(),
+                overwrite: true,
+            });
+        let command = KernelCommand::from_local_request(
+            "credential-2",
+            None,
+            Some("attachment-1".to_string()),
+            &request,
+        );
+
+        assert_eq!(command.command_type, "provider_account.credential.set");
+        assert_eq!(
+            command.payload["SetProviderAccountCredential"]["value"],
+            "[redacted]"
+        );
+        assert!(!format!("{request:?}").contains("super-secret-setup-token"));
+        assert!(!serde_json::to_string(&command.payload)
+            .unwrap()
+            .contains("super-secret-setup-token"));
     }
 
     #[test]

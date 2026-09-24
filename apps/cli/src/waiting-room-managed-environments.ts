@@ -12,6 +12,9 @@ import type {
   WaitingRoomRemoteState,
   WaitingRoomState,
 } from "./waiting-room-types.js"
+
+export const DEFAULT_MANAGED_REPOSITORY_ROOT = "/home/chariox"
+
 export {
   NEW_MANAGED_MACHINE_REF,
   managedEnvironmentIdFromMachineRef,
@@ -98,6 +101,7 @@ export function normalizeWaitingRoomManagedDraft(
     : undefined
   const normalized: WaitingRoomState = {
     ...state,
+    managedRepositoryRoot: state.managedRepositoryRoot ?? DEFAULT_MANAGED_REPOSITORY_ROOT,
     managedKernelContext: state.managedKernelContext ?? "empty",
     managedDevelopmentMode: state.managedDevelopmentMode ?? "empty",
     managedRepositoryIndex: supportingWorkspaceIds.length === 0

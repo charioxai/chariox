@@ -1,0 +1,1214 @@
+use crate::error::DaemonError;
+use crate::runtime::state::KernelRuntimeState;
+use crate::session::{
+    ActionAdmission, EnvironmentActionRequest, EnvironmentActionTerminal, EnvironmentTab,
+    RoomEnvironmentSnapshot,
+};
+
+use super::controller_browser_projection::*;
+use super::slice_browser::{
+    browser_status_url, ensure_browser_fill_target, ensure_browser_secret_target_is_masked,
+    ensure_browser_target_matches_expectations,
+};
+
+impl KernelRuntimeState {
+    pub(super) async fn controller_paste_secret_to_slice_tool_result(
+        &self,
+        session_id: &str,
+        slice_id: &str,
+        agent_id: &str,
+        args: crate::transport::runtime_tools::PasteSecretToSliceArgs,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let status =
+            capture_controller_browser_status(self, session_id, slice_id, agent_id, None).await?;
+        let browser =
+            status
+                .result
+                .payload
+                .get("browser")
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "runtime_tool_paste_secret_to_slice",
+                    message:
+                        "controller-backed browser status omitted its compatibility projection"
+                            .to_string(),
+                })?;
+        browser_status_url(browser)?;
+        ensure_browser_target_matches_expectations(browser, &args)?;
+        let element_ref = match controller_browser_element_ref(
+            args.selector.as_deref(),
+            args.field_id.as_deref(),
+            "runtime_tool_paste_secret_to_slice",
+        ) {
+            Ok(reference) => reference,
+            Err(_) if args.selector.is_none() && args.field_id.is_none() => {
+                ensure_browser_fill_target(browser, None)?;
+                browser
+                    .pointer("/focusedElement/field_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+                    .ok_or_else(|| DaemonError::LocalTransport {
+                        operation: "runtime_tool_paste_secret_to_slice",
+                        message: "the focused browser field has no opaque element reference"
+                            .to_string(),
+                    })?
+            }
+            Err(error) => return Err(error),
+        };
+        ensure_browser_fill_target(browser, Some(&element_ref))?;
+        ensure_browser_secret_target_is_masked(browser, Some(&element_ref))?;
+        let target_document_url = status
+            .structured_snapshot
+            .as_ref()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "runtime_tool_paste_secret_to_slice",
+                message: "browser snapshot is unavailable for secret target authorization"
+                    .to_string(),
+            })?
+            .document_url_for_element(&element_ref)
+            .map(str::to_string)
+            .map_err(|message| DaemonError::LocalTransport {
+                operation: "runtime_tool_paste_secret_to_slice",
+                message,
+            })?;
+        // The Room controller and vault share home authority. A leased worker
+        // forwards the opaque credential handle, never a resolved secret.
+        self.home_runtime_secret_service()?
+            .validate_browser_secret_input_for_target_url(
+                &args.credential_id,
+                &target_document_url,
+            )?;
+        let _vault_unlock = self
+            .ensure_vault_unlocked_for_agent(
+                session_id,
+                agent_id,
+                "runtime_tool_paste_secret_to_slice",
+            )
+            .await?;
+        // Unlock can await a human for several minutes. Do not resolve against
+        // credential metadata or vault configuration captured before that wait.
+        let service = self.home_runtime_secret_service()?;
+        let secret = zeroize::Zeroizing::new(
+            service
+                .browser_secret_input_for_target_url(&args.credential_id, &target_document_url)?,
+        );
+        let result = self
+            .perform_browser_environment_locator_action_as_agent(
+                session_id,
+                agent_id,
+                &element_ref,
+                crate::runtime::browser_controller_action::BrowserLocatorAction::Fill {
+                    text: secret.to_string(),
+                    append: false,
+                    submit: args.submit,
+                    expected_document_url: Some(target_document_url),
+                },
+                crate::runtime::browser_controller_action::MAX_BROWSER_ACTION_TIMEOUT_MS,
+            )
+            .await?;
+        Ok(controller_secret_paste_tool_result(
+            slice_id,
+            agent_id,
+            &args.credential_id,
+            args.submit,
+            result,
+        ))
+    }
+
+    pub(super) async fn controller_browser_status_tool_result(
+        &self,
+        session_id: &str,
+        slice_id: &str,
+        agent_id: &str,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        run_controller_browser_status_tool(self, session_id, slice_id, agent_id).await
+    }
+
+    pub(super) async fn controller_browser_tab_tool_result(
+        &self,
+        session_id: &str,
+        slice_id: &str,
+        agent_id: &str,
+        args: crate::transport::runtime_tools::SliceBrowserTabArgs,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let action = match args.action.as_str() {
+            "activate" => crate::runtime::browser_controller_tab::BrowserTabAction::Activate,
+            "close" => crate::runtime::browser_controller_tab::BrowserTabAction::Close,
+            other => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_tab",
+                    message: format!("unsupported browser tab action `{other}`"),
+                });
+            }
+        };
+        let execution = self
+            .manage_browser_environment_tab_as_agent(session_id, agent_id, &args.tab_id, action)
+            .await?;
+        Ok(controller_browser_tab_tool_result(
+            slice_id, agent_id, action, execution,
+        ))
+    }
+
+    pub(super) async fn controller_browser_history_tool_result(
+        &self,
+        session_id: &str,
+        slice_id: &str,
+        agent_id: &str,
+        args: crate::transport::runtime_tools::SliceBrowserHistoryArgs,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let action = match args.action.as_str() {
+            "back" => crate::runtime::browser_controller_history::BrowserHistoryAction::Back,
+            "forward" => crate::runtime::browser_controller_history::BrowserHistoryAction::Forward,
+            "reload" => crate::runtime::browser_controller_history::BrowserHistoryAction::Reload,
+            other => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_history",
+                    message: format!("unsupported browser history action `{other}`"),
+                });
+            }
+        };
+        let tab_id = args.tab_id;
+        let execution = self
+            .navigate_browser_environment_history_as_agent(session_id, agent_id, &tab_id, action)
+            .await?;
+        controller_browser_history_tool_result(slice_id, agent_id, &tab_id, action, execution)
+    }
+
+    pub(super) async fn controller_browser_find_tool_result(
+        &self,
+        session_id: &str,
+        slice_id: &str,
+        agent_id: &str,
+        query: &str,
+        kind: &str,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        run_controller_browser_find_tool(self, session_id, slice_id, agent_id, query, kind).await
+    }
+
+    pub(super) async fn controller_browser_text_tool_result(
+        &self,
+        session_id: &str,
+        slice_id: &str,
+        agent_id: &str,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        run_controller_browser_text_tool(self, session_id, slice_id, agent_id).await
+    }
+
+    pub(super) async fn controller_browser_wait_for_text_tool_result(
+        &self,
+        session_id: &str,
+        slice_id: &str,
+        agent_id: &str,
+        query: &str,
+        timeout_ms: Option<u64>,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        run_controller_browser_wait_for_text_tool(
+            self, session_id, slice_id, agent_id, query, timeout_ms,
+        )
+        .await
+    }
+
+    pub(super) async fn controller_browser_fill_tool_result(
+        &self,
+        session_id: &str,
+        slice_id: &str,
+        agent_id: &str,
+        args: crate::transport::runtime_tools::SliceBrowserFillArgs,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let element_ref = controller_browser_element_ref(
+            args.selector.as_deref(),
+            args.field_id.as_deref(),
+            "runtime_tool_slice_browser_fill",
+        )?;
+        let result = self
+            .perform_browser_environment_locator_action_as_agent(
+                session_id,
+                agent_id,
+                &element_ref,
+                crate::runtime::browser_controller_action::BrowserLocatorAction::Fill {
+                    text: args.text,
+                    append: false,
+                    submit: false,
+                    expected_document_url: None,
+                },
+                crate::runtime::browser_controller_action::MAX_BROWSER_ACTION_TIMEOUT_MS,
+            )
+            .await?;
+        Ok(controller_browser_action_tool_result(
+            slice_id, agent_id, result,
+        ))
+    }
+
+    pub(super) async fn controller_browser_click_tool_result(
+        &self,
+        session_id: &str,
+        slice_id: &str,
+        agent_id: &str,
+        args: crate::transport::runtime_tools::SliceBrowserClickArgs,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let element_ref = controller_browser_element_ref(
+            args.selector.as_deref(),
+            args.field_id.as_deref(),
+            "runtime_tool_slice_browser_click",
+        )?;
+        let result = self
+            .perform_browser_environment_locator_action_as_agent(
+                session_id,
+                agent_id,
+                &element_ref,
+                crate::runtime::browser_controller_action::BrowserLocatorAction::Click,
+                crate::runtime::browser_controller_action::MAX_BROWSER_ACTION_TIMEOUT_MS,
+            )
+            .await?;
+        Ok(controller_browser_action_tool_result(
+            slice_id, agent_id, result,
+        ))
+    }
+
+    pub(super) async fn controller_browser_submit_tool_result(
+        &self,
+        session_id: &str,
+        slice_id: &str,
+        agent_id: &str,
+        args: crate::transport::runtime_tools::SliceBrowserSubmitArgs,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let element_ref = match controller_browser_element_ref(
+            args.selector.as_deref(),
+            args.field_id.as_deref(),
+            "runtime_tool_slice_browser_submit",
+        ) {
+            Ok(reference) => reference,
+            Err(_) if args.selector.is_none() && args.field_id.is_none() => {
+                let status =
+                    run_controller_browser_status_tool(self, session_id, slice_id, agent_id)
+                        .await?;
+                status
+                    .payload
+                    .pointer("/browser/focusedElement/field_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+                    .ok_or_else(|| DaemonError::LocalTransport {
+                        operation: "runtime_tool_slice_browser_submit",
+                        message: "the Room browser has no focused element to submit".to_string(),
+                    })?
+            }
+            Err(error) => return Err(error),
+        };
+        let result = self
+            .perform_browser_environment_locator_action_as_agent(
+                session_id,
+                agent_id,
+                &element_ref,
+                crate::runtime::browser_controller_action::BrowserLocatorAction::Submit,
+                crate::runtime::browser_controller_action::MAX_BROWSER_ACTION_TIMEOUT_MS,
+            )
+            .await?;
+        Ok(controller_browser_action_tool_result(
+            slice_id, agent_id, result,
+        ))
+    }
+
+    pub(super) async fn controller_browser_dialog_tool_result(
+        &self,
+        session_id: &str,
+        slice_id: &str,
+        agent_id: &str,
+        args: crate::transport::runtime_tools::SliceBrowserDialogArgs,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let action = match args.action.as_str() {
+            "accept" => crate::runtime::browser_controller_action::BrowserDialogAction::Accept {
+                prompt_text: args.prompt_text,
+            },
+            "dismiss" => crate::runtime::browser_controller_action::BrowserDialogAction::Dismiss,
+            other => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_dialog",
+                    message: format!("unsupported browser dialog action `{other}`"),
+                });
+            }
+        };
+        let environment = ensure_controller_browser_environment(
+            self,
+            session_id,
+            "runtime_tool_slice_browser_dialog",
+        )
+        .await?;
+        let tab_id = environment
+            .focused_tab_id
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "runtime_tool_slice_browser_dialog",
+                message: "the Room browser has no focused tab".to_string(),
+            })?;
+        let result = self
+            .handle_browser_environment_dialog_as_agent(session_id, agent_id, &tab_id, action)
+            .await?;
+        Ok(controller_browser_dialog_tool_result(
+            slice_id, agent_id, result,
+        ))
+    }
+
+    pub(super) async fn controller_browser_events_tool_result(
+        &self,
+        session_id: &str,
+        slice_id: &str,
+        agent_id: &str,
+        args: crate::transport::runtime_tools::SliceBrowserEventsArgs,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        if args.browser_generation == 0
+            || args.limit == 0
+            || args.limit > crate::runtime::browser_controller_event::MAX_BROWSER_EVENT_POLL_LIMIT
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "runtime_tool_slice_browser_events",
+                message: "browser_generation must be positive and limit must be between 1 and 200"
+                    .to_string(),
+            });
+        }
+        ensure_controller_browser_environment(
+            self,
+            session_id,
+            "runtime_tool_slice_browser_events",
+        )
+        .await?;
+        let batch = self
+            .poll_browser_environment_events(
+                session_id,
+                args.browser_generation,
+                args.cursor,
+                args.limit,
+            )
+            .await?;
+        Ok(controller_browser_events_tool_result(
+            slice_id, agent_id, session_id, batch,
+        ))
+    }
+
+    pub(super) async fn controller_browser_downloads_tool_result(
+        &self,
+        session_id: &str,
+        slice_id: &str,
+        agent_id: &str,
+        args: crate::transport::runtime_tools::SliceBrowserDownloadsArgs,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let environment = ensure_controller_browser_environment(
+            self,
+            session_id,
+            "runtime_tool_slice_browser_downloads",
+        )
+        .await?;
+        if let Some(cancel) = args.cancel {
+            let cancellation =
+                crate::runtime::browser_controller_file_transfer::BrowserDownloadCancellation::new(
+                    cancel.browser_generation,
+                    cancel.guid,
+                )
+                .map_err(|message| DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_downloads",
+                    message,
+                })?;
+            let execution = self
+                .cancel_browser_download_as_agent(session_id, agent_id, cancellation)
+                .await?;
+            return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({
+                    "source": "browser_controller", "slice_id": slice_id, "agent_id": agent_id,
+                    "session_id": session_id, "environment_id": execution.environment_id,
+                    "runtime_generation": execution.runtime_generation,
+                    "action_id": execution.action_id, "actor_id": execution.actor_id,
+                    "browser_generation": execution.value.browser_generation,
+                    "guid": execution.value.guid,
+                    "cancellation_requested": execution.value.cancellation_requested,
+                }),
+            });
+        }
+        let tab_id = environment
+            .focused_tab_id
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "runtime_tool_slice_browser_downloads",
+                message: "the Room browser has no focused tab".to_string(),
+            })?;
+        let result = self
+            .configure_browser_downloads_as_agent(session_id, agent_id, &tab_id)
+            .await?;
+        Ok(controller_browser_downloads_tool_result(
+            slice_id,
+            agent_id,
+            result.value,
+        ))
+    }
+
+    pub(super) async fn controller_browser_upload_tool_result(
+        &self,
+        session_id: &str,
+        slice_id: &str,
+        agent_id: &str,
+        args: crate::transport::runtime_tools::SliceBrowserUploadArgs,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        ensure_controller_browser_environment(
+            self,
+            session_id,
+            "runtime_tool_slice_browser_upload",
+        )
+        .await?;
+        let result = self
+            .upload_browser_environment_files_as_agent(
+                session_id,
+                agent_id,
+                &args.field_id,
+                args.files,
+            )
+            .await?;
+        Ok(controller_browser_upload_tool_result(
+            slice_id,
+            agent_id,
+            result.value,
+        ))
+    }
+
+    pub(super) async fn controller_browser_permission_tool_result(
+        &self,
+        session_id: &str,
+        slice_id: &str,
+        agent_id: &str,
+        args: crate::transport::runtime_tools::SliceBrowserPermissionArgs,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let permission = runtime_tool_browser_permission(&args.permission).ok_or_else(|| {
+            DaemonError::LocalTransport {
+                operation: "runtime_tool_slice_browser_permission",
+                message: "unsupported browser permission".to_string(),
+            }
+        })?;
+        let setting = serde_json::from_value::<
+            crate::runtime::browser_controller_permission::BrowserPermissionSetting,
+        >(serde_json::Value::String(args.setting))
+        .map_err(|_| DaemonError::LocalTransport {
+            operation: "runtime_tool_slice_browser_permission",
+            message: "unsupported browser permission setting".to_string(),
+        })?;
+        let environment = ensure_controller_browser_environment(
+            self,
+            session_id,
+            "runtime_tool_slice_browser_permission",
+        )
+        .await?;
+        let tab_id = environment
+            .focused_tab_id
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "runtime_tool_slice_browser_permission",
+                message: "the Room browser has no focused tab".to_string(),
+            })?;
+        let result = self
+            .set_browser_permission_as_agent(session_id, agent_id, &tab_id, permission, setting)
+            .await?;
+        Ok(controller_browser_permission_tool_result(
+            slice_id,
+            agent_id,
+            result.value,
+        ))
+    }
+}
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    use crate::session::{
+        EnvironmentActionOutcome, EnvironmentActionState, EnvironmentActionTerminal,
+        EnvironmentTabObservation,
+    };
+
+    #[test]
+    fn kernel_observation_helpers_record_actual_actor_and_tab_in_room_history() {
+        let (_test_root, runtime, session_id, agent_id) = runtime_with_room();
+        let environment = runtime
+            .room_environment_snapshot(&session_id)
+            .expect("Room should exist");
+        let tab = environment.tabs.first().expect("test tab should exist");
+        let status = begin_controller_browser_observation(
+            &runtime,
+            &session_id,
+            &agent_id,
+            &environment,
+            tab,
+            "browser_status",
+        )
+        .expect("status observation should be admitted");
+        let find = begin_controller_browser_observation(
+            &runtime,
+            &session_id,
+            &agent_id,
+            &environment,
+            tab,
+            "browser_find",
+        )
+        .expect("same-tab find should remain nonblocking");
+
+        let running = runtime
+            .room_environment_action_history(&session_id, None, 8)
+            .expect("Room Action history should be readable")
+            .actions;
+        assert_eq!(running.len(), 2);
+        for action in &running {
+            assert_eq!(
+                action.actor_id,
+                crate::session::agent_environment_actor_id(&agent_id)
+            );
+            assert_eq!(
+                action.targets,
+                vec![crate::session::InputTarget::BrowserTab(tab.tab_id.clone())]
+            );
+            assert_eq!(action.runtime_generation, environment.runtime_generation);
+            assert!(action.started_at_ms.is_some());
+            assert!(action.finished_at_ms.is_none());
+            assert!(action.arguments.is_none());
+        }
+
+        finish_controller_browser_observation(
+            &runtime,
+            &session_id,
+            &status,
+            "browser_status",
+            EnvironmentActionTerminal::Completed,
+        )
+        .expect("status observation should complete");
+        finish_controller_browser_observation(
+            &runtime,
+            &session_id,
+            &find,
+            "browser_find",
+            EnvironmentActionTerminal::Failed,
+        )
+        .expect("failed find should be recorded");
+
+        let history = runtime
+            .room_environment_action_history(&session_id, None, 8)
+            .expect("Room Action history should be readable")
+            .actions;
+        assert!(history.iter().any(|action| {
+            action.action_id == status
+                && action.state == EnvironmentActionState::Completed
+                && action.finished_at_ms.unwrap() >= action.started_at_ms.unwrap()
+                && action.outcome == Some(EnvironmentActionOutcome::Completed)
+        }));
+        assert!(history.iter().any(|action| {
+            action.action_id == find
+                && action.state == EnvironmentActionState::Failed
+                && action.finished_at_ms.unwrap() >= action.started_at_ms.unwrap()
+                && action.outcome
+                    == Some(EnvironmentActionOutcome::Failed {
+                        code: crate::session::EnvironmentActionFailureCode::ControllerFailure,
+                    })
+        }));
+        let serialized_history = serde_json::to_string(&history).unwrap();
+        assert!(!serialized_history.contains("sensitive-query"));
+        assert!(!serialized_history.contains("sensitive-result"));
+    }
+
+    struct TestRoot(std::path::PathBuf);
+
+    impl TestRoot {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "chariox-browser-observation-{}-{}",
+                std::process::id(),
+                crate::session::unix_epoch_ms()
+            ));
+            std::fs::create_dir_all(&path).expect("test root should be created");
+            Self(path)
+        }
+    }
+
+    impl Drop for TestRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn runtime_with_room() -> (TestRoot, KernelRuntimeState, String, String) {
+        let test_root = TestRoot::new();
+        let test_root_path = test_root.0.to_string_lossy().into_owned();
+        let mut app = crate::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, _) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                &test_root_path,
+                &test_root_path,
+            ))
+            .expect("session should be created");
+        let agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("browser-agent"),
+            )
+            .expect("agent should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let runtime = runtime_state_from_test_app(app);
+        let viewport = crate::session::CanonicalViewport::new(1280, 800, 1, 1280, 800)
+            .expect("viewport should be valid");
+        runtime
+            .owned
+            .session_store
+            .create_room_environment(&session_id, "environment-test", viewport.clone())
+            .expect("Room environment should be created");
+        runtime
+            .start_room_environment(&session_id, viewport)
+            .expect("Room should start");
+        runtime
+            .transition_room_environment(&session_id, crate::session::EnvironmentLifecycle::Ready)
+            .expect("Room should become ready");
+        runtime
+            .reconcile_room_environment_actors(&session_id, None)
+            .expect("agent actor should be reconciled");
+        runtime
+            .reconcile_room_environment_controller_tabs(
+                &session_id,
+                vec![EnvironmentTabObservation {
+                    runtime_target_id: "target-1".to_string(),
+                    document_id: "document-1".to_string(),
+                    url: "https://example.test".to_string(),
+                    title: "Example".to_string(),
+                }],
+                Some("target-1"),
+            )
+            .expect("test tab should be reconciled");
+        (test_root, runtime, session_id, agent_id)
+    }
+
+    fn runtime_state_from_test_app(app: crate::DaemonApp) -> KernelRuntimeState {
+        let config_projection = app.config_projection_store();
+        let session_store = app.session_state_store();
+        let agent_store = app.agents().clone();
+        let attachment_store = app.attachments().clone();
+        let provider_store = app.providers().clone();
+        let provider_process_tracking = app.provider_process_tracking_store();
+        let slice_store = app.slices();
+        let session_projection = app.session_state_projection_store();
+        let provider_run_projection = app.provider_run_projection_store();
+        let operational_history_store = app.operational_history_store();
+        let durable_state_store = app.durable_state_store();
+        let prompt_state_owner = app.prompt_state_owner();
+        let active_turns = app.active_turn_store();
+        let prompt_activity = app.prompt_activity_store();
+        let prompt_workspace_claims = app.prompt_workspace_claim_store();
+        let structured_output_records = app.structured_output_record_store();
+        let terminal_stream = app.terminal_stream_store();
+        let workflow_design_events = app.workflow_design_event_store();
+        let metaagent_events = app.metaagent_event_store();
+        let workspace_coordinator = app.workspace_coordinator();
+        KernelRuntimeState::new_with_owned_state(
+            Arc::new(Mutex::new(app)),
+            config_projection,
+            session_store,
+            agent_store,
+            attachment_store,
+            provider_store,
+            provider_process_tracking,
+            slice_store,
+            session_projection,
+            provider_run_projection,
+            operational_history_store,
+            durable_state_store,
+            prompt_state_owner,
+            active_turns,
+            prompt_activity,
+            prompt_workspace_claims,
+            structured_output_records,
+            terminal_stream,
+            workflow_design_events,
+            metaagent_events,
+            workspace_coordinator,
+        )
+    }
+}
+
+fn runtime_tool_browser_permission(
+    value: &str,
+) -> Option<crate::runtime::browser_controller_permission::BrowserPermissionName> {
+    use crate::runtime::browser_controller_permission::BrowserPermissionName;
+    match value {
+        "camera" => Some(BrowserPermissionName::Camera),
+        "clipboard-read-write" | "clipboard_read_write" => {
+            Some(BrowserPermissionName::ClipboardReadWrite)
+        }
+        "clipboard-sanitized-write" | "clipboard_sanitized_write" => {
+            Some(BrowserPermissionName::ClipboardSanitizedWrite)
+        }
+        "display-capture" | "display_capture" => Some(BrowserPermissionName::DisplayCapture),
+        "geolocation" => Some(BrowserPermissionName::Geolocation),
+        "local-fonts" | "local_fonts" => Some(BrowserPermissionName::LocalFonts),
+        "microphone" => Some(BrowserPermissionName::Microphone),
+        "midi" => Some(BrowserPermissionName::Midi),
+        "midi-sysex" | "midi_sysex" => Some(BrowserPermissionName::MidiSysex),
+        "notifications" => Some(BrowserPermissionName::Notifications),
+        _ => None,
+    }
+}
+
+pub(super) async fn run_controller_browser_status_tool(
+    state: &KernelRuntimeState,
+    session_id: &str,
+    slice_id: &str,
+    agent_id: &str,
+) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+    let capture = capture_controller_browser_status(
+        state,
+        session_id,
+        slice_id,
+        agent_id,
+        Some("browser_status"),
+    )
+    .await?;
+    finish_captured_browser_observation(
+        state,
+        session_id,
+        &capture,
+        EnvironmentActionTerminal::Completed,
+        "browser_status",
+    )?;
+    Ok(capture.result)
+}
+
+struct ControllerBrowserStatusCapture {
+    result: crate::transport::runtime_tools::RuntimeToolResult,
+    structured_snapshot:
+        Option<crate::runtime::browser_controller_snapshot::RoomBrowserStructuredSnapshot>,
+    observation_action_id: Option<String>,
+}
+
+async fn capture_controller_browser_status(
+    state: &KernelRuntimeState,
+    session_id: &str,
+    slice_id: &str,
+    agent_id: &str,
+    observation_kind: Option<&'static str>,
+) -> Result<ControllerBrowserStatusCapture, DaemonError> {
+    let operation = observation_kind
+        .map(browser_observation_operation)
+        .unwrap_or("runtime_tool_slice_browser_status");
+    let environment = ensure_controller_browser_environment(state, session_id, operation).await?;
+    let focused = environment
+        .focused_tab_id
+        .as_deref()
+        .and_then(|focused_id| environment.tabs.iter().find(|tab| tab.tab_id == focused_id));
+    let observation_action_id = match (observation_kind, focused) {
+        (Some(kind), Some(tab)) => Some(begin_controller_browser_observation(
+            state,
+            session_id,
+            agent_id,
+            &environment,
+            tab,
+            kind,
+        )?),
+        _ => None,
+    };
+    let capture = async {
+        let structured_snapshot = match focused {
+            Some(tab) => Some(
+                state
+                    .capture_browser_environment_snapshot(session_id, &tab.tab_id)
+                    .await?,
+            ),
+            None => None,
+        };
+        let url = focused.map(|tab| tab.url.as_str()).unwrap_or_default();
+        let title = focused.map(|tab| tab.title.as_str()).unwrap_or_default();
+        let host = url::Url::parse(url)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_string))
+            .unwrap_or_default();
+        let surfaces = controller_browser_status_surfaces(structured_snapshot.as_ref());
+        let browser_generation = structured_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.browser_generation);
+        let browser = controller_browser_status_compatibility(url, &host, title, &surfaces);
+        let payload = serde_json::json!({
+            "source": "browser_controller",
+            "slice_id": slice_id,
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "environment_id": environment.environment_id,
+            "runtime_generation": environment.runtime_generation,
+            "browser_generation": browser_generation,
+            "viewport": environment.viewport,
+            "tab_id": focused.map(|tab| tab.tab_id.as_str()),
+            "url": url,
+            "host": host,
+            "title": title,
+            "document_revision": focused.map(|tab| tab.document_revision),
+            "tabs": environment.tabs,
+            "browser": browser,
+        });
+        Ok::<_, DaemonError>((
+            crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload },
+            structured_snapshot,
+        ))
+    }
+    .await;
+    let (result, structured_snapshot) = match capture {
+        Ok(capture) => capture,
+        Err(error) => {
+            if let (Some(action_id), Some(kind)) =
+                (observation_action_id.as_deref(), observation_kind)
+            {
+                finish_controller_browser_observation(
+                    state,
+                    session_id,
+                    action_id,
+                    kind,
+                    EnvironmentActionTerminal::Failed,
+                )?;
+            }
+            return Err(error);
+        }
+    };
+    Ok(ControllerBrowserStatusCapture {
+        result,
+        structured_snapshot,
+        observation_action_id,
+    })
+}
+
+fn controller_browser_observation_request(
+    agent_id: &str,
+    runtime_generation: u64,
+    kind: &str,
+    tab_id: &str,
+    document_revision: u64,
+) -> EnvironmentActionRequest {
+    EnvironmentActionRequest::browser_observation(
+        crate::session::agent_environment_actor_id(agent_id),
+        runtime_generation,
+        kind,
+        tab_id,
+        document_revision,
+    )
+}
+
+fn begin_controller_browser_observation(
+    state: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+    environment: &RoomEnvironmentSnapshot,
+    tab: &EnvironmentTab,
+    kind: &'static str,
+) -> Result<String, DaemonError> {
+    let operation = browser_observation_operation(kind);
+    let request = controller_browser_observation_request(
+        agent_id,
+        environment.runtime_generation,
+        kind,
+        &tab.tab_id,
+        tab.document_revision,
+    );
+    let (admission, _) = state
+        .submit_room_environment_action(session_id, request)
+        .map_err(|error| room_environment_action_error(operation, error))?;
+    match admission {
+        ActionAdmission::Accepted { action_id } => Ok(action_id),
+        other => Err(DaemonError::LocalTransport {
+            operation,
+            message: format!("browser observation was not immediately admitted: {other:?}"),
+        }),
+    }
+}
+
+fn finish_captured_browser_observation(
+    state: &KernelRuntimeState,
+    session_id: &str,
+    capture: &ControllerBrowserStatusCapture,
+    terminal: EnvironmentActionTerminal,
+    kind: &'static str,
+) -> Result<(), DaemonError> {
+    if let Some(action_id) = capture.observation_action_id.as_deref() {
+        finish_controller_browser_observation(state, session_id, action_id, kind, terminal)?;
+    }
+    Ok(())
+}
+
+fn finish_controller_browser_observation(
+    state: &KernelRuntimeState,
+    session_id: &str,
+    action_id: &str,
+    kind: &'static str,
+    terminal: EnvironmentActionTerminal,
+) -> Result<(), DaemonError> {
+    state
+        .finish_room_environment_action(session_id, action_id, terminal)
+        .map(|_| ())
+        .map_err(|error| room_environment_action_error(browser_observation_operation(kind), error))
+}
+
+fn browser_observation_operation(kind: &'static str) -> &'static str {
+    match kind {
+        "browser_status" => "runtime_tool_slice_browser_status",
+        "browser_find" => "runtime_tool_slice_browser_find",
+        _ => "runtime_tool_slice_browser_observation",
+    }
+}
+
+fn room_environment_action_error(
+    operation: &'static str,
+    error: crate::session::EnvironmentError,
+) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation,
+        message: format!("{}: {error:?}", error.code()),
+    }
+}
+
+pub(super) async fn ensure_controller_browser_environment(
+    state: &KernelRuntimeState,
+    session_id: &str,
+    operation: &'static str,
+) -> Result<crate::session::RoomEnvironmentSnapshot, DaemonError> {
+    let viewport = match state.room_environment_snapshot(session_id) {
+        Ok(environment) => environment.viewport,
+        Err(crate::session::EnvironmentError::EnvironmentNotFound { .. }) => {
+            slice_environment_viewport(operation)?
+        }
+        Err(error) => {
+            return Err(DaemonError::LocalTransport {
+                operation,
+                message: format!("{}: {error:?}", error.code()),
+            });
+        }
+    };
+    let environment = state
+        .start_room_environment(session_id, viewport)
+        .map_err(|error| DaemonError::LocalTransport {
+            operation,
+            message: format!("{}: {error:?}", error.code()),
+        })?;
+    if environment.lifecycle == crate::session::EnvironmentLifecycle::Starting {
+        state
+            .finish_room_environment_controller_start(session_id, operation)
+            .await?;
+    } else {
+        state
+            .ensure_browser_controller_process_started(session_id)
+            .await?;
+        state
+            .reconcile_browser_controller_environment(session_id)
+            .await?;
+    }
+    state
+        .reconcile_room_environment_actors(session_id, None)
+        .map_err(|error| DaemonError::LocalTransport {
+            operation,
+            message: format!("{}: {error:?}", error.code()),
+        })
+}
+
+pub(super) async fn run_controller_browser_find_tool(
+    state: &KernelRuntimeState,
+    session_id: &str,
+    slice_id: &str,
+    agent_id: &str,
+    query: &str,
+    kind: &str,
+) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+    let capture = capture_controller_browser_status(
+        state,
+        session_id,
+        slice_id,
+        agent_id,
+        Some("browser_find"),
+    )
+    .await?;
+    let result =
+        (|| {
+            let browser_status = capture.result.payload.get("browser").ok_or_else(|| {
+                DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_find",
+                    message:
+                        "controller-backed browser status omitted its compatibility projection"
+                            .to_string(),
+                }
+            })?;
+            let browser =
+                controller_browser_find(browser_status, query, kind).map_err(|message| {
+                    DaemonError::LocalTransport {
+                        operation: "runtime_tool_slice_browser_find",
+                        message,
+                    }
+                })?;
+            Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({
+                    "source": "browser_controller",
+                    "slice_id": slice_id,
+                    "agent_id": agent_id,
+                    "session_id": session_id,
+                    "browser": browser,
+                }),
+            })
+        })();
+    match result {
+        Ok(result) => {
+            finish_captured_browser_observation(
+                state,
+                session_id,
+                &capture,
+                EnvironmentActionTerminal::Completed,
+                "browser_find",
+            )?;
+            Ok(result)
+        }
+        Err(error) => {
+            finish_captured_browser_observation(
+                state,
+                session_id,
+                &capture,
+                EnvironmentActionTerminal::Failed,
+                "browser_find",
+            )?;
+            Err(error)
+        }
+    }
+}
+
+pub(super) async fn run_controller_browser_text_tool(
+    state: &KernelRuntimeState,
+    session_id: &str,
+    slice_id: &str,
+    agent_id: &str,
+) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+    let (environment, text) =
+        capture_controller_browser_text(state, session_id, "runtime_tool_slice_browser_text")
+            .await?;
+    Ok(crate::transport::runtime_tools::RuntimeToolResult {
+        ok: true,
+        payload: serde_json::json!({
+            "source": "browser_controller",
+            "slice_id": slice_id,
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "environment_id": environment.environment_id,
+            "runtime_generation": environment.runtime_generation,
+            "tab_id": environment.focused_tab_id,
+            "text": text,
+        }),
+    })
+}
+
+pub(super) async fn run_controller_browser_wait_for_text_tool(
+    state: &KernelRuntimeState,
+    session_id: &str,
+    slice_id: &str,
+    agent_id: &str,
+    query: &str,
+    timeout_ms: Option<u64>,
+) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+    validate_controller_browser_text_query(query).map_err(|message| {
+        DaemonError::LocalTransport {
+            operation: "runtime_tool_slice_browser_wait_for_text",
+            message,
+        }
+    })?;
+    let timeout_ms = timeout_ms.unwrap_or(10_000).clamp(100, 60_000);
+    let timeout = std::time::Duration::from_millis(timeout_ms);
+    let started = std::time::Instant::now();
+    let environment = ensure_controller_browser_environment(
+        state,
+        session_id,
+        "runtime_tool_slice_browser_wait_for_text",
+    )
+    .await?;
+    let tab_id = environment
+        .focused_tab_id
+        .as_deref()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "runtime_tool_slice_browser_wait_for_text",
+            message: "the Room browser has no focused tab".to_string(),
+        })?
+        .to_string();
+    loop {
+        let text = capture_controller_browser_text_from_tab(state, session_id, &tab_id).await?;
+        let waited_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        if text.contains(query) {
+            return Ok(controller_browser_wait_for_text_result(
+                slice_id,
+                agent_id,
+                environment.clone(),
+                query,
+                waited_ms,
+                true,
+                timeout_ms,
+            ));
+        }
+        let elapsed = started.elapsed();
+        if elapsed >= timeout {
+            return Ok(controller_browser_wait_for_text_result(
+                slice_id,
+                agent_id,
+                environment.clone(),
+                query,
+                waited_ms,
+                false,
+                timeout_ms,
+            ));
+        }
+        tokio::time::sleep(
+            std::time::Duration::from_millis(250).min(timeout.saturating_sub(elapsed)),
+        )
+        .await;
+    }
+}
+
+pub(super) async fn capture_controller_browser_text(
+    state: &KernelRuntimeState,
+    session_id: &str,
+    operation: &'static str,
+) -> Result<(crate::session::RoomEnvironmentSnapshot, String), DaemonError> {
+    let environment = ensure_controller_browser_environment(state, session_id, operation).await?;
+    let tab_id =
+        environment
+            .focused_tab_id
+            .as_deref()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation,
+                message: "the Room browser has no focused tab".to_string(),
+            })?;
+    let text = capture_controller_browser_text_from_tab(state, session_id, tab_id).await?;
+    Ok((environment, text))
+}
+
+async fn capture_controller_browser_text_from_tab(
+    state: &KernelRuntimeState,
+    session_id: &str,
+    tab_id: &str,
+) -> Result<String, DaemonError> {
+    let snapshot = state
+        .capture_browser_environment_snapshot(session_id, tab_id)
+        .await?;
+    Ok(controller_browser_document_text(&snapshot))
+}
+
+fn slice_environment_viewport(
+    operation: &'static str,
+) -> Result<crate::session::CanonicalViewport, DaemonError> {
+    let geometry = std::env::var("CHARIOX_SLICE_SCREEN_GEOMETRY")
+        .unwrap_or_else(|_| "1280x800x24".to_string());
+    let mut parts = geometry.split('x');
+    let width = parts.next().and_then(|value| value.parse::<u32>().ok());
+    let height = parts.next().and_then(|value| value.parse::<u32>().ok());
+    if width.is_none() || height.is_none() || parts.next().is_none() || parts.next().is_some() {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: "CHARIOX_SLICE_SCREEN_GEOMETRY must use WIDTHxHEIGHTxDEPTH".to_string(),
+        });
+    }
+    let (width, height) = (
+        width.expect("validated width"),
+        height.expect("validated height"),
+    );
+    crate::session::CanonicalViewport::new(width, height, 1, width, height).map_err(|_| {
+        DaemonError::LocalTransport {
+            operation,
+            message: "CHARIOX_SLICE_SCREEN_GEOMETRY must contain positive dimensions".to_string(),
+        }
+    })
+}

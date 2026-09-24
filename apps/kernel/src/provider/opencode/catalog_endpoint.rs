@@ -78,12 +78,12 @@ pub(crate) fn ensure_opencode_account_endpoint(
     for name in crate::account_profile::provider_auth_env_vars("opencode") {
         command.env_remove(name);
     }
-    let mut child = command
-        .spawn()
-        .map_err(|error| DaemonError::LocalTransport {
+    let mut child = crate::process_spawn::spawn_command(command).map_err(|error| {
+        DaemonError::LocalTransport {
             operation: "ensure_opencode_account_endpoint",
             message: format!("failed to start profile-specific OpenCode server: {error}"),
-        })?;
+        }
+    })?;
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if endpoint_is_healthy(&endpoint) {

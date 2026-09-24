@@ -403,6 +403,7 @@ name = "chariox-kernel"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
+ "anyhow",
  "argon2",
  "base64",
  "bytes",
@@ -446,6 +447,7 @@ dependencies = [
  "url",
  "wait-timeout",
  "webpki-roots 1.0.8",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 

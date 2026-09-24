@@ -90,13 +90,11 @@ fn interactive_output_keeps_opencode_selection_sync_behavior() {
 async fn assert_owned_output_pump_drains_pending_record_after_run_state_change(
     state: crate::provider::ProviderRunState,
 ) {
+    let worktree = crate::test_support::TestWorktree::new("structured-output-pending");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-pending-structured-output",
-            "worktree-pending-structured-output",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -186,13 +184,11 @@ async fn owned_output_pump_drains_completed_pending_output_after_run_quiesces() 
 
 #[tokio::test]
 async fn live_structured_poll_failures_are_retried_then_surfaced() {
+    let worktree = crate::test_support::TestWorktree::new("structured-output-poll-retry");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-structured-poll-retry",
-            "worktree-structured-poll-retry",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let request = crate::provider::LaunchProviderRequest::new(
         session.id(),
@@ -286,13 +282,11 @@ async fn live_structured_poll_failures_are_retried_then_surfaced() {
 
 #[tokio::test]
 async fn structured_output_batch_fans_out_chunks_with_one_terminal_notification() {
+    let worktree = crate::test_support::TestWorktree::new("structured-output-fanout");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -389,6 +383,7 @@ async fn structured_output_batch_fans_out_chunks_with_one_terminal_notification(
 
 #[tokio::test]
 async fn structured_output_usage_resolves_the_cloud_owners_local_account_authority() {
+    let worktree = crate::test_support::TestWorktree::new("structured-output-cloud-owner");
     let cloud_owner_user_id = "cloud-owner";
     let mut config = crate::config::DaemonConfig::for_tests();
     config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
@@ -399,11 +394,9 @@ async fn structured_output_usage_resolves_the_cloud_owners_local_account_authori
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(
-            crate::session::CreateSessionRequest::new(
-                "workspace-cloud-owner-usage",
-                "worktree-cloud-owner-usage",
-            )
-            .with_owner_user_id(cloud_owner_user_id),
+            worktree
+                .session_request()
+                .with_owner_user_id(cloud_owner_user_id),
         )
         .expect("cloud-owned session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
@@ -485,13 +478,11 @@ async fn structured_output_usage_resolves_the_cloud_owners_local_account_authori
 
 #[tokio::test]
 async fn structured_output_and_completion_fanout_respect_collaborator_trace_visibility() {
+    let worktree = crate::test_support::TestWorktree::new("structured-output-collaborator");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-collaborator-trace-output",
-            "worktree-collaborator-trace-output",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     {
         let mut sessions = app.sessions_mut();
@@ -714,13 +705,11 @@ async fn structured_output_and_completion_fanout_respect_collaborator_trace_visi
 
 #[tokio::test]
 async fn structured_output_batch_persists_one_turn_id_for_all_chunks() {
+    let worktree = crate::test_support::TestWorktree::new("structured-output-turn-id");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-structured-history-turn",
-            "worktree-structured-history-turn",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -840,14 +829,12 @@ async fn structured_output_batch_persists_one_turn_id_for_all_chunks() {
 
 #[tokio::test]
 async fn active_turn_trace_metadata_uses_prompt_owner_when_session_mirror_is_stale() {
+    let worktree = crate::test_support::TestWorktree::new("structured-output-stale-turn");
     let mut app =
         crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-stale-active-turn",
-            "worktree-stale-active-turn",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let run = app
         .launch_provider(
@@ -927,13 +914,11 @@ async fn active_turn_trace_metadata_uses_prompt_owner_when_session_mirror_is_sta
 
 #[tokio::test]
 async fn pty_output_pump_batches_chunks_with_one_terminal_notification() {
+    let worktree = crate::test_support::TestWorktree::new("structured-output-pty");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
@@ -1028,13 +1013,11 @@ async fn pty_output_pump_batches_chunks_with_one_terminal_notification() {
 
 #[tokio::test]
 async fn idle_claude_native_tui_projects_startup_terminal_without_history() {
+    let worktree = crate::test_support::TestWorktree::new("structured-output-claude-native");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-idle-claude-native-runtime",
-            "worktree-idle-claude-native-runtime",
-        ))
+        .create_session(worktree.session_request())
         .expect("session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(

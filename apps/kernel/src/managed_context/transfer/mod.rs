@@ -140,6 +140,18 @@ pub(crate) struct ManagedContextTransferStore {
 }
 
 impl ManagedContextTransferStore {
+    pub(crate) fn has_incomplete_import(&self) -> bool {
+        self.lock_state().entries.values().any(|entry| {
+            matches!(
+                entry.phase,
+                ManagedContextTransferPhase::Armed
+                    | ManagedContextTransferPhase::Receiving
+                    | ManagedContextTransferPhase::ReadyToImport
+                    | ManagedContextTransferPhase::Importing
+            )
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn open(root: PathBuf) -> Result<Self, DaemonError> {
         Self::open_with_launch_recovery(root, None)
@@ -558,6 +570,25 @@ impl ManagedContextTransferStore {
         import_receipt_json: &str,
         now_ms: u64,
     ) -> Result<(), DaemonError> {
+        self.commit_import_with_publication(transfer_id, import_receipt_json, now_ms, true)
+    }
+
+    pub(crate) fn commit_credential_import(
+        &self,
+        transfer_id: &str,
+        import_receipt_json: &str,
+        now_ms: u64,
+    ) -> Result<(), DaemonError> {
+        self.commit_import_with_publication(transfer_id, import_receipt_json, now_ms, false)
+    }
+
+    fn commit_import_with_publication(
+        &self,
+        transfer_id: &str,
+        import_receipt_json: &str,
+        now_ms: u64,
+        publish_launch_target: bool,
+    ) -> Result<(), DaemonError> {
         if import_receipt_json.is_empty() || import_receipt_json.len() > MAX_IMPORT_RECEIPT_BYTES {
             return Err(transfer_error(
                 "managed context import receipt size is invalid",
@@ -575,10 +606,14 @@ impl ManagedContextTransferStore {
             .entries
             .get(transfer_id)
             .ok_or_else(|| transfer_error("managed context transfer does not exist"))?;
-        let launch_target = import_receipt
-            .as_ref()
-            .map(|receipt| launch_target_from_receipt(transfer_id, existing, receipt))
-            .transpose()?;
+        let launch_target = if publish_launch_target {
+            import_receipt
+                .as_ref()
+                .map(|receipt| launch_target_from_receipt(transfer_id, existing, receipt))
+                .transpose()?
+        } else {
+            None
+        };
         if existing.phase == ManagedContextTransferPhase::Consumed {
             return if existing.import_receipt_sha256.as_deref() == Some(receipt_sha256.as_str())
                 && existing.import_receipt_json.as_deref() == Some(import_receipt_json)
@@ -787,20 +822,14 @@ impl ManagedContextTransferStore {
                     .insert(recovery.plan.context_id.clone(), target);
             }
             if legacy_version == 4 {
-                let state_root = self
-                    .root
-                    .parent()
-                    .ok_or_else(|| transfer_error("managed context transfer root has no parent"))?;
                 for (context_id, target) in &mut state.applied_contexts {
                     if let crate::local::ManagedContextDevelopmentLaunchTarget::Empty {
                         workspace_path,
                     } = &mut target.development
                     {
                         if workspace_path.is_empty() {
-                            *workspace_path = state_root
-                                .join("managed-context-empty-workspaces")
-                                .join(sha256_bytes(context_id.as_bytes()))
-                                .join("workspace")
+                            *workspace_path = crate::managed_context::empty::
+                                managed_user_empty_context_workspace_path(context_id)?
                                 .to_string_lossy()
                                 .into_owned();
                         }
@@ -1031,9 +1060,10 @@ fn launch_target_from_receipt(
                 ));
             }
             ManagedContextDevelopmentLaunchTarget::Empty {
-                workspace_path: entry
-                    .destination_root
-                    .join("workspace")
+                workspace_path:
+                    crate::managed_context::empty::managed_user_empty_context_workspace_path(
+                        &entry.plan.context_id,
+                    )?
                     .to_string_lossy()
                     .into_owned(),
             }
@@ -1073,7 +1103,20 @@ fn development_launch_target(
     receipt: &crate::managed_context::development::DevelopmentContextPublicationReceipt,
 ) -> Result<crate::local::ManagedContextDevelopmentLaunchTarget, DaemonError> {
     let destination_root = receipt
-        .destination_root
+        .repositories
+        .first()
+        .and_then(|repository| repository.destination_path.parent())
+        .ok_or_else(|| transfer_error("managed context destination has no repository parent"))?;
+    if receipt
+        .repositories
+        .iter()
+        .any(|repository| repository.destination_path.parent() != Some(destination_root))
+    {
+        return Err(transfer_error(
+            "managed context repositories do not share a destination root",
+        ));
+    }
+    let destination_root = destination_root
         .to_str()
         .ok_or_else(|| transfer_error("managed context destination is not UTF-8"))?
         .to_string();
@@ -1082,6 +1125,7 @@ fn development_launch_target(
         .iter()
         .map(|repository| {
             Ok(crate::local::ManagedContextRepositoryLaunchTarget {
+                workspace_kind: repository.workspace_kind,
                 repository_id: repository.repository_id.clone(),
                 role: repository.role,
                 target_directory: repository.target_directory.clone(),
@@ -1110,13 +1154,10 @@ fn recover_launch_target_from_publication(
 ) -> Result<crate::local::ManagedContextLaunchTarget, DaemonError> {
     let development = match &recovery.plan.development {
         crate::managed_context::package::ManagedContextDevelopmentSelection::Empty => {
-            let state_root = transfer_root
-                .parent()
-                .ok_or_else(|| transfer_error("managed context transfer root has no parent"))?;
-            let workspace_path = state_root
-                .join("managed-context-empty-workspaces")
-                .join(sha256_bytes(recovery.plan.context_id.as_bytes()))
-                .join("workspace")
+            let workspace_path =
+                crate::managed_context::empty::managed_user_empty_context_workspace_path(
+                    &recovery.plan.context_id,
+                )?
                 .to_string_lossy()
                 .into_owned();
             crate::local::ManagedContextDevelopmentLaunchTarget::Empty { workspace_path }

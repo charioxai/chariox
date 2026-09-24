@@ -26,6 +26,7 @@ pub mod logging;
 pub mod managed_bootstrap;
 pub mod managed_context;
 pub mod mcp;
+pub(crate) mod process_spawn;
 pub(crate) mod prompt_assembly;
 pub mod prompt_transcript;
 pub mod provider;

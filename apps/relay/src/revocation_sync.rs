@@ -3,17 +3,18 @@
 //!
 //! The cloud exposes active revocations for a realm at
 //! `GET /relay/revocations?realmId=...`. This module fetches that document on
-//! an interval and applies it to the registry, mapping CLIENT/MACHINE subjects
-//! to `revoke_subject` and every entry's account to `revoke_account`. Because
-//! cloud revocations carry no expiry, each entry is given a bounded horizon so
-//! the registry stays prunable (the underlying tokens expire regardless).
+//! an interval and applies it to the registry. Each Cloud entry is an exact
+//! subject tombstone namespaced by `accountId`; that namespace must not be
+//! interpreted as an account-wide revocation. Because cloud revocations carry
+//! no expiry, each entry is given a bounded horizon so the registry stays
+//! prunable (the underlying tokens expire regardless).
 
 use std::time::Duration;
 
 use serde::Deserialize;
 use tokio::sync::watch;
 
-use crate::auth::RelayRevocationRegistry;
+use crate::auth::{RelayRevocationRegistry, RelaySubjectKind};
 
 /// How far ahead a revocation entry stays active in the registry before it can
 /// be pruned. Comfortably longer than any relay token TTL, so a revoked
@@ -50,26 +51,33 @@ pub fn apply_revocations_document(
     let expires_at_ms = now_ms.saturating_add(REVOCATION_SYNC_HORIZON_MS);
     let mut applied = 0;
     for entry in document.revocations {
-        if let Some(account_id) = entry
+        let Some(account_id) = entry
             .account_id
             .as_deref()
             .filter(|value| !value.is_empty())
-        {
-            registry.revoke_account(account_id, expires_at_ms);
-            applied += 1;
-        }
-        // CLIENT/MACHINE revocations name a paired-identity subject that maps
-        // to a token's client_id / machine_id claim.
-        if matches!(
-            entry.subject_kind.as_deref(),
-            Some("CLIENT") | Some("MACHINE")
-        ) {
-            if let Some(subject) = entry.subject.as_deref().filter(|value| !value.is_empty()) {
-                registry.revoke_subject(subject, expires_at_ms);
-            }
-        }
+        else {
+            continue;
+        };
+        let Some(subject) = entry.subject.as_deref().filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        let Some(subject_kind) = entry.subject_kind.as_deref().and_then(parse_subject_kind) else {
+            continue;
+        };
+        registry.revoke_scoped_subject(account_id, subject_kind, subject, expires_at_ms);
+        applied += 1;
     }
     Ok(applied)
+}
+
+fn parse_subject_kind(value: &str) -> Option<RelaySubjectKind> {
+    match value {
+        "CLIENT" => Some(RelaySubjectKind::Client),
+        "KERNEL" => Some(RelaySubjectKind::Kernel),
+        "MACHINE" => Some(RelaySubjectKind::Machine),
+        "SERVICE" => Some(RelaySubjectKind::Service),
+        _ => None,
+    }
 }
 
 fn revocations_url(base_url: &str, realm_id: &str) -> String {
@@ -157,7 +165,60 @@ fn current_unix_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
+    use crate::auth::{
+        RelayAction, RelayAuthError, RelayAuthRequest, RelaySubjectKind, RelayTokenClaims,
+        ScopedTokenVerifier,
+    };
+
+    fn claims(
+        token_id: &str,
+        account_id: &str,
+        subject: &str,
+        subject_kind: RelaySubjectKind,
+        machine_id: Option<&str>,
+        client_id: Option<&str>,
+    ) -> RelayTokenClaims {
+        RelayTokenClaims {
+            issuer: "issuer".to_string(),
+            subject: subject.to_string(),
+            subject_kind,
+            realm_id: "realm-1".to_string(),
+            allowed_actions: vec![match subject_kind {
+                RelaySubjectKind::Kernel | RelaySubjectKind::Machine => RelayAction::DaemonRegister,
+                RelaySubjectKind::Client | RelaySubjectKind::Service => RelayAction::ClientConnect,
+            }],
+            allowed_targets: None,
+            issued_at_ms: 1,
+            expires_at_ms: 100_000,
+            token_id: token_id.to_string(),
+            account_id: Some(account_id.to_string()),
+            organization_id: None,
+            user_id: None,
+            device_id: None,
+            machine_id: machine_id.map(str::to_string),
+            client_id: client_id.map(str::to_string),
+            session_id: None,
+            public_key_thumbprint: None,
+            entitlements_version: None,
+        }
+    }
+
+    fn verify(
+        verifier: &ScopedTokenVerifier,
+        token: &str,
+        action: RelayAction,
+    ) -> Result<(), RelayAuthError> {
+        verifier
+            .verify(RelayAuthRequest {
+                token,
+                action,
+                target: None,
+            })
+            .map(|_| ())
+    }
 
     #[test]
     fn builds_the_realm_scoped_revocations_url() {
@@ -168,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn applies_subject_and_account_revocations_from_a_document() {
+    fn applies_supported_subject_revocations_from_a_document() {
         let registry = RelayRevocationRegistry::new();
         let body = serde_json::json!({
             "revocations": [
@@ -192,6 +253,151 @@ mod tests {
         )
         .expect("empty document parses");
         assert_eq!(empty, 0);
+    }
+
+    #[test]
+    fn identity_tombstones_only_revoke_old_subjects_within_the_account() {
+        let registry = RelayRevocationRegistry::new();
+        let tokens = BTreeMap::from([
+            (
+                "old-kernel-token".to_string(),
+                claims(
+                    "old-kernel-jti",
+                    "account-1",
+                    "kernel-old",
+                    RelaySubjectKind::Kernel,
+                    Some("machine-old"),
+                    None,
+                ),
+            ),
+            (
+                "controller-token".to_string(),
+                claims(
+                    "controller-jti",
+                    "account-1",
+                    "controller-client",
+                    RelaySubjectKind::Client,
+                    None,
+                    Some("controller-client"),
+                ),
+            ),
+            (
+                "replacement-token".to_string(),
+                claims(
+                    "replacement-jti",
+                    "account-1",
+                    "kernel-replacement",
+                    RelaySubjectKind::Kernel,
+                    Some("machine-replacement"),
+                    None,
+                ),
+            ),
+        ]);
+        let verifier = ScopedTokenVerifier::new(tokens, BTreeMap::new(), Some(1_000))
+            .with_revocations(registry.clone());
+        let body = serde_json::json!({
+            "revocations": [
+                {
+                    "accountId": "account-1",
+                    "subjectKind": "MACHINE",
+                    "subject": "machine-old"
+                },
+                {
+                    "accountId": "account-1",
+                    "subjectKind": "KERNEL",
+                    "subject": "kernel-old"
+                }
+            ]
+        })
+        .to_string();
+
+        assert_eq!(
+            apply_revocations_document(&body, &registry, 1_000).expect("document parses"),
+            2
+        );
+        assert_eq!(
+            verify(&verifier, "old-kernel-token", RelayAction::DaemonRegister),
+            Err(RelayAuthError::TokenRevoked)
+        );
+        verify(&verifier, "controller-token", RelayAction::ClientConnect)
+            .expect("an unrelated controller in the account remains admitted");
+        verify(&verifier, "replacement-token", RelayAction::DaemonRegister)
+            .expect("the replacement kernel in the account remains admitted");
+    }
+
+    #[test]
+    fn kernel_tombstones_are_kind_and_account_scoped() {
+        let registry = RelayRevocationRegistry::new();
+        let tokens = BTreeMap::from([
+            (
+                "revoked-kernel-token".to_string(),
+                claims(
+                    "revoked-kernel-jti",
+                    "account-1",
+                    "shared-subject",
+                    RelaySubjectKind::Kernel,
+                    None,
+                    None,
+                ),
+            ),
+            (
+                "same-account-client-token".to_string(),
+                claims(
+                    "same-account-client-jti",
+                    "account-1",
+                    "shared-subject",
+                    RelaySubjectKind::Client,
+                    None,
+                    Some("shared-subject"),
+                ),
+            ),
+            (
+                "other-account-kernel-token".to_string(),
+                claims(
+                    "other-account-kernel-jti",
+                    "account-2",
+                    "shared-subject",
+                    RelaySubjectKind::Kernel,
+                    None,
+                    None,
+                ),
+            ),
+        ]);
+        let verifier = ScopedTokenVerifier::new(tokens, BTreeMap::new(), Some(1_000))
+            .with_revocations(registry.clone());
+        let body = serde_json::json!({
+            "revocations": [{
+                "accountId": "account-1",
+                "subjectKind": "KERNEL",
+                "subject": "shared-subject"
+            }]
+        })
+        .to_string();
+
+        assert_eq!(
+            apply_revocations_document(&body, &registry, 1_000).expect("document parses"),
+            1
+        );
+        assert_eq!(
+            verify(
+                &verifier,
+                "revoked-kernel-token",
+                RelayAction::DaemonRegister
+            ),
+            Err(RelayAuthError::TokenRevoked)
+        );
+        verify(
+            &verifier,
+            "same-account-client-token",
+            RelayAction::ClientConnect,
+        )
+        .expect("the same subject string in another identity kind remains admitted");
+        verify(
+            &verifier,
+            "other-account-kernel-token",
+            RelayAction::DaemonRegister,
+        )
+        .expect("the same kernel subject in another account remains admitted");
     }
 
     #[test]

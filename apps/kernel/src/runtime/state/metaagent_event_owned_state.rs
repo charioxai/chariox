@@ -691,6 +691,7 @@ impl KernelRuntimeOwnedState {
         if let (crate::session::PromptSubmissionOutcome::Started { prompt }, Some(dispatch)) =
             (&submission.outcome, submission.dispatch.as_ref())
         {
+            let activity_mutation = self.begin_managed_activity_mutation();
             self.active_turns.start(
                 crate::app::ActiveTurnState::new(
                     dispatch.session_id.clone(),
@@ -701,6 +702,7 @@ impl KernelRuntimeOwnedState {
                 .with_prompt_metadata(prompt)
                 .with_trace_id("metaagent-event"),
             );
+            activity_mutation.record();
         }
         let delivery_status = match &submission.outcome {
             crate::session::PromptSubmissionOutcome::Started { .. } => {

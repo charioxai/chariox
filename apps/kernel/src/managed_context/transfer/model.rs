@@ -66,7 +66,10 @@ pub(crate) struct ManagedContextTransferCaller {
     pub key_thumbprint: String,
     pub owner_user_id: String,
     pub realm_id: String,
-    pub target_environment_id: String,
+    /// `Some` is a confirmed managed-environment registration. `None` is the
+    /// target-local confirmed disposable-worker receipt binding; the worker
+    /// identity and target kernel/key remain checked on every request.
+    pub target_environment_id: Option<String>,
     pub target_kernel_id: String,
     pub target_key_thumbprint: String,
 }

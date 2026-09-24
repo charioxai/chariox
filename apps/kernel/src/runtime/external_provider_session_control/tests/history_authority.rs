@@ -12,7 +12,7 @@ fn private_meta_continuation_observation_matches_its_owned_marker() {
 }
 
 #[test]
-fn observed_external_history_appends_without_creating_active_prompt() {
+fn retained_external_history_appends_without_projecting_live_work() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -54,12 +54,12 @@ fn observed_external_history_appends_without_creating_active_prompt() {
         },
     )
     .expect("observed history should append");
-    let working_activity_revision = app.session_state_projection_store().change_sequence();
+    let history_activity_revision = app.session_state_projection_store().change_sequence();
 
     assert_eq!(outcome.changed_count, 2);
     assert!(
-        working_activity_revision > idle_activity_revision,
-        "starting external activity should wake session projection subscribers"
+        history_activity_revision >= idle_activity_revision,
+        "history import may refresh the session projection without claiming live work"
     );
     assert!(app
         .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
@@ -91,26 +91,14 @@ fn observed_external_history_appends_without_creating_active_prompt() {
         .expect("imported agent activity should project");
     assert_eq!(
         activity.status,
-        crate::runtime::projection::AgentRuntimeStatus::Working,
-        "live external observation should project WORKING without owning prompt state"
+        crate::runtime::projection::AgentRuntimeStatus::Idle,
+        "retained transcript history is not provider liveness authority"
     );
     assert_eq!(
         activity.prompt_status,
-        crate::runtime::projection::AgentPromptRuntimeStatus::Running
+        crate::runtime::projection::AgentPromptRuntimeStatus::None
     );
-    let active_turn = activity
-        .active_turn
-        .as_ref()
-        .expect("live external observation should project an active turn");
-    assert_eq!(
-        active_turn.prompt_origin,
-        Some(crate::session::PromptOrigin::External)
-    );
-    assert_eq!(active_turn.external_provider.as_deref(), Some("codex"));
-    assert_eq!(
-        active_turn.external_provider_session_id.as_deref(),
-        Some("thread-observed")
-    );
+    assert!(activity.active_turn.is_none());
 
     let import = app
         .agents()
@@ -153,8 +141,8 @@ fn observed_external_history_appends_without_creating_active_prompt() {
     )
     .expect("observed completion should append");
     assert!(
-        app.session_state_projection_store().change_sequence() > working_activity_revision,
-        "settling external activity should wake session projection subscribers"
+        app.session_state_projection_store().change_sequence() >= history_activity_revision,
+        "settled retained history must remain non-live"
     );
 
     assert!(app
@@ -192,7 +180,16 @@ fn empty_external_observation_clears_projected_activity() {
         "codex:thread-observed".to_string(),
         "codex".to_string(),
         "thread-observed".to_string(),
-    );
+    )
+    .with_cursor(ExternalProviderObservedCursor::new(
+        Some("assistant-1".to_string()),
+        Some(40),
+        Some(crate::history::external_provider_observed_merge_key(
+            "codex",
+            "thread-observed",
+            "assistant-1",
+        )),
+    ));
     persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
         .expect("metadata should persist");
 
@@ -205,12 +202,20 @@ fn empty_external_observation_clears_projected_activity() {
                 None,
                 import.clone(),
             ),
-            turns: vec![ObservedExternalProviderTurn {
-                provider_turn_id: Some("user-1".to_string()),
-                role: ObservedExternalProviderTurnRole::User,
-                text: "external prompt".to_string(),
-                observed_at_ms: Some(42),
-            }],
+            turns: vec![
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("assistant-1".to_string()),
+                    role: ObservedExternalProviderTurnRole::Assistant,
+                    text: "retained response".to_string(),
+                    observed_at_ms: Some(40),
+                },
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("user-2".to_string()),
+                    role: ObservedExternalProviderTurnRole::User,
+                    text: "external prompt".to_string(),
+                    observed_at_ms: Some(42),
+                },
+            ],
         },
     )
     .expect("live observation should project");
@@ -244,6 +249,87 @@ fn empty_external_observation_clears_projected_activity() {
         .agent_activity
         .get(agent.id())
         .expect("imported agent activity should project");
+    assert_eq!(
+        activity.status,
+        crate::runtime::projection::AgentRuntimeStatus::Idle
+    );
+    assert!(activity.active_turn.is_none());
+}
+
+#[test]
+fn older_delayed_external_observation_cannot_restore_settled_activity() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    let import = ExternalProviderImportMetadata::observed_history(
+        "codex:thread-delayed".to_string(),
+        "codex".to_string(),
+        "thread-delayed".to_string(),
+    )
+    .with_cursor(ExternalProviderObservedCursor::new(
+        Some("assistant-1".to_string()),
+        Some(84),
+        Some(crate::history::external_provider_observed_merge_key(
+            "codex",
+            "thread-delayed",
+            "assistant-1",
+        )),
+    ));
+    persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+        .expect("metadata should persist");
+    let mut older = attached_external_observer_target_from_import(
+        session.id().to_string(),
+        agent.id().to_string(),
+        None,
+        import.clone(),
+    );
+    reserve_external_observation_generations(&app, std::slice::from_mut(&mut older));
+    let mut settled = attached_external_observer_target_from_import(
+        session.id().to_string(),
+        agent.id().to_string(),
+        None,
+        import,
+    );
+    reserve_external_observation_generations(&app, std::slice::from_mut(&mut settled));
+
+    append_observed_external_turns_for_attached_target(
+        &mut app,
+        AttachedExternalObserverRead {
+            target: settled,
+            turns: vec![ObservedExternalProviderTurn {
+                provider_turn_id: Some("task-complete-2".to_string()),
+                role: ObservedExternalProviderTurnRole::Status,
+                text: "codex task_complete\n{\"turn_id\":\"turn-2\"}".to_string(),
+                observed_at_ms: Some(120),
+            }],
+        },
+    )
+    .expect("newer settlement should apply");
+    append_observed_external_turns_for_attached_target(
+        &mut app,
+        AttachedExternalObserverRead {
+            target: older,
+            turns: vec![ObservedExternalProviderTurn {
+                provider_turn_id: Some("user-2".to_string()),
+                role: ObservedExternalProviderTurnRole::User,
+                text: "delayed external prompt".to_string(),
+                observed_at_ms: Some(100),
+            }],
+        },
+    )
+    .expect("older delayed history may reconcile without restoring activity");
+
+    let projection = crate::runtime::projection::SessionSnapshotProjection::from_daemon_app(
+        &mut app,
+        session.id(),
+        0,
+    )
+    .expect("session projection should load");
+    let activity = projection
+        .agent_activity
+        .get(agent.id())
+        .expect("agent activity should project");
     assert_eq!(
         activity.status,
         crate::runtime::projection::AgentRuntimeStatus::Idle

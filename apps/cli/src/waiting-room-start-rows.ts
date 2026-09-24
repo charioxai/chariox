@@ -18,6 +18,7 @@ import { describeWaitingRoomWorktreeSelection } from "./waiting-room-worktrees.j
 import type { WaitingRoomRemoteState, WaitingRoomRow, WaitingRoomState, WaitingRoomTargetState } from "./waiting-room-types.js"
 import { describeWaitingRoomProjectSelection } from "./waiting-room-projects.js"
 import {
+  DEFAULT_MANAGED_REPOSITORY_ROOT,
   managedAutoStopLabel,
   managedDurationLabel,
   managedEnvironmentIsLaunchReady,
@@ -132,6 +133,18 @@ export function waitingRoomStartRows(
       selectable: true,
       scrollbar: "",
     },
+    ...(selectedEnvironment
+      ? [{
+          id: "managed-environment-repository-root",
+          title: "Trusted repository root",
+          value: selectedEnvironment.managedRepositoryRoot,
+          titleWidth: options.titleWidth,
+          indent: 2,
+          focused: false,
+          selectable: false,
+          scrollbar: "",
+        }]
+      : []),
     {
       id: "launch-kernel",
       title: "Kernel",
@@ -343,6 +356,13 @@ export function waitingRoomManagedMachineDialogRows(
   return [
     startRow("managed-compute", "Compute class", state.managedComputeClass ?? "Unavailable", state, titleWidth),
     startRow("managed-region", "Region", state.managedRegion ?? "Unavailable", state, titleWidth),
+    startRow(
+      "managed-repository-root",
+      "Trusted repository root",
+      state.managedRepositoryRoot ?? DEFAULT_MANAGED_REPOSITORY_ROOT,
+      state,
+      titleWidth,
+    ),
     startRow("managed-kernel-context", "Kernel context from", managedKernelContextLabel(state, remote), state, titleWidth),
     startRow("managed-development", "Development setup", state.managedDevelopmentMode === "current_project" ? "Current Project" : "Empty", state, titleWidth),
     ...repositoryRows,

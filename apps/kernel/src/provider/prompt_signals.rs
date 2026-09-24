@@ -24,6 +24,10 @@ pub struct ProviderPromptSignalBatch {
     pub completions: Vec<ProviderAssistantCompletion>,
     pub prompt_completed: bool,
     pub terminal_failure: Option<String>,
+    // Only provider-protocol error frames may become durable explicit-provider
+    // termination evidence. PTY/stderr classifiers keep terminal_failure for
+    // prompt settlement but must not be promoted across that trust boundary.
+    pub explicit_provider_error: bool,
     pub notices: Vec<String>,
     pub resolved_model: Option<String>,
     pub resolved_model_source: Option<&'static str>,

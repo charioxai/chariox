@@ -1,4 +1,5 @@
-use super::super::drain::{codex_authoritative_backfill_due, codex_turn_should_backfill};
+use super::super::backfill::CodexAuthoritativeBackfillGate;
+use super::super::drain::{codex_turn_recovery_evidence, codex_turn_should_backfill};
 use super::super::events::codex_completed_turn_has_settlement_evidence;
 use super::super::prompt::note_codex_turn_start_response;
 use super::super::turn::CodexTerminalSignal;
@@ -1569,6 +1570,215 @@ fn managed_turn_does_not_backfill_from_pre_tool_commentary() {
 
 #[test]
 fn authoritative_backfill_is_due_even_when_the_notification_drain_is_not_quiet() {
-    assert!(codex_authoritative_backfill_due(true, None));
-    assert!(!codex_authoritative_backfill_due(false, None));
+    use std::time::Instant;
+
+    let mut tracker = CodexTurnTracker::default();
+    tracker.note_terminal(CodexTerminalSignal {
+        turn_id: "turn-1".to_string(),
+        status: "completed".to_string(),
+        error_message: None,
+    });
+    let recovery_evidence = codex_turn_recovery_evidence(
+        crate::provider::AgentEndpointMode::Managed,
+        true,
+        &tracker,
+        false,
+    );
+    assert!(recovery_evidence.is_some());
+    let now = Instant::now();
+    assert!(CodexAuthoritativeBackfillGate::default().is_due(true, recovery_evidence, now));
+    assert!(!CodexAuthoritativeBackfillGate::default().is_due(false, recovery_evidence, now));
+}
+
+#[test]
+fn long_healthy_active_turn_has_bounded_authoritative_reconciliation() {
+    use std::time::{Duration, Instant};
+
+    let mut full_thread_requests = 0;
+    let mut gate = CodexAuthoritativeBackfillGate::default();
+    let mut now = Instant::now();
+    for _ in 0..10_000 {
+        if gate.is_due(true, None, now) {
+            full_thread_requests += 1;
+        }
+        now += Duration::from_millis(500);
+    }
+
+    assert_eq!(full_thread_requests, 1);
+}
+
+#[test]
+fn long_healthy_external_turn_has_bounded_authoritative_reconciliation() {
+    use std::time::{Duration, Instant};
+
+    let tracker = CodexTurnTracker::default();
+    let mut full_thread_requests = 0;
+    let mut gate = CodexAuthoritativeBackfillGate::default();
+    let mut now = Instant::now();
+    for _ in 0..10_000 {
+        let recovery_evidence = codex_turn_recovery_evidence(
+            crate::provider::AgentEndpointMode::External,
+            true,
+            &tracker,
+            true,
+        );
+        if gate.is_due(true, recovery_evidence, now) {
+            full_thread_requests += 1;
+        }
+        now += Duration::from_millis(500);
+    }
+
+    assert_eq!(full_thread_requests, 1);
+}
+
+#[test]
+fn completed_tool_evidence_has_finite_authoritative_reconciliation_during_silent_model_work() {
+    use std::time::{Duration, Instant};
+
+    let mut tracker = CodexTurnTracker::default();
+    tracker.note_tool_started("tool-1");
+    tracker.note_tool_completed("tool-1");
+    tracker.force_assistant_evidence_quiet_for_tests(Duration::from_millis(250));
+
+    let mut full_thread_requests = 0;
+    let mut gate = CodexAuthoritativeBackfillGate::default();
+    let mut now = Instant::now();
+    for _ in 0..10_000 {
+        let recovery_evidence = codex_turn_recovery_evidence(
+            crate::provider::AgentEndpointMode::Managed,
+            true,
+            &tracker,
+            true,
+        );
+        if gate.is_due(true, recovery_evidence, now) {
+            full_thread_requests += 1;
+        }
+        now += Duration::from_millis(500);
+    }
+
+    assert_eq!(full_thread_requests, 14);
+}
+
+#[test]
+fn completed_tool_evidence_stays_bounded_across_ordinary_activity_bursts() {
+    use std::time::{Duration, Instant};
+
+    for endpoint_mode in [
+        crate::provider::AgentEndpointMode::Managed,
+        crate::provider::AgentEndpointMode::External,
+    ] {
+        let mut tracker = CodexTurnTracker::default();
+        tracker.note_tool_started("tool-1");
+        tracker.note_tool_completed("tool-1");
+        let completed_tool_evidence = tracker.completion_recovery_version();
+
+        let mut full_thread_requests = 0;
+        let mut gate = CodexAuthoritativeBackfillGate::default();
+        let mut now = Instant::now();
+        for _ in 0..10_000 {
+            tracker.note_activity();
+            tracker.force_assistant_evidence_quiet_for_tests(Duration::from_millis(250));
+            assert!(codex_turn_should_backfill(
+                endpoint_mode,
+                true,
+                &tracker,
+                true,
+            ));
+            let recovery_evidence =
+                codex_turn_recovery_evidence(endpoint_mode, true, &tracker, true);
+            assert_eq!(recovery_evidence, completed_tool_evidence);
+            if gate.is_due(true, recovery_evidence, now) {
+                full_thread_requests += 1;
+            }
+            now += Duration::from_millis(500);
+        }
+
+        assert_eq!(full_thread_requests, 14, "{endpoint_mode:?}");
+    }
+}
+
+#[test]
+fn completion_evidence_rearms_authoritative_backfill_after_a_bounded_gate() {
+    use std::time::{Duration, Instant};
+
+    let mut pending_terminal = CodexTurnTracker::default();
+    pending_terminal.note_terminal(CodexTerminalSignal {
+        turn_id: "turn-1".to_string(),
+        status: "completed".to_string(),
+        error_message: None,
+    });
+    let mut legacy_completion = CodexTurnTracker::default();
+    legacy_completion.note_legacy_completion_hint();
+    let mut quiet_terminal_assistant = CodexTurnTracker::default();
+    quiet_terminal_assistant.note_assistant_content();
+    quiet_terminal_assistant.note_assistant_item_completed();
+    quiet_terminal_assistant.force_assistant_evidence_quiet_for_tests(Duration::from_millis(250));
+    let mut quiet_completed_tool = CodexTurnTracker::default();
+    quiet_completed_tool.note_tool_started("tool-1");
+    quiet_completed_tool.note_tool_completed("tool-1");
+    quiet_completed_tool.force_assistant_evidence_quiet_for_tests(Duration::from_millis(250));
+
+    for (tracker, drained_to_quiet) in [
+        (&pending_terminal, false),
+        (&legacy_completion, false),
+        (&quiet_terminal_assistant, true),
+        (&quiet_completed_tool, true),
+    ] {
+        let recovery_evidence = codex_turn_recovery_evidence(
+            crate::provider::AgentEndpointMode::Managed,
+            true,
+            tracker,
+            drained_to_quiet,
+        );
+        assert!(recovery_evidence.is_some());
+        let mut gate = CodexAuthoritativeBackfillGate::default();
+        let now = Instant::now();
+        assert!(gate.is_due(true, None, now));
+        assert!(!gate.is_due(true, recovery_evidence, now));
+        assert!(gate.is_due(true, recovery_evidence, now + Duration::from_millis(500)));
+        assert!(!gate.is_due(true, recovery_evidence, now + Duration::from_millis(500)));
+    }
+}
+
+#[test]
+fn newer_completion_evidence_and_each_turn_reset_authoritative_backfill_budget() {
+    use std::time::{Duration, Instant};
+
+    let mut tracker = CodexTurnTracker::default();
+    tracker.note_legacy_completion_hint();
+    let evidence = tracker.completion_recovery_version();
+    let mut gate = CodexAuthoritativeBackfillGate::default();
+    let mut now = Instant::now();
+    let mut requests = 0;
+    for _ in 0..10_000 {
+        if gate.is_due(true, evidence, now) {
+            requests += 1;
+        }
+        now += Duration::from_millis(500);
+    }
+    assert_eq!(requests, 14);
+    assert!(!gate.is_due(true, evidence, now));
+
+    tracker.note_assistant_content();
+    tracker.note_assistant_item_completed();
+    tracker.force_assistant_evidence_quiet_for_tests(Duration::from_millis(250));
+    let newer_evidence = tracker.completion_recovery_version();
+    assert_ne!(newer_evidence, evidence);
+    assert!(gate.is_due(true, newer_evidence, now));
+
+    tracker.reset_for_started();
+    assert_eq!(
+        codex_turn_recovery_evidence(
+            crate::provider::AgentEndpointMode::Managed,
+            true,
+            &tracker,
+            true,
+        ),
+        None
+    );
+    tracker.note_legacy_completion_hint();
+    let next_turn_evidence = tracker.completion_recovery_version();
+    assert_ne!(next_turn_evidence, newer_evidence);
+    gate.reset();
+    assert!(gate.is_due(true, next_turn_evidence, now));
 }

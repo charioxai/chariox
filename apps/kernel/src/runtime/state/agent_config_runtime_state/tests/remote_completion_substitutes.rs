@@ -217,6 +217,7 @@ async fn assert_remote_workflow_substitute_confirmation(valid_acknowledgement: b
                         message_id: "failed-completion".into(),
                         completed_at_ms: crate::session::unix_epoch_ms(),
                         home_prompt_id: Some(prompt_id),
+                        provider_termination: None,
                     }],
                 )
                 .await

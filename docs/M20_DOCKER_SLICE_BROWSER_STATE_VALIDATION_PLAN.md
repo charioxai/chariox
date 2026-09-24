@@ -18,6 +18,8 @@ The browser state that may matter includes:
 - Linux keyring or secret service state used by Chromium to decrypt stored browser data.
 - Stable machine identity such as `/etc/machine-id`.
 - Stable Linux user, home path, UID/GID, hostname, and browser profile path.
+- A durable slice display-port assignment used by both the projected endpoint
+  and every direct desktop lifecycle action.
 - Installed packages and desktop/browser dependencies.
 - Graceful shutdown of browser processes so profile SQLite databases are not captured while locked or partially flushed.
 
@@ -110,19 +112,88 @@ Drill:
 1. Launch a Docker slice.
 2. Open Chromium to a local test page.
 3. Store data in cookies, localStorage, IndexedDB, and a service worker cache.
-4. Install a small package or program inside the slice.
+4. Install Mousepad from the image's pinned Debian snapshot. Open a real
+   document, type Unicode text with the production Computer input helpers,
+   save it, and set the editor's line-number preference.
 5. Save the slice.
 6. Fully remove the running container.
 7. Relaunch from the saved slice.
-8. Verify the installed program still exists.
-9. Verify browser cookies, localStorage, IndexedDB, and cache survived.
-10. Capture screenshots before save and after restore.
+8. Verify the installed binary and desktop launcher are unchanged. Reopen the
+   document, read its displayed text through the Computer clipboard, edit and
+   save it again, and verify the editor retains focus during Computer input
+   and screenshots.
+9. Download a fixture file through Chromium before saving the slice. Preserve
+   the real editor's configuration and document under the slice home, not
+   synthetic application marker files.
+10. Record the machine ID, hostname, user, UID/GID, home, headed display
+    geometry, viewer backend, browser profile, and password-store policy.
+    The hostname must be RFC 1123-safe even when the user-facing slice name
+    contains dots, underscores, uppercase characters, or is unusually long.
+11. Verify browser cookies, localStorage, IndexedDB, Cache Storage, and the
+   service-worker registration survived.
+12. Verify the browser download, application configuration, and application
+    user data survived.
+13. Verify the recorded machine, user, display, profile, and password-store
+    identity remains unchanged, including the slice's durable display-port
+    assignment and projected viewer URL.
+14. Invalidate the fixture's service-side session without deleting the
+    browser cookie or profile. Verify the browser shows the exact login prompt
+    while every persisted browser-state marker remains present.
+15. Reauthenticate through the browser UI and send another message to prove
+    the product remains usable after service-side invalidation.
+16. Stop the fixture and verify the restored service worker serves a cached
+    marker while its network origin is offline.
+17. Capture screenshots before save, after restore, at the reauthentication
+    prompt, and during the offline service-worker check.
 
 Pass criteria:
 
 - Browser data survives a full container destroy/recreate.
-- Installed program survives.
+- Cache Storage and the service worker work after restore, including offline.
+- Browser downloads plus application configuration and user data survive the
+  home-volume destroy/recreate.
+- Machine/user identity, display geometry, Selkies selection, persistent
+  Chromium profile, and deterministic `basic` password-store policy remain
+  stable.
+- Mousepad's binary, desktop launcher, line-number preference, and Unicode
+  document survive. The restored editor can display, edit, and save the
+  document after both saved-state restore and repeated named-backup restore.
+- Service-side session invalidation is recorded as external reauthentication,
+  not browser-state loss, and a fresh login restores normal use.
 - No manual file repair is needed after restore.
+
+Run locally with
+`pnpm --dir apps/cli browser-computer:persistence-drill`. The retained manifest
+records the exact Git head, kernel hash, initial and restored slice runtime
+identity, resource samples, assertions, screenshots, and cleanup result.
+
+The default command builds the kernel and client. For a previously verified
+local runtime, `M20_USE_PREBUILT=1` requires an absolute `M20_KERNEL_BINARY`
+and explicit `M20_SLICE_IMAGE`. The drill checks the host binary/client protocol
+pair and records the binary hash and build mode. The operator must separately
+verify that the binary and image match the intended runtime source; protocol
+equality alone is not source provenance or production-release evidence.
+
+`CHARIOX_ROOM_DRILL_MEMORY_MB` accepts a positive u32 MiB value and defaults to
+2048. The actual initial and restored containers must retain that limit, no
+additional swap, and one CPU. Reducing a drill's cap does not bypass kernel
+admission checks. SIGINT and SIGTERM use the shared interruption lifecycle,
+allow in-flight provisioning to settle, and clean up before reporting failure.
+
+This deterministic drill uses production Computer input helpers directly. It
+does not establish provider-driven office work, vault injection, or Web/TUI
+projection. Those remain separate acceptance drills. Package installation
+requires access to the pinned Debian snapshot; an installation failure must
+fail the run rather than skip the graphical application checks.
+
+The first-party fixture also exposes a one-time OAuth authorization flow. The
+real-Chrome Browser Controller acceptance test must open the authorization
+popup through an observed link, activate its stable Tab, submit consent, follow
+the redirect, validate the callback in the original page, confirm the
+HttpOnly-authenticated session, and close the popup without changing the
+original Tab identity. The complete functional evidence contract records this
+as `browser.authentication` alongside the external-service reauthentication
+proof above.
 
 ## Phase 5: Gmail Live Drill
 
@@ -166,6 +237,14 @@ Fixture:
 - The fixture exposes a browser UI with login, inbox, compose, sent mail, and logout.
 - The fixture sets realistic secure session cookies and uses localStorage or IndexedDB for client-side UI state.
 - The fixture stores sent messages server-side and exposes a test-only verification endpoint outside the agent's browser.
+- The compose form accepts multipart attachments. The authenticated messages
+  endpoint reports each filename, content type, exact byte length, and SHA-256
+  of the received bytes. The office-work drill must compare these with its
+  expected document, not accept a byte count or an agent's success claim.
+  Attachment bodies are not retained in the message record. The complete
+  request remains capped at 1 MiB and each message at 20 attachments; malformed
+  submissions create no message. URL-encoded mail without attachments remains
+  supported for existing callers.
 - The fixture password is placed in Chariox vault and must be injected into the browser by runtime MCP secret insertion. The agent must not receive the password in its context.
 - Optionally back the fixture with Mailpit for captured SMTP delivery evidence. Mailpit provides an SMTP server, web interface, and API suitable for email testing.
 
@@ -192,7 +271,13 @@ Drill:
 14. Ask the agent to open the webmail fixture again.
 15. Ask the agent to send a second message without re-entering the password.
 16. Verify outside the agent context that the second message was received.
-17. Capture screenshots from the web terminal view page before save, after restore, and after the second send.
+17. Invalidate the fixture session without changing browser storage, then
+    verify the exact login prompt appears and all persisted browser markers
+    still pass.
+18. Reauthenticate through the same browser UI, send a third message, and
+    verify it outside the agent context.
+19. Capture screenshots from the web terminal view page before save, after
+    restore, at reauthentication, and after the final send.
 
 Pass criteria:
 
@@ -201,7 +286,18 @@ Pass criteria:
 - After save, container removal, and restore, the agent can open the same browser session without password entry.
 - The second message is sent after restore.
 - Browser cookies, localStorage or IndexedDB, and any relevant profile state survive restore.
+- Service-side invalidation remains distinguishable from local browser-state
+  loss, and reauthentication returns the restored slice to normal use.
 - Screenshots and fixture verification prove the behavior without user intervention.
+
+Run the fixture's HTTP regressions with
+`pnpm --dir apps/cli test:browser-computer-fixture`. An explicit installed-Chrome
+form check is available through
+`PLAYWRIGHT_MODULE=/absolute/path/to/installed/playwright/index.mjs pnpm --dir apps/cli test:browser-computer-fixture-browser`.
+It downloads no dependencies and closes its browser and fixture. Its screenshot
+and result live under `~/.codex/evidence/browser-computer-use/mail-attachments/`.
+These tests prove fixture behavior, not provider-driven document editing or
+Room kernel/Web/TUI acceptance.
 
 Failure interpretation:
 
@@ -239,7 +335,11 @@ If any drill fails:
 
 ## Evidence Requirements
 
-Store drill artifacts under `./.artifacts/m20-docker-slice-browser-state/`.
+Store drill artifacts under
+`~/.codex/evidence/browser-computer-use/persistence/<run-id>/`. Keep disposable
+kernel and slice state under
+`~/.chariox/dev/browser-computer-use-persistence/<run-id>/`; never write drill
+state or evidence into a repository.
 
 Required artifacts:
 

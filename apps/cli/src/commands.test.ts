@@ -18,6 +18,14 @@ test("parseSlashCommand parses session commands with action and value", () => {
   })
 })
 
+test("parseSlashCommand parses Room environment commands", () => {
+  assert.deepEqual(parseSlashCommand("/room status"), {
+    kind: "room",
+    raw: "/room status",
+    args: ["status"],
+  })
+})
+
 test("parseSlashCommand preserves raw attachment command input", () => {
   assert.deepEqual(parseSlashCommand('/attach "foo bar.txt"'), {
     kind: "attachment",
@@ -238,6 +246,7 @@ test("executeSlashCommand dispatches agent wait schedules", async () => {
     onKernel: () => undefined,
     onMachine: () => undefined,
     onSlice: () => undefined,
+    onRoom: () => undefined,
     onRelay: () => undefined,
     onCloud: () => undefined,
     onCollab: () => undefined,
@@ -261,9 +270,9 @@ test("executeSlashCommand dispatches agent wait schedules", async () => {
   assert.equal(command?.kind, "wait")
 })
 
-test("executeSlashCommand dispatches to the matching handler", async () => {
+test("executeSlashCommand dispatches to the matching handlers", async () => {
   const calls: string[] = []
-  const command = await executeSlashCommand("/view split", {
+  const handlers = {
     onExit: () => calls.push("exit"),
     onWaiting: () => calls.push("waiting"),
     onStop: () => calls.push("stop"),
@@ -281,6 +290,7 @@ test("executeSlashCommand dispatches to the matching handler", async () => {
     onKernel: () => calls.push("kernel"),
     onMachine: () => calls.push("machine"),
     onSlice: () => calls.push("slice"),
+    onRoom: (room: { args: string[] }) => calls.push(`room:${room.args.join(" ")}`),
     onRelay: () => calls.push("relay"),
     onCloud: () => calls.push("cloud"),
     onCollab: () => calls.push("collab"),
@@ -297,13 +307,20 @@ test("executeSlashCommand dispatches to the matching handler", async () => {
     onCredential: () => calls.push("credential"),
     onConnector: () => calls.push("connector"),
     onExtension: () => calls.push("extension"),
-  })
+  }
+  const command = await executeSlashCommand("/view split", handlers)
+  const roomCommand = await executeSlashCommand("/room status", handlers)
 
-  assert.deepEqual(calls, ["view"])
+  assert.deepEqual(calls, ["view", "room:status"])
   assert.deepEqual(command, {
     kind: "view",
     raw: "/view split",
     value: "split",
+  })
+  assert.deepEqual(roomCommand, {
+    kind: "room",
+    raw: "/room status",
+    args: ["status"],
   })
 })
 
@@ -326,6 +343,7 @@ test("executeSlashCommand returns null for non-command input", async () => {
     onKernel: () => undefined,
     onMachine: () => undefined,
     onSlice: () => undefined,
+    onRoom: () => undefined,
     onRelay: () => undefined,
     onCloud: () => undefined,
     onCollab: () => undefined,

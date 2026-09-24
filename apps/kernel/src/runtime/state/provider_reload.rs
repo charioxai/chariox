@@ -296,8 +296,38 @@ impl KernelRuntimeState {
                     owned.session_store.get_session(session_id).ok().as_ref(),
                 ),
             );
-            let launch_request =
-                owned.prepare_provider_launch_request(launch_request, config.runtime_mcp_url())?;
+            let launch_request = self
+                .prepare_provider_launch_request_with_vault(launch_request, "reload provider run")
+                .await?;
+            let has_active_prompt = owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&owned.session_store.get_session(session_id)?, agent_id)
+                .is_some();
+            let current_run = owned.provider_store.get_run_for_agent(session_id, agent_id);
+            if current_run.is_none() {
+                return Ok(ProviderReloadOutcome::Unaffected);
+            }
+            if !provider_reload_snapshot_is_still_current(
+                run.id(),
+                current_run.as_ref(),
+                has_active_prompt,
+            ) {
+                if !has_active_prompt {
+                    return Ok(ProviderReloadOutcome::Deferred);
+                }
+                owned.record_notice(
+                    session_id,
+                    Some(run.id()),
+                    owned
+                        .attachment_store
+                        .list_session_attachment_ids(session_id),
+                    format!(
+                        "Provider reload for {reason} is pending until agent `{agent_id}` is idle."
+                    ),
+                );
+                return Ok(ProviderReloadOutcome::Deferred);
+            }
+            let run = current_run.expect("current provider run was checked above");
             // An in-place tool refresh must not swallow a simultaneous launch
             // configuration/permission change retained by the common queue.
             if cause.includes_catalog()
@@ -350,12 +380,20 @@ impl KernelRuntimeState {
     }
 }
 
+fn provider_reload_snapshot_is_still_current(
+    expected_run_id: &str,
+    current_run: Option<&crate::provider::RuntimeProviderRun>,
+    has_active_prompt: bool,
+) -> bool {
+    !has_active_prompt && current_run.is_some_and(|run| run.id() == expected_run_id)
+}
+
 fn policy_reload_launch_request(
     run: &crate::provider::RuntimeProviderRun,
     agent_id: &str,
     durable_resume_state: crate::provider::ProviderResumeState,
 ) -> crate::provider::LaunchProviderRequest {
-    crate::provider::LaunchProviderRequest::new(
+    let request = crate::provider::LaunchProviderRequest::new(
         run.session_id(),
         run.adapter_key(),
         run.provider(),
@@ -367,7 +405,12 @@ fn policy_reload_launch_request(
     .with_client_interface(run.client_interface())
     .with_remote_extension_manifest(run.remote_extension_manifest().clone())
     .with_variant(run.variant().map(str::to_string))
-    .with_resume_state(durable_resume_state)
+    .with_resume_state(durable_resume_state);
+    if let Some((home, path)) = run.preparation_environment() {
+        request.with_preparation_environment(home, path)
+    } else {
+        request
+    }
 }
 
 fn user_config_path_requires_provider_reload(path: &str) -> bool {
@@ -399,7 +442,10 @@ mod tests {
         AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, ProviderResumeState,
     };
 
-    use super::{active_agent_provider_run_ids_for_session, policy_reload_launch_request};
+    use super::{
+        active_agent_provider_run_ids_for_session, policy_reload_launch_request,
+        provider_reload_snapshot_is_still_current,
+    };
 
     #[test]
     fn runtime_catalog_refresh_is_required_even_when_launch_inputs_are_identical() {
@@ -507,6 +553,31 @@ mod tests {
     }
 
     #[test]
+    fn provider_reload_carries_the_kernel_preparation_environment() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-provider-reload-preparation-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms(),
+        ));
+        let home = root
+            .join(".chariox-project-environment")
+            .join("b".repeat(64));
+        std::fs::create_dir_all(&home).expect("preparation home should exist");
+        let path = format!("{}/.local/bin:/usr/bin", home.display());
+        let mut run = provider_run("run-prepared", "session-1", Some("agent-1"));
+        run.set_preparation_environment(home.display().to_string(), path.clone())
+            .expect("preparation environment should bind to the run");
+
+        let request = policy_reload_launch_request(&run, "agent-1", ProviderResumeState::default());
+
+        assert_eq!(
+            request.preparation_environment,
+            Some((home.display().to_string(), path))
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn provider_reload_policy_selects_active_agent_runs_for_session_mode_changes() {
         let mut running = provider_run("run-1", "session-1", Some("agent-1"));
         running.mark_running();
@@ -527,6 +598,33 @@ mod tests {
                 .into_iter()
                 .collect()
         );
+    }
+
+    #[test]
+    fn provider_reload_revalidates_idle_run_identity_after_async_preparation() {
+        let expected = provider_run("expected", "session-1", Some("agent-1"));
+        let replacement = provider_run("replacement", "session-1", Some("agent-1"));
+
+        assert!(provider_reload_snapshot_is_still_current(
+            expected.id(),
+            Some(&expected),
+            false,
+        ));
+        assert!(!provider_reload_snapshot_is_still_current(
+            expected.id(),
+            Some(&expected),
+            true,
+        ));
+        assert!(!provider_reload_snapshot_is_still_current(
+            expected.id(),
+            Some(&replacement),
+            false,
+        ));
+        assert!(!provider_reload_snapshot_is_still_current(
+            expected.id(),
+            None,
+            false,
+        ));
     }
 
     fn provider_run(

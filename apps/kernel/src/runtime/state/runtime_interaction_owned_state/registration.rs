@@ -32,6 +32,7 @@ impl KernelRuntimeOwnedState {
                 });
             }
         }
+        let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();
         let mut session = sessions.get_session(session_id)?.clone();
         match (interaction.agent_id(), kernel_operation_owner) {
@@ -103,6 +104,7 @@ impl KernelRuntimeOwnedState {
             .write()
             .insert(interaction.id().into(), pending);
         sessions.restore_session(session);
+        activity_mutation.record();
         drop(sessions);
         if let Err(error) = self.session_snapshot(session_id) {
             let mut pending = self.pending_interactions.write();

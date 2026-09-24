@@ -60,6 +60,11 @@ test("managed environments share the Machine selector without duplicating runtim
     "Managed build · ready",
   )
   assert.equal(managed.selectedKernelRef, "kernel-managed")
+  assert.equal(
+    waitingRoomRows(managed, [], catalog(), remote())
+      .find((row) => row.id === "managed-environment-repository-root")?.value,
+    "/srv/chariox/repos",
+  )
 })
 
 test("new managed Machine selection keeps managed configuration out of the session form", () => {
@@ -70,6 +75,7 @@ test("new managed Machine selection keeps managed configuration out of the sessi
   }, [], catalog(), undefined, remote())
   const rows = waitingRoomRows(state, [], catalog(), remote())
   assert.equal(rows.find((row) => row.id === "new")?.title, "Create machine and start session")
+  assert.equal(state.managedRepositoryRoot, "/home/chariox")
   assert.deepEqual(rows.filter((row) => row.id.startsWith("managed-")).map((row) => row.id), [])
   assert.deepEqual(
     waitingRoomFocusTargets([], remote(), state)
@@ -88,6 +94,7 @@ test("new managed Machine dialog owns every conditional configuration row", () =
   assert.deepEqual(rows.map((row) => row.id), [
     "managed-compute",
     "managed-region",
+    "managed-repository-root",
     "managed-kernel-context",
     "managed-development",
     "managed-repositories",
@@ -98,6 +105,7 @@ test("new managed Machine dialog owns every conditional configuration row", () =
     "managed-git-credentials",
     "managed-auto-stop",
   ])
+  assert.equal(rows.find((row) => row.id === "managed-repository-root")?.value, "/home/chariox")
   assert.deepEqual(
     waitingRoomManagedMachineFocusTargets(state, remote()).map((target) => {
       if (target.focus !== "managed-provider-account") return target.focus
@@ -114,6 +122,7 @@ test("clean kernel plus Current Project exports every available provider account
   const state: WaitingRoomState = {
     ...baseState(),
     selectedMachineRef: NEW_MANAGED_MACHINE_REF,
+    managedRepositoryRoot: "/srv/chariox/repos",
     managedComputeClass: "agent-small",
     managedRegion: "hel1",
     managedKernelContext: "empty",
@@ -168,6 +177,9 @@ test("clean kernel plus Current Project exports every available provider account
     assert.equal(decision.action, "create")
     if (decision.action === "create") {
       assert.equal(decision.launch.managedEnvironment?.kind, "new")
+      if (decision.launch.managedEnvironment?.kind === "new") {
+        assert.equal(decision.launch.managedEnvironment.managedRepositoryRoot, "/srv/chariox/repos")
+      }
     }
   } finally {
     __setWaitingRoomWorktreeInventoryForTest(null)
@@ -685,6 +697,7 @@ function remote(): WaitingRoomRemoteState {
       name: "Managed build",
       region: "hel1",
       computeClass: "agent-small",
+      managedRepositoryRoot: "/srv/chariox/repos",
       desiredState: "running",
       observedState: "ready",
       desiredRevision: 1,

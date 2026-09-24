@@ -41,13 +41,19 @@ mod app_event_delivery_owned_state;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_event_pump_runtime;
 mod app_runtime_state;
+mod computer_secret_input_runtime_state;
 mod config_runtime_state;
 mod native_catalog_refresh;
 mod provider_output_deadline_store;
 mod provider_reload;
 use provider_output_deadline_store::ProviderOutputDeadlineStore;
 pub(crate) use provider_reload::*;
+mod browser_import_consent;
+mod browser_import_execution_gate;
+mod environment_execution_gate;
 mod event_delivery_runtime_state;
+mod human_browser_action_runtime_state;
+mod human_environment_action_runtime_state;
 mod leased_agent_operations;
 mod managed_activity_runtime_state;
 mod provider_launch_defaults_owned_state;
@@ -55,6 +61,14 @@ mod provider_relaunch_runtime;
 mod provider_reload_pending_runtime;
 mod provider_run_read_state;
 mod publication_activation;
+mod room_browser_controller;
+mod room_computer_observation;
+mod room_display;
+mod room_environment_placement;
+mod room_environment_state;
+mod room_screenshot;
+mod runtime_tool_call_activity;
+use runtime_tool_call_activity::RuntimeToolCallActivity;
 
 #[derive(Clone)]
 pub(crate) struct KernelRuntimeState {
@@ -73,6 +87,11 @@ struct KernelRuntimeOwnedState {
     agent_store: AgentServiceStore,
     attachment_store: AttachmentServiceStore,
     provider_store: ProviderProcessServiceStore,
+    pending_provider_launch_credentials: Arc<
+        std::sync::Mutex<
+            BTreeMap<String, crate::provider::ProviderCredentialEnvironment>,
+        >,
+    >,
     workflow_provider_launch_lock: Arc<std::sync::Mutex<()>>,
     workflow_instance_provision_lock: Arc<std::sync::Mutex<()>>,
     workflow_entry_claims: workflow_queue_durable::WorkflowEntryClaims,
@@ -82,6 +101,14 @@ struct KernelRuntimeOwnedState {
     external_provider_sessions: ExternalProviderSessionIndexStore,
     attached_provider_transcript_cursors: AttachedProviderTranscriptCursorStore,
     slice_store: crate::slice::SliceStore,
+    browser_controller_processes:
+        crate::runtime::browser_controller_process::BrowserControllerProcessStore,
+    browser_import_admission: crate::runtime::browser_import_admission::BrowserImportAdmission,
+    environment_execution_gates: environment_execution_gate::EnvironmentExecutionGates,
+    computer_input_executions:
+        crate::runtime::computer_input_execution::ComputerInputExecutionStore,
+    browser_controller_generations:
+        Arc<std::sync::Mutex<BTreeMap<String, (u64, bool)>>>,
     session_projection: crate::runtime::projection::SessionStateProjectionStore,
     agent_runtime_projection: crate::runtime::projection::AgentRuntimeProjectionStore,
     provider_run_projection: crate::runtime::projection::ProviderRunProjectionStore,
@@ -89,6 +116,19 @@ struct KernelRuntimeOwnedState {
     operational_history_store: OperationalHistoryStore,
     transcript_history_append_lock: Arc<std::sync::Mutex<()>>,
     durable_state_store: DurableKernelStateStore,
+    managed_activity_transitions:
+        managed_activity_persistence::ManagedActivityTransitionState,
+    // Serializes local activity-bearing mutations with their durable observation. Callers must
+    // release this boundary before async or provider I/O.
+    managed_activity_mutation_lock: Arc<std::sync::Mutex<()>>,
+    #[cfg(test)]
+    managed_activity_before_record_pause: Arc<
+        std::sync::Mutex<Option<managed_activity_runtime_state::ManagedActivityRecordPause>>,
+    >,
+    #[cfg(test)]
+    managed_activity_next_lock_probe: Arc<
+        std::sync::Mutex<Option<managed_activity_runtime_state::ManagedActivityLockProbe>>,
+    >,
     legacy_workflow_history: crate::app::LegacyWorkflowHistoryStore,
     provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
     provider_login_processes: ProviderLoginProcessStore,
@@ -126,6 +166,7 @@ struct KernelRuntimeOwnedState {
         Arc<Mutex<BTreeMap<String, Vec<RemoteHomeExtensionInflightInvocation>>>>,
     remote_extension_manifest_retry_counts: Arc<Mutex<BTreeMap<String, u32>>>,
     agent_message_idempotency: Arc<Mutex<AgentMessageIdempotencyStore>>,
+    runtime_tool_call_activity: RuntimeToolCallActivity,
     next_provider_process_gc_at_ms: Arc<AtomicU64>,
     relay_state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
     remote_prompt_projection_drains:
@@ -134,6 +175,7 @@ struct KernelRuntimeOwnedState {
     slice_private_relay_connectors: Arc<Mutex<BTreeMap<String, SlicePrivateRelayConnector>>>,
     workflow_publication_runtimes:
         crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore,
+    project_environment_setups: project_environment_setup::ProjectEnvironmentSetupStore,
 }
 
 #[derive(Debug, Clone)]
@@ -215,6 +257,14 @@ mod agent_prompt_schedule_runtime_state;
 mod agent_turn_actions_runtime_state;
 mod agent_utility_runtime_state;
 mod attachment_owned_state;
+mod browser_controller_action_cancellation_runtime_state;
+mod browser_controller_action_execution_runtime_state;
+mod browser_controller_compatibility_runtime_state;
+pub(crate) use browser_controller_action_execution_runtime_state::BrowserControllerActionExecution;
+mod browser_configuration_runtime_state;
+mod browser_controller_runtime_state;
+mod browser_download_cancellation_runtime_state;
+mod browser_upload_runtime_state;
 mod capability_owned_state;
 mod detached_provider_run_owned_state;
 mod owned;
@@ -225,6 +275,8 @@ use pending_runtime_state::*;
 pub(in crate::runtime) use pending_runtime_state::PendingInteractionResolution;
 mod local_prompt_dispatch_runtime;
 mod local_prompt_submission_owned_state;
+mod managed_activity_persistence;
+pub(crate) use managed_activity_persistence::ManagedActivityObservation;
 mod metaagent_event_owned_state;
 mod metaagent_task_runtime_state;
 pub(crate) use metaagent_task_runtime_state::parse_meta_slash_command;
@@ -254,6 +306,7 @@ mod provider_output_runtime;
 mod provider_process_runtime_state;
 pub(crate) use provider_process_runtime_state::*;
 mod agent_substitute_transition_owned_state;
+mod project_environment_setup;
 #[cfg(test)]
 mod provider_output_runtime_tests;
 mod provider_prompt_failure_runtime;
@@ -264,9 +317,11 @@ mod remote_prompt_dispatch_runtime;
 mod remote_prompt_lifecycle_runtime;
 mod remote_prompt_owned_state;
 mod remote_prompt_worker_submission_runtime;
+mod remote_native_provider_launch;
 mod remote_provider_failure_runtime;
 mod restart_recovery_runtime;
 pub(crate) use restart_recovery_runtime::is_internal_recovery_prompt_attachment;
+mod agent_batch_runtime_state;
 mod runtime_interaction_owned_state;
 mod runtime_interaction_state;
 mod runtime_notice_owned_state;
@@ -278,6 +333,7 @@ mod session_lifecycle_runtime_state;
 mod session_lookup_state;
 mod slice_development_runtime_state;
 mod slice_runtime_state;
+pub(crate) use slice_runtime_state::SliceAgentRelaunchManifest;
 mod structured_provider_output_runtime;
 mod terminal_runtime_state;
 mod tool_dispatch;
@@ -445,6 +501,7 @@ impl KernelRuntimeState {
             legacy_workflow_history,
             agent_runtime_projection,
             app_control,
+            has_managed_kernel_registration,
         ) = {
             let started = Instant::now();
             loop {
@@ -457,6 +514,7 @@ impl KernelRuntimeState {
                         app.legacy_workflow_history_store(),
                         app.agent_runtime_projection_store(),
                         app.app_control_service(),
+                        app.managed_kernel_registration().is_some(),
                     );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
@@ -487,7 +545,27 @@ impl KernelRuntimeState {
                 .publication_control_state_root
                 .is_some(),
         ));
-        Self {
+        let project_environment_setups =
+            project_environment_setup::ProjectEnvironmentSetupStore::restore_from_durable_state(
+                &durable_state_store,
+            );
+        let config = config_projection.snapshot();
+        let managed_activity_kernel_id = (has_managed_kernel_registration
+            || (config.kernel_runtime_role
+                == crate::config::KernelRuntimeRole::RemoteLeaseWorker
+                && std::env::var_os(
+                    crate::managed_bootstrap::worker::ACTIVITY_RECEIPT_ENV,
+                )
+                .filter(|value| !value.is_empty())
+                .map(std::path::PathBuf::from)
+                .is_some_and(|path| path.exists())))
+        .then(|| config.daemon_id.clone());
+        let managed_activity_transitions =
+            managed_activity_persistence::ManagedActivityTransitionState::new(
+                durable_state_store.clone(),
+                managed_activity_kernel_id,
+            );
+        let runtime = Self {
             app,
             provider_runtime_lanes,
             leased_agent_operations: leased_agent_operations::LeasedAgentOperations::default(),
@@ -499,6 +577,9 @@ impl KernelRuntimeState {
                 agent_store,
                 attachment_store,
                 provider_store,
+                pending_provider_launch_credentials: Arc::new(std::sync::Mutex::new(
+                    BTreeMap::new(),
+                )),
                 workflow_provider_launch_lock: Arc::new(std::sync::Mutex::new(())),
                 workflow_instance_provision_lock: Arc::new(std::sync::Mutex::new(())),
                 workflow_entry_claims: workflow_queue_durable::WorkflowEntryClaims::default(),
@@ -508,6 +589,14 @@ impl KernelRuntimeState {
                 external_provider_sessions,
                 attached_provider_transcript_cursors,
                 slice_store,
+                browser_controller_processes:
+                    crate::runtime::browser_controller_process::BrowserControllerProcessStore::from_environment(),
+                browser_import_admission:
+                    crate::runtime::browser_import_admission::BrowserImportAdmission::default(),
+                environment_execution_gates: Default::default(),
+                computer_input_executions:
+                    crate::runtime::computer_input_execution::ComputerInputExecutionStore::default(),
+                browser_controller_generations: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
                 session_projection,
                 agent_runtime_projection,
                 provider_run_projection,
@@ -519,6 +608,12 @@ impl KernelRuntimeState {
                         durable_state_store.clone(),
                     ),
                 durable_state_store,
+                managed_activity_transitions,
+                managed_activity_mutation_lock: Arc::new(std::sync::Mutex::new(())),
+                #[cfg(test)]
+                managed_activity_before_record_pause: Arc::new(std::sync::Mutex::new(None)),
+                #[cfg(test)]
+                managed_activity_next_lock_probe: Arc::new(std::sync::Mutex::new(None)),
                 legacy_workflow_history,
                 provider_account_profiles,
                 provider_login_processes: ProviderLoginProcessStore::default(),
@@ -561,6 +656,7 @@ impl KernelRuntimeState {
                 agent_message_idempotency: Arc::new(Mutex::new(
                     AgentMessageIdempotencyStore::default(),
                 )),
+                runtime_tool_call_activity: RuntimeToolCallActivity::default(),
                 next_provider_process_gc_at_ms: Arc::new(AtomicU64::new(0)),
                 relay_state,
                 remote_prompt_projection_drains: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
@@ -568,8 +664,11 @@ impl KernelRuntimeState {
                 slice_private_relay_connectors: Arc::new(Mutex::new(BTreeMap::new())),
                 workflow_publication_runtimes:
                     crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore::default(),
+                project_environment_setups,
             },
-        }
+        };
+        runtime.owned.record_managed_activity_transition();
+        runtime
     }
 
     pub(crate) async fn with_app_side_effect<R>(
@@ -580,6 +679,26 @@ impl KernelRuntimeState {
             crate::runtime::app_lock::lock_app_instrumented(&self.app, "kernel_runtime_state")
                 .await;
         operation(&mut app)
+    }
+
+    pub(crate) async fn with_app_side_effect_blocking<R, F>(
+        &self,
+        operation: F,
+    ) -> Result<R, DaemonError>
+    where
+        F: FnOnce(&mut DaemonApp) -> Result<R, DaemonError> + Send + 'static,
+        R: Send + 'static,
+    {
+        let app = Arc::clone(&self.app);
+        tokio::task::spawn_blocking(move || {
+            let mut app = app.blocking_lock();
+            operation(&mut app)
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "run blocking kernel app side effect",
+            message: error.to_string(),
+        })?
     }
 
     pub(crate) fn provider_account_profile_registry(

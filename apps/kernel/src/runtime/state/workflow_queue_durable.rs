@@ -144,7 +144,9 @@ impl KernelRuntimeOwnedState {
         session: &str,
     ) -> Result<Option<WorkflowQueueRun>, DaemonError> {
         self.durable_state_store.require_writer_healthy()?;
-        self.durable_state_store
+        let activity_mutation = self.begin_managed_activity_mutation();
+        let admitted = self
+            .durable_state_store
             .with_workflow_runtime_transition_lock(|| {
                 let mut sessions = self.session_store.write();
                 let before = sessions.get_session(session)?;
@@ -164,7 +166,13 @@ impl KernelRuntimeOwnedState {
                     })?;
                 sessions.restore_session(prepared.after().clone());
                 Ok(prepared.next().cloned())
-            })
+            })?;
+        if admitted.is_some() {
+            activity_mutation.record();
+            // Publication follows durable admission and activity capture.
+            self.session_snapshot(session)?;
+        }
+        Ok(admitted)
     }
 
     /// Before admission the exact Ready intent remains retryable. Once the
