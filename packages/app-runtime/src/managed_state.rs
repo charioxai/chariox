@@ -4,8 +4,13 @@
 
 mod changes;
 mod store;
+mod wakes;
 
 pub use changes::{StateChanges, StateCheck, StateWrite};
+pub use wakes::{
+    complete_wake, defer_wake, delete_installation_wakes, due_wakes, next_wake_at, DueWake, Wake,
+    WakeChange, MAX_WAKES, MAX_WAKE_CHANGES,
+};
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 use serde_json::Value;
 
@@ -81,7 +86,26 @@ impl<'a> ManagedStateStore<'a> {
     }
 
     pub fn initialize(&mut self) -> Result<()> {
-        store::initialize(self.connection)
+        store::initialize(self.connection)?;
+        wakes::initialize(self.connection)
+    }
+
+    /// Compose wake changes with state in the caller's writer transaction.
+    /// Like `apply_in`, this does not commit the outer transaction.
+    pub fn apply_wakes_in(
+        transaction: &mut Transaction<'_>,
+        scope: StateScope<'_>,
+        changes: &[WakeChange],
+    ) -> Result<()> {
+        let savepoint = transaction.savepoint()?;
+        wakes::apply(&savepoint, scope, changes)?;
+        savepoint.commit()?;
+        Ok(())
+    }
+
+    /// The active installation's pending wakes, ordered by due time.
+    pub fn wakes_in(transaction: &Transaction<'_>, scope: StateScope<'_>) -> Result<Vec<Wake>> {
+        wakes::list(transaction, scope)
     }
 
     /// Admission and the read share one SQLite snapshot. Update quiescence or

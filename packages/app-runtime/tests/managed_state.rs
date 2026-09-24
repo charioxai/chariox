@@ -4,8 +4,9 @@ use chariox_app_runtime::{
         ReleaseMetadata,
     },
     managed_state::{
-        ManagedStateStore, StateChanges, StateCheck, StateError, StateScope, StateWrite,
-        MAX_CHANGES, MAX_KEYS, MAX_REVISION, MAX_STATE_BYTES, MAX_VALUE_BYTES,
+        complete_wake, defer_wake, due_wakes, next_wake_at, ManagedStateStore, StateChanges,
+        StateCheck, StateError, StateScope, StateWrite, Wake, WakeChange, MAX_CHANGES, MAX_KEYS,
+        MAX_REVISION, MAX_STATE_BYTES, MAX_VALUE_BYTES, MAX_WAKES,
     },
 };
 use rusqlite::{Connection, TransactionBehavior};
@@ -401,4 +402,75 @@ fn change_validation_bounds_values_and_rejects_ambiguous_duplicate_keys() {
         vec![put("合法的 key", json!({"$ref":"ordinary data"}))]
     )
     .is_ok());
+}
+
+fn wake(id: &str, due_at_ms: u64, revision: &str) -> WakeChange {
+    WakeChange::Set(Wake {
+        id: id.into(),
+        due_at_ms,
+        revision: revision.into(),
+    })
+}
+fn apply_wakes(db: &mut Connection, id: &str, changes: &[WakeChange]) -> Result<(), StateError> {
+    let mut tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    ManagedStateStore::apply_wakes_in(&mut tx, scope(id), changes)?;
+    tx.commit()?;
+    Ok(())
+}
+
+#[test]
+fn wakes_are_due_in_order_replaced_by_id_and_completed_only_at_their_revision() {
+    let fixture = Database::new();
+    let mut db = fixture.open();
+    install(&mut db, "todo");
+    apply_wakes(&mut db, "todo", &[wake("b", 200, "r1"), wake("a", 100, "r1")]).unwrap();
+    assert_eq!(next_wake_at(&db).unwrap(), Some(100));
+    assert!(due_wakes(&db, 99, 8).unwrap().is_empty());
+    let due = due_wakes(&db, 250, 8).unwrap();
+    assert_eq!(due.iter().map(|w| w.wake.id.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+    assert_eq!(due[0].owner_id, "alice");
+    // A replacement after delivery began keeps the newer due time and revision.
+    apply_wakes(&mut db, "todo", &[wake("a", 300, "r2")]).unwrap();
+    complete_wake(&db, &due[0]).unwrap();
+    let pending = due_wakes(&db, 1_000, 8).unwrap();
+    assert_eq!(pending.iter().map(|w| (w.wake.id.as_str(), w.wake.revision.as_str())).collect::<Vec<_>>(), [("b", "r1"), ("a", "r2")]);
+    apply_wakes(&mut db, "todo", &[WakeChange::Cancel { id: "b".into() }]).unwrap();
+    assert_eq!(due_wakes(&db, 1_000, 8).unwrap().len(), 1);
+}
+
+#[test]
+fn failed_wake_delivery_backs_off_and_is_dropped_after_bounded_attempts() {
+    let fixture = Database::new();
+    let mut db = fixture.open();
+    install(&mut db, "todo");
+    apply_wakes(&mut db, "todo", &[wake("a", 100, "")]).unwrap();
+    let mut now = 100;
+    let mut kept = true;
+    let mut attempts = 0;
+    while kept {
+        let due = due_wakes(&db, now, 8).unwrap();
+        assert_eq!(due.len(), 1);
+        assert!(due_wakes(&db, now - 1, 8).unwrap().is_empty() || attempts == 0);
+        kept = defer_wake(&db, &due[0], now).unwrap();
+        attempts += 1;
+        now = next_wake_at(&db).unwrap().unwrap_or(now);
+    }
+    assert_eq!(attempts, 8);
+    assert_eq!(next_wake_at(&db).unwrap(), None);
+}
+
+#[test]
+fn wakes_require_an_active_installation_and_are_bounded() {
+    let fixture = Database::new();
+    let mut db = fixture.open();
+    assert!(apply_wakes(&mut db, "missing", &[wake("a", 1, "")]).is_err());
+    install(&mut db, "todo");
+    assert!(matches!(apply_wakes(&mut db, "todo", &[wake("bad id", 1, "")]), Err(StateError::Invalid)));
+    for batch in 0..MAX_WAKES / 16 {
+        let changes: Vec<_> = (0..16).map(|n| wake(&format!("w{batch}-{n}"), 1, "")).collect();
+        apply_wakes(&mut db, "todo", &changes).unwrap();
+    }
+    assert!(matches!(apply_wakes(&mut db, "todo", &[wake("overflow", 1, "")]), Err(StateError::Limit)));
+    let tx = db.transaction().unwrap();
+    assert_eq!(ManagedStateStore::wakes_in(&tx, scope("todo")).unwrap().len(), MAX_WAKES);
 }

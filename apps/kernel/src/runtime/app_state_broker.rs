@@ -89,6 +89,7 @@ impl AppStorageBroker {
                 json!({"revision":revision,"receipts":receipts})
             }
             AppStateOutcome::Receipt(receipt) => receipt::value(&receipt),
+            AppStateOutcome::Wakes(wakes) => json!({ "wakes": wakes }),
         })
     }
 }

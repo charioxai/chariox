@@ -27,6 +27,7 @@ pub(crate) mod app_installation_operations;
 pub(crate) mod app_publishers;
 pub(crate) mod app_publisher_operations;
 pub(crate) mod app_state;
+pub(crate) mod app_wakes;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_files;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -150,6 +151,7 @@ enum DurableWriterRequest {
     AppPublisherOperation(Box<app_publisher_operations::PublisherOperationRequest>),
     VerifiedApp(Box<app_installation_staging::AppVerifiedInstallationRequest>),
     AppState(Box<app_state::AppStateRequest>),
+    AppWake(Box<app_wakes::AppWakeRequest>),
     AppBinding(Box<app_bindings::AppBindingRequest>),
     AppAutomation(Box<app_automations::AppAutomationRequest>),
     AppActivation(Box<app_activation::AppActivationRequest>),
@@ -1401,6 +1403,10 @@ fn run_durable_writer(
                 app_state::execute(&mut connection, *request);
                 continue;
             }
+            DurableWriterRequest::AppWake(request) => {
+                app_wakes::execute(&mut connection, *request);
+                continue;
+            }
             DurableWriterRequest::AppBinding(request) => {
                 app_bindings::execute(&mut connection, *request);
                 continue;
@@ -1485,6 +1491,7 @@ fn run_durable_writer(
                     | DurableWriterRequest::AppPublisherOperation(_)
                     | DurableWriterRequest::VerifiedApp(_)
                     | DurableWriterRequest::AppState(_)
+                    | DurableWriterRequest::AppWake(_)
                     | DurableWriterRequest::AppBinding(_)
                     | DurableWriterRequest::AppAutomation(_)
                     | DurableWriterRequest::AppActivation(_)

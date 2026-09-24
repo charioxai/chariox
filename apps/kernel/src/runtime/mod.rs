@@ -9,6 +9,7 @@ pub(crate) mod app_install_control;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_lifecycle;
 pub(crate) mod app_event_pump;
+pub(crate) mod app_wake_pump;
 pub(crate) mod app_lock;
 pub(crate) mod app_operation_budget;
 mod app_package_preparation;

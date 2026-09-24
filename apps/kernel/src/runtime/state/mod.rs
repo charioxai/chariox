@@ -40,6 +40,8 @@ mod app_automation_owned_state;
 mod app_event_delivery_owned_state;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_event_pump_runtime;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_wake_pump_runtime;
 mod app_runtime_state;
 mod computer_secret_input_runtime_state;
 mod config_runtime_state;

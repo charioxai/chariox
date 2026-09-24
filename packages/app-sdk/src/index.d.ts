@@ -61,6 +61,19 @@ export interface StateTransaction {
   writes: ({ key: string; value: Json } | { key: string; delete: true })[];
   /** Kernel persistence commits these occurrences with the structured writes. */
   occurrences?: EventOccurrence[];
+  /** Wake changes commit atomically with the structured writes. */
+  wakes?: WakeChange[];
+}
+/** A kernel-owned wake. `revision` is App-defined and delivered back unchanged. */
+export interface Wake {
+  id: string;
+  dueAtMs: number;
+  revision?: string;
+}
+export type WakeChange = ({ op: 'set' } & Wake) | { op: 'cancel'; id: string };
+export interface DeliveredWake extends Required<Wake> {
+  /** True when delivery happens after sleep, shutdown or restart. */
+  overdue: boolean;
 }
 export interface HttpRequest {
   url: string;
@@ -105,6 +118,16 @@ export interface AppSdk {
   readonly state: {
     get(key: string, options?: CallOptions): Promise<StateRecord | null>;
     transaction(transaction: StateTransaction, options?: CallOptions): Promise<{ revision: number; receipts: EventReceipt[] }>;
+  };
+  /**
+   * Kernel-owned wakes. The kernel starts the worker when a wake falls due and
+   * delivers it at least once; the App does not need to keep running.
+   */
+  readonly schedule: {
+    set(wake: Wake, options?: CallOptions): Promise<{ wakes: Required<Wake>[] }>;
+    cancel(id: string, options?: CallOptions): Promise<{ wakes: Required<Wake>[] }>;
+    list(options?: CallOptions): Promise<{ wakes: Required<Wake>[] }>;
+    onWake(handler: Handler<DeliveredWake>): void;
   };
   readonly files: {
     atomicReplace(path: string, contents: string | Uint8Array, options?: CallOptions): Promise<{ bytesWritten: number }>;

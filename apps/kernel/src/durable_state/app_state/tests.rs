@@ -224,6 +224,7 @@ fn put(value: i32) -> AppStateOperation {
         )
         .unwrap(),
         occurrences: Vec::new(),
+        wakes: Vec::new(),
     }
 }
 fn read() -> AppStateOperation {
@@ -482,5 +483,72 @@ fn expired_after_sqlite_admission_does_not_change_state() {
             .execute_app_state("alice", catalog, read(), budget())
             .unwrap(),
         AppStateOutcome::Value(None)
+    );
+}
+
+#[test]
+fn schedule_operations_commit_wakes_that_the_writer_reports_due_and_completes() {
+    use crate::durable_state::app_wakes::{AppWakeOperation, AppWakeOutcome};
+    use chariox_app_runtime::managed_state::{Wake, WakeChange};
+    let fixture = Fixture::new();
+    let store = fixture.open();
+    let catalog = catalog(&store);
+    let set = |id: &str, due_at_ms: u64| {
+        WakeChange::Set(Wake {
+            id: id.into(),
+            due_at_ms,
+            revision: "r1".into(),
+        })
+    };
+    let outcome = store
+        .execute_app_state(
+            "alice",
+            Arc::clone(&catalog),
+            AppStateOperation::Schedule(vec![set("later", 5_000), set("soon", 1_000)]),
+            budget(),
+        )
+        .unwrap();
+    let AppStateOutcome::Wakes(wakes) = outcome else {
+        panic!("schedule returns the installation's wakes");
+    };
+    assert_eq!(
+        wakes.iter().map(|w| w.id.as_str()).collect::<Vec<_>>(),
+        ["soon", "later"]
+    );
+    // Another owner cannot schedule into this installation.
+    assert!(store
+        .execute_app_state(
+            "bob",
+            Arc::clone(&catalog),
+            AppStateOperation::Schedule(vec![set("forged", 1)]),
+            budget(),
+        )
+        .is_err());
+    // A state transaction commits its wake changes atomically with its writes.
+    let mut transaction = put(1);
+    if let AppStateOperation::Transaction { wakes, .. } = &mut transaction {
+        wakes.push(WakeChange::Cancel { id: "later".into() });
+    }
+    store
+        .execute_app_state("alice", Arc::clone(&catalog), transaction, budget())
+        .unwrap();
+    let AppWakeOutcome::Due(due) = store
+        .app_wakes(AppWakeOperation::Due {
+            now_ms: 10_000,
+            limit: 8,
+        })
+        .unwrap()
+    else {
+        panic!("due wakes");
+    };
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].wake.id, "soon");
+    assert_eq!(due[0].owner_id, "alice");
+    store
+        .app_wakes(AppWakeOperation::Delivered(due[0].clone()))
+        .unwrap();
+    assert_eq!(
+        store.app_wakes(AppWakeOperation::NextDue).unwrap(),
+        AppWakeOutcome::NextDue(None)
     );
 }

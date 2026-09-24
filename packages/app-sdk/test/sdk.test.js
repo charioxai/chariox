@@ -207,3 +207,36 @@ test('unclassified handler exceptions never send private exception contents acro
   sdk.close();
   assert.equal(new AppError('DENIED', 'Request denied').retryable, false);
 });
+
+test('kernel-owned wakes are kernel calls, commit with state and deliver to one handler', async () => {
+  const { transport, sdk } = setup();
+  const received = [];
+  sdk.schedule.onWake((wake) => { received.push(wake); return null; });
+  assert.throws(() => sdk.schedule.onWake(() => null), (error) => error.code === 'DUPLICATE_HANDLER');
+  assert.throws(() => sdk.schedule.set({ id: 'bad id', dueAtMs: 1 }), (error) => error.code === 'INVALID_ARGUMENT');
+  assert.throws(() => sdk.schedule.set({ id: 'due', dueAtMs: -1 }), (error) => error.code === 'INVALID_ARGUMENT');
+  const pending = sdk.schedule.set({ id: 'todo-7', dueAtMs: 5000, revision: 'r2' });
+  assert.equal(transport.sent[0].method, 'schedule.set');
+  assert.deepEqual(transport.sent[0].params, { id: 'todo-7', dueAtMs: 5000, revision: 'r2' });
+  transport.receive(response(transport.sent[0].id, { wakes: [{ id: 'todo-7', dueAtMs: 5000, revision: 'r2' }] }));
+  assert.equal((await pending).wakes.length, 1);
+  const committed = sdk.state.transaction({ schemaVersion: 1, checks: [], writes: [],
+    wakes: [{ op: 'set', id: 'todo-8', dueAtMs: 6000 }, { op: 'cancel', id: 'todo-7' }] });
+  assert.deepEqual(transport.sent[1].params.wakes,
+    [{ op: 'set', id: 'todo-8', dueAtMs: 6000, revision: '' }, { op: 'cancel', id: 'todo-7' }]);
+  transport.receive(response(transport.sent[1].id, { revision: 1, receipts: [] }));
+  await committed;
+  transport.receive(request('host-9', 'schedule.wake', { id: 'todo-8', dueAtMs: 6000, revision: '', overdue: true }));
+  await flush();
+  assert.deepEqual(received, [{ id: 'todo-8', dueAtMs: 6000, revision: '', overdue: true }]);
+  assert.equal(transport.sent.at(-1).kind, 'response');
+  sdk.close();
+});
+
+test('a due wake without a registered handler is a typed failure', async () => {
+  const { transport, sdk } = setup();
+  transport.receive(request('host-1', 'schedule.wake', { id: 'todo-1', dueAtMs: 1, revision: '' }));
+  await flush();
+  assert.equal(transport.sent[0].error.code, 'METHOD_NOT_FOUND');
+  sdk.close();
+});

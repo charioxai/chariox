@@ -103,6 +103,9 @@ impl Admission {
                             | "events.emit"
                             | "events.status"
                             | "events.retry"
+                            | "schedule.set"
+                            | "schedule.cancel"
+                            | "schedule.list"
                             | "files.atomic_replace"
                     ))
         })
