@@ -14,7 +14,7 @@ const defaultLatestManifest = path.join(repoRoot, 'target', 'live-tui-web-parity
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const options = {
     rootDir: null,
     manifestPath: defaultLatestManifest,
@@ -26,6 +26,8 @@ function parseArgs(argv) {
     workspace: null,
     worktree: null,
     webObservationPath: null,
+    relayUrl: null,
+    targetDaemonId: null,
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -46,15 +48,74 @@ function parseArgs(argv) {
     else if (arg === '--workspace') options.workspace = path.resolve(next())
     else if (arg === '--worktree') options.worktree = path.resolve(next())
     else if (arg === '--web-observation') options.webObservationPath = path.resolve(next())
+    else if (arg === '--relay-url') options.relayUrl = next()
+    else if (arg === '--target-daemon-id') options.targetDaemonId = next()
     else if (arg === '--preserve') options.preserve = true
     else if (arg === '--help' || arg === '-h') {
-      console.log('Usage: node apps/cli/scripts/live-tui-web-parity-visual-session.mjs [--manifest PATH] [--root-dir DIR] [--preserve]\n       node apps/cli/scripts/live-tui-web-parity-visual-session.mjs --observe-room-session ID --kernel-url URL --slice-id ID --workspace PATH --worktree PATH --web-observation PATH [--root-dir DIR] [--manifest PATH]')
+      console.log('Usage: node apps/cli/scripts/live-tui-web-parity-visual-session.mjs [--manifest PATH] [--root-dir DIR] [--preserve]\n       node apps/cli/scripts/live-tui-web-parity-visual-session.mjs --observe-room-session ID --kernel-url URL --slice-id ID --workspace PATH --worktree PATH --web-observation PATH --relay-url URL --target-daemon-id ID [--root-dir DIR] [--manifest PATH] (set CHARIOX_DRILL_C_RELAY_TOKEN)')
       process.exit(0)
     } else {
       throw new Error(`unknown option: ${arg}`)
     }
   }
+  assert.equal(Boolean(options.relayUrl), Boolean(options.targetDaemonId), '--relay-url and --target-daemon-id must be supplied together')
   return options
+}
+
+export function validateRemoteRelay(options, relayToken) {
+  assert.ok(options.relayUrl, '--relay-url is required for the remote Room observer')
+  assert.ok(options.targetDaemonId?.trim(), '--target-daemon-id is required for the remote Room observer')
+  assert.ok(typeof relayToken === 'string' && relayToken.trim().length > 0, 'CHARIOX_DRILL_C_RELAY_TOKEN is required for the remote Room observer')
+
+  let endpoint
+  try {
+    endpoint = new URL(options.relayUrl)
+  } catch {
+    throw new Error('--relay-url must be a valid WebSocket URL')
+  }
+  assert.ok(['ws:', 'wss:'].includes(endpoint.protocol), '--relay-url must be a WebSocket URL')
+  const host = endpoint.hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  const ipv4 = host.split('.').map((part) => Number(part))
+  const isLoopbackIpv4 = ipv4.length === 4
+    && ipv4.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)
+    && ipv4[0] === 127
+  assert.ok(host === 'localhost' || host === '::1' || isLoopbackIpv4, '--relay-url must target a same-host loopback relay')
+  assert.ok(!endpoint.username && !endpoint.password && !endpoint.search && !endpoint.hash, '--relay-url must not include credentials, query, or fragment data')
+
+  return { url: options.relayUrl, targetDaemonId: options.targetDaemonId }
+}
+
+export function buildObserverCliArgs({
+  cliPath,
+  kernelUrl,
+  relay,
+  relayToken,
+  automationSocket,
+  sessionId,
+  workspace,
+  worktree,
+  clientId,
+}) {
+  const args = [cliPath]
+  if (relay) {
+    args.push('--relay-url', relay.url, '--relay-token', relayToken, '--target-daemon-id', relay.targetDaemonId)
+  } else {
+    args.push('--kernel-url', kernelUrl)
+  }
+  args.push(
+    '--automation-socket', automationSocket,
+    '--session', sessionId,
+    '--workspace', workspace,
+    '--worktree', worktree,
+    '--client-id', clientId,
+  )
+  return args
+}
+
+export function assertSameRoomObservers(localSnapshot, remoteSnapshot, sessionId) {
+  assert.equal(localSnapshot?.session?.id, sessionId, 'local direct-kernel TUI did not attach to the requested Room')
+  assert.equal(remoteSnapshot?.session?.id, sessionId, 'remote relay TUI did not attach to the requested Room')
+  assert.equal(remoteSnapshot.session.id, localSnapshot.session.id, 'local and remote TUI observers are attached to different Rooms')
 }
 
 function makePorts() {
@@ -127,6 +188,80 @@ async function waitForSocket(socketPath) {
     }
   }
   throw new Error(`automation socket did not become ready: ${lastError?.message ?? lastError}`)
+}
+
+async function readAutomationSnapshot(socketPath) {
+  const requestId = `drill-c-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  return await new Promise((resolve, reject) => {
+    const socket = net.createConnection(socketPath)
+    socket.setEncoding('utf8')
+    let buffer = ''
+    let settled = false
+    const finish = (error, snapshot) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      socket.destroy()
+      if (error) reject(error)
+      else resolve(snapshot)
+    }
+    const timer = setTimeout(() => finish(new Error('automation snapshot request timed out')), 3_000)
+    socket.once('connect', () => {
+      socket.write(`${JSON.stringify({ id: requestId, action: 'snapshot' })}\n`)
+    })
+    socket.on('data', (chunk) => {
+      buffer += chunk
+      const newline = buffer.indexOf('\n')
+      if (newline < 0) return
+      try {
+        const response = JSON.parse(buffer.slice(0, newline))
+        if (response.id !== requestId || response.ok !== true) {
+          finish(new Error('automation snapshot request failed'))
+          return
+        }
+        finish(null, response.data)
+      } catch {
+        finish(new Error('automation snapshot response was invalid'))
+      }
+    })
+    socket.once('error', () => finish(new Error('automation socket is not ready')))
+    socket.once('close', () => {
+      if (!settled) finish(new Error('automation socket closed before its snapshot response'))
+    })
+  })
+}
+
+async function waitForObserverRoom(socketPath, sessionId, label, child) {
+  const deadline = Date.now() + 30_000
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error(`${label} TUI exited before attaching to the requested Room`)
+    }
+    try {
+      const snapshot = await readAutomationSnapshot(socketPath)
+      if (snapshot?.session?.id === sessionId) return snapshot
+      if (snapshot?.session?.id) throw new Error(`${label} TUI attached to an unexpected Room`)
+    } catch (error) {
+      if (error.message === `${label} TUI attached to an unexpected Room`) throw error
+    }
+    await sleep(250)
+  }
+  throw new Error(`${label} TUI did not attach to the requested Room before timeout`)
+}
+
+function waitForObserverChildren(children) {
+  for (const { label, child } of children) {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      return Promise.reject(new Error(`${label} TUI exited before the observer session completed`))
+    }
+  }
+  return new Promise((resolve, reject) => {
+    const fail = (label, reason) => reject(new Error(`${label} TUI observer exited: ${reason}`))
+    for (const { label, child } of children) {
+      child.once('error', () => fail(label, 'process error'))
+      child.once('exit', (code, signal) => fail(label, `code=${code} signal=${signal ?? 'none'}`))
+    }
+  })
 }
 
 function unwrap(resp, ...keys) {
@@ -335,6 +470,63 @@ async function writeManifest(manifestPath, manifest) {
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
 }
 
+export function buildRoomObserverManifest({
+  startedAt,
+  repoRoot,
+  rootDir,
+  evidenceDir,
+  kernelUrl,
+  sessionId,
+  sliceId,
+  workspace,
+  worktree,
+  webObservationPath,
+  baseline,
+  relay,
+  automationSocket,
+  remoteAutomationSocket,
+  reportPath,
+  manifestPath,
+}) {
+  assert.ok(path.isAbsolute(automationSocket), 'local automation socket must be absolute')
+  assert.ok(path.isAbsolute(remoteAutomationSocket), 'remote automation socket must be absolute')
+  assert.notEqual(automationSocket, remoteAutomationSocket, 'local and remote observers require distinct automation sockets')
+  return {
+    schema: 'chariox.drill_c.live_observer_session.v1',
+    startedAt,
+    repoRoot,
+    rootDir,
+    evidenceDir,
+    kernelUrl,
+    sessionId,
+    sliceId,
+    workspace,
+    worktree,
+    webObservationPath,
+    baseline,
+    webObserverContract: {
+      schema: 'chariox.browser_computer.drill_c.web_observer.v1',
+      required: [
+        'sessionId, environmentId, sliceId, runtimeGeneration',
+        'display.viewport, display.browserIds, display.profileIds',
+        'browser.focusedTabId and browser.tab { tabId, url, title, documentRevision }',
+        'actions.computer and actions.webTakeover with actionId, actorId, sequence, mode, kind, state',
+      ],
+    },
+    automationSocket,
+    remoteAutomationSocket,
+    remoteRelay: {
+      url: relay.url,
+      targetDaemonId: relay.targetDaemonId,
+    },
+    reportPath,
+    command: {
+      verify: `node apps/cli/scripts/tui-web-parity-visual-control.mjs --manifest ${manifestPath} --action drill-c-verify`,
+    },
+    cleanup: 'observer TUIs and local IPC connection only; the Room, slice, and session are preserved',
+  }
+}
+
 async function runRoomObserverSession(options) {
   for (const [name, flag] of [
     ['roomSessionId', '--observe-room-session'],
@@ -350,6 +542,8 @@ async function runRoomObserverSession(options) {
   assert.ok(path.isAbsolute(options.webObservationPath), 'Web observation path must be absolute')
   const kernelEndpoint = new URL(options.kernelUrl)
   assert.ok(['ws:', 'wss:'].includes(kernelEndpoint.protocol), '--kernel-url must be a WebSocket URL')
+  const relayToken = process.env.CHARIOX_DRILL_C_RELAY_TOKEN
+  const remoteRelay = validateRemoteRelay(options, relayToken)
 
   const stamp = `${process.pid}-${Date.now()}`
   const rootDir = options.rootDir ?? path.join(os.homedir(), '.chariox', 'dev', 'browser-computer-use', `drill-c-live-observer-${stamp}`)
@@ -358,20 +552,26 @@ async function runRoomObserverSession(options) {
   const manifestPath = options.manifestPathProvided ? options.manifestPath : path.join(rootDir, 'manifest.json')
   assert.ok(manifestPath !== repoRoot && !manifestPath.startsWith(`${repoRoot}${path.sep}`), 'observer manifest must be outside the repository')
   assert.notEqual(manifestPath, options.webObservationPath, 'observer manifest and Web report must use separate files')
-  const automationSocket = path.join(os.tmpdir(), `chariox-drill-c-observer-${stamp}.sock`)
+  const automationSocket = path.join(os.tmpdir(), `chariox-drill-c-observer-${stamp}-local.sock`)
+  const remoteAutomationSocket = path.join(os.tmpdir(), `chariox-drill-c-observer-${stamp}-remote.sock`)
+  assert.ok(path.isAbsolute(remoteAutomationSocket), 'remote automation socket must be absolute')
+  assert.notEqual(automationSocket, remoteAutomationSocket, 'local and remote observers require distinct automation sockets')
   await mkdir(evidenceDir, { recursive: true, mode: 0o700 })
 
   const { LocalIpcClient } = await import('../../../packages/kernel-client/dist/ipc.js')
   const requests = await import('../../../packages/kernel-client/dist/ipc-requests.js')
   const client = new LocalIpcClient(options.kernelUrl)
-  let cli = null
+  let localCli = null
+  let remoteCli = null
   let cleaned = false
   const cleanup = async () => {
     if (cleaned) return
     cleaned = true
     await client.close?.().catch(() => {})
-    await stopChild(cli)
+    await stopChild(remoteCli)
+    await stopChild(localCli)
     await rm(automationSocket, { force: true }).catch(() => {})
+    await rm(remoteAutomationSocket, { force: true }).catch(() => {})
   }
 
   process.once('SIGINT', () => { void cleanup().then(() => process.exit(130)) })
@@ -384,8 +584,7 @@ async function runRoomObserverSession(options) {
       sessionId: options.roomSessionId,
       sliceId: options.sliceId,
     })
-    const manifest = {
-      schema: 'chariox.drill_c.live_observer_session.v1',
+    const manifest = buildRoomObserverManifest({
       startedAt: new Date().toISOString(),
       repoRoot,
       rootDir,
@@ -397,58 +596,71 @@ async function runRoomObserverSession(options) {
       worktree: options.worktree,
       webObservationPath: options.webObservationPath,
       baseline,
-      webObserverContract: {
-        schema: 'chariox.browser_computer.drill_c.web_observer.v1',
-        required: [
-          'sessionId, environmentId, sliceId, runtimeGeneration',
-          'display.viewport, display.browserIds, display.profileIds',
-          'browser.focusedTabId and browser.tab { tabId, url, title, documentRevision }',
-          'actions.computer and actions.webTakeover with actionId, actorId, sequence, mode, kind, state',
-        ],
-      },
+      relay: remoteRelay,
       automationSocket,
+      remoteAutomationSocket,
       reportPath: path.join(evidenceDir, 'drill-c-live-observation.json'),
-      command: {
-        verify: `node apps/cli/scripts/tui-web-parity-visual-control.mjs --manifest ${manifestPath} --action drill-c-verify`,
-      },
-      cleanup: 'observer TUI and local IPC connection only; the Room, slice, and session are preserved',
-    }
+      manifestPath,
+    })
     await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' })
     console.log(`[tui-web-parity-visual] live Room observer manifest: ${manifestPath}`)
     console.log('[tui-web-parity-visual] attached without creating or mutating the Room; start before Computer work, then run drill-c-verify after Web takeover')
 
-    cli = spawn('bun', [
-      path.join(repoRoot, 'apps/cli/dist/index.js'),
-      '--kernel-url', options.kernelUrl,
-      '--automation-socket', automationSocket,
-      '--session', options.roomSessionId,
-      '--workspace', options.workspace,
-      '--worktree', options.worktree,
-      '--client-id', `chariox-drill-c-observer-${stamp}`,
-    ], {
+    const cliPath = path.join(repoRoot, 'apps/cli/dist/index.js')
+    const observerEnv = { ...process.env }
+    delete observerEnv.CHARIOX_DRILL_C_RELAY_TOKEN
+    localCli = spawn('bun', buildObserverCliArgs({
+      cliPath,
+      kernelUrl: options.kernelUrl,
+      automationSocket,
+      sessionId: options.roomSessionId,
+      workspace: options.workspace,
+      worktree: options.worktree,
+      clientId: `chariox-drill-c-observer-${stamp}-local`,
+    }), {
       cwd: repoRoot,
-      env: process.env,
+      env: observerEnv,
       stdio: 'inherit',
     })
-    const startupFailure = new Promise((resolve) => {
-      cli.once('error', (error) => resolve(error))
-      cli.once('exit', (code, signal) => {
-        if (code !== 0) resolve(new Error(`observer CLI exited before its automation socket was ready: code=${code} signal=${signal ?? 'none'}`))
-      })
+    const localStartupFailure = new Promise((resolve) => {
+      localCli.once('error', () => resolve(new Error('local direct-kernel observer CLI failed to start')))
+      localCli.once('exit', (code, signal) => resolve(new Error(`local direct-kernel observer CLI exited before Room attachment: code=${code} signal=${signal ?? 'none'}`)))
     })
-    const failed = await Promise.race([
-      waitForSocket(automationSocket).then(() => null),
-      startupFailure,
+    const localStartup = await Promise.race([
+      waitForObserverRoom(automationSocket, options.roomSessionId, 'local direct-kernel', localCli).then((snapshot) => ({ snapshot })),
+      localStartupFailure.then((error) => ({ error })),
     ])
-    if (failed) throw failed
-    await new Promise((resolve, reject) => {
-      cli.once('error', reject)
-      cli.once('exit', (code, signal) => {
-        if (signal) reject(new Error(`observer CLI exited by signal ${signal}`))
-        else if (code && code !== 0) reject(new Error(`observer CLI exited with code ${code}`))
-        else resolve()
-      })
+    if (localStartup.error) throw localStartup.error
+
+    remoteCli = spawn('bun', buildObserverCliArgs({
+      cliPath,
+      relay: remoteRelay,
+      relayToken,
+      automationSocket: remoteAutomationSocket,
+      sessionId: options.roomSessionId,
+      workspace: options.workspace,
+      worktree: options.worktree,
+      clientId: `chariox-drill-c-observer-${stamp}-remote`,
+    }), {
+      cwd: repoRoot,
+      env: observerEnv,
+      stdio: 'inherit',
     })
+    const remoteStartupFailure = new Promise((resolve) => {
+      remoteCli.once('error', () => resolve(new Error('remote relay observer CLI failed to start')))
+      remoteCli.once('exit', (code, signal) => resolve(new Error(`remote relay observer CLI exited before Room attachment: code=${code} signal=${signal ?? 'none'}`)))
+    })
+    const remoteStartup = await Promise.race([
+      waitForObserverRoom(remoteAutomationSocket, options.roomSessionId, 'remote relay', remoteCli).then((snapshot) => ({ snapshot })),
+      remoteStartupFailure.then((error) => ({ error })),
+    ])
+    if (remoteStartup.error) throw remoteStartup.error
+    assertSameRoomObservers(localStartup.snapshot, remoteStartup.snapshot, options.roomSessionId)
+    console.log('[tui-web-parity-visual] local direct-kernel and remote relay TUIs both attached to the requested Room')
+    await waitForObserverChildren([
+      { label: 'local direct-kernel', child: localCli },
+      { label: 'remote relay', child: remoteCli },
+    ])
   } finally {
     await cleanup()
   }
@@ -479,6 +691,8 @@ async function main() {
     options.workspace,
     options.worktree,
     options.webObservationPath,
+    options.relayUrl,
+    options.targetDaemonId,
   ].some(Boolean)
   if (observerModeRequested) {
     await runRoomObserverSession(options)
@@ -625,7 +839,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(`[tui-web-parity-visual] ${error.stack ?? error.message}`)
-  process.exitCode = 1
-})
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(`[tui-web-parity-visual] ${error.stack ?? error.message}`)
+    process.exitCode = 1
+  })
+}
