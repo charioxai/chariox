@@ -196,7 +196,7 @@ fn cancellation_fence_reports_the_other_tab_request_as_controller_fenced() {
     let store = BrowserControllerProcessStore::new(
         &fixture.path,
         Vec::new(),
-        Duration::from_millis(500),
+        Duration::from_secs(2),
     );
     store.acquire("room-fence").expect("Room acquires controller");
     let _shutdown = ShutdownOnDrop(store.clone());
@@ -216,6 +216,8 @@ fn cancellation_fence_reports_the_other_tab_request_as_controller_fenced() {
     wait_for_marker(&fixture, "action");
     assert!(store.cancel_browser_action("room-fence", ACTION_ID));
     wait_for_marker(&fixture, "cancel");
+    // Start the snapshot after the action's extra 100ms budget so its own
+    // deadline cannot beat the fence. The 2s base leaves room for scheduling.
     thread::sleep(Duration::from_millis(200));
 
     let snapshot_store = store.clone();
