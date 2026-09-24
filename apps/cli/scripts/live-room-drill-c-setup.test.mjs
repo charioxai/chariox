@@ -658,6 +658,15 @@ test("isolated manifest carries exact observer inputs without claiming Browser o
   assert.equal(manifest.localCloudTransport.status, "verified")
   assert.ok(manifest.tuiObserver.args.includes("--observe-room-session"))
   assert.ok(manifest.tuiObserver.args.includes("--slice-id"))
+  assert.deepEqual(manifest.tuiObserver.args.slice(-4), [
+    "--relay-url", "ws://127.0.0.1:47000", "--target-daemon-id", "kernel-1",
+  ])
+  assert.deepEqual(manifest.tuiObserver.remoteRelay, {
+    url: "ws://127.0.0.1:47000",
+    targetDaemonId: "kernel-1",
+    credentialEnvironment: "CHARIOX_DRILL_C_RELAY_TOKEN",
+    status: "relay_url_selected",
+  })
   assert.equal("actions" in manifest, false)
   assert.equal("relayToken" in manifest, false)
   assert.equal("relayToken" in manifest.localCloudTransport, false)
@@ -694,6 +703,13 @@ test("existing-kernel manifest defers Cloud and Web transport to the Mac fronten
   assert.equal(manifest.webObserver.transportStatus, "not_observed")
   assert.equal(manifest.webObserver.evidenceStatus, "not_observed")
   assert.equal(manifest.webObserver.relayUrl, null)
+  assert.equal(manifest.tuiObserver.args.includes("--relay-url"), false)
+  assert.deepEqual(manifest.tuiObserver.remoteRelay, {
+    url: null,
+    targetDaemonId: "kernel-1",
+    credentialEnvironment: "CHARIOX_DRILL_C_RELAY_TOKEN",
+    status: "relay_url_required",
+  })
   assert.deepEqual(manifest.baseline.actionHistory, [])
   assert.equal(manifest.priorKernelState.sessionCount, 7)
   assert.equal("relayToken" in manifest, false)

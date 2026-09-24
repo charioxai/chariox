@@ -52,8 +52,9 @@ export async function captureDrillCRoomCheckpoint({ client, requests, sessionId,
   }
 }
 
-export function assertDrillCSharedRoomEvidence({ baseline, checkpoint, web, tui }) {
-  assert.ok(baseline && checkpoint && web && tui, 'Drill C evidence requires baseline, kernel, Web, and TUI observations')
+export function assertDrillCSharedRoomEvidence({ baseline, checkpoint, web, tui, remoteTui }) {
+  assert.ok(baseline && checkpoint && web && tui, 'Drill C evidence requires baseline, kernel, Web, and local TUI observations')
+  assert.ok(remoteTui, 'Drill C evidence requires a remote TUI observation through the relay')
   assert.equal(baseline.sessionId, baseline.environment?.session_id, 'baseline Room identity mismatch')
   assert.equal(checkpoint.environment?.session_id, baseline.sessionId, 'TUI observer saw a different Room')
   assert.equal(checkpoint.environment?.environment_id, baseline.environment.environment_id, 'Room Environment changed after Computer work')
@@ -104,12 +105,23 @@ export function assertDrillCSharedRoomEvidence({ baseline, checkpoint, web, tui 
   assert.ok(webObservedAt >= takeoverAction.submitted_at_ms, 'Web observation predates its takeover Action')
 
   assert.equal(tui.sessionId, baseline.sessionId, 'TUI observer attached to a different Room')
+  assert.equal(remoteTui.sessionId, baseline.sessionId, 'remote TUI observer attached to a different Room')
+  assert.ok(tui.attachmentId && remoteTui.attachmentId && tui.attachmentId !== remoteTui.attachmentId,
+    'Drill C requires distinct TUI attachments')
+  assert.equal(remoteTui.transport?.kind, 'relay', 'remote TUI observer did not use the relay')
+  assert.equal(remoteTui.transport.targetDaemonId, baseline.sliceBinding.owner_kernel_id,
+    'remote TUI observer targeted a different home kernel')
+  const remoteRelayUrl = new URL(remoteTui.transport.relayUrl)
+  assert.ok(['ws:', 'wss:'].includes(remoteRelayUrl.protocol), 'remote TUI relay URL is invalid')
   assertTuiRoomStatus(tui.statusNotice, checkpoint.environment, focusedTab)
   assertTuiActionVisible(tui.actionsNotice, computerAction)
   assertTuiActionVisible(tui.actionsNotice, takeoverAction)
+  assertTuiRoomStatus(remoteTui.statusNotice, checkpoint.environment, focusedTab)
+  assertTuiActionVisible(remoteTui.actionsNotice, computerAction)
+  assertTuiActionVisible(remoteTui.actionsNotice, takeoverAction)
 
   return {
-    schema: 'chariox.browser_computer.drill_c.live_evidence.v1',
+    schema: 'chariox.browser_computer.drill_c.live_evidence.v2',
     status: 'passed',
     observedAt: new Date().toISOString(),
     sameRoom: true,
@@ -131,7 +143,13 @@ export function assertDrillCSharedRoomEvidence({ baseline, checkpoint, web, tui 
       webTakeover: actionIdentity(takeoverAction),
     },
     observers: {
-      tui: { statusNotice: tui.statusNotice, actionsNotice: tui.actionsNotice },
+      localTui: { attachmentId: tui.attachmentId, statusNotice: tui.statusNotice, actionsNotice: tui.actionsNotice },
+      remoteTui: {
+        attachmentId: remoteTui.attachmentId,
+        transport: remoteTui.transport,
+        statusNotice: remoteTui.statusNotice,
+        actionsNotice: remoteTui.actionsNotice,
+      },
       web: { client: web.client, observedAt: web.observedAt },
     },
   }
@@ -671,6 +689,7 @@ async function observeRoomFromTui(automation) {
   assert.ok(statusNotice, 'TUI observer did not return a /room status notice')
   assert.ok(actionsNotice, 'TUI observer did not return a /room actions notice')
   return {
+    attachmentId: attachmentSnapshot.attachmentId ?? null,
     sessionId: attachmentSnapshot.session?.id ?? null,
     statusNotice,
     actionsNotice,
@@ -683,6 +702,7 @@ async function verifyDrillC(manifest, automation) {
   const { LocalIpcClient } = await import(pathToFileURL(path.join(repoRoot, 'packages/kernel-client/dist/ipc.js')).href)
   const requests = await import(pathToFileURL(path.join(repoRoot, 'packages/kernel-client/dist/ipc-requests.js')).href)
   const client = new LocalIpcClient(manifest.kernelUrl)
+  const remoteAutomation = createAutomationClient(manifest.remoteAutomationSocket)
   try {
     const checkpoint = await captureDrillCRoomCheckpoint({
       client,
@@ -692,13 +712,22 @@ async function verifyDrillC(manifest, automation) {
     })
     const web = JSON.parse(await readFile(manifest.webObservationPath, 'utf8'))
     const tui = await observeRoomFromTui(automation)
-    const report = assertDrillCSharedRoomEvidence({ baseline: manifest.baseline, checkpoint, web, tui })
+    const remoteTui = {
+      ...await observeRoomFromTui(remoteAutomation),
+      transport: {
+        kind: 'relay',
+        relayUrl: manifest.remoteRelay.url,
+        targetDaemonId: manifest.remoteRelay.targetDaemonId,
+      },
+    }
+    const report = assertDrillCSharedRoomEvidence({ baseline: manifest.baseline, checkpoint, web, tui, remoteTui })
     const reportPath = path.join(manifest.evidenceDir, 'drill-c-live-observation.json')
     await mkdir(path.dirname(reportPath), { recursive: true })
     await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8')
     return { report, reportPath }
   } finally {
     await client.close?.().catch(() => {})
+    remoteAutomation.close()
   }
 }
 
@@ -719,6 +748,18 @@ export function assertDrillCLiveObserverManifest(manifest) {
   assert.equal(manifest.baseline.resourceInventory?.environment_id, manifest.baseline.environment.environment_id, 'live observer baseline inventory mismatch')
   assert.equal(manifest.baseline.resourceInventory?.slice_id, manifest.sliceId, 'live observer baseline inventory slice mismatch')
   assert.ok(path.isAbsolute(manifest.webObservationPath), 'Web observer report path must be absolute')
+  assert.ok(typeof manifest.remoteAutomationSocket === 'string' && path.isAbsolute(manifest.remoteAutomationSocket),
+    'remote TUI automation socket path must be absolute')
+  assert.ok(typeof manifest.automationSocket === 'string' && path.isAbsolute(manifest.automationSocket),
+    'local TUI automation socket path must be absolute')
+  assert.notEqual(manifest.remoteAutomationSocket, manifest.automationSocket,
+    'local and remote TUI automation sockets must be distinct')
+  assert.equal(manifest.remoteRelay?.targetDaemonId, manifest.baseline.sliceBinding?.owner_kernel_id,
+    'remote TUI relay must target the home kernel')
+  assert.ok(typeof manifest.remoteRelay?.url === 'string', 'remote TUI relay URL is missing')
+  const relayEndpoint = new URL(manifest.remoteRelay.url)
+  assert.ok(['ws:', 'wss:'].includes(relayEndpoint.protocol), 'remote TUI relay URL is invalid')
+  assert.notEqual(relayEndpoint.origin, endpoint.origin, 'remote TUI relay cannot be the direct kernel endpoint')
 }
 
 async function main() {

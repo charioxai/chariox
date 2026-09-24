@@ -501,6 +501,7 @@ export function buildSetupManifest({
     "--web-observation", webObservationPath,
     "--root-dir", path.join(rootDir, "tui-observer"),
     "--manifest", tuiManifestPath,
+    ...(relayUrl ? ["--relay-url", relayUrl, "--target-daemon-id", daemonId] : []),
   ]
   return {
     schema: "chariox.drill_c.same_host_setup.v1",
@@ -593,6 +594,12 @@ export function buildSetupManifest({
       executable: "node",
       args: tuiObserverArgs,
       manifestPath: tuiManifestPath,
+      remoteRelay: {
+        url: relayUrl,
+        targetDaemonId: daemonId,
+        credentialEnvironment: "CHARIOX_DRILL_C_RELAY_TOKEN",
+        status: relayUrl ? "relay_url_selected" : "relay_url_required",
+      },
       verify: {
         executable: "node",
         args: [

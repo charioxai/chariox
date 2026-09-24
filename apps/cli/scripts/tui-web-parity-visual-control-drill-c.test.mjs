@@ -121,6 +121,7 @@ const web = {
   },
 }
 const tui = {
+  attachmentId: 'attachment-local',
   sessionId,
   statusNotice: [
     `Room environment ${environmentId}`,
@@ -136,9 +137,18 @@ const tui = {
     'next_before=none',
   ].join('\n'),
 }
+const remoteTui = {
+  ...tui,
+  attachmentId: 'attachment-remote',
+  transport: {
+    kind: 'relay',
+    relayUrl: 'ws://127.0.0.1:47000',
+    targetDaemonId: 'kernel-home',
+  },
+}
 
-test('Drill C verifier accepts matching live kernel, TUI, and Web observations', () => {
-  const report = assertDrillCSharedRoomEvidence({ baseline, checkpoint, web, tui })
+test('Drill C verifier accepts matching live kernel, local TUI, remote TUI, and Web observations', () => {
+  const report = assertDrillCSharedRoomEvidence({ baseline, checkpoint, web, tui, remoteTui })
 
   assert.equal(report.status, 'passed')
   assert.equal(report.sameRoom, true)
@@ -147,6 +157,29 @@ test('Drill C verifier accepts matching live kernel, TUI, and Web observations',
   assert.equal(report.sameDisplay, true)
   assert.equal(report.actions.computer.actionId, computerAction.action_id)
   assert.equal(report.actions.webTakeover.actorId, webTakeover.actor_id)
+  assert.equal(report.observers.remoteTui.attachmentId, 'attachment-remote')
+})
+
+test('Drill C verifier cannot pass with only a direct-kernel TUI', () => {
+  assert.throws(() => assertDrillCSharedRoomEvidence({ baseline, checkpoint, web, tui }), /remote TUI/)
+})
+
+test('Drill C verifier requires a distinct relay attachment to the home kernel', () => {
+  assert.throws(() => assertDrillCSharedRoomEvidence({
+    baseline, checkpoint, web, tui,
+    remoteTui: { ...remoteTui, attachmentId: tui.attachmentId },
+  }), /distinct TUI attachments/)
+  assert.throws(() => assertDrillCSharedRoomEvidence({
+    baseline, checkpoint, web, tui,
+    remoteTui: { ...remoteTui, transport: { ...remoteTui.transport, targetDaemonId: 'wrong-kernel' } },
+  }), /home kernel/)
+})
+
+test('Drill C verifier requires the remote TUI to show both actors and actions', () => {
+  assert.throws(() => assertDrillCSharedRoomEvidence({
+    baseline, checkpoint, web, tui,
+    remoteTui: { ...remoteTui, actionsNotice: 'Room actions (0)' },
+  }), /remote TUI|did not show kernel Action/)
 })
 
 test('Drill C verifier rejects a dev-stub visual manifest', () => {
@@ -167,7 +200,36 @@ test('Drill C verifier accepts only a captured live observer baseline', () => {
     sliceId,
     baseline,
     webObservationPath: '/tmp/web-observer.json',
+    automationSocket: '/tmp/local-observer.sock',
+    remoteAutomationSocket: '/tmp/remote-observer.sock',
+    remoteRelay: { url: 'ws://127.0.0.1:47000', targetDaemonId: 'kernel-home' },
   }))
+})
+
+test('Drill C live manifest rejects a missing remote relay observer', () => {
+  assert.throws(() => assertDrillCLiveObserverManifest({
+    schema: 'chariox.drill_c.live_observer_session.v1',
+    kernelUrl: 'ws://127.0.0.1:43118/kernel',
+    sessionId,
+    sliceId,
+    baseline,
+    webObservationPath: '/tmp/web-observer.json',
+    automationSocket: '/tmp/local-observer.sock',
+  }), /remote TUI/)
+})
+
+test('Drill C live manifest rejects a direct-kernel endpoint posing as the relay', () => {
+  assert.throws(() => assertDrillCLiveObserverManifest({
+    schema: 'chariox.drill_c.live_observer_session.v1',
+    kernelUrl: 'ws://127.0.0.1:43118/kernel',
+    sessionId,
+    sliceId,
+    baseline,
+    webObservationPath: '/tmp/web-observer.json',
+    automationSocket: '/tmp/local-observer.sock',
+    remoteAutomationSocket: '/tmp/remote-observer.sock',
+    remoteRelay: { url: 'ws://127.0.0.1:43118/relay', targetDaemonId: 'kernel-home' },
+  }), /cannot be the direct kernel/)
 })
 
 test('Room checkpoint reads identity and action history from public kernel requests', async () => {
@@ -214,12 +276,14 @@ test('Drill C verifier rejects Web evidence with a different tab or viewport', (
     checkpoint,
     web: { ...web, browser: { ...web.browser, focusedTabId: 'other-tab' } },
     tui,
+    remoteTui,
   }), /different focused tab/)
   assert.throws(() => assertDrillCSharedRoomEvidence({
     baseline,
     checkpoint,
     web: { ...web, display: { ...display, viewport: { ...viewport, desktop_pixel_width: 1024 } } },
     tui,
+    remoteTui,
   }), /different canonical display/)
 })
 
@@ -229,12 +293,14 @@ test('Drill C verifier rejects missing Computer work and mismatched actor histor
     checkpoint: { ...checkpoint, actions: [webTakeover] },
     web,
     tui,
+    remoteTui,
   }), /no completed agent Computer work/)
   assert.throws(() => assertDrillCSharedRoomEvidence({
     baseline,
     checkpoint,
     web: { ...web, actions: { ...web.actions, webTakeover: { ...web.actions.webTakeover, actorId: 'agent:wrong' } } },
     tui,
+    remoteTui,
   }), /Action identity differs from kernel history/)
 })
 
