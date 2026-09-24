@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -8,6 +9,7 @@ import {
   DEFAULT_SOURCE_REF,
   MP_ROWS,
   parseArgs,
+  parseCatFileBatch,
   parseStatus,
   PRIOR_REVIEWED_SOURCE_COMMIT,
   PRIOR_REVIEWED_SOURCE_TREE,
@@ -103,25 +105,42 @@ function makeFixture(options = {}) {
   const root = mkdtempSync(join(tmpdir(), "chariox-mp11-"));
   const files = fixtureFiles(options);
   const entries = [];
+  const blobByPath = new Map();
+  const blobsById = new Map();
   let index = 1;
   const addFile = (file, contents, mode = "100644") => {
     const absolute = join(root, file);
     mkdirSync(dirname(absolute), { recursive: true });
     writeFileSync(absolute, contents);
-    entries.push(`${mode} blob ${String(index).padStart(40, "0")}\t${file}`);
+    const blob = String(index).padStart(40, "0");
+    entries.push({ mode, blob, file });
+    blobByPath.set(file, blob);
+    blobsById.set(blob, Buffer.from(contents));
+    files[file] = contents;
     index += 1;
+  };
+  const replaceFile = (file, contents) => {
+    const prior = entries.find((entry) => entry.file === file);
+    if (!prior) throw new Error(`fixture file not found: ${file}`);
+    entries.splice(entries.indexOf(prior), 1);
+    addFile(file, contents, prior.mode);
   };
   for (const [file, contents] of Object.entries(files)) {
     addFile(file, contents);
   }
   const runGit = (args) => {
     if (args[0] === "rev-parse" && args[1] === "HEAD") return `${COMMIT}\n`;
-    if (args[0] === "rev-parse" && args[1] === "HEAD^{tree}") return `${TREE}\n`;
+    if (args[0] === "rev-parse" && args[1].endsWith("^{tree}")) return `${TREE}\n`;
     if (args[0] === "status") return options.dirtyPath ? ` M ${options.dirtyPath}\0` : "";
-    if (args[0] === "ls-tree") return `${entries.join("\0")}\0`;
+    if (args[0] === "ls-tree") {
+      const records = [...entries].sort((left, right) => left.file.localeCompare(right.file))
+        .map(({ mode, blob, file }) => `${mode} blob ${blob}\t${file}`);
+      return `${records.join("\0")}\0`;
+    }
     throw new Error(`unexpected git command in fixture: ${args.join(" ")}`);
   };
-  return { root, files, addFile, runGit };
+  const readBlobBatch = (_sourceRoot, blobIds) => new Map(blobIds.map((blob) => [blob, blobsById.get(blob)]));
+  return { root, files, addFile, replaceFile, blobByPath, readBlobBatch, runGit };
 }
 
 test("porcelain NUL records retain both rename/copy paths and literal arrows", () => {
@@ -130,17 +149,62 @@ test("porcelain NUL records retain both rename/copy paths and literal arrows", (
   assert.throws(() => parseStatus("R  new\0"), /incomplete git status/);
 });
 
+test("cat-file batch parsing rejects absent, mismatched, malformed, and truncated objects", () => {
+  const blob = "a".repeat(40);
+  const otherBlob = "b".repeat(40);
+  assert.deepEqual(parseCatFileBatch(Buffer.from(`${blob} blob 3\nabc\n`), [blob]).get(blob), Buffer.from("abc"));
+  assert.throws(() => parseCatFileBatch(Buffer.from(`${blob} missing\n`), [blob]), /could not find listed blob/);
+  assert.throws(() => parseCatFileBatch(Buffer.from(`${otherBlob} blob 1\nx\n`), [blob]), /different object than requested/);
+  assert.throws(() => parseCatFileBatch(Buffer.from(`${blob} tree 1\nx\n`), [blob]), /malformed object header/);
+  assert.throws(() => parseCatFileBatch(Buffer.from(`${blob} blob 4\nabc`), [blob]), /truncated or malformed/);
+  assert.throws(() => parseCatFileBatch(Buffer.from(`${blob} blob 0\n\nextra`), [blob]), /unexpected trailing bytes/);
+});
+
+test("assume-unchanged worktree edits do not replace committed source bytes", () => {
+  const root = mkdtempSync(join(tmpdir(), "chariox-mp11-committed-blobs-"));
+  const sourcePath = "apps/kernel/src/identity.rs";
+  const oldSource = 'let selector = "CHARIOX_MANAGED_OLD_REF_SOURCE";\n';
+  const committedSource = 'let selector = "CHARIOX_MANAGED_COMMITTED_SOURCE";\n';
+  const modifiedSource = 'let selector = "CHARIOX_MANAGED_WORKTREE_DECOY";\n';
+  const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
+  try {
+    mkdirSync(dirname(join(root, sourcePath)), { recursive: true });
+    writeFileSync(join(root, sourcePath), oldSource);
+    git("init", "--quiet");
+    git("config", "user.name", "Inventory Test");
+    git("config", "user.email", "inventory-test@example.invalid");
+    git("add", sourcePath);
+    git("commit", "--quiet", "-m", "old ref fixture");
+    const oldCommit = git("rev-parse", "HEAD").trim();
+    writeFileSync(join(root, sourcePath), committedSource);
+    git("add", sourcePath);
+    git("commit", "--quiet", "-m", "committed source fixture");
+    git("update-index", "--assume-unchanged", sourcePath);
+    writeFileSync(join(root, sourcePath), modifiedSource);
+    assert.equal(git("status", "--porcelain=v1", "--untracked-files=all").trim(), "");
+    const headReport = collectSourceInventory({ sourceRoot: root });
+    assert.ok(headReport.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_COMMITTED_SOURCE"));
+    assert.equal(headReport.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_WORKTREE_DECOY"), false);
+    const oldRefReport = collectSourceInventory({ sourceRoot: root, sourceRef: oldCommit });
+    assert.ok(oldRefReport.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_OLD_REF_SOURCE"));
+    assert.equal(oldRefReport.entries.some((entry) => entry.selector === "CHARIOX_MANAGED_WORKTREE_DECOY"), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("non-HEAD source blobs use the same binary exclusion as HEAD", () => {
   withFixture({}, (fixture) => {
     const runGit = (args, cwd) => {
       if (args[0] === "rev-parse") return args[1].endsWith("^{tree}") ? `${TREE}\n` : `${COMMIT}\n`;
-      if (args[0] === "show") {
-        const path = args[1].slice("snapshot:".length);
-        return path === "apps/kernel/src/selector-rust.rs" ? "\0CHARIOX_MANAGED_BINARY" : fixture.files[path];
-      }
       return fixture.runGit(args, cwd);
     };
-    const report = collect(fixture, { sourceRef: "snapshot", runGit });
+    const readBlobBatch = (sourceRoot, blobIds) => {
+      const blobs = fixture.readBlobBatch(sourceRoot, blobIds);
+      blobs.set(fixture.blobByPath.get("apps/kernel/src/selector-rust.rs"), Buffer.from("\0CHARIOX_MANAGED_BINARY"));
+      return blobs;
+    };
+    const report = collect(fixture, { sourceRef: "snapshot", readBlobBatch, runGit });
     assert.equal(report.entries.some(entry => entry.path === "apps/kernel/src/selector-rust.rs"), false);
   });
 });
@@ -175,6 +239,7 @@ test("MP row meanings stay aligned with the stable plan ledger", () => {
 function collect(fixture, options = {}) {
   return collectSourceInventory({
     sourceRoot: fixture.root,
+    readBlobBatch: fixture.readBlobBatch,
     runGit: fixture.runGit,
     expectedCommit: COMMIT,
     expectedTree: TREE,
@@ -242,7 +307,7 @@ test("historical approvals stay pending on current source instead of being repin
     const currentTree = "b".repeat(40);
     const runGit = (args, cwd) => {
       if (args[0] === "rev-parse" && args[1] === "HEAD") return `${currentCommit}\n`;
-      if (args[0] === "rev-parse" && args[1] === "HEAD^{tree}") return `${currentTree}\n`;
+      if (args[0] === "rev-parse" && args[1].endsWith("^{tree}")) return `${currentTree}\n`;
       return fixture.runGit(args, cwd);
     };
     const report = collect(fixture, {
@@ -406,8 +471,15 @@ test("source drift removes the exact release exemption", () => {
   withFixture({}, (fixture) => {
     const releasePath = join(fixture.root, "apps/kernel/src/managed_bootstrap/release.rs");
     const original = readFileSync(releasePath, "utf8");
-    writeFileSync(releasePath, original.replace("pub(super) fn verify_release(", "pub(super) fn verify_release( // drift"));
-    const report = collect(fixture);
+    fixture.replaceFile("apps/kernel/src/managed_bootstrap/release.rs", original.replace("pub(super) fn verify_release(", "pub(super) fn verify_release( // drift"));
+    const driftedCommit = "c".repeat(40);
+    const driftedTree = "d".repeat(40);
+    const runGit = (args, cwd) => {
+      if (args[0] === "rev-parse" && args[1] === "HEAD") return `${driftedCommit}\n`;
+      if (args[0] === "rev-parse" && args[1].endsWith("^{tree}")) return `${driftedTree}\n`;
+      return fixture.runGit(args, cwd);
+    };
+    const report = collect(fixture, { runGit, expectedCommit: driftedCommit, expectedTree: driftedTree });
     const drifted = report.entries.find((entry) => entry.path.endsWith("release.rs") && entry.line === 39);
     assert.equal(drifted?.disposition, "unreviewed");
     assert.equal(report.summary.allowedReleaseDeployment, 0);

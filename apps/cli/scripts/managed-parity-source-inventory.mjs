@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const INVENTORY_SCHEMA = "chariox.managed-parity.source-inventory.v1";
@@ -13,6 +13,8 @@ export const PRIOR_REVIEWED_SOURCE_COMMIT = "391b38b2be15c4f49d8ea70cc14b031385c
 export const PRIOR_REVIEWED_SOURCE_TREE = "199b565b83e9582acd38a38a76520e2ba5ac02b4";
 export const DEFAULT_SOURCE_REF = "HEAD";
 const INVENTORY_TOOL_PATH = "apps/cli/scripts/managed-parity-source-inventory.mjs";
+const MAX_BLOB_BATCH_OBJECTS = 100_000;
+const MAX_BLOB_BATCH_OUTPUT_BYTES = 64 * 1024 * 1024;
 
 export const REQUIRED_CATEGORIES = Object.freeze([
   "managed_only_branch",
@@ -386,6 +388,55 @@ function parseLsTree(output) {
   }).filter((entry) => entry.type === "blob");
 }
 
+export function parseCatFileBatch(output, expectedBlobIds) {
+  if (!Buffer.isBuffer(output)) throw new Error("git cat-file --batch returned non-binary output");
+  const blobs = new Map();
+  let offset = 0;
+  for (const expectedBlobId of expectedBlobIds) {
+    const headerEnd = output.indexOf(0x0a, offset);
+    if (headerEnd < 0) throw new Error("git cat-file --batch returned an incomplete object header");
+    const header = output.toString("ascii", offset, headerEnd);
+    if (header === `${expectedBlobId} missing`) {
+      throw new Error(`git cat-file --batch could not find listed blob ${expectedBlobId}`);
+    }
+    const match = /^([0-9a-f]{40}) blob (0|[1-9][0-9]*)$/.exec(header);
+    if (!match) throw new Error("git cat-file --batch returned a malformed object header");
+    if (match[1] !== expectedBlobId) throw new Error("git cat-file --batch returned a different object than requested");
+    const size = Number(match[2]);
+    if (!Number.isSafeInteger(size) || size > MAX_BLOB_BATCH_OUTPUT_BYTES) {
+      throw new Error(`git cat-file --batch object exceeds the ${MAX_BLOB_BATCH_OUTPUT_BYTES}-byte limit`);
+    }
+    offset = headerEnd + 1;
+    const bodyEnd = offset + size;
+    if (bodyEnd >= output.length || output[bodyEnd] !== 0x0a) {
+      throw new Error("git cat-file --batch returned a truncated or malformed object body");
+    }
+    blobs.set(expectedBlobId, output.subarray(offset, bodyEnd));
+    offset = bodyEnd + 1;
+  }
+  if (offset !== output.length) throw new Error("git cat-file --batch returned unexpected trailing bytes");
+  return blobs;
+}
+
+function readGitBlobBatch(sourceRoot, blobIds) {
+  if (blobIds.length > MAX_BLOB_BATCH_OBJECTS) {
+    throw new Error(`source tree exceeds the ${MAX_BLOB_BATCH_OBJECTS}-blob batch limit`);
+  }
+  if (blobIds.some((blobId) => !/^[0-9a-f]{40}$/.test(blobId))) {
+    throw new Error("source tree contains an invalid blob object ID");
+  }
+  if (blobIds.length === 0) return new Map();
+  const result = spawnSync("git", ["cat-file", "--batch"], {
+    cwd: sourceRoot,
+    input: `${blobIds.join("\n")}\n`,
+    encoding: null,
+    maxBuffer: MAX_BLOB_BATCH_OUTPUT_BYTES,
+  });
+  if (result.error) throw new Error(`git cat-file --batch failed: ${result.error.message}`);
+  if (result.status !== 0) throw new Error(`git cat-file --batch failed with status ${result.status}`);
+  return parseCatFileBatch(result.stdout, blobIds);
+}
+
 export function parseStatus(output) {
   const records = output.split("\0");
   const paths = [];
@@ -456,8 +507,8 @@ function stripComments(text, format) {
   }).join("\n");
 }
 
-function readText(fsApi, absolutePath) {
-  const value = fsApi.readFileSync(absolutePath);
+function readText(value) {
+  if (!Buffer.isBuffer(value)) throw new Error("git cat-file --batch omitted a requested blob");
   if (value.includes(0)) return null;
   return value.toString("utf8");
 }
@@ -532,24 +583,25 @@ function buildRowCoverage(entries) {
   }));
 }
 
-function collectTrackedFiles({ sourceRoot, sourceRef, fsApi, runGit }) {
-  const treeEntries = parseLsTree(runGit(["ls-tree", "-r", "--full-tree", "-z", sourceRef], sourceRoot));
-  return treeEntries.map((entry) => {
+function collectTrackedFiles({ sourceRoot, sourceCommit, readBlobBatch, runGit }) {
+  const treeEntries = parseLsTree(runGit(["ls-tree", "-r", "--full-tree", "-z", sourceCommit], sourceRoot));
+  const selectedEntries = treeEntries.map((entry) => {
     const format = classifyProductionPath(entry.path);
     if (!format) return null;
-    return {
-      ...entry,
-      format,
-      text: sourceRef === "HEAD"
-        ? readText(fsApi, join(sourceRoot, entry.path))
-        : runGit(["show", `${sourceRef}:${entry.path}`], sourceRoot),
-    };
-  }).filter((entry) => entry !== null && entry.text !== null && !entry.text.includes("\0"));
+    return { ...entry, format };
+  }).filter((entry) => entry !== null);
+  const blobIds = [...new Set(selectedEntries.map((entry) => entry.blob))];
+  const blobs = readBlobBatch(sourceRoot, blobIds);
+  if (!(blobs instanceof Map)) throw new Error("git cat-file --batch returned an invalid blob map");
+  return selectedEntries.map((entry) => ({
+    ...entry,
+    text: readText(blobs.get(entry.blob)),
+  })).filter((entry) => entry.text !== null);
 }
 
 export function collectSourceInventory({
   sourceRoot,
-  fsApi = { readFileSync },
+  readBlobBatch = readGitBlobBatch,
   runGit = defaultRunGit,
   expectedCommit = null,
   expectedTree = null,
@@ -557,10 +609,11 @@ export function collectSourceInventory({
   claimedDispositions = [],
 } = {}) {
   if (!sourceRoot || !isAbsolute(sourceRoot)) throw new Error("sourceRoot must be an absolute path");
+  const commit = runGit(["rev-parse", sourceRef], sourceRoot).trim();
   const source = {
     ref: sourceRef,
-    commit: runGit(["rev-parse", sourceRef], sourceRoot).trim(),
-    tree: runGit(["rev-parse", `${sourceRef}^{tree}`], sourceRoot).trim(),
+    commit,
+    tree: runGit(["rev-parse", `${commit}^{tree}`], sourceRoot).trim(),
   };
   if (expectedCommit && source.commit !== expectedCommit) {
     throw new Error(`source commit assertion mismatch: expected ${expectedCommit}, got ${source.commit}`);
@@ -576,7 +629,7 @@ export function collectSourceInventory({
   const reviewedPredicates = DEFAULT_REVIEWED_PREDICATES;
   assertDispositionClaims(claimedDispositions, reviewedPredicates, source);
 
-  const files = collectTrackedFiles({ sourceRoot, sourceRef, fsApi, runGit });
+  const files = collectTrackedFiles({ sourceRoot, sourceCommit: source.commit, readBlobBatch, runGit });
   const entries = [];
   for (const file of files) {
     const rawLines = file.text.split(/\r?\n/);
