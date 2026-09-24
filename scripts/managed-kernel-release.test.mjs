@@ -1210,6 +1210,10 @@ exec /bin/mv "$@"
 }
 
 test("managed image installer verifies, installs twice, and rejects seeded runtime state", async (context) => {
+  if (process.platform !== "linux") {
+    context.skip("requires Linux stat and filesystem ownership semantics")
+    return
+  }
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-install-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const fixture = await makeFixture(root)
@@ -1732,6 +1736,10 @@ test("managed image installer rejects a linked artifact ancestor before host mut
 })
 
 test("managed image installer atomically pivots current to a different release", async (context) => {
+  if (process.platform !== "linux") {
+    context.skip("requires Linux stat and filesystem ownership semantics")
+    return
+  }
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-install-pivot-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const firstRoot = join(root, "first-fixture")
@@ -1790,6 +1798,10 @@ test("managed image installer atomically pivots current to a different release",
 })
 
 test("a terminated managed image install releases the lock for a concurrent install", async (context) => {
+  if (process.platform !== "linux") {
+    context.skip("requires Linux stat and filesystem ownership semantics")
+    return
+  }
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-install-lock-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const fixture = await makeFixture(root)
