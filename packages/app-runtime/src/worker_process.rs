@@ -80,11 +80,12 @@ impl PreparedWorker {
     }
     /// Kernel startup recovery for macOS storage, before any worker of this
     /// kernel is prepared: detaches volumes and clears interrupted creations.
+    /// The error is a stable code such as `app_storage_busy`, for diagnostics.
     #[cfg(target_os = "macos")]
-    pub fn recover_macos_storage(storage_root: &std::path::Path) -> Result<(), WorkerError> {
+    pub fn recover_macos_storage(storage_root: &std::path::Path) -> Result<(), &'static str> {
         storage_macos::StorageRoot::open(storage_root)
             .and_then(|root| root.recover_all_blocking())
-            .map_err(|_| WorkerError::Preparation)
+            .map_err(|error| error.code())
     }
 }
 

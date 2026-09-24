@@ -42,6 +42,21 @@ pub(super) enum Error {
     #[error("app_storage_recovery_required")]
     RecoveryRequired,
 }
+impl Error {
+    pub(super) fn code(self) -> &'static str {
+        match self {
+            Self::Io => "app_storage_io",
+            Self::Identity => "app_storage_identity",
+            Self::Busy => "app_storage_busy",
+            Self::Capacity => "app_storage_capacity",
+            Self::Metadata => "app_storage_metadata",
+            Self::Command => "app_storage_command",
+            Self::CommandTimeout => "app_storage_command_timeout",
+            Self::CommandOutput => "app_storage_command_output",
+            Self::RecoveryRequired => "app_storage_recovery_required",
+        }
+    }
+}
 impl From<std::io::Error> for Error {
     fn from(_: std::io::Error) -> Self {
         Self::Io

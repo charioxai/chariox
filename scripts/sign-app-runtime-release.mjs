@@ -25,11 +25,12 @@ export async function signRuntimeRelease({ inputDirectory, builderAttestation, b
   repository = await realpath(repository);
   inputDirectory = await realpath(inputDirectory);
   const bundleRoot = join(inputDirectory, 'bundle');
-  const bundle = await verifyBundle(bundleRoot);
   // macOS production releases require Developer ID signing and notarization.
   // Only the local developer-runtime tool may sign an ad-hoc darwin graph.
-  if (bundle.target.startsWith('darwin-') && !developerRuntime)
+  const declared = JSON.parse(await readSmall(bundleRoot, 'bundle-manifest.json', MANIFEST_LIMIT));
+  if (String(declared.target).startsWith('darwin-') && !developerRuntime)
     throw new Error('macOS releases require the Developer ID signing path');
+  const bundle = await verifyBundle(bundleRoot);
   // Historical native evidence is useful for debugging, but cannot become a
   // release by attaching a new signature to the old manifest.
   if (bundle.native.inputStatus !== 'matches-current-source') throw new Error('historical native artifact cannot be released');

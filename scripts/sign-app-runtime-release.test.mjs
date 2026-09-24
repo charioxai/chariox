@@ -152,3 +152,16 @@ test('darwin graphs contain only the Seatbelt launcher and require the developer
   assert.ok(!launcherInputs('darwin-arm64').includes('apps/app-worker/src/sandbox_linux.c'));
   assert.deepEqual(launcherInputs('linux-x64'), LAUNCHER_INPUTS);
 });
+
+test('the production signer refuses darwin bundles before writing any output', async t => {
+  const parent = join(homedir(), '.chariox/dev');
+  await mkdir(parent, { recursive: true, mode: 0o700 });
+  const root = await mkdtemp(join(await realpath(parent), 'runtime-release-darwin-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, 'input/bundle'), { recursive: true, mode: 0o700 });
+  await writeFile(join(root, 'input/bundle/bundle-manifest.json'), JSON.stringify({ target: 'darwin-arm64' }));
+  await assert.rejects(signRuntimeRelease({ inputDirectory: join(root, 'input'), builderAttestation: join(root, 'b.json'),
+    builderSignature: join(root, 'b.sig'), trustedBuilderKey: join(root, 'b.pem'), signingKey: join(root, 'r.pem'),
+    output: join(root, 'release') }), /Developer ID signing path/);
+  await assert.rejects(lstat(join(root, 'release')), { code: 'ENOENT' });
+});

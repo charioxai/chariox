@@ -266,7 +266,15 @@ fn macos_storage_root(store: &crate::durable_state::DurableKernelStateStore) -> 
         .map_err(|_| LifecycleError::Supervisor)?;
     if !recovered.contains(&root) {
         chariox_app_runtime::worker_process::PreparedWorker::recover_macos_storage(&root)
-            .map_err(|_| LifecycleError::Preparation)?;
+            .map_err(|code| {
+                // Fail closed, but keep the cause visible (no App-supplied paths).
+                crate::logging::warn_with_fields(
+                    "app.lifecycle",
+                    "App storage recovery failed; macOS App starts are paused",
+                    serde_json::json!({ "code": code }),
+                );
+                LifecycleError::Preparation
+            })?;
         recovered.insert(root.clone());
     }
     Ok(root)

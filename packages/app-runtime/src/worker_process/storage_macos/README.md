@@ -111,8 +111,9 @@ inherit it; DiskImages service ownership must be observed before asserting that
 such a limit constrains image creation.
 
 In-flight tool/service
-ownership across a kernel crash also needs validation before factory integration;
-if FD inheritance cannot provide it, a trusted supervised guardian is required.
+ownership across a kernel crash remains an open macOS release gate (see
+`worker_process/README.md`); if FD inheritance cannot provide it, a trusted
+supervised guardian is required.
 This component does
 not yet establish worker integration, signed/hardened library validation,
 snapshot and rollback semantics, an installation-wide resource admission

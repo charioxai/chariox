@@ -49,7 +49,7 @@ Before Continue on macOS it also attaches a mandatory monitor to its own
 unreaped direct child. Every 100ms the owner calls the retained resource domain's
 bounded running check and the macOS monitor. The domain's default running check
 is only for independently enforced hard limits; it does not approve preparation.
-There is still no public production domain/preparation factory.
+`prepare_linux`/`prepare_macos` are the only production factories.
 
 The private candidate macOS worker policy is 512MiB for the greater of physical
 footprint and RSS, 64 threads, and one CPU of elapsed-time credit with a 250ms
