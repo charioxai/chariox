@@ -58,14 +58,14 @@ impl VerifiedInstallCandidate {
         let manifest = package.manifest();
         let declarations = package.declarations();
         let capabilities_digest = json_digest(&json!({
-            "schema": "chariox.installation-capabilities.v1",
+            "schema": "chariox.installation-capabilities.v2",
             "capabilities": manifest.capabilities,
             "actions": declarations.actions,
             "toolActions": declarations.tools.iter().filter_map(|tool| tool.action.as_ref().map(|action|
                 json!({"tool": tool.name, "action": action}))).collect::<Vec<_>>()
         }))?;
         let catalog_digest = json_digest(&json!({
-            "schema": "chariox.installation-catalog.v1", "declarations": declarations
+            "schema": "chariox.installation-catalog.v2", "declarations": declarations
         }))?;
         // A view can use shared/dynamic assets outside ui/. Until the serving
         // contract narrows that set, every signed payload file participates.

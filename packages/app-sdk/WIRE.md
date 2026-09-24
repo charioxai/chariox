@@ -127,7 +127,7 @@ return a typed error. The supervisor owns capability checks and rejects unknown
 or undeclared effect routes; it never dispatches arbitrary kernel method names.
 
 `validation.request` returns a durable pending reference when waiting for human
-input. They must not retain a worker request
+input. It must not retain a worker request
 slot for the duration of that wait. App-specific meaning stays in App handlers;
 the kernel performs generic authorization, correlation and schema checks.
 
