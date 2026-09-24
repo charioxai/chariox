@@ -176,7 +176,7 @@ impl AppControlService {
     }
 }
 
-pub(super) fn owner(command: &KernelCommand) -> Result<String, AppRequestErrorCode> {
+pub(crate) fn owner(command: &KernelCommand) -> Result<String, AppRequestErrorCode> {
     let caller = &command.caller;
     if matches!(caller.caller_kind, KernelCallerKind::HostedService) {
         return Err(AppRequestErrorCode::Unauthorized);

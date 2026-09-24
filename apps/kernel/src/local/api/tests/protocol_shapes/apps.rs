@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 344);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 345);
     let release = AppReleaseSummary {
         version: "1.0.0".into(),
         publisher_id: "publisher".into(),
@@ -85,7 +85,7 @@ fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
 
 #[test]
 fn app_package_upload_protocol_shapes_bind_retry_bytes_and_opaque_handles() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 344);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 345);
     let handle = format!("upload_{}", "a".repeat(64));
     let digest = format!("sha256:{:064x}", 1);
     let requests = vec![
@@ -163,4 +163,85 @@ fn app_package_upload_protocol_shapes_bind_retry_bytes_and_opaque_handles() {
         forged["BeginAppPackageUpload"][field] = serde_json::json!("caller-supplied");
         assert!(serde_json::from_value::<LocalDaemonRequest>(forged).is_err());
     }
+}
+
+#[test]
+fn app_worker_control_and_automation_shapes_are_versioned_and_owner_free() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 345);
+    let requests = vec![
+        LocalDaemonRequest::GetAppWorker(AppWorkerRequest {
+            installation_id: "todo".into(),
+        }),
+        LocalDaemonRequest::ControlAppWorker(ControlAppWorkerRequest {
+            installation_id: "todo".into(),
+            action: AppWorkerAction::Restart,
+        }),
+        LocalDaemonRequest::ListAppAutomations(AppWorkerRequest {
+            installation_id: "todo".into(),
+        }),
+        LocalDaemonRequest::ConfigureAppAutomation(ConfigureAppAutomationRequest {
+            installation_id: "todo".into(),
+            automation_id: "reminders".into(),
+            expected_revision: 0,
+            event_name: "todo_due".into(),
+            session_id: "session-1".into(),
+            publication_ref: "todo-reminders".into(),
+            queue_ref: None,
+            scheduled: true,
+        }),
+        LocalDaemonRequest::DisableAppAutomation(DisableAppAutomationRequest {
+            installation_id: "todo".into(),
+            automation_id: "reminders".into(),
+            expected_revision: 1,
+        }),
+    ];
+    let automation = AppAutomationSummary {
+        automation_id: "reminders".into(),
+        revision: 1,
+        event_name: "todo_due".into(),
+        event_version: 1,
+        session_id: "session-1".into(),
+        publication_id: "publication-1".into(),
+        endpoint_id: "endpoint-1".into(),
+        queue_id: "queue-1".into(),
+        scheduled: true,
+        status: AppAutomationStatus::Active,
+    };
+    let responses = vec![
+        LocalDaemonResponse::AppWorker {
+            worker: AppWorkerSummary {
+                installation_id: "todo".into(),
+                phase: AppWorkerPhase::Dormant,
+                enabled: true,
+                failure: None,
+                updated_at_ms: Some(1),
+            },
+        },
+        LocalDaemonResponse::AppAutomations {
+            installation_id: "todo".into(),
+            automations: vec![automation.clone()],
+        },
+        LocalDaemonResponse::AppAutomation {
+            installation_id: "todo".into(),
+            automation,
+        },
+    ];
+    for request in &requests {
+        let encoded = serde_json::to_vec(request).unwrap();
+        assert_eq!(&serde_json::from_slice::<LocalDaemonRequest>(&encoded).unwrap(), request);
+    }
+    for response in &responses {
+        let encoded = serde_json::to_vec(response).unwrap();
+        assert_eq!(&serde_json::from_slice::<LocalDaemonResponse>(&encoded).unwrap(), response);
+    }
+    let snapshot = serde_json::json!({"requests": requests, "responses": responses});
+    let digest = format!("{:x}", Sha256::digest(serde_json::to_vec(&snapshot).unwrap()));
+    assert_eq!(
+        digest,
+        "40c9cc0fbdc28d6edaa0aa068d4a8654b3e95fd008a49af19a36e08913335b1a"
+    );
+    assert!(serde_json::from_value::<LocalDaemonRequest>(
+        serde_json::json!({"ControlAppWorker": {"installation_id": "todo", "action": "start", "owner_id": "other"}})
+    )
+    .is_err());
 }

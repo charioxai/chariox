@@ -199,3 +199,94 @@ pub enum AppRequestErrorCode {
     DigestMismatch,
     StorageUnavailable,
 }
+
+/// Protocol 345: owner-scoped App worker control. The kernel derives the
+/// owner; requests cannot name an owner, generation or host path.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppWorkerRequest {
+    pub installation_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppWorkerAction {
+    Start,
+    Stop,
+    Restart,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ControlAppWorkerRequest {
+    pub installation_id: String,
+    pub action: AppWorkerAction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppWorkerPhase {
+    NotStarted,
+    Starting,
+    Running,
+    /// Stopped while idle; the next use starts it on demand.
+    Dormant,
+    Stopped,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppWorkerSummary {
+    pub installation_id: String,
+    pub phase: AppWorkerPhase,
+    /// False after a user stop; on-demand use does not restart it.
+    pub enabled: bool,
+    pub failure: Option<String>,
+    pub updated_at_ms: Option<u64>,
+}
+
+/// Protocol 345: App automations route one App event to one workflow endpoint.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigureAppAutomationRequest {
+    pub installation_id: String,
+    pub automation_id: String,
+    /// Zero creates; replacements name the current revision.
+    pub expected_revision: u64,
+    pub event_name: String,
+    pub session_id: String,
+    pub publication_ref: String,
+    pub queue_ref: Option<String>,
+    pub scheduled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DisableAppAutomationRequest {
+    pub installation_id: String,
+    pub automation_id: String,
+    pub expected_revision: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppAutomationStatus {
+    Active,
+    Paused,
+    Broken,
+    Disabled,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppAutomationSummary {
+    pub automation_id: String,
+    pub revision: u64,
+    pub event_name: String,
+    pub event_version: u32,
+    pub session_id: String,
+    pub publication_id: String,
+    pub endpoint_id: String,
+    pub queue_id: String,
+    pub scheduled: bool,
+    pub status: AppAutomationStatus,
+}
