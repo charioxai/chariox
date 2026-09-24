@@ -1,7 +1,8 @@
 //! Blocking ownership of a native App worker and its existing SDK channel.
 //!
 //! Linux preparation consumes installed-runtime and verified-package leases,
-//! then provisions fixed storage, code views and the owned cgroup domain.
+//! then provisions fixed storage, code views and the owned cgroup domain. macOS
+//! preparation provisions private APFS storage for the Seatbelt launcher.
 //! A private type or a native identity reply does not establish confinement.
 //!
 //! Spawn, wait, shutdown and Drop are blocking. The kernel must own this handle
@@ -13,6 +14,8 @@ mod private_data;
 pub use private_data::{PreparedDataReplace, PrivateData, PrivateDataError};
 #[cfg(target_os = "linux")]
 mod platform_linux;
+#[cfg(target_os = "macos")]
+mod platform_macos;
 mod record;
 mod spawn;
 #[cfg(target_os = "linux")]
@@ -63,6 +66,17 @@ impl PreparedWorker {
         binding: &crate::installation::StageTrustBinding,
     ) -> Result<Self, WorkerError> {
         platform_linux::prepare(runtime, release, binding)
+    }
+    /// macOS preparation. `storage_root` is the kernel-owned private storage
+    /// directory; the launcher applies Seatbelt to the derived canonical roots.
+    #[cfg(target_os = "macos")]
+    pub fn prepare_macos(
+        runtime: crate::runtime_enrollment::EnrolledRuntime,
+        release: crate::release_store::VerifiedReleaseLease,
+        binding: &crate::installation::StageTrustBinding,
+        storage_root: &std::path::Path,
+    ) -> Result<Self, WorkerError> {
+        platform_macos::prepare(runtime, release, binding, storage_root)
     }
 }
 

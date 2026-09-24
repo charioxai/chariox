@@ -211,9 +211,50 @@ fn spawn(
             fixture_release: None,
         })
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        let _ = verified;
+        let runtime = chariox_app_runtime::runtime_enrollment::EnrolledRuntime::open_installed()
+            .map_err(|_| LifecycleError::Preparation)?;
+        let storage_root = macos_storage_root(&context.store)?;
+        let prepared = chariox_app_runtime::worker_process::PreparedWorker::prepare_macos(
+            runtime,
+            release,
+            binding,
+            &storage_root,
+        )
+        .map_err(|_| LifecycleError::Preparation)?;
+        if context.control.stopped() {
+            return Err(LifecycleError::Stopped);
+        }
+        let process = WorkerProcess::spawn_blocking(prepared, WorkerLimits::default())
+            .map_err(|_| LifecycleError::Preparation)?;
+        Ok(PreparedProcess {
+            process,
+            #[cfg(test)]
+            fixture_release: None,
+        })
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (context, binding, verified, release);
         Err(LifecycleError::Preparation)
+    }
+}
+
+/// Kernel-owned private APFS image root beside the kernel database. It is
+/// never derived from an App, client or package value.
+#[cfg(target_os = "macos")]
+fn macos_storage_root(store: &crate::durable_state::DurableKernelStateStore) -> Result<std::path::PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+    let root = store
+        .path()
+        .parent()
+        .ok_or(LifecycleError::Preparation)?
+        .join("app-storage");
+    match std::fs::DirBuilder::new().mode(0o700).create(&root) {
+        Ok(()) => Ok(root),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(root),
+        Err(_) => Err(LifecycleError::Preparation),
     }
 }

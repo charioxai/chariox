@@ -4,7 +4,7 @@
 //! process sandbox or replace macOS code-signature/notarization verification.
 mod filesystem;
 mod graph;
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub mod installer;
 mod manifest;
 #[cfg(test)]

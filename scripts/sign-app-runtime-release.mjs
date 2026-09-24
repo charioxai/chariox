@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Offline Linux release assembly. The trusted builder supplies a signed exact
-// inventory of bundle + launcher + bubblewrap + fixed ELF dependency files.
+// Offline release assembly. The trusted builder supplies a signed exact inventory
+// of bundle + launcher (+ bubblewrap and fixed ELF dependency files on Linux).
 // This tool copies verified bytes and signs the installed-runtime inventory. It
 // executes no input artifact, installs no root authority, and certifies no drill.
 import { createPrivateKey, createPublicKey, sign } from 'node:crypto';
@@ -10,7 +10,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { digestAndCopy, inventory, outputDirectory, readSmall, sha256, stableJson } from './app-runtime-bundle-files.mjs';
 import { verifyBundle } from './package-app-runtime.mjs';
-import { executable, LAUNCHER_INPUTS, MANIFEST_LIMIT, RELEASE_LIMIT, releasePaths, runtimeInventory, verifyBuilder } from './app-runtime-release-contract.mjs';
+import { executable, launcherInputs as targetLauncherInputs, MANIFEST_LIMIT, RELEASE_LIMIT, releasePaths, runtimeInventory, verifyBuilder } from './app-runtime-release-contract.mjs';
 
 const REPOSITORY = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const equal = (a, b) => stableJson(a) === stableJson(b);
@@ -35,7 +35,7 @@ export async function signRuntimeRelease({ inputDirectory, builderAttestation, b
       throw new Error('release sources differ from builder source identity');
   }
   const launcherInputs = [];
-  for (const path of LAUNCHER_INPUTS) {
+  for (const path of targetLauncherInputs(bundle.target)) {
     const digest = sha256(sourceBytes(repository, bundle.sourceCommit, path));
     if (digest !== sha256(await readSmall(repository, path, MANIFEST_LIMIT)))
       throw new Error('launcher source differs from builder source identity');

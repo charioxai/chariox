@@ -8,17 +8,30 @@ export const RELEASE_LIMIT = 536870912;
 export const MANIFEST_LIMIT = 262144;
 // Security launcher changes must not invalidate the expensive Node build cache.
 // They have their own exact attested input set at final release assembly.
-export const LAUNCHER_INPUTS = [
+const COMMON_LAUNCHER_INPUTS = [
   'apps/app-worker/sandbox.lock.json', 'apps/app-worker/src/launcher.c',
   'apps/app-worker/src/launcher.h', 'apps/app-worker/src/runtime.h',
   'apps/app-worker/src/launch_record.c', 'apps/app-worker/src/launch_process.c',
-  'apps/app-worker/src/sandbox_linux.c', 'apps/app-worker/src/linux_domain_entry.c',
-].sort();
+];
+export const LAUNCHER_INPUTS = [...COMMON_LAUNCHER_INPUTS,
+  'apps/app-worker/src/sandbox_linux.c', 'apps/app-worker/src/linux_domain_entry.c'].sort();
+const DARWIN_LAUNCHER_INPUTS = [...COMMON_LAUNCHER_INPUTS, 'apps/app-worker/src/sandbox_macos.c'].sort();
+const darwin = target => target === 'darwin-arm64' || target === 'darwin-x64';
+
+export function launcherInputs(target) {
+  return darwin(target) ? DARWIN_LAUNCHER_INPUTS : LAUNCHER_INPUTS;
+}
+
+export function nativeExecutables(target) {
+  return darwin(target) ? ['chariox-app-worker'] : ['chariox-app-worker', 'chariox-app-domain-entry', 'chariox-bwrap'];
+}
 const HEX = /^[a-f0-9]{64}$/u;
 const COMMIT = /^[a-f0-9]{40}$/u;
 const equal = (a, b) => stableJson(a) === stableJson(b);
 
 export function platformFiles(target) {
+  // macOS workers load system libraries from the dyld shared cache.
+  if (darwin(target)) return [];
   const loader = { 'linux-x64': 'ld-linux-x86-64.so.2', 'linux-arm64': 'ld-linux-aarch64.so.1' }[target];
   if (!loader) throw new Error('Linux release target required; macOS needs its code-signing release path');
   return [loader, 'libc.so.6', 'libm.so.6', 'libstdc++.so.6', 'libgcc_s.so.1',
@@ -27,7 +40,7 @@ export function platformFiles(target) {
 
 export function releasePaths(bundle) {
   return [...bundle.files.map(file => file.path), 'bundle-manifest.json',
-    'chariox-app-worker', 'chariox-app-domain-entry', 'chariox-bwrap', ...platformFiles(bundle.target)].sort();
+    ...nativeExecutables(bundle.target), ...platformFiles(bundle.target)].sort();
 }
 
 export function executable(path) {

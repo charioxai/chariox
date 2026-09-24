@@ -1,6 +1,6 @@
 //! Privileged installer entry point. Trust key/digest come from the root
 //! operator or signed OS installer, never from a bundle-provided key file.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn main() {
     use chariox_app_runtime::runtime_enrollment::installer::RuntimeInstaller;
     let run = || -> Result<(), String> {
@@ -33,13 +33,13 @@ fn main() {
         std::process::exit(1);
     }
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn main() {
     eprintln!("app_runtime_installer_platform_unsupported");
     std::process::exit(1);
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 mod command {
     use std::{ffi::OsString, path::PathBuf};
     pub enum Command {
