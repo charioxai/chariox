@@ -10,18 +10,17 @@ const containerId = "a".repeat(64)
 const imageId = `sha256:${"b".repeat(64)}`
 const runId = "m20-docker-state-123-20260923T050000Z"
 
-function harness({ replace = false, failCopy = false } = {}) {
+function harness({ replace = false, failSourceWrite = false } = {}) {
   const calls = []
   let removed = false
-  let copied = 0
   const docker = async (args) => {
     calls.push({ method: "docker", args })
-    if (args[0] === "cp" && ++copied === 1 && failCopy) throw new Error("copy failed")
     if (args[0] === "rm") removed = true
     return { stdout: "" }
   }
   const dockerText = async (args, options = {}) => {
     calls.push({ method: "dockerText", args, options })
+    if (failSourceWrite && Buffer.isBuffer(options.stdin)) throw new Error("source write failed")
     if (args[0] === "image") return `${JSON.stringify(imageId)}\n`
     if (args[0] === "run") return `${containerId}\n`
     if (args.some(value => value.endsWith("/messages"))) return JSON.stringify([{ subject: "one" }])
@@ -71,12 +70,26 @@ test("sidecar control stays on container loopback and cleanup removes exact iden
   await fixture.close()
   await fixture.close()
   await fixture.cleanup()
-  const submittedConfig = fake.calls.find(({ options }) => options?.stdin)?.options.stdin
+  const submittedConfig = fake.calls.find(({ options }) => typeof options?.stdin === "string")?.options.stdin
   assert.equal(JSON.parse(submittedConfig).password, "synthetic-password")
   assert.ok(!fake.calls.some(({ args }) => args.some(value => value.includes("synthetic-password"))))
   assert.ok(fake.calls.some(({ args }) => args.includes("http://127.0.0.1:4322/messages")))
   assert.ok(fake.calls.some(({ args }) => args[0] === "rm" && args[2] === containerId))
-  assert.equal(fake.calls.filter(({ args }) => args[0] === "cp").length, 3)
+})
+
+test("sidecar sources are created by the slice user without inheriting host file modes", async () => {
+  const fake = harness()
+  const fixture = await startBrowserStateFixtureSidecar({
+    ...fake, image: "pinned:image", runId, port: 4323,
+    account: "agent@chariox.test", password: "synthetic-password",
+  })
+  const sourceWrites = fake.calls.filter(({ method, args, options }) =>
+    method === "dockerText" && args[0] === "exec" && args.includes("-i") &&
+    args.includes("slice") && Buffer.isBuffer(options?.stdin))
+  assert.equal(sourceWrites.length, 3)
+  assert.ok(sourceWrites.every(({ args }) => args.some(value => value.startsWith("umask 077; tee "))))
+  assert.ok(!fake.calls.some(({ args }) => args[0] === "cp"))
+  await fixture.cleanup()
 })
 
 test("sidecar accepts a separate fixture port without moving its private control port", async () => {
@@ -86,7 +99,7 @@ test("sidecar accepts a separate fixture port without moving its private control
     account: "agent@chariox.test", password: "synthetic-password",
   })
   assert.equal(fixture.origin, "http://127.0.0.1:4323")
-  const submittedConfig = fake.calls.find(({ options }) => options?.stdin)?.options.stdin
+  const submittedConfig = fake.calls.find(({ options }) => typeof options?.stdin === "string")?.options.stdin
   assert.equal(JSON.parse(submittedConfig).port, 4323)
   assert.ok(fake.calls.some(({ args }) => args.includes("http://127.0.0.1:4322/health")))
   await fixture.cleanup()
@@ -112,10 +125,10 @@ test("sidecar cleanup refuses a replaced container", async () => {
 })
 
 test("sidecar startup failure removes only the created container", async () => {
-  const fake = harness({ failCopy: true })
+  const fake = harness({ failSourceWrite: true })
   await assert.rejects(startBrowserStateFixtureSidecar({
     ...fake, image: "pinned:image", runId, port: 4321,
     account: "agent@chariox.test", password: "synthetic-password",
-  }), /copy failed/)
+  }), /source write failed/)
   assert.ok(fake.calls.some(({ args }) => args[0] === "rm" && args[2] === containerId))
 })

@@ -70,7 +70,10 @@ export async function startBrowserStateFixtureSidecar({
     assert.match(containerId, /^[a-f0-9]{64}$/, "Docker did not return a sidecar identity")
     await docker(["exec", "-u", "slice", name, "mkdir", "-m", "700", sidecarDir])
     for (const source of fixtureSources) {
-      await docker(["cp", fileURLToPath(source), `${name}:${sidecarDir}/${basename(source.pathname)}`])
+      await dockerText(["exec", "-i", "-u", "slice", name, "sh", "-c",
+        `umask 077; tee ${sidecarDir}/${basename(source.pathname)} >/dev/null`], {
+        stdin: await readFile(fileURLToPath(source)),
+      })
     }
     await dockerText(["exec", "-i", "-u", "slice", name, "sh", "-c",
       `umask 077; tee ${sidecarDir}/config.json >/dev/null`], {

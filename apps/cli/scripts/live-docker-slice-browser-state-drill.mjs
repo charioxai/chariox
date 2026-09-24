@@ -421,6 +421,7 @@ async function seedConfig() {
     "",
     "[credential_vault]",
     "backend = \"process_memory\"",
+    `path = "${path.join(tempRoot, "home", "vault", "vault.json").replaceAll("\\", "\\\\")}"`,
     `service = "chariox-${runId}"`,
     "agent_management = \"allow\"",
     "",
