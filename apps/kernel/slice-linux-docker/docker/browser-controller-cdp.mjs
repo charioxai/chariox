@@ -431,7 +431,7 @@ export class BrowserCdpClient {
         this.targetsBySession.delete(sessionId);
         await this.frameSessions.removeTarget(targetId);
       }
-      if (sessionId && !(this.connection === connection && this.connectionEpoch !== attempt.epoch)) {
+      if (sessionId) {
         await connection.send("Target.detachFromTarget", { sessionId }).catch(() => {});
       }
       throw error;
