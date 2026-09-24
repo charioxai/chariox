@@ -154,13 +154,22 @@ impl KernelRuntimeState {
         match execution {
             Ok(RoomBrowserControllerResult::ComputerInputApplied {
                 action_id: returned_action_id,
-            }) if returned_action_id == action_id => Ok(ComputerControllerActionExecution {
-                action_id,
-                actor_id,
-                action_kind: metadata.kind,
-                environment_id: current.environment_id,
-                runtime_generation: current.runtime_generation,
-            }),
+            }) if returned_action_id == action_id => {
+                // Agent Computer input may navigate the physical browser too.
+                // Reconcile after completion so Browser clients share its tab.
+                if self.browser_controller_enabled_for_room(session_id) {
+                    let _ = self
+                        .reconcile_browser_controller_environment(session_id)
+                        .await;
+                }
+                Ok(ComputerControllerActionExecution {
+                    action_id,
+                    actor_id,
+                    action_kind: metadata.kind,
+                    environment_id: current.environment_id,
+                    runtime_generation: current.runtime_generation,
+                })
+            }
             Ok(RoomBrowserControllerResult::ActionCancelled { controller_fenced }) => {
                 Err(DaemonError::BrowserControllerActionCancelled { controller_fenced })
             }

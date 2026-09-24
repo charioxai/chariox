@@ -150,7 +150,20 @@ impl KernelRuntimeState {
         match execution {
             Ok(RoomBrowserControllerResult::ComputerInputApplied {
                 action_id: returned_action_id,
-            }) if returned_action_id == action_id => Ok((action_id, environment)),
+            }) if returned_action_id == action_id => {
+                // Physical input can navigate Chromium without a structured
+                // Browser action. Refresh the shared tab registry only after
+                // the input has finished; Room reads must remain nonblocking
+                // while an Action is running.
+                let environment = if self.browser_controller_enabled_for_room(&request.session_id) {
+                    self.reconcile_browser_controller_environment(&request.session_id)
+                        .await
+                        .unwrap_or(environment)
+                } else {
+                    environment
+                };
+                Ok((action_id, environment))
+            }
             Ok(RoomBrowserControllerResult::ActionCancelled { controller_fenced }) => {
                 Err(DaemonError::BrowserControllerActionCancelled { controller_fenced })
             }
