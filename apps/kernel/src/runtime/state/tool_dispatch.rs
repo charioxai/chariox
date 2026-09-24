@@ -187,7 +187,8 @@ impl KernelRuntimeState {
                 canonical_tool_name,
                 self.slice_kernel_id().is_some()
                     || matches!(provider_runs.as_slice(), [run]
-                    if self.room_browser_slice_for_tool(run.session_id(), canonical_tool_name).is_some()),
+                    if self.room_browser_slice_for_tool(run.session_id(), canonical_tool_name).is_some()
+                        || owned.provider_run_projection.is_leased_provider_run(run.id())),
             );
             if is_metaagent_auth_token && !is_meta_tool && !is_metaagent_allowed_direct_tool {
                 return Ok(crate::transport::runtime_tools::RuntimeToolResult {
@@ -456,7 +457,8 @@ impl KernelRuntimeState {
             .filter(|spec| {
                 self.slice_kernel_id().is_some()
                     || matches!(runs, [run]
-                if self.room_browser_slice_for_tool(run.session_id(), &spec.name).is_some())
+                if self.room_browser_slice_for_tool(run.session_id(), &spec.name).is_some()
+                    || self.owned.provider_run_projection.is_leased_provider_run(run.id()))
             })
             .collect()
     }
