@@ -46,8 +46,8 @@ foundations; they do not create verified signer bindings.
 
 Release fingerprints use SHA256 over versioned RFC8785 canonical JSON:
 
-- Capabilities includes verified manifest grants, action and information-set
-  declarations, and tool-to-action links. It is a content fingerprint; deciding
+- Capabilities includes verified manifest grants, action declarations, and
+  tool-to-action links. It is a content fingerprint; deciding
   which changes require human consent remains kernel policy.
 - Catalog includes the full validated declarations. JSON object key ordering and
   whitespace do not change it; declared array ordering is retained.

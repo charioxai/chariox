@@ -62,8 +62,6 @@ Wire control events never dispatch App event handlers.
 - `log.write`: bounded structured logging through the kernel's App log policy.
 - `validation.request`, `status`: a pending operation reference returns promptly;
   an App cannot approve it or claim that an App-view click was human validation.
-- `outputs.request`, `cancel`: requests for declared information sets; the kernel
-  must check explicit consent and capture the task/agent/turn before delivery.
 - `paths`: the read-only package and private writable data/temporary roots supplied
   by the trusted worker. Ordinary private I/O continues to use `node:fs`.
 

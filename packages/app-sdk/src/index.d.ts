@@ -83,12 +83,6 @@ export interface ValidationOperation {
   operationId: string;
   state: 'pending' | 'approved' | 'denied' | 'expired' | 'cancelled' | 'reconciliation';
 }
-export interface OutputRequest {
-  informationSet: string;
-  version: number;
-  taskRef: string;
-  mode: 'intermediate' | 'final';
-}
 
 export interface AppSdk {
   readonly paths: Readonly<{ package: string; data: string; temporary: string }>;
@@ -139,10 +133,6 @@ export interface AppSdk {
   readonly validation: {
     request(request: { action: string; parameters: Json; operationId?: string; connectionId?: string }, options?: CallOptions): Promise<ValidationOperation>;
     status(operationId: string, options?: CallOptions): Promise<ValidationOperation>;
-  };
-  readonly outputs: {
-    request(request: OutputRequest, options?: CallOptions): Promise<{ requestId: string; state: 'pending_consent' | 'pending_output' }>;
-    cancel(requestId: string, options?: CallOptions): Promise<null>;
   };
   /** Completes bootstrap registration. This never asserts sandbox lockdown. */
   ready(options?: CallOptions): Promise<null>;

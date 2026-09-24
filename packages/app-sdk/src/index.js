@@ -153,10 +153,6 @@ export function createAppSdk({ transport, generation, paths, declarations = {}, 
       request: (request, options) => call('validation.request', record(request, 'human validation request'), options),
       status: (operationId, options) => call('validation.status', { operationId: name(operationId, 'operation identity') }, options),
     }),
-    outputs: Object.freeze({
-      request: (request, options) => call('outputs.request', record(request, 'information-set request'), options),
-      cancel: (requestId, options) => call('outputs.cancel', { requestId: name(requestId, 'output request identity') }, options),
-    }),
     async ready(options) {
       if (ready) throw new AppError('ALREADY_READY', 'App readiness already reported');
       if (!tools.complete() || !events.complete()) throw new AppError('MISSING_HANDLER', 'Declared App handlers are missing');

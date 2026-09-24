@@ -10,7 +10,7 @@ use super::{
 use crate::{ErrorCode, Limits, NetworkDestination, PackageError, Result};
 
 pub fn usage() -> &'static str {
-    "chariox-app-package create DIR --app-id ID --publisher PUBLIC --kernel-protocol N [--version SEMVER]\nchariox-app-package keygen --publisher-id ID --publisher-name NAME --key-out PRIVATE --trust-out PUBLIC\nchariox-app-package manifest --app-id ID --version SEMVER --publisher PUBLIC --kernel-protocol N --output FILE [--runtime-entry PATH --ui-entry PATH --tools PATH --events PATH --actions PATH --information-sets PATH --network GET,POST=https://api.example.com]\nchariox-app-package pack --bundle DIR --manifest FILE --key PRIVATE --output FILE --kernel-protocol N\nchariox-app-package validate ARCHIVE --trust PUBLIC --kernel-protocol N\nchariox-app-package inspect ARCHIVE"
+    "chariox-app-package create DIR --app-id ID --publisher PUBLIC --kernel-protocol N [--version SEMVER]\nchariox-app-package keygen --publisher-id ID --publisher-name NAME --key-out PRIVATE --trust-out PUBLIC\nchariox-app-package manifest --app-id ID --version SEMVER --publisher PUBLIC --kernel-protocol N --output FILE [--runtime-entry PATH --ui-entry PATH --tools PATH --events PATH --actions PATH --network GET,POST=https://api.example.com]\nchariox-app-package pack --bundle DIR --manifest FILE --key PRIVATE --output FILE --kernel-protocol N\nchariox-app-package validate ARCHIVE --trust PUBLIC --kernel-protocol N\nchariox-app-package inspect ARCHIVE"
 }
 
 fn arguments_error() -> PackageError {
@@ -156,7 +156,6 @@ pub fn run_cli(args: &[String]) -> Result<Value> {
                     "--tools",
                     "--events",
                     "--actions",
-                    "--information-sets",
                     "--network",
                 ],
                 0,
@@ -177,7 +176,6 @@ pub fn run_cli(args: &[String]) -> Result<Value> {
             options.tools = args.optional("--tools");
             options.events = args.optional("--events");
             options.actions = args.optional("--actions");
-            options.information_sets = args.optional("--information-sets");
             for network in &args.networks {
                 let (methods, origin) = network.split_once('=').ok_or_else(arguments_error)?;
                 let methods = methods
