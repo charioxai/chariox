@@ -5,7 +5,7 @@ use crate::error::DaemonError;
 use crate::runtime::browser_controller_process::CONTROLLER_RESTARTED_BEFORE_OPERATION;
 use crate::session::{
     agent_environment_actor_id, ActionAdmission, EnvironmentActionRequest, EnvironmentActionState,
-    EnvironmentActionTerminal, EnvironmentError,
+    EnvironmentActionTerminal, EnvironmentError, RoomEnvironmentSnapshot,
 };
 use crate::transport::room_browser_controller::{
     RoomBrowserControllerCommand, RoomBrowserControllerResult, RoomComputerInputAction,
@@ -149,7 +149,8 @@ impl KernelRuntimeState {
             }
             _ => EnvironmentActionTerminal::Failed,
         };
-        self.finish_room_environment_action(session_id, &action_id, terminal)
+        let environment = self
+            .finish_room_environment_action(session_id, &action_id, terminal)
             .map_err(action_environment_error)?;
         match execution {
             Ok(RoomBrowserControllerResult::ComputerInputApplied {
@@ -157,7 +158,7 @@ impl KernelRuntimeState {
             }) if returned_action_id == action_id => {
                 // Agent Computer input may navigate the physical browser too.
                 // Reconcile after completion so Browser clients share its tab.
-                if self.browser_controller_enabled_for_room(session_id) {
+                if self.should_reconcile_browser_controller_after_input(session_id, &environment) {
                     let _ = self
                         .reconcile_browser_controller_environment(session_id)
                         .await;
@@ -178,6 +179,20 @@ impl KernelRuntimeState {
             )),
             Err(error) => Err(error),
         }
+    }
+
+    pub(super) fn should_reconcile_browser_controller_after_input(
+        &self,
+        session_id: &str,
+        environment: &RoomEnvironmentSnapshot,
+    ) -> bool {
+        self.browser_controller_enabled_for_room(session_id)
+            && !environment.actions.iter().any(|action| {
+                matches!(
+                    action.state,
+                    EnvironmentActionState::Running | EnvironmentActionState::Queued
+                )
+            })
     }
 
     pub(crate) async fn execute_browser_mutation_as_agent<T, F>(
@@ -517,22 +532,51 @@ pub(crate) mod computer_input_reconcile_test_support {
 
             let root = TestRoot::new(label);
             let screen_tool = root.path().join("screen-tool.sh");
-            let controller_tool = root.path().join("controller-tool.sh");
+            let controller_tool = root.path().join("controller-tool.cjs");
             std::fs::write(&screen_tool, "#!/bin/sh\nset -eu\nexit 0\n")
                 .expect("fake screen tool should be written");
             std::fs::write(
                 &controller_tool,
-                r##"#!/bin/sh
-set -eu
-while IFS= read -r request; do
-  id=${request#*:}
-  id=${id%%,*}
-  case "$request" in
-    *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
-    *'"method":"browser.reconcile"'*) printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"tabs":[{"target_id":"target-a","document_id":"loader-after-input","url":"https://after-input.test","title":"After input"}],"focused_target_id":"target-a","resource_inventory":{"browser_ids":["browser-pid-41"],"profile_ids":["profile-sha256-41"]},"viewport":{"css_width":1280,"css_height":800,"device_scale_factor":1,"desktop_pixel_width":1280,"desktop_pixel_height":800}}}\n' "$id" ;;
-    *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
-  esac
-done
+                r##"const { createInterface } = require("node:readline");
+createInterface({ input: process.stdin }).on("line", (line) => {
+  const { id, method } = JSON.parse(line);
+  let result;
+  if (method === "health") {
+    result = { state: "ready", process_id: process.pid, diagnostic_code: null };
+  } else if (method === "browser.reconcile") {
+    result = {
+      browser_generation: 1,
+      tabs: [{
+        target_id: "target-a",
+        document_id: "loader-after-input",
+        url: "https://after-input.test",
+        title: "After input",
+      }],
+      focused_target_id: "target-a",
+      resource_inventory: {
+        browser_ids: ["browser-pid-41"],
+        profile_ids: ["profile-sha256-41"],
+      },
+      viewport: {
+        css_width: 1280,
+        css_height: 800,
+        device_scale_factor: 1,
+        desktop_pixel_width: 1280,
+        desktop_pixel_height: 800,
+      },
+    };
+  } else if (method === "shutdown") {
+    result = { state: "stopped", process_id: null, diagnostic_code: null };
+  } else {
+    process.stdout.write(JSON.stringify({ id, ok: false, error: {
+      code: "unsupported", message: method,
+    } }) + "\n");
+    return;
+  }
+  process.stdout.write(JSON.stringify({ id, ok: true, result }) + "\n", () => {
+    if (method === "shutdown") process.exit(0);
+  });
+});
 "##,
             )
             .expect("fake controller tool should be written");
@@ -562,7 +606,7 @@ done
     pub(crate) fn install_screen_tool(path: &Path) -> ScreenToolEnvironment {
         let lock = SCREEN_TOOL_ENVIRONMENT_LOCK
             .lock()
-            .expect("screen tool environment lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let previous = std::env::var_os("CHARIOX_SLICE_SCREEN_TOOL");
         std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL", path);
         ScreenToolEnvironment {
@@ -656,6 +700,33 @@ done
                 .ensure_browser_controller_process_started(&self.session_id)
                 .await
                 .expect("test browser controller should start");
+        }
+
+        pub(crate) fn add_background_tab(&self) -> crate::session::EnvironmentTab {
+            self.runtime
+                .reconcile_room_environment_controller_tabs(
+                    &self.session_id,
+                    vec![
+                        crate::session::EnvironmentTabObservation {
+                            runtime_target_id: "target-a".to_string(),
+                            document_id: "loader-before-input".to_string(),
+                            url: "https://before-input.test".to_string(),
+                            title: "Before input".to_string(),
+                        },
+                        crate::session::EnvironmentTabObservation {
+                            runtime_target_id: "target-b".to_string(),
+                            document_id: "loader-background".to_string(),
+                            url: "https://background.test".to_string(),
+                            title: "Background".to_string(),
+                        },
+                    ],
+                    Some("target-a"),
+                )
+                .expect("background tab should be installed")
+                .tabs
+                .into_iter()
+                .find(|tab| !tab.focused)
+                .expect("background tab should be available")
         }
 
         pub(crate) async fn stop_browser_controller(&self) {
@@ -758,11 +829,7 @@ mod tests {
         let _screen_tool = install_screen_tool(&tools.screen_tool);
         let mut room = TestRoom::new("agent-busy");
         room.enable_browser_controller(&tools).await;
-        let initial = room
-            .runtime
-            .room_environment_snapshot(&room.session_id)
-            .expect("Room snapshot should be available");
-        let tab = initial.tabs[0].clone();
+        let tab = room.add_background_tab();
 
         let (first_started_tx, first_started_rx) = oneshot::channel();
         let (release_first_tx, release_first_rx) = oneshot::channel();

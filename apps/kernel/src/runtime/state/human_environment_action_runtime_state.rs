@@ -155,7 +155,10 @@ impl KernelRuntimeState {
                 // Browser action. Refresh the shared tab registry only after
                 // the input has finished; Room reads must remain nonblocking
                 // while an Action is running.
-                let environment = if self.browser_controller_enabled_for_room(&request.session_id) {
+                let environment = if self.should_reconcile_browser_controller_after_input(
+                    &request.session_id,
+                    &environment,
+                ) {
                     self.reconcile_browser_controller_environment(&request.session_id)
                         .await
                         .unwrap_or(environment)
@@ -585,11 +588,7 @@ mod tests {
         let _screen_tool = install_screen_tool(&tools.screen_tool);
         let mut room = TestRoom::new("human-busy");
         room.enable_browser_controller(&tools).await;
-        let initial = room
-            .runtime
-            .room_environment_snapshot(&room.session_id)
-            .expect("Room snapshot should be available");
-        let tab = initial.tabs[0].clone();
+        let tab = room.add_background_tab();
         let (action_started_tx, action_started_rx) = oneshot::channel();
         let (release_action_tx, release_action_rx) = oneshot::channel();
         let runtime = room.runtime.clone();
