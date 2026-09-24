@@ -22,8 +22,6 @@ pub struct Declarations {
     pub events: Vec<EventDeclaration>,
     #[serde(default)]
     pub actions: Vec<ActionDeclaration>,
-    #[serde(default)]
-    pub information_sets: Vec<InformationSet>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -89,34 +87,6 @@ pub struct EffectRoute {
     pub connection: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct InformationSet {
-    pub name: String,
-    pub purpose: String,
-    pub source_scope: InformationSourceScope,
-    pub schema_version: u32,
-    pub delivery: OutputDelivery,
-    pub fields_schema: Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub validator: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InformationSourceScope {
-    AppTask,
-    AgentTurn,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OutputDelivery {
-    Intermediate,
-    Final,
-    Both,
-}
-
 macro_rules! declaration_document {
     ($name:ident, $field:ident, $item:ty) => {
         #[derive(Deserialize)]
@@ -129,7 +99,6 @@ macro_rules! declaration_document {
 declaration_document!(ToolsDocument, tools, ToolDeclaration);
 declaration_document!(EventsDocument, events, EventDeclaration);
 declaration_document!(ActionsDocument, actions, ActionDeclaration);
-declaration_document!(InformationDocument, information_sets, InformationSet);
 
 pub(crate) fn read_declarations(
     manifest: &Manifest,
@@ -162,10 +131,6 @@ pub(crate) fn read_declarations(
     if let Some(path) = &manifest.actions {
         declarations.actions = load::<ActionsDocument>(path, files, limits)?.actions;
     }
-    if let Some(path) = &manifest.information_sets {
-        declarations.information_sets =
-            load::<InformationDocument>(path, files, limits)?.information_sets;
-    }
     declarations.validate(manifest, limits)?;
     Ok(declarations)
 }
@@ -175,10 +140,6 @@ impl Declarations {
         check_names(self.tools.iter().map(|item| item.name.as_str()), limits)?;
         check_names(self.events.iter().map(|item| item.name.as_str()), limits)?;
         check_names(self.actions.iter().map(|item| item.name.as_str()), limits)?;
-        check_names(
-            self.information_sets.iter().map(|item| item.name.as_str()),
-            limits,
-        )?;
         for tool in &self.tools {
             validate_schema(&tool.input_schema, true, limits)?;
             if tool.description.len() > 4096 {
@@ -262,22 +223,6 @@ impl Declarations {
                 }
             }
         }
-        for info in &self.information_sets {
-            if info.purpose.trim().is_empty()
-                || info.purpose.len() > 1024
-                || info.schema_version == 0
-            {
-                return invalid("information sets need a purpose and positive schema version");
-            }
-            validate_schema(&info.fields_schema, true, limits)?;
-            if info
-                .validator
-                .as_ref()
-                .is_some_and(|name| !valid_function_name(name))
-            {
-                return invalid("information validator must be a local function name");
-            }
-        }
         Ok(())
     }
 }
@@ -307,7 +252,7 @@ pub fn compile_schema(schema: &Value, closed_object: bool, limits: &Limits) -> R
         && (schema.get("type").and_then(Value::as_str) != Some("object")
             || schema.get("additionalProperties") != Some(&Value::Bool(false)))
     {
-        return invalid("input and information schemas must be closed objects");
+        return invalid("input schemas must be closed objects");
     }
     let compilation_schema = schema_for_compilation(schema)?;
     JSONSchema::options()

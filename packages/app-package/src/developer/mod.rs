@@ -36,7 +36,6 @@ pub struct ManifestOptions {
     pub tools: Option<String>,
     pub events: Option<String>,
     pub actions: Option<String>,
-    pub information_sets: Option<String>,
     pub capabilities: Capabilities,
 }
 
@@ -57,7 +56,6 @@ impl ManifestOptions {
             tools: None,
             events: None,
             actions: None,
-            information_sets: None,
             capabilities: Capabilities::default(),
         }
     }
@@ -83,7 +81,6 @@ pub fn generate_manifest(options: ManifestOptions, limits: &Limits) -> Result<Ma
         tools: options.tools,
         events: options.events,
         actions: options.actions,
-        information_sets: options.information_sets,
         capabilities: options.capabilities,
         migrations: None,
     };

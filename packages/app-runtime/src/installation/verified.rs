@@ -61,7 +61,6 @@ impl VerifiedInstallCandidate {
             "schema": "chariox.installation-capabilities.v1",
             "capabilities": manifest.capabilities,
             "actions": declarations.actions,
-            "informationSets": declarations.information_sets,
             "toolActions": declarations.tools.iter().filter_map(|tool| tool.action.as_ref().map(|action|
                 json!({"tool": tool.name, "action": action}))).collect::<Vec<_>>()
         }))?;
@@ -102,9 +101,7 @@ impl VerifiedInstallCandidate {
             "keyFingerprint": digest(signer.public_key.as_bytes()), "trustRevision": trust.revision().to_string(),
             "packageDigest": release.package_digest, "capabilitiesDigest": release.capabilities_digest,
             "capabilities": manifest.capabilities,
-            "actions": declarations.actions.iter().map(|a| json!({"name":a.name,"criticalValidation":a.critical_validation,"effectRoutes":a.effect_routes})).collect::<Vec<_>>(),
-            "declaredInformationSets": declarations.information_sets.iter().map(|i| json!({"name":i.name,"purpose":i.purpose,"sourceScope":i.source_scope})).collect::<Vec<_>>(),
-            "informationSetConsent": "not_granted"
+            "actions": declarations.actions.iter().map(|a| json!({"name":a.name,"criticalValidation":a.critical_validation,"effectRoutes":a.effect_routes})).collect::<Vec<_>>()
         });
         Ok(Self {
             release,
@@ -113,7 +110,7 @@ impl VerifiedInstallCandidate {
         })
     }
     /// Human review data derived from the exact verified package. Descriptions
-    /// are display data; declared information sets are explicitly not consent.
+    /// are display data.
     pub fn review_metadata(&self) -> &serde_json::Value {
         &self.review
     }

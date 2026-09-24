@@ -76,7 +76,7 @@ fn input() -> InstallInput {
 
 #[test]
 fn preparing_ack_replay_and_cancel_survive_reopen_without_creating_a_stage() {
-    let f = Fixture::new();
+    let mut f = Fixture::new();
     let initial = f.reserve("request");
     assert_eq!(initial.phase, InstallPhase::Preparing);
     assert!(initial.review.is_none());
@@ -112,13 +112,19 @@ fn preparing_ack_replay_and_cancel_survive_reopen_without_creating_a_stage() {
         .store
         .get_app_installation("alice", &initial.token.installation_id)
         .is_err());
-    let reopened = DurableKernelStateStore::open_owned(f.store.path().to_path_buf()).unwrap();
+    // Release this kernel's ownership, keeping the database, before reopening.
+    let database = f.store.path().to_path_buf();
+    let directory = std::mem::take(&mut f.path);
+    drop(f);
+    let reopened = DurableKernelStateStore::open_owned(database).unwrap();
     assert_eq!(
         cancelled,
         reopened
             .replay_public_app_install("alice", "request", budget())
             .unwrap()
     );
+    drop(reopened);
+    let _ = std::fs::remove_dir_all(directory);
 }
 
 #[test]
@@ -128,7 +134,6 @@ fn verified_review_nonce_and_original_deadline_fence_fresh_writer_budgets() {
     let old = Arc::new(f.arm("review", "old-decision"));
     let mut current = f.arm("review", "current-decision");
     assert_eq!(current.review()["packageDigest"], operation.package_digest);
-    assert_eq!(current.review()["informationSetConsent"], "not_granted");
     assert!(matches!(
         f.store.decide_app_install(old, true, budget()),
         Err(InstallOperationError::Conflict)

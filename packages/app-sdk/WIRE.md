@@ -122,15 +122,14 @@ can establish that fact before loading App code.
 
 Other typed methods use the names and parameter shapes documented in
 `src/index.d.ts` and `src/index.js`: `state.*`, `files.*`, `events.*`, `http.request`,
-`log.write`, `host.*`, `validation.*`, and `outputs.*`. Unsupported operations
+`log.write`, `host.*`, and `validation.*`. Unsupported operations
 return a typed error. The supervisor owns capability checks and rejects unknown
 or undeclared effect routes; it never dispatches arbitrary kernel method names.
 
-`validation.request` and `outputs.request` return durable pending references when
-waiting for human input or model output. They must not retain a worker request
-slot for the duration of that wait. App-specific meaning stays in App handlers
-and validators; the kernel performs generic authorization, correlation, schema
-and delivery checks.
+`validation.request` returns a durable pending reference when waiting for human
+input. They must not retain a worker request
+slot for the duration of that wait. App-specific meaning stays in App handlers;
+the kernel performs generic authorization, correlation and schema checks.
 
 The shared JSON vectors in `test/wire-vectors.json` contain `generation` and
 `cases` with `name`, `sender`, `valid` and `message`. Both implementations run this
