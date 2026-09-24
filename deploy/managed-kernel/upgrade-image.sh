@@ -35,11 +35,6 @@ case "$managed_provider_topology" in
 esac
 if [ "$managed_provider_topology" = path1 ]; then
   service_name=chariox-path1-managed-bootstrap.service
-  trusted_builder_public_key=${CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY:-}
-  if [ -z "$trusted_builder_public_key" ]; then
-    echo "Path-1 upgrade requires CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY outside the image" >&2
-    exit 1
-  fi
 else
   service_name=chariox-managed-bootstrap.service
 fi
@@ -588,6 +583,13 @@ fi
 if [ "$expected_current_digest" = "$expected_new_digest" ]; then
   echo "target release is not newer than current" >&2
   exit 1
+fi
+if [ "$managed_provider_topology" = path1 ]; then
+  trusted_builder_public_key=${CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY:-}
+  if [ -z "$trusted_builder_public_key" ]; then
+    echo "Path-1 upgrade requires CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY outside the image" >&2
+    exit 1
+  fi
 fi
 if [ -L "$image_root" ] || [ ! -d "$image_root" ]; then
   echo "managed kernel image root must be a directory, not a symlink" >&2
