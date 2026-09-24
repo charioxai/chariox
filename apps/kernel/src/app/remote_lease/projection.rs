@@ -79,17 +79,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let mut pumped_output_records = Vec::new();
         let mut settled_quiet = false;
         if pump_output {
-            settled_quiet =
-                self.settle_quiet_leased_prompt_if_needed(&leased_agent, provider_run_id)?;
             pumped_output_records = provider_output::pump_terminal_output_for_attachment(
                 self.app,
                 &leased_agent.backing_session_id,
                 &leased_agent.backing_attachment_id,
             )?;
-            if !settled_quiet {
-                settled_quiet =
-                    self.settle_quiet_leased_prompt_if_needed(&leased_agent, provider_run_id)?;
-            }
+            settled_quiet =
+                self.settle_quiet_leased_prompt_if_needed(&leased_agent, provider_run_id)?;
         }
         let mut output_chunks = pumped_output_records
             .into_iter()
@@ -314,7 +310,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 });
             }
         }
-        let mut backing_prompt_active = backing_active_prompt.is_some();
+        let backing_prompt_active = backing_active_prompt.is_some();
         let backing_active_prompt_id = backing_active_prompt
             .as_ref()
             .map(|prompt| prompt.id().to_string());
@@ -349,8 +345,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
             // with the home kernel.
             completions.retain(|completion| !completion.message_id.starts_with("prompt-complete:"));
         }
-        let has_settleable_output_history =
-            current_batch_has_provider_output && !requires_explicit_completion;
         let provider_run_ended = provider_run
             .as_ref()
             .is_some_and(|run| run.state() == crate::provider::ProviderRunState::Ended);
@@ -456,31 +450,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 }
             }
         }
-        let should_complete_from_history = completions.is_empty()
-            && prompts.is_empty()
-            && backing_active_prompt
-                .as_ref()
-                .is_some_and(|prompt| prompt.workflow_run_id().is_none())
-            && has_settleable_output_history;
-        if should_complete_from_history {
-            let _ = self.app.complete_active_prompt(
-                &leased_agent.backing_session_id,
-                &leased_agent.backing_agent_id,
-                Some(provider_run_id),
-            )?;
-            let _generated_prompt_completions = self
-                .app
-                .terminal
-                .drain_completion_records(
-                    &leased_agent.backing_session_id,
-                    &leased_agent.backing_attachment_id,
-                )
-                .into_iter()
-                .filter(|record| record.provider_run_id == provider_run_id)
-                .collect::<Vec<_>>();
-            backing_prompt_active = false;
-            settled_quiet = true;
-        }
         if !prompts.is_empty() {
             if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
                 for prompt in &prompts {
@@ -500,7 +469,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
             && !((requires_explicit_completion || provider_run_failed)
                 && explicit_completion_already_projected)
             && (settled_quiet
-                || has_settleable_output_history
                 || (requires_explicit_completion && provider_run_has_projected_output)
                 || provider_run_ended
                 || provider_run_failed)

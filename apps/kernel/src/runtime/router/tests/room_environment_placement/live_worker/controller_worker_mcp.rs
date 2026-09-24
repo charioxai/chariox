@@ -193,6 +193,41 @@ async fn check_leased_agent_on_another_kernel_uses_room_browser() {
         assert_eq!(opened.payload["session_id"], room);
         assert_eq!(opened.payload["agent_id"], home_agent_id);
         assert_eq!(opened.payload["browser"]["url"], url);
+        let worker_prompt = {
+            let app = agent_worker.app.lock().await;
+            let run = app
+                .providers()
+                .get_run(&worker_provider_run_id)
+                .expect("leased provider remains available after navigation");
+            let run_state = run.state();
+            let worker_session_id = run.session_id().to_string();
+            let worker_agent_id = run
+                .agent_instance_id()
+                .expect("leased provider agent")
+                .to_string();
+            let worker_prompt = app
+                .prompt_owner_active_prompt_for_agent_snapshot(
+                    &worker_session_id,
+                    &worker_agent_id,
+                )
+                .expect("leased worker prompt state");
+            (worker_prompt, run_state)
+        };
+        assert!(
+            worker_prompt
+                .0
+                .as_ref()
+                .is_some_and(|prompt| {
+                    matches!(
+                        prompt.status(),
+                        crate::session::PromptStatus::Dispatching
+                            | crate::session::PromptStatus::Running
+                    )
+                }),
+            "the leased worker prompt must remain active after its Room browser call; prompt={:?}, provider_run_state={:?}",
+            worker_prompt.0,
+            worker_prompt.1
+        );
         let environment = fixture
             .home
             .runtime_state
