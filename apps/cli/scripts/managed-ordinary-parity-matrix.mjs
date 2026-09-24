@@ -3,6 +3,7 @@
 import { execFile } from "node:child_process"
 import { createHash, createHmac, timingSafeEqual } from "node:crypto"
 import { readFile, writeFile } from "node:fs/promises"
+import { basename, dirname, isAbsolute, join, sep } from "node:path"
 import { promisify } from "node:util"
 
 const execFileAsync = promisify(execFile)
@@ -405,6 +406,17 @@ function sameKeys(actual, expected) {
   return left.length === right.length && left.every((key, index) => key === right[index])
 }
 
+function isCollectorEvidenceReference(reference, topology, rowId, checkId) {
+  if (typeof topology !== "string"
+    || typeof reference !== "string"
+    || !isAbsolute(reference)
+    || !basename(reference).endsWith(".json")) {
+    return false
+  }
+  const expectedDirectory = join(topology, rowId, checkId)
+  return dirname(reference).endsWith(`${sep}${expectedDirectory}`)
+}
+
 function addFailure(failures, code, topology = null, rowId = null, checkId = null, detail = null) {
   failures.push({ code, topology, rowId, checkId, ...(detail ? { detail } : {}) })
 }
@@ -456,6 +468,9 @@ function validateCollection(collection, failures, topology, allowFixture) {
   }
   for (const key of ["runtime_probe", "inside_provider_turn", "independent", "fixture"]) {
     if (typeof collection[key] !== "boolean") addFailure(failures, `${key}_invalid`, topology)
+  }
+  if (allowFixture && collection.fixture !== true) {
+    addFailure(failures, "fixture_manifest_required", topology)
   }
   if (collection.runtime_probe !== true) addFailure(failures, "runtime_probe_required", topology)
   if (collection.inside_provider_turn !== true) addFailure(failures, "provider_turn_required", topology)
@@ -771,6 +786,12 @@ export function validateManifest(manifest, {
         || check.evidence_refs.some((reference) => !nonEmptyString(reference))) {
         addFailure(failures, "evidence_reference_missing", topology, definition.id, checkId)
       }
+      if (!allowFixture && Array.isArray(check.evidence_refs)
+        && check.evidence_refs.some((reference) => (
+          !isCollectorEvidenceReference(reference, manifest.topology, definition.id, checkId)
+        ))) {
+        addFailure(failures, "evidence_reference_invalid", topology, definition.id, checkId)
+      }
       validateCheckResult(check.result, manifest, topology, definition.id, checkId, failures)
     }
     for (const checkId of Object.keys(row.checks)) {
@@ -1007,6 +1028,63 @@ export async function runEvidenceCommand(command, args = [], {
   }
 }
 
+function matchesEvidenceCommand(record, commandText) {
+  let command
+  try {
+    command = JSON.parse(commandText)
+  } catch {
+    return false
+  }
+  return Array.isArray(command)
+    && command.every((part) => typeof part === "string")
+    && Array.isArray(record.args)
+    && canonicalJson(command) === canonicalJson([record.command, ...record.args])
+}
+
+async function verifyEvidenceArtifacts(manifest, topology, filesystem) {
+  for (const definition of ROW_DEFINITIONS) {
+    for (const checkId of definition.checks) {
+      const check = manifest.rows[definition.id].checks[checkId]
+      const expectedDirectory = join(topology, definition.id, checkId)
+      let commandEvidenceFound = false
+
+      for (const reference of check.evidence_refs) {
+        if (!isAbsolute(reference)
+          || !dirname(reference).endsWith(`${sep}${expectedDirectory}`)
+          || !basename(reference).endsWith(".json")) {
+          throw new Error(`evidence reference is not a collector artifact for ${definition.id}/${checkId}`)
+        }
+
+        let record
+        try {
+          record = JSON.parse(String(await filesystem.readFile(reference, "utf8")))
+        } catch {
+          throw new Error(`evidence artifact is unavailable or invalid for ${definition.id}/${checkId}`)
+        }
+        if (!isPlainObject(record)
+          || record.topology !== topology
+          || record.row_id !== definition.id
+          || record.check_id !== checkId
+          || record.exit_code !== 0
+          || record.signal !== null
+          || record.killed !== false
+          || record.timed_out !== false
+          || !SHA256_DIGEST.test(record.stdout_sha256 ?? "")
+          || !SHA256_DIGEST.test(record.stderr_sha256 ?? "")
+          || typeof record.command !== "string"
+          || !Array.isArray(record.args)) {
+          throw new Error(`evidence artifact does not prove a successful ${definition.id}/${checkId} command`)
+        }
+        if (matchesEvidenceCommand(record, check.command)) commandEvidenceFound = true
+      }
+
+      if (!commandEvidenceFound) {
+        throw new Error(`evidence artifacts do not contain the recorded command for ${definition.id}/${checkId}`)
+      }
+    }
+  }
+}
+
 export function createParityMatrixRunner({
   filesystem = NODE_FILESYSTEM,
   runCommand = defaultRunCommand,
@@ -1023,6 +1101,21 @@ export function createParityMatrixRunner({
       requireComparisonIdentity(options)
       const ordinary = await this.loadManifest(ordinaryPath)
       const path1 = await this.loadManifest(path1Path)
+      const allowFixture = options.allowFixture === true
+      if (!allowFixture) {
+        const ordinaryValidation = validateManifest(ordinary, {
+          ...options,
+          expectedTopology: "ordinary",
+        })
+        const path1Validation = validateManifest(path1, {
+          ...options,
+          expectedTopology: "path1",
+        })
+        if (ordinaryValidation.ok && path1Validation.ok) {
+          await verifyEvidenceArtifacts(ordinary, "ordinary", filesystem)
+          await verifyEvidenceArtifacts(path1, "path1", filesystem)
+        }
+      }
       const report = compareManifests(ordinary, path1, options)
       if (reportPath) await filesystem.writeFile(reportPath, serializeReport(report), "utf8")
       return report

@@ -211,6 +211,34 @@ function makeManifest(topology) {
   }, SIGNING_KEY)
 }
 
+function makeManifestWithCapturedEvidence(topology, evidenceFiles) {
+  const manifest = structuredClone(makeManifest(topology))
+  delete manifest.signature
+  manifest.collection.fixture = false
+  for (const [rowId, row] of Object.entries(manifest.rows)) {
+    for (const [checkId, check] of Object.entries(row.checks)) {
+      const command = [`collector-${topology}`, rowId, checkId]
+      const evidenceRef = `/external/parity-evidence/${topology}/${rowId}/${checkId}/probe.json`
+      check.command = JSON.stringify(command)
+      check.evidence_refs = [evidenceRef]
+      evidenceFiles.set(evidenceRef, JSON.stringify({
+        topology,
+        row_id: rowId,
+        check_id: checkId,
+        exit_code: 0,
+        signal: null,
+        killed: false,
+        timed_out: false,
+        stdout_sha256: `sha256:${"b".repeat(64)}`,
+        stderr_sha256: `sha256:${"c".repeat(64)}`,
+        command: command[0],
+        args: command.slice(1),
+      }))
+    }
+  }
+  return createSignedManifest(manifest, SIGNING_KEY)
+}
+
 function cloneAndResign(manifest, mutate) {
   const copy = structuredClone(manifest)
   delete copy.signature
@@ -389,6 +417,95 @@ test("filesystem and command seams are injectable without touching the host", as
     stderr: "",
   })
   assert.deepEqual(calls, [["fixture-probe", ["--cwd", "/home"]]])
+})
+
+test("file comparison rejects asserted passes with unresolved non-fixture evidence references", async () => {
+  const ordinary = cloneAndResign(makeManifest("ordinary"), (manifest) => {
+    manifest.collection.fixture = false
+  })
+  const path1 = cloneAndResign(makeManifest("path1"), (manifest) => {
+    manifest.collection.fixture = false
+  })
+  const placeholderReport = compareManifests(ordinary, path1, {
+    expectedReviewedCommit: REVIEWED_COMMIT,
+    expectedBuildId: BUILD_ID,
+    signingKey: SIGNING_KEY,
+  })
+  assert.equal(placeholderReport.status, "fail")
+  assert.ok(placeholderReport.failures.some((failure) => failure.code === "evidence_reference_invalid"))
+  const fixtureBypassReport = compareManifests(ordinary, path1, {
+    expectedReviewedCommit: REVIEWED_COMMIT,
+    expectedBuildId: BUILD_ID,
+    signingKey: SIGNING_KEY,
+    allowFixture: true,
+  })
+  assert.equal(fixtureBypassReport.status, "fail")
+  assert.ok(fixtureBypassReport.failures.some((failure) => failure.code === "fixture_manifest_required"))
+
+  const replaceWithMissingArtifacts = (manifest) => {
+    for (const [rowId, row] of Object.entries(manifest.rows)) {
+      for (const checkId of Object.keys(row.checks)) {
+        row.checks[checkId].evidence_refs = [
+          `/missing/managed-parity/${manifest.topology}/${rowId}/${checkId}/probe.json`,
+        ]
+      }
+    }
+  }
+  const ordinaryWithMissingArtifacts = cloneAndResign(ordinary, replaceWithMissingArtifacts)
+  const path1WithMissingArtifacts = cloneAndResign(path1, replaceWithMissingArtifacts)
+  const files = new Map([
+    ["ordinary.json", JSON.stringify(ordinaryWithMissingArtifacts)],
+    ["path1.json", JSON.stringify(path1WithMissingArtifacts)],
+  ])
+  const writes = new Map()
+  const runner = createParityMatrixRunner({
+    filesystem: {
+      async readFile(filePath) {
+        if (!files.has(filePath)) throw new Error("evidence artifact does not exist")
+        return files.get(filePath)
+      },
+      async writeFile(filePath, content) { writes.set(filePath, content) },
+    },
+  })
+
+  await assert.rejects(
+    runner.compareFiles({
+      ordinaryPath: "ordinary.json",
+      path1Path: "path1.json",
+      reportPath: "report.json",
+      expectedReviewedCommit: REVIEWED_COMMIT,
+      expectedBuildId: BUILD_ID,
+      signingKey: SIGNING_KEY,
+    }),
+    /evidence/i,
+  )
+  assert.equal(writes.size, 0)
+
+  const evidenceFiles = new Map()
+  const ordinaryWithEvidence = makeManifestWithCapturedEvidence("ordinary", evidenceFiles)
+  const path1WithEvidence = makeManifestWithCapturedEvidence("path1", evidenceFiles)
+  const completeFiles = new Map([
+    ["ordinary.json", JSON.stringify(ordinaryWithEvidence)],
+    ["path1.json", JSON.stringify(path1WithEvidence)],
+    ...evidenceFiles,
+  ])
+  const completeRunner = createParityMatrixRunner({
+    filesystem: {
+      async readFile(filePath) {
+        if (!completeFiles.has(filePath)) throw new Error("test artifact is missing")
+        return completeFiles.get(filePath)
+      },
+      async writeFile(filePath, content) { writes.set(filePath, content) },
+    },
+  })
+  const completeReport = await completeRunner.compareFiles({
+    ordinaryPath: "ordinary.json",
+    path1Path: "path1.json",
+    expectedReviewedCommit: REVIEWED_COMMIT,
+    expectedBuildId: BUILD_ID,
+    signingKey: SIGNING_KEY,
+  })
+  assert.equal(completeReport.status, "pass", JSON.stringify(completeReport, null, 2))
 })
 
 test("comparison identity is mandatory before either manifest is read", async () => {
