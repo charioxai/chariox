@@ -1,4 +1,4 @@
-//! Root installer for Linux runtime generations. External installer authority
+//! Root installer for Linux and macOS runtime generations. External installer authority
 //! selects the exact Ed25519 key and inventory digest; artifacts cannot enroll
 //! their own key. This does not execute or attest the native sandbox.
 mod files;
@@ -35,10 +35,10 @@ pub struct InstallReceipt {
     pub inventory_sha256: String,
     pub target: String,
 }
-/// Only fixed root-owned Linux paths are exposed outside this module.
+/// Only fixed root-owned platform paths are exposed outside this module.
 pub struct RuntimeInstaller;
 impl RuntimeInstaller {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub fn install(
         source: &Path,
         trusted_key: [u8; 32],
@@ -48,13 +48,13 @@ impl RuntimeInstaller {
         let roots = Roots::production()?;
         roots.install(source, trusted_key, expected_digest, &mut |_| Ok(()))
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub fn cleanup(inactive_digest: &str) -> Result<()> {
         require_root()?;
         Roots::production()?.cleanup(inactive_digest, &mut |_| Ok(()))
     }
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn require_root() -> Result<()> {
     if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
         return Err(EnrollmentError::Identity);
@@ -81,6 +81,20 @@ struct Context {
     _lock: File,
 }
 impl Roots {
+    #[cfg(target_os = "macos")]
+    fn production() -> Result<Self> {
+        // Must match EnrolledRuntime::open_installed; both are root-owned.
+        let support = files::dir(Path::new("/Library/Application Support"), 0)?;
+        let chariox = files::create_or_open(&support, "Chariox", 0)?;
+        files::create_or_open(&chariox, "AppRuntime", 0)?;
+        files::create_or_open(&chariox, "AppRuntimes", 0)?;
+        Ok(Self {
+            runtimes: "/Library/Application Support/Chariox/AppRuntimes".into(),
+            enrollment: "/Library/Application Support/Chariox/AppRuntime".into(),
+            uid: 0,
+            target: manifest::target()?.into(),
+        })
+    }
     #[cfg(target_os = "linux")]
     fn production() -> Result<Self> {
         let etc = files::dir(Path::new("/etc"), 0)?;

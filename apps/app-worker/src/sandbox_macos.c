@@ -34,14 +34,23 @@ static const char profile[] =
     "(subpath \"/usr/lib\") (subpath \"/System/Library/dyld\") "
     "(subpath \"/System/Cryptexes/OS\") "
     "(subpath \"/System/Volumes/Preboot/Cryptexes/OS\"))\n"
+    // libuv's loop init opens "/" itself, and OpenSSL reads its default
+    // configuration from the system OpenSSL directory during Node startup.
     "(allow file-read-data (literal \"/dev/null\") (literal \"/dev/random\") "
-    "(literal \"/dev/urandom\"))\n"
+    "(literal \"/dev/urandom\") (literal \"/\") "
+    "(subpath \"/System/Library/OpenSSL\"))\n"
     "(allow sysctl-read (sysctl-name \"hw.activecpu\") (sysctl-name \"hw.ncpu\") "
     "(sysctl-name \"hw.logicalcpu_max\") (sysctl-name \"hw.physicalcpu_max\") "
-    "(sysctl-name \"hw.memsize\") (sysctl-name \"hw.pagesize\") "
+    "(sysctl-name \"hw.memsize\") "
+    // The page-size lookup by MIB does not match its exact name; a prefix does.
+    "(sysctl-name-prefix \"hw.pagesize\") "
     "(sysctl-name \"hw.cputype\") (sysctl-name \"hw.cpusubtype\") "
     "(sysctl-name-prefix \"hw.optional.\") (sysctl-name \"kern.osrelease\") "
-    "(sysctl-name \"kern.ostype\") (sysctl-name \"kern.osversion\"))\n";
+    "(sysctl-name \"kern.ostype\") (sysctl-name \"kern.osversion\") "
+    // uname(3) reads these; Node's os module calls it at load, and
+    // fs/promises loads os, so without them Node aborts on that import.
+    "(sysctl-name \"kern.version\") (sysctl-name \"hw.machine\") "
+    "(sysctl-name \"kern.hostname\"))\n";
 
 static bool append_literal(char* buffer, size_t capacity, size_t* used,
                            const char* path, size_t length) {

@@ -1528,3 +1528,10 @@ nonexistent relative `worktree` fixture path (identical on main) and the App
 event contract hash (its fixture, crates and serde_json are unchanged). Main's
 four relay peer shape tests are updated from 56 to 57. The CLI typecheck reports
 one error in the unfinished publisher-file WIP carried into this merge.
+
+### macOS worker integration start (2026-09-24)
+
+The unsigned darwin-arm64 and linux-x64 native artifacts from run
+`34185809550`/`34185809490` expired on 2026-09-15. A fresh monitored macOS
+arm64 native build is admitted from the macOS worker integration PR, so local
+macOS development can execute Apps through the production launcher.
