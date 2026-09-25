@@ -75,6 +75,10 @@ pub struct RuntimeProviderRun {
         skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
     )]
     remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+    /// Process-local ordering token for competing manifest writers, including
+    /// equal-value updates. It is never sent to peers or restored from disk.
+    #[serde(skip)]
+    remote_extension_manifest_revision: u64,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     provider_config_overrides: BTreeMap<String, serde_json::Value>,
     #[serde(
@@ -158,6 +162,7 @@ impl RuntimeProviderRun {
             workflow_fresh_context_node_run_id: None,
             mcp_servers: request.mcp_servers.clone(),
             remote_extension_manifest: request.remote_extension_manifest.clone(),
+            remote_extension_manifest_revision: 0,
             provider_config_overrides: request.provider_config_overrides.clone(),
             write_access_mode: request.write_access_mode,
             workspace_live_sync_roots: request.workspace_live_sync_roots.clone(),
@@ -224,6 +229,7 @@ impl RuntimeProviderRun {
             workflow_fresh_context_node_run_id: None,
             mcp_servers: Vec::new(),
             remote_extension_manifest: crate::extension::RemoteExtensionManifest::default(),
+            remote_extension_manifest_revision: 0,
             provider_config_overrides: BTreeMap::new(),
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
             workspace_live_sync_roots: Vec::new(),
@@ -366,6 +372,18 @@ impl RuntimeProviderRun {
         &self.remote_extension_manifest
     }
 
+    pub(crate) fn remote_extension_manifest_revision(&self) -> u64 {
+        self.remote_extension_manifest_revision
+    }
+
+    pub(super) fn advance_manifest_revision_after_snapshot_restore(&mut self, current: &Self) {
+        self.remote_extension_manifest_revision = self
+            .remote_extension_manifest_revision
+            .max(current.remote_extension_manifest_revision)
+            .checked_add(1)
+            .expect("provider manifest revision exhausted");
+    }
+
     pub fn provider_config_overrides(&self) -> &BTreeMap<String, serde_json::Value> {
         &self.provider_config_overrides
     }
@@ -374,6 +392,10 @@ impl RuntimeProviderRun {
         &mut self,
         manifest: crate::extension::RemoteExtensionManifest,
     ) {
+        self.remote_extension_manifest_revision = self
+            .remote_extension_manifest_revision
+            .checked_add(1)
+            .expect("provider manifest revision exhausted");
         self.remote_extension_manifest = manifest;
         self.touch_activity();
     }

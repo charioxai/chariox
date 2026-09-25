@@ -219,49 +219,109 @@ impl KernelRuntimeState {
             // worker's turn before translating it to the leased home turn.
             forwarded_arguments["origin_prompt_id"] = serde_json::json!(home_prompt_id);
         }
-        let (result, skill_package) = self
-            .with_app_side_effect(|app| {
-                let response = app.block_on_relay_future(
-                    crate::transport::relay_client::send_peer_request_via_temporary_connection(
-                        app.config(),
-                        ClientTarget {
-                            daemon_id: Some(remote_context.home_kernel_id.clone()),
-                            daemon_alias: None,
+        let config = self.config_snapshot().await;
+        let mut original_response = None;
+        let refresh = async {
+        for attempt in 0..3 {
+            let revision = self
+                .owned
+                .provider_store
+                .get_run(provider_run.id())?
+                .remote_extension_manifest_revision();
+            // Home may call back into this worker to install a grant. Do not
+            // hold the worker app mutex across that outbound request.
+            let response =
+                crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                    &config,
+                    ClientTarget {
+                        daemon_id: Some(remote_context.home_kernel_id.clone()),
+                        daemon_alias: None,
+                    },
+                    RelayPeerRequest::ForwardCapabilityRuntimeTool {
+                        context: remote_context.clone(),
+                        tool_name: if attempt == 0 {
+                            tool_name.to_string()
+                        } else {
+                            crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL.to_string()
                         },
-                        RelayPeerRequest::ForwardCapabilityRuntimeTool {
-                            context: remote_context.clone(),
-                            tool_name: tool_name.to_string(),
-                            arguments: forwarded_arguments.clone(),
+                        arguments: if attempt == 0 {
+                            forwarded_arguments.clone()
+                        } else {
+                            serde_json::json!({})
                         },
-                    ),
-                )?;
-                let RelayPeerResponse::CapabilityRuntimeToolHandled {
-                    result,
-                    skill_package,
-                    remote_extension_manifest,
-                } = response
-                else {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "forward leased capability runtime tool",
-                        message: format!("unexpected forwarded capability response: {response:?}"),
-                    });
-                };
-                // Keep response application in the same worker critical section
-                // as the request. A newer pushed manifest must not be applied
-                // between receiving this snapshot and storing it.
-                #[cfg(test)]
-                self.pause_capability_response_before_apply();
-                let updated = self
-                    .owned
-                    .provider_store
-                    .update_run_remote_extension_manifest(
-                        provider_run.id(),
-                        remote_extension_manifest,
-                    )?;
-                self.owned.provider_run_projection.update(updated);
-                Ok((result, skill_package))
-            })
-            .await?;
+                    },
+                )
+                .await?;
+            let RelayPeerResponse::CapabilityRuntimeToolHandled {
+                result,
+                skill_package,
+                remote_extension_manifest,
+            } = response
+            else {
+                return Err(DaemonError::LocalTransport {
+                    operation: "forward leased capability runtime tool",
+                    message: format!("unexpected forwarded capability response: {response:?}"),
+                });
+            };
+            if original_response.is_none() {
+                original_response = Some((result, skill_package));
+            }
+            #[cfg(test)]
+            self.pause_capability_response_before_apply();
+            let applied = self
+                .with_app_side_effect(|_| {
+                    let updated = self
+                        .owned
+                        .provider_store
+                        .compare_update_run_remote_extension_manifest(
+                            provider_run.id(),
+                            revision,
+                            remote_extension_manifest,
+                        )?;
+                    if let Some(updated) = updated {
+                        self.owned.provider_run_projection.update(updated);
+                        Ok::<_, DaemonError>(true)
+                    } else {
+                        Ok(false)
+                    }
+                })
+                .await?;
+            if applied {
+                break;
+            }
+            // An intervening push invalidates the response snapshot, even if
+            // its contents later become equal again. Refresh with a read-only
+            // request; never replay the original tool's side effects.
+            if attempt == 2 {
+                return Err(DaemonError::LocalTransport {
+                    operation: "refresh forwarded capability manifest",
+                    message: "original tool completed, but concurrent manifest updates prevented refresh; original tool was not replayed".to_string(),
+                });
+            }
+        }
+        Ok::<_, DaemonError>(())
+        }.await;
+        let Some((mut result, skill_package)) = original_response else {
+            return Err(refresh.expect_err("missing response requires a forwarding error"));
+        };
+        if let Err(error) = refresh {
+            // The original operation has already returned its result. A failed
+            // read-only refresh must not turn that into an invitation to replay
+            // a grant, registration, or message that already happened.
+            let warning = serde_json::json!({
+                "error": error.to_string(),
+                "original_tool_replayed": false,
+                "original_result_preserved": true,
+            });
+            if let Some(payload) = result.payload.as_object_mut() {
+                payload.insert("manifest_refresh_warning".to_string(), warning);
+            } else {
+                result.payload = serde_json::json!({
+                    "original_payload": result.payload,
+                    "manifest_refresh_warning": warning,
+                });
+            }
+        }
         let result = self.apply_remote_skill_package_response(
             &workspace_context.root,
             &remote_context.home_kernel_id,

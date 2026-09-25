@@ -124,8 +124,8 @@ async fn capability_response_ordering(initially_bound: bool) {
             !initially_bound
         );
         assert!(
-            !acquired_before_release,
-            "the lease push must not interleave before an older capability response is applied"
+            acquired_before_release,
+            "the outbound capability request must leave the worker available for home callbacks"
         );
     })
     .catch_unwind()
