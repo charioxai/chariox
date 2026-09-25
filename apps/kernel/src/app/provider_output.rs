@@ -946,7 +946,12 @@ impl<'a> ProviderOutputPumpContext<'a> {
                 &completion.message_id,
                 completion.completed_at_ms,
             );
-            self.mark_prompt_completion_recorded(provider_run_id);
+            // Codex assistant-message completion can be replayed independently
+            // of the authoritative turn-completed notification. Do not let a
+            // reconnect or duplicate output record arm quiet-gap settlement.
+            if provider_run.adapter_key() != "codex" || prompt_completed {
+                self.mark_prompt_completion_recorded(provider_run_id);
+            }
         }
         let exited = self.reconcile_provider_run_exit(session_id, provider_run_id)?;
         if exited {

@@ -297,6 +297,19 @@ fn structured_provider_test_app() -> (
     String,
     String,
 ) {
+    structured_provider_test_app_for("opencode", "opencode")
+}
+
+fn structured_provider_test_app_for(
+    adapter_key: &str,
+    provider: &str,
+) -> (
+    DaemonApp,
+    crate::test_support::TestWorktree,
+    String,
+    String,
+    String,
+) {
     let worktree = crate::test_support::TestWorktree::new("provider-output-structured-poll");
     let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
@@ -312,8 +325,8 @@ fn structured_provider_test_app() -> (
         .expect("attachment should attach");
     let request = crate::provider::LaunchProviderRequest::new(
         session.id(),
-        "opencode",
-        "opencode",
+        adapter_key,
+        provider,
         "default",
         "zen",
     )
@@ -323,7 +336,7 @@ fn structured_provider_test_app() -> (
         &request,
         crate::provider::ProviderLaunchResult {
             endpoint_mode: crate::provider::AgentEndpointMode::External,
-            process_label: "test-opencode-structured-poll".to_string(),
+            process_label: format!("test-{provider}-structured-poll"),
             pty_target: None,
             pty_program: None,
             pty_args: Vec::new(),
@@ -346,6 +359,114 @@ fn structured_provider_test_app() -> (
         attachment.id().to_string(),
         run.id().to_string(),
     )
+}
+
+#[test]
+fn codex_duplicate_assistant_completion_does_not_settle_before_authoritative_turn_completion() {
+    let (mut app, _worktree, session_id, attachment_id, provider_run_id) =
+        structured_provider_test_app_for("codex", "codex");
+    let agent_id = app
+        .providers
+        .get_run(&provider_run_id)
+        .expect("provider run should exist")
+        .agent_instance_id()
+        .expect("provider run should belong to an agent")
+        .to_string();
+    let prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        &attachment_id,
+        &agent_id,
+        "stream a response",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .prompt_owner_submit_prepared_prompt(&session_id, prompt, false)
+        .expect("Codex prompt should start")
+    else {
+        panic!("Codex prompt should be active");
+    };
+    app.mark_active_prompt_delivery(
+        &session_id,
+        &agent_id,
+        prompt.id(),
+        crate::session::DurablePromptDeliveryPhase::Delivered,
+        Some(provider_run_id.clone()),
+        None,
+    )
+    .expect("Codex prompt should be delivered");
+    crate::transport::flow_control::note_prompt_started(&mut app, &provider_run_id);
+
+    let completion = crate::provider::ProviderAssistantCompletion {
+        message_id: "codex-turn:turn-1".to_string(),
+        completed_at_ms: crate::session::unix_epoch_ms(),
+    };
+    app.structured_output_record_store()
+        .mark_poll_enqueued(&provider_run_id, Some(prompt.id().to_string()));
+    app.providers_mut()
+        .push_finished_structured_output_poll_for_test(
+            provider_run_id.clone(),
+            Ok(Some(crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("codex-turn-1".to_string()),
+                    bytes: b"final answer streamed".to_vec(),
+                }],
+                completions: vec![completion.clone()],
+                prompt_completed: false,
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            })),
+        );
+    pump_structured_test_run(&mut app, &session_id, &attachment_id, &provider_run_id);
+    assert_eq!(
+        app.prompt_owner_active_prompt_for_agent_snapshot(&session_id, &agent_id)
+            .expect("streaming Codex prompt should load")
+            .expect("streaming output must not settle the Codex prompt")
+            .id(),
+        prompt.id()
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(75));
+    app.structured_output_record_store()
+        .mark_poll_enqueued(&provider_run_id, Some(prompt.id().to_string()));
+    app.providers_mut()
+        .push_finished_structured_output_poll_for_test(
+            provider_run_id.clone(),
+            Ok(Some(crate::provider::ProviderPromptSignalBatch {
+                completions: vec![completion],
+                prompt_completed: false,
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            })),
+        );
+    pump_structured_test_run(&mut app, &session_id, &attachment_id, &provider_run_id);
+
+    assert_eq!(
+        app.prompt_owner_active_prompt_for_agent_snapshot(&session_id, &agent_id)
+            .expect("replayed Codex prompt should load")
+            .expect("duplicate/reconnected completion is not authoritative")
+            .id(),
+        prompt.id()
+    );
+
+    app.structured_output_record_store()
+        .mark_poll_enqueued(&provider_run_id, Some(prompt.id().to_string()));
+    app.providers_mut()
+        .push_finished_structured_output_poll_for_test(
+            provider_run_id.clone(),
+            Ok(Some(crate::provider::ProviderPromptSignalBatch {
+                prompt_completed: true,
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            })),
+        );
+    pump_structured_test_run(&mut app, &session_id, &attachment_id, &provider_run_id);
+    assert!(app
+        .prompt_owner_active_prompt_for_agent_snapshot(&session_id, &agent_id)
+        .expect("authoritative Codex completion should begin settlement")
+        .is_some());
+    pump_structured_test_run(&mut app, &session_id, &attachment_id, &provider_run_id);
+    assert!(app
+        .prompt_owner_active_prompt_for_agent_snapshot(&session_id, &agent_id)
+        .expect("authoritatively completed Codex prompt should load")
+        .is_none());
 }
 
 fn pump_structured_test_run(
