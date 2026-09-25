@@ -1939,6 +1939,51 @@ fn managed_materialization_uses_the_bootstrap_repository_root() {
 
 #[cfg(unix)]
 #[test]
+fn managed_import_rejects_repository_root_alias_into_kernel_state_before_copy() {
+    use std::os::unix::fs::symlink;
+
+    let _lock = crate::env_lock::lock();
+    let root = test_root("managed-root-state-alias");
+    let control_state = root.join("control-state");
+    let control_parent = control_state.join("managed-context-workspaces");
+    let chariox_home = root.join("home/.chariox");
+    let protected_repositories = chariox_home.join("repositories");
+    let root_alias = root.join("alias");
+    let selected_root = root_alias.join("repositories");
+    fs::create_dir_all(&control_parent).expect("create control parent");
+    fs::create_dir_all(&protected_repositories).expect("create protected repository fixture");
+    symlink(&chariox_home, &root_alias).expect("alias protected state ancestor");
+
+    let source = root.join("source-project");
+    init_repository(&source, "tracked.txt", "source remains separate\n");
+    let exported = one_repo_export(&root, &source, "managed-root-state-alias")
+        .expect("export source repository");
+    let _environment = ManagedPublicationEnvGuard::set(&control_state, &selected_root);
+    let _state_home =
+        TestEnvironmentVariableGuard::set("CHARIOX_HOME", Some(chariox_home.as_os_str()));
+
+    let error = import_development_context_with_publication(
+        DevelopmentContextImportRequest {
+            archive_path: exported.archive_path,
+            expected_archive_sha256: exported.archive_sha256,
+            expected_project_id: "project-managed-root-state-alias".to_string(),
+            expected_source_repositories: None,
+            destination_root: control_parent.join("transfer-1"),
+        },
+        "transfer-1".to_string(),
+    )
+    .expect_err("custom root resolving inside kernel state must fail before copy");
+    assert!(matches!(error, DaemonError::ManagedContext { .. }));
+    assert!(!protected_repositories.join("source-project").exists());
+    assert!(!control_parent.join("transfer-1").exists());
+
+    drop(_state_home);
+    drop(_environment);
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[cfg(unix)]
+#[test]
 fn interrupted_materialization_recovers_the_directory_published_after_intent() {
     let root = test_root("materialization-crash-after-rename");
     let staging = root.join("staging");
