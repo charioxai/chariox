@@ -1,8 +1,11 @@
 use super::*;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use chariox_relay::protocol::RelayEnvelope;
+use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
+use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
 
 const RELAY_URL: &str = "ws://127.0.0.1:41327";
 const WORKER_ID: &str = "worker-kernel-cancel-ack";
@@ -131,6 +134,237 @@ async fn acknowledge_peer_request(
         encrypted,
     )
     .await;
+}
+
+async fn receive_temporary_relay_envelope(
+    socket: &mut WebSocketStream<TcpStream>,
+) -> RelayEnvelope {
+    let message = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next())
+        .await
+        .expect("temporary relay client should send an envelope before timeout")
+        .expect("temporary relay socket should remain open")
+        .expect("temporary relay frame should decode");
+    serde_json::from_str(
+        message
+            .to_text()
+            .expect("temporary relay envelope should be text"),
+    )
+    .expect("temporary relay envelope should deserialize")
+}
+
+async fn send_temporary_relay_envelope(
+    socket: &mut WebSocketStream<TcpStream>,
+    envelope: RelayEnvelope,
+) {
+    socket
+        .send(Message::Text(
+            serde_json::to_string(&envelope)
+                .expect("temporary relay envelope should serialize")
+                .into(),
+        ))
+        .await
+        .expect("temporary relay envelope should send");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn temporary_cancel_response_wait_keeps_home_app_lock_available() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("temporary relay listener should bind");
+    let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.relay_url = Some(relay_url);
+    config.relay_token = Some("cancel-lock-test-token".to_string());
+    config.relay_request_timeout_ms = 2_000;
+    let home_public_key = config.relay_public_key.clone();
+    let worker_config = crate::config::DaemonConfig::for_tests();
+    let worker_private_key = worker_config.relay_private_key.clone();
+    let worker_public_key = worker_config.relay_public_key.clone();
+
+    let mut app = crate::app::DaemonApp::bootstrap(config).expect("home app should bootstrap");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "cancel-lock-workspace",
+            "cancel-lock-worktree",
+        ))
+        .expect("home session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "cancel-lock-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("home attachment should be created");
+    app.agents
+        .bind_remote_execution(
+            agent.id(),
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: WORKER_ID.to_string(),
+                worker_machine_id: "worker-machine-cancel-lock".to_string(),
+                execution_lease_id: "worker-lease-cancel-lock".to_string(),
+                leased_agent_id: LEASED_AGENT_ID.to_string(),
+                active_worker_provider_run_id: Some(WORKER_RUN_ID.to_string()),
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
+            },
+        )
+        .expect("home agent should bind to the fake worker");
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .prompt_owner_submit_prepared_prompt(
+            session.id(),
+            crate::session::PromptQueueItem::new(
+                "home-prompt-cancel-lock",
+                attachment.id(),
+                agent.id(),
+                "cancel through temporary relay",
+                crate::session::PromptStatus::Queued,
+            ),
+            false,
+        )
+        .expect("home prompt should start")
+    else {
+        panic!("remote prompt should become active");
+    };
+    app.mark_active_prompt_delivery(
+        session.id(),
+        agent.id(),
+        prompt.id(),
+        crate::session::DurablePromptDeliveryPhase::Delivered,
+        Some(WORKER_RUN_ID.to_string()),
+        None,
+    )
+    .expect("home prompt should have its worker ACK persisted");
+
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let attachment_id = attachment.id().to_string();
+    let response_prompt = prompt.clone();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let (request_seen_tx, request_seen_rx) = tokio::sync::oneshot::channel();
+    let (release_response_tx, release_response_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener
+            .accept()
+            .await
+            .expect("temporary relay should accept discovery connection");
+        let mut discovery = accept_async(stream)
+            .await
+            .expect("temporary relay should upgrade discovery connection");
+        let RelayEnvelope::ClientMetadataRequest { request_id, .. } =
+            receive_temporary_relay_envelope(&mut discovery).await
+        else {
+            panic!("expected temporary relay metadata request");
+        };
+        let presence = serde_json::from_value(serde_json::json!({
+            "kernel_id": WORKER_ID,
+            "machine_id": "worker-machine-cancel-lock",
+            "public_key": worker_public_key,
+        }))
+        .expect("fake worker presence should deserialize");
+        send_temporary_relay_envelope(
+            &mut discovery,
+            RelayEnvelope::ClientMetadataResponse {
+                request_id,
+                machines: None,
+                kernels: None,
+                kernel: Some(presence),
+                error: None,
+            },
+        )
+        .await;
+        drop(discovery);
+
+        let (stream, _) = listener
+            .accept()
+            .await
+            .expect("temporary relay should accept peer connection");
+        let mut peer = accept_async(stream)
+            .await
+            .expect("temporary relay should upgrade peer connection");
+        assert!(matches!(
+            receive_temporary_relay_envelope(&mut peer).await,
+            RelayEnvelope::DaemonRegister { .. }
+        ));
+        let RelayEnvelope::DaemonPeerRequest {
+            request_id,
+            encrypted_request,
+            ..
+        } = receive_temporary_relay_envelope(&mut peer).await
+        else {
+            panic!("expected temporary CancelLeasedPrompt request");
+        };
+        let decrypted = crate::transport::relay_crypto::decrypt_payload_for_private_key(
+            &worker_private_key,
+            &encrypted_request,
+        )
+        .expect("fake worker should decrypt the cancellation request");
+        let request: RelayPeerRequest = serde_json::from_slice(&decrypted.plaintext)
+            .expect("fake worker request should decode");
+        assert!(matches!(
+            request,
+            RelayPeerRequest::CancelLeasedPrompt { leased_agent_id }
+                if leased_agent_id == LEASED_AGENT_ID
+        ));
+        request_seen_tx
+            .send(())
+            .expect("test should still be waiting for the relay request");
+        release_response_rx
+            .await
+            .expect("test should release the paused cancellation response");
+        let response = RelayPeerResponse::LeasedPromptCancelled {
+            cancellation: crate::session::PromptCancellation {
+                prompt: response_prompt,
+                started_next: None,
+            },
+        };
+        let encrypted_response = crate::transport::relay_crypto::encrypt_payload_for_peer(
+            &worker_private_key,
+            &home_public_key,
+            &serde_json::to_vec(&response).expect("fake response should encode"),
+        )
+        .expect("fake worker should encrypt its response");
+        send_temporary_relay_envelope(
+            &mut peer,
+            RelayEnvelope::DaemonPeerResponse {
+                request_id,
+                from_daemon_id: WORKER_ID.to_string(),
+                encrypted_response: Some(encrypted_response),
+                error: None,
+            },
+        )
+        .await;
+    });
+
+    let cancel_runtime = runtime.clone();
+    let cancellation = tokio::spawn(async move {
+        cancel_runtime
+            .cancel_remote_agent_prompt_if_remote(&session_id, &agent_id, &attachment_id)
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), request_seen_rx)
+        .await
+        .expect("temporary relay should receive cancellation before timeout")
+        .expect("fake relay should signal the cancellation request");
+    let app_lock = app.try_lock();
+    let app_lock_available = app_lock.is_ok();
+    drop(app_lock);
+    release_response_tx
+        .send(())
+        .expect("fake relay should still be holding the response");
+    cancellation
+        .await
+        .expect("cancellation task should join")
+        .expect("temporary relay cancellation should succeed")
+        .expect("remote cancellation should be handled");
+    server.await.expect("temporary relay fixture should join");
+    assert!(
+        app_lock_available,
+        "home DaemonApp lock must remain available while the temporary relay response is pending"
+    );
 }
 
 #[tokio::test]
