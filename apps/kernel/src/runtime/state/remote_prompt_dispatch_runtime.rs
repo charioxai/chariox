@@ -226,8 +226,22 @@ impl KernelRuntimeState {
             };
             match self.reconcile_remote_prompt_worker_receipt(&dispatch).await {
                 Ok(provider_run_id) => {
-                    self.finish_remote_prompt_dispatch(dispatch, Ok(provider_run_id))
-                        .await?;
+                    if let Err(error) = self
+                        .finish_remote_prompt_dispatch(dispatch.clone(), Ok(provider_run_id))
+                        .await
+                    {
+                        crate::logging::warn_with_fields(
+                            "daemon.remote_prompt_dispatch",
+                            "restart verified worker receipt but could not settle home prompt; retrying read-only reconciliation",
+                            serde_json::json!({
+                                "session_id": dispatch.session_id,
+                                "agent_id": dispatch.agent_id,
+                                "prompt_id": dispatch.prompt_id,
+                                "error": error.to_string(),
+                            }),
+                        );
+                        self.spawn_remote_prompt_receipt_reconciliation(dispatch);
+                    }
                 }
                 Err(error) => {
                     crate::logging::warn_with_fields(
@@ -242,6 +256,7 @@ impl KernelRuntimeState {
                             "error": error.to_string(),
                         }),
                     );
+                    self.spawn_remote_prompt_receipt_reconciliation(dispatch);
                 }
             }
             return Ok(true);
@@ -984,6 +999,19 @@ impl KernelRuntimeState {
                         "error": error.to_string(),
                     }),
                 );
+                if remote_prompt_error_is_reconciliation_pending(&error) {
+                    if let Ok(agent) = state.owned.agent_store.get_agent(&agent_id) {
+                        if let Ok(Some(dispatch)) = state.remote_prompt_recovery_dispatch(&agent) {
+                            if remote_prompt_reconciliation_pending(&state, &dispatch)
+                                .unwrap_or(false)
+                            {
+                                state
+                                    .retry_remote_prompt_receipt_with_claim(&dispatch)
+                                    .await;
+                            }
+                        }
+                    }
+                }
             }
             state
                 .run_remote_prompt_dispatch_with_claim(claim, None)
@@ -1875,7 +1903,9 @@ impl KernelRuntimeState {
         let (session_id, agent_id) = claim.key.clone();
         loop {
             if let Some(dispatch) = dispatch.take() {
-                self.dispatch_remote_prompt_once(dispatch).await;
+                if let Some(pending) = self.dispatch_remote_prompt_once(dispatch).await {
+                    self.retry_remote_prompt_receipt_with_claim(&pending).await;
+                }
             }
             if !claim.release_or_restart() {
                 return;
@@ -1904,7 +1934,7 @@ impl KernelRuntimeState {
     async fn dispatch_remote_prompt_once(
         &self,
         mut dispatch: crate::app::KernelRemotePromptDispatch,
-    ) {
+    ) -> Option<crate::app::KernelRemotePromptDispatch> {
         crate::logging::info_with_fields(
             "daemon.remote_prompt_dispatch",
             "remote prompt dispatch starting",
@@ -1927,7 +1957,7 @@ impl KernelRuntimeState {
             let _ = self
                 .finish_remote_prompt_dispatch(dispatch, Err(error))
                 .await;
-            return;
+            return None;
         }
         let agent = match self.owned.agent_store.get_agent(&dispatch.agent_id) {
             Ok(agent) => agent,
@@ -1935,7 +1965,7 @@ impl KernelRuntimeState {
                 let _ = self
                     .finish_remote_prompt_dispatch(dispatch, Err(error))
                     .await;
-                return;
+                return None;
             }
         };
         let (prompt, _) = match self
@@ -1947,7 +1977,7 @@ impl KernelRuntimeState {
                 let _ = self
                     .finish_remote_prompt_dispatch(dispatch, Err(error))
                     .await;
-                return;
+                return None;
             }
         };
         let attachments = dispatch.attachments.clone();
@@ -1968,7 +1998,7 @@ impl KernelRuntimeState {
                 let _ = self
                     .finish_remote_prompt_dispatch(dispatch, Err(error))
                     .await;
-                return;
+                return None;
             }
         };
         let result = submit_remote_prompt_to_worker_with_binding_refresh(
@@ -2009,7 +2039,7 @@ impl KernelRuntimeState {
         {
             // An indeterminate submission must keep the same durable prompt active.
             // The ordinary error finalizer would cancel it and promote the backlog.
-            return;
+            return Some(dispatch);
         }
         match result {
             Ok(remote_provider_run_id) => {
@@ -2042,6 +2072,7 @@ impl KernelRuntimeState {
                         )),
                         &message,
                     );
+                    return Some(dispatch);
                 }
             }
             Err(error) => {
@@ -2054,6 +2085,76 @@ impl KernelRuntimeState {
                         "remote prompt failure could not be settled",
                         serde_json::json!({"error": settlement_error.to_string()}),
                     );
+                }
+            }
+        }
+        None
+    }
+
+    fn spawn_remote_prompt_receipt_reconciliation(
+        &self,
+        dispatch: crate::app::KernelRemotePromptDispatch,
+    ) {
+        let Some(claim) = RemotePromptAgentClaim::try_acquire(
+            Arc::clone(&self.owned.remote_prompt_recoveries),
+            &dispatch.session_id,
+            &dispatch.agent_id,
+        ) else {
+            return;
+        };
+        let state = self.clone();
+        tokio::spawn(async move {
+            state
+                .retry_remote_prompt_receipt_with_claim(&dispatch)
+                .await;
+            state
+                .run_remote_prompt_dispatch_with_claim(claim, None)
+                .await;
+        });
+    }
+
+    async fn retry_remote_prompt_receipt_with_claim(
+        &self,
+        dispatch: &crate::app::KernelRemotePromptDispatch,
+    ) {
+        let mut attempt = 0_u32;
+        loop {
+            attempt = attempt.saturating_add(1);
+            tokio::time::sleep(remote_prompt_recovery_delay(attempt)).await;
+            match self.reconcile_remote_prompt_worker_receipt(dispatch).await {
+                Ok(provider_run_id) => {
+                    match self
+                        .finish_remote_prompt_dispatch(dispatch.clone(), Ok(provider_run_id))
+                        .await
+                    {
+                        Ok(()) => return,
+                        Err(error) => crate::logging::warn_with_fields(
+                            "daemon.remote_prompt_dispatch",
+                            "verified worker receipt could not be settled; retrying read-only reconciliation",
+                            serde_json::json!({
+                                "session_id": dispatch.session_id,
+                                "agent_id": dispatch.agent_id,
+                                "prompt_id": dispatch.prompt_id,
+                                "error": error.to_string(),
+                            }),
+                        ),
+                    }
+                }
+                Err(DaemonError::NoActivePrompt { .. }) => return,
+                Err(error) => {
+                    if attempt == 1 || attempt % 12 == 0 {
+                        crate::logging::warn_with_fields(
+                            "daemon.remote_prompt_dispatch",
+                            "worker receipt remains uncertain; retrying read-only reconciliation",
+                            serde_json::json!({
+                                "session_id": dispatch.session_id,
+                                "agent_id": dispatch.agent_id,
+                                "prompt_id": dispatch.prompt_id,
+                                "attempt": attempt,
+                                "error": error.to_string(),
+                            }),
+                        );
+                    }
                 }
             }
         }
@@ -2843,6 +2944,139 @@ mod tests {
             settlements, 1,
             "home settlement should be durable exactly once"
         );
+    }
+
+    #[tokio::test]
+    async fn transient_receipt_query_failure_retries_without_replaying_the_prompt() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake relay listener should bind");
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let fixture = make_receipt_reconciliation_fixture(&relay_url, "retry").await;
+        let worker_id = fixture.worker_id.clone();
+        let worker_machine_id = fixture.worker_machine_id.clone();
+        let worker_public_key = fixture.worker_public_key.clone();
+        let worker_private_key = fixture.worker_private_key.clone();
+        let home_public_key = fixture.home_public_key.clone();
+        let expected_leased_agent_id = fixture.leased_agent_id.clone();
+        let prompt_id = fixture.dispatch.prompt_id.clone();
+        let server = tokio::spawn(async move {
+            let first = receive_fake_worker_peer_request(
+                &listener,
+                &worker_id,
+                &worker_machine_id,
+                &worker_public_key,
+                &worker_private_key,
+            )
+            .await;
+            assert!(matches!(
+                &first.request,
+                RelayPeerRequest::GetLeasedPromptReceipt { .. }
+            ));
+            drop(first);
+
+            let second = receive_fake_worker_peer_request(
+                &listener,
+                &worker_id,
+                &worker_machine_id,
+                &worker_public_key,
+                &worker_private_key,
+            )
+            .await;
+            assert!(matches!(
+                &second.request,
+                RelayPeerRequest::GetLeasedPromptReceipt { leased_agent_id, home_prompt_id }
+                    if leased_agent_id == &expected_leased_agent_id && home_prompt_id == &prompt_id
+            ));
+            send_fake_worker_peer_response(
+                second,
+                &worker_id,
+                &worker_private_key,
+                &home_public_key,
+                RelayPeerResponse::LeasedPromptReceiptQueried {
+                    receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                        home_prompt_id: prompt_id,
+                        worker_provider_run_id: "worker-run-after-retry".to_string(),
+                        phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
+                        target_home_prompt_id: None,
+                        execution_lease_id: None,
+                    }),
+                },
+            )
+            .await;
+        });
+
+        assert!(fixture
+            .runtime
+            .recover_remote_prompt_after_kernel_restart(
+                &fixture.session_id,
+                &fixture.agent_id,
+                Some(crate::session::DurablePromptDeliveryPhase::Dispatching),
+                None,
+            )
+            .await
+            .expect("the uncertain prompt must remain held"));
+        tokio::time::timeout(std::time::Duration::from_secs(10), server)
+            .await
+            .expect("receipt reconciliation must retry after a transient failure")
+            .expect("fake worker should serve the second receipt query");
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let agent = fixture
+                    .runtime
+                    .owned
+                    .agent_store
+                    .get_agent(&fixture.agent_id)
+                    .unwrap();
+                let run_matches = agent
+                    .remote_execution()
+                    .unwrap()
+                    .active_worker_provider_run_id
+                    .as_deref()
+                    == Some("worker-run-after-retry");
+                let session = fixture
+                    .runtime
+                    .owned
+                    .session_store
+                    .get_session(&fixture.session_id)
+                    .unwrap();
+                let delivered = fixture
+                    .runtime
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, &fixture.agent_id)
+                    .is_some_and(|prompt| {
+                        prompt.id() == fixture.dispatch.prompt_id
+                            && prompt.durable_delivery_phase()
+                                == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+                    });
+                if run_matches && delivered {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("verified worker receipt must settle the same home prompt");
+        let session = fixture
+            .runtime
+            .owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .unwrap();
+        let (active, queued) = fixture
+            .runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &fixture.agent_id);
+        let active = active.expect("the original prompt must remain active");
+        assert_eq!(active.id(), fixture.dispatch.prompt_id);
+        assert_eq!(
+            active.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+        );
+        assert_eq!(queued.len(), 1, "the successor must not be replayed");
+        assert_eq!(queued[0].id(), fixture.successor_prompt_id);
     }
 
     #[tokio::test]
