@@ -1,11 +1,13 @@
 import { executeAppCommand } from "@chariox/kernel-client/shell-app-command"
 import { tokenizeShellLine } from "@chariox/kernel-client/shell-core"
+import type { AppDevLoop } from "./app-dev-loop.js"
 import { AppFileInstaller, formatInstallOperation } from "./app-install-file.js"
 import { AppPublisherEnrollment, formatPublisherReview } from "./app-publisher-file.js"
 import type { ParsedSlashCommand } from "./commands.js"
 
 export type AppCommandHandlerDeps = {
   appFileInstaller?: AppFileInstaller
+  appDevLoop?: AppDevLoop
   appPublisherEnrollment?: AppPublisherEnrollment
   currentAppSessionId?: () => string | undefined
   sendAppRequest?: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
@@ -34,6 +36,19 @@ export async function handleAppSlashCommand(
       if (args.length > 1) throw new Error(`usage: /app publisher ${action} [review-id]`)
       deps.appendNotice(formatPublisherReview(await enrollment[action](args[0])))
     } else throw new Error("usage: /app publisher enroll|status|cancel")
+    return
+  }
+  if (command.args[0] === "dev") {
+    const loop = deps.appDevLoop
+    if (!loop) throw new Error("The App dev loop is unavailable in this terminal")
+    const [, ...args] = tokenizeShellLine(command.raw.replace(/^\/app(?:\s|$)/, ""))
+    if (args.length === 1 && args[0] === "stop") {
+      deps.appendNotice(await loop.stop() ? "App dev loop stopped." : "No App dev loop is running in this terminal.")
+      return
+    }
+    const usage = 'usage: /app dev "DIRECTORY" [--key PRIVATE] | /app dev stop'
+    if (!args[0] || args[0].startsWith("--") || !(args.length === 1 || (args.length === 3 && args[1] === "--key" && args[2]))) throw new Error(usage)
+    await loop.start(args[0], args[2] ? { key: args[2] } : {})
     return
   }
   if (["install", "update", "operation", "cancel"].includes(command.args[0] ?? "")) {

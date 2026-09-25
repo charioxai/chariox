@@ -157,8 +157,12 @@ fn package_with_options(with_tools: bool, with_network: bool) -> (Vec<u8>, Trust
     package_variant(with_tools, with_network, "1.0.0", 0)
 }
 /// Another release of the same App; `schema` > 0 declares data migrations.
-pub(super) fn release_package(version: &str, schema: u32) -> (Vec<u8>, TrustedPublisher) {
-    package_variant(false, false, version, schema)
+pub(super) fn release_package(
+    version: &str,
+    schema: u32,
+    with_network: bool,
+) -> (Vec<u8>, TrustedPublisher) {
+    package_variant(false, with_network, version, schema)
 }
 fn package_variant(
     with_tools: bool,

@@ -1807,7 +1807,9 @@ Workflow trigger and deployment direction:
   expected_generation, upload_handle, expected_package_digest}`, a local
   replacement of the caller's installation with a newly uploaded release of the
   same App and publisher. It returns `AppInstallOperationStatus` and then uses
-  the install operation requests and the same owner approval ("Update App").
+  the install operation requests. A release that declares exactly the active
+  release's capabilities is approved by kernel policy; any capability change
+  asks the owner ("Update App"), and declining keeps the old release.
   A stale generation, another unfinished install/update of the installation or
   a release that changes the data schema (`app_update_migration_required`,
   until migrations land) is refused. After approval the kernel fences admission,

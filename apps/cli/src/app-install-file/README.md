@@ -52,3 +52,46 @@ Focused tests use actual local files and a stateful shared-protocol fixture. The
 exercise immutable file checks, quoted/current-session dispatch, lost replies,
 request ordering on cancellation, reconnect IDs, retained receipts, shutdown and
 local-only path history. They do not start a kernel, relay, provider or native App.
+
+## Developer loop
+
+```
+/app dev ./my-app [--key PRIVATE]
+/app dev stop
+```
+
+`/app dev` takes an App source directory as created by `chariox app create`
+(`app.json` and `bundle/`). Each cycle runs the same `app pack` helper command
+(which verifies the archive with the installer's verifier) into a private
+temporary directory, never inside the App directory, then finds the owner's
+active installation of the manifest's App ID (`ListAppInstallations`, all pages).
+The first cycle installs when none exists; otherwise it updates that installation
+through this same transfer and operation, then follows the operation to its
+result: `Packed ID VERSION (sha256:…)`, then `Installed`/`Updated ... to
+generation N` or the failure (for example, a data schema change fails with
+`app_update_migration_required`). App data is kept across updates. A release that
+declares the same capabilities is approved by kernel policy without a prompt;
+changed capabilities wait for the owner in the approval panel, like install.
+The loop never opens views: open one with `/app open INSTALLATION`, and reopen it
+after each update because views stay on the generation they were opened on.
+
+The signing key defaults to `~/.chariox/dev/app-publisher/private`, the location
+used by the `chariox app keygen` example in `packages/app-package/README.md`;
+`--key` selects another. A missing key fails with the keygen and publisher
+enrollment steps. The publisher must be enrolled in the kernel (`/app publisher
+enroll`) before the first install succeeds.
+
+The directory is watched recursively (`fs.watch`), ignoring dotfiles and
+`node_modules`, with a 500 ms debounce. Cycles never overlap: changes during a
+cycle produce exactly one more cycle afterwards. There is one loop per terminal;
+starting another stops the previous one. `/app dev stop`, terminal exit (the same
+drain as installation transfers), a watcher error, or a cycle that finds the
+terminal attached to another session stops the loop and removes its temporary
+directory. Detaching has no separate hook: the watcher stays open until the next
+change (which then stops the loop) or exit. A cycle already running finishes its
+current kernel request; a submitted operation remains kernel-owned and visible
+with `/app operation`. After a connection failure the retained attempt behaves
+like a manual install: the next cycle resumes or discards it, or use `/app cancel`.
+
+Focused tests (`app-dev-loop.test.ts`) inject the watcher, packer, installer and
+kernel list; they cover install then update, coalescing, stop and failures.

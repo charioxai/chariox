@@ -233,10 +233,11 @@ fn old_operation_table_migrates_without_losing_receipts() {
 fn release(
     version: &str,
     schema: u32,
+    with_network: bool,
     store: &DurableKernelStateStore,
 ) -> VerifiedInstallCandidate {
     let (bytes, publisher) =
-        crate::durable_state::app_state::fixture_release_package(version, schema);
+        crate::durable_state::app_state::fixture_release_package(version, schema, with_network);
     let package = verify(
         &bytes,
         &VerificationPolicy::new(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, vec![publisher]),
@@ -260,7 +261,7 @@ fn update_input(expected_generation: u64) -> InstallInput {
 #[test]
 fn an_update_stages_onto_the_active_installation_and_a_failed_start_keeps_it() {
     let f = Fixture::new();
-    let next = release("1.1.0", 0, &f.store);
+    let next = release("1.1.0", 0, false, &f.store);
     let digest = next.release_metadata().package_digest.clone();
     let reserve = |id: &str, owner: &str, input: InstallInput| {
         f.store
@@ -292,10 +293,13 @@ fn an_update_stages_onto_the_active_installation_and_a_failed_start_keeps_it() {
     let installed = f.store.get_app_installation("alice", "installed").unwrap();
     assert_eq!(installed.generation, 1);
     assert_eq!(installed.pending_generation, Some(2));
-    let challenge = Arc::new(f.arm("update", "yes"));
-    f.store
-        .decide_app_install(challenge, true, budget())
-        .unwrap();
+    // Unchanged capabilities: the kernel approves by policy, no prompt.
+    assert!(matches!(
+        f.store
+            .arm_app_install_review("alice", "update", "none", budget())
+            .unwrap(),
+        InstallReviewDisposition::Approved
+    ));
     let admission = Arc::new(
         f.store
             .claim_first_app_install("alice", "update", "attempt", budget())
@@ -319,7 +323,7 @@ fn an_update_stages_onto_the_active_installation_and_a_failed_start_keeps_it() {
     assert!(!installed.admission_paused);
     assert!(installed.active.is_some());
     // A release that changes the data schema needs migrations (not yet).
-    let migrating = release("2.0.0", 1, &f.store);
+    let migrating = release("2.0.0", 1, false, &f.store);
     let digest = migrating.release_metadata().package_digest.clone();
     f.store
         .reserve_app_install("alice", "migrate", update_input(1), &digest, budget())
@@ -333,9 +337,35 @@ fn an_update_stages_onto_the_active_installation_and_a_failed_start_keeps_it() {
 }
 
 #[test]
+fn an_update_that_changes_capabilities_asks_the_owner_again() {
+    let f = Fixture::new();
+    let next = release("1.1.0", 0, true, &f.store);
+    let digest = next.release_metadata().package_digest.clone();
+    f.store
+        .reserve_app_install("alice", "network", update_input(1), &digest, budget())
+        .unwrap();
+    f.store
+        .complete_app_install_preparation("alice", "network", next, budget())
+        .unwrap();
+    let challenge = Arc::new(f.arm("network", "yes"));
+    assert!(challenge.is_update());
+    assert_eq!(
+        f.store
+            .decide_app_install(challenge, false, budget())
+            .unwrap()
+            .phase,
+        InstallPhase::Cancelled
+    );
+    // Declining keeps the old release active.
+    let installed = f.store.get_app_installation("alice", "installed").unwrap();
+    assert_eq!(installed.generation, 1);
+    assert_eq!(installed.pending_generation, None);
+}
+
+#[test]
 fn uninstalling_during_an_update_leaves_its_operation_cancellable() {
     let f = Fixture::new();
-    let next = release("1.1.0", 0, &f.store);
+    let next = release("1.1.0", 0, false, &f.store);
     let digest = next.release_metadata().package_digest.clone();
     f.store
         .reserve_app_install("alice", "update", update_input(1), &digest, budget())

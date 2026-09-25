@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "@chariox/kernel-client"
-import { locateAppPackageBinary, runAppDeveloperCommand, type AppDeveloperDeps } from "./app-developer.js"
+import { locateAppPackageBinary, packAppPackage, runAppDeveloperCommand, type AppDeveloperDeps } from "./app-developer.js"
 import { runAppCommand } from "./app-command.js"
 
 function harness(response = { status: 0, stdout: '{"ok":true,"result":{"status":"fixture"}}' }) {
@@ -72,4 +72,14 @@ test("source helper discovery uses module checkout and explicit target directory
   await writeFile(binary, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
   // An explicitly selected checkout target takes precedence over installed tools.
   assert.equal(await locateAppPackageBinary({ CARGO_TARGET_DIR: target }, pathToFileURL(join(root, "apps/cli/dist/app-developer.js")).href), binary)
+})
+
+test("the dev loop packs through the same pack command and returns its verified identity", async () => {
+  const digest = `sha256:${"b".repeat(64)}`
+  const h = harness({ status: 0, stdout: JSON.stringify({ ok: true, result: { status: "packed-locally", manifest: { appId: "com.example.todo", version: "1.0.3" }, packageDigest: digest } }) })
+  assert.deepEqual(await packAppPackage({ bundle: "/a/bundle", manifest: "/a/app.json", key: "/k/private", output: "/t/app-dev.cxapp" }, h.deps), { appId: "com.example.todo", version: "1.0.3", packageDigest: digest })
+  assert.deepEqual(h.calls[0]!.args, ["pack", "--bundle", "/a/bundle", "--manifest", "/a/app.json", "--key", "/k/private", "--output", "/t/app-dev.cxapp", "--kernel-protocol", String(LOCAL_DAEMON_PROTOCOL_VERSION)])
+  assert.deepEqual(h.output, [])
+  const failed = harness({ status: 3, stdout: '{"ok":false,"error":{"code":"INVALID_DEVELOPER_KEY","message":"manifest publisher key ID does not match the private signing key"}}' })
+  await assert.rejects(packAppPackage({ bundle: "b", manifest: "m", key: "k", output: "o.cxapp" }, failed.deps), /INVALID_DEVELOPER_KEY: manifest publisher key ID/)
 })

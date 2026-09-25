@@ -225,19 +225,24 @@ function operation(reply: Record<string, unknown>, request: string): AppInstallO
   return value
 }
 
+const installFailures: Record<string, string> = {
+  app_install_publisher_not_enrolled: "This publisher must be enrolled in the kernel before installation.",
+  app_install_publisher_revoked: "This publisher has been revoked in the kernel.",
+  app_install_package_rejected: "The kernel rejected the package signature or contents.",
+  app_install_upload_missing_or_expired: "The upload expired before preparation. Select the file again.",
+  app_install_approval_expired: "The approval request expired.",
+  app_install_insufficient_storage: "The kernel has insufficient App storage.",
+  app_update_migration_required: "This release changes the App's data schema; updating with data migrations is not supported yet.",
+}
+
+/** Friendly text for an operation's kernel failure code; unknown codes are shown only when well-formed. */
+export function formatInstallFailure(failure: string): string {
+  return installFailures[failure] ?? (/^app_(?:install|update)_[a-z_]{1,96}$/.test(failure) ? `Kernel failure: ${failure}.` : "The kernel could not complete the App operation.")
+}
+
 export function formatInstallOperation(value: AppInstallOperationSummary): string {
   const label = { preparing: "Preparing App", awaiting_approval: "Awaiting approval in the operation's session", starting: "Starting App", committed: "App operation complete", cancelled: "App operation cancelled", failed: "App operation failed" }[value.phase]
-  const failures: Record<string, string> = {
-    app_install_publisher_not_enrolled: "This publisher must be enrolled in the kernel before installation.",
-    app_install_publisher_revoked: "This publisher has been revoked in the kernel.",
-    app_install_package_rejected: "The kernel rejected the package signature or contents.",
-    app_install_upload_missing_or_expired: "The upload expired before preparation. Select the file again.",
-    app_install_approval_expired: "The approval request expired.",
-    app_install_insufficient_storage: "The kernel has insufficient App storage.",
-    app_update_migration_required: "This release changes the App's data schema; updating with data migrations is not supported yet.",
-  }
-  const fallback = value.failure && /^app_(?:install|update)_[a-z_]{1,96}$/.test(value.failure) ? `Kernel failure: ${value.failure}.` : "The kernel could not complete the App operation."
-  const detail = value.failure ? ` ${failures[value.failure] ?? fallback}` : ""
+  const detail = value.failure ? ` ${formatInstallFailure(value.failure)}` : ""
   return `${label}${value.installation_id ? `: ${value.installation_id}` : ""}.${detail} Operation ${value.request_id}. Use /app operation for status; /app cancel to cancel before it completes.`
 }
 

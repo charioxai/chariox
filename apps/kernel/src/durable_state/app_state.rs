@@ -238,8 +238,9 @@ pub(crate) fn fixture_event_package() -> (Vec<u8>, chariox_app_package::TrustedP
 pub(crate) fn fixture_release_package(
     version: &str,
     schema: u32,
+    with_network: bool,
 ) -> (Vec<u8>, chariox_app_package::TrustedPublisher) {
-    tests::release_package(version, schema)
+    tests::release_package(version, schema, with_network)
 }
 
 #[cfg(test)]

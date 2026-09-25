@@ -19,14 +19,14 @@ export function isAppDeveloperCommand(action: string | undefined): boolean {
   return action !== undefined && commands.has(action)
 }
 
+export function defaultAppDeveloperDeps(write: (text: string) => void = (text) => { process.stdout.write(text) }): AppDeveloperDeps {
+  return { locateBinary: () => locateAppPackageBinary(), execute: executePackageCommand, write }
+}
+
 /** No kernel connection, shell, dependency installation or implicit Cargo build. */
 export async function runAppDeveloperCommand(
   args: readonly string[],
-  deps: AppDeveloperDeps = {
-    locateBinary: () => locateAppPackageBinary(),
-    execute: executePackageCommand,
-    write: (text) => { process.stdout.write(text) },
-  },
+  deps: AppDeveloperDeps = defaultAppDeveloperDeps(),
 ): Promise<boolean> {
   const action = args[0]
   if (!isAppDeveloperCommand(action)) return false
@@ -57,6 +57,29 @@ export async function runAppDeveloperCommand(
   if (!("result" in value)) throw new Error("App package tool returned an invalid response")
   deps.write(`${JSON.stringify(value.result, null, 2)}\n`)
   return true
+}
+
+export type PackedAppPackage = { appId: string, version: string, packageDigest: string }
+
+/**
+ * `app pack` with the CLI's own protocol, returning its result instead of printing it.
+ * The helper verifies the archive with the installer's verifier before writing it.
+ */
+export async function packAppPackage(
+  options: { bundle: string, manifest: string, key: string, output: string },
+  deps: Omit<AppDeveloperDeps, "write"> = defaultAppDeveloperDeps(),
+): Promise<PackedAppPackage> {
+  let printed = ""
+  await runAppDeveloperCommand(
+    ["pack", "--bundle", options.bundle, "--manifest", options.manifest, "--key", options.key, "--output", options.output],
+    { ...deps, write: (text) => { printed += text } },
+  )
+  const result = JSON.parse(printed) as { manifest?: { appId?: unknown, version?: unknown }, packageDigest?: unknown }
+  const { appId, version } = result.manifest ?? {}
+  if (typeof appId !== "string" || typeof version !== "string" || typeof result.packageDigest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(result.packageDigest)) {
+    throw new Error("App package tool returned an invalid pack result")
+  }
+  return { appId, version, packageDigest: result.packageDigest }
 }
 
 async function executable(path: string): Promise<string | undefined> {

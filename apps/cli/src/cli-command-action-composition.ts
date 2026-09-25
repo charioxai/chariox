@@ -1,3 +1,4 @@
+import type { AppDevLoop } from "./app-dev-loop.js"
 import type { AppFileInstaller } from "./app-install-file.js"
 import type { AppPublisherEnrollment } from "./app-publisher-file.js"
 import type { BootstrapState, RuntimeSession } from "./cli-types.js"
@@ -190,6 +191,7 @@ type AnyFn = (...args: any[]) => any
 
 export type CliCommandActionCompositionDeps = {
   appFileInstaller?: AppFileInstaller
+  appDevLoop?: AppDevLoop
   appPublisherEnrollment?: AppPublisherEnrollment
   client: BootstrapState["client"]
   options: BootstrapState["options"]
@@ -478,6 +480,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     sendWorkflowEventPublicationRequest: (request) => client.send(request),
     sendAppRequest: (request) => client.send(request),
     ...(deps.appFileInstaller ? { appFileInstaller: deps.appFileInstaller } : {}),
+    ...(deps.appDevLoop ? { appDevLoop: deps.appDevLoop } : {}),
     ...(deps.appPublisherEnrollment ? { appPublisherEnrollment: deps.appPublisherEnrollment } : {}),
     currentAppSessionId: () => isAttached() ? sessionState().id : undefined,
     appendCloudNotice,
