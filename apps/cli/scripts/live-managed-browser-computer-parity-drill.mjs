@@ -544,6 +544,14 @@ function evaluateManagedParityPlacement(report, expected) {
   if (browser && computer && browser.actorId !== computer.actorId) {
     violations.push("browser_computer_actor_mismatch")
   }
+  if (Object.hasOwn(expected, "actorId")) {
+    if (typeof expected.actorId !== "string" || !/^agent:.+/.test(expected.actorId)) {
+      violations.push("expected_actor_invalid")
+    } else {
+      if (browser && browser.actorId !== expected.actorId) violations.push("browser_action_actor_mismatch")
+      if (computer && computer.actorId !== expected.actorId) violations.push("computer_action_actor_mismatch")
+    }
+  }
   if (proofs.length === 3 && new Set(proofs.map((proof) => proof.environmentId)).size !== 1) {
     violations.push("browser_computer_web_view_environment_mismatch")
   }

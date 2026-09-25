@@ -284,6 +284,22 @@ test("live M0 rejects Browser and Computer placement evidence attributed to diff
   assert.ok(report.browserComputerGuard.placement.violations.includes("browser_computer_actor_mismatch"))
 })
 
+test("live M0 rejects matching Browser and Computer actions from the wrong assigned agent", async () => {
+  const runConfig = config()
+  runConfig.expected.actorId = "agent:assigned-room-agent"
+  const report = await runManagedBrowserComputerParityLive({
+    config: runConfig,
+    transport: transport(),
+    evidenceRoot: EVIDENCE_ROOT,
+    collectResourceSnapshot: ({ phase }) => sample(phase),
+  })
+
+  assert.equal(report.status, "failed")
+  assert.equal(report.failure.code, "browser_computer_placement_proof_required")
+  assert.ok(report.browserComputerGuard.placement.violations.includes("browser_action_actor_mismatch"))
+  assert.ok(report.browserComputerGuard.placement.violations.includes("computer_action_actor_mismatch"))
+})
+
 test("live M0 wrapper validates the released kernel lifecycle plan without Docker argv assumptions", async () => {
   const kernelConfig = config()
   kernelConfig.browserComputerGuard.dockerPreconditions = []
