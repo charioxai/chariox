@@ -192,13 +192,14 @@ async fn public_remote_completion_preserves_worker_termination_async() {
                             execution_lease_id: Some("termination-lease".to_string()),
                         }),
                     };
-                    let encrypted_response = crate::transport::relay_crypto::encrypt_payload_for_peer(
-                        &worker_private_key,
-                        &decrypted.sender_public_key,
-                        &serde_json::to_vec(&response)
-                            .expect("worker receipt response should serialize"),
-                    )
-                    .expect("worker receipt response should encrypt");
+                    let encrypted_response =
+                        crate::transport::relay_crypto::encrypt_payload_for_peer(
+                            &worker_private_key,
+                            &decrypted.sender_public_key,
+                            &serde_json::to_vec(&response)
+                                .expect("worker receipt response should serialize"),
+                        )
+                        .expect("worker receipt response should encrypt");
                     worker_socket
                         .send(Message::Text(
                             serde_json::to_string(
@@ -221,9 +222,8 @@ async fn public_remote_completion_preserves_worker_termination_async() {
                 } => {
                     assert_eq!(leased_agent_id, "termination-leased-agent");
                     assert_eq!(provider_run_id, "worker-provider-run");
-                    let response = RelayPeerResponse::LeasedRuntimeProjectionDrained {
-                        event: None,
-                    };
+                    let response =
+                        RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None };
                     let encrypted_response =
                         crate::transport::relay_crypto::encrypt_payload_for_peer(
                             &worker_private_key,
@@ -337,10 +337,8 @@ async fn public_remote_completion_preserves_worker_termination_async() {
         )
     };
 
-    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
-        Arc::clone(&app),
-        1,
-    );
+    let router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
     let prompt_request = LocalDaemonRequest::SubmitPrompt(crate::local::SubmitPromptRequest {
         session_id: session_id.clone(),
         attachment_id: attachment_id.clone(),
@@ -365,21 +363,17 @@ async fn public_remote_completion_preserves_worker_termination_async() {
         panic!("public remote prompt submission should start");
     };
     let prompt_id = prompt.id().to_string();
-    let active_prompt = wait_for_home_remote_prompt_receipt(
-        &app,
-        &session_id,
-        &agent_id,
-        &prompt_id,
-    )
-    .await;
+    let active_prompt =
+        wait_for_home_remote_prompt_receipt(&app, &session_id, &agent_id, &prompt_id).await;
 
     active_prompt_tx
         .send(active_prompt)
         .expect("worker should wait for the home prompt before completion");
 
-    let completion_request = LocalDaemonRequest::CompletePrompt(crate::local::CompletePromptRequest {
-        session_id: session_id.clone(),
-    });
+    let completion_request =
+        LocalDaemonRequest::CompletePrompt(crate::local::CompletePromptRequest {
+            session_id: session_id.clone(),
+        });
     let completion_command = KernelCommand::from_local_request(
         "public-remote-completion-worker-termination-complete",
         None,
@@ -2262,10 +2256,8 @@ async fn remote_machine_agents_materialize_file_attachments_on_the_worker_async(
     std::fs::write(&source_path, b"remote attachment body")
         .expect("source attachment should be written");
 
-    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
-        Arc::clone(&app_home),
-        1,
-    );
+    let router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(Arc::clone(&app_home), 1);
     let submit_request = LocalDaemonRequest::SubmitPrompt(crate::local::SubmitPromptRequest {
         session_id: session_id.clone(),
         attachment_id: attachment_id.clone(),
@@ -2297,13 +2289,9 @@ async fn remote_machine_agents_materialize_file_attachments_on_the_worker_async(
     let crate::session::PromptSubmissionOutcome::Started { prompt } = &outcome else {
         panic!("remote attachment prompt should start");
     };
-    let _delivered_prompt = wait_for_home_remote_prompt_receipt(
-        &app_home,
-        &session_id,
-        &remote_agent_id,
-        prompt.id(),
-    )
-    .await;
+    let _delivered_prompt =
+        wait_for_home_remote_prompt_receipt(&app_home, &session_id, &remote_agent_id, prompt.id())
+            .await;
 
     let worker_attachments = wait_for_leased_agent_active_prompt_attachments(
         app_worker.clone(),
@@ -2486,10 +2474,8 @@ async fn remote_machine_agents_cancel_prompts_through_the_home_session_async() {
             .to_string()
     };
 
-    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
-        Arc::clone(&app_home),
-        1,
-    );
+    let router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(Arc::clone(&app_home), 1);
     let submit_request = LocalDaemonRequest::SubmitPrompt(crate::local::SubmitPromptRequest {
         session_id: session_id.clone(),
         attachment_id: attachment_id.clone(),
@@ -2513,13 +2499,9 @@ async fn remote_machine_agents_cancel_prompts_through_the_home_session_async() {
     let crate::session::PromptSubmissionOutcome::Started { prompt } = &outcome else {
         panic!("remote prompt should start before cancellation");
     };
-    let _delivered_prompt = wait_for_home_remote_prompt_receipt(
-        &app_home,
-        &session_id,
-        &remote_agent_id,
-        prompt.id(),
-    )
-    .await;
+    let _delivered_prompt =
+        wait_for_home_remote_prompt_receipt(&app_home, &session_id, &remote_agent_id, prompt.id())
+            .await;
 
     let cancel_request = || {
         LocalDaemonRequest::CancelActivePrompt(crate::local::CancelActivePromptRequest {
