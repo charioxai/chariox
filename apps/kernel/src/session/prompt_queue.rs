@@ -123,6 +123,8 @@ pub(crate) struct DurablePromptPrivateState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) delivery_provider_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "is_false_bool")]
+    pub(crate) delivery_reconciliation_pending: bool,
+    #[serde(default, skip_serializing_if = "is_false_bool")]
     pub(crate) delivery_failure_pending: bool,
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub(crate) recovery_generation: u32,
@@ -144,6 +146,7 @@ struct PromptPrivateMetadata {
     delivery_phase: Option<DurablePromptDeliveryPhase>,
     delivery_provider_run_id: Option<String>,
     delivery_provider_session_id: Option<String>,
+    delivery_reconciliation_pending: bool,
     delivery_failure_pending: bool,
     recovery_generation: u32,
     recovery_operation_id: Option<String>,
@@ -173,6 +176,7 @@ impl DurablePromptPrivateState {
             delivery_phase: metadata.delivery_phase,
             delivery_provider_run_id: metadata.delivery_provider_run_id.clone(),
             delivery_provider_session_id: metadata.delivery_provider_session_id.clone(),
+            delivery_reconciliation_pending: metadata.delivery_reconciliation_pending,
             delivery_failure_pending: metadata.delivery_failure_pending,
             recovery_generation: metadata.recovery_generation,
             recovery_operation_id: metadata.recovery_operation_id.clone(),
@@ -536,6 +540,18 @@ impl PromptQueueItem {
             .delivery_failure_pending = pending;
     }
 
+    pub(crate) fn durable_delivery_reconciliation_pending(&self) -> bool {
+        self.private_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.delivery_reconciliation_pending)
+    }
+
+    pub(crate) fn set_durable_delivery_reconciliation_pending(&mut self, pending: bool) {
+        self.private_metadata
+            .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()))
+            .delivery_reconciliation_pending = pending;
+    }
+
     pub(crate) fn set_durable_delivery(
         &mut self,
         phase: DurablePromptDeliveryPhase,
@@ -550,6 +566,7 @@ impl PromptQueueItem {
         metadata.delivery_provider_session_id = provider_session_id;
         if phase == DurablePromptDeliveryPhase::Delivered {
             metadata.delivery_failure_pending = false;
+            metadata.delivery_reconciliation_pending = false;
         }
     }
 
@@ -604,6 +621,7 @@ impl PromptQueueItem {
             && private.agent_prompt_schedule_id.is_none()
             && private.operation_id.is_none()
             && private.delivery_phase.is_none()
+            && !private.delivery_reconciliation_pending
             && !private.delivery_failure_pending
             && private.recovery_operation_id.is_none()
             && private.source_client_id.is_none()
@@ -623,6 +641,7 @@ impl PromptQueueItem {
             delivery_phase: private.delivery_phase,
             delivery_provider_run_id: private.delivery_provider_run_id.clone(),
             delivery_provider_session_id: private.delivery_provider_session_id.clone(),
+            delivery_reconciliation_pending: private.delivery_reconciliation_pending,
             delivery_failure_pending: private.delivery_failure_pending,
             recovery_generation: private.recovery_generation,
             recovery_operation_id: private.recovery_operation_id.clone(),
@@ -832,6 +851,40 @@ mod tests {
             .remove("agent_prompt_schedule_id");
         let legacy: DurablePromptPrivateState = serde_json::from_value(legacy).unwrap();
         assert_eq!(legacy.agent_prompt_schedule_id, None);
+    }
+
+    #[test]
+    fn reconciliation_pending_survives_private_state_restore_until_delivery_is_durable() {
+        let mut prompt = PromptQueueItem::new(
+            "prompt-uncertain",
+            "attachment-1",
+            "agent-1",
+            "same prompt body",
+            PromptStatus::Running,
+        );
+        prompt.set_durable_delivery(DurablePromptDeliveryPhase::Dispatching, None, None);
+        prompt.set_durable_delivery_reconciliation_pending(true);
+
+        let private = DurablePromptPrivateState::from_prompt("session-1", &prompt).unwrap();
+        let private: DurablePromptPrivateState =
+            serde_json::from_value(serde_json::to_value(private).unwrap()).unwrap();
+        let mut restored: PromptQueueItem =
+            serde_json::from_value(serde_json::to_value(&prompt).unwrap()).unwrap();
+        restored.restore_durable_private_state(&private);
+
+        assert_eq!(restored.id(), "prompt-uncertain");
+        assert_eq!(
+            restored.durable_delivery_phase(),
+            Some(DurablePromptDeliveryPhase::Dispatching)
+        );
+        assert!(restored.durable_delivery_reconciliation_pending());
+
+        restored.set_durable_delivery(
+            DurablePromptDeliveryPhase::Delivered,
+            Some("worker-run-1".to_string()),
+            None,
+        );
+        assert!(!restored.durable_delivery_reconciliation_pending());
     }
 
     #[test]

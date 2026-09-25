@@ -4,8 +4,10 @@
 //! settlement after owned prompt state has already admitted the prompt.
 
 use super::remote_prompt_worker_submission_runtime::{
+    persist_remote_prompt_reconciliation_pending, remote_prompt_error_is_reconciliation_pending,
     remote_prompt_error_should_refresh_binding, remote_prompt_error_should_retry_transport,
-    remote_prompt_transport_retry_delay, submit_remote_prompt_to_worker_with_binding_refresh,
+    remote_prompt_reconciliation_pending, remote_prompt_transport_retry_delay,
+    submit_remote_prompt_to_worker_with_binding_refresh,
 };
 use super::*;
 
@@ -90,6 +92,23 @@ impl KernelRuntimeState {
         delivery_provider_run_id: Option<&str>,
     ) -> Result<bool, DaemonError> {
         let agent = self.owned.agent_store.get_agent(agent_id)?;
+        let session = self.owned.session_store.get_session(session_id)?;
+        let active_prompt = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id);
+        if agent.remote_execution().is_some()
+            && active_prompt.as_ref().is_some_and(|prompt| {
+                prompt.durable_delivery_reconciliation_pending()
+                    || prompt.durable_delivery_phase()
+                        == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+                    || delivery_phase
+                        == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+            })
+        {
+            let _ = self.remote_prompt_recovery_dispatch_for_phase(&agent, delivery_phase)?;
+            return Ok(true);
+        }
         let active_worker_run = agent
             .remote_execution()
             .and_then(|binding| binding.active_worker_provider_run_id.as_deref())
@@ -119,7 +138,9 @@ impl KernelRuntimeState {
             self.spawn_remote_prompt_projection_drain(session_id.to_string(), agent_id.to_string());
             return Ok(true);
         }
-        let Some(mut dispatch) = self.remote_prompt_recovery_dispatch(&agent)? else {
+        let Some(mut dispatch) = self
+            .remote_prompt_recovery_dispatch_for_phase(&agent, delivery_phase)?
+        else {
             return Ok(false);
         };
         self.populate_remote_prompt_recovery_workflow_context(&mut dispatch)
@@ -506,7 +527,8 @@ impl KernelRuntimeState {
         let Some(rebound) = rebound else {
             return Ok(());
         };
-        let Some(mut dispatch) = self.remote_prompt_recovery_dispatch(&rebound)? else {
+        let Some(mut dispatch) = self.remote_prompt_recovery_dispatch_for_phase(&rebound, None)?
+        else {
             return Ok(());
         };
         self.populate_remote_prompt_recovery_workflow_context(&mut dispatch)
@@ -607,6 +629,12 @@ impl KernelRuntimeState {
                     return Ok(());
                 }
                 Err(error) => {
+                    if remote_prompt_error_is_reconciliation_pending(&error)
+                        || remote_prompt_reconciliation_pending(self, &dispatch)
+                            .unwrap_or(true)
+                    {
+                        return Err(error);
+                    }
                     attempt = attempt.saturating_add(1);
                     self.log_remote_prompt_recovery_retry(
                         session_id, agent_id, &dispatch, attempt, &error,
@@ -661,6 +689,44 @@ impl KernelRuntimeState {
                 .map(str::to_string),
             workflow_context: None,
         }))
+    }
+
+    fn remote_prompt_recovery_dispatch_for_phase(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        observed_delivery_phase: Option<crate::session::DurablePromptDeliveryPhase>,
+    ) -> Result<Option<crate::app::KernelRemotePromptDispatch>, DaemonError> {
+        let Some(dispatch) = self.remote_prompt_recovery_dispatch(agent)? else {
+            return Ok(None);
+        };
+        let session = self.owned.session_store.get_session(&dispatch.session_id)?;
+        let Some(active_prompt) = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &dispatch.agent_id)
+        else {
+            return Ok(None);
+        };
+        if active_prompt.id() != dispatch.prompt_id {
+            return Ok(None);
+        }
+        let must_hold = active_prompt.durable_delivery_reconciliation_pending()
+            || active_prompt.durable_delivery_phase()
+                == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+            || observed_delivery_phase
+                == Some(crate::session::DurablePromptDeliveryPhase::Dispatching);
+        if must_hold {
+            let marker_was_durable = active_prompt.durable_delivery_reconciliation_pending()
+                || persist_remote_prompt_reconciliation_pending(self, &dispatch, true).is_ok();
+            let detail = if marker_was_durable {
+                "restart found a remote prompt in Dispatching without a durable submission acknowledgement"
+            } else {
+                "restart found a remote prompt in Dispatching without a durable submission acknowledgement; the reconciliation marker could not be persisted, so automatic replay remains blocked by the durable Dispatching phase"
+            };
+            self.report_remote_prompt_reconciliation_pending(&dispatch, detail);
+            return Ok(None);
+        }
+        Ok(Some(dispatch))
     }
 
     async fn populate_remote_prompt_recovery_workflow_context(
@@ -840,6 +906,84 @@ impl KernelRuntimeState {
                 .await
             }
         }
+    }
+
+    pub(super) fn report_remote_prompt_reconciliation_pending(
+        &self,
+        dispatch: &crate::app::KernelRemotePromptDispatch,
+        detail: &str,
+    ) {
+        let message = format!(
+            "Remote delivery of prompt `{}` to worker kernel `{}` is indeterminate: {detail}. The same prompt remains active in durable Dispatching state; it was not cancelled, promoted, or replayed. Automatic retry is blocked until the worker's completed-prompt receipt is reconciled.",
+            dispatch.prompt_id, dispatch.worker_kernel_id
+        );
+        crate::logging::warn_with_fields(
+            "daemon.remote_prompt_dispatch",
+            &message,
+            serde_json::json!({
+                "session_id": dispatch.session_id,
+                "agent_id": dispatch.agent_id,
+                "prompt_id": dispatch.prompt_id,
+                "worker_kernel_id": dispatch.worker_kernel_id,
+                "leased_agent_id": dispatch.leased_agent_id,
+                "delivery_uncertain": true,
+                "prompt_replayed": false,
+                "worker_completed_receipt_required": true,
+            }),
+        );
+        let provider_run_id = format!("remote-dispatch:{}", dispatch.prompt_id);
+        let merge_key = Some(format!("remote-dispatch-uncertain:{}", dispatch.prompt_id));
+        self.owned.fan_out_remote_dispatch_error(
+            dispatch,
+            &provider_run_id,
+            merge_key.clone(),
+            &message,
+        );
+        let workflow_run_id = self
+            .owned
+            .session_store
+            .get_session(&dispatch.session_id)
+            .ok()
+            .and_then(|session| {
+                self.owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, &dispatch.agent_id)
+                    .filter(|prompt| prompt.id() == dispatch.prompt_id)
+                    .and_then(|prompt| prompt.workflow_run_id().map(str::to_string))
+            });
+        let workflow_id = workflow_run_id.as_deref().and_then(|run_id| {
+            self.owned
+                .session_store
+                .get_session(&dispatch.session_id)
+                .ok()
+                .and_then(|session| {
+                    session
+                        .workflow_run(run_id)
+                        .map(|run| run.workflow_id().to_string())
+                })
+        });
+        self.owned.append_operational_history_entry_with_context(
+            &SessionHistoryEntry::provider_output(
+                &dispatch.session_id,
+                &provider_run_id,
+                Some(&dispatch.agent_id),
+                crate::terminal::TerminalOutputKind::ProviderError,
+                merge_key,
+                message,
+            )
+            .with_prompt_origin(dispatch.prompt_origin)
+            .with_source_attachment_id(Some(dispatch.source_attachment_id.clone())),
+            crate::history::HistoryEventTurnContext {
+                session_id: Some(dispatch.session_id.clone()),
+                agent_id: Some(dispatch.agent_id.clone()),
+                provider_run_id: Some(provider_run_id),
+                prompt_id: Some(dispatch.prompt_id.clone()),
+                turn_id: Some(dispatch.prompt_id.clone()),
+                workflow_id,
+                workflow_run_id,
+                ..Default::default()
+            },
+        );
     }
 
     pub(super) async fn finish_remote_prompt_dispatch(
@@ -1170,6 +1314,15 @@ impl KernelRuntimeState {
                     }),
                 ),
             }
+            if result
+                .as_ref()
+                .err()
+                .is_some_and(remote_prompt_error_is_reconciliation_pending)
+            {
+                // An indeterminate submission must keep the same durable prompt active.
+                // The ordinary error finalizer would cancel it and promote the backlog.
+                return;
+            }
             match result {
                 Ok(remote_provider_run_id) => {
                     if let Err(error) = state
@@ -1294,6 +1447,140 @@ mod tests {
         assert_eq!(echoes.len(), 1, "recovered queued prompt must echo once to its submitting attachment");
         assert_eq!(echoes[0].prompt_id.as_deref(), Some(active.id()));
         assert_eq!(echoes[0].provider_run_id, crate::provider::projected_leased_provider_run_id("leased-agent-1", "worker-run-recovered"));
+    }
+
+    #[tokio::test]
+    async fn dispatching_remote_prompt_without_durable_ack_is_held_on_restart() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-uncertain-restart",
+                "worktree-uncertain-restart",
+            ))
+            .unwrap();
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "uncertain-restart-client",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        app.agents
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "worker-uncertain".to_string(),
+                    worker_machine_id: "machine-uncertain".to_string(),
+                    execution_lease_id: "lease-uncertain".to_string(),
+                    leased_agent_id: "leased-uncertain".to_string(),
+                    active_worker_provider_run_id: None,
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .unwrap();
+
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let started = runtime
+            .owned
+            .submit_remote_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+                session_id: session.id().to_string(),
+                prompt: crate::session::PromptQueueItem::new(
+                    "uncertain-active",
+                    attachment.id(),
+                    agent.id(),
+                    "prompt that may have been accepted",
+                    crate::session::PromptStatus::Queued,
+                ),
+                force_queue: false,
+                refresh_projection: true,
+            })
+            .unwrap()
+            .unwrap();
+        let dispatch = started.remote_dispatch.unwrap();
+        runtime
+            .owned
+            .mark_active_prompt_delivery(
+                session.id(),
+                agent.id(),
+                &dispatch.prompt_id,
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+                None,
+                None,
+            )
+            .unwrap();
+        runtime
+            .owned
+            .submit_remote_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+                session_id: session.id().to_string(),
+                prompt: crate::session::PromptQueueItem::new(
+                    "queued-successor",
+                    attachment.id(),
+                    agent.id(),
+                    "must remain queued",
+                    crate::session::PromptStatus::Queued,
+                ),
+                force_queue: true,
+                refresh_projection: true,
+            })
+            .unwrap();
+        let session_before_recovery = runtime.owned.session_store.get_session(session.id()).unwrap();
+        assert!(!runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session_before_recovery, agent.id())
+            .unwrap()
+            .durable_delivery_reconciliation_pending());
+
+        let recovered = runtime
+            .recover_remote_prompt_after_kernel_restart(
+                session.id(),
+                agent.id(),
+                Some(crate::session::DurablePromptDeliveryPhase::Dispatching),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(recovered, "uncertain dispatch should be handled without replay");
+        let session_after = runtime.owned.session_store.get_session(session.id()).unwrap();
+        let (active, queued) = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session_after, agent.id());
+        let active = active.expect("same active prompt should remain");
+        assert_eq!(active.id(), dispatch.prompt_id);
+        assert_eq!(
+            active.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+        );
+        assert!(active.durable_delivery_reconciliation_pending());
+        assert_eq!(queued.len(), 1, "successor must not be promoted");
+        assert_eq!(queued[0].id(), "queued-successor");
+        assert!(runtime
+            .owned
+            .agent_store
+            .get_agent(agent.id())
+            .unwrap()
+            .remote_execution()
+            .unwrap()
+            .active_worker_provider_run_id
+            .is_none());
+        let errors = runtime
+            .owned
+            .terminal_stream
+            .drain_output_records(session.id(), attachment.id())
+            .into_iter()
+            .filter(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderError)
+            .collect::<Vec<_>>();
+        assert!(errors.iter().any(|record| {
+            record.prompt_id.as_deref() == Some(dispatch.prompt_id.as_str())
+                && String::from_utf8_lossy(&record.bytes).contains("completed-prompt receipt")
+        }));
     }
 
     fn completed_worker_projection(

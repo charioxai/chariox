@@ -1,9 +1,23 @@
 //! Relay worker submission and stale remote-agent binding refresh for remote prompts.
 
 use super::*;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const REMOTE_PROMPT_TRANSPORT_RETRY_WINDOW: std::time::Duration =
     std::time::Duration::from_secs(30);
+
+#[derive(Debug)]
+enum RemotePromptSubmissionOutcome {
+    Accepted(String),
+    DefinitelyPreSend(DaemonError),
+    RejectedBeforeAdmission(DaemonError),
+    Indeterminate(DaemonError),
+}
+
+struct RemotePromptSubmissionAttempt {
+    result: Result<String, DaemonError>,
+    request_transport_started: bool,
+}
 
 pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
     state: &KernelRuntimeState,
@@ -11,7 +25,16 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
     prompt: String,
     attachments: Vec<crate::transport::relay_peer::RelayPromptAttachment>,
 ) -> Result<String, DaemonError> {
+    if remote_prompt_reconciliation_pending(state, dispatch)? {
+        return Err(remote_prompt_reconciliation_pending_error(
+            dispatch,
+            "a previous submission has no reconciled worker receipt",
+        ));
+    }
+    ensure_remote_prompt_dispatching(state, dispatch)?;
     let mut attempt = 0_u32;
+    let mut provider_credential_retry_used = false;
+    let mut binding_refresh_used = false;
     let transport_retry_started_at = tokio::time::Instant::now();
     let mut provider_launch_credential =
         remote_prompt_provider_launch_credential_if_needed(state, dispatch).await?;
@@ -24,8 +47,8 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
                 session_id: dispatch.session_id.clone(),
             });
         }
-        let mut result = state
-            .submit_remote_prompt_attempt(
+        let outcome = state
+            .submit_remote_prompt_attempt_with_outcome(
                 dispatch,
                 prompt.clone(),
                 attachments.clone(),
@@ -33,64 +56,58 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
                 "unexpected remote prompt response",
             )
             .await;
-        if provider_launch_credential.is_none()
-            && remote_prompt_dispatch_requires_provider_launch_credential(&result)
-        {
-            provider_launch_credential = state
-                .resolve_remote_provider_launch_credential(
-                    &dispatch.session_id,
-                    &dispatch.agent_id,
-                    "relaunch remote provider run",
-                )
-                .await?;
-            result = state
-                .submit_remote_prompt_attempt(
-                    dispatch,
-                    prompt.clone(),
-                    attachments.clone(),
-                    provider_launch_credential.clone(),
-                    "unexpected remote prompt response after credential request",
-                )
-                .await;
-        }
-        if remote_prompt_dispatch_should_refresh_binding(&result) {
-            result = match refresh_remote_prompt_binding(state, dispatch).await {
-                Ok(()) => {
-                    provider_launch_credential =
-                        remote_prompt_provider_launch_credential_if_needed(state, dispatch).await?;
-                    state
-                        .submit_remote_prompt_attempt(
-                            dispatch,
-                            prompt.clone(),
-                            attachments.clone(),
-                            provider_launch_credential.clone(),
-                            "unexpected remote prompt response after binding refresh",
-                        )
-                        .await
-                }
-                Err(error) => Err(error),
-            };
-        }
-        match result {
-            Err(error) if remote_prompt_error_should_retry_transport(&error) => {
+        match outcome {
+            RemotePromptSubmissionOutcome::Accepted(provider_run_id) => {
+                // Dispatch settlement clears the hold only after its durable ACK write.
+                return Ok(provider_run_id);
+            }
+            RemotePromptSubmissionOutcome::RejectedBeforeAdmission(error)
+                if provider_launch_credential.is_none()
+                    && !provider_credential_retry_used
+                    && remote_prompt_error_requires_provider_launch_credential(&error) =>
+            {
+                clear_reconciliation_pending_or_defer(state, dispatch)?;
+                provider_credential_retry_used = true;
+                provider_launch_credential = state
+                    .resolve_remote_provider_launch_credential(
+                        &dispatch.session_id,
+                        &dispatch.agent_id,
+                        "relaunch remote provider run",
+                    )
+                    .await?;
+            }
+            RemotePromptSubmissionOutcome::RejectedBeforeAdmission(error)
+                if !binding_refresh_used && remote_prompt_error_should_refresh_binding(&error) =>
+            {
+                clear_reconciliation_pending_or_defer(state, dispatch)?;
+                binding_refresh_used = true;
+                refresh_remote_prompt_binding(state, dispatch).await?;
+                provider_launch_credential =
+                    remote_prompt_provider_launch_credential_if_needed(state, dispatch).await?;
+            }
+            RemotePromptSubmissionOutcome::DefinitelyPreSend(error)
+                if !binding_refresh_used && remote_prompt_error_should_refresh_binding(&error) =>
+            {
+                clear_reconciliation_pending_or_defer(state, dispatch)?;
+                binding_refresh_used = true;
+                refresh_remote_prompt_binding(state, dispatch).await?;
+                provider_launch_credential =
+                    remote_prompt_provider_launch_credential_if_needed(state, dispatch).await?;
+            }
+            RemotePromptSubmissionOutcome::RejectedBeforeAdmission(error)
+                if remote_prompt_error_should_retry_transport(&error) =>
+            {
+                clear_reconciliation_pending_or_defer(state, dispatch)?;
                 attempt = attempt.saturating_add(1);
                 if remote_prompt_transport_retry_window_expired(
                     transport_retry_started_at.elapsed(),
                 ) {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "submit remote prompt transport retry window",
-                        message: format!(
-                            "worker kernel `{}` remained unreachable for {}s while dispatching prompt `{}`: {error}",
-                            dispatch.worker_kernel_id,
-                            REMOTE_PROMPT_TRANSPORT_RETRY_WINDOW.as_secs(),
-                            dispatch.prompt_id,
-                        ),
-                    });
+                    return Err(error);
                 }
                 if attempt == 1 || attempt % 12 == 0 {
                     crate::logging::warn_with_fields(
                         "daemon.remote_prompt_dispatch",
-                        "remote prompt transport unavailable; retrying active prompt",
+                        "relay rejected remote prompt before worker admission; retrying active prompt",
                         serde_json::json!({
                             "session_id": dispatch.session_id,
                             "agent_id": dispatch.agent_id,
@@ -104,9 +121,221 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
                 }
                 tokio::time::sleep(remote_prompt_transport_retry_delay(attempt)).await;
             }
-            result => return result,
+            RemotePromptSubmissionOutcome::DefinitelyPreSend(error)
+                if remote_prompt_error_should_retry_transport(&error) =>
+            {
+                clear_reconciliation_pending_or_defer(state, dispatch)?;
+                attempt = attempt.saturating_add(1);
+                if remote_prompt_transport_retry_window_expired(
+                    transport_retry_started_at.elapsed(),
+                ) {
+                    return Err(error);
+                }
+                if attempt == 1 || attempt % 12 == 0 {
+                    crate::logging::warn_with_fields(
+                        "daemon.remote_prompt_dispatch",
+                        "remote prompt request was definitely not sent; retrying active prompt",
+                        serde_json::json!({
+                            "session_id": dispatch.session_id,
+                            "agent_id": dispatch.agent_id,
+                            "worker_kernel_id": dispatch.worker_kernel_id,
+                            "leased_agent_id": dispatch.leased_agent_id,
+                            "prompt_id": dispatch.prompt_id,
+                            "attempt": attempt,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+                tokio::time::sleep(remote_prompt_transport_retry_delay(attempt)).await;
+            }
+            RemotePromptSubmissionOutcome::DefinitelyPreSend(error)
+            | RemotePromptSubmissionOutcome::RejectedBeforeAdmission(error) => {
+                clear_reconciliation_pending_or_defer(state, dispatch)?;
+                return Err(error);
+            }
+            RemotePromptSubmissionOutcome::Indeterminate(error) => {
+                let detail = if persist_remote_prompt_reconciliation_pending(state, dispatch, true)
+                    .is_ok()
+                {
+                    "the request may have reached the worker, but no submission acknowledgement was recorded"
+                } else {
+                    "the request may have reached the worker, but no submission acknowledgement was recorded and the reconciliation marker could not be persisted; the already-durable Dispatching phase still blocks restart replay"
+                };
+                state.report_remote_prompt_reconciliation_pending(dispatch, detail);
+                crate::logging::warn_with_fields(
+                    "daemon.remote_prompt_dispatch",
+                    "remote prompt delivery is pending worker receipt reconciliation",
+                    serde_json::json!({
+                        "session_id": dispatch.session_id,
+                        "agent_id": dispatch.agent_id,
+                        "worker_kernel_id": dispatch.worker_kernel_id,
+                        "leased_agent_id": dispatch.leased_agent_id,
+                        "prompt_id": dispatch.prompt_id,
+                        "delivery_uncertain": true,
+                        "prompt_replayed": false,
+                        "transport_error": error.to_string(),
+                    }),
+                );
+                return Err(remote_prompt_reconciliation_pending_error(dispatch, detail));
+            }
         }
     }
+}
+
+fn ensure_remote_prompt_dispatching(
+    state: &KernelRuntimeState,
+    dispatch: &crate::app::KernelRemotePromptDispatch,
+) -> Result<(), DaemonError> {
+    let session = state.owned.session_store.get_session(&dispatch.session_id)?;
+    let active = state
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &dispatch.agent_id)
+        .filter(|prompt| prompt.id() == dispatch.prompt_id)
+        .ok_or_else(|| DaemonError::NoActivePrompt {
+            session_id: dispatch.session_id.clone(),
+        })?;
+    if active.durable_delivery_phase()
+        == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+    {
+        return Ok(());
+    }
+    state.owned.mark_active_prompt_delivery(
+        &dispatch.session_id,
+        &dispatch.agent_id,
+        &dispatch.prompt_id,
+        crate::session::DurablePromptDeliveryPhase::Dispatching,
+        None,
+        None,
+    )?;
+    Ok(())
+}
+
+fn clear_reconciliation_pending_or_defer(
+    state: &KernelRuntimeState,
+    dispatch: &crate::app::KernelRemotePromptDispatch,
+) -> Result<(), DaemonError> {
+    if let Err(error) = persist_remote_prompt_reconciliation_pending(state, dispatch, false) {
+        let detail = "the submission was rejected before admission or definitely not sent, but the reconciliation hold could not be cleared";
+        if remote_prompt_reconciliation_pending(state, dispatch).unwrap_or(true) {
+            state.report_remote_prompt_reconciliation_pending(dispatch, detail);
+            return Err(remote_prompt_reconciliation_pending_error(dispatch, detail));
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+pub(super) fn persist_remote_prompt_reconciliation_pending(
+    state: &KernelRuntimeState,
+    dispatch: &crate::app::KernelRemotePromptDispatch,
+    pending: bool,
+) -> Result<(), DaemonError> {
+    let session = state.owned.session_store.get_session(&dispatch.session_id)?;
+    let previous = state
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &dispatch.agent_id)
+        .filter(|prompt| prompt.id() == dispatch.prompt_id)
+        .ok_or_else(|| DaemonError::NoActivePrompt {
+            session_id: dispatch.session_id.clone(),
+        })?;
+    if previous.durable_delivery_reconciliation_pending() == pending {
+        return Ok(());
+    }
+    let mut replacement = previous.clone();
+    replacement.set_durable_delivery_reconciliation_pending(pending);
+    if !state
+        .owned
+        .prompt_state_owner
+        .replace_active_prompt_if_matches(
+            &session,
+            &dispatch.agent_id,
+            &previous,
+            replacement.clone(),
+        )
+    {
+        return Err(DaemonError::NoActivePrompt {
+            session_id: dispatch.session_id.clone(),
+        });
+    }
+    let (active_prompt, queued_prompts) = state
+        .owned
+        .prompt_state_owner
+        .state_parts(&session, &dispatch.agent_id);
+    if let Err(error) = state.owned.mirror_prompt_owner_agent_state(
+        &dispatch.session_id,
+        &dispatch.agent_id,
+        active_prompt,
+        queued_prompts,
+    ) {
+        let _ = state
+            .owned
+            .prompt_state_owner
+            .replace_active_prompt_if_matches(
+                &session,
+                &dispatch.agent_id,
+                &replacement,
+                previous,
+            );
+        let (active_prompt, queued_prompts) = state
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &dispatch.agent_id);
+        let _ = state.owned.session_store.mirror_agent_prompt_state(
+            &dispatch.session_id,
+            &dispatch.agent_id,
+            active_prompt,
+            queued_prompts,
+        );
+        return Err(error);
+    }
+    Ok(())
+}
+
+pub(super) fn remote_prompt_reconciliation_pending(
+    state: &KernelRuntimeState,
+    dispatch: &crate::app::KernelRemotePromptDispatch,
+) -> Result<bool, DaemonError> {
+    let session = state.owned.session_store.get_session(&dispatch.session_id)?;
+    Ok(state
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &dispatch.agent_id)
+        .filter(|prompt| prompt.id() == dispatch.prompt_id)
+        .is_some_and(|prompt| prompt.durable_delivery_reconciliation_pending()))
+}
+
+fn remote_prompt_reconciliation_pending_error(
+    dispatch: &crate::app::KernelRemotePromptDispatch,
+    detail: &str,
+) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "remote prompt delivery reconciliation pending",
+        message: format!(
+            "Remote delivery of prompt `{}` to worker kernel `{}` is uncertain: {detail}. The same prompt remains active in durable Dispatching state; it was not cancelled, promoted, or replayed. Do not retry until the worker's completed-prompt receipt is reconciled.",
+            dispatch.prompt_id, dispatch.worker_kernel_id
+        ),
+    }
+}
+
+pub(super) fn remote_prompt_error_is_reconciliation_pending(error: &DaemonError) -> bool {
+    matches!(
+        error,
+        DaemonError::LocalTransport {
+            operation: "remote prompt delivery reconciliation pending",
+            ..
+        }
+    )
+}
+
+fn remote_prompt_error_requires_provider_launch_credential(error: &DaemonError) -> bool {
+    matches!(
+        error,
+        DaemonError::RelayTransport { operation, code, .. }
+            if matches!(*operation, "read relay peer response" | "read temporary relay peer response")
+                && code == crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE
+    )
 }
 
 async fn remote_prompt_provider_launch_credential_if_needed(
@@ -187,6 +416,69 @@ fn remote_prompt_transport_retry_window_expired(elapsed: std::time::Duration) ->
     elapsed >= REMOTE_PROMPT_TRANSPORT_RETRY_WINDOW
 }
 
+fn classify_remote_prompt_submission_outcome(
+    result: Result<String, DaemonError>,
+    request_transport_started: bool,
+) -> RemotePromptSubmissionOutcome {
+    match result {
+        Ok(provider_run_id) => RemotePromptSubmissionOutcome::Accepted(provider_run_id),
+        Err(error) if remote_prompt_error_is_known_pre_admission_rejection(&error) => {
+            RemotePromptSubmissionOutcome::RejectedBeforeAdmission(error)
+        }
+        Err(error)
+            if !request_transport_started
+                || remote_prompt_error_is_definitely_pre_send_after_transport_start(&error) =>
+        {
+            RemotePromptSubmissionOutcome::DefinitelyPreSend(error)
+        }
+        Err(error) => RemotePromptSubmissionOutcome::Indeterminate(error),
+    }
+}
+
+fn remote_prompt_error_is_known_pre_admission_rejection(error: &DaemonError) -> bool {
+    let DaemonError::RelayTransport {
+        operation, code, ..
+    } = error
+    else {
+        return false;
+    };
+    matches!(
+        *operation,
+        "read relay peer response" | "read temporary relay peer response"
+    ) && matches!(
+        code.as_str(),
+        crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE
+            | "leased_agent_not_found"
+            | "execution_lease_not_found"
+            | "target_not_connected"
+            | "target_not_allowed"
+            | "action_not_allowed"
+    )
+}
+
+fn remote_prompt_error_is_definitely_pre_send_after_transport_start(error: &DaemonError) -> bool {
+    let operation = match error {
+        DaemonError::LocalTransport { operation, .. }
+        | DaemonError::RelayTransport { operation, .. } => *operation,
+        _ => return false,
+    };
+    matches!(
+        operation,
+        "connect temporary relay peer socket"
+            | "serialize temporary relay register"
+            | "write temporary relay register"
+            | "send relay peer request"
+            | "serialize relay peer request"
+            | "encrypt relay payload"
+            | "get_live_kernel"
+            | "relay_metadata_query"
+            | "connect relay metadata socket"
+            | "write relay metadata request"
+            | "read relay metadata response"
+            | "decode relay metadata response"
+    )
+}
+
 pub(super) fn remote_prompt_unavailable_slice_error(
     slice_store: &crate::slice::SliceStore,
     remote_execution: &crate::agent::RemoteAgentBinding,
@@ -251,13 +543,59 @@ impl KernelRuntimeState {
         >,
         unexpected_response_message: &'static str,
     ) -> Result<String, DaemonError> {
+        let attempt = self
+            .submit_remote_prompt_attempt_raw(
+                dispatch,
+                prompt,
+                attachments,
+                provider_launch_credential,
+                unexpected_response_message,
+            )
+            .await;
+        attempt.result
+    }
+
+    async fn submit_remote_prompt_attempt_with_outcome(
+        &self,
+        dispatch: &crate::app::KernelRemotePromptDispatch,
+        prompt: String,
+        attachments: Vec<crate::transport::relay_peer::RelayPromptAttachment>,
+        provider_launch_credential: Option<
+            crate::transport::relay_peer::RemoteProviderLaunchCredential,
+        >,
+        unexpected_response_message: &'static str,
+    ) -> RemotePromptSubmissionOutcome {
+        let attempt = self
+            .submit_remote_prompt_attempt_raw(
+                dispatch,
+                prompt,
+                attachments,
+                provider_launch_credential,
+                unexpected_response_message,
+            )
+            .await;
+        classify_remote_prompt_submission_outcome(attempt.result, attempt.request_transport_started)
+    }
+
+    async fn submit_remote_prompt_attempt_raw(
+        &self,
+        dispatch: &crate::app::KernelRemotePromptDispatch,
+        prompt: String,
+        attachments: Vec<crate::transport::relay_peer::RelayPromptAttachment>,
+        provider_launch_credential: Option<
+            crate::transport::relay_peer::RemoteProviderLaunchCredential,
+        >,
+        unexpected_response_message: &'static str,
+    ) -> RemotePromptSubmissionAttempt {
         let agent_id = dispatch.agent_id.clone();
         let expected_leased_agent_id = dispatch.leased_agent_id.clone();
         let hidden_system_context = dispatch.hidden_system_context.clone();
         let workflow_context = dispatch.workflow_context.clone();
         let git_context = remote_git_turn_context(dispatch);
         let callback_state = self.clone();
-        self.with_current_remote_extension_manifest(
+        let transport_started = std::sync::Arc::new(AtomicBool::new(false));
+        let mark_transport_started = std::sync::Arc::clone(&transport_started);
+        let result = self.with_current_remote_extension_manifest(
             &agent_id,
             &expected_leased_agent_id,
             move |agent, remote_execution, manifest| async move {
@@ -317,11 +655,10 @@ impl KernelRuntimeState {
                     remote_extension_manifest: manifest,
                     provider_launch_credential,
                 };
-                let response = match callback_state
-                    .connected_relay_state_for_config(&config)
-                    .await
-                {
+                let relay_state = callback_state.connected_relay_state_for_config(&config).await;
+                let response = match relay_state {
                     Some(relay_state) => {
+                        mark_transport_started.store(true, Ordering::Relaxed);
                         crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
                             &config,
                             &relay_state,
@@ -332,6 +669,7 @@ impl KernelRuntimeState {
                         .await
                     }
                     None => {
+                        mark_transport_started.store(true, Ordering::Relaxed);
                         crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
                             &config,
                             target,
@@ -353,10 +691,15 @@ impl KernelRuntimeState {
                 }
             },
         )
-        .await
+        .await;
+        RemotePromptSubmissionAttempt {
+            result,
+            request_transport_started: transport_started.load(Ordering::Relaxed),
+        }
     }
 }
 
+#[cfg(test)]
 fn remote_prompt_dispatch_should_refresh_binding(result: &Result<String, DaemonError>) -> bool {
     let Err(error) = result else {
         return false;
@@ -364,6 +707,7 @@ fn remote_prompt_dispatch_should_refresh_binding(result: &Result<String, DaemonE
     remote_prompt_error_should_refresh_binding(error)
 }
 
+#[cfg(test)]
 fn remote_prompt_dispatch_requires_provider_launch_credential(
     result: &Result<String, DaemonError>,
 ) -> bool {
@@ -484,6 +828,96 @@ fn remote_git_turn_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn classify_error(
+        error: DaemonError,
+        request_transport_started: bool,
+    ) -> RemotePromptSubmissionOutcome {
+        classify_remote_prompt_submission_outcome(Err(error), request_transport_started)
+    }
+
+    #[test]
+    fn remote_prompt_submission_classifies_pre_send_rejection_and_indeterminate_transport() {
+        let definitely_pre_send = classify_error(
+            DaemonError::LocalTransport {
+                operation: "send relay peer request",
+                message: "relay is not connected".to_string(),
+            },
+            true,
+        );
+        assert!(matches!(
+            &definitely_pre_send,
+            RemotePromptSubmissionOutcome::DefinitelyPreSend(error)
+                if remote_prompt_error_should_retry_transport(error)
+        ));
+
+        let known_rejection = classify_error(
+            DaemonError::RelayTransport {
+                operation: "read relay peer response",
+                code: "leased_agent_not_found".to_string(),
+                message: "worker rejected the stale lease before admission".to_string(),
+                retryable: false,
+            },
+            true,
+        );
+        assert!(matches!(
+            known_rejection,
+            RemotePromptSubmissionOutcome::RejectedBeforeAdmission(_)
+        ));
+
+        let relay_admission_rejection = classify_error(
+            DaemonError::RelayTransport {
+                operation: "read relay peer response",
+                code: "target_not_connected".to_string(),
+                message: "target daemon is not connected to relay".to_string(),
+                retryable: true,
+            },
+            true,
+        );
+        assert!(matches!(
+            &relay_admission_rejection,
+            RemotePromptSubmissionOutcome::RejectedBeforeAdmission(error)
+                if remote_prompt_error_should_retry_transport(error)
+        ));
+
+        let response_timeout = classify_error(
+            DaemonError::RelayTransport {
+                operation: "read relay peer response",
+                code: "target_disconnected".to_string(),
+                message: "worker disconnected while awaiting response".to_string(),
+                retryable: true,
+            },
+            true,
+        );
+        assert!(matches!(
+            response_timeout,
+            RemotePromptSubmissionOutcome::Indeterminate(_)
+        ));
+
+        let partial_write = classify_error(
+            DaemonError::LocalTransport {
+                operation: "write temporary relay peer request",
+                message: "connection closed during websocket write".to_string(),
+            },
+            true,
+        );
+        assert!(matches!(
+            partial_write,
+            RemotePromptSubmissionOutcome::Indeterminate(_)
+        ));
+
+        let setup_failure = classify_error(
+            DaemonError::LocalTransport {
+                operation: "prepare remote prompt manifest",
+                message: "local validation failed before network submission".to_string(),
+            },
+            false,
+        );
+        assert!(matches!(
+            setup_failure,
+            RemotePromptSubmissionOutcome::DefinitelyPreSend(_)
+        ));
+    }
 
     #[test]
     fn remote_prompt_dispatch_does_not_refresh_binding_after_worker_timeout() {
