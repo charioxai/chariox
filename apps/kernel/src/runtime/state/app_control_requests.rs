@@ -63,8 +63,22 @@ impl KernelRuntimeState {
         match request {
             LocalDaemonRequest::GetAppWorker(_) => {}
             LocalDaemonRequest::ControlAppWorker(request) => {
-                self.control_app_worker(&owner, &installation, request.action)
+                let started = self
+                    .control_app_worker(&owner, &installation, request.action)
                     .await?;
+                if started {
+                    // The durable claim runs on the owner thread after this
+                    // returns; report the accepted start, not the stale row.
+                    return Ok(LocalDaemonResponse::AppWorker {
+                        worker: AppWorkerSummary {
+                            installation_id: installation,
+                            phase: AppWorkerPhase::Starting,
+                            enabled: true,
+                            failure: None,
+                            updated_at_ms: Some(crate::session::unix_epoch_ms()),
+                        },
+                    });
+                }
             }
             LocalDaemonRequest::ListAppAutomations(_) => {
                 let catalog = self.app_catalog(&owner, &installation).await?;
@@ -139,12 +153,13 @@ impl KernelRuntimeState {
         self.app_worker_summary(owner, installation).await
     }
 
+    /// Returns whether a new start was accepted (an owner thread was spawned).
     async fn control_app_worker(
         &self,
         owner: &str,
         installation: &str,
         action: AppWorkerAction,
-    ) -> Result<(), AppRequestErrorCode> {
+    ) -> Result<bool, AppRequestErrorCode> {
         let lifecycle = self.app_control().lifecycle().clone();
         let (owner, installation) = (owner.to_owned(), installation.to_owned());
         let handle = tokio::runtime::Handle::current();
@@ -154,9 +169,13 @@ impl KernelRuntimeState {
             }
             if matches!(action, AppWorkerAction::Start | AppWorkerAction::Restart) {
                 // An explicit user start re-enables an App after a user stop.
-                lifecycle.start_active_blocking(&owner, &installation, handle)?;
+                let disposition = lifecycle.start_active_blocking(&owner, &installation, handle)?;
+                return Ok(matches!(
+                    disposition,
+                    crate::runtime::app_lifecycle::StartDisposition::Starting { .. }
+                ));
             }
-            Ok::<_, crate::runtime::app_lifecycle::LifecycleError>(())
+            Ok::<_, crate::runtime::app_lifecycle::LifecycleError>(false)
         })
         .await
         .map_err(|_| AppRequestErrorCode::StorageUnavailable)?

@@ -315,6 +315,19 @@ async fn app_worker_and_automation_requests_are_owner_scoped_and_need_no_worker(
         dispatch(&router, &cache, Some("bob"), stop, "stop").await,
         failed(AppRequestErrorCode::NotFound)
     );
+    // An accepted explicit start reports the start, not the user-stopped row
+    // its owner thread has not yet claimed.
+    let start = LocalDaemonRequest::ControlAppWorker(crate::local::ControlAppWorkerRequest {
+        installation_id: "installed".into(),
+        action: crate::local::AppWorkerAction::Start,
+    });
+    let LocalDaemonResponse::AppWorker { worker: starting } =
+        dispatch(&router, &cache, Some("alice"), start, "start").await
+    else {
+        panic!("Alice starts her App")
+    };
+    assert_eq!(starting.phase, AppWorkerPhase::Starting);
+    assert!(starting.enabled);
     // Automations are durable configuration: no running worker is needed.
     let list = LocalDaemonRequest::ListAppAutomations(AppWorkerRequest {
         installation_id: "installed".into(),

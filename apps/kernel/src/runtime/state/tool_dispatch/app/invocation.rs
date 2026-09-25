@@ -103,7 +103,7 @@ const EVICTABLE_IDLE_MS: u64 = 60_000;
 impl KernelRuntimeState {
     /// A dormant (idle-stopped) App starts on its next tool call. Only an App
     /// whose verified catalog is already dormant can be started this way.
-    pub(crate) async fn app_lease_on_demand(
+    async fn app_lease_on_demand(
         &self,
         owner: &str,
         installation: &str,
