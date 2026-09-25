@@ -732,9 +732,62 @@ async fn active_prompt_for(
 }
 
 #[tokio::test]
-async fn ordinary_completion_promotes_workflow_head_through_post_lock_ordered_sender() {
+async fn ordinary_completion_restores_persisted_workflow_ids_before_ordered_dispatch() {
     let mut fixture = room_manifest_fixture().await;
     let ordinary_prompt_id = queue_workflow_successor_after_ordinary_prompt(&fixture).await;
+    let persisted_session = fixture
+        .runtime
+        .owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .expect("session with queued workflow successor should be persisted");
+    let restored_session: crate::session::RuntimeSession = serde_json::from_slice(
+        &serde_json::to_vec(&persisted_session).expect("persisted session should encode"),
+    )
+    .expect("persisted session should restore");
+    let persisted_successor = restored_session
+        .queued_prompts_for_agent(&fixture.agent_id)
+        .and_then(|prompts| prompts.front())
+        .expect("persisted session should retain its queued workflow successor");
+    let expected_workflow_run_id = persisted_successor
+        .workflow_run_id()
+        .expect("persisted workflow successor should retain its run id")
+        .to_string();
+    let expected_workflow_node_run_id = persisted_successor
+        .workflow_node_run_id()
+        .expect("persisted workflow successor should retain its node run id")
+        .to_string();
+
+    let mut empty_prompt_state = restored_session.clone();
+    empty_prompt_state.mirror_agent_prompt_state(
+        &fixture.agent_id,
+        None,
+        std::collections::VecDeque::new(),
+    );
+    fixture
+        .runtime
+        .owned
+        .prompt_state_owner
+        .restore_session_state(&empty_prompt_state);
+    fixture
+        .runtime
+        .owned
+        .prompt_state_owner
+        .restore_session_state(&restored_session);
+    let restored_successor = fixture
+        .runtime
+        .owned
+        .prompt_state_owner
+        .peek_next_queued_prompt(&restored_session, &fixture.agent_id)
+        .expect("workflow successor should be restored before promotion");
+    assert_eq!(
+        restored_successor.workflow_run_id(),
+        Some(expected_workflow_run_id.as_str())
+    );
+    assert_eq!(
+        restored_successor.workflow_node_run_id(),
+        Some(expected_workflow_node_run_id.as_str())
+    );
     let lane = fixture
         .runtime
         .leased_agent_operations
@@ -757,7 +810,7 @@ async fn ordinary_completion_promotes_workflow_head_through_post_lock_ordered_se
     let (request_id, request) = next_peer_request(&mut fixture).await;
     let crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt {
         prompt,
-        workflow_context,
+        workflow_context: Some(workflow_context),
         git_context,
         ..
     } = request
@@ -765,13 +818,57 @@ async fn ordinary_completion_promotes_workflow_head_through_post_lock_ordered_se
         panic!("expected promoted workflow prompt on the ordered sender");
     };
     assert_eq!(prompt, "workflow successor");
-    assert!(workflow_context.is_some());
+    assert_eq!(
+        workflow_context.workflow_run_id,
+        expected_workflow_run_id,
+        "successor dispatch should restore its persisted workflow run id"
+    );
+    assert_eq!(
+        workflow_context.workflow_node_run_id,
+        expected_workflow_node_run_id,
+        "successor dispatch should restore its persisted workflow node run id"
+    );
     assert_eq!(
         git_context
             .as_ref()
             .and_then(|context| context.home_prompt_id.as_deref()),
         Some(promoted.id())
     );
+
+    let app_lock_read = fixture
+        .runtime
+        .with_app_side_effect(|app| app.config().daemon_id.clone());
+    let daemon_id = tokio::time::timeout(std::time::Duration::from_secs(2), app_lock_read)
+        .await
+        .expect("relay round-trip must not retain the app mutex");
+    assert!(!daemon_id.is_empty());
+
+    let slice = create_room_slice(&fixture.runtime, "room-manifest-during-workflow-dispatch");
+    let manifest_waiting = fixture
+        .runtime
+        .leased_agent_operations
+        .notify_on_next_acquire_for_tests("leased-agent-1");
+    fixture
+        .runtime
+        .bind_room_environment_slice(
+            crate::local::BindRoomEnvironmentSliceRequest {
+                session_id: fixture.session_id.clone(),
+                slice_ref: slice.id,
+            },
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        )
+        .expect("Room bind should enqueue manifest sync during the pending relay request");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        manifest_waiting.notified(),
+    )
+    .await
+    .expect("manifest sync should queue behind the ordered prompt relay round-trip");
+    assert!(
+        fixture.priority_rx.try_recv().is_err(),
+        "manifest sync must not overtake the pending workflow prompt request"
+    );
+
     acknowledge_peer_response(
         &fixture,
         request_id,
@@ -800,6 +897,10 @@ async fn ordinary_completion_promotes_workflow_head_through_post_lock_ordered_se
     })
     .await
     .expect("ordered sender should settle the promoted workflow prompt");
+
+    let (manifest_request_id, manifest) = next_manifest_update(&mut fixture).await;
+    assert!(manifest.room_browser_available);
+    acknowledge_manifest_update(&fixture, manifest_request_id).await;
 }
 
 #[tokio::test]
