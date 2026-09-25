@@ -1657,6 +1657,22 @@ Workflow trigger and deployment direction:
   the bound home agent, leased agent, and worker provider run. Calls carrying a
   settled home prompt ID cannot message another agent. The local
   client shape is unchanged, so web and native minimum versions do not change.
+- protocol 344 adds the Claude `setup_token` value for `StartProviderLogin.method`.
+  The kernel runs the official `claude setup-token` command as a managed
+  terminal login whose `ProviderLoginStart.login_kind` is
+  `terminal_setup_token`. The kernel captures the printed token from the PTY
+  and stores it through the same vault path as `provider setup-token`. Before
+  output is recorded, the kernel replaces every `sk-ant-` credential run with a
+  marker. A run that may continue in the next PTY chunk is withheld until it
+  resolves, so `terminal_output_base64` never carries the token. If the
+  encrypted Chariox Vault is locked, the workflow stays `running` and its
+  `interaction` becomes a secret vault-passphrase prompt. The next
+  `SendProviderLoginInput` is consumed as that passphrase, not written to the
+  exited provider CLI. A wrong passphrase keeps the prompt open; the normal
+  10-minute workflow timeout and cancellation discard the captured token. The
+  message shapes are unchanged. A client that offers the method requires
+  kernel 344. Older kernels reject it through the normal enrollment-method
+  validation.
 - relay peer protocol 57 requires a worker capable of supplying the originating
   turn for `chariox.send_agent_message`. A new home kernel rejects a v56 worker
   at peer binding before provider dispatch rather than failing on a missing

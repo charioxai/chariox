@@ -16,6 +16,10 @@ use crate::runtime::state::KernelRuntimeState;
 
 const PROVIDER_LOGIN_MONITOR_INTERVAL: std::time::Duration =
     std::time::Duration::from_millis(1_500);
+pub(crate) const CLAUDE_SETUP_TOKEN_METHOD: &str = "setup_token";
+/// Ink wraps at the terminal width; the sign-in URL and the printed token must
+/// each stay on one line so the URL is usable and the token is captured whole.
+const CLAUDE_SETUP_TOKEN_TERMINAL_COLUMNS: u16 = 1_000;
 pub(crate) async fn execute_provider_auth_request(
     runtime_state: &KernelRuntimeState,
     owner_user_id: &str,
@@ -148,13 +152,18 @@ async fn start_terminal_provider_auth(
             .to_lowercase()
     );
     let now_ms = crate::session::unix_epoch_ms();
+    let setup_token = provider == "claude" && method.as_deref() == Some(CLAUDE_SETUP_TOKEN_METHOD);
     let workflow = ProviderLoginStart {
         provider: provider.to_string(),
         account_profile: profile.profile_id.clone(),
-        login_kind: if operation == crate::runtime::state::ProviderAuthProcessOperation::Login {
-            "terminal".to_string()
-        } else {
-            "terminal_logout".to_string()
+        login_kind: match operation {
+            crate::runtime::state::ProviderAuthProcessOperation::Login if setup_token => {
+                "terminal_setup_token".to_string()
+            }
+            crate::runtime::state::ProviderAuthProcessOperation::Login => "terminal".to_string(),
+            crate::runtime::state::ProviderAuthProcessOperation::Logout => {
+                "terminal_logout".to_string()
+            }
         },
         login_id: Some(login_id.clone()),
         auth_url: None,
@@ -198,6 +207,7 @@ async fn start_terminal_provider_auth(
             state: ProviderLoginProcessState::Running,
             backend: crate::runtime::state::ProviderLoginProcessBackend::Terminal,
             operation,
+            setup_token: setup_token.then(crate::runtime::state::ClaudeSetupTokenLogin::default),
             output: Vec::new(),
             started_at_ms: now_ms,
             updated_at_ms: now_ms,
@@ -213,7 +223,11 @@ async fn start_terminal_provider_auth(
                 env: launch.pty_env,
                 env_remove,
                 working_directory: launch.working_directory,
-                cols: 120,
+                cols: if setup_token {
+                    CLAUDE_SETUP_TOKEN_TERMINAL_COLUMNS
+                } else {
+                    120
+                },
                 rows: 40,
             })
         })
@@ -240,6 +254,11 @@ fn terminal_provider_auth_args(
     method: Option<&str>,
 ) -> Vec<String> {
     match (provider, operation, method) {
+        (
+            "claude",
+            crate::runtime::state::ProviderAuthProcessOperation::Login,
+            Some(CLAUDE_SETUP_TOKEN_METHOD),
+        ) => vec!["setup-token".to_string()],
         (
             "opencode",
             crate::runtime::state::ProviderAuthProcessOperation::Login,
@@ -328,6 +347,11 @@ pub(crate) async fn execute_get_provider_login_status_request(
             now_ms,
         )?;
         return Ok(LocalDaemonResponse::ProviderLoginStatus { login });
+    }
+    if record.awaits_vault_passphrase() {
+        return Ok(LocalDaemonResponse::ProviderLoginStatus {
+            login: record.status(),
+        });
     }
     if record.backend == crate::runtime::state::ProviderLoginProcessBackend::CodexAppServer {
         let registry = runtime_state.provider_account_profile_registry().clone();
@@ -420,6 +444,17 @@ pub(crate) async fn execute_get_provider_login_status_request(
         chunks.into_iter().map(|chunk| chunk.bytes),
         crate::session::unix_epoch_ms(),
     )?;
+    if record.setup_token.is_some() {
+        let login = reconcile_claude_setup_token_login(
+            runtime_state,
+            owner_user_id,
+            &record,
+            process_state.is_exited(),
+            status,
+        )
+        .await?;
+        return Ok(LocalDaemonResponse::ProviderLoginStatus { login });
+    }
     if process_state.is_exited() && status.state == ProviderLoginProcessState::Running {
         let registry = runtime_state.provider_account_profile_registry().clone();
         let owner = owner_user_id.to_string();
@@ -505,6 +540,145 @@ pub(crate) async fn execute_get_provider_login_status_request(
             .await;
     }
     Ok(LocalDaemonResponse::ProviderLoginStatus { login: status })
+}
+
+/// Finishes `claude setup-token` once it printed its token or exited. The token
+/// is taken from the redacting output filter and never enters projected output.
+async fn reconcile_claude_setup_token_login(
+    runtime_state: &KernelRuntimeState,
+    owner_user_id: &str,
+    record: &crate::runtime::state::ProviderLoginProcessRecord,
+    exited: bool,
+    status: crate::local::ProviderLoginStatus,
+) -> Result<crate::local::ProviderLoginStatus, DaemonError> {
+    let store = runtime_state.provider_login_process_store();
+    if !exited
+        && store
+            .setup_token_secret(owner_user_id, &record.login_id)?
+            .is_none()
+    {
+        return Ok(status);
+    }
+    let remaining = runtime_state
+        .with_app_side_effect(|app| app.pty_mut().drain_output(&record.login_id))
+        .await
+        .unwrap_or_default();
+    let now_ms = crate::session::unix_epoch_ms();
+    store.append_output(
+        owner_user_id,
+        &record.login_id,
+        remaining.into_iter().map(|chunk| chunk.bytes),
+        now_ms,
+    )?;
+    let _ = runtime_state
+        .with_app_side_effect(|app| app.pty_mut().remove_process(&record.login_id))
+        .await;
+    store.finish_setup_token_output(owner_user_id, &record.login_id, now_ms)?;
+    let Some(token) = store.setup_token_secret(owner_user_id, &record.login_id)? else {
+        store.append_output(
+            owner_user_id,
+            &record.login_id,
+            std::iter::once(b"\nClaude setup-token exited without printing a token.\n".to_vec()),
+            now_ms,
+        )?;
+        return store.set_state(
+            owner_user_id,
+            &record.login_id,
+            ProviderLoginProcessState::Failed,
+            now_ms,
+        );
+    };
+    store_claude_setup_token_login(runtime_state, owner_user_id, record, token, None).await
+}
+
+async fn store_claude_setup_token_login(
+    runtime_state: &KernelRuntimeState,
+    owner_user_id: &str,
+    record: &crate::runtime::state::ProviderLoginProcessRecord,
+    token: zeroize::Zeroizing<String>,
+    passphrase: Option<zeroize::Zeroizing<String>>,
+) -> Result<crate::local::ProviderLoginStatus, DaemonError> {
+    let store = runtime_state.provider_login_process_store();
+    let entered_passphrase = passphrase.is_some();
+    let outcome = runtime_state
+        .store_claude_setup_token(owner_user_id, &record.account_profile, token, passphrase)
+        .await;
+    let now_ms = crate::session::unix_epoch_ms();
+    let message = match outcome {
+        Ok(crate::runtime::state::ClaudeSetupTokenStoreOutcome::VaultPassphraseRequired(
+            prompt,
+        )) => {
+            return store.await_vault_passphrase(owner_user_id, &record.login_id, prompt, now_ms);
+        }
+        Err(error) if entered_passphrase => {
+            return store.append_output(
+                owner_user_id,
+                &record.login_id,
+                std::iter::once(
+                    format!("\nChariox Vault unlock failed: {error}\nEnter the passphrase again.\n")
+                        .into_bytes(),
+                ),
+                now_ms,
+            );
+        }
+        Err(error) => {
+            store.append_output(
+                owner_user_id,
+                &record.login_id,
+                std::iter::once(
+                    format!("\nStoring the Claude setup token failed: {error}\n").into_bytes(),
+                ),
+                now_ms,
+            )?;
+            return store.set_state(
+                owner_user_id,
+                &record.login_id,
+                ProviderLoginProcessState::Failed,
+                now_ms,
+            );
+        }
+        Ok(crate::runtime::state::ClaudeSetupTokenStoreOutcome::Stored) => {
+            "\nClaude setup token stored in the Chariox Vault. Unattended agents can now use this account.\n"
+        }
+    };
+    store.append_output(
+        owner_user_id,
+        &record.login_id,
+        std::iter::once(message.as_bytes().to_vec()),
+        now_ms,
+    )?;
+    let registry = runtime_state.provider_account_profile_registry().clone();
+    let owner = owner_user_id.to_string();
+    let profile = record.account_profile.clone();
+    let refreshed = tokio::task::spawn_blocking(move || {
+        crate::local::provider_requests::refresh_provider_account_profile_response(
+            &registry, &owner, "claude", &profile,
+        )
+    })
+    .await
+    .map_err(|error| provider_auth_task_error("refresh Claude setup-token account", error))?;
+    if let Err(error) = refreshed {
+        crate::logging::warn_with_fields(
+            "provider.account",
+            "Claude account refresh after storing a setup token failed",
+            serde_json::json!({
+                "account_profile": record.account_profile,
+                "login_id": record.login_id,
+                "error": error.to_string(),
+            }),
+        );
+    }
+    let login = store.set_state(
+        owner_user_id,
+        &record.login_id,
+        ProviderLoginProcessState::Succeeded,
+        now_ms,
+    )?;
+    runtime_state
+        .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
+        .await;
+    runtime_state.record_waiting_room_change();
+    Ok(login)
 }
 
 fn provider_auth_process_succeeded(
@@ -602,11 +776,34 @@ pub(crate) async fn execute_send_provider_login_input_request(
             "Codex device login does not accept terminal input",
         ));
     }
-    let data = base64::engine::general_purpose::STANDARD
-        .decode(request.data_base64.as_bytes())
-        .map_err(|_| provider_login_error("provider login input is not valid base64"))?;
+    let data = zeroize::Zeroizing::new(
+        base64::engine::general_purpose::STANDARD
+            .decode(request.data_base64.as_bytes())
+            .map_err(|_| provider_login_error("provider login input is not valid base64"))?,
+    );
     if data.len() > 8 * 1024 {
         return Err(provider_login_error("provider login input is too large"));
+    }
+    if record.awaits_vault_passphrase() {
+        let passphrase = std::str::from_utf8(&data)
+            .map_err(|_| provider_login_error("Chariox Vault passphrase must be UTF-8"))?
+            .trim_end_matches(['\r', '\n']);
+        let token = runtime_state
+            .provider_login_process_store()
+            .setup_token_secret(owner_user_id, &request.login_id)?
+            .ok_or_else(|| provider_login_error("the Claude setup token is no longer available"))?;
+        store_claude_setup_token_login(
+            runtime_state,
+            owner_user_id,
+            &record,
+            token,
+            Some(zeroize::Zeroizing::new(passphrase.to_string())),
+        )
+        .await?;
+        return Ok(LocalDaemonResponse::ProviderLoginInputSent {
+            login_id: request.login_id,
+            byte_count: data.len(),
+        });
     }
     runtime_state
         .with_app_side_effect(|app| app.pty_mut().write_input(&request.login_id, &data))
@@ -727,6 +924,7 @@ pub(crate) async fn execute_start_provider_login_request(
                     state: ProviderLoginProcessState::Running,
                     backend: crate::runtime::state::ProviderLoginProcessBackend::CodexAppServer,
                     operation: crate::runtime::state::ProviderAuthProcessOperation::Login,
+                    setup_token: None,
                     output: Vec::new(),
                     started_at_ms: now_ms,
                     updated_at_ms: now_ms,
@@ -913,6 +1111,24 @@ mod tests {
                 "--method",
                 "API key"
             ]
+        );
+    }
+
+    #[test]
+    fn claude_setup_token_method_runs_the_provider_setup_token_command() {
+        use crate::runtime::state::ProviderAuthProcessOperation;
+
+        assert_eq!(
+            terminal_provider_auth_args(
+                "claude",
+                ProviderAuthProcessOperation::Login,
+                Some(super::CLAUDE_SETUP_TOKEN_METHOD),
+            ),
+            ["setup-token"]
+        );
+        assert_eq!(
+            terminal_provider_auth_args("claude", ProviderAuthProcessOperation::Login, None),
+            ["auth", "login"]
         );
     }
 

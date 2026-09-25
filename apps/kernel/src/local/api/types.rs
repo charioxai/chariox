@@ -100,4 +100,5 @@ pub use workspace::*;
 /// Version 342 carries the create-selected trusted managed repository root and
 /// returns the persisted root in managed-environment summaries.
 /// Version 343 carries the originating home prompt in forwarded worker tool context.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 343;
+/// Version 344 adds the Claude `setup_token` provider login method.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 344;

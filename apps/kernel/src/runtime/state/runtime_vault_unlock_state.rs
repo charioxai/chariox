@@ -679,7 +679,7 @@ fn vault_unlock_request_lock(path: &std::path::Path) -> std::sync::Arc<tokio::sy
         .clone()
 }
 
-fn expand_vault_path(path: &str) -> std::path::PathBuf {
+pub(super) fn expand_vault_path(path: &str) -> std::path::PathBuf {
     if path == "~" {
         if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
             return home;
