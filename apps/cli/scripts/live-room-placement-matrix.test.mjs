@@ -29,6 +29,15 @@ test("matrix config requires the six exact placement roles without substitution"
   const remoteHome = structuredClone(config)
   remoteHome.homeKernel.url = "wss://kernel.example.invalid"
   assertRejects(() => validateRoomPlacementMatrixConfig(remoteHome), /local Unix socket or loopback kernel/)
+
+  const rowSixHomeKernel = structuredClone(config)
+  rowSixHomeKernel.rows[5].agentPlacement = {
+    kind: "kernel_ref",
+    kernelRef: rowSixHomeKernel.homeKernel.kernelId,
+  }
+  rowSixHomeKernel.rows[5].agentWorkerKernelId = rowSixHomeKernel.homeKernel.kernelId
+  rowSixHomeKernel.rows[5].agentWorkerMachineId = rowSixHomeKernel.homeKernel.machineId
+  assertRejects(() => validateRoomPlacementMatrixConfig(rowSixHomeKernel), /must select a non-home remote worker/)
 })
 
 test("all six placement proofs validate while acceptance-only gates remain explicitly unexecuted", () => {

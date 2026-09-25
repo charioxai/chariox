@@ -114,7 +114,9 @@ function validateRowConfig(row, spec, home) {
     } else {
       assert.equal(placement.kernelRef, row.agentWorkerKernelId)
       assert.notEqual(row.agentWorkerKernelId, row.environmentWorkerKernelId,
-      `${spec.id} remote agent must differ from the Environment worker`)
+        `${spec.id} remote agent must differ from the Environment worker`)
+      assert.notEqual(row.agentWorkerKernelId, home.kernelId,
+        `${spec.id} must select a non-home remote worker`)
     }
   }
   if (placement.kind !== "slice_ref") {
