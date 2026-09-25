@@ -641,7 +641,7 @@ async fn assert_remote_native_terminal_resize(
 #[test]
 fn remote_machine_agents_execute_prompts_through_the_home_session() {
     run_async_with_large_test_stack("remote-agents-execute-prompts", || {
-        remote_machine_agents_execute_prompts_through_the_home_session_async(false, false, false, false)
+        remote_machine_agents_execute_prompts_through_the_home_session_async(false, false, false, false, false)
     });
 }
 
@@ -650,7 +650,7 @@ fn remote_agent_message_steers_live_worker_without_a_user_queue() {
     // Fixed worker IDs must not retain the previous fixture's generated trust key.
     for _ in 0..2 {
         run_async_with_large_test_stack("remote-agent-direct-message", || {
-            remote_machine_agents_execute_prompts_through_the_home_session_async(true, false, false, false)
+            remote_machine_agents_execute_prompts_through_the_home_session_async(true, false, false, false, false)
         });
     }
 }
@@ -658,21 +658,28 @@ fn remote_agent_message_steers_live_worker_without_a_user_queue() {
 #[test]
 fn remote_agent_message_steer_keeps_home_app_lock_available_while_worker_reply_waits() {
     run_async_with_large_test_stack("remote-agent-message-home-lock", || {
-        remote_machine_agents_execute_prompts_through_the_home_session_async(true, true, false, false)
+        remote_machine_agents_execute_prompts_through_the_home_session_async(true, true, false, false, false)
     });
 }
 
 #[test]
 fn remote_agent_message_reply_after_target_completion_does_not_commit_stale_steer() {
     run_async_with_large_test_stack("remote-agent-message-stale-reply", || {
-        remote_machine_agents_execute_prompts_through_the_home_session_async(true, true, false, true)
+        remote_machine_agents_execute_prompts_through_the_home_session_async(true, true, false, true, false)
     });
 }
 
 #[test]
 fn remote_queued_prompt_steer_reserves_queue_head_and_keeps_home_lock_available_while_worker_reply_waits() {
     run_async_with_large_test_stack("remote-queued-steer-home-lock", || {
-        remote_machine_agents_execute_prompts_through_the_home_session_async(false, false, true, false)
+        remote_machine_agents_execute_prompts_through_the_home_session_async(false, false, true, false, false)
+    });
+}
+
+#[test]
+fn failed_remote_queued_prompt_steer_advances_after_concurrent_completion() {
+    run_async_with_large_test_stack("remote-queued-steer-failed-advance", || {
+        remote_machine_agents_execute_prompts_through_the_home_session_async(false, false, true, false, true)
     });
 }
 
@@ -681,6 +688,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
     hold_agent_message_reply: bool,
     hold_queued_prompt_reply: bool,
     finish_target_before_direct_reply: bool,
+    fail_queued_prompt_reply: bool,
 ) {
     let _relay_test_guard = relay_client_test_guard().await;
     let _test_home = RelayTestHome::new();
@@ -1263,7 +1271,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
         KernelCommand::from_local_request("command-remote-queued-steer", None, None, &request);
     let response = if hold_queued_prompt_reply {
         let pending_before = registry.read().await.pending_request_count();
-        let worker_app_guard = app_worker.lock().await;
+        let mut worker_app_guard = app_worker.lock().await;
         let dispatch_router = Arc::clone(&router);
         let dispatch = tokio::spawn(async move { dispatch_router.dispatch(command, request).await });
         let relay_reply_is_waiting = tokio::time::timeout(Duration::from_secs(2), async {
@@ -1318,11 +1326,34 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                 .expect("ordinary completion advancement should inspect the queue");
             queue_advance_deferred &= next.is_none();
         }
+        if fail_queued_prompt_reply {
+            assert!(
+                relay_reply_is_waiting,
+                "the worker request must be held before injecting its rejection"
+            );
+            let leased_agent = RemoteLeaseRuntime::new(&mut worker_app_guard)
+                .leased_agent_snapshot_for_test(&leased_agent_id)
+                .expect("worker leased agent should remain available");
+            worker_app_guard
+                .providers_mut()
+                .terminate_run_provider_only(
+                    &leased_agent.backing_session_id,
+                    &worker_provider_run_id,
+                )
+                .expect("the held worker run should terminate for explicit rejection");
+            assert_eq!(
+                worker_app_guard
+                    .providers()
+                    .get_run(&worker_provider_run_id)
+                    .expect("terminated worker run should remain recorded")
+                    .state(),
+                crate::provider::ProviderRunState::Ended
+            );
+        }
         drop(worker_app_guard);
-        let response = dispatch
+        let dispatch_result = dispatch
             .await
-            .expect("queued steer dispatch task should join")
-            .expect("remote queued prompt should steer through the worker");
+            .expect("queued steer dispatch task should join");
         assert!(relay_reply_is_waiting, "worker reply should be held by its app lock");
         assert!(
             home_app_lock_available,
@@ -1332,7 +1363,80 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
             queue_advance_deferred,
             "ordinary completion must leave the reserved queued prompt for the steer reply"
         );
-        response
+        if fail_queued_prompt_reply {
+            let rejection = match dispatch_result {
+                Err(DaemonError::RelayTransport {
+                    operation: "read temporary relay peer response",
+                    code,
+                    retryable: false,
+                    ..
+                }) => code,
+                other => panic!("expected a terminal explicit worker rejection, got {other:?}"),
+            };
+            assert_eq!(
+                rejection, "no_active_provider_run",
+                "the worker must return its validated terminal rejection code"
+            );
+            let mut worker_queue_count = 0;
+            for _ in 0..80 {
+                worker_queue_count = {
+                    let mut worker = app_worker.lock().await;
+                    let leased_agent = RemoteLeaseRuntime::new(&mut worker)
+                        .leased_agent_snapshot_for_test(&leased_agent_id)
+                        .expect("worker leased agent should remain available");
+                    worker
+                        .prompt_owner_queued_prompt_count_for_agent(
+                            &leased_agent.backing_session_id,
+                            &leased_agent.backing_agent_id,
+                        )
+                        .expect("worker prompt queue should load")
+                };
+                if worker_queue_count == 1 {
+                    break;
+                }
+                sleep(Duration::from_millis(25)).await;
+            }
+            assert_eq!(
+                worker_queue_count, 1,
+                "the rejected steer must be admitted once as an ordinary worker prompt"
+            );
+            let (active_prompt, queued_count) = {
+                let mut app = app_home.lock().await;
+                let active = app
+                    .prompt_owner_active_prompt_for_agent(&session_id, &remote_agent_id)
+                    .expect("home active prompt should load");
+                let queued = app
+                    .prompt_owner_queued_prompt_count_for_agent(&session_id, &remote_agent_id)
+                    .expect("home prompt queue should load");
+                (active, queued)
+            };
+            let active_prompt = active_prompt.expect("ordinary queue advancement should start");
+            assert_eq!(active_prompt.prompt(), "REMOTE_QUEUE_STEER_DELIVERY\n");
+            assert_eq!(active_prompt.pending_prompt_id(), Some(queued_prompt_id.as_str()));
+            assert_eq!(queued_count, 0, "the head must be removed from the queue once");
+            let steer_deliveries = app_worker
+                .lock()
+                .await
+                .terminal()
+                .input_records()
+                .into_iter()
+                .filter(|record| {
+                    String::from_utf8_lossy(&record.bytes).contains("REMOTE_QUEUE_STEER_DELIVERY")
+                })
+                .count();
+            assert_eq!(
+                steer_deliveries, 0,
+                "a rejected steer must not also be recorded as a steer delivery"
+            );
+            let _ = shutdown_home_tx.send(true);
+            let _ = shutdown_worker_tx.send(true);
+            connector_home.await.expect("home connector should join");
+            connector_worker.await.expect("worker connector should join");
+            let _ = server_shutdown_tx.send(());
+            server_task.await.expect("server task should join");
+            return;
+        }
+        dispatch_result.expect("remote queued prompt should steer through the worker")
     } else {
         router
             .dispatch(command, request)
