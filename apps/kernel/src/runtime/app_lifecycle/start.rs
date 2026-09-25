@@ -1,11 +1,10 @@
 //! Restart-time package verification and physical worker preparation. All paths
 //! derive from kernel/installer state; no client may choose a native program.
 use super::*;
+use crate::durable_state::app_active_release::{ActiveRelease, ActiveReleaseError};
 use crate::runtime::app_worker::{ActivatedApp, AppWorkerOwner, RegisteredAppWorker};
-use chariox_app_package::{verify, VerificationPolicy, VerifiedPackage};
+use chariox_app_package::VerifiedPackage;
 use chariox_app_runtime::{
-    app_catalog::AppCatalog,
-    app_outbox::EventCatalog,
     installation::StageTrustBinding,
     publisher_trust::TrustedPublisherSnapshot,
     release_store::{ReleaseStore, VerifiedReleaseLease},
@@ -93,31 +92,18 @@ pub(super) fn register(
     mut check: impl FnMut() -> Result<()>,
 ) -> Result<RegisteredStart> {
     check()?;
-    let releases = ReleaseStore::open_or_create(context.store.path())
-        .map_err(|_| LifecycleError::Preparation)?;
-    let mut stored = releases
-        .open_stored_archive(binding.package_digest())
-        .map_err(|_| LifecycleError::Preparation)?;
-    let bytes = stored
-        .read_bytes()
+    let active = ActiveRelease::load(context.store.path(), binding.clone(), trust.clone())
         .map_err(|_| LifecycleError::Preparation)?;
     budget.check().map_err(|_| LifecycleError::Stopped)?;
-    let verified = verify(
-        &bytes,
-        &VerificationPolicy::new(
-            crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
-            vec![trust.publisher().clone()],
-        ),
-    )
-    .map_err(|_| LifecycleError::Preparation)?;
-    let catalog = Arc::new(
-        AppCatalog::compile(&verified, binding, trust).map_err(|_| LifecycleError::Authority)?,
-    );
-    let events = Arc::new(
-        EventCatalog::compile(&verified, catalog).map_err(|_| LifecycleError::Preparation)?,
-    );
-    let release = releases
-        .lease_verified(&verified, &bytes)
+    let verified = active.verify().map_err(|_| LifecycleError::Preparation)?;
+    let events = active
+        .event_catalog(&verified)
+        .map_err(|error| match error {
+            ActiveReleaseError::Untrusted => LifecycleError::Authority,
+            _ => LifecycleError::Preparation,
+        })?;
+    let release = ReleaseStore::open_or_create(context.store.path())
+        .and_then(|releases| releases.lease_verified(&verified, active.bytes()))
         .map_err(|_| LifecycleError::Preparation)?;
     check()?;
     let prepared = spawn(context, binding, &verified, release)?;

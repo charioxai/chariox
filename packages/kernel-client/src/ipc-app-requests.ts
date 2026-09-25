@@ -57,3 +57,32 @@ export function getAppInstallOperationRequest(requestId: string) {
 export function cancelAppInstallOperationRequest(requestId: string) {
   return { CancelAppInstallOperation: { request_id: requestId } }
 }
+
+export function getAppWorkerRequest(installationId: string) {
+  return { GetAppWorker: { installation_id: installationId } }
+}
+
+export function controlAppWorkerRequest(installationId: string, action: "start" | "stop" | "restart") {
+  return { ControlAppWorker: { installation_id: installationId, action } }
+}
+
+export function listAppAutomationsRequest(installationId: string) {
+  return { ListAppAutomations: { installation_id: installationId } }
+}
+
+/** Expected revision zero creates the automation; replacements name the current revision. */
+export function configureAppAutomationRequest(options: {
+  installationId: string; automationId: string; expectedRevision: number; eventName: string;
+  sessionId: string; publicationRef: string; queueRef?: string; scheduled?: boolean;
+}) {
+  return { ConfigureAppAutomation: {
+    installation_id: options.installationId, automation_id: options.automationId,
+    expected_revision: options.expectedRevision, event_name: options.eventName,
+    session_id: options.sessionId, publication_ref: options.publicationRef,
+    queue_ref: options.queueRef ?? null, scheduled: options.scheduled ?? false,
+  } }
+}
+
+export function disableAppAutomationRequest(installationId: string, automationId: string, expectedRevision: number) {
+  return { DisableAppAutomation: { installation_id: installationId, automation_id: automationId, expected_revision: expectedRevision } }
+}

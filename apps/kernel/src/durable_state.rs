@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::DaemonError;
 
 pub(crate) mod app_activation;
+pub(crate) mod app_active_release;
 pub(crate) mod app_automations;
 pub(crate) mod app_bindings;
 pub(crate) mod app_event_delivery;

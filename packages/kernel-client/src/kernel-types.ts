@@ -1,4 +1,4 @@
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 344
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 345
 
 export type * from "./kernel-types-apps.js"
 

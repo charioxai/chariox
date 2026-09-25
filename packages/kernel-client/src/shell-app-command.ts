@@ -1,9 +1,18 @@
-import { getAppInstallationJournalRequest, getAppInstallationRequest, listAppInstallationsRequest } from "./ipc-app-requests.js"
-import type { AppInstallationSummary, AppUpdateSummary } from "./kernel-types-apps.js"
+import {
+  configureAppAutomationRequest, controlAppWorkerRequest, disableAppAutomationRequest, getAppInstallationJournalRequest,
+  getAppInstallationRequest, getAppWorkerRequest, listAppAutomationsRequest, listAppInstallationsRequest,
+} from "./ipc-app-requests.js"
+import type { AppAutomationSummary, AppInstallationSummary, AppUpdateSummary, AppWorkerSummary } from "./kernel-types-apps.js"
 import type { ShellCommandResult } from "./shell-core.js"
 
 type Client = { send(request: Record<string, unknown>): Promise<Record<string, unknown>> }
-const usage = "usage: app list [--after <installation-id>] [--limit <1..100>] | status <installation-id> | journal <installation-id>"
+const usage = [
+  "usage: app list [--after <installation-id>] [--limit <1..100>] | status <installation-id> | journal <installation-id>",
+  "       app worker <installation-id> | start <installation-id> | stop <installation-id> | restart <installation-id>",
+  "       app automation list <installation-id>",
+  "       app automation add <installation-id> <automation-id> <event> <session-id> <workflow> [--queue <queue>] [--scheduled] [--revision <n>]",
+  "       app automation disable <installation-id> <automation-id> <revision>",
+].join("\n")
 
 export async function executeAppCommand(args: string[], client: Client): Promise<ShellCommandResult> {
   const [action = "list", ...rest] = args
@@ -21,6 +30,14 @@ export async function executeAppCommand(args: string[], client: Client): Promise
     request = listAppInstallationsRequest(options)
   } else if ((action === "status" || action === "journal") && rest.length === 1 && rest[0]) {
     request = action === "status" ? getAppInstallationRequest(rest[0]) : getAppInstallationJournalRequest(rest[0])
+  } else if (action === "worker" && rest.length === 1 && rest[0]) {
+    request = getAppWorkerRequest(rest[0])
+  } else if ((action === "start" || action === "stop" || action === "restart") && rest.length === 1 && rest[0]) {
+    request = controlAppWorkerRequest(rest[0], action)
+  } else if (action === "automation") {
+    const parsed = automationRequest(rest)
+    if (!parsed) return { ok: false, message: usage }
+    request = parsed
   } else return { ok: false, message: usage }
 
   const response = await client.send(request)
@@ -28,10 +45,14 @@ export async function executeAppCommand(args: string[], client: Client): Promise
   if (failure) {
     const messages: Record<string, string> = {
       unauthorized: "This connection is not authorized to access Apps.",
-      not_found: "App installation not found.",
+      not_found: action === "automation"
+        ? "Not found: check the App installation, session, workflow or automation."
+        : "App installation not found.",
       invalid_request: "Invalid App request.",
       busy: "App requests are busy. Try again shortly.",
       storage_unavailable: "App storage is unavailable.",
+      conflict: "The request conflicts with the App's current state (for example a stale revision). Refresh and try again.",
+      limit_exceeded: "An App limit was reached.",
     }
     return { ok: false, message: messages[failure.code ?? ""] ?? "App request failed.", data: failure }
   }
@@ -45,12 +66,62 @@ export async function executeAppCommand(args: string[], client: Client): Promise
     const data = expect<{ installation: AppInstallationSummary }>(response, "AppInstallation")
     return { ok: true, message: formatInstallation(data.installation), data }
   }
+  if (response.AppWorker) {
+    const data = expect<{ worker: AppWorkerSummary }>(response, "AppWorker")
+    return { ok: true, message: formatWorker(data.worker), data }
+  }
+  if (response.AppAutomations) {
+    const data = expect<{ installation_id: string; automations: AppAutomationSummary[] }>(response, "AppAutomations")
+    return { ok: true, message: data.automations.map(formatAutomation).join("\n") || "No App automations.", data }
+  }
+  if (response.AppAutomation) {
+    const data = expect<{ installation_id: string; automation: AppAutomationSummary }>(response, "AppAutomation")
+    return { ok: true, message: formatAutomation(data.automation), data }
+  }
   const data = expect<{ installation_id: string; updates: AppUpdateSummary[] }>(response, "AppInstallationJournal")
   return {
     ok: true,
     message: data.updates.map(update => `Generation ${update.generation}: ${update.release.version} · ${update.phase} · ${update.decision}`).join("\n") || "No retained App updates.",
     data,
   }
+}
+
+function automationRequest(args: string[]): Record<string, unknown> | null {
+  const [verb, installation, ...rest] = args
+  if (!installation) return null
+  if (verb === "list" && rest.length === 0) return listAppAutomationsRequest(installation)
+  if (verb === "disable" && rest.length === 2 && /^\d+$/.test(rest[1] ?? "")) {
+    return disableAppAutomationRequest(installation, rest[0] ?? "", Number(rest[1]))
+  }
+  if (verb !== "add" || rest.length < 4) return null
+  const [automationId, eventName, sessionId, publicationRef, ...flags] = rest
+  let queueRef: string | undefined
+  let scheduled = false
+  let expectedRevision = 0
+  for (let index = 0; index < flags.length; index += 1) {
+    const flag = flags[index]
+    const value = flags[index + 1]
+    if (flag === "--scheduled") scheduled = true
+    else if (flag === "--queue" && value && queueRef === undefined) { queueRef = value; index += 1 }
+    else if (flag === "--revision" && value && /^\d+$/.test(value)) { expectedRevision = Number(value); index += 1 }
+    else return null
+  }
+  return configureAppAutomationRequest({
+    installationId: installation, automationId: automationId ?? "", expectedRevision,
+    eventName: eventName ?? "", sessionId: sessionId ?? "", publicationRef: publicationRef ?? "",
+    ...(queueRef === undefined ? {} : { queueRef }), scheduled,
+  })
+}
+
+function formatWorker(worker: AppWorkerSummary): string {
+  const enabled = worker.enabled ? "" : " (stopped by user)"
+  const failure = worker.failure ? ` · ${worker.failure}` : ""
+  return `${worker.installation_id} · ${worker.phase.replace("_", " ")}${enabled}${failure}`
+}
+
+function formatAutomation(automation: AppAutomationSummary): string {
+  const scheduled = automation.scheduled ? " · scheduled" : ""
+  return `${automation.automation_id} · ${automation.event_name} v${automation.event_version} → workflow ${automation.publication_id} (queue ${automation.queue_id}) · ${automation.status} · revision ${automation.revision}${scheduled}`
 }
 
 function formatInstallation(app: AppInstallationSummary): string {

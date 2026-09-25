@@ -58,3 +58,27 @@ export type AppInstallOperationSummary = {
   interaction_id: string | null
   failure: string | null
 }
+
+/** Protocol 345 worker control. `dormant` workers start on their next use. */
+export type AppWorkerSummary = {
+  installation_id: string
+  phase: "not_started" | "starting" | "running" | "dormant" | "stopped" | "failed"
+  /** False after a user stop; on-demand use does not restart it. */
+  enabled: boolean
+  failure: string | null
+  updated_at_ms: number | null
+}
+
+/** Protocol 345: one App event routed to one workflow endpoint and queue. */
+export type AppAutomationSummary = {
+  automation_id: string
+  revision: number
+  event_name: string
+  event_version: number
+  session_id: string
+  publication_id: string
+  endpoint_id: string
+  queue_id: string
+  scheduled: boolean
+  status: "active" | "paused" | "broken" | "disabled"
+}

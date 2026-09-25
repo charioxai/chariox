@@ -176,7 +176,7 @@ impl AppControlService {
     }
 }
 
-pub(super) fn owner(command: &KernelCommand) -> Result<String, AppRequestErrorCode> {
+pub(crate) fn owner(command: &KernelCommand) -> Result<String, AppRequestErrorCode> {
     let caller = &command.caller;
     if matches!(caller.caller_kind, KernelCallerKind::HostedService) {
         return Err(AppRequestErrorCode::Unauthorized);
@@ -257,7 +257,7 @@ fn read(
     }
 }
 
-fn registry_error(error: AppRegistryError) -> AppRequestErrorCode {
+pub(crate) fn registry_error(error: AppRegistryError) -> AppRequestErrorCode {
     match error {
         AppRegistryError::Registry(InstallationError::NotFound) => AppRequestErrorCode::NotFound,
         // Caller fields were validated before the read. Residual invariant

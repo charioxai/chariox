@@ -249,7 +249,10 @@ pub use api::{
     KERNEL_RESOURCE_TELEMETRY_SCHEMA,
 };
 pub use api::{
-    AppCapabilityDecisionStatus, AppInstallationRequest, AppInstallationSummary, AppReleaseSummary,
+    AppAutomationStatus, AppAutomationSummary, AppCapabilityDecisionStatus,
+    AppInstallationRequest, AppInstallationSummary, AppReleaseSummary, AppWorkerAction,
+    AppWorkerPhase, AppWorkerRequest, AppWorkerSummary, ConfigureAppAutomationRequest,
+    ControlAppWorkerRequest, DisableAppAutomationRequest,
     AppRequestErrorCode, AppUpdatePhase, AppUpdateSummary, ListAppInstallationsRequest,
 };
 pub use client::LocalDaemonClient;

@@ -1748,6 +1748,20 @@ Workflow trigger and deployment direction:
 - protocol 344 merges the Chariox Apps line (protocols 288-297 above, developed
   on the Apps branch in parallel with main's 298-343) onto main. It adds no shape
   beyond those two lines; clients depending on App requests require 344.
+- protocol 345 adds owner-scoped App worker control and automations on the
+  same local/relay terminal path. `GetAppWorker` and `ControlAppWorker`
+  (`start`/`stop`/`restart`) return `AppWorker` with a phase of `not_started`,
+  `starting`, `running`, `dormant` (idle-stopped; the next tool call, wake or
+  event starts it), `stopped` or `failed`, plus `enabled` (false after a user
+  stop, which on-demand use never overrides). `restart` is a user stop followed
+  by an explicit start; if that start fails the App stays stopped (`enabled`
+  false) until the next explicit `start`. `ListAppAutomations`,
+  `ConfigureAppAutomation` (expected revision zero creates) and
+  `DisableAppAutomation` return `AppAutomations`/`AppAutomation`; one automation
+  routes one App event to one workflow endpoint and queue, resolved under
+  workflow ownership. The kernel derives the owner; requests name only the
+  installation and cannot supply an owner, generation or host path. Automation
+  requests use the active release's verified catalog and need no running worker.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

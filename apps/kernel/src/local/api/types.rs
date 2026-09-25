@@ -105,4 +105,6 @@ pub use workspace::*;
 /// Version 344 merges the Chariox Apps contracts (branch protocols 288-297:
 /// App installation, upload, bindings, events, HTTP/Fetch, kernel operation
 /// approvals and publisher enrollment) onto the main protocol line.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 344;
+/// Version 345 adds owner-scoped App worker control (status/start/stop/restart)
+/// and App automation list/configure/disable requests.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 345;
