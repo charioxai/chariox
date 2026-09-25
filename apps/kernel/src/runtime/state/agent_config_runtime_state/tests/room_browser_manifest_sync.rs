@@ -1022,7 +1022,7 @@ async fn rejected_promoted_workflow_head_is_not_reported_as_delivered() {
     let dispatch_provider_run_id = format!("remote-dispatch:{home_prompt_id}");
     assert!(
         durable_history.iter().any(|event| {
-            event.kind == crate::history::HistoryEventKind::ProviderOutput
+            event.kind == crate::history::HistoryEventKind::ProviderError
                 && event.prompt_id.as_deref() == Some(home_prompt_id.as_str())
                 && event.provider_run_id.as_deref() == Some(dispatch_provider_run_id.as_str())
                 && event.workflow_id.as_deref() == Some(workflow_id.as_str())
