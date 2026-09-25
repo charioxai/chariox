@@ -478,15 +478,16 @@ async fn rejected_ordered_queued_dispatch_uses_shared_sender_failure_semantics()
         request,
         crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt { .. }
     ));
-    // Characterize the current shared sender's failure side effect only: it
-    // cancels the admitted prompt. This is not approval of the difference from
-    // the old queued retry path; root review owns that retry-policy decision.
-    acknowledge_peer_response(
-        &fixture,
+    // A known pre-admission rejection is safe to cancel. An unexpected response
+    // would instead be indeterminate and must retain this exact prompt.
+    crate::transport::relay_client::resolve_pending_peer_error_for_test(
+        &fixture.relay_state,
         request_id,
-        crate::transport::relay_peer::RelayPeerResponse::Pong {
-            value: "wrong response for prompt submission".to_string(),
-            daemon_id: "worker-1".to_string(),
+        "worker-1".to_string(),
+        chariox_relay::protocol::RelayError {
+            code: "action_not_allowed".to_string(),
+            message: "queued submission rejected before worker admission".to_string(),
+            retryable: false,
         },
     )
     .await;
