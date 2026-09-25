@@ -228,6 +228,7 @@ test("Path-1 image preparation rejects inherited systemd drop-ins", async (conte
   })
   assert.notEqual(inheritedWorker.status, 0)
   assert.match(inheritedWorker.stderr, /systemd drop-ins/)
+  assert.match(inheritedWorker.stderr, /chariox-disposable-worker-bootstrap\.service/)
 })
 
 test("Path-1 verification requires an independently supplied builder trust root", async (context) => {
