@@ -17,6 +17,7 @@ use chariox_app_runtime::{
 pub(super) struct FixturePlatform {
     pub(super) native: Arc<chariox_app_runtime::worker_process::test_fixture::Fixture>,
     pub(super) fail_health: bool,
+    pub(super) fail_migration: bool,
     pub(super) observations:
         Arc<Mutex<Vec<chariox_app_runtime::worker_process::test_fixture::Observation>>>,
 }
@@ -106,7 +107,12 @@ pub(super) fn register(
         .and_then(|releases| releases.lease_verified(&verified, active.bytes()))
         .map_err(|_| LifecycleError::Preparation)?;
     check()?;
-    let prepared = spawn(context, binding, &verified, release)?;
+    // A staged worker whose update opened a migration runs its steps first.
+    let migrate_from = context
+        .store
+        .app_migration_from(&binding.token().installation_id, binding.token().generation)
+        .map_err(|_| LifecycleError::Preparation)?;
+    let prepared = spawn(context, binding, &verified, release, migrate_from)?;
     let process = prepared.process;
     if context.control.stopped() {
         return Err(LifecycleError::Stopped);
@@ -124,17 +130,32 @@ pub(super) fn register(
         },
     )
     .map_err(|_| LifecycleError::Preparation)?;
-    let (starting, controls) = AppWorkerOwner::start_blocking(
-        process,
-        &verified,
-        events,
-        delegate,
-        PeerLimits::default(),
-        context.runtime.clone(),
-    )
-    .map_err(|_| LifecycleError::Registration)?;
+    let started = if migrate_from.is_some() {
+        AppWorkerOwner::start_migrating_blocking(
+            process,
+            &verified,
+            events,
+            delegate,
+            PeerLimits::default(),
+            context.runtime.clone(),
+        )
+    } else {
+        AppWorkerOwner::start_blocking(
+            process,
+            &verified,
+            events,
+            delegate,
+            PeerLimits::default(),
+            context.runtime.clone(),
+        )
+    };
+    let (starting, controls) = started.map_err(|_| LifecycleError::Registration)?;
+    let registration = Duration::from_secs(15)
+        + migrate_from.map_or(Duration::ZERO, |_| {
+            Duration::from_millis(chariox_app_runtime::worker_process::MIGRATION_TIMEOUT_MS)
+        });
     let registered = starting
-        .await_registered_blocking(Duration::from_secs(15))
+        .await_registered_blocking(registration)
         .map_err(|_| LifecycleError::Registration)?;
     if context.control.stopped() {
         return Err(LifecycleError::Stopped);
@@ -152,11 +173,16 @@ fn spawn(
     binding: &StageTrustBinding,
     verified: &VerifiedPackage<'_>,
     release: VerifiedReleaseLease,
+    migrate_from: Option<u32>,
 ) -> Result<PreparedProcess> {
     #[cfg(test)]
     if let Some(fixture) = &context.fixture {
         use chariox_app_runtime::worker_process::test_fixture::Mode;
         let mode = match context.kind {
+            StartKind::First { .. } if migrate_from.is_some() && fixture.fail_migration => {
+                Mode::BadMigration
+            }
+            StartKind::First { .. } if migrate_from.is_some() => Mode::Migrate,
             StartKind::First { .. } if fixture.fail_health => Mode::BadHealth,
             StartKind::First { .. } => Mode::Health,
             StartKind::Active { .. } => Mode::Ready,
@@ -188,7 +214,10 @@ fn spawn(
         let runtime = chariox_app_runtime::runtime_enrollment::EnrolledRuntime::open_installed()
             .map_err(|_| LifecycleError::Preparation)?;
         let prepared = chariox_app_runtime::worker_process::PreparedWorker::prepare_linux(
-            runtime, release, binding,
+            runtime,
+            release,
+            binding,
+            migrate_from,
         )
         .map_err(|_| LifecycleError::Preparation)?;
         if context.control.stopped() {
@@ -204,7 +233,7 @@ fn spawn(
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (context, binding, verified, release);
+        let _ = (context, binding, verified, release, migrate_from);
         Err(LifecycleError::Preparation)
     }
 }

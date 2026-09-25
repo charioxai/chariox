@@ -50,6 +50,8 @@ struct Admission {
     cancellation: WorkerCancellation,
     broker: Weak<dyn Broker>,
     broker_draining: std::sync::atomic::AtomicBool,
+    /// Set for a staged worker that migrates its data before it registers.
+    migrating: std::sync::atomic::AtomicBool,
 }
 impl Admission {
     fn stop(&self) {
@@ -93,7 +95,11 @@ impl Admission {
     }
     fn broker_open(&self, method: &str) -> bool {
         self.phase.lock().is_ok_and(|phase| {
-            *phase == Phase::Active
+            // Migrations only read and write structured state, before ready.
+            (*phase == Phase::Starting
+                && self.migrating.load(std::sync::atomic::Ordering::Acquire)
+                && matches!(method, "state.get" | "state.transaction" | "migration.step"))
+                || *phase == Phase::Active
                 || (*phase == Phase::Draining
                     && matches!(
                         method,

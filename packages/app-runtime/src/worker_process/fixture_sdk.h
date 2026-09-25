@@ -8,7 +8,8 @@ static int fixture_sdk_mode(const char* mode) {
   return !strcmp(mode, "sdk_ready") || !strcmp(mode, "sdk_wrong_handlers") ||
       !strcmp(mode, "sdk_no_report") || !strcmp(mode, "sdk_broker_call") || !strcmp(mode, "sdk_tool") ||
       !strcmp(mode, "sdk_other_installation") || !strcmp(mode, "sdk_files") ||
-      !strcmp(mode, "sdk_health") || !strcmp(mode, "sdk_bad_health") || !strcmp(mode, "sdk_http") || !strcmp(mode, "sdk_http_paused");
+      !strcmp(mode, "sdk_health") || !strcmp(mode, "sdk_bad_health") || !strcmp(mode, "sdk_http") || !strcmp(mode, "sdk_http_paused") ||
+      !strcmp(mode, "sdk_migrate") || !strcmp(mode, "sdk_bad_migration");
 }
 
 static int fixture_sdk_io(void* buffer, size_t size, int writing, int64_t deadline) {
@@ -129,15 +130,37 @@ static int fixture_sdk_tool(const struct cx_launch_record* record) {
 #include "fixture_health.h"
 #include "fixture_http.h"
 
+/* A staged worker migrating schema 0 to 1 before it registers: it reads and
+ * rewrites state, then reports the step. The bad variant ends before its report. */
+static int fixture_sdk_migrate(const char* mode, char response[8193]) {
+  if (fixture_sdk_request("migrate-read", "state.get", "{\"key\":\"todos\"}") != 1 ||
+      fixture_sdk_receive(response, cx_monotonic_ms() + 5000) != 1 ||
+      !strstr(response, "\"id\":\"migrate-read\",\"result\":")) return 125;
+  if (fixture_sdk_request("migrate-write", "state.transaction",
+      "{\"schemaVersion\":1,\"checks\":[],\"writes\":[{\"key\":\"migrated\",\"value\":true}]}") != 1 ||
+      fixture_sdk_receive(response, cx_monotonic_ms() + 5000) != 1 ||
+      !strstr(response, "\"id\":\"migrate-write\",\"result\":{") || !strstr(response, "\"revision\":")) return 126;
+  if (!strcmp(mode, "sdk_bad_migration")) return 127;
+  if (fixture_sdk_request("migrate-step", "migration.step", "{\"to\":1}") != 1 ||
+      fixture_sdk_receive(response, cx_monotonic_ms() + 5000) != 1 ||
+      strcmp(response, "{\"kind\":\"response\",\"version\":1,\"generation\":\"1\",\"id\":\"migrate-step\",\"result\":null}")) return 128;
+  return 0;
+}
+
 static int fixture_sdk_run(const struct cx_launch_record* record, const char* mode) {
   const int flags = fcntl(3, F_GETFL);
   if (flags < 0 || fcntl(3, F_SETFL, flags | O_NONBLOCK)) return 94;
   char response[8193];
-  if (fixture_sdk_request("before-ready", "state.get", "{\"key\":\"fixture\"}") != 1 ||
-      fixture_sdk_receive(response, cx_monotonic_ms() + 5000) != 1) return 95;
-  static const char rejected[] = "{\"kind\":\"response\",\"version\":1,\"generation\":\"1\",\"id\":\"before-ready\",\"error\":{\"code\":\"APP_NOT_READY\",";
-  if (strncmp(response, rejected, sizeof(rejected) - 1)) return 96;
-  if (fixture_sdk_event("worker.fixture.before_ready_rejected") != 1) return 97;
+  if (!strcmp(mode, "sdk_migrate") || !strcmp(mode, "sdk_bad_migration")) {
+    const int migrated = fixture_sdk_migrate(mode, response);
+    if (migrated) return migrated;
+  } else {
+    if (fixture_sdk_request("before-ready", "state.get", "{\"key\":\"fixture\"}") != 1 ||
+        fixture_sdk_receive(response, cx_monotonic_ms() + 5000) != 1) return 95;
+    static const char rejected[] = "{\"kind\":\"response\",\"version\":1,\"generation\":\"1\",\"id\":\"before-ready\",\"error\":{\"code\":\"APP_NOT_READY\",";
+    if (strncmp(response, rejected, sizeof(rejected) - 1)) return 96;
+    if (fixture_sdk_event("worker.fixture.before_ready_rejected") != 1) return 97;
+  }
   if (!strcmp(mode, "sdk_no_report")) {
     /* Parent owns the short activation timeout. EOF/kill ends this fixed shim. */
     return fixture_sdk_receive(response, cx_monotonic_ms() + 30000) == 0 ? 0 : 98;

@@ -19,6 +19,7 @@ pub(in crate::worker_process) fn prepare(
     runtime: EnrolledRuntime,
     release: VerifiedReleaseLease,
     binding: &StageTrustBinding,
+    migrate_from: Option<u32>,
 ) -> Result<PreparedWorker> {
     if release.package_digest() != binding.package_digest() {
         return Err(WorkerError::Identity);
@@ -30,7 +31,7 @@ pub(in crate::worker_process) fn prepare(
         installation: installation.clone(),
         release_digest: release.package_digest().into(),
         roots: plan::ROOTS.map(str::to_owned),
-        bootstrap: bootstrap(&release)?,
+        bootstrap: bootstrap(&release, migrate_from)?,
         nofile: 128,
         cpu_seconds: 86400,
         heap_mib: 256,
@@ -191,11 +192,16 @@ fn libraries_for(target: &str) -> Result<Vec<(&'static str, String)>> {
     );
     Ok(libraries)
 }
-fn bootstrap(package: &VerifiedReleaseLease) -> Result<String> {
-    let config = serde_json::json!({"version":1,"entry":package.manifest().runtime.entry,
+fn bootstrap(package: &VerifiedReleaseLease, migrate_from: Option<u32>) -> Result<String> {
+    let mut config = serde_json::json!({"version":1,"entry":package.manifest().runtime.entry,
         "declarations":{"tools":package.declarations().tools.iter().map(|tool| &tool.name).collect::<Vec<_>>(),
         "incomingEvents":package.declarations().events.iter().filter(|event| matches!(event.direction, EventDirection::Incoming | EventDirection::Both)).map(|event| &event.name).collect::<Vec<_>>()},
         "startupTimeoutMs":15000});
+    if let Some(from) = migrate_from {
+        config["migrations"] = crate::worker_process::migration_steps(package.manifest(), from)
+            .ok_or(WorkerError::Preparation)?;
+        config["migrationTimeoutMs"] = crate::worker_process::MIGRATION_TIMEOUT_MS.into();
+    }
     let config = serde_json::to_string(&config).map_err(|_| WorkerError::Preparation)?;
     Ok(format!("require('node:module').createRequire('/runtime/bootstrap.cjs')('/runtime/bootstrap.cjs').start({config});"))
 }

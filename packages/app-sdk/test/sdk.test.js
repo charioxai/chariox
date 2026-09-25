@@ -254,3 +254,28 @@ test('log messages are limited in UTF-8 bytes, like the kernel', () => {
   assert.throws(() => sdk.log.write('trace', 'x'), { code: 'INVALID_ARGUMENT' });
   sdk.close();
 });
+
+test('a migration step writes only its target schema version and reports completion', async () => {
+  const { transport, sdk } = setup();
+  assert.throws(() => sdk.migration({ from: 1, to: 3 }), TypeError);
+  const context = sdk.migration({ from: 1, to: 2 });
+  assert.equal(context.from, 1);
+  assert.equal(context.to, 2);
+  assert.throws(() => context.state.transaction({ schemaVersion: 1, checks: [], writes: [] }), { code: 'INVALID_ARGUMENT' });
+  assert.equal(transport.sent.length, 0);
+  const read = context.state.get('project');
+  assert.deepEqual([transport.sent[0].method, transport.sent[0].params], ['state.get', { key: 'project' }]);
+  transport.receive(response(transport.sent[0].id, null));
+  assert.equal(await read, null);
+  const writes = [{ key: 'project', value: { v: 2 } }];
+  const committed = context.state.transaction({ checks: [{ key: 'project', version: null }], writes });
+  assert.equal(transport.sent[1].method, 'state.transaction');
+  assert.deepEqual(transport.sent[1].params, { checks: [{ key: 'project', version: null }], writes, schemaVersion: 2 });
+  transport.receive(response(transport.sent[1].id, { revision: 1, receipts: [] }));
+  await committed;
+  const step = sdk.migrationStep(2);
+  assert.deepEqual([transport.sent[2].method, transport.sent[2].params], ['migration.step', { to: 2 }]);
+  transport.receive(response(transport.sent[2].id, null));
+  assert.equal(await step, null);
+  sdk.close();
+});

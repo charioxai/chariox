@@ -48,6 +48,10 @@ pub(crate) enum AppStateOperation {
     Retry {
         receipt_id: String,
     },
+    /// A migrating worker finished the step to this data schema.
+    MigrationStep {
+        to: u32,
+    },
 }
 impl AppStateOperation {
     fn name(&self) -> &'static str {
@@ -59,6 +63,7 @@ impl AppStateOperation {
             Self::ScheduleList => "schedule_list",
             Self::Status { .. } => "status",
             Self::Retry { .. } => "retry",
+            Self::MigrationStep { .. } => "migration_step",
         }
     }
 }
@@ -145,6 +150,24 @@ impl DurableKernelStateStore {
     }
 }
 
+impl DurableKernelStateStore {
+    /// The data schema a staged generation's worker migrates from, when its
+    /// update opened a migration (quiesce does, in the writer).
+    pub(crate) fn app_migration_from(
+        &self,
+        installation: &str,
+        generation: u64,
+    ) -> Result<Option<u32>, DaemonError> {
+        let connection = self.lock_connection("durable_state.app_migration")?;
+        ManagedStateStore::migration_from(&connection, installation, generation).map_err(|error| {
+            DaemonError::LocalTransport {
+                operation: "durable_state.app_migration",
+                message: error.to_string(),
+            }
+        })
+    }
+}
+
 pub(super) fn initialize(connection: &mut Connection) -> Result<(), DaemonError> {
     ManagedStateStore::new(connection)
         .initialize()
@@ -180,7 +203,19 @@ fn apply(
         .map_err(StateError::from)?;
     // Publisher revoke/re-enroll can invalidate an otherwise unchanged active
     // generation. Hold its exact retained verification fence through commit.
-    catalog.app_catalog().require_current(&transaction, owner)?;
+    let current = catalog.app_catalog().require_current(&transaction, owner);
+    // A migrating worker of the pending stage may only read and write state.
+    let migration = match &operation {
+        AppStateOperation::Get { .. } | AppStateOperation::MigrationStep { .. } => true,
+        AppStateOperation::Transaction {
+            occurrences, wakes, ..
+        } => occurrences.is_empty() && wakes.is_empty(),
+        _ => false,
+    };
+    match current {
+        Err(_) if migration => catalog.app_catalog().require_staged(&transaction, owner)?,
+        current => current?,
+    }
     // BEGIN IMMEDIATE may itself wait for a writer lock. Check again after
     // acquiring it, immediately before state work. Once this check admits the
     // transaction, cancellation cannot promise that its commit was undone.
@@ -205,6 +240,10 @@ fn apply(
         }
         AppStateOperation::ScheduleList => {
             AppStateOutcome::Wakes(ManagedStateStore::wakes_in(&transaction, scope)?)
+        }
+        AppStateOperation::MigrationStep { to } => {
+            ManagedStateStore::migration_step_in(&transaction, scope, to)?;
+            AppStateOutcome::Value(None)
         }
         event => AppStateOutcome::Receipt(events::apply(&mut transaction, catalog, owner, event)?),
     };

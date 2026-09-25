@@ -322,18 +322,15 @@ fn an_update_stages_onto_the_active_installation_and_a_failed_start_keeps_it() {
     assert_eq!(installed.pending_generation, None);
     assert!(!installed.admission_paused);
     assert!(installed.active.is_some());
-    // A release that changes the data schema needs migrations (not yet).
+    // A release with a newer data schema stages; its update migrates the data.
     let migrating = release("2.0.0", 1, false, &f.store);
     let digest = migrating.release_metadata().package_digest.clone();
     f.store
         .reserve_app_install("alice", "migrate", update_input(1), &digest, budget())
         .unwrap();
-    assert_eq!(
-        f.store
-            .complete_app_install_preparation("alice", "migrate", migrating, budget())
-            .unwrap_err(),
-        InstallOperationError::MigrationRequired
-    );
+    f.store
+        .complete_app_install_preparation("alice", "migrate", migrating, budget())
+        .unwrap();
 }
 
 #[test]

@@ -155,7 +155,7 @@ test("/app update fences the shared upload on the generation it read first", asy
   assert.match(notices.at(-1)!, /Preparing App/)
   await assert.rejects(installer.install(f.path, "current-session"), /Another App installation or update is retained/)
   assert.equal(formatInstallOperation({ ...k.status!, phase: "committed", installation_id: "todo" } as never), `App operation complete: todo. Operation ${request_id}. Use /app operation for status; /app cancel to cancel before it completes.`)
-  assert.match(formatInstallOperation({ ...k.status!, phase: "failed", failure: "app_update_migration_required" } as never), /^App operation failed\. This release changes the App's data schema; updating with data migrations is not supported yet/)
+  assert.match(formatInstallOperation({ ...k.status!, phase: "failed", failure: "app_update_schema_downgrade" } as never), /^App operation failed\. This release's data schema is older than the installed App's/)
   assert.deepEqual(installer.retained(), { path: f.path, request: request_id, digest: digest(f.bytes), installation: "todo", begun: true })
   assert.equal(installer.discardRetained(), false)
   k.status!.phase = "committed"

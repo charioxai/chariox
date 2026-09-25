@@ -68,8 +68,9 @@ active installation of the manifest's App ID (`ListAppInstallations`, all pages)
 The first cycle installs when none exists; otherwise it updates that installation
 through this same transfer and operation, then follows the operation to its
 result: `Packed ID VERSION (sha256:…)`, then `Installed`/`Updated ... to
-generation N` or the failure (for example, a data schema change fails with
-`app_update_migration_required`). App data is kept across updates. A release that
+generation N` or the failure (for example, an older data schema fails with
+`app_update_schema_downgrade`). App data is kept across updates; a newer data
+schema runs the release's migrations during the update. A release that
 declares the same capabilities is approved by kernel policy without a prompt;
 changed capabilities wait for the owner in the approval panel, like install.
 The loop never opens views: open one with `/app open INSTALLATION`, and reopen it

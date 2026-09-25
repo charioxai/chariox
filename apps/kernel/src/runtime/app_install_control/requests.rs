@@ -14,7 +14,7 @@ fn code(error: InstallOperationError) -> AppRequestErrorCode {
         InstallOperationError::Storage | InstallOperationError::CommitUnknown => {
             AppRequestErrorCode::StorageUnavailable
         }
-        InstallOperationError::MigrationRequired => AppRequestErrorCode::InvalidRequest,
+        InstallOperationError::SchemaDowngrade => AppRequestErrorCode::InvalidRequest,
         _ => AppRequestErrorCode::Conflict,
     }
 }

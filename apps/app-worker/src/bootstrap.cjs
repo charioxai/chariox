@@ -34,7 +34,8 @@ function start(input) {
   let config;
   try { config = configuration(input, process.env, __dirname); }
   catch { finish(130); return; }
-  timer = later(() => finish(132), config.startupTimeoutMs);
+  const arm = timeoutMs => { cancelTimer(timer); timer = later(() => finish(132), timeoutMs); };
+  arm(config.migrations.length ? config.migrationTimeoutMs : config.startupTimeoutMs);
 
   async function load() {
     // Runtime packaging pins this complete SDK source graph. Never resolve an
@@ -77,8 +78,21 @@ function start(input) {
     // Preserve Node's Web value objects while routing every global Fetch call
     // through the actual worker SDK channel before loading any App module.
     Object.defineProperty(globalThis, 'fetch', { value: sdk.http.fetch, writable: false, configurable: false });
-    const { ready, close, ...api } = sdk;
+    const { ready, close, migration, migrationStep, ...api } = sdk;
     void ready; void close;
+    if (config.migrations.length) {
+      // Pending data migrations run in order before any App runtime module.
+      // The kernel admits only state calls and migration.step until readiness.
+      try {
+        for (const step of config.migrations) {
+          const module = await import(pathToFileURL(step.entry).href);
+          if (typeof module.default !== 'function') throw new Error('migration');
+          await module.default(Object.freeze(migration(step)));
+          if (await migrationStep(step.to) !== null) throw new Error('migration');
+        }
+      } catch { finish(136); return; }
+      arm(config.startupTimeoutMs);
+    }
     const app = await import(pathToFileURL(config.entry).href);
     if (typeof app.default !== 'function') { finish(131); return; }
     await app.default(Object.freeze(api));

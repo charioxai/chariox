@@ -3,6 +3,7 @@
 //! kernel. These transactions do not lock or roll back ordinary node:fs writes.
 
 mod changes;
+pub(crate) mod migration;
 mod store;
 mod wakes;
 
@@ -87,6 +88,7 @@ impl<'a> ManagedStateStore<'a> {
 
     pub fn initialize(&mut self) -> Result<()> {
         store::initialize(self.connection)?;
+        migration::initialize(self.connection)?;
         wakes::initialize(self.connection)
     }
 
@@ -97,6 +99,10 @@ impl<'a> ManagedStateStore<'a> {
         scope: StateScope<'_>,
         changes: &[WakeChange],
     ) -> Result<()> {
+        // No changes need no wake admission (a migrating worker has none).
+        if changes.is_empty() {
+            return Ok(());
+        }
         let savepoint = transaction.savepoint()?;
         wakes::apply(&savepoint, scope, changes)?;
         savepoint.commit()?;
@@ -125,7 +131,7 @@ impl<'a> ManagedStateStore<'a> {
         key: &str,
     ) -> Result<Option<StateRecord>> {
         changes::key(key)?;
-        store::active(transaction, scope)?;
+        store::admit(transaction, scope)?;
         store::read(transaction, scope.installation, key)
     }
 
@@ -154,5 +160,25 @@ impl<'a> ManagedStateStore<'a> {
         let revision = store::apply(&savepoint, scope, changes)?;
         savepoint.commit()?;
         Ok(revision)
+    }
+
+    /// A migrating worker finished the step to schema `to`, in the caller's
+    /// writer transaction.
+    pub fn migration_step_in(
+        transaction: &Transaction<'_>,
+        scope: StateScope<'_>,
+        to: u32,
+    ) -> Result<()> {
+        migration::step(transaction, scope, to)
+    }
+
+    /// The data schema an open migration of this pending generation starts
+    /// the staged worker from, or None when there is nothing to migrate.
+    pub fn migration_from(
+        connection: &Connection,
+        installation: &str,
+        generation: u64,
+    ) -> Result<Option<u32>> {
+        Ok(migration::next_schema(connection, installation, generation)?.map(|next| next - 1))
     }
 }

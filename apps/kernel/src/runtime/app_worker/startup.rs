@@ -37,14 +37,38 @@ struct ReadyReport {
 }
 
 impl AppWorkerOwner {
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn start_blocking(
+        process: WorkerProcess,
+        package: &VerifiedPackage<'_>,
+        catalog: Arc<EventCatalog>,
+        delegate: Arc<dyn Broker>,
+        limits: PeerLimits,
+        runtime: Handle,
+    ) -> Result<(StartingAppWorker, mpsc::Receiver<ControlEvent>), AppWorkerError> {
+        Self::start_with(process, package, catalog, delegate, limits, runtime, false)
+    }
+
+    /// A staged worker that first migrates the installation's data: until it
+    /// reports ready it may only read and write state and report steps.
+    pub(crate) fn start_migrating_blocking(
+        process: WorkerProcess,
+        package: &VerifiedPackage<'_>,
+        catalog: Arc<EventCatalog>,
+        delegate: Arc<dyn Broker>,
+        limits: PeerLimits,
+        runtime: Handle,
+    ) -> Result<(StartingAppWorker, mpsc::Receiver<ControlEvent>), AppWorkerError> {
+        Self::start_with(process, package, catalog, delegate, limits, runtime, true)
+    }
+
+    fn start_with(
         mut process: WorkerProcess,
         package: &VerifiedPackage<'_>,
         catalog: Arc<EventCatalog>,
         delegate: Arc<dyn Broker>,
         limits: PeerLimits,
         runtime: Handle,
+        migrating: bool,
     ) -> Result<(StartingAppWorker, mpsc::Receiver<ControlEvent>), AppWorkerError> {
         if process.installation_id() != catalog.installation_id()
             || process.release_digest() != catalog.app_catalog().package_digest()
@@ -61,6 +85,7 @@ impl AppWorkerOwner {
             cancellation: process.cancellation(),
             broker: Arc::downgrade(&delegate),
             broker_draining: std::sync::atomic::AtomicBool::new(false),
+            migrating: std::sync::atomic::AtomicBool::new(migrating),
         });
         let (sender, registration) = oneshot::channel();
         let broker = Arc::new(StartupBroker {
@@ -105,7 +130,10 @@ impl StartingAppWorker {
         self,
         timeout: Duration,
     ) -> Result<RegisteredAppWorker, AppWorkerError> {
-        if timeout.is_zero() || timeout > Duration::from_secs(15) {
+        // Startup gets 15 s; a migrating worker also its migrations' budget.
+        let limit = Duration::from_secs(15)
+            + Duration::from_millis(chariox_app_runtime::worker_process::MIGRATION_TIMEOUT_MS);
+        if timeout.is_zero() || timeout > limit {
             return Err(AppWorkerError::Invalid);
         }
         let Self {
@@ -211,6 +239,10 @@ impl Broker for StartupBroker {
             }
             return Box::pin(async { Err(remote("APP_NOT_READY")) });
         }
+        // Registration ends the migration phase; later startup code gets none.
+        self.admission
+            .migrating
+            .store(false, std::sync::atomic::Ordering::Release);
         let budget = AppOperationBudget::from_broker(&request);
         let report = self.report.lock().ok().and_then(|mut report| report.take());
         let registration = self

@@ -45,8 +45,8 @@ pub(crate) enum InstallOperationError {
     Storage,
     #[error("app_install_commit_unknown")]
     CommitUnknown,
-    #[error("app_update_migration_required")]
-    MigrationRequired,
+    #[error("app_update_schema_downgrade")]
+    SchemaDowngrade,
 }
 type Result<T> = std::result::Result<T, InstallOperationError>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

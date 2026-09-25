@@ -214,6 +214,26 @@ export function createAppSdk({ transport, generation, paths, declarations = {}, 
       lifecycle.seal();
       return call('worker.ready', { tools: tools.names(), events: events.names(), lifecycle: lifecycle.names() }, options);
     },
+    // Bootstrap-only data migration phase; never part of the App registration API.
+    // The kernel admits only these state calls before readiness and scopes them
+    // to the staged generation at the step's target schema version.
+    migration({ from, to }) {
+      if (!Number.isSafeInteger(from) || from < 0 || to !== from + 1) throw new TypeError('Invalid migration step');
+      return {
+        from, to,
+        state: Object.freeze({
+          get: sdk.state.get,
+          transaction(transaction, options) {
+            record(transaction, 'state transaction');
+            if (transaction.schemaVersion !== undefined && transaction.schemaVersion !== to) {
+              throw new AppError('INVALID_ARGUMENT', 'A migration writes only its target schema version');
+            }
+            return sdk.state.transaction({ ...transaction, schemaVersion: to }, options);
+          },
+        }),
+      };
+    },
+    migrationStep: (to, options) => call('migration.step', { to }, options),
     close: () => peer.close(),
   };
   return Object.freeze(sdk);

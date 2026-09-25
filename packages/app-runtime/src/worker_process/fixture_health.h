@@ -1,6 +1,6 @@
 /* Test-only health/startup behavior on the actual inherited SDK channel. */
 static int fixture_health_mode(const char* mode) {
-  return !strcmp(mode, "sdk_health") || !strcmp(mode, "sdk_bad_health");
+  return !strcmp(mode, "sdk_health") || !strcmp(mode, "sdk_bad_health") || !strcmp(mode, "sdk_migrate");
 }
 static int fixture_health_parse(char response[8193], const char* event, char id[129]) {
   if (strncmp(response, "{\"kind\":\"request\",", 18) ||

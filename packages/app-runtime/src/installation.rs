@@ -206,6 +206,7 @@ impl<'a> InstallationRegistry<'a> {
                 PRIMARY KEY(installation_id,generation)
              );",
         )?;
+        crate::managed_state::migration::initialize(self.connection)?;
         Ok(())
     }
 
@@ -478,6 +479,11 @@ fn commit_generation(
     if record.phase != UpdatePhase::Prepared {
         return Err(InstallationError::InvalidTransition);
     }
+    crate::managed_state::migration::finish_in(
+        transaction,
+        &token.installation_id,
+        token.generation,
+    )?;
     let CapabilityDecision::Approved { approval } = record.decision.clone() else {
         return Err(InstallationError::ApprovalRequired);
     };
@@ -697,6 +703,12 @@ fn save_update(connection: &Connection, record: &UpdateRecord) -> Result<()> {
 }
 
 fn clear_pending(connection: &Connection, token: &StageToken) -> Result<()> {
+    // Every pre-commit exit puts back the structured state a migration changed.
+    crate::managed_state::migration::restore_in(
+        connection,
+        &token.installation_id,
+        token.generation,
+    )?;
     require_changed(connection.execute(
         "UPDATE app_installations SET pending_generation = NULL, admission_paused = 0
          WHERE installation_id = ?1 AND generation = ?2 AND pending_generation = ?3",

@@ -15,10 +15,38 @@ function root(value) {
   return value;
 }
 
+function file(base, value, prefix) {
+  if (typeof value !== 'string' || !value.startsWith(prefix)
+    || Buffer.byteLength(value) > 1024 || !/\.(?:js|mjs|cjs)$/u.test(value)
+    || /[\\\x00-\x1f\x7f]/u.test(value)
+    || value.split('/').some(part => part === '' || part === '.' || part === '..')) throw new Error('configuration');
+  const absolute = path.join(base, value);
+  // No symlink or alternate root can redirect even the initial App import.
+  // The supervisor holds the entire verified package immutable thereafter.
+  if (realpathSync(absolute) !== absolute || !statSync(absolute).isFile()) throw new Error('configuration');
+  return absolute;
+}
+
+// Pending data migrations: one consecutive from→from+1 chain of package modules.
+function migrationSteps(input, base) {
+  if (!Object.hasOwn(input, 'migrations')) return Object.freeze([]);
+  const steps = input.migrations;
+  if (!Array.isArray(steps) || steps.length === 0 || steps.length > 1024
+    || !Number.isSafeInteger(input.migrationTimeoutMs) || input.migrationTimeoutMs < 1
+    || input.migrationTimeoutMs > 120000) throw new Error('configuration');
+  return Object.freeze(steps.map((step, index) => {
+    if (!object(step, ['from', 'to', 'entry']) || !Number.isSafeInteger(step.from) || step.from < 0
+      || step.to !== step.from + 1 || !Number.isSafeInteger(step.to)
+      || (index > 0 && step.from !== steps[index - 1].to)) throw new Error('configuration');
+    return Object.freeze({ from: step.from, to: step.to, entry: file(base, step.entry, 'migrations/') });
+  }));
+}
+
 // These inputs originate in the native launch record and the trusted kernel's
 // serialized bootstrap. This validates the ABI, never grants permissions.
 exports.configuration = function configuration(input, environment, runtime) {
-  if (!object(input, ['version', 'entry', 'declarations', 'startupTimeoutMs']) || input.version !== 1
+  const keys = ['version', 'entry', 'declarations', 'startupTimeoutMs'];
+  if (!(object(input, keys) || object(input, [...keys, 'migrations', 'migrationTimeoutMs'])) || input.version !== 1
     || !Number.isSafeInteger(input.startupTimeoutMs) || input.startupTimeoutMs < 1 || input.startupTimeoutMs > 15000
     || !object(input.declarations, ['tools', 'incomingEvents'])) throw new Error('configuration');
   for (const names of Object.values(input.declarations)) {
@@ -41,15 +69,10 @@ exports.configuration = function configuration(input, environment, runtime) {
     if (roots.slice(0, index).some(other => roots[index] === other
       || roots[index].startsWith(`${other}/`) || other.startsWith(`${roots[index]}/`))) throw new Error('configuration');
   }
-  if (typeof input.entry !== 'string' || !input.entry.startsWith('runtime/')
-    || Buffer.byteLength(input.entry) > 1024 || !/\.(?:js|mjs|cjs)$/u.test(input.entry)
-    || /[\\\x00-\x1f\x7f]/u.test(input.entry)
-    || input.entry.split('/').some(part => part === '' || part === '.' || part === '..')) throw new Error('configuration');
-  const entry = path.join(paths.package, input.entry);
-  // No symlink or alternate root can redirect even the initial App import.
-  // The supervisor holds the entire verified package immutable thereafter.
-  if (realpathSync(entry) !== entry || !statSync(entry).isFile()) throw new Error('configuration');
+  const entry = file(paths.package, input.entry, 'runtime/');
+  const migrations = migrationSteps(input, paths.package);
   return Object.freeze({ generation, entry, paths: Object.freeze(paths),
     declarations: Object.freeze({ tools: Object.freeze([...input.declarations.tools]), incomingEvents: Object.freeze([...input.declarations.incomingEvents]) }),
-    startupTimeoutMs: input.startupTimeoutMs });
+    startupTimeoutMs: input.startupTimeoutMs, migrations,
+    ...(migrations.length ? { migrationTimeoutMs: input.migrationTimeoutMs } : {}) });
 };
