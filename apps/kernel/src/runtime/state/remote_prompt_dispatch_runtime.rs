@@ -195,6 +195,11 @@ impl KernelRuntimeState {
                     return Ok(true);
                 }
                 Some(crate::session::DurablePromptDeliveryPhase::Dispatching) => {}
+                Some(crate::session::DurablePromptDeliveryPhase::Accepted) => {
+                    // Conflicting persisted phase evidence cannot prove the worker was untouched.
+                    // Keep cancellation held rather than settling or replaying this prompt.
+                    return Ok(true);
+                }
                 None => {
                     // Older or incomplete state has no proof tying this cancellation to a worker
                     // run. Keep the same prompt held; never redispatch or cancel a lease by guess.

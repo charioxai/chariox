@@ -840,7 +840,7 @@ impl KernelRuntimeState {
                 )
             })
             .await?;
-        self.cancel_remote_home_extension_invocations_for_leased_agent(leased_agent_id)
+        self.cancel_remote_home_extension_invocations_for_leased_agent(&leased_agent_id)
             .await;
         Ok(cancellation)
     }
