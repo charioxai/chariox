@@ -216,6 +216,8 @@ pub struct PendingPromptSubmission {
     updated_at_ms: u64,
     #[serde(default, skip_serializing, skip_deserializing)]
     private_metadata: Option<Box<PromptPrivateMetadata>>,
+    #[serde(skip)]
+    remote_steer_reservation: RemoteSteerReservation,
     prompt_origin: PromptOrigin,
     external_provider: Option<String>,
     external_provider_session_id: Option<String>,
@@ -291,6 +293,7 @@ impl PromptQueueItem {
             created_at_ms: now,
             updated_at_ms: now,
             private_metadata: None,
+            remote_steer_reservation: RemoteSteerReservation::default(),
             status,
             prompt_origin: PromptOrigin::Chariox,
             external_provider: None,
