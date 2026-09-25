@@ -10,6 +10,338 @@ mod capability_response_ordering;
 mod meta_forwarding_lock;
 
 #[test]
+fn home_room_agent_uses_remote_environment_worker_browser_and_web_view() {
+    run_test(check_home_room_agent_uses_remote_environment_worker_browser_and_web_view);
+}
+
+async fn check_home_room_agent_uses_remote_environment_worker_browser_and_web_view() {
+    let mut fixture = LiveWorker::start_configured(false, true).await;
+    let check = std::panic::AssertUnwindSafe(async {
+        let (room, attachment_id, viewer_public_key) =
+            prepare_cross_worker_room_display(&fixture).await;
+        let started = dispatch_json(
+            &fixture.home,
+            json!({"StartRoomEnvironment": {
+                "session_id": &room,
+                "viewport": {
+                    "css_width":1280, "css_height":800, "device_scale_factor":1,
+                    "desktop_pixel_width":1280, "desktop_pixel_height":800
+                }
+            }}),
+        )
+        .await
+        .expect("start the home-owned Room Environment on worker A");
+        let started_environment = &started["RoomEnvironmentUpdated"]["environment"];
+        assert_eq!(started_environment["session_id"], room);
+        assert_eq!(started_environment["lifecycle"], "ready");
+        let environment_id = started_environment["environment_id"]
+            .as_str()
+            .expect("Room Environment identity")
+            .to_string();
+        let initial_tab_id = started_environment["focused_tab_id"]
+            .as_str()
+            .expect("initial stable Room Tab")
+            .to_string();
+
+        let spawned = dispatch_json(
+            &fixture.home,
+            json!({"SpawnAgent": {
+                "session_id": &room,
+                "provider": "managed-dev-stub",
+                "model": "runtime-mcp-idle"
+            }}),
+        )
+        .await
+        .expect("spawn the Room agent on the home kernel");
+        let home_agent_id = spawned["AgentSpawned"]["agent"]["id"]
+            .as_str()
+            .expect("home Room agent identity")
+            .to_string();
+        assert!(
+            spawned["AgentSpawned"]["agent"]["remote_execution"].is_null(),
+            "the matrix row must keep the agent on the home kernel"
+        );
+
+        let launched = dispatch_json(
+            &fixture.home,
+            json!({"LaunchProviderRun": {
+                "session_id": &room,
+                "agent_id": &home_agent_id,
+                "adapter_key": "managed-dev-stub",
+                "provider": "managed-dev-stub",
+                "account_profile": "default",
+                "model": "runtime-mcp-idle",
+                "variant": null,
+                "structured_endpoint": null,
+                "provider_session_id": null,
+                "native_tui": false
+            }}),
+        )
+        .await
+        .expect("launch the local Room agent provider run");
+        assert!(
+            launched.get("ProviderRunLaunchAccepted").is_some(),
+            "expected a home-kernel provider run acceptance: {launched}"
+        );
+        let provider_run_id = {
+            let app = fixture.home.app.lock().await;
+            let agent = app
+                .agents()
+                .get_agent(&home_agent_id)
+                .expect("home Room agent remains kernel-owned");
+            assert!(agent.remote_execution().is_none());
+            app.providers()
+                .get_latest_run_for_agent(&room, &home_agent_id)
+                .expect("provider run attached to the home Room agent")
+                .id()
+                .to_string()
+        };
+        let token = fixture
+            .home
+            .runtime_state
+            .runtime_mcp_auth_token_for_provider_run(&provider_run_id)
+            .expect("home provider runtime tool token");
+        let advertised = fixture
+            .home
+            .runtime_state
+            .runtime_tool_specs_for_auth_token(&token)
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect::<std::collections::BTreeSet<_>>();
+        for tool in ["slice_open_url", "slice_browser_status", "slice_mouse"] {
+            assert!(advertised.contains(tool), "home Room agent is missing {tool}");
+        }
+
+        let url = "https://home-agent.remote-environment.test/";
+        let opened = fixture
+            .home
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(
+                &token,
+                "slice_open_url",
+                json!({"url": url}),
+            )
+            .await
+            .expect("home agent Browser call must route to worker A through home admission");
+        assert!(opened.ok, "{:?}", opened.payload);
+        assert_eq!(opened.payload["session_id"], room);
+        assert_eq!(opened.payload["agent_id"], home_agent_id);
+        assert_eq!(opened.payload["actor_id"], format!("agent:{home_agent_id}"));
+        assert_eq!(opened.payload["browser"]["url"], url);
+        let browser_action_id = opened.payload["action_id"]
+            .as_str()
+            .expect("home-admitted Browser action ID")
+            .to_string();
+
+        let status = fixture
+            .home
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(&token, "slice_browser_status", json!({}))
+            .await
+            .expect("home agent must observe worker A's Browser state");
+        assert!(status.ok, "{:?}", status.payload);
+        assert_eq!(status.payload["environment_id"], environment_id);
+        assert_eq!(status.payload["tab_id"], initial_tab_id);
+        assert_eq!(status.payload["url"], url);
+
+        let computer = fixture
+            .home
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(
+                &token,
+                "slice_mouse",
+                json!({"action":"move","x":8,"y":8}),
+            )
+            .await
+            .expect("home agent Computer call must reach the same worker A Environment");
+        assert!(computer.ok, "{:?}", computer.payload);
+        assert_eq!(computer.payload["session_id"], room);
+        assert_eq!(computer.payload["environment_id"], environment_id);
+        assert_eq!(computer.payload["agent_id"], home_agent_id);
+        assert_eq!(computer.payload["actor_id"], format!("agent:{home_agent_id}"));
+        assert_eq!(computer.payload["action_kind"], "pointer_move");
+        let computer_action_id = computer.payload["action_id"]
+            .as_str()
+            .expect("home-admitted Computer action ID")
+            .to_string();
+
+        let environment = fixture
+            .home
+            .runtime_state
+            .room_environment_snapshot(&room)
+            .expect("home Room retains its worker A Environment ledger");
+        assert_eq!(environment.environment_id, environment_id);
+        assert_eq!(environment.focused_tab_id.as_deref(), Some(initial_tab_id.as_str()));
+        let action_count_before_denials = environment.actions.len();
+        let tab = environment
+            .tabs
+            .iter()
+            .find(|tab| tab.tab_id == initial_tab_id)
+            .expect("same stable Room Tab after Browser and Computer calls");
+        assert_eq!(tab.url, url);
+        for (action_id, expected_kind) in [
+            (&browser_action_id, "navigate"),
+            (&computer_action_id, "pointer_move"),
+        ] {
+            let action = environment
+                .actions
+                .iter()
+                .find(|action| &action.action_id == action_id)
+                .expect("home Room action history records the provider call");
+            assert_eq!(
+                action.actor_id,
+                crate::session::agent_environment_actor_id(&home_agent_id)
+            );
+            assert_eq!(action.kind, expected_kind);
+            assert_eq!(
+                action.state,
+                crate::session::EnvironmentActionState::Completed
+            );
+        }
+
+        let binding = dispatch_json(
+            &fixture.home,
+            json!({"GetRoomEnvironmentSlice":{"session_id": &room}}),
+        )
+        .await
+        .expect("read the Room's authoritative worker A Environment binding");
+        let binding = &binding["RoomEnvironmentSlice"]["binding"];
+        assert_eq!(binding["session_id"], room);
+        assert_eq!(binding["slice_id"], "slice-1");
+        assert_eq!(
+            binding["owner_kernel_id"],
+            fixture.home_state.config.daemon_id
+        );
+        assert_eq!(binding["worker_kernel_ref"], "desktop-worker");
+        let display = dispatch_json(
+            &fixture.home,
+            json!({"GetSliceDisplayEndpoint": {
+                "slice_ref":"desktop",
+                "session_id": &room,
+                "attachment_id": attachment_id,
+                "viewer_public_key": viewer_public_key
+            }}),
+        )
+        .await
+        .expect("Room Web View must route through its worker A binding");
+        let endpoint = &display["SliceDisplayEndpoint"]["endpoint"];
+        assert_eq!(endpoint["slice_id"], binding["slice_id"]);
+        assert_eq!(endpoint["kind"], "selkies");
+        assert_eq!(endpoint["stream_protocol"], "chariox-display-v1");
+        assert_eq!(
+            endpoint["peer_public_key"],
+            fixture._worker_state.config.relay_public_key
+        );
+        let stream_id = endpoint["stream_id"].as_str().expect("Web View stream ID");
+        assert_eq!(
+            endpoint["url"],
+            format!("ws://{}/display/{stream_id}/stream", fixture.address)
+        );
+
+        let environment_worker_kernel_id = fixture._worker_state.config.daemon_id.clone();
+        let environment_worker_machine_id = fixture._worker_state.config.host_machine_id.clone();
+        let forged_context = crate::transport::relay_peer::RemoteExtensionInvocationContext {
+            home_kernel_id: fixture.home_state.config.daemon_id.clone(),
+            home_session_id: room.clone(),
+            home_agent_id: home_agent_id.clone(),
+            leased_agent_id: "forged-lease-for-home-agent".to_string(),
+            worker_provider_run_id: "forged-provider-run".to_string(),
+            worker_kernel_id: Some(environment_worker_kernel_id),
+            worker_machine_id: Some(environment_worker_machine_id),
+        };
+        let wrong_room = send_peer_request_via_temporary_connection(
+            &fixture._worker_state.config,
+            ClientTarget {
+                daemon_id: Some(fixture.home_state.config.daemon_id.clone()),
+                daemon_alias: None,
+            },
+            RelayPeerRequest::ForwardRoomBrowserRuntimeTool {
+                context: crate::transport::relay_peer::RemoteExtensionInvocationContext {
+                    home_session_id: fixture.rooms[1].clone(),
+                    ..forged_context.clone()
+                },
+                call: crate::transport::relay_peer::RemoteRoomBrowserRuntimeToolCall {
+                    tool_name: "slice_open_url".to_string(),
+                    arguments: json!({"url":"https://wrong-room.must-not-open/"}),
+                },
+            },
+        )
+        .await
+        .expect_err("worker A must not substitute a different Room's browser");
+        assert!(
+            wrong_room
+                .to_string()
+                .contains("agent does not belong to invocation session"),
+            "wrong-Room access must fail at home admission: {wrong_room}"
+        );
+        let forged_lease = send_peer_request_via_temporary_connection(
+            &fixture._worker_state.config,
+            ClientTarget {
+                daemon_id: Some(fixture.home_state.config.daemon_id.clone()),
+                daemon_alias: None,
+            },
+            RelayPeerRequest::ForwardRoomBrowserRuntimeTool {
+                context: forged_context,
+                call: crate::transport::relay_peer::RemoteRoomBrowserRuntimeToolCall {
+                    tool_name: "slice_open_url".to_string(),
+                    arguments: json!({"url":"https://forged-lease.must-not-open/"}),
+                },
+            },
+        )
+        .await
+        .expect_err("a fabricated lease must not authorize a home-local agent");
+        assert!(
+            forged_lease.to_string().contains("agent is not remote-backed"),
+            "forged lease must fail against the kernel-owned home agent: {forged_lease}"
+        );
+
+        let after_denials = fixture
+            .home
+            .runtime_state
+            .room_environment_snapshot(&room)
+            .expect("denied relay substitutions leave the Room Environment intact");
+        assert_eq!(after_denials.environment_id, environment_id);
+        assert_eq!(
+            after_denials.focused_tab_id.as_deref(),
+            Some(initial_tab_id.as_str())
+        );
+        assert_eq!(
+            after_denials.actions.len(),
+            action_count_before_denials,
+            "denied Room and forged-lease requests must not enter action history"
+        );
+        assert_eq!(
+            after_denials
+                .tabs
+                .iter()
+                .find(|tab| tab.tab_id == initial_tab_id)
+                .expect("same Room Tab after denials")
+                .url,
+            url
+        );
+    })
+    .catch_unwind()
+    .await;
+    let controller_cleanup = fixture
+        .worker
+        .runtime_state
+        .shutdown_browser_controller_process()
+        .await;
+    let provider_cleanup = fixture
+        .home
+        .app
+        .lock()
+        .await
+        .teardown_provider_processes(Some("managed-dev-stub"), true);
+    fixture.stop().await;
+    controller_cleanup.expect("stop worker A's Browser Controller");
+    provider_cleanup.expect("stop the home Room agent provider");
+    if let Err(panic) = check {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+#[test]
 fn room_browser_on_environment_worker_serves_remote_agent_and_web_view() {
     run_test(check_room_browser_on_environment_worker_serves_remote_agent_and_web_view);
 }
