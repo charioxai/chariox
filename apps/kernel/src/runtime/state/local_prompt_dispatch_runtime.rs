@@ -2674,8 +2674,8 @@ impl KernelRuntimeState {
                         &dispatch.provider_run_id,
                         recipients,
                         false,
-                )
-                .await?;
+                    )
+                    .await?;
                 if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
                     return Ok(false);
                 }
@@ -2987,7 +2987,7 @@ impl KernelRuntimeState {
                         &dispatch.prompt_id,
                         &dispatch.provider_run_id,
                     )
-                    else {
+                else {
                     return Ok(false);
                 };
                 owned.note_prompt_started(&dispatch.provider_run_id);

@@ -437,7 +437,9 @@ impl KernelRuntimeState {
             })
             .await?;
         let _provider_lane = match provider_run_id.as_deref() {
-            Some(provider_run_id) => Some(self.provider_runtime_lanes.acquire(provider_run_id).await),
+            Some(provider_run_id) => {
+                Some(self.provider_runtime_lanes.acquire(provider_run_id).await)
+            }
             None => None,
         };
         self.with_app_side_effect(move |app| {
@@ -457,7 +459,10 @@ impl KernelRuntimeState {
         execution_lease_id: &str,
     ) -> Result<crate::transport::relay_peer::LeasedPromptReceipt, DaemonError> {
         let _operation = self.leased_agent_operations.lock(leased_agent_id).await;
-        let _provider_lane = self.provider_runtime_lanes.acquire(worker_provider_run_id).await;
+        let _provider_lane = self
+            .provider_runtime_lanes
+            .acquire(worker_provider_run_id)
+            .await;
         let leased_agent_id = leased_agent_id.to_string();
         let steer_id = steer_id.to_string();
         let target_home_prompt_id = target_home_prompt_id.to_string();
@@ -597,8 +602,7 @@ impl KernelRuntimeState {
                 })?;
             let _permit = self.provider_runtime_lanes.acquire(&provider_run_id).await;
             self.with_app_side_effect(|app| {
-                RemoteLeaseRuntime::new(app)
-                    .consume_leased_agent_authorization(&leased_agent_id)
+                RemoteLeaseRuntime::new(app).consume_leased_agent_authorization(&leased_agent_id)
             })
             .await?;
             let prepared_result = self
@@ -653,11 +657,11 @@ impl KernelRuntimeState {
                         .with_app_side_effect(|app| {
                             RemoteLeaseRuntime::new(app)
                                 .mark_leased_prompt_steer_definitely_not_accepted(
-                                &leased_agent_id,
-                                &steer_id,
-                                &target_home_prompt_id,
-                                &prepared_provider_run_id,
-                            )
+                                    &leased_agent_id,
+                                    &steer_id,
+                                    &target_home_prompt_id,
+                                    &prepared_provider_run_id,
+                                )
                         })
                         .await;
                     return Err(error);
@@ -666,7 +670,10 @@ impl KernelRuntimeState {
             if !reserved {
                 return Ok((provider_run_id, true));
             }
-            match self.enqueue_prompt_dispatch_with_acceptance(&dispatch).await {
+            match self
+                .enqueue_prompt_dispatch_with_acceptance(&dispatch)
+                .await
+            {
                 Ok(true) => {
                     self.with_app_side_effect(|app| {
                         RemoteLeaseRuntime::new(app).mark_leased_prompt_steer_accepted(
@@ -683,11 +690,11 @@ impl KernelRuntimeState {
                         .with_app_side_effect(|app| {
                             RemoteLeaseRuntime::new(app)
                                 .mark_leased_prompt_steer_definitely_not_accepted(
-                                &leased_agent_id,
-                                &steer_id,
-                                &target_home_prompt_id,
-                                &prepared_provider_run_id,
-                            )
+                                    &leased_agent_id,
+                                    &steer_id,
+                                    &target_home_prompt_id,
+                                    &prepared_provider_run_id,
+                                )
                         })
                         .await?;
                     if !rejected {

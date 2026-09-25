@@ -55,8 +55,8 @@ mod provider_relaunch_runtime;
 mod provider_reload_pending_runtime;
 mod provider_run_read_state;
 mod publication_activation;
-mod room_browser_manifest_sync;
 mod room_browser_controller;
+mod room_browser_manifest_sync;
 mod room_computer_observation;
 mod room_display;
 mod room_environment_placement;
@@ -307,11 +307,11 @@ mod provider_prompt_failure_runtime;
 mod provider_prompt_settlement_runtime;
 mod provider_substitute_runtime;
 mod relay_peer_runtime_state;
+mod remote_native_provider_launch;
 mod remote_prompt_dispatch_runtime;
 mod remote_prompt_lifecycle_runtime;
 mod remote_prompt_owned_state;
 mod remote_prompt_worker_submission_runtime;
-mod remote_native_provider_launch;
 mod remote_provider_failure_runtime;
 mod restart_recovery_runtime;
 pub(crate) use restart_recovery_runtime::is_internal_recovery_prompt_attachment;
@@ -542,14 +542,11 @@ impl KernelRuntimeState {
             );
         let config = config_projection.snapshot();
         let managed_activity_kernel_id = (has_managed_kernel_registration
-            || (config.kernel_runtime_role
-                == crate::config::KernelRuntimeRole::RemoteLeaseWorker
-                && std::env::var_os(
-                    crate::managed_bootstrap::worker::ACTIVITY_RECEIPT_ENV,
-                )
-                .filter(|value| !value.is_empty())
-                .map(std::path::PathBuf::from)
-                .is_some_and(|path| path.exists())))
+            || (config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker
+                && std::env::var_os(crate::managed_bootstrap::worker::ACTIVITY_RECEIPT_ENV)
+                    .filter(|value| !value.is_empty())
+                    .map(std::path::PathBuf::from)
+                    .is_some_and(|path| path.exists())))
         .then(|| config.daemon_id.clone());
         let managed_activity_transitions =
             managed_activity_persistence::ManagedActivityTransitionState::new(

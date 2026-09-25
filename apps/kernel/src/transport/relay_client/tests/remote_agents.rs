@@ -678,7 +678,8 @@ fn remote_agent_message_reply_after_target_completion_does_not_commit_stale_stee
 }
 
 #[test]
-fn remote_queued_prompt_steer_reserves_queue_head_and_keeps_home_lock_available_while_worker_reply_waits() {
+fn remote_queued_prompt_steer_reserves_queue_head_and_keeps_home_lock_available_while_worker_reply_waits(
+) {
     run_async_with_large_test_stack("remote-queued-steer-home-lock", || {
         remote_machine_agents_execute_prompts_through_the_home_session_async(
             false, false, true, false, false, false,
@@ -1121,7 +1122,9 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                     .is_none());
             }
             drop(worker_app_guard);
-            let direct_message_result = dispatch.await.expect("agent message dispatch task should join");
+            let direct_message_result = dispatch
+                .await
+                .expect("agent message dispatch task should join");
             held_reply_observation = Some((relay_reply_is_waiting, home_app_lock_available));
             if finish_target_before_direct_reply {
                 assert!(
@@ -1146,7 +1149,9 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                 let _ = shutdown_home_tx.send(true);
                 let _ = shutdown_worker_tx.send(true);
                 connector_home.await.expect("home connector should join");
-                connector_worker.await.expect("worker connector should join");
+                connector_worker
+                    .await
+                    .expect("worker connector should join");
                 let _ = server_shutdown_tx.send(());
                 server_task.await.expect("server task should join");
                 return;
@@ -1301,7 +1306,8 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                 .test_lose_next_peer_response_payload();
         }
         let dispatch_router = Arc::clone(&router);
-        let dispatch = tokio::spawn(async move { dispatch_router.dispatch(command, request).await });
+        let dispatch =
+            tokio::spawn(async move { dispatch_router.dispatch(command, request).await });
         let relay_reply_is_waiting = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if registry.read().await.pending_request_count() > pending_before {
@@ -1367,7 +1373,10 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                     .expect("send intent must be uncertain before the relay response arrives");
                 assert_eq!(queued.id(), queued_prompt_id);
                 assert_eq!(uncertainty.0, "prompt-1");
-                assert_eq!(uncertainty.1.as_deref(), Some(worker_provider_run_id.as_str()));
+                assert_eq!(
+                    uncertainty.1.as_deref(),
+                    Some(worker_provider_run_id.as_str())
+                );
 
                 let durable = crate::durable_prompt_state::DurablePromptStateEventPayload::capture(
                     &snapshot,
@@ -1392,16 +1401,18 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                 );
                 let public_session = serde_json::to_vec(&snapshot)
                     .expect("home prompt state should serialize for restart");
-                let mut restarted_session = serde_json::from_slice::<
-                    crate::session::RuntimeSession,
-                >(&public_session)
-                .expect("home prompt state should deserialize for restart");
-                restarted_session
-                    .restore_durable_prompt_private_states(&durable.private_states);
-                let restarted_prompt_owner = crate::runtime::prompt_state::PromptStateOwner::default();
-                assert!(restarted_prompt_owner
-                    .peek_next_queued_prompt(&restarted_session, &remote_agent_id)
-                    .is_none(), "restart must not promote an uncertain queued steer");
+                let mut restarted_session =
+                    serde_json::from_slice::<crate::session::RuntimeSession>(&public_session)
+                        .expect("home prompt state should deserialize for restart");
+                restarted_session.restore_durable_prompt_private_states(&durable.private_states);
+                let restarted_prompt_owner =
+                    crate::runtime::prompt_state::PromptStateOwner::default();
+                assert!(
+                    restarted_prompt_owner
+                        .peek_next_queued_prompt(&restarted_session, &remote_agent_id)
+                        .is_none(),
+                    "restart must not promote an uncertain queued steer"
+                );
                 assert!(restarted_prompt_owner
                     .activate_next_queued_prompt_with_prompt_id(
                         &restarted_session,
@@ -1441,7 +1452,10 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
         let dispatch_result = dispatch
             .await
             .expect("queued steer dispatch task should join");
-        assert!(relay_reply_is_waiting, "worker reply should be held by its app lock");
+        assert!(
+            relay_reply_is_waiting,
+            "worker reply should be held by its app lock"
+        );
         assert!(
             home_app_lock_available,
             "home app lock must remain available during the relay round trip"
@@ -1505,7 +1519,10 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                 "promotion must allocate one new active-turn identity"
             );
             assert_eq!(active_prompt.pending_prompt_id(), None);
-            assert_eq!(queued_count, 0, "the head must be removed from the queue once");
+            assert_eq!(
+                queued_count, 0,
+                "the head must be removed from the queue once"
+            );
             let steer_deliveries = app_worker
                 .lock()
                 .await
@@ -1523,7 +1540,9 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
             let _ = shutdown_home_tx.send(true);
             let _ = shutdown_worker_tx.send(true);
             connector_home.await.expect("home connector should join");
-            connector_worker.await.expect("worker connector should join");
+            connector_worker
+                .await
+                .expect("worker connector should join");
             let _ = server_shutdown_tx.send(());
             server_task.await.expect("server task should join");
             return;
@@ -1562,8 +1581,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                 "the worker must accept the steer before its response payload is lost"
             );
 
-            let steering_merge_key =
-                crate::history::steering_prompt_merge_key(&queued_prompt_id);
+            let steering_merge_key = crate::history::steering_prompt_merge_key(&queued_prompt_id);
             let mut reconciled = false;
             for _ in 0..240 {
                 let (queued, active, matching_history) = {
@@ -1628,9 +1646,19 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                     .collect::<Vec<_>>();
                 (queued, active, history)
             };
-            assert!(!queued, "receipt reconciliation must settle the exact queued ID");
-            assert!(!active, "accepted steer reconciliation must not promote a second prompt");
-            assert_eq!(history.len(), 1, "history reconciliation must be idempotent");
+            assert!(
+                !queued,
+                "receipt reconciliation must settle the exact queued ID"
+            );
+            assert!(
+                !active,
+                "accepted steer reconciliation must not promote a second prompt"
+            );
+            assert_eq!(
+                history.len(),
+                1,
+                "history reconciliation must be idempotent"
+            );
             assert_eq!(
                 history[0].provider_run_id.as_deref(),
                 Some(projected_provider_run_id.as_str()),
@@ -1643,15 +1671,19 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                 .input_records()
                 .into_iter()
                 .filter(|record| {
-                    String::from_utf8_lossy(&record.bytes)
-                        .contains("REMOTE_QUEUE_STEER_DELIVERY")
+                    String::from_utf8_lossy(&record.bytes).contains("REMOTE_QUEUE_STEER_DELIVERY")
                 })
                 .count();
-            assert_eq!(worker_steer_deliveries, 1, "receipt recovery must never resend the steer");
+            assert_eq!(
+                worker_steer_deliveries, 1,
+                "receipt recovery must never resend the steer"
+            );
             let _ = shutdown_home_tx.send(true);
             let _ = shutdown_worker_tx.send(true);
             connector_home.await.expect("home connector should join");
-            connector_worker.await.expect("worker connector should join");
+            connector_worker
+                .await
+                .expect("worker connector should join");
             let _ = server_shutdown_tx.send(());
             server_task.await.expect("server task should join");
             return;

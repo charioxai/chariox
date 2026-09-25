@@ -89,9 +89,7 @@ impl KernelRuntimeState {
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
             for (session_id, agent_id, prompt_id) in uncertain_steer_targets {
                 state.spawn_remote_queued_steer_receipt_reconciliation(
-                    session_id,
-                    agent_id,
-                    prompt_id,
+                    session_id, agent_id, prompt_id,
                 );
             }
             let mut attempt = 0_u32;
@@ -279,7 +277,9 @@ impl KernelRuntimeState {
             .collect()
     }
 
-    fn durable_restart_uncertain_remote_steer_targets(&self) -> BTreeSet<DurableRestartRecoveryTarget> {
+    fn durable_restart_uncertain_remote_steer_targets(
+        &self,
+    ) -> BTreeSet<DurableRestartRecoveryTarget> {
         self.owned
             .session_store
             .list_all_sessions()
@@ -1740,7 +1740,9 @@ mod tests {
             })
             .expect("remote prompt should be accepted")
             .expect("remote binding should produce a dispatch");
-        let dispatch = started.remote_dispatch.expect("remote dispatch should exist");
+        let dispatch = started
+            .remote_dispatch
+            .expect("remote dispatch should exist");
         runtime
             .owned
             .mark_active_prompt_delivery(

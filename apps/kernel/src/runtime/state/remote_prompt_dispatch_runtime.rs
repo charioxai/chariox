@@ -58,9 +58,9 @@ fn remote_prompt_receipt_action(
         ),
         crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerDispatching
         | crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerAccepted
-        | crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerRejected => Err(
-            "worker returned a queued-steer receipt while reconciling an active prompt",
-        ),
+        | crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerRejected => {
+            Err("worker returned a queued-steer receipt while reconciling an active prompt")
+        }
     }
 }
 
@@ -153,9 +153,9 @@ impl KernelRuntimeState {
             .prompt_state_owner
             .active_prompt_for_agent(&session, agent_id);
         if agent.remote_execution().is_some()
-            && active_prompt.as_ref().is_some_and(|prompt| {
-                prompt.status() == crate::session::PromptStatus::Cancelling
-            })
+            && active_prompt
+                .as_ref()
+                .is_some_and(|prompt| prompt.status() == crate::session::PromptStatus::Cancelling)
         {
             let prompt = active_prompt.as_ref().expect("checked above");
             match prompt.durable_delivery_phase() {
@@ -394,13 +394,12 @@ impl KernelRuntimeState {
         dispatch: &crate::app::KernelRemotePromptDispatch,
         expected_provider_run_id: Option<&str>,
     ) -> Result<(), DaemonError> {
-        let expected_provider_run_id = expected_provider_run_id.ok_or_else(|| {
-            DaemonError::LocalTransport {
+        let expected_provider_run_id =
+            expected_provider_run_id.ok_or_else(|| DaemonError::LocalTransport {
                 operation: "resume remote prompt cancellation",
                 message: "delivered cancellation has no durable worker provider-run identity"
                     .to_string(),
-            }
-        })?;
+            })?;
         if !self.remote_prompt_receipt_prompt_is_current(dispatch)? {
             return Err(DaemonError::NoActivePrompt {
                 session_id: dispatch.session_id.clone(),
@@ -412,8 +411,7 @@ impl KernelRuntimeState {
                 operation: "resume remote prompt cancellation",
                 message: detail,
             })?;
-        if binding_before.active_worker_provider_run_id.as_deref()
-            != Some(expected_provider_run_id)
+        if binding_before.active_worker_provider_run_id.as_deref() != Some(expected_provider_run_id)
         {
             return Err(DaemonError::LocalTransport {
                 operation: "resume remote prompt cancellation",
@@ -427,12 +425,13 @@ impl KernelRuntimeState {
                 session_id: dispatch.session_id.clone(),
             });
         }
-        let action = remote_prompt_receipt_action(&dispatch.prompt_id, receipt).map_err(
-            |detail| DaemonError::LocalTransport {
-                operation: "resume remote prompt cancellation",
-                message: detail.to_string(),
-            },
-        )?;
+        let action =
+            remote_prompt_receipt_action(&dispatch.prompt_id, receipt).map_err(|detail| {
+                DaemonError::LocalTransport {
+                    operation: "resume remote prompt cancellation",
+                    message: detail.to_string(),
+                }
+            })?;
         let binding_after = self
             .remote_prompt_receipt_binding(dispatch)
             .map_err(|detail| DaemonError::LocalTransport {
@@ -473,12 +472,12 @@ impl KernelRuntimeState {
                     operation: "resume remote prompt cancellation",
                     message: detail,
                 })?;
-                let binding = self.remote_prompt_receipt_binding(dispatch).map_err(|detail| {
-                    DaemonError::LocalTransport {
+                let binding = self
+                    .remote_prompt_receipt_binding(dispatch)
+                    .map_err(|detail| DaemonError::LocalTransport {
                         operation: "resume remote prompt cancellation",
                         message: detail,
-                    }
-                })?;
+                    })?;
                 let session = self.owned.session_store.get_session(&dispatch.session_id)?;
                 if let Some(prompt) = self
                     .owned

@@ -1533,8 +1533,8 @@ mod tests {
                     execution_lease_id: Some("lease-1".to_string()),
                 }),
             };
-            let snapshot = serde_json::to_value(&response)
-                .expect("queued-steer receipt should serialize");
+            let snapshot =
+                serde_json::to_value(&response).expect("queued-steer receipt should serialize");
             assert_eq!(
                 snapshot,
                 serde_json::json!({

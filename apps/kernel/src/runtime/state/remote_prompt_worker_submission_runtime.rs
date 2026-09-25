@@ -6,8 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 const REMOTE_PROMPT_TRANSPORT_RETRY_WINDOW: std::time::Duration =
     std::time::Duration::from_secs(30);
-const REMOTE_PROMPT_RECEIPT_QUERY_TIMEOUT: std::time::Duration =
-    std::time::Duration::from_secs(5);
+const REMOTE_PROMPT_RECEIPT_QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Debug)]
 enum RemotePromptSubmissionOutcome {
@@ -179,9 +178,7 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
                         "transport_error": error.to_string(),
                     }),
                 );
-                return state
-                    .reconcile_remote_prompt_worker_receipt(dispatch)
-                    .await;
+                return state.reconcile_remote_prompt_worker_receipt(dispatch).await;
             }
         }
     }
@@ -244,7 +241,8 @@ pub(super) async fn query_remote_queued_steer_receipt(
         })
         .ok_or_else(|| DaemonError::LocalTransport {
             operation: "query queued steer receipt",
-            message: "the current remote worker binding no longer matches the queued steer".to_string(),
+            message: "the current remote worker binding no longer matches the queued steer"
+                .to_string(),
         })?;
     if !remote_execution.relay_peer_protocol_compatible() {
         return Err(DaemonError::LocalTransport {
@@ -300,12 +298,7 @@ pub(super) async fn query_remote_prompt_worker_receipt_with_transport<F, Fut>(
     send_request: F,
 ) -> Result<Option<crate::transport::relay_peer::LeasedPromptReceipt>, DaemonError>
 where
-    F: FnOnce(
-            crate::config::DaemonConfig,
-            ClientTarget,
-            RelayPeerRequest,
-        ) -> Fut
-        + Send,
+    F: FnOnce(crate::config::DaemonConfig, ClientTarget, RelayPeerRequest) -> Fut + Send,
     Fut: Future<Output = Result<RelayPeerResponse, DaemonError>> + Send,
 {
     let agent = state.owned.agent_store.get_agent(&dispatch.agent_id)?;
@@ -368,7 +361,10 @@ fn ensure_remote_prompt_dispatching(
     state: &KernelRuntimeState,
     dispatch: &crate::app::KernelRemotePromptDispatch,
 ) -> Result<(), DaemonError> {
-    let session = state.owned.session_store.get_session(&dispatch.session_id)?;
+    let session = state
+        .owned
+        .session_store
+        .get_session(&dispatch.session_id)?;
     let active = state
         .owned
         .prompt_state_owner
@@ -413,7 +409,10 @@ pub(super) fn persist_remote_prompt_reconciliation_pending(
     dispatch: &crate::app::KernelRemotePromptDispatch,
     pending: bool,
 ) -> Result<(), DaemonError> {
-    let session = state.owned.session_store.get_session(&dispatch.session_id)?;
+    let session = state
+        .owned
+        .session_store
+        .get_session(&dispatch.session_id)?;
     let previous = state
         .owned
         .prompt_state_owner
@@ -454,12 +453,7 @@ pub(super) fn persist_remote_prompt_reconciliation_pending(
         let _ = state
             .owned
             .prompt_state_owner
-            .replace_active_prompt_if_matches(
-                &session,
-                &dispatch.agent_id,
-                &replacement,
-                previous,
-            );
+            .replace_active_prompt_if_matches(&session, &dispatch.agent_id, &replacement, previous);
         let (active_prompt, queued_prompts) = state
             .owned
             .prompt_state_owner
@@ -479,7 +473,10 @@ pub(super) fn remote_prompt_reconciliation_pending(
     state: &KernelRuntimeState,
     dispatch: &crate::app::KernelRemotePromptDispatch,
 ) -> Result<bool, DaemonError> {
-    let session = state.owned.session_store.get_session(&dispatch.session_id)?;
+    let session = state
+        .owned
+        .session_store
+        .get_session(&dispatch.session_id)?;
     Ok(state
         .owned
         .prompt_state_owner
@@ -1289,8 +1286,7 @@ mod tests {
                 Some(root.join("artifacts").display().to_string());
             config.user_config.artifacts.operational.index_path =
                 Some(root.join("artifacts.db").display().to_string());
-            config.user_config.credential_vault.backend =
-                CredentialVaultBackend::CharioxEncrypted;
+            config.user_config.credential_vault.backend = CredentialVaultBackend::CharioxEncrypted;
             config.user_config.credential_vault.path =
                 root.join("credentials.vault").display().to_string();
             // A missing relay makes reaching transport distinguishable from failing credential
@@ -1487,9 +1483,8 @@ mod tests {
 
     impl Drop for WorkflowSubmissionFixture {
         fn drop(&mut self) {
-            let _ = crate::secret::lock_chariox_encrypted_vault(
-                &self.root.join("credentials.vault"),
-            );
+            let _ =
+                crate::secret::lock_chariox_encrypted_vault(&self.root.join("credentials.vault"));
             let _ = crate::secret::clear_vault_secret_process_cache();
             match self.previous_home.take() {
                 Some(value) => std::env::set_var("CHARIOX_HOME", value),
@@ -1765,9 +1760,7 @@ mod tests {
             .submit()
             .await
             .expect_err("workflow submit must reject a missing credential before transport");
-        assert!(error
-            .to_string()
-            .contains("remote Claude launch requires"));
+        assert!(error.to_string().contains("remote Claude launch requires"));
         assert!(!error.to_string().contains("relay_url is not configured"));
         assert!(!format!("{error:?}").contains(WORKFLOW_CREDENTIAL_CANARY));
     }
@@ -1797,7 +1790,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn remote_workflow_submit_admits_vaulted_token_or_active_worker_run_without_exposing_it() {
+    async fn remote_workflow_submit_admits_vaulted_token_or_active_worker_run_without_exposing_it()
+    {
         let _env = crate::env_lock::lock();
         for credential_state in [
             WorkflowCredentialState::Unlocked,

@@ -2184,11 +2184,9 @@ mod tests {
         let encrypted_response = outcome
             .encrypted_response
             .expect("worker should return an encrypted response");
-        let decrypted = relay_crypto::decrypt_payload_for_private_key(
-            source_private_key,
-            &encrypted_response,
-        )
-        .expect("response should decrypt");
+        let decrypted =
+            relay_crypto::decrypt_payload_for_private_key(source_private_key, &encrypted_response)
+                .expect("response should decrypt");
         serde_json::from_slice(&decrypted.plaintext).expect("response should decode")
     }
 
@@ -2213,8 +2211,9 @@ mod tests {
 
     async fn lease_worker_receipt_query_returns_only_exact_active_prompt_without_mutation_inner() {
         let source_private_key = relay_crypto::generate_private_key_base64();
-        let source_public_key = relay_crypto::public_key_from_private_key_base64(&source_private_key)
-            .expect("home public key");
+        let source_public_key =
+            relay_crypto::public_key_from_private_key_base64(&source_private_key)
+                .expect("home public key");
         let source_thumbprint = public_key_thumbprint(&source_public_key);
         let mut config = lease_worker_config();
         config.accept_remote_leases = true;
@@ -2289,10 +2288,7 @@ mod tests {
         ));
         let state = Arc::new(RwLock::new(RelayClientState::default()));
         let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
-        let identity = scoped_machine_identity(
-            "machine-home-1",
-            Some(source_thumbprint),
-        );
+        let identity = scoped_machine_identity("machine-home-1", Some(source_thumbprint));
         let query = |home_prompt_id: &str| RelayPeerRequest::GetLeasedPromptReceipt {
             leased_agent_id: leased_agent.id.clone(),
             home_prompt_id: home_prompt_id.to_string(),
@@ -2394,12 +2390,8 @@ mod tests {
             }
         );
 
-        let input_count_before_late_request = worker_app
-            .lock()
-            .await
-            .terminal()
-            .input_records()
-            .len();
+        let input_count_before_late_request =
+            worker_app.lock().await.terminal().input_records().len();
         let late_steer = send_lease_worker_request(
             &router,
             &state,
@@ -2425,12 +2417,7 @@ mod tests {
         assert_eq!(late_steer_error.code, "transport_error");
         assert!(late_steer_error.message.contains("already rejected"));
         assert_eq!(
-            worker_app
-                .lock()
-                .await
-                .terminal()
-                .input_records()
-                .len(),
+            worker_app.lock().await.terminal().input_records().len(),
             input_count_before_late_request,
             "rejected late request must not reach provider input"
         );
