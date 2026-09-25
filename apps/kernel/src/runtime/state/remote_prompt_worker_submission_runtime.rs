@@ -1,10 +1,13 @@
 //! Relay worker submission and stale remote-agent binding refresh for remote prompts.
 
 use super::*;
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const REMOTE_PROMPT_TRANSPORT_RETRY_WINDOW: std::time::Duration =
     std::time::Duration::from_secs(30);
+const REMOTE_PROMPT_RECEIPT_QUERY_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(5);
 
 #[derive(Debug)]
 enum RemotePromptSubmissionOutcome {
@@ -176,9 +179,114 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
                         "transport_error": error.to_string(),
                     }),
                 );
-                return Err(remote_prompt_reconciliation_pending_error(dispatch, detail));
+                return state
+                    .reconcile_remote_prompt_worker_receipt(dispatch)
+                    .await;
             }
         }
+    }
+}
+
+pub(super) async fn query_remote_prompt_worker_receipt(
+    state: &KernelRuntimeState,
+    dispatch: &crate::app::KernelRemotePromptDispatch,
+) -> Result<Option<crate::transport::relay_peer::LeasedPromptReceipt>, DaemonError> {
+    query_remote_prompt_worker_receipt_with_transport(state, dispatch, |config, target, request| {
+        async move {
+            let relay_state = state.connected_relay_state_for_config(&config).await;
+            match relay_state {
+                Some(relay_state) => {
+                    crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
+                        &config,
+                        &relay_state,
+                        target,
+                        request,
+                        REMOTE_PROMPT_RECEIPT_QUERY_TIMEOUT,
+                    )
+                    .await
+                }
+                None => {
+                    crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+                        &config,
+                        target,
+                        request,
+                        REMOTE_PROMPT_RECEIPT_QUERY_TIMEOUT,
+                    )
+                    .await
+                }
+            }
+        }
+    })
+    .await
+}
+
+pub(super) async fn query_remote_prompt_worker_receipt_with_transport<F, Fut>(
+    state: &KernelRuntimeState,
+    dispatch: &crate::app::KernelRemotePromptDispatch,
+    send_request: F,
+) -> Result<Option<crate::transport::relay_peer::LeasedPromptReceipt>, DaemonError>
+where
+    F: FnOnce(
+            crate::config::DaemonConfig,
+            ClientTarget,
+            RelayPeerRequest,
+        ) -> Fut
+        + Send,
+    Fut: Future<Output = Result<RelayPeerResponse, DaemonError>> + Send,
+{
+    let agent = state.owned.agent_store.get_agent(&dispatch.agent_id)?;
+    let remote_execution = agent
+        .remote_execution()
+        .cloned()
+        .filter(|binding| {
+            binding.worker_kernel_id == dispatch.worker_kernel_id
+                && binding.leased_agent_id == dispatch.leased_agent_id
+        })
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "query leased prompt receipt",
+            message: "the current remote worker binding no longer matches the dispatch".to_string(),
+        })?;
+    if !remote_execution.relay_peer_protocol_compatible() {
+        return Err(DaemonError::LocalTransport {
+            operation: "query leased prompt receipt",
+            message: format!(
+                "worker `{}` does not support the leased prompt receipt query protocol",
+                dispatch.worker_kernel_id
+            ),
+        });
+    }
+    let relay_config = state
+        .with_app_side_effect(move |app| app.relay_config_for_remote_execution(&remote_execution))
+        .await;
+    let target = ClientTarget {
+        daemon_id: Some(dispatch.worker_kernel_id.clone()),
+        daemon_alias: None,
+    };
+    let request = RelayPeerRequest::GetLeasedPromptReceipt {
+        leased_agent_id: dispatch.leased_agent_id.clone(),
+        home_prompt_id: dispatch.prompt_id.clone(),
+    };
+    // The app lock used to derive relay configuration is released before invoking transport.
+    let response = send_request(relay_config, target, request).await?;
+    match response {
+        RelayPeerResponse::LeasedPromptReceiptQueried { receipt } => {
+            if let Some(receipt) = receipt.as_ref() {
+                if receipt.home_prompt_id != dispatch.prompt_id
+                    || receipt.worker_provider_run_id.trim().is_empty()
+                {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "query leased prompt receipt",
+                        message: "worker returned a conflicting or incomplete prompt receipt"
+                            .to_string(),
+                    });
+                }
+            }
+            Ok(receipt)
+        }
+        other => Err(DaemonError::LocalTransport {
+            operation: "query leased prompt receipt",
+            message: format!("unexpected worker receipt query response: {other:?}"),
+        }),
     }
 }
 
@@ -306,14 +414,14 @@ pub(super) fn remote_prompt_reconciliation_pending(
         .is_some_and(|prompt| prompt.durable_delivery_reconciliation_pending()))
 }
 
-fn remote_prompt_reconciliation_pending_error(
+pub(super) fn remote_prompt_reconciliation_pending_error(
     dispatch: &crate::app::KernelRemotePromptDispatch,
     detail: &str,
 ) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "remote prompt delivery reconciliation pending",
         message: format!(
-            "Remote delivery of prompt `{}` to worker kernel `{}` is uncertain: {detail}. The same prompt remains active in durable Dispatching state; it was not cancelled, promoted, or replayed. Do not retry until the worker's completed-prompt receipt is reconciled.",
+            "Remote delivery of prompt `{}` to worker kernel `{}` is uncertain: {detail}. The same prompt remains active in durable Dispatching state; it was not cancelled, promoted, or replayed. Do not replay until the exact worker receipt is reconciled.",
             dispatch.prompt_id, dispatch.worker_kernel_id
         ),
     }

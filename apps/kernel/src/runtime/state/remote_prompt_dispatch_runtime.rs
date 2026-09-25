@@ -5,8 +5,9 @@
 
 use super::remote_prompt_worker_submission_runtime::{
     persist_remote_prompt_reconciliation_pending, remote_prompt_error_is_reconciliation_pending,
+    query_remote_prompt_worker_receipt, remote_prompt_reconciliation_pending,
+    remote_prompt_reconciliation_pending_error, remote_prompt_transport_retry_delay,
     remote_prompt_error_should_refresh_binding, remote_prompt_error_should_retry_transport,
-    remote_prompt_reconciliation_pending, remote_prompt_transport_retry_delay,
     submit_remote_prompt_to_worker_with_binding_refresh,
 };
 use super::*;
@@ -26,6 +27,39 @@ struct RemotePromptAgentClaim {
 enum RemotePromptRunBindingRecovery {
     Recovered,
     Rejected,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RemotePromptReceiptAction {
+    AssociateActiveRun(String),
+    DrainCompletedProjection(String),
+}
+
+fn remote_prompt_receipt_action(
+    expected_prompt_id: &str,
+    receipt: Option<crate::transport::relay_peer::LeasedPromptReceipt>,
+) -> Result<RemotePromptReceiptAction, &'static str> {
+    let Some(receipt) = receipt else {
+        return Err("worker returned no receipt for the exact home prompt");
+    };
+    if receipt.home_prompt_id != expected_prompt_id {
+        return Err("worker receipt names a different home prompt");
+    }
+    if receipt.worker_provider_run_id.trim().is_empty() {
+        return Err("worker receipt has no provider-run identity");
+    }
+    match receipt.phase {
+        crate::transport::relay_peer::LeasedPromptReceiptPhase::Active => Ok(
+            RemotePromptReceiptAction::AssociateActiveRun(receipt.worker_provider_run_id),
+        ),
+        crate::transport::relay_peer::LeasedPromptReceiptPhase::Completed => Ok(
+            RemotePromptReceiptAction::DrainCompletedProjection(receipt.worker_provider_run_id),
+        ),
+    }
+}
+
+fn remote_prompt_receipt_action_requires_projection(action: &RemotePromptReceiptAction) -> bool {
+    matches!(action, RemotePromptReceiptAction::DrainCompletedProjection(_))
 }
 
 impl RemotePromptAgentClaim {
@@ -106,7 +140,29 @@ impl KernelRuntimeState {
                         == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
             })
         {
-            let _ = self.remote_prompt_recovery_dispatch_for_phase(&agent, delivery_phase)?;
+            let Some(dispatch) = self.remote_prompt_recovery_dispatch(&agent)? else {
+                return Ok(true);
+            };
+            match self.reconcile_remote_prompt_worker_receipt(&dispatch).await {
+                Ok(provider_run_id) => {
+                    self.finish_remote_prompt_dispatch(dispatch, Ok(provider_run_id))
+                        .await?;
+                }
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.remote_prompt_dispatch",
+                        "restart kept remote prompt held because its worker receipt was not reconciled",
+                        serde_json::json!({
+                            "session_id": dispatch.session_id,
+                            "agent_id": dispatch.agent_id,
+                            "worker_kernel_id": dispatch.worker_kernel_id,
+                            "leased_agent_id": dispatch.leased_agent_id,
+                            "prompt_id": dispatch.prompt_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+            }
             return Ok(true);
         }
         let active_worker_run = agent
@@ -147,6 +203,239 @@ impl KernelRuntimeState {
             .await?;
         self.spawn_remote_prompt_dispatch(dispatch);
         Ok(true)
+    }
+
+    pub(super) async fn reconcile_remote_prompt_worker_receipt(
+        &self,
+        dispatch: &crate::app::KernelRemotePromptDispatch,
+    ) -> Result<String, DaemonError> {
+        match self.remote_prompt_receipt_prompt_is_current(dispatch) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(DaemonError::NoActivePrompt {
+                    session_id: dispatch.session_id.clone(),
+                });
+            }
+            Err(error) => {
+                return Err(self.hold_remote_prompt_receipt_reconciliation(
+                    dispatch,
+                    format!("could not verify the active home prompt before querying: {error}"),
+                ));
+            }
+        }
+        let _ = persist_remote_prompt_reconciliation_pending(self, dispatch, true);
+        let binding_before = match self.remote_prompt_receipt_binding(dispatch) {
+            Ok(binding) => binding,
+            Err(detail) => {
+                return Err(self.hold_remote_prompt_receipt_reconciliation(dispatch, detail))
+            }
+        };
+        let receipt = match query_remote_prompt_worker_receipt(self, dispatch).await {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                let detail = format!("read-only worker receipt query failed: {error}");
+                return Err(self.hold_remote_prompt_receipt_reconciliation(dispatch, detail));
+            }
+        };
+        match self.remote_prompt_receipt_prompt_is_current(dispatch) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(DaemonError::NoActivePrompt {
+                    session_id: dispatch.session_id.clone(),
+                });
+            }
+            Err(error) => {
+                return Err(self.hold_remote_prompt_receipt_reconciliation(
+                    dispatch,
+                    format!("could not verify the active home prompt after querying: {error}"),
+                ));
+            }
+        }
+        let action = match remote_prompt_receipt_action(&dispatch.prompt_id, receipt) {
+            Ok(action) => action,
+            Err(detail) => {
+                return Err(self.hold_remote_prompt_receipt_reconciliation(dispatch, detail))
+            }
+        };
+        let binding_after = match self.remote_prompt_receipt_binding(dispatch) {
+            Ok(binding) => binding,
+            Err(detail) => {
+                return Err(self.hold_remote_prompt_receipt_reconciliation(dispatch, detail))
+            }
+        };
+        if !same_remote_prompt_worker_binding(&binding_before, &binding_after)
+            || binding_before.active_worker_provider_run_id
+                != binding_after.active_worker_provider_run_id
+        {
+            return Err(self.hold_remote_prompt_receipt_reconciliation(
+                dispatch,
+                "remote worker binding changed while its receipt was being queried",
+            ));
+        }
+        let completed = remote_prompt_receipt_action_requires_projection(&action);
+        let worker_provider_run_id = match action {
+            RemotePromptReceiptAction::AssociateActiveRun(provider_run_id) => provider_run_id,
+            RemotePromptReceiptAction::DrainCompletedProjection(provider_run_id) => {
+                provider_run_id
+            }
+        };
+        if let Err(error) = self
+            .owned
+            .agent_store
+            .set_remote_execution_active_worker_provider_run_id(
+                &dispatch.agent_id,
+                Some(worker_provider_run_id.clone()),
+            )
+        {
+            return Err(self.hold_remote_prompt_receipt_reconciliation(
+                dispatch,
+                format!("could not associate the verified worker provider run: {error}"),
+            ));
+        }
+        if let Err(error) = self.owned.session_snapshot(&dispatch.session_id) {
+            return Err(self.hold_remote_prompt_receipt_reconciliation(
+                dispatch,
+                format!("could not persist the verified worker provider run: {error}"),
+            ));
+        }
+
+        if completed {
+            if let Err(detail) = self
+                .drain_completed_remote_prompt_receipt_projection(
+                    dispatch,
+                    &worker_provider_run_id,
+                )
+                .await
+            {
+                return Err(self.hold_remote_prompt_receipt_reconciliation(dispatch, detail));
+            }
+        }
+        Ok(worker_provider_run_id)
+    }
+
+    fn remote_prompt_receipt_prompt_is_current(
+        &self,
+        dispatch: &crate::app::KernelRemotePromptDispatch,
+    ) -> Result<bool, DaemonError> {
+        let session = self.owned.session_store.get_session(&dispatch.session_id)?;
+        Ok(self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &dispatch.agent_id)
+            .is_some_and(|prompt| prompt.id() == dispatch.prompt_id))
+    }
+
+    fn remote_prompt_receipt_binding(
+        &self,
+        dispatch: &crate::app::KernelRemotePromptDispatch,
+    ) -> Result<crate::agent::RemoteAgentBinding, String> {
+        let agent = self
+            .owned
+            .agent_store
+            .get_agent(&dispatch.agent_id)
+            .map_err(|error| format!("could not read current remote worker binding: {error}"))?;
+        agent
+            .remote_execution()
+            .filter(|binding| {
+                binding.worker_kernel_id == dispatch.worker_kernel_id
+                    && binding.leased_agent_id == dispatch.leased_agent_id
+            })
+            .cloned()
+            .ok_or_else(|| {
+                "current remote worker binding conflicts with the uncertain dispatch".to_string()
+            })
+    }
+
+    fn hold_remote_prompt_receipt_reconciliation(
+        &self,
+        dispatch: &crate::app::KernelRemotePromptDispatch,
+        detail: impl std::fmt::Display,
+    ) -> DaemonError {
+        let detail = detail.to_string();
+        let detail = match persist_remote_prompt_reconciliation_pending(self, dispatch, true) {
+            Ok(()) => detail,
+            Err(error) => format!(
+                "{detail}; durable reconciliation marker could not be refreshed ({error}); the Dispatching phase continues to block replay"
+            ),
+        };
+        self.report_remote_prompt_reconciliation_pending(dispatch, &detail);
+        remote_prompt_reconciliation_pending_error(dispatch, &detail)
+    }
+
+    async fn drain_completed_remote_prompt_receipt_projection(
+        &self,
+        dispatch: &crate::app::KernelRemotePromptDispatch,
+        worker_provider_run_id: &str,
+    ) -> Result<(), String> {
+        let binding = self.remote_prompt_receipt_binding(dispatch)?;
+        if binding.active_worker_provider_run_id.as_deref() != Some(worker_provider_run_id) {
+            return Err("worker provider-run association changed before projection drain".to_string());
+        }
+        let relay_config = self
+            .with_app_side_effect(move |app| app.relay_config_for_remote_execution(&binding))
+            .await;
+        let target = ClientTarget {
+            daemon_id: Some(dispatch.worker_kernel_id.clone()),
+            daemon_alias: None,
+        };
+        let request = RelayPeerRequest::DrainLeasedRuntimeProjection {
+            leased_agent_id: dispatch.leased_agent_id.clone(),
+            provider_run_id: worker_provider_run_id.to_string(),
+            pump_output: true,
+        };
+        // Relay I/O runs after relay configuration was copied and the app lock was released.
+        let relay_state = self.connected_relay_state_for_config(&relay_config).await;
+        let response = match relay_state {
+            Some(relay_state) => {
+                crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
+                    &relay_config,
+                    &relay_state,
+                    target,
+                    request,
+                    REMOTE_PROMPT_PROJECTION_RESPONSE_TIMEOUT,
+                )
+                .await
+            }
+            None => {
+                crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+                    &relay_config,
+                    target,
+                    request,
+                    REMOTE_PROMPT_PROJECTION_RESPONSE_TIMEOUT,
+                )
+                .await
+            }
+        }
+        .map_err(|error| format!("completed receipt projection drain failed: {error}"))?;
+        let event = match response {
+            RelayPeerResponse::LeasedRuntimeProjectionDrained { event: Some(event) } => event,
+            RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None } => {
+                return Err(
+                    "worker returned no replayable projection for its completed receipt".to_string(),
+                );
+            }
+            other => {
+                return Err(format!("unexpected completed receipt drain response: {other:?}"));
+            }
+        };
+        if !completed_receipt_projection_matches(dispatch, worker_provider_run_id, &event) {
+            return Err(
+                "worker projection did not prove completion of the exact home prompt and provider run"
+                    .to_string(),
+            );
+        }
+        if !self
+            .remote_prompt_receipt_prompt_is_current(dispatch)
+            .map_err(|error| error.to_string())?
+        {
+            return Err(
+                "home prompt changed before the completed worker projection was applied"
+                    .to_string(),
+            );
+        }
+        self.project_remote_runtime_projection_event(event)
+            .await
+            .map_err(|error| format!("completed worker projection could not be applied: {error}"))
     }
 
     pub(super) fn spawn_remote_prompt_projection_drain_if_needed(
@@ -914,7 +1203,7 @@ impl KernelRuntimeState {
         detail: &str,
     ) {
         let message = format!(
-            "Remote delivery of prompt `{}` to worker kernel `{}` is indeterminate: {detail}. The same prompt remains active in durable Dispatching state; it was not cancelled, promoted, or replayed. Automatic retry is blocked until the worker's completed-prompt receipt is reconciled.",
+            "Remote delivery of prompt `{}` to worker kernel `{}` is indeterminate: {detail}. The same prompt remains active in durable Dispatching state; it was not cancelled, promoted, or replayed. Automatic replay is blocked until the exact worker receipt is reconciled.",
             dispatch.prompt_id, dispatch.worker_kernel_id
         );
         crate::logging::warn_with_fields(
@@ -928,7 +1217,7 @@ impl KernelRuntimeState {
                 "leased_agent_id": dispatch.leased_agent_id,
                 "delivery_uncertain": true,
                 "prompt_replayed": false,
-                "worker_completed_receipt_required": true,
+                "worker_prompt_receipt_required": true,
             }),
         );
         let provider_run_id = format!("remote-dispatch:{}", dispatch.prompt_id);
@@ -1386,6 +1675,30 @@ fn same_remote_prompt_worker_binding(
         && current.relay_peer_protocol_version == expected.relay_peer_protocol_version
 }
 
+fn completed_receipt_projection_matches(
+    dispatch: &crate::app::KernelRemotePromptDispatch,
+    worker_provider_run_id: &str,
+    event: &RelayPeerEvent,
+) -> bool {
+    let RelayPeerEvent::LeasedRuntimeProjection {
+        home_session_id,
+        home_agent_id,
+        provider_run_id,
+        provider_run,
+        completions,
+        ..
+    } = event;
+    home_session_id == &dispatch.session_id
+        && home_agent_id == &dispatch.agent_id
+        && provider_run_id == worker_provider_run_id
+        && provider_run
+            .as_ref()
+            .is_none_or(|run| run.id() == worker_provider_run_id)
+        && completions.iter().any(|completion| {
+            completion.home_prompt_id.as_deref() == Some(dispatch.prompt_id.as_str())
+        })
+}
+
 fn remote_prompt_projection_error_should_refresh_binding(
     recovering_missing_run_binding: bool,
     error: &DaemonError,
@@ -1401,8 +1714,226 @@ fn remote_prompt_recovery_delay(attempt: u32) -> std::time::Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::remote_prompt_worker_submission_runtime::query_remote_prompt_worker_receipt_with_transport;
     use std::sync::Arc;
     use tokio::sync::Mutex;
+
+    #[test]
+    fn exact_worker_receipt_selects_active_association_completed_drain_or_hold() {
+        let active = crate::transport::relay_peer::LeasedPromptReceipt {
+            home_prompt_id: "home-prompt-1".to_string(),
+            worker_provider_run_id: "worker-run-1".to_string(),
+            phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
+        };
+        assert_eq!(
+            remote_prompt_receipt_action("home-prompt-1", Some(active.clone())),
+            Ok(RemotePromptReceiptAction::AssociateActiveRun(
+                "worker-run-1".to_string()
+            ))
+        );
+        let active_action = remote_prompt_receipt_action("home-prompt-1", Some(active)).unwrap();
+        assert!(!remote_prompt_receipt_action_requires_projection(&active_action));
+        let completed = crate::transport::relay_peer::LeasedPromptReceipt {
+            home_prompt_id: "home-prompt-1".to_string(),
+            worker_provider_run_id: "worker-run-2".to_string(),
+            phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Completed,
+        };
+        assert_eq!(
+            remote_prompt_receipt_action("home-prompt-1", Some(completed.clone())),
+            Ok(RemotePromptReceiptAction::DrainCompletedProjection(
+                "worker-run-2".to_string()
+            ))
+        );
+        let completed_action =
+            remote_prompt_receipt_action("home-prompt-1", Some(completed)).unwrap();
+        assert!(remote_prompt_receipt_action_requires_projection(
+            &completed_action
+        ));
+        assert_eq!(
+            remote_prompt_receipt_action("home-prompt-1", None),
+            Err("worker returned no receipt for the exact home prompt")
+        );
+        assert_eq!(
+            remote_prompt_receipt_action(
+                "home-prompt-1",
+                Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                    home_prompt_id: "other-prompt".to_string(),
+                    worker_provider_run_id: "worker-run-3".to_string(),
+                    phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
+                })
+            ),
+            Err("worker receipt names a different home prompt")
+        );
+    }
+
+    #[tokio::test]
+    async fn receipt_query_targets_exact_prompt_after_releasing_the_app_lock() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-receipt-query",
+                "worktree-receipt-query",
+            ))
+            .unwrap();
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "receipt-query-client",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        app.agents
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "worker-receipt-query".to_string(),
+                    worker_machine_id: "machine-receipt-query".to_string(),
+                    execution_lease_id: "lease-receipt-query".to_string(),
+                    leased_agent_id: "leased-receipt-query".to_string(),
+                    active_worker_provider_run_id: None,
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .unwrap();
+        let prompt_id = "home-prompt-receipt-query";
+        app.prompt_owner_submit_prepared_prompt(
+            session.id(),
+            crate::session::PromptQueueItem::new(
+                prompt_id,
+                attachment.id(),
+                agent.id(),
+                "uncertain prompt",
+                crate::session::PromptStatus::Queued,
+            ),
+            false,
+        )
+        .unwrap();
+        app.mark_active_prompt_delivery(
+            session.id(),
+            agent.id(),
+            prompt_id,
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let agent = runtime.owned.agent_store.get_agent(agent.id()).unwrap();
+        let dispatch = runtime
+            .remote_prompt_recovery_dispatch(&agent)
+            .unwrap()
+            .unwrap();
+        let app_during_send = Arc::clone(&app);
+        let receipt = query_remote_prompt_worker_receipt_with_transport(
+            &runtime,
+            &dispatch,
+            move |_config, target, request| async move {
+                assert!(
+                    app_during_send.try_lock().is_ok(),
+                    "receipt transport must not run while DaemonApp is locked"
+                );
+                assert_eq!(target.daemon_id.as_deref(), Some("worker-receipt-query"));
+                assert!(matches!(
+                    request,
+                    RelayPeerRequest::GetLeasedPromptReceipt {
+                        leased_agent_id,
+                        home_prompt_id,
+                    } if leased_agent_id == "leased-receipt-query"
+                        && home_prompt_id == prompt_id
+                ));
+                Ok(RelayPeerResponse::LeasedPromptReceiptQueried {
+                    receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                        home_prompt_id: prompt_id.to_string(),
+                        worker_provider_run_id: "worker-receipt-run".to_string(),
+                        phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
+                    }),
+                })
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            receipt.unwrap().worker_provider_run_id,
+            "worker-receipt-run"
+        );
+        let completed_receipt = query_remote_prompt_worker_receipt_with_transport(
+            &runtime,
+            &dispatch,
+            move |_config, _target, _request| async move {
+                assert!(app.try_lock().is_ok());
+                Ok(RelayPeerResponse::LeasedPromptReceiptQueried {
+                    receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                        home_prompt_id: prompt_id.to_string(),
+                        worker_provider_run_id: "worker-completed-run".to_string(),
+                        phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Completed,
+                    }),
+                })
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            completed_receipt.phase,
+            crate::transport::relay_peer::LeasedPromptReceiptPhase::Completed
+        );
+        let no_receipt = query_remote_prompt_worker_receipt_with_transport(
+            &runtime,
+            &dispatch,
+            |_config, _target, _request| async move {
+                Ok(RelayPeerResponse::LeasedPromptReceiptQueried { receipt: None })
+            },
+        )
+        .await
+        .unwrap();
+        assert!(no_receipt.is_none());
+        let completion_event = RelayPeerEvent::LeasedRuntimeProjection {
+            home_session_id: dispatch.session_id.clone(),
+            home_agent_id: dispatch.agent_id.clone(),
+            provider_run_id: "worker-receipt-run".to_string(),
+            provider_run: None,
+            prompts: Vec::new(),
+            output_chunks: Vec::new(),
+            notices: Vec::new(),
+            completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                message_id: "assistant-message-1".to_string(),
+                completed_at_ms: 1,
+                home_prompt_id: Some(dispatch.prompt_id.clone()),
+                provider_termination: None,
+            }],
+        };
+        assert!(completed_receipt_projection_matches(
+            &dispatch,
+            "worker-receipt-run",
+            &completion_event
+        ));
+        let conflicting_event = RelayPeerEvent::LeasedRuntimeProjection {
+            home_session_id: dispatch.session_id.clone(),
+            home_agent_id: dispatch.agent_id.clone(),
+            provider_run_id: "worker-receipt-run".to_string(),
+            provider_run: None,
+            prompts: Vec::new(),
+            output_chunks: Vec::new(),
+            notices: Vec::new(),
+            completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                message_id: "assistant-message-other".to_string(),
+                completed_at_ms: 2,
+                home_prompt_id: Some("another-home-prompt".to_string()),
+                provider_termination: None,
+            }],
+        };
+        assert!(!completed_receipt_projection_matches(
+            &dispatch,
+            "worker-receipt-run",
+            &conflicting_event
+        ));
+    }
 
     #[tokio::test]
     async fn recovered_queued_remote_prompt_echo_uses_durable_queue_origin() {
@@ -1579,7 +2110,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(errors.iter().any(|record| {
             record.prompt_id.as_deref() == Some(dispatch.prompt_id.as_str())
-                && String::from_utf8_lossy(&record.bytes).contains("completed-prompt receipt")
+                && String::from_utf8_lossy(&record.bytes).contains("exact worker receipt")
         }));
     }
 
