@@ -3,10 +3,10 @@ use futures_util::FutureExt;
 
 #[test]
 fn worker_browser_and_user_display_share_the_bound_room_environment() {
-    run_test(worker_browser_and_user_display_share_the_bound_room_environment);
+    run_test(check_worker_browser_and_user_display_share_the_bound_room_environment);
 }
 
-async fn worker_browser_and_user_display_share_the_bound_room_environment() {
+async fn check_worker_browser_and_user_display_share_the_bound_room_environment() {
     let mut fixture = LiveWorker::start_configured(false, true).await;
     let check = std::panic::AssertUnwindSafe(async {
         let (room, attachment_id, viewer_public) = prepare_room_display(&fixture).await;
