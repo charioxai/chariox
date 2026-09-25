@@ -319,7 +319,12 @@ impl KernelRuntimeState {
                         continue;
                     }
                 };
-                if prompt.workflow_run_id().is_some()
+                let uncertain_remote_delivery = agent.remote_execution().is_some()
+                    && (prompt.durable_delivery_reconciliation_pending()
+                        || delivery_phase
+                            == Some(crate::session::DurablePromptDeliveryPhase::Dispatching));
+                if !uncertain_remote_delivery
+                    && prompt.workflow_run_id().is_some()
                     && self
                         .owned
                         .session_store
@@ -1639,6 +1644,123 @@ mod tests {
             prompt.durable_delivery_phase(),
             Some(crate::session::DurablePromptDeliveryPhase::Delivered)
         );
+    }
+
+    #[tokio::test]
+    async fn uncertain_remote_workflow_prompt_is_reconciled_before_orphan_finalization() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-uncertain-workflow-restart",
+                "worktree-uncertain-workflow-restart",
+            ))
+            .expect("session should create");
+        let attachment = KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "uncertain-workflow-restart-client",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        app.agents
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "worker-orphaned-workflow".to_string(),
+                    worker_machine_id: "machine-orphaned-workflow".to_string(),
+                    execution_lease_id: "lease-orphaned-workflow".to_string(),
+                    leased_agent_id: "leased-orphaned-workflow".to_string(),
+                    active_worker_provider_run_id: None,
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .expect("agent should bind to the remote worker");
+
+        let app = Arc::new(Mutex::new(app));
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            app,
+            crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+        );
+        let runtime = router.runtime_state();
+        let started = runtime
+            .owned
+            .submit_remote_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+                session_id: session.id().to_string(),
+                prompt: PromptQueueItem::new(
+                    "uncertain-orphaned-workflow",
+                    attachment.id(),
+                    agent.id(),
+                    "prompt that may have been accepted by the worker",
+                    PromptStatus::Queued,
+                )
+                .with_workflow_context("missing-workflow-run", "missing-workflow-node"),
+                force_queue: false,
+                refresh_projection: true,
+            })
+            .expect("remote prompt should be accepted")
+            .expect("remote binding should produce a dispatch");
+        let dispatch = started.remote_dispatch.expect("remote dispatch should exist");
+        runtime
+            .owned
+            .mark_active_prompt_delivery(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                &dispatch.prompt_id,
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+                None,
+                None,
+            )
+            .expect("dispatching phase should be durable before send");
+        runtime
+            .owned
+            .submit_remote_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+                session_id: session.id().to_string(),
+                prompt: PromptQueueItem::new(
+                    "queued-after-uncertain-orphaned-workflow",
+                    attachment.id(),
+                    agent.id(),
+                    "successor must stay queued",
+                    PromptStatus::Queued,
+                ),
+                force_queue: true,
+                refresh_projection: true,
+            })
+            .expect("successor should remain queued");
+
+        let targets = BTreeSet::from([(
+            session.id().to_string(),
+            agent.id().to_string(),
+            dispatch.prompt_id.clone(),
+        )]);
+        let summary = runtime
+            .recover_durable_runtime_after_restart_targets(&targets, &BTreeSet::new())
+            .await;
+
+        assert_eq!(summary.remote_reconciliations_started, 1);
+        assert_eq!(summary.orphaned_workflow_prompts_finalized, 0);
+        assert_eq!(summary.failed_reconciliations, 0);
+        let session_after = runtime
+            .owned
+            .session_store
+            .get_session(&session.id().to_string())
+            .expect("session should remain available");
+        let (active, queued) = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session_after, &agent.id().to_string());
+        let active = active.expect("the uncertain prompt should stay active");
+        assert_eq!(active.id(), dispatch.prompt_id);
+        assert_eq!(
+            active.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+        );
+        assert!(active.durable_delivery_reconciliation_pending());
+        assert_eq!(queued.len(), 1, "successor must not be promoted");
+        assert_eq!(queued[0].id(), "queued-after-uncertain-orphaned-workflow");
     }
 
     #[tokio::test]
