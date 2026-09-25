@@ -421,3 +421,23 @@ fn protocol_348_operation_table_migrates_to_generations() {
     assert!(input.update.is_none());
     assert_eq!(operation.interaction_id.as_deref(), Some("nonce"));
 }
+
+#[test]
+fn a_policy_approval_accepts_the_longest_request_id() {
+    let f = Fixture::new();
+    let next = release("1.1.0", 0, false, &f.store);
+    let digest = next.release_metadata().package_digest.clone();
+    let request = "r".repeat(128);
+    f.store
+        .reserve_app_install("alice", &request, update_input(1), &digest, budget())
+        .unwrap();
+    f.store
+        .complete_app_install_preparation("alice", &request, next, budget())
+        .unwrap();
+    assert!(matches!(
+        f.store
+            .arm_app_install_review("alice", &request, "none", budget())
+            .unwrap(),
+        InstallReviewDisposition::Approved
+    ));
+}

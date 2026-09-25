@@ -395,7 +395,9 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
                         &trust,
                         CapabilityDecision::Approved {
                             approval: CapabilityApproval {
-                                decision_id: format!("unchanged:{request_id}"),
+                                // The authority names the policy; the request id
+                                // (<= 128 bytes) identifies this decision.
+                                decision_id: request_id.clone(),
                                 authority_ref: "kernel_unchanged_capabilities".into(),
                             },
                         },
