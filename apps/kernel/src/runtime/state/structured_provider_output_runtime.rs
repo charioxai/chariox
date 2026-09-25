@@ -584,7 +584,8 @@ impl KernelRuntimeState {
             .provider_store
             .apply_structured_output_metadata(provider_run_id, &poll_result)?;
         let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
-        let codex_provider = provider_run.adapter_key() == "codex";
+        let requires_authoritative_turn_completion =
+            crate::provider::provider_run_requires_authoritative_turn_completion(&provider_run);
         let agent_id = provider_run.agent_instance_id().map(str::to_string);
         if let Some(agent_id) = provider_run.agent_instance_id() {
             owned.external_provider_sessions.mark_provider_run_attached(
@@ -722,7 +723,7 @@ impl KernelRuntimeState {
                 &completion.message_id,
                 completion.completed_at_ms,
             );
-            if !codex_provider {
+            if !requires_authoritative_turn_completion {
                 owned.mark_prompt_completion_recorded(provider_run_id);
             }
         }
