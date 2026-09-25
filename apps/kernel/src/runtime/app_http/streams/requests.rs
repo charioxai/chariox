@@ -1,5 +1,6 @@
 //! Typed work admitted by the one durable writer; no arbitrary App callbacks.
 use super::*;
+use crate::durable_state::app_validations::EffectReceipt;
 use crate::runtime::app_http::{decode::Command, encode, policy::AppHttpPolicy};
 use chariox_app_runtime::worker_peer::{BrokerCancellation, ResponsePublication};
 use serde_json::Value;
@@ -68,7 +69,7 @@ impl Drop for PortGate {
     }
 }
 enum Operation {
-    Open(PendingStart, PortGate),
+    Open(PendingStart, PortGate, Option<EffectReceipt>),
     Port(StreamPort, PortOperation, PortGate),
 }
 enum PortOperation {
@@ -98,23 +99,41 @@ impl HttpStreams {
         deadline: Instant,
         cancellation: BrokerCancellation,
         permit: OwnedSemaphorePermit,
+        approved: &dyn Fn(&str, &str) -> Result<(String, EffectReceipt)>,
     ) -> Result<(HttpJob, oneshot::Receiver<Result<HttpReply>>)> {
         budget.check().map_err(|_| HttpError::Cancelled)?;
         let is_headers = matches!(&command, Command::Headers(_));
         let operation = match command {
             Command::Open(open) => {
-                let pending = self.prepare(
-                    policy.anonymous_target(
+                let mut receipt = None;
+                let target = match open.operation.as_deref() {
+                    // A protected effect: the exact declared route and the
+                    // approved parameters as the whole body. The writer spends
+                    // the approval after admission and before any I/O.
+                    Some(operation) => {
+                        if open.has_body {
+                            return Err(HttpError::ProtectedEffect);
+                        }
+                        let (target, action) = policy.protected_target(
+                            &open.url,
+                            &open.method,
+                            &open.headers,
+                            open.connection.as_deref(),
+                        )?;
+                        let (parameters, approval) = approved(&action, operation)?;
+                        receipt = Some(approval);
+                        target.with_approved_body(parameters)
+                    }
+                    None => policy.anonymous_target(
                         &open.url,
                         &open.method,
                         &open.headers,
                         open.connection.as_deref(),
-                        open.operation.as_deref(),
                     )?,
-                    open.has_body,
-                )?;
+                };
+                let pending = self.prepare(target, open.has_body)?;
                 let gate = PortGate::acquire(pending.entry.opening.clone())?;
-                Operation::Open(pending, gate)
+                Operation::Open(pending, gate, receipt)
             }
             Command::Write { id, bytes, end } => {
                 let port = self.port(&id)?;
@@ -150,6 +169,30 @@ impl HttpStreams {
             receiver,
         ))
     }
+}
+/// Spends a protected effect's approval in the writer transaction once every
+/// local admission check passed, and makes that durable before the task that
+/// sends any byte exists. The writer rolls back the fresh transaction after it.
+pub(super) fn spend(
+    receipt: Option<&EffectReceipt>,
+    transaction: &rusqlite::Transaction<'_>,
+) -> Result<()> {
+    let Some(receipt) = receipt else {
+        return Ok(());
+    };
+    receipt
+        .consume_in(transaction, crate::session::unix_epoch_ms())
+        .map_err(|code| match code {
+            "VALIDATION_REQUIRED" => HttpError::ValidationRequired,
+            _ => HttpError::Busy,
+        })?;
+    transaction
+        .execute_batch("COMMIT")
+        .map_err(|_| HttpError::Busy)?;
+    // The spend is durable; nothing else uses this transaction. A deferred
+    // BEGIN takes no lock, and the writer's rollback of it is a no-op.
+    let _ = transaction.execute_batch("BEGIN");
+    Ok(())
 }
 impl HttpJob {
     pub(crate) fn reject(self, error: HttpError) {
@@ -188,7 +231,7 @@ impl HttpJob {
             response,
         } = self;
         match operation {
-            Operation::Open(pending, gate) => {
+            Operation::Open(pending, gate, receipt) => {
                 // The first task poll checks the original request budget before
                 // acknowledging a new stream. Normal request completion may
                 // close that cancellation watch, so it cannot govern the later
@@ -206,9 +249,13 @@ impl HttpJob {
                 let execution = budget.fork(|| false);
                 #[cfg(test)]
                 let network = group.0.fixture.lock().unwrap().clone();
+                // Spent once every local admission check passed, and durable
+                // before the task that sends any byte exists. The writer rolls
+                // back the fresh transaction that follows.
                 let outcome = pending.start_with(
                     transaction,
                     &budget,
+                    || spend(receipt.as_ref(), transaction),
                     move |transport, target, exchange, stopped, lease, admitted| async move {
                         let ready = execution.check().map_err(|_| HttpError::Cancelled);
                         let sender = task_reply

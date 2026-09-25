@@ -43,12 +43,21 @@ impl Fixture {
         action: &str,
         now_ms: u64,
     ) -> Result<Option<ValidationOperation>, &'static str> {
+        let digest = self
+            .1
+            .app_validation_status("alice", "pay", id)
+            .unwrap()
+            .map(|operation| operation.digest)
+            .unwrap_or_default();
         self.1.app_validation(ValidationCommand::Consume {
-            owner: "alice".into(),
-            installation: "pay".into(),
-            generation,
-            action: action.into(),
-            operation_id: id.into(),
+            receipt: EffectReceipt {
+                owner: "alice".into(),
+                installation: "pay".into(),
+                generation,
+                action: action.into(),
+                operation_id: id.into(),
+                digest,
+            },
             now_ms,
         })
     }
@@ -104,6 +113,22 @@ fn an_approval_is_decided_once_and_consumed_once_for_its_exact_binding() {
         f.consume("op-1", 3, "refund", 200),
         Err("VALIDATION_REQUIRED"),
         "other action"
+    );
+    let (_, other) = canonical(&serde_json::json!({"to": "acct", "amount": 11}));
+    assert_eq!(
+        f.1.app_validation(ValidationCommand::Consume {
+            receipt: EffectReceipt {
+                owner: "alice".into(),
+                installation: "pay".into(),
+                generation: 3,
+                action: "send_payment".into(),
+                operation_id: "op-1".into(),
+                digest: other,
+            },
+            now_ms: 200,
+        }),
+        Err("VALIDATION_REQUIRED"),
+        "other parameters"
     );
     assert_eq!(
         f.consume("op-1", 3, "send_payment", 200)

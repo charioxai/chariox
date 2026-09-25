@@ -7,9 +7,18 @@ critical operation.
 
 `AppHttpPolicy` derives exact origins/methods and protected-service origins from
 the same verified package as the retained `AppCatalog`. App-chosen connection or
-operation IDs never create authority. Anonymous transport rejects those IDs and
-every request to an origin containing a declared critical effect. Connection and
-single-use critical receipt integration remain required Phase 1 work.
+operation IDs never create authority. Without an operation, every request to an
+origin containing a declared critical effect is rejected. With `operationId`,
+the request must match one declared effect route exactly (origin, `POST`/`PUT`/
+`PATCH`, path; no query or percent-encoding) and carry no App header except
+`accept`. The App supplies no body: the kernel sends the approved canonical
+parameters as the whole `application/json` body. The durable writer spends the
+approval (bound to that parameter digest, installation, generation and action)
+after local admission and commits it before the task that sends any byte
+exists; otherwise the request fails `VALIDATION_REQUIRED` and nothing is sent.
+The route's symbolic `connection` class is not enforced yet: no credential is
+attached, and scoped connections arrive with the Slack App (P1.11).
+Connection authority remains unsupported.
 
 `HttpTransport` connects directly to a checked numeric address, verifies the
 actual socket peer before sending TLS or HTTP bytes, and uses the original URL

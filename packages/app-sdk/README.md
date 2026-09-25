@@ -167,8 +167,12 @@ generation mismatch, handler capacity, lifecycle exclusion and event separation.
 
 `http.open`, `write`, `headers`, `read`, and `cancel` use the kernel's existing
 worker channel. Production currently supports anonymous HTTPS to the signed
-package's exact approved origins/methods. Opaque connections and protected-effect
-receipts return explicit unsupported responses until their authority is wired.
+package's exact approved origins/methods. A declared critical effect route is
+reached only with the `operationId` of an approved `validation.request`; the
+kernel consumes that single-use approval before sending, sends the approved
+parameters as the JSON body (the App passes none), and otherwise returns
+`VALIDATION_REQUIRED`. Effect routes use `POST`, `PUT` or `PATCH`, and the request
+may carry no header but `accept`. Opaque connections return explicit unsupported responses.
 No provider account credentials, redirects, cookies, automatic decompression,
 raw sockets, or body retries are supplied by these methods.
 

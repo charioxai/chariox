@@ -143,13 +143,36 @@ impl Fixture {
     }
     pub(super) fn target(&self) -> ApprovedTarget {
         self.policy
-            .anonymous_target("https://api.example.com/fixture", "POST", &[], None, None)
+            .anonymous_target("https://api.example.com/fixture", "POST", &[], None)
             .unwrap()
     }
     pub(super) fn start<F, Fut>(
         &self,
         pending: PendingStart,
         budget: &AppOperationBudget,
+        run: F,
+    ) -> Result<String>
+    where
+        F: FnOnce(
+                HttpTransport,
+                ApprovedTarget,
+                Exchange,
+                watch::Receiver<bool>,
+                LifetimeLease,
+                Instant,
+            ) -> Fut
+            + Send
+            + 'static,
+        Fut: std::future::Future<Output = Result<()>> + Send + 'static,
+    {
+        self.start_spending(pending, budget, None, run)
+    }
+    /// As `start`, spending a protected effect's approval like the writer.
+    pub(super) fn start_spending<F, Fut>(
+        &self,
+        pending: PendingStart,
+        budget: &AppOperationBudget,
+        receipt: Option<&crate::durable_state::app_validations::EffectReceipt>,
         run: F,
     ) -> Result<String>
     where
@@ -174,7 +197,12 @@ impl Fixture {
         let transaction = connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .unwrap();
-        let result = pending.start_with(&transaction, budget, run);
+        let result = pending.start_with(
+            &transaction,
+            budget,
+            || super::super::requests::spend(receipt, &transaction),
+            run,
+        );
         transaction.rollback().unwrap();
         result
     }

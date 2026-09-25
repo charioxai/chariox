@@ -96,13 +96,52 @@ pub(crate) enum ValidationCommand {
     },
     /// Single use: approved and unexpired for exactly this binding.
     Consume {
-        owner: String,
-        installation: String,
-        generation: u64,
-        action: String,
-        operation_id: String,
+        receipt: EffectReceipt,
         now_ms: u64,
     },
+}
+
+/// The exact approval an effect spends: its operation, the installation
+/// generation and action it was requested by, and the digest of the canonical
+/// parameters the effect carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EffectReceipt {
+    pub(crate) owner: String,
+    pub(crate) installation: String,
+    pub(crate) generation: u64,
+    pub(crate) action: String,
+    pub(crate) operation_id: String,
+    pub(crate) digest: String,
+}
+impl EffectReceipt {
+    /// Consumes the approval inside the caller's writer transaction, so it is
+    /// spent atomically with whatever that transaction admits.
+    pub(crate) fn consume_in(
+        &self,
+        connection: &Connection,
+        now_ms: u64,
+    ) -> Result<(), &'static str> {
+        let changed = connection
+            .execute(
+                "UPDATE app_validations SET state='consumed', updated_ms=?7
+                 WHERE operation_id=?1 AND owner_id=?2 AND installation_id=?3 AND generation=?4
+                   AND action=?5 AND digest=?6 AND state='approved' AND expires_ms>?7",
+                params![
+                    self.operation_id,
+                    self.owner,
+                    self.installation,
+                    self.generation as i64,
+                    self.action,
+                    self.digest,
+                    now_ms as i64
+                ],
+            )
+            .map_err(|_| "STORAGE_UNAVAILABLE")?;
+        if changed != 1 {
+            return Err("VALIDATION_REQUIRED");
+        }
+        Ok(())
+    }
 }
 
 pub(super) struct ValidationRequest {
@@ -185,6 +224,23 @@ impl DurableKernelStateStore {
         Ok(load(&connection, operation_id)
             .map_err(|_| "STORAGE_UNAVAILABLE")?
             .filter(|operation| operation.owner == owner && operation.installation == installation))
+    }
+
+    /// An approved, unexpired operation for this installation generation and
+    /// action; reading it spends nothing.
+    pub(crate) fn approved_app_validation(
+        &self,
+        receipt: &EffectReceipt,
+        now_ms: u64,
+    ) -> Result<Option<ValidationOperation>, &'static str> {
+        Ok(self
+            .app_validation_status(&receipt.owner, &receipt.installation, &receipt.operation_id)?
+            .filter(|operation| {
+                operation.state == ValidationState::Approved
+                    && operation.expires_ms > now_ms
+                    && operation.generation == receipt.generation
+                    && operation.action == receipt.action
+            }))
     }
 
     /// The oldest pending operation of each installation, oldest first: one
@@ -310,33 +366,9 @@ fn apply(
                 .map_err(storage)?;
             None
         }
-        ValidationCommand::Consume {
-            owner,
-            installation,
-            generation,
-            action,
-            operation_id,
-            now_ms,
-        } => {
-            let changed = transaction
-                .execute(
-                    "UPDATE app_validations SET state='consumed', updated_ms=?6
-                     WHERE operation_id=?1 AND owner_id=?2 AND installation_id=?3 AND generation=?4
-                       AND action=?5 AND state='approved' AND expires_ms>?6",
-                    params![
-                        operation_id,
-                        owner,
-                        installation,
-                        generation as i64,
-                        action,
-                        now_ms as i64
-                    ],
-                )
-                .map_err(storage)?;
-            if changed != 1 {
-                return Err("VALIDATION_REQUIRED");
-            }
-            load(&transaction, &operation_id).map_err(storage)?
+        ValidationCommand::Consume { receipt, now_ms } => {
+            receipt.consume_in(&transaction, now_ms)?;
+            load(&transaction, &receipt.operation_id).map_err(storage)?
         }
     };
     transaction.commit().map_err(storage)?;

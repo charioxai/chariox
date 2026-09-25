@@ -105,6 +105,39 @@ async fn streaming_upload_preserves_multipart_bytes_and_midbody_progress() {
 }
 
 #[tokio::test]
+async fn an_approved_effect_sends_exactly_the_kernel_body_and_the_app_cannot_add_bytes() {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let (client, server) = sockets().await;
+        let (mut upload, receive, exchange) =
+            fixed_channels(Bytes::from_static(br#"{"amount":5,"to":"x"}"#));
+        assert!(matches!(
+            upload.write(Bytes::from_static(b"more"), true).await,
+            Err(HttpError::Invalid)
+        ));
+        let (_stop, signal) = watch::channel(false);
+        let driver = tokio::spawn(drive(client, exchange, signal, Duration::from_secs(2)));
+        let server_task = tokio::spawn(async move {
+            let service = hyper::service::service_fn(|request: Request<Incoming>| async move {
+                let body = request.into_body().collect().await.unwrap().to_bytes();
+                assert_eq!(&body[..], br#"{"amount":5,"to":"x"}"#);
+                Ok::<_, std::convert::Infallible>(hyper::Response::new(http_body_util::Empty::<
+                    Bytes,
+                >::new()))
+            });
+            hyper::server::conn::http1::Builder::new()
+                .serve_connection(TokioIo::new(server), service)
+                .await
+                .unwrap();
+        });
+        assert_eq!(receive.headers.await.unwrap().unwrap().status, 200);
+        driver.await.unwrap().unwrap();
+        server_task.await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn cancellation_closes_socket_with_backpressured_response() {
     tokio::time::timeout(Duration::from_secs(3), async {
         let (client, mut server) = sockets().await;

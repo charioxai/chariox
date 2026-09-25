@@ -374,3 +374,87 @@ fn concurrent_reads_and_writes_are_bounded_and_interrupted_upload_is_never_repla
         cancellation.close().await;
     });
 }
+
+#[test]
+fn an_approval_is_spent_durably_only_by_an_admitted_start_and_only_once() {
+    use crate::durable_state::app_validations::{
+        canonical, EffectReceipt, ValidationCommand, ValidationOperation, ValidationState,
+    };
+    let fixture = Fixture::new();
+    let group = fixture.group();
+    let (parameters, digest) = canonical(&serde_json::json!({"amount": 5}));
+    fixture
+        .store
+        .app_validation(ValidationCommand::Create(ValidationOperation {
+            operation_id: "op".into(),
+            owner: "alice".into(),
+            installation: fixture.catalog.installation_id().into(),
+            generation: fixture.catalog.generation(),
+            action: "send".into(),
+            parameters,
+            digest: digest.clone(),
+            state: ValidationState::Pending,
+            expires_ms: u64::MAX / 4,
+        }))
+        .unwrap();
+    fixture
+        .store
+        .app_validation(ValidationCommand::Decide {
+            operation_id: "op".into(),
+            approved: true,
+            now_ms: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    let receipt = EffectReceipt {
+        owner: "alice".into(),
+        installation: fixture.catalog.installation_id().into(),
+        generation: fixture.catalog.generation(),
+        action: "send".into(),
+        operation_id: "op".into(),
+        digest,
+    };
+    let state = || {
+        fixture
+            .store
+            .app_validation_status("alice", fixture.catalog.installation_id(), "op")
+            .unwrap()
+            .unwrap()
+            .state
+    };
+    let invoked = Arc::new(AtomicUsize::new(0));
+    let run = |count: Arc<AtomicUsize>| {
+        move |_, _, _, _, _, _| async move {
+            count.fetch_add(1, Ordering::AcqRel);
+            Ok(())
+        }
+    };
+    // A start refused by local admission spends nothing.
+    let mut expired = group.prepare(fixture.target(), false).unwrap();
+    Arc::get_mut(&mut expired.entry).unwrap().deadline = Instant::now();
+    assert!(matches!(
+        fixture.start_spending(expired, &budget(), Some(&receipt), run(invoked.clone())),
+        Err(HttpError::Deadline)
+    ));
+    assert_eq!(state(), ValidationState::Approved);
+    // An admitted start spends it, durably despite the writer's rollback.
+    fixture
+        .start_spending(
+            group.prepare(fixture.target(), false).unwrap(),
+            &budget(),
+            Some(&receipt),
+            run(invoked.clone()),
+        )
+        .unwrap();
+    assert_eq!(state(), ValidationState::Consumed);
+    // A replay is refused before any task exists.
+    assert!(matches!(
+        fixture.start_spending(
+            group.prepare(fixture.target(), false).unwrap(),
+            &budget(),
+            Some(&receipt),
+            run(invoked.clone()),
+        ),
+        Err(HttpError::ValidationRequired)
+    ));
+    assert_eq!(group.0.state.lock().unwrap().entries.len(), 1);
+}

@@ -149,7 +149,11 @@ impl HttpStreams {
 
     /// Bounds allocation before writer admission. A dropped/expired pending
     /// start releases its buffers and reservation without ever opening a socket.
-    pub(super) fn prepare(&self, target: ApprovedTarget, has_body: bool) -> Result<PendingStart> {
+    pub(super) fn prepare(
+        &self,
+        mut target: ApprovedTarget,
+        has_body: bool,
+    ) -> Result<PendingStart> {
         if self
             .0
             .state
@@ -169,7 +173,10 @@ impl HttpStreams {
             .limits
             .acquire(&scope.owner, scope.catalog.installation_id())?
             .retain_worker(scope._data.clone())?;
-        let (upload, receive, exchange) = transport::channels(has_body);
+        let (upload, receive, exchange) = match target.take_body() {
+            Some(body) => transport::fixed_channels(body),
+            None => transport::channels(has_body),
+        };
         let (stop, _) = watch::channel(false);
         // The sender is installed only when the writer starts the transport.
         let (_, completed) = watch::channel(None);
@@ -351,6 +358,7 @@ impl PendingStart {
         self.start_with(
             transaction,
             budget,
+            || Ok(()),
             move |transport, target, exchange, stopped, lease, admitted| async move {
                 execution.check().map_err(|_| HttpError::Cancelled)?;
                 transport
@@ -366,6 +374,7 @@ impl PendingStart {
         mut self,
         transaction: &rusqlite::Transaction<'_>,
         budget: &AppOperationBudget,
+        admitted_hook: impl FnOnce() -> Result<()>,
         run: F,
     ) -> Result<String>
     where
@@ -405,6 +414,8 @@ impl PendingStart {
         Arc::get_mut(&mut self.entry)
             .ok_or(HttpError::Provenance)?
             .completed = completed;
+        // Only the infallible insert and spawn follow a spent approval.
+        admitted_hook()?;
         let stopped = self.entry.stop.subscribe();
         let lifetime = self.entry.deadline;
         let owner = TaskOwner {

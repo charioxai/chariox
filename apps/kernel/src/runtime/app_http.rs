@@ -34,6 +34,8 @@ pub(crate) enum HttpError {
     ConnectionAuthority,
     #[error("app_http_protected_effect_unavailable")]
     ProtectedEffect,
+    #[error("app_http_validation_required")]
+    ValidationRequired,
     #[error("app_http_provenance")]
     Provenance,
     #[error("app_http_limit")]

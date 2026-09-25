@@ -27,6 +27,8 @@ pub(super) struct AppHttpPolicy {
 struct Rules {
     destinations: BTreeMap<String, BTreeSet<HttpMethod>>,
     protected_origins: BTreeSet<String>,
+    /// (origin, method, exact path) → critical action it effects.
+    protected_routes: BTreeMap<(String, HttpMethod, String), String>,
 }
 /// Produced only by the signed policy. It contains no secret headers or IDs.
 pub(super) struct ApprovedTarget {
@@ -34,6 +36,8 @@ pub(super) struct ApprovedTarget {
     method: Method,
     headers: HeaderMap,
     catalog: Option<Arc<AppCatalog>>,
+    /// Only a protected effect's approved parameters; the App adds no body.
+    body: Option<bytes::Bytes>,
 }
 impl AppHttpPolicy {
     pub(super) fn compile(package: &VerifiedPackage<'_>, catalog: Arc<AppCatalog>) -> Result<Self> {
@@ -65,6 +69,20 @@ impl AppHttpPolicy {
                         .map(|route| route.origin.clone())
                 })
                 .collect(),
+            protected_routes: package
+                .declarations()
+                .actions
+                .iter()
+                .filter(|action| action.critical_validation.is_some())
+                .flat_map(|action| {
+                    action.effect_routes.iter().map(|route| {
+                        (
+                            (route.origin.clone(), route.method, route.path.clone()),
+                            action.name.clone(),
+                        )
+                    })
+                })
+                .collect(),
         };
         Ok(Self { catalog, rules })
     }
@@ -86,14 +104,33 @@ impl AppHttpPolicy {
         method: &str,
         headers: &[(String, String)],
         connection_id: Option<&str>,
-        operation_id: Option<&str>,
     ) -> Result<ApprovedTarget> {
-        if connection_id.is_some() || operation_id.is_some() {
+        if connection_id.is_some() {
             return Err(HttpError::ConnectionAuthority);
         }
         let mut target = self.rules.target(url, method, headers)?;
         target.catalog = Some(self.catalog.clone());
         Ok(target)
+    }
+    /// A request carrying a validation operation reaches a protected service
+    /// only on an exact declared effect route of a critical action: no query,
+    /// no percent-encoded path and no method-override header, so an alias of
+    /// the route cannot be approved by accident, and no App header but
+    /// `accept`. Returns the action it effects; the writer spends the matching
+    /// approval before any I/O.
+    pub(super) fn protected_target(
+        &self,
+        url: &str,
+        method: &str,
+        headers: &[(String, String)],
+        connection_id: Option<&str>,
+    ) -> Result<(ApprovedTarget, String)> {
+        if connection_id.is_some() {
+            return Err(HttpError::ConnectionAuthority);
+        }
+        let (mut target, action) = self.rules.protected(url, method, headers)?;
+        target.catalog = Some(self.catalog.clone());
+        Ok((target, action))
     }
 }
 impl Rules {
@@ -102,6 +139,49 @@ impl Rules {
         raw: &str,
         method: &str,
         headers: &[(String, String)],
+    ) -> Result<ApprovedTarget> {
+        self.target_with(raw, method, headers, false)
+    }
+    fn protected(
+        &self,
+        raw: &str,
+        method: &str,
+        headers: &[(String, String)],
+    ) -> Result<(ApprovedTarget, String)> {
+        // The effect is the approved body on the declared route: no App-chosen
+        // header can change it (method overrides are refused everywhere).
+        if headers
+            .iter()
+            .any(|(name, _)| !name.eq_ignore_ascii_case("accept"))
+        {
+            return Err(HttpError::ProtectedEffect);
+        }
+        let target = self.target_with(raw, method, headers, true)?;
+        let (declared, _) = declared_method(method)?;
+        // Only methods that carry the approved parameters as their body.
+        if !matches!(
+            declared,
+            HttpMethod::Post | HttpMethod::Put | HttpMethod::Patch
+        ) {
+            return Err(HttpError::ProtectedEffect);
+        }
+        let path = target.url.path().to_owned();
+        if target.url.query().is_some() || path.contains('%') {
+            return Err(HttpError::ProtectedEffect);
+        }
+        let action = self
+            .protected_routes
+            .get(&(target.url.origin().ascii_serialization(), declared, path))
+            .cloned()
+            .ok_or(HttpError::ProtectedEffect)?;
+        Ok((target, action))
+    }
+    fn target_with(
+        &self,
+        raw: &str,
+        method: &str,
+        headers: &[(String, String)],
+        allow_protected: bool,
     ) -> Result<ApprovedTarget> {
         if raw.is_empty() || raw.len() > MAX_URL_BYTES || raw.chars().any(char::is_control) {
             return Err(HttpError::Invalid);
@@ -124,12 +204,11 @@ impl Rules {
         {
             return Err(HttpError::Destination);
         }
-        // Until the scoped connection/receipt executor exists, do not expose
-        // alternate unauthenticated URLs on a protected service. String path
+        // A protected service is reached only through `protected` (an exact
+        // declared effect route whose approval the writer spends). String path
         // matching cannot establish how a service interprets encoded aliases or
-        // method overrides. This conservative fence is explicit, never bypassed
-        // by supplying an App-chosen operation/connection ID.
-        if self.protected_origins.contains(&origin) {
+        // method overrides, so every other request to its origin is refused.
+        if !allow_protected && self.protected_origins.contains(&origin) {
             return Err(HttpError::ProtectedEffect);
         }
         Ok(ApprovedTarget {
@@ -137,6 +216,7 @@ impl Rules {
             method,
             headers: request_headers(headers)?,
             catalog: None,
+            body: None,
         })
     }
 }
@@ -151,6 +231,18 @@ impl ApprovedTarget {
         } else {
             Err(HttpError::Provenance)
         }
+    }
+    /// The effect sends exactly the approved canonical parameters as JSON.
+    pub(super) fn with_approved_body(mut self, parameters: String) -> Self {
+        self.headers.insert(
+            hyper::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        self.body = Some(parameters.into());
+        self
+    }
+    pub(super) fn take_body(&mut self) -> Option<bytes::Bytes> {
+        self.body.take()
     }
     pub(super) fn url(&self) -> &Url {
         &self.url
@@ -267,6 +359,7 @@ pub(super) fn fixture_target() -> ApprovedTarget {
             BTreeSet::from([HttpMethod::Post]),
         )]),
         protected_origins: BTreeSet::new(),
+        protected_routes: BTreeMap::new(),
     }
     .target(
         "http://api.example.com/fixture",

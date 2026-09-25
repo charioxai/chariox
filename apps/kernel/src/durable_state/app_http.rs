@@ -1,5 +1,6 @@
 //! Serialize HTTP enqueueing with the existing installation/signer writer.
-//! This transaction contains no mutation: no DB commit follows a socket effect.
+//! The transaction holds no mutation except a protected effect's approval
+//! spend, which commits before the effect's task exists.
 use super::{DurableKernelStateStore, DurableWriterRequest};
 use crate::runtime::app_http::{HttpError, HttpJob};
 use rusqlite::{Connection, TransactionBehavior};
