@@ -1986,6 +1986,51 @@ fn managed_import_rejects_repository_root_alias_into_kernel_state_before_copy() 
     fs::remove_dir_all(root).expect("remove test root");
 }
 
+#[test]
+fn managed_import_rejects_protected_repository_destination_below_allowed_root() {
+    let _lock = crate::env_lock::lock();
+    let root = test_root("managed-protected-repository-destination");
+    let control_state = root.join("control-state");
+    let control_parent = control_state.join("managed-context-workspaces");
+    let repository_root = root.join("selected-root");
+    let protected_destination = repository_root.join("chariox");
+    fs::create_dir_all(&control_parent).expect("create control parent");
+    fs::create_dir_all(&repository_root).expect("create selected repository root");
+
+    let source = root.join("chariox");
+    init_repository(&source, "tracked.txt", "source remains separate\n");
+    let exported = one_repo_export(&root, &source, "protected-destination")
+        .expect("export source repository");
+    let _environment = ManagedPublicationEnvGuard::set(&control_state, &repository_root);
+    let _protected_root = TestEnvironmentVariableGuard::set(
+        "CHARIOX_MANAGED_SLICE_SERVICE_ROOT",
+        Some(protected_destination.as_os_str()),
+    );
+
+    let error = import_development_context_with_publication(
+        DevelopmentContextImportRequest {
+            archive_path: exported.archive_path,
+            expected_archive_sha256: exported.archive_sha256,
+            expected_project_id: "project-protected-destination".to_string(),
+            expected_source_repositories: None,
+            destination_root: control_parent.join("transfer-1"),
+        },
+        "transfer-1".to_string(),
+    )
+    .expect_err("protected final repository destination must fail before copy");
+    assert!(
+        error.to_string().contains("protected Chariox service state"),
+        "unexpected import rejection: {error}"
+    );
+    assert!(matches!(error, DaemonError::ManagedContext { .. }));
+    assert!(!protected_destination.exists());
+    assert!(!control_parent.join("transfer-1").exists());
+
+    drop(_protected_root);
+    drop(_environment);
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
 #[cfg(unix)]
 #[test]
 fn interrupted_materialization_recovers_the_directory_published_after_intent() {

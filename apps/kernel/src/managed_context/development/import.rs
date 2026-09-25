@@ -510,6 +510,7 @@ fn import_development_context_with_options(
             super::export::validate_managed_repository_basename(&repository.target_directory)?;
             if materialization_root != control_destination_root {
                 let destination = materialization_root.join(&repository.target_directory);
+                preflight_managed_repository_path(&destination)?;
                 ensure_path_absent(&destination, "managed repository destination")?;
             }
         }
@@ -722,12 +723,7 @@ pub(super) fn managed_materialization_root_for_control(
     validate_real_directory(&root, "managed repository root")?;
     let canonical = fs::canonicalize(&root)
         .map_err(|error| context_io_error("resolve managed repository root", error))?;
-    crate::git_worktree_placement::preflight_managed_repository_root(&canonical).map_err(
-        |error| match error {
-            DaemonError::LocalTransport { message, .. } => context_error(message),
-            other => context_error(other.to_string()),
-        },
-    )?;
+    preflight_managed_repository_path(&canonical)?;
     if canonical == control_destination
         || control_destination.starts_with(&canonical)
         || canonical.starts_with(
@@ -741,6 +737,15 @@ pub(super) fn managed_materialization_root_for_control(
         ));
     }
     Ok(Some(canonical))
+}
+
+fn preflight_managed_repository_path(path: &Path) -> Result<(), DaemonError> {
+    crate::git_worktree_placement::preflight_managed_repository_root(path).map_err(|error| {
+        match error {
+            DaemonError::LocalTransport { message, .. } => context_error(message),
+            other => context_error(other.to_string()),
+        }
+    })
 }
 
 fn trusted_managed_control_parent() -> Result<Option<PathBuf>, DaemonError> {
@@ -1056,6 +1061,9 @@ fn publication_materialization_root(
         super::export::validate_managed_repository_basename(&repository.target_directory).is_ok()
             && repository.destination_path == configured.join(&repository.target_directory)
     }) {
+        for repository in &receipt.repositories {
+            preflight_managed_repository_path(&repository.destination_path)?;
+        }
         return Ok(configured);
     }
     Err(context_error(
