@@ -1461,7 +1461,7 @@ mod tests {
             promoted.workflow_node_run_id(),
             Some(workflow_node_run_id.as_str())
         );
-        assert_eq!(promoted.status(), crate::session::PromptStatus::Dispatching);
+        assert_eq!(promoted.status(), crate::session::PromptStatus::Running);
 
         let deferred = app.take_deferred_workflow_remote_prompt_dispatches();
         assert_eq!(deferred.len(), 1, "the promoted workflow should dispatch exactly once");
