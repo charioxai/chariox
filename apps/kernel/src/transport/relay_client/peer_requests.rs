@@ -1892,6 +1892,19 @@ fn ordinary_lease_caller(
     identity: Option<&RelayCallerIdentity>,
     encrypted_request: &EncryptedRelayPayload,
 ) -> Result<crate::app::LeaseCallerBinding, RelayError> {
+    if identity.is_some_and(|identity| {
+        !matches!(
+            identity.subject_kind,
+            chariox_relay::auth::RelaySubjectKind::Kernel
+                | chariox_relay::auth::RelaySubjectKind::Machine
+        )
+    }) {
+        return Err(relay_error(
+            "unauthorized",
+            "execution lease caller must identify a kernel or machine",
+            false,
+        ));
+    }
     let home_kernel_id = canonical_peer_daemon_id(from_daemon_id).ok_or_else(|| {
         relay_error(
             "unauthorized",
@@ -2103,6 +2116,20 @@ mod tests {
         ManagedContextPackageDevelopment, ManagedContextPackageExportRequest,
         ManagedContextPackageKernel, ManagedContextPackageProviderAccounts,
     };
+
+    #[test]
+    fn ordinary_lease_caller_rejects_service_identity() {
+        let mut identity = scoped_machine_identity("service-1", None);
+        identity.subject_kind = RelaySubjectKind::Service;
+        let payload = EncryptedRelayPayload {
+            sender_public_key: "sender-key".to_string(),
+            nonce: String::new(),
+            ciphertext: String::new(),
+        };
+        let error = ordinary_lease_caller("home-kernel", Some(&identity), &payload)
+            .expect_err("a service identity cannot own an execution lease");
+        assert_eq!(error.code, "unauthorized");
+    }
 
     #[test]
     fn lease_worker_peer_allowlist_is_closed_and_peer_suffix_is_canonical() {
