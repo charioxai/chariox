@@ -65,13 +65,6 @@ impl AppViews {
         }
     }
 
-    pub(crate) fn remove(&self, session: &str, target: &str) {
-        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(views) = sessions.get_mut(session) {
-            views.tabs.remove(target);
-        }
-    }
-
     pub(crate) fn set_open_tabs(&self, session: &str, open: usize) {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(views) = sessions.get_mut(session) {
@@ -120,7 +113,6 @@ mod tests {
         assert!(!views.register("s", "t2", binding("b")));
         assert_eq!(views.binding("s", "t2"), Some(binding("b")));
         assert_eq!(views.binding("other", "t2"), None);
-        views.remove("s", "t1");
         assert!(views.keep_pumping("s"));
         views.forget_session("s");
         assert!(!views.keep_pumping("s"));
@@ -137,7 +129,7 @@ mod tests {
         // An unbound App Tab the controller still shows keeps the pump, so
         // its calls are answered instead of hanging.
         views.register("s", "t7", binding("a"));
-        views.remove("s", "t7");
+        views.retain_open("s", &[], views.registrations("s"));
         views.set_open_tabs("s", 1);
         assert!(views.keep_pumping("s"));
         views.set_open_tabs("s", 0);

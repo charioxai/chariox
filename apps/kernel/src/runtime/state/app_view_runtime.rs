@@ -25,8 +25,11 @@ use sha2::{Digest, Sha256};
 use std::time::Duration;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
-const COMMAND_ATTEMPTS: u32 = 5;
 const COMMAND_RETRY: Duration = Duration::from_millis(100);
+/// An Open waits for a running Room command (bounded by the controller's
+/// 15 s command timeout); an answer is retried a few times.
+const OPEN_WAIT: Duration = Duration::from_secs(16);
+const RESPOND_ATTEMPTS: u32 = 5;
 /// Consecutive failed polls before the session's views are dropped (for
 /// example after the Room environment went away).
 const MAX_POLL_FAILURES: u32 = 20;
@@ -114,16 +117,21 @@ impl KernelRuntimeState {
         })
     }
 
-    /// The slice runs one controller operation at a time, so a view command
-    /// can meet the call poll or another Room command. That rejection means
-    /// the command never ran, so only it is retried (an Open is not
-    /// idempotent); any other failure is final.
+    /// A view command either runs or is final, with two exceptions. An Open
+    /// takes the slice's operation slot, so it waits while another Room
+    /// command holds it (that rejection means it never ran; an Open is not
+    /// idempotent). An answer is idempotent, so any failure is retried.
     async fn app_view_command<T: serde::de::DeserializeOwned>(
         &self,
         session_id: &str,
         request: BrowserAppViewRequest,
     ) -> Option<T> {
-        for attempt in 0..COMMAND_ATTEMPTS {
+        let open = matches!(request, BrowserAppViewRequest::Open { .. });
+        let respond = matches!(request, BrowserAppViewRequest::Respond { .. });
+        let deadline = tokio::time::Instant::now() + OPEN_WAIT;
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
             match self
                 .room_browser_controller_command(
                     session_id,
@@ -138,8 +146,10 @@ impl KernelRuntimeState {
                 }) => return serde_json::from_value(value).ok(),
                 Ok(_) => return None,
                 Err(error)
-                    if attempt + 1 < COMMAND_ATTEMPTS
-                        && error.to_string().contains("already has an active") =>
+                    if (open
+                        && tokio::time::Instant::now() < deadline
+                        && error.to_string().contains("already has an active"))
+                        || (respond && attempt < RESPOND_ATTEMPTS) =>
                 {
                     tokio::time::sleep(COMMAND_RETRY).await;
                 }
@@ -149,7 +159,6 @@ impl KernelRuntimeState {
                 }
             }
         }
-        None
     }
 
     async fn pump_app_view_calls(self, session_id: String) {
@@ -197,7 +206,9 @@ impl KernelRuntimeState {
             Ok(value) => (Some(value), None),
             Err(error) => (None, Some(error)),
         };
-        let delivered = self
+        // An undelivered answer leaves the binding alone: the next poll's
+        // `open_targets` drops Tabs that really closed.
+        let _ = self
             .app_view_command::<Value>(
                 &session_id,
                 BrowserAppViewRequest::Respond {
@@ -208,10 +219,6 @@ impl KernelRuntimeState {
                 },
             )
             .await;
-        if delivered.is_none() {
-            // The Tab closed or navigated away from the controller's App tabs.
-            views.remove(&session_id, &call.target_id);
-        }
     }
 
     async fn invoke_app_view_tool(

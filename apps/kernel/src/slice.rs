@@ -855,6 +855,35 @@ mod tests {
     }
 
     #[test]
+    fn shared_environment_use_overlaps_controller_routes_but_not_lifecycle() {
+        let store = SliceStore::default();
+        let slice = store
+            .create("kernel-1", "machine-1", create_input("dev"))
+            .expect("slice should create");
+        let shared = |store: &SliceStore| {
+            store.check_shared_environment_use(
+                &slice.id,
+                None,
+                "browser_controller.route",
+                "browser_controller.route",
+            )
+        };
+
+        shared(&store).expect("an idle slice admits a shared use");
+        let route = store
+            .try_begin_operation("dev", "browser_controller.route")
+            .expect("a controller route should start");
+        shared(&store).expect("a shared use overlaps a controller route");
+        drop(route);
+
+        let _start = store
+            .try_begin_operation("dev", "slice.start")
+            .expect("a lifecycle operation should start");
+        let error = shared(&store).expect_err("a shared use yields to lifecycle operations");
+        assert!(error.to_string().contains("slice.start"));
+    }
+
+    #[test]
     fn local_docker_slice_port_check_reports_busy_ports() {
         let store = SliceStore::default();
         let slice = store

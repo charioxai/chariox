@@ -136,7 +136,25 @@ impl KernelRuntimeState {
     ) -> Result<Response, DaemonError> {
         // The original action retains its operation guard until terminal proof.
         // Cancellation must not wait for that very action to release the guard.
+        // App view polls and answers only drain and resolve the page bridge's
+        // queue, so they share the slot with controller routes (the local
+        // controller runs these concurrently too); holding it would starve
+        // or fail agent and Room commands 4 times a second.
         let _guard = if matches!(&command, Command::CancelAction { .. }) {
+            None
+        } else if matches!(
+            &command,
+            Command::AppView {
+                request: crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Calls
+                    | crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Respond { .. }
+            }
+        ) {
+            self.owned.slice_store.check_shared_environment_use(
+                &slice.id,
+                Some(session_id),
+                "browser_controller.route",
+                "browser_controller.route",
+            )?;
             None
         } else {
             Some(self.owned.slice_store.guard_environment_use(

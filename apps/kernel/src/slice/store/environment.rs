@@ -28,6 +28,53 @@ impl SliceStore {
         Ok(guard)
     }
 
+    /// Admit a command that may overlap other controller commands: it checks
+    /// the same binding as `guard_environment_use` without taking the slice's
+    /// operation slot. It still yields to lifecycle operations (start, stop,
+    /// restore) and to a quarantining restore.
+    pub(crate) fn check_shared_environment_use(
+        &self,
+        slice_id: &str,
+        session_id: Option<&str>,
+        shares_with: &'static str,
+        operation: &'static str,
+    ) -> Result<(), DaemonError> {
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let slice = state
+            .records
+            .get(slice_id)
+            .ok_or_else(|| access_error("unknown slice"))?;
+        if let Some(pending) = super::pending_backup_restore_for_slice(&state, slice_id) {
+            return Err(super::unresolved_backup_restore_error(
+                operation,
+                &slice.name,
+                &pending.id,
+            ));
+        }
+        if let Some(existing) = state
+            .active_operations
+            .get(slice_id)
+            .filter(|existing| existing.as_str() != shares_with)
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.operation",
+                message: format!(
+                    "slice `{}` already has an active `{existing}` operation",
+                    slice.name
+                ),
+            });
+        }
+        if has_shared_worker(slice, &state) {
+            return Err(access_error(
+                "slice worker reference is shared by another slice",
+            ));
+        }
+        require_environment_session(slice, session_id)
+    }
+
     pub(crate) fn environment_slice(&self, session_id: &str) -> Option<SliceRecord> {
         self.inner
             .lock()
