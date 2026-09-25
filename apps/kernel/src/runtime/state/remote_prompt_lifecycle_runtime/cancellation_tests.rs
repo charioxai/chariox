@@ -619,6 +619,8 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
                 home_prompt_id: "different-home-prompt".to_string(),
                 worker_provider_run_id: "different-worker-run".to_string(),
                 phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
+                target_home_prompt_id: None,
+                execution_lease_id: None,
             }),
         },
     )
@@ -696,6 +698,8 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
                 home_prompt_id: prompt_id.clone(),
                 worker_provider_run_id: WORKER_RUN_ID.to_string(),
                 phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
+                target_home_prompt_id: None,
+                execution_lease_id: None,
             }),
         },
     )

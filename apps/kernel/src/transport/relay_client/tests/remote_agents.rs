@@ -1587,7 +1587,8 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                 let (queued, active, matching_history) = {
                     let mut home = app_home.lock().await;
                     let snapshot = home
-                        .session_snapshot(&session_id)
+                        .sessions()
+                        .get_session(&session_id)
                         .expect("home session should remain available");
                     let queued = snapshot
                         .queued_prompts_for_agent(&remote_agent_id)
@@ -1623,7 +1624,8 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
             let (queued, active, history) = {
                 let mut home = app_home.lock().await;
                 let snapshot = home
-                    .session_snapshot(&session_id)
+                    .sessions()
+                    .get_session(&session_id)
                     .expect("reconciled home session should snapshot");
                 let queued = snapshot
                     .queued_prompts_for_agent(&remote_agent_id)
