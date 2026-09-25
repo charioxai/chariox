@@ -635,9 +635,8 @@ fn interrupt_fixture() -> InterruptFixture {
     else {
         panic!("second workflow prompt should queue");
     };
-    let target_unrelated_prompt_id = "interrupt-target-unrelated-queued".to_string();
     let target_unrelated_prompt = crate::session::PromptQueueItem::new(
-        target_unrelated_prompt_id.as_str(),
+        "interrupt-target-unrelated-queued",
         crate::scheduler::runtime::workflow_prompt_source_attachment_id("unrelated-target-run"),
         target_agent.id(),
         "unrelated queued prompt for target agent",
@@ -677,9 +676,8 @@ fn interrupt_fixture() -> InterruptFixture {
     else {
         panic!("second target's workflow prompt should remain queued");
     };
-    let second_target_unrelated_prompt_id = "interrupt-second-target-unrelated-queued".to_string();
     let second_target_unrelated_prompt = crate::session::PromptQueueItem::new(
-        second_target_unrelated_prompt_id.as_str(),
+        "interrupt-second-target-unrelated-queued",
         crate::scheduler::runtime::workflow_prompt_source_attachment_id(
             "unrelated-second-queued-run",
         ),

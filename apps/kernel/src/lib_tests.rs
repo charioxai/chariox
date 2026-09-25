@@ -389,7 +389,7 @@ fn relay_peer_leased_agent_profile_update_shape_is_versioned() {
 fn relay_peer_queued_prompt_steer_shape_is_versioned() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        56
+        58
     );
 
     let request = RelayPeerRequest::SteerLeasedPrompt {
