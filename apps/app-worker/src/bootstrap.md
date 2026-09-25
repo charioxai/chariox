@@ -27,6 +27,9 @@ require('node:module').createRequire('/runtime/bootstrap.cjs')(
   entry: 'runtime/main.mjs',
   declarations: { tools: ['list_issues'], incomingEvents: [] },
   startupTimeoutMs: 10000,
+  // Only for an update raising the data schema version; both keys or neither.
+  migrations: [{ from: 1, to: 2, entry: 'migrations/002.js' }],
+  migrationTimeoutMs: 60000,
 });
 ```
 
@@ -39,6 +42,13 @@ remains responsible for input/output schemas and operation authorization.
 `incomingEvents` contains only signed events with direction `incoming` or `both`.
 An outgoing-only declaration never requires a JavaScript handler or appears in
 the readiness event list. Old ambiguous `declarations.events` input is rejected.
+
+`migrations` is the consecutive pending chain from the installation's data
+version to the release's `migrations.targetVersion`; each entry obeys the same
+containment rules as the App entry under `migrations/`. The bootstrap runs each
+step's default export with the SDK's migration context, reports `migration.step`
+and only then imports the App entry. `migrationTimeoutMs` (at most 120 seconds)
+bounds the whole migration phase; `startupTimeoutMs` is re-armed for App load.
 
 The bootstrap captures native-filtered `CHARIOX_APP_GENERATION`,
 `CHARIOX_APP_INSTALLATION`, `CHARIOX_APP_RELEASE_DIGEST`, `CHARIOX_APP_PACKAGE`,
@@ -61,8 +71,8 @@ code sharing the JavaScript process.
 Failure output is only `app_worker_bootstrap_failed:<code>`; exception text,
 paths, bootstrap/configuration bytes and IPC payloads are not copied to errors.
 Codes are 130 invalid configuration, 131 import/registration/readiness failure,
-132 startup timeout, 133 IPC failure, 134 uncaught exception/rejection, and 135
-shutdown/flush failure. These are worker exit categories, not new wire messages.
+132 startup or migration timeout, 133 IPC failure, 134 uncaught exception/rejection,
+135 shutdown/flush failure, and 136 data migration failure. These are worker exit categories, not new wire messages.
 
 `node --test --test-concurrency=1 apps/app-worker/tests/bootstrap.test.mjs`
 uses ordinary Node processes and real inherited FD3 streams. It proves bootstrap

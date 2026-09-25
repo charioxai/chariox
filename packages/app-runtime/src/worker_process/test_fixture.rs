@@ -36,6 +36,10 @@ pub enum Mode {
     Health,
     BadHealth,
     OtherInstallation,
+    /// A staged worker that migrates schema 0 to 1 first, then is healthy.
+    Migrate,
+    /// Writes during its migration, then fails before reporting the step.
+    BadMigration,
 }
 impl Mode {
     fn argument(self) -> &'static str {
@@ -51,6 +55,8 @@ impl Mode {
             Self::Health => "sdk_health",
             Self::BadHealth => "sdk_bad_health",
             Self::OtherInstallation => "sdk_other_installation",
+            Self::Migrate => "sdk_migrate",
+            Self::BadMigration => "sdk_bad_migration",
         }
     }
 }

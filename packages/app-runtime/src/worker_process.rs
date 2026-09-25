@@ -56,14 +56,37 @@ impl PreparedWorker {
     /// Physical preparation only: the kernel must fence the current binding
     /// and approval before this call and complete its readiness/activation path
     /// after spawn. Paths, bootstrap source and limits are not caller arguments.
+    /// `migrate_from` is the data schema of a staged worker that first runs
+    /// its release's migration steps from there (the kernel's open migration).
     #[cfg(target_os = "linux")]
     pub fn prepare_linux(
         runtime: crate::runtime_enrollment::EnrolledRuntime,
         release: crate::release_store::VerifiedReleaseLease,
         binding: &crate::installation::StageTrustBinding,
+        migrate_from: Option<u32>,
     ) -> Result<Self, WorkerError> {
-        platform_linux::prepare(runtime, release, binding)
+        platform_linux::prepare(runtime, release, binding, migrate_from)
     }
+}
+
+/// The bootstrap's budget for all migration steps of one update; App startup
+/// then gets its normal budget.
+pub const MIGRATION_TIMEOUT_MS: u64 = 120_000;
+
+/// The bootstrap configuration's migration steps from `from`, or None when
+/// the release declares none past it.
+pub fn migration_steps(
+    manifest: &chariox_app_package::Manifest,
+    from: u32,
+) -> Option<serde_json::Value> {
+    let steps: Vec<_> = manifest
+        .migrations
+        .iter()
+        .flat_map(|migrations| &migrations.steps)
+        .filter(|step| step.from >= from)
+        .map(|step| serde_json::json!({"from":step.from,"to":step.to,"entry":step.entry}))
+        .collect();
+    (!steps.is_empty()).then(|| serde_json::Value::Array(steps))
 }
 
 /// To be implemented by the enrolled platform provisioner, not by callers of

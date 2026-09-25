@@ -95,6 +95,7 @@ fn make_control(
     *control.lifecycle().0.fixture.lock().unwrap() = Some(start::FixturePlatform {
         native,
         fail_health: false,
+        fail_migration: false,
         observations: observations.clone(),
     });
     (control, observations)

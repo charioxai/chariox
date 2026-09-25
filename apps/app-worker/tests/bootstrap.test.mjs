@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import { encodeFrame, FrameDecoder } from '../../../packages/app-sdk/src/protocol.js';
@@ -23,12 +24,16 @@ after(async () => {
   if (scratch) await rm(scratch, { recursive: true, force: true });
 });
 
-async function fixture(source, { entry = 'runtime/main.mjs', config = {}, environment = {} } = {}) {
+async function fixture(source, { entry = 'runtime/main.mjs', config = {}, environment = {}, files = {} } = {}) {
   const parent = path.join(scratch, `fixture-${++fixtureNumber}`);
   const roots = Object.fromEntries(['package', 'data', 'temporary', 'runtime'].map(name => [name, path.join(parent, name)]));
   for (const root of Object.values(roots)) await mkdir(root, { recursive: true, mode: 0o700 });
   await mkdir(path.join(roots.package, 'runtime'));
   await writeFile(path.join(roots.package, entry), source);
+  for (const [name, contents] of Object.entries(files)) {
+    await mkdir(path.dirname(path.join(roots.package, name)), { recursive: true });
+    await writeFile(path.join(roots.package, name), contents);
+  }
   for (const file of ['bootstrap.cjs', 'bootstrap-config.cjs'])
     await cp(path.join(repository, 'apps/app-worker/src', file), path.join(roots.runtime, file));
   await cp(path.join(repository, 'packages/app-sdk'), path.join(roots.runtime, 'sdk'), { recursive: true });
@@ -37,7 +42,7 @@ async function fixture(source, { entry = 'runtime/main.mjs', config = {}, enviro
   // is used only for node:module; file loading then uses createRequire.
   const bootstrapPath = path.join(roots.runtime, 'bootstrap.cjs');
   const script = `require('node:module').createRequire(${JSON.stringify(bootstrapPath)})(${JSON.stringify(bootstrapPath)}).start(${JSON.stringify(launch)});`;
-  return { roots, script, environment: {
+  return { roots, script, launch, environment: {
     CHARIOX_APP_GENERATION: '7', CHARIOX_APP_INSTALLATION: 'installation_1',
     CHARIOX_APP_RELEASE_DIGEST: 'a'.repeat(64), CHARIOX_APP_PACKAGE: roots.package,
     CHARIOX_APP_DATA: roots.data, CHARIOX_APP_TMP: roots.temporary, ...environment,
@@ -96,7 +101,7 @@ function start(prepared) {
 
 const registration = `async function register(chariox) {
   if (!Object.isFrozen(chariox) || !Object.isFrozen(chariox.paths) || !Object.isFrozen(chariox.tools)
-    || 'ready' in chariox || 'close' in chariox) throw new Error('bad injection');
+    || 'ready' in chariox || 'close' in chariox || 'migration' in chariox || 'migrationStep' in chariox) throw new Error('bad injection');
   await new Promise(resolve => setTimeout(resolve, 10));
   chariox.tools.register('echo', async input => input);
   chariox.lifecycle.on('shutdown', async () => 'x'.repeat(512 * 1024));
@@ -272,4 +277,102 @@ test('fatal asynchronous App exceptions terminate without exposing exception tex
   const result = await running.completed;
   assert.equal(result.code, 134);
   assert.equal(result.stderr, 'app_worker_bootstrap_failed:134\n');
+});
+
+const migrationFiles = { 'migrations/001.js': `export default async chariox => {
+  if (!Object.isFrozen(chariox) || 'tools' in chariox || typeof fetch !== 'function') throw new Error('bad migration context');
+  const record = await chariox.state.get('project');
+  await chariox.state.transaction({ checks: [{ key: 'project', version: record.version }], writes: [{ key: 'project', value: { v: chariox.to } }] });
+};`, 'migrations/002.cjs': 'module.exports = async () => {};' };
+const migrations = { migrations: [{ from: 0, to: 1, entry: 'migrations/001.js' }, { from: 1, to: 2, entry: 'migrations/002.cjs' }], migrationTimeoutMs: 2000 };
+
+test('trusted configuration accepts only a consecutive, contained migration chain', async () => {
+  const prepared = await fixture('export default () => {};', { files: { ...migrationFiles, 'migrations/link.js': '', 'runtime/other.js': '' } });
+  const { configuration } = createRequire(import.meta.url)('../src/bootstrap-config.cjs');
+  const load = patch => configuration({ ...prepared.launch, ...patch }, prepared.environment, prepared.roots.runtime);
+  const plain = load({});
+  assert.deepEqual(plain.migrations, []);
+  assert.ok(Object.isFrozen(plain.migrations));
+  const migrating = load(migrations);
+  assert.equal(migrating.migrationTimeoutMs, 2000);
+  assert.deepEqual(migrating.migrations, [
+    { from: 0, to: 1, entry: path.join(prepared.roots.package, 'migrations/001.js') },
+    { from: 1, to: 2, entry: path.join(prepared.roots.package, 'migrations/002.cjs') }]);
+  assert.ok(Object.isFrozen(migrating.migrations) && migrating.migrations.every(Object.isFrozen));
+  await rm(path.join(prepared.roots.package, 'migrations/link.js'));
+  await symlink(path.join(prepared.roots.package, 'migrations/001.js'), path.join(prepared.roots.package, 'migrations/link.js'));
+  const step = (entry, from = 0, to = 1) => ({ migrations: [{ from, to, entry }], migrationTimeoutMs: 1000 });
+  for (const patch of [
+    { migrations: migrations.migrations }, { migrationTimeoutMs: 1000 }, { migrations: [], migrationTimeoutMs: 1000 },
+    { ...migrations, migrationTimeoutMs: 0 }, { ...migrations, migrationTimeoutMs: 120001 }, { ...migrations, migrationTimeoutMs: 1.5 },
+    { migrations: Array.from({ length: 1025 }, (_, from) => ({ from, to: from + 1, entry: 'migrations/001.js' })), migrationTimeoutMs: 1000 },
+    step('migrations/001.js', 0, 2), step('migrations/001.js', -1, 0), step('migrations/001.js', 0.5, 1.5),
+    step('migrations/001.js', Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER + 1),
+    { migrations: [migrations.migrations[1], migrations.migrations[0]], migrationTimeoutMs: 1000 },
+    { migrations: [{ ...migrations.migrations[0], extra: 1 }], migrationTimeoutMs: 1000 },
+    { migrations: [{ from: 0, to: 1 }], migrationTimeoutMs: 1000 },
+    step('runtime/other.js'), step('migrations/../runtime/other.js'), step('migrations//001.js'),
+    step('migrations/001.json'), step('migrations\\001.js'), step('migrations/0\n01.js'),
+    step('migrations/missing.js'), step('migrations/link.js'),
+  ]) assert.throws(() => load(patch), undefined, JSON.stringify(patch));
+});
+
+test('pending migrations run in order through admitted state calls before the App entry loads', async () => {
+  const prepared = await fixture(`import fs from 'node:fs'; fs.writeFileSync(process.env.CHARIOX_APP_DATA + '/imported', 'yes');
+    export default ${registration}`, { files: migrationFiles, config: migrations });
+  const running = start(prepared);
+  const get = await running.receive(message => message.method === 'state.get');
+  assert.deepEqual(get.params, { key: 'project' });
+  await assert.rejects(readFile(path.join(prepared.roots.data, 'imported')));
+  running.send({ kind: 'response', id: get.id, result: { value: { v: 0 }, version: 3 } });
+  const write = await running.receive(message => message.method === 'state.transaction');
+  assert.deepEqual(write.params, { checks: [{ key: 'project', version: 3 }], writes: [{ key: 'project', value: { v: 1 } }], schemaVersion: 1 });
+  running.send({ kind: 'response', id: write.id, result: { revision: 1, receipts: [] } });
+  for (const to of [1, 2]) {
+    const step = await running.receive(message => message.method === 'migration.step' && message.params.to === to);
+    running.send({ kind: 'response', id: step.id, result: null });
+  }
+  await running.ready();
+  assert.equal(await readFile(path.join(prepared.roots.data, 'imported'), 'utf8'), 'yes');
+  assert.deepEqual(running.messages.map(message => message.method),
+    ['state.get', 'state.transaction', 'migration.step', 'migration.step', 'worker.ready']);
+  running.request('shutdown-migrated', 'lifecycle.dispatch', { event: 'shutdown' });
+  const result = await running.completed;
+  assert.equal(result.code, 0, JSON.stringify(result));
+});
+
+test('a failed migration step ends the worker with its own code before the App loads', async () => {
+  const source = `import fs from 'node:fs'; fs.writeFileSync(process.env.CHARIOX_APP_DATA + '/imported', 'yes'); export default () => {};`;
+  for (const failing of [`export default () => { throw new Error('secret migration detail'); };`,
+    'export default async () => Promise.reject(new Error("x"));', 'export const migrate = () => {};', 'syntax error here(']) {
+    const prepared = await fixture(source, { files: { ...migrationFiles, 'migrations/001.js': failing }, config: migrations });
+    const result = await start(prepared).completed;
+    assert.equal(result.code, 136, JSON.stringify(result));
+    assert.equal(result.stderr, 'app_worker_bootstrap_failed:136\n');
+    assert.equal(result.messages.length, 0);
+    await assert.rejects(readFile(path.join(prepared.roots.data, 'imported')));
+  }
+  const prepared = await fixture(source, { files: { ...migrationFiles, 'migrations/001.js': 'export default () => {};' }, config: migrations });
+  const running = start(prepared);
+  const step = await running.receive(message => message.method === 'migration.step');
+  running.send({ kind: 'response', id: step.id, error: { code: 'DENIED', message: 'stale data version' } });
+  const result = await running.completed;
+  assert.equal(result.code, 136);
+  await assert.rejects(readFile(path.join(prepared.roots.data, 'imported')));
+});
+
+test('the migration timeout bounds migrations and startup is re-armed for App load', async () => {
+  const hung = await fixture('export default () => {};', { files: { ...migrationFiles, 'migrations/001.js': 'export default () => new Promise(() => {});' },
+    config: { ...migrations, migrationTimeoutMs: 150 } });
+  assert.equal((await start(hung).completed).code, 132);
+  const prepared = await fixture(`export default ${registration}`, { config: { ...migrations, startupTimeoutMs: 400, migrationTimeoutMs: 5000 },
+    files: { ...migrationFiles, 'migrations/001.js': 'export default () => new Promise(resolve => setTimeout(resolve, 600));' } });
+  const running = start(prepared);
+  for (const to of [1, 2]) {
+    const step = await running.receive(message => message.method === 'migration.step' && message.params.to === to);
+    running.send({ kind: 'response', id: step.id, result: null });
+  }
+  await running.ready();
+  running.request('shutdown-slow', 'lifecycle.dispatch', { event: 'shutdown' });
+  assert.equal((await running.completed).code, 0);
 });

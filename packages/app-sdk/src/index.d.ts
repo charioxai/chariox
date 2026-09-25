@@ -173,12 +173,32 @@ export interface AppSdk {
   };
   /** Completes bootstrap registration. This never asserts sandbox lockdown. */
   ready(options?: CallOptions): Promise<null>;
+  /** Bootstrap-only: the context passed to one pending data migration step. */
+  migration(step: { from: number; to: number }): MigrationContext;
+  /** Bootstrap-only: reports a completed step; the kernel answers `null`. */
+  migrationStep(to: number, options?: CallOptions): Promise<null>;
   close(): void;
 }
 
 /** Injected into the one App registration function; bootstrap owns readiness and IPC lifetime. */
-export type AppBackendSdk = Omit<AppSdk, 'ready' | 'close'>;
+export type AppBackendSdk = Omit<AppSdk, 'ready' | 'close' | 'migration' | 'migrationStep'>;
 export type AppRegistration = (chariox: AppBackendSdk) => void | Promise<void>;
+
+/** State access during one data migration step; every transaction commits at schema version `to`. */
+export interface MigrationContext {
+  readonly from: number;
+  readonly to: number;
+  readonly state: {
+    get(key: string, options?: CallOptions): Promise<StateRecord | null>;
+    transaction(transaction: Pick<StateTransaction, 'checks' | 'writes'>, options?: CallOptions): Promise<{ revision: number; receipts: EventReceipt[] }>;
+  };
+}
+/**
+ * A package's `migrations/NNN.js` module, declared as step `{from, to: from + 1, entry}`:
+ * `export default async function migrate(chariox) { ... }`. Pending steps run in
+ * order before the App's runtime entry is imported; only state calls are admitted.
+ */
+export type Migration = (chariox: MigrationContext) => void | Promise<void>;
 
 /** Worker bootstrap options, supplied after the trusted launcher established containment. */
 export interface AppSdkOptions {

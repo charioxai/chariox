@@ -248,7 +248,7 @@ const installFailures: Record<string, string> = {
   app_install_upload_missing_or_expired: "The upload expired before preparation. Select the file again.",
   app_install_approval_expired: "The approval request expired.",
   app_install_insufficient_storage: "The kernel has insufficient App storage.",
-  app_update_migration_required: "This release changes the App's data schema; updating with data migrations is not supported yet.",
+  app_update_schema_downgrade: "This release's data schema is older than the installed App's; App data is never migrated to an older schema.",
 }
 
 /** Friendly text for an operation's kernel failure code; unknown codes are shown only when well-formed. */

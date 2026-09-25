@@ -132,6 +132,16 @@ and admits only `outgoing`/`both` events to automations. A readiness
 request is not evidence that the OS sandbox is active; only the trusted bootstrap
 can establish that fact before loading App code.
 
+A worker started for a local update that raises the data schema version runs a
+migration phase first: the bootstrap imports each pending `migrations/NNN.js`
+step in order, calls its default export with `{from, to, state:{get, transaction}}`,
+then sends `migration.step {to}`; the kernel answers `null` once it records that
+step. Before `worker.ready` is accepted, the kernel admits only `state.get`,
+`state.transaction` and `migration.step` from a migrating worker, scopes them to
+the staged generation, and requires each transaction's `schemaVersion` to equal
+the current step's `to` (the SDK always sends it). Every other method is denied.
+Any failed step ends the worker with exit code 136 before App runtime code loads.
+
 Other typed methods use the names and parameter shapes documented in
 `src/index.d.ts` and `src/index.js`: `state.*`, `files.*`, `events.*`, `http.request`,
 `log.write`, `host.*`, `validation.*`, and `outputs.*`. Unsupported operations

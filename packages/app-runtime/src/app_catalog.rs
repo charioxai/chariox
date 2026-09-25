@@ -188,6 +188,15 @@ impl AppCatalog {
         Ok(())
     }
 
+    /// Admission for a migrating worker of the still-pending stage: the stage
+    /// is current under its exact signer. The state store checks the rest
+    /// (quiesced for this update, a migration open for its generation).
+    pub fn require_staged(&self, transaction: &Transaction<'_>, trusted_owner: &str) -> Result<()> {
+        self.binding
+            .require_current(transaction, trusted_owner, &self.trust)?;
+        Ok(())
+    }
+
     pub fn installation_id(&self) -> &str {
         &self.binding.token().installation_id
     }

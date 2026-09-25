@@ -113,7 +113,8 @@ impl Broker for BackendBroker {
             match request.method.as_str() {
                 name if name.starts_with("state.")
                     || name.starts_with("events.")
-                    || name.starts_with("schedule.") =>
+                    || name.starts_with("schedule.")
+                    || name == "migration.step" =>
                 {
                     delegate.state.dispatch(request).await
                 }

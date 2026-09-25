@@ -37,6 +37,15 @@ pub(super) fn active(transaction: &Connection, scope: StateScope<'_>) -> Result<
         .ok_or_else(|| InstallationError::Inactive.into())
 }
 
+/// The schema a scope's state operations must carry: the active release's, or
+/// for a migrating worker of the pending generation, its next step's.
+pub(super) fn admit(transaction: &Connection, scope: StateScope<'_>) -> Result<u32> {
+    if let Some(schema) = super::migration::admit(transaction, scope)? {
+        return Ok(schema);
+    }
+    Ok(active(transaction, scope)?.release.schema_version)
+}
+
 pub(super) fn read(
     transaction: &Connection,
     installation: &str,
@@ -68,8 +77,7 @@ pub(super) fn apply(
     scope: StateScope<'_>,
     changes: &StateChanges,
 ) -> Result<u64> {
-    let current = active(transaction, scope)?;
-    if current.release.schema_version != changes.schema_version {
+    if admit(transaction, scope)? != changes.schema_version {
         return Err(StateError::SchemaMismatch);
     }
     let head: Option<(i64, i64, i64)> = transaction

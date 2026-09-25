@@ -145,7 +145,7 @@ fn hosted_readonly_code_views_match_verified_roots_in_kernel_namespace() {
 fn hosted_prepared_worker_uses_only_enrolled_sources_and_reclaims_unstarted_domain() {
     let context = Context::open("55555555555555555555555555555555");
     let (package, runtime, binding) = proofs();
-    let prepared = PreparedWorker::prepare_linux(runtime, package, &binding).unwrap();
+    let prepared = PreparedWorker::prepare_linux(runtime, package, &binding, None).unwrap();
     assert_eq!(prepared.record.installation, "factory-only");
     assert_eq!(prepared.record.generation, "1");
     assert_eq!(

@@ -173,12 +173,12 @@ test("stop closes the watcher and the private workspace; a new start replaces th
 
 test("a failed update reports the friendly kernel failure and keeps watching", async t => {
   const f = await fixture(t)
-  const h = harness(f, { installed: true, failure: "app_update_migration_required" })
+  const h = harness(f, { installed: true, failure: "app_update_schema_downgrade" })
   const loop = new AppDevLoop(h.deps)
   t.after(() => loop.dispose())
   await loop.start(f.app, { key: f.key })
   await loop.settled()
-  assert.match(h.notices.at(-1)!, /^Update failed: This release changes the App's data schema; updating with data migrations is not supported yet\. Operation app-update-1\.$/)
+  assert.match(h.notices.at(-1)!, /^Update failed: This release's data schema is older than the installed App's; App data is never migrated to an older schema\. Operation app-update-1\.$/)
   h.deps.pack = async () => { throw new Error("INVALID_MANIFEST: app.json is invalid") }
   h.change()
   await loop.settled()

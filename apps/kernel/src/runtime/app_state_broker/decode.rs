@@ -18,6 +18,14 @@ pub(super) fn operation(method: &str, params: Value) -> Result<AppStateOperation
                 key: key(take(&mut object, "key")?)?,
             })
         }
+        "migration.step" => {
+            let mut object = fields(params, &["to"])?;
+            let to = take(&mut object, "to")?
+                .as_u64()
+                .and_then(|value| u32::try_from(value).ok())
+                .ok_or_else(errors::invalid)?;
+            Ok(AppStateOperation::MigrationStep { to })
+        }
         "state.transaction" => {
             let mut object = fields(
                 params,

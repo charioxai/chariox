@@ -334,8 +334,8 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
             }
             .map_err(|error| match error {
                 VerifiedStageError::Installation(InstallationError::Invalid(
-                    "data migration required",
-                )) => InstallOperationError::MigrationRequired,
+                    "data schema downgrade",
+                )) => InstallOperationError::SchemaDowngrade,
                 _ => InstallOperationError::Stale,
             })?;
             sql(tx.execute("UPDATE app_installation_operations SET phase='approval',review_json=?1,updated_ms=?2,generation=?3 WHERE owner_id=?4 AND request_id=?5",params![review,time,staged.token.generation as i64,owner,request_id]))?;
