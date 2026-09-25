@@ -17,8 +17,7 @@ async fn check_home_room_agent_uses_home_local_slice_environment_browser_compute
         let (room, attachment_id, viewer_public_key, environment_slice) =
             prepare_home_local_room_display(&fixture).await;
         assert_eq!(
-            environment_slice.owner_kernel_id,
-            fixture.home_state.config.daemon_id,
+            environment_slice.owner_kernel_id, fixture.home_state.config.daemon_id,
             "the headed Environment slice is owned by the home kernel"
         );
         assert_eq!(
@@ -104,7 +103,10 @@ async fn check_home_room_agent_uses_home_local_slice_environment_browser_compute
         )
         .await
         .expect("launch the home-kernel Room agent provider run");
-        assert!(launched.get("ProviderRunLaunchAccepted").is_some(), "{launched}");
+        assert!(
+            launched.get("ProviderRunLaunchAccepted").is_some(),
+            "{launched}"
+        );
         let provider_run_id = {
             let app = fixture.home.app.lock().await;
             let agent = app
@@ -138,17 +140,16 @@ async fn check_home_room_agent_uses_home_local_slice_environment_browser_compute
         let browser = fixture
             .home
             .runtime_state
-            .dispatch_authenticated_runtime_tool_call(
-                &token,
-                "slice_open_url",
-                json!({"url":url}),
-            )
+            .dispatch_authenticated_runtime_tool_call(&token, "slice_open_url", json!({"url":url}))
             .await
             .expect("public Browser tool call must use home Room admission");
         assert!(browser.ok, "{:?}", browser.payload);
         assert_eq!(browser.payload["session_id"], room);
         assert_eq!(browser.payload["agent_id"], home_agent_id);
-        assert_eq!(browser.payload["actor_id"], format!("agent:{home_agent_id}"));
+        assert_eq!(
+            browser.payload["actor_id"],
+            format!("agent:{home_agent_id}")
+        );
         assert_eq!(browser.payload["browser"]["url"], url);
         let browser_action_id = browser.payload["action_id"]
             .as_str()
@@ -169,7 +170,10 @@ async fn check_home_room_agent_uses_home_local_slice_environment_browser_compute
         assert_eq!(computer.payload["session_id"], room);
         assert_eq!(computer.payload["environment_id"], environment_id);
         assert_eq!(computer.payload["agent_id"], home_agent_id);
-        assert_eq!(computer.payload["actor_id"], format!("agent:{home_agent_id}"));
+        assert_eq!(
+            computer.payload["actor_id"],
+            format!("agent:{home_agent_id}")
+        );
         assert_eq!(computer.payload["action_kind"], "pointer_move");
         let computer_action_id = computer.payload["action_id"]
             .as_str()
@@ -208,7 +212,9 @@ async fn check_home_room_agent_uses_home_local_slice_environment_browser_compute
             .find(|tab| tab["tab_id"] == stable_tab_id)
             .expect("public Room state contains the original Tab");
         assert_eq!(stable_tab["url"], url);
-        let actions = before_environment["actions"].as_array().expect("Room action ledger");
+        let actions = before_environment["actions"]
+            .as_array()
+            .expect("Room action ledger");
         let actor_id = format!("agent:{home_agent_id}");
         for (action_id, action_kind) in [
             (&browser_action_id, "navigate"),
@@ -218,7 +224,11 @@ async fn check_home_room_agent_uses_home_local_slice_environment_browser_compute
                 .iter()
                 .filter(|action| action["action_id"].as_str() == Some(action_id.as_str()))
                 .collect::<Vec<_>>();
-            assert_eq!(matching.len(), 1, "each public tool action is recorded once");
+            assert_eq!(
+                matching.len(),
+                1,
+                "each public tool action is recorded once"
+            );
             assert_eq!(matching[0]["actor_id"], actor_id);
             assert_eq!(matching[0]["kind"], action_kind);
             assert_eq!(matching[0]["state"], "completed");
@@ -265,10 +275,12 @@ async fn check_home_room_agent_uses_home_local_slice_environment_browser_compute
         let after_environment = &after_denial["RoomEnvironmentState"]["environment"];
         assert_eq!(after_environment["environment_id"], environment_id);
         assert_eq!(after_environment["focused_tab_id"], stable_tab_id);
-        assert_eq!(after_environment["actions"].as_array().unwrap().len(), action_count);
         assert_eq!(
-            after_environment["tabs"][0]["url"],
-            url,
+            after_environment["actions"].as_array().unwrap().len(),
+            action_count
+        );
+        assert_eq!(
+            after_environment["tabs"][0]["url"], url,
             "a foreign-Room request must not change the shared Browser Tab"
         );
 
