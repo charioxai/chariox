@@ -319,7 +319,12 @@ impl KernelRuntimeState {
                 ));
             }
         }
-        let _ = persist_remote_prompt_reconciliation_pending(self, dispatch, true);
+        if let Err(error) = persist_remote_prompt_reconciliation_pending(self, dispatch, true) {
+            return Err(self.hold_remote_prompt_receipt_reconciliation(
+                dispatch,
+                format!("could not persist reconciliation marker before querying worker: {error}"),
+            ));
+        }
         let binding_before = match self.remote_prompt_receipt_binding(dispatch) {
             Ok(binding) => binding,
             Err(detail) => {
