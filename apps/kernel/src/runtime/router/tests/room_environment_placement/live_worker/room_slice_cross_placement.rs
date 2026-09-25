@@ -1,7 +1,7 @@
 use super::*;
 use crate::transport::relay_client::send_peer_request_via_temporary_connection;
 use crate::transport::relay_peer::{
-    RemoteRoomComputerObservationCall, RelayPeerRequest, RelayPeerResponse,
+    RelayPeerRequest, RelayPeerResponse, RemoteRoomComputerObservationCall,
 };
 use crate::transport::room_browser_controller::RoomBrowserControllerCommand;
 use chariox_relay::protocol::ClientTarget;
@@ -87,8 +87,7 @@ async fn agent_on_second_home_local_slice_uses_the_room_environment_without_dire
         .resolve_slice(&agent_slice_id)
         .expect("resolve separate Room agent slice");
     assert_eq!(
-        browser_slice.owner_kernel_id,
-        fixture.home_state.config.daemon_id,
+        browser_slice.owner_kernel_id, fixture.home_state.config.daemon_id,
         "the browser slice is owned by the home kernel"
     );
     assert_eq!(
@@ -101,8 +100,7 @@ async fn agent_on_second_home_local_slice_uses_the_room_environment_without_dire
         crate::slice::SliceDisplayMode::Headed
     );
     assert_eq!(
-        agent_slice.owner_kernel_id,
-        fixture.home_state.config.daemon_id,
+        agent_slice.owner_kernel_id, fixture.home_state.config.daemon_id,
         "the agent slice is owned by the same home kernel"
     );
     assert_eq!(
@@ -111,13 +109,11 @@ async fn agent_on_second_home_local_slice_uses_the_room_environment_without_dire
         "the Room agent must use a second local slice"
     );
     assert_eq!(
-        browser_slice.owner_machine_id,
-        fixture.home_state.config.host_machine_id,
+        browser_slice.owner_machine_id, fixture.home_state.config.host_machine_id,
         "the headed Room Environment belongs to the home machine"
     );
     assert_eq!(
-        agent_slice.owner_machine_id,
-        browser_slice.owner_machine_id,
+        agent_slice.owner_machine_id, browser_slice.owner_machine_id,
         "both local slices belong to the same home machine"
     );
     let browser_worker_machine_id = format!("slice:{}", browser_slice.id);
@@ -134,8 +130,7 @@ async fn agent_on_second_home_local_slice_uses_the_room_environment_without_dire
         "the Room agent must not run in the browser slice"
     );
     assert_ne!(
-        browser_slice.worker_kernel_id,
-        agent_slice.worker_kernel_id,
+        browser_slice.worker_kernel_id, agent_slice.worker_kernel_id,
         "the Room agent and Environment use different local slice workers"
     );
 
@@ -165,10 +160,8 @@ async fn agent_on_second_home_local_slice_uses_the_room_environment_without_dire
         std::fs::set_permissions(&screen_tool, std::fs::Permissions::from_mode(0o700))
             .expect("Computer helper should be executable");
     }
-    let _screen_tool_env = ScopedEnvironmentVariable::set(
-        "CHARIOX_SLICE_SCREEN_TOOL",
-        screen_tool.as_os_str(),
-    );
+    let _screen_tool_env =
+        ScopedEnvironmentVariable::set("CHARIOX_SLICE_SCREEN_TOOL", screen_tool.as_os_str());
 
     let check = std::panic::AssertUnwindSafe(async {
         let room = fixture.rooms[0].clone();
@@ -229,15 +222,17 @@ async fn agent_on_second_home_local_slice_uses_the_room_environment_without_dire
             .expect("home agent identity")
             .to_string();
         assert_eq!(spawned["AgentSpawned"]["agent"]["session_id"], room);
-        let remote_execution: crate::agent::RemoteAgentBinding = serde_json::from_value(
-            spawned["AgentSpawned"]["agent"]["remote_execution"].clone(),
-        )
-        .expect("home-owned remote worker binding");
+        let remote_execution: crate::agent::RemoteAgentBinding =
+            serde_json::from_value(spawned["AgentSpawned"]["agent"]["remote_execution"].clone())
+                .expect("home-owned remote worker binding");
         assert_eq!(remote_execution.worker_kernel_id, agent_worker_kernel_id);
         assert_eq!(remote_execution.worker_machine_id, agent_worker_machine_id);
         assert_ne!(
             remote_execution.worker_machine_id,
-            browser_slice.worker_machine_id.as_deref().unwrap_or_default(),
+            browser_slice
+                .worker_machine_id
+                .as_deref()
+                .unwrap_or_default(),
             "the provider run must stay in the distinct agent slice"
         );
         let attached_agent_slice = fixture
@@ -336,11 +331,7 @@ async fn agent_on_second_home_local_slice_uses_the_room_environment_without_dire
         let url = "https://home-local-slice-cross-placement.test/";
         let opened = agent_worker
             .runtime_state
-            .dispatch_authenticated_runtime_tool_call(
-                &token,
-                "slice_open_url",
-                json!({"url":url}),
-            )
+            .dispatch_authenticated_runtime_tool_call(&token, "slice_open_url", json!({"url":url}))
             .await
             .expect("Browser call should cross home admission");
         assert!(opened.ok, "{:?}", opened.payload);
@@ -350,11 +341,7 @@ async fn agent_on_second_home_local_slice_uses_the_room_environment_without_dire
 
         let status = agent_worker
             .runtime_state
-            .dispatch_authenticated_runtime_tool_call(
-                &token,
-                "slice_browser_status",
-                json!({}),
-            )
+            .dispatch_authenticated_runtime_tool_call(&token, "slice_browser_status", json!({}))
             .await
             .expect("Browser status should come from the Room Environment");
         assert!(status.ok, "{:?}", status.payload);
@@ -454,7 +441,10 @@ async fn agent_on_second_home_local_slice_uses_the_room_environment_without_dire
             .room_environment_snapshot(&room)
             .expect("home retains the Room Environment and stable Tab");
         assert_eq!(home_environment.environment_id, environment_id);
-        assert_eq!(home_environment.focused_tab_id.as_deref(), Some(stable_tab_id.as_str()));
+        assert_eq!(
+            home_environment.focused_tab_id.as_deref(),
+            Some(stable_tab_id.as_str())
+        );
         assert_eq!(
             home_environment
                 .tabs
