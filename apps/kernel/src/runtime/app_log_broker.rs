@@ -93,7 +93,7 @@ impl AppLogBroker {
 fn error(code: &str, retryable: bool) -> RemoteError {
     let message = match code {
         "INVALID_ARGUMENT" => "Invalid log entry",
-        "LIMIT_EXCEEDED" => "Log fields are too large",
+        "LIMIT_EXCEEDED" => "Log message or fields are too large",
         "RATE_LIMITED" => "Too many log writes; slow down",
         "APP_BUSY" => "App operation limit reached",
         _ => "Log write did not complete",
