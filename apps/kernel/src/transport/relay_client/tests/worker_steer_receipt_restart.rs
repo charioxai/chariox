@@ -32,8 +32,15 @@ fn assert_unauthorized(result: Result<RelayPeerResponse, crate::error::DaemonErr
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn accepted_queued_steer_receipt_reconciles_after_worker_restart_without_replay() {
+#[test]
+fn accepted_queued_steer_receipt_reconciles_after_worker_restart_without_replay() {
+    run_async_with_large_test_stack(
+        "accepted-queued-steer-receipt-restart",
+        accepted_queued_steer_receipt_reconciles_after_worker_restart_without_replay_async,
+    );
+}
+
+async fn accepted_queued_steer_receipt_reconciles_after_worker_restart_without_replay_async() {
     let _relay_test_guard = relay_client_test_guard().await;
     let _test_home = RelayTestHome::new();
     let test_root = std::env::temp_dir().join(format!(

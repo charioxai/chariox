@@ -101,11 +101,14 @@ pub(super) async fn handle_daemon_peer_request(
             },
         );
     }
-    let lease_worker_caller = if router.kernel_runtime_role()
-        == crate::config::KernelRuntimeRole::RemoteLeaseWorker
-        && !managed_context_request(&request)
+    let is_lease_worker =
+        router.kernel_runtime_role() == crate::config::KernelRuntimeRole::RemoteLeaseWorker;
+    let lease_worker_caller = if !managed_context_request(&request)
+        && (is_lease_worker
+            || matches!(&request, RelayPeerRequest::CreateExecutionLease { .. })
+            || lease_resource(&request).is_some())
     {
-        if !lease_worker_peer_request_allowed(&request) {
+        if is_lease_worker && !lease_worker_peer_request_allowed(&request) {
             return RelayRequestOutcome {
                 encrypted_response: None,
                 error: Some(relay_error(
@@ -115,12 +118,16 @@ pub(super) async fn handle_daemon_peer_request(
                 )),
             };
         }
-        let caller = match authenticated_lease_worker_caller(
-            router,
-            from_daemon_id,
-            caller_identity.as_ref(),
-            &encrypted_request,
-        ) {
+        let caller = match if is_lease_worker {
+            authenticated_lease_worker_caller(
+                router,
+                from_daemon_id,
+                caller_identity.as_ref(),
+                &encrypted_request,
+            )
+        } else {
+            ordinary_lease_caller(from_daemon_id, caller_identity.as_ref(), &encrypted_request)
+        } {
             Ok(caller) => caller,
             Err(error) => {
                 return RelayRequestOutcome {
@@ -135,7 +142,13 @@ pub(super) async fn handle_daemon_peer_request(
             ..
         } = &request
         {
-            if caller.home_kernel_id != *home_kernel_id || caller.owner_user_id != *owner_user_id {
+            if caller.home_kernel_id != *home_kernel_id
+                || (caller_identity
+                    .as_ref()
+                    .and_then(|identity| identity.user_id.as_deref())
+                    .is_some()
+                    && caller.owner_user_id != *owner_user_id)
+            {
                 return RelayRequestOutcome {
                     encrypted_response: None,
                     error: Some(relay_error(
@@ -1871,6 +1884,39 @@ fn authenticated_lease_worker_caller(
         owner_user_id: owner_user_id.to_string(),
         realm_id: identity.realm_id.clone(),
         public_key_thumbprint: public_key_thumbprint.to_string(),
+    })
+}
+
+fn ordinary_lease_caller(
+    from_daemon_id: &str,
+    identity: Option<&RelayCallerIdentity>,
+    encrypted_request: &EncryptedRelayPayload,
+) -> Result<crate::app::LeaseCallerBinding, RelayError> {
+    let home_kernel_id = canonical_peer_daemon_id(from_daemon_id).ok_or_else(|| {
+        relay_error(
+            "unauthorized",
+            "execution lease caller has an invalid peer daemon identity",
+            false,
+        )
+    })?;
+    let key_thumbprint = crate::runtime::terminal_pairings::public_key_thumbprint(
+        &encrypted_request.sender_public_key,
+    );
+    // Legacy shared-token relays have no scoped caller identity. The encrypted
+    // sender key and registered daemon ID still bind every lease operation to
+    // the same home; scoped identities additionally bind their account/realm.
+    Ok(crate::app::LeaseCallerBinding {
+        home_kernel_id: home_kernel_id.to_string(),
+        authenticated_machine_id: identity
+            .map(|identity| identity.subject.clone())
+            .unwrap_or_else(|| home_kernel_id.to_string()),
+        owner_user_id: identity
+            .and_then(|identity| identity.user_id.clone())
+            .unwrap_or_default(),
+        realm_id: identity
+            .map(|identity| identity.realm_id.clone())
+            .unwrap_or_default(),
+        public_key_thumbprint: key_thumbprint,
     })
 }
 
