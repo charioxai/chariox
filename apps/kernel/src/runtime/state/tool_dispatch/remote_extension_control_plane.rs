@@ -6,6 +6,9 @@ use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 
 use super::*;
 
+#[path = "remote_extension_refresh_result.rs"]
+mod remote_extension_refresh_result;
+
 #[cfg(test)]
 type CapabilityResponsePause = (
     tokio::sync::oneshot::Sender<()>,
@@ -301,27 +304,8 @@ impl KernelRuntimeState {
         }
         Ok::<_, DaemonError>(())
         }.await;
-        let Some((mut result, skill_package)) = original_response else {
-            return Err(refresh.expect_err("missing response requires a forwarding error"));
-        };
-        if let Err(error) = refresh {
-            // The original operation has already returned its result. A failed
-            // read-only refresh must not turn that into an invitation to replay
-            // a grant, registration, or message that already happened.
-            let warning = serde_json::json!({
-                "error": error.to_string(),
-                "original_tool_replayed": false,
-                "original_result_preserved": true,
-            });
-            if let Some(payload) = result.payload.as_object_mut() {
-                payload.insert("manifest_refresh_warning".to_string(), warning);
-            } else {
-                result.payload = serde_json::json!({
-                    "original_payload": result.payload,
-                    "manifest_refresh_warning": warning,
-                });
-            }
-        }
+        let (result, skill_package) =
+            remote_extension_refresh_result::preserve_original_result(original_response, refresh)?;
         let result = self.apply_remote_skill_package_response(
             &workspace_context.root,
             &remote_context.home_kernel_id,
