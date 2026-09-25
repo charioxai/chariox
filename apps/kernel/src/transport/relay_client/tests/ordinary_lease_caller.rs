@@ -389,7 +389,9 @@ async fn ordinary_lease_caller_binding_survives_restart_and_rejects_spoofs_async
     // registered home with a different encryption key must not inherit its
     // persisted worker receipt.
     let _ = shutdown_home_tx.send(true);
-    connector_home.await.expect("original home connector should stop");
+    connector_home
+        .await
+        .expect("original home connector should stop");
     for _ in 0..80 {
         if registry
             .read()
@@ -420,8 +422,7 @@ async fn ordinary_lease_caller_binding_survives_restart_and_rejects_spoofs_async
     same_id_other_key_config.relay_token = home_config.relay_token.clone();
     same_id_other_key_config.relay_heartbeat_ms = home_config.relay_heartbeat_ms;
     assert_ne!(
-        same_id_other_key_config.relay_public_key,
-        home_config.relay_public_key,
+        same_id_other_key_config.relay_public_key, home_config.relay_public_key,
         "same-ID replacement must use a distinct encrypted sender identity"
     );
     let app_same_id_other_key = Arc::new(Mutex::new(
