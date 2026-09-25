@@ -761,7 +761,6 @@ impl KernelRuntimeState {
         };
         let state = self.clone();
         tokio::spawn(async move {
-            let _claim = claim;
             if let Err(error) = state
                 .recover_stale_remote_prompt(
                     &session_id,
@@ -784,6 +783,9 @@ impl KernelRuntimeState {
                     }),
                 );
             }
+            state
+                .run_remote_prompt_dispatch_with_claim(claim, None)
+                .await;
         });
     }
 
@@ -879,6 +881,14 @@ impl KernelRuntimeState {
                     });
                 }
             };
+            if !self.remote_prompt_recovery_is_current(
+                session_id,
+                agent_id,
+                &prompt_id,
+                &dispatch.leased_agent_id,
+            )? {
+                return Ok(());
+            }
             let result = submit_remote_prompt_to_worker_with_binding_refresh(
                 self,
                 &mut dispatch,
@@ -1505,9 +1515,273 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    pub(crate) fn spawn_remote_prompt_dispatch(
+    async fn remote_prompt_dispatch_after_claim_restart(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<crate::app::KernelRemotePromptDispatch>, DaemonError> {
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        if agent.session_id() != session_id {
+            return Ok(None);
+        }
+        let Some(mut dispatch) = self.remote_prompt_recovery_dispatch_for_phase(&agent, None)?
+        else {
+            return Ok(None);
+        };
+        if dispatch.session_id != session_id {
+            return Ok(None);
+        }
+        let session = self.owned.session_store.get_session(session_id)?;
+        let Some(prompt) = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+        else {
+            return Ok(None);
+        };
+        if prompt.id() != dispatch.prompt_id
+            || prompt.durable_delivery_reconciliation_pending()
+            || matches!(
+                prompt.durable_delivery_phase(),
+                Some(
+                    crate::session::DurablePromptDeliveryPhase::Dispatching
+                        | crate::session::DurablePromptDeliveryPhase::Delivered
+                )
+            )
+        {
+            return Ok(None);
+        }
+        self.populate_remote_prompt_recovery_workflow_context(&mut dispatch)
+            .await?;
+
+        // Context resolution can await app work. Recheck exact prompt ownership before handing
+        // the rebuilt dispatch to the network path.
+        if !self.remote_prompt_recovery_is_current(
+            session_id,
+            agent_id,
+            &dispatch.prompt_id,
+            &dispatch.leased_agent_id,
+        )? {
+            return Ok(None);
+        }
+        let session = self.owned.session_store.get_session(session_id)?;
+        let Some(prompt) = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+        else {
+            return Ok(None);
+        };
+        if prompt.id() != dispatch.prompt_id
+            || prompt.durable_delivery_reconciliation_pending()
+            || matches!(
+                prompt.durable_delivery_phase(),
+                Some(
+                    crate::session::DurablePromptDeliveryPhase::Dispatching
+                        | crate::session::DurablePromptDeliveryPhase::Delivered
+                )
+            )
+        {
+            return Ok(None);
+        }
+        Ok(Some(dispatch))
+    }
+
+    async fn run_remote_prompt_dispatch_with_claim(
+        &self,
+        mut claim: RemotePromptAgentClaim,
+        mut dispatch: Option<crate::app::KernelRemotePromptDispatch>,
+    ) {
+        let (session_id, agent_id) = claim.key.clone();
+        loop {
+            if let Some(dispatch) = dispatch.take() {
+                self.dispatch_remote_prompt_once(dispatch).await;
+            }
+            if !claim.release_or_restart() {
+                return;
+            }
+            dispatch = match self
+                .remote_prompt_dispatch_after_claim_restart(&session_id, &agent_id)
+                .await
+            {
+                Ok(dispatch) => dispatch,
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.remote_prompt_dispatch",
+                        "remote prompt claim restart could not prepare the current prompt",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "agent_id": agent_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                    None
+                }
+            };
+        }
+    }
+
+    async fn dispatch_remote_prompt_once(
         &self,
         mut dispatch: crate::app::KernelRemotePromptDispatch,
+    ) {
+        crate::logging::info_with_fields(
+            "daemon.remote_prompt_dispatch",
+            "remote prompt dispatch starting",
+            serde_json::json!({
+                "session_id": dispatch.session_id,
+                "agent_id": dispatch.agent_id,
+                "worker_kernel_id": dispatch.worker_kernel_id,
+                "leased_agent_id": dispatch.leased_agent_id,
+                "source_attachment_id": dispatch.source_attachment_id,
+            }),
+        );
+        if let Err(error) = self.owned.mark_active_prompt_delivery(
+            &dispatch.session_id,
+            &dispatch.agent_id,
+            &dispatch.prompt_id,
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+            None,
+            None,
+        ) {
+            let _ = self
+                .finish_remote_prompt_dispatch(dispatch, Err(error))
+                .await;
+            return;
+        }
+        let agent = match self.owned.agent_store.get_agent(&dispatch.agent_id) {
+            Ok(agent) => agent,
+            Err(error) => {
+                let _ = self
+                    .finish_remote_prompt_dispatch(dispatch, Err(error))
+                    .await;
+                return;
+            }
+        };
+        let (prompt, _) = match self
+            .prepare_remote_prompt_skill_context(&agent, &dispatch.prompt)
+            .await
+        {
+            Ok(context) => context,
+            Err(error) => {
+                let _ = self
+                    .finish_remote_prompt_dispatch(dispatch, Err(error))
+                    .await;
+                return;
+            }
+        };
+        let attachments = dispatch.attachments.clone();
+        let serialized_attachments = match tokio::task::spawn_blocking(move || {
+            crate::app::serialize_remote_prompt_attachments(&attachments)
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => Err(DaemonError::LocalTransport {
+                operation: "serialize remote prompt attachments",
+                message: error.to_string(),
+            }),
+        };
+        let attachments = match serialized_attachments {
+            Ok(attachments) => attachments,
+            Err(error) => {
+                let _ = self
+                    .finish_remote_prompt_dispatch(dispatch, Err(error))
+                    .await;
+                return;
+            }
+        };
+        let result = submit_remote_prompt_to_worker_with_binding_refresh(
+            self,
+            &mut dispatch,
+            prompt,
+            attachments,
+        )
+        .await;
+        match &result {
+            Ok(provider_run_id) => crate::logging::info_with_fields(
+                "daemon.remote_prompt_dispatch",
+                "remote prompt dispatch submitted",
+                serde_json::json!({
+                    "session_id": dispatch.session_id,
+                    "agent_id": dispatch.agent_id,
+                    "worker_kernel_id": dispatch.worker_kernel_id,
+                    "leased_agent_id": dispatch.leased_agent_id,
+                    "remote_provider_run_id": provider_run_id,
+                }),
+            ),
+            Err(error) => crate::logging::warn_with_fields(
+                "daemon.remote_prompt_dispatch",
+                "remote prompt dispatch failed",
+                serde_json::json!({
+                    "session_id": dispatch.session_id,
+                    "agent_id": dispatch.agent_id,
+                    "worker_kernel_id": dispatch.worker_kernel_id,
+                    "leased_agent_id": dispatch.leased_agent_id,
+                    "error": error.to_string(),
+                }),
+            ),
+        }
+        if result
+            .as_ref()
+            .err()
+            .is_some_and(remote_prompt_error_is_reconciliation_pending)
+        {
+            // An indeterminate submission must keep the same durable prompt active.
+            // The ordinary error finalizer would cancel it and promote the backlog.
+            return;
+        }
+        match result {
+            Ok(remote_provider_run_id) => {
+                if let Err(error) = self
+                    .finish_remote_prompt_dispatch(dispatch.clone(), Ok(remote_provider_run_id))
+                    .await
+                {
+                    let message = format!(
+                        "Worker accepted prompt `{}`, but the home kernel could not record its acknowledgement: {error}. Delivery is uncertain; do not replay this prompt without checking the worker.",
+                        dispatch.prompt_id,
+                    );
+                    crate::logging::warn_with_fields(
+                        "daemon.remote_prompt_dispatch",
+                        &message,
+                        serde_json::json!({
+                            "session_id": dispatch.session_id,
+                            "agent_id": dispatch.agent_id,
+                            "prompt_id": dispatch.prompt_id,
+                            "worker_kernel_id": dispatch.worker_kernel_id,
+                            "leased_agent_id": dispatch.leased_agent_id,
+                            "delivery_uncertain": true,
+                        }),
+                    );
+                    self.owned.fan_out_remote_dispatch_error(
+                        &dispatch,
+                        &format!("remote-dispatch:{}", dispatch.prompt_id),
+                        Some(format!(
+                            "remote-dispatch-ack-persist-failed:{}",
+                            dispatch.prompt_id
+                        )),
+                        &message,
+                    );
+                }
+            }
+            Err(error) => {
+                if let Err(settlement_error) = self
+                    .finish_remote_prompt_dispatch(dispatch, Err(error))
+                    .await
+                {
+                    crate::logging::warn_with_fields(
+                        "daemon.remote_prompt_dispatch",
+                        "remote prompt failure could not be settled",
+                        serde_json::json!({"error": settlement_error.to_string()}),
+                    );
+                }
+            }
+        }
+    }
+
+    pub(crate) fn spawn_remote_prompt_dispatch(
+        &self,
+        dispatch: crate::app::KernelRemotePromptDispatch,
     ) {
         // A stale projection drain can discover a dead lease while the initial
         // dispatch is already refreshing that same binding. Both paths submit
@@ -1522,159 +1796,9 @@ impl KernelRuntimeState {
         };
         let state = self.clone();
         tokio::spawn(async move {
-            let _claim = claim;
-            crate::logging::info_with_fields(
-                "daemon.remote_prompt_dispatch",
-                "remote prompt dispatch starting",
-                serde_json::json!({
-                    "session_id": dispatch.session_id,
-                    "agent_id": dispatch.agent_id,
-                    "worker_kernel_id": dispatch.worker_kernel_id,
-                    "leased_agent_id": dispatch.leased_agent_id,
-                    "source_attachment_id": dispatch.source_attachment_id,
-                }),
-            );
-            if let Err(error) = state.owned.mark_active_prompt_delivery(
-                &dispatch.session_id,
-                &dispatch.agent_id,
-                &dispatch.prompt_id,
-                crate::session::DurablePromptDeliveryPhase::Dispatching,
-                None,
-                None,
-            ) {
-                let _ = state
-                    .finish_remote_prompt_dispatch(dispatch, Err(error))
-                    .await;
-                return;
-            }
-            let agent = match state.owned.agent_store.get_agent(&dispatch.agent_id) {
-                Ok(agent) => agent,
-                Err(error) => {
-                    let _ = state
-                        .finish_remote_prompt_dispatch(dispatch, Err(error))
-                        .await;
-                    return;
-                }
-            };
-            let (prompt, _) = match state
-                .prepare_remote_prompt_skill_context(&agent, &dispatch.prompt)
-                .await
-            {
-                Ok(context) => context,
-                Err(error) => {
-                    let _ = state
-                        .finish_remote_prompt_dispatch(dispatch, Err(error))
-                        .await;
-                    return;
-                }
-            };
-            let attachments = dispatch.attachments.clone();
-            let serialized_attachments = match tokio::task::spawn_blocking(move || {
-                crate::app::serialize_remote_prompt_attachments(&attachments)
-            })
-            .await
-            {
-                Ok(result) => result,
-                Err(error) => Err(DaemonError::LocalTransport {
-                    operation: "serialize remote prompt attachments",
-                    message: error.to_string(),
-                }),
-            };
-            let attachments = match serialized_attachments {
-                Ok(attachments) => attachments,
-                Err(error) => {
-                    let _ = state
-                        .finish_remote_prompt_dispatch(dispatch, Err(error))
-                        .await;
-                    return;
-                }
-            };
-            let result = submit_remote_prompt_to_worker_with_binding_refresh(
-                &state,
-                &mut dispatch,
-                prompt,
-                attachments,
-            )
-            .await;
-            match &result {
-                Ok(provider_run_id) => crate::logging::info_with_fields(
-                    "daemon.remote_prompt_dispatch",
-                    "remote prompt dispatch submitted",
-                    serde_json::json!({
-                        "session_id": dispatch.session_id,
-                        "agent_id": dispatch.agent_id,
-                        "worker_kernel_id": dispatch.worker_kernel_id,
-                        "leased_agent_id": dispatch.leased_agent_id,
-                        "remote_provider_run_id": provider_run_id,
-                    }),
-                ),
-                Err(error) => crate::logging::warn_with_fields(
-                    "daemon.remote_prompt_dispatch",
-                    "remote prompt dispatch failed",
-                    serde_json::json!({
-                        "session_id": dispatch.session_id,
-                        "agent_id": dispatch.agent_id,
-                        "worker_kernel_id": dispatch.worker_kernel_id,
-                        "leased_agent_id": dispatch.leased_agent_id,
-                        "error": error.to_string(),
-                    }),
-                ),
-            }
-            if result
-                .as_ref()
-                .err()
-                .is_some_and(remote_prompt_error_is_reconciliation_pending)
-            {
-                // An indeterminate submission must keep the same durable prompt active.
-                // The ordinary error finalizer would cancel it and promote the backlog.
-                return;
-            }
-            match result {
-                Ok(remote_provider_run_id) => {
-                    if let Err(error) = state
-                        .finish_remote_prompt_dispatch(dispatch.clone(), Ok(remote_provider_run_id))
-                        .await
-                    {
-                        let message = format!(
-                            "Worker accepted prompt `{}`, but the home kernel could not record its acknowledgement: {error}. Delivery is uncertain; do not replay this prompt without checking the worker.",
-                            dispatch.prompt_id,
-                        );
-                        crate::logging::warn_with_fields(
-                            "daemon.remote_prompt_dispatch",
-                            &message,
-                            serde_json::json!({
-                                "session_id": dispatch.session_id,
-                                "agent_id": dispatch.agent_id,
-                                "prompt_id": dispatch.prompt_id,
-                                "worker_kernel_id": dispatch.worker_kernel_id,
-                                "leased_agent_id": dispatch.leased_agent_id,
-                                "delivery_uncertain": true,
-                            }),
-                        );
-                        state.owned.fan_out_remote_dispatch_error(
-                            &dispatch,
-                            &format!("remote-dispatch:{}", dispatch.prompt_id),
-                            Some(format!(
-                                "remote-dispatch-ack-persist-failed:{}",
-                                dispatch.prompt_id
-                            )),
-                            &message,
-                        );
-                    }
-                }
-                Err(error) => {
-                    if let Err(settlement_error) = state
-                        .finish_remote_prompt_dispatch(dispatch, Err(error))
-                        .await
-                    {
-                        crate::logging::warn_with_fields(
-                            "daemon.remote_prompt_dispatch",
-                            "remote prompt failure could not be settled",
-                            serde_json::json!({"error": settlement_error.to_string()}),
-                        );
-                    }
-                }
-            }
+            state
+                .run_remote_prompt_dispatch_with_claim(claim, Some(dispatch))
+                .await;
         });
     }
 }
@@ -1732,8 +1856,176 @@ fn remote_prompt_recovery_delay(attempt: u32) -> std::time::Duration {
 mod tests {
     use super::*;
     use super::super::remote_prompt_worker_submission_runtime::query_remote_prompt_worker_receipt_with_transport;
+    use chariox_relay::protocol::RelayEnvelope;
+    use futures_util::{SinkExt, StreamExt};
     use std::sync::Arc;
+    use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::Mutex;
+    use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
+
+    async fn receive_claim_test_envelope(
+        socket: &mut WebSocketStream<TcpStream>,
+    ) -> RelayEnvelope {
+        let message = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next())
+            .await
+            .expect("temporary relay should receive a client envelope before timeout")
+            .expect("temporary relay socket should remain open")
+            .expect("temporary relay frame should decode");
+        serde_json::from_str(
+            message
+                .to_text()
+                .expect("temporary relay envelope should be text"),
+        )
+        .expect("temporary relay envelope should deserialize")
+    }
+
+    async fn send_claim_test_envelope(
+        socket: &mut WebSocketStream<TcpStream>,
+        envelope: RelayEnvelope,
+    ) {
+        socket
+            .send(Message::Text(
+                serde_json::to_string(&envelope)
+                    .expect("temporary relay envelope should serialize")
+                    .into(),
+            ))
+            .await
+            .expect("temporary relay envelope should send");
+    }
+
+    async fn accept_claim_test_prompt(
+        listener: &TcpListener,
+        worker_id: &str,
+        machine_id: &str,
+        worker_public_key: &str,
+        worker_private_key: &str,
+    ) -> (
+        WebSocketStream<TcpStream>,
+        String,
+        String,
+        String,
+        String,
+    ) {
+        let (stream, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            listener.accept(),
+        )
+        .await
+        .expect("temporary relay should accept discovery connection before timeout")
+        .expect("temporary relay listener should remain open");
+        let mut discovery = accept_async(stream)
+            .await
+            .expect("temporary relay should upgrade discovery connection");
+        let RelayEnvelope::ClientMetadataRequest { request_id, .. } =
+            receive_claim_test_envelope(&mut discovery).await
+        else {
+            panic!("expected relay metadata request");
+        };
+        let presence = serde_json::from_value(serde_json::json!({
+            "kernel_id": worker_id,
+            "machine_id": machine_id,
+            "public_key": worker_public_key,
+        }))
+        .expect("fake worker presence should deserialize");
+        send_claim_test_envelope(
+            &mut discovery,
+            RelayEnvelope::ClientMetadataResponse {
+                request_id,
+                machines: None,
+                kernels: None,
+                kernel: Some(presence),
+                error: None,
+            },
+        )
+        .await;
+        drop(discovery);
+
+        let (stream, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            listener.accept(),
+        )
+        .await
+        .expect("temporary relay should accept peer connection before timeout")
+        .expect("temporary relay listener should remain open");
+        let mut peer = accept_async(stream)
+            .await
+            .expect("temporary relay should upgrade peer connection");
+        assert!(matches!(
+            receive_claim_test_envelope(&mut peer).await,
+            RelayEnvelope::DaemonRegister { .. }
+        ));
+        let RelayEnvelope::DaemonPeerRequest {
+            request_id,
+            encrypted_request,
+            ..
+        } = receive_claim_test_envelope(&mut peer).await
+        else {
+            panic!("expected leased prompt submission");
+        };
+        let decrypted = crate::transport::relay_crypto::decrypt_payload_for_private_key(
+            worker_private_key,
+            &encrypted_request,
+        )
+        .expect("fake worker should decrypt the prompt submission");
+        let crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt {
+            leased_agent_id,
+            prompt,
+            git_context: Some(git_context),
+            ..
+        } = serde_json::from_slice(&decrypted.plaintext)
+            .expect("fake worker request should decode")
+        else {
+            panic!("expected SubmitLeasedPrompt with home turn context");
+        };
+        Ok((
+            peer,
+            request_id,
+            decrypted.sender_public_key,
+            git_context.home_prompt_id,
+            format!("{leased_agent_id}\n{prompt}"),
+        ))
+    }
+
+    async fn acknowledge_claim_test_prompt(
+        peer: &mut WebSocketStream<TcpStream>,
+        request_id: String,
+        sender_public_key: &str,
+        worker_id: &str,
+        worker_private_key: &str,
+        prompt_id: &str,
+        leased_agent_id: &str,
+        prompt: &str,
+        run_id: &str,
+    ) {
+        let response = crate::transport::relay_peer::RelayPeerResponse::LeasedPromptSubmitted {
+            provider_run_id: run_id.to_string(),
+            outcome: crate::session::PromptSubmissionOutcome::Started {
+                prompt: crate::session::PromptQueueItem::new(
+                    format!("worker-{prompt_id}"),
+                    "worker-attachment",
+                    leased_agent_id,
+                    prompt,
+                    crate::session::PromptStatus::Running,
+                ),
+            },
+        };
+        let encrypted_response = crate::transport::relay_crypto::encrypt_payload_for_peer(
+            worker_private_key,
+            sender_public_key,
+            &serde_json::to_vec(&response).expect("fake worker response should encode"),
+        )
+        .expect("fake worker should encrypt the response");
+        send_claim_test_envelope(
+            peer,
+            RelayEnvelope::DaemonPeerResponse {
+                request_id,
+                from_daemon_id: worker_id.to_string(),
+                encrypted_response: Some(encrypted_response),
+                error: None,
+            },
+        )
+        .await;
+    }
 
     #[test]
     fn exact_worker_receipt_selects_active_association_completed_drain_or_hold() {
@@ -3336,6 +3628,223 @@ mod tests {
                 agent.id(),
             )
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn dispatch_claim_releases_to_successor_after_predecessor_ack_once() {
+        const WORKER_ID: &str = "worker-claim-restart";
+        const MACHINE_ID: &str = "machine-claim-restart";
+        const LEASED_AGENT_ID: &str = "leased-agent-claim-restart";
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("temporary relay listener should bind");
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.relay_url = Some(relay_url);
+        config.relay_token = Some("claim-restart-test-token".to_string());
+        config.relay_request_timeout_ms = 2_000;
+        let worker_config = crate::config::DaemonConfig::for_tests();
+        let worker_private_key = worker_config.relay_private_key.clone();
+        let worker_public_key = worker_config.relay_public_key.clone();
+
+        let mut app = DaemonApp::bootstrap(config).expect("home app should bootstrap");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "claim-restart-workspace",
+                "claim-restart-worktree",
+            ))
+            .expect("home session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "claim-restart-client",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("home attachment should be created");
+        app.agents
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: WORKER_ID.to_string(),
+                    worker_machine_id: MACHINE_ID.to_string(),
+                    execution_lease_id: "lease-claim-restart".to_string(),
+                    leased_agent_id: LEASED_AGENT_ID.to_string(),
+                    active_worker_provider_run_id: None,
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .expect("home agent should bind to the fake worker");
+
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let make_submission = |prompt_id: &str, prompt: &str| {
+            runtime
+                .owned
+                .submit_remote_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+                    session_id: session.id().to_string(),
+                    prompt: crate::session::PromptQueueItem::new(
+                        prompt_id,
+                        attachment.id(),
+                        agent.id(),
+                        prompt,
+                        crate::session::PromptStatus::Queued,
+                    ),
+                    force_queue: false,
+                    refresh_projection: true,
+                })
+                .expect("remote prompt admission should succeed")
+                .expect("remote prompt should be handled")
+                .remote_dispatch
+                .expect("started remote prompt should have a dispatch")
+        };
+        let predecessor = make_submission("home-prompt-claim-a", "predecessor prompt");
+        let predecessor_id = predecessor.prompt_id.clone();
+        runtime.spawn_remote_prompt_dispatch(predecessor);
+
+        let (predecessor_seen_tx, predecessor_seen_rx) = tokio::sync::oneshot::channel();
+        let (release_predecessor_tx, release_predecessor_rx) =
+            tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let (mut predecessor_peer, predecessor_request_id, predecessor_sender_key,
+                predecessor_home_prompt_id, predecessor_identity) =
+                accept_claim_test_prompt(
+                    &listener,
+                    WORKER_ID,
+                    MACHINE_ID,
+                    &worker_public_key,
+                    &worker_private_key,
+                )
+                .await;
+            predecessor_seen_tx
+                .send((predecessor_home_prompt_id.clone(), predecessor_identity.clone()))
+                .expect("test should still await the predecessor request");
+            release_predecessor_rx
+                .await
+                .expect("test should release the predecessor acknowledgement");
+            acknowledge_claim_test_prompt(
+                &mut predecessor_peer,
+                predecessor_request_id,
+                &predecessor_sender_key,
+                WORKER_ID,
+                &worker_private_key,
+                &predecessor_home_prompt_id,
+                LEASED_AGENT_ID,
+                "predecessor prompt",
+                "worker-run-claim-a",
+            )
+            .await;
+
+            let (mut successor_peer, successor_request_id, successor_sender_key,
+                successor_home_prompt_id, successor_identity) =
+                accept_claim_test_prompt(
+                    &listener,
+                    WORKER_ID,
+                    MACHINE_ID,
+                    &worker_public_key,
+                    &worker_private_key,
+                )
+                .await;
+            acknowledge_claim_test_prompt(
+                &mut successor_peer,
+                successor_request_id,
+                &successor_sender_key,
+                WORKER_ID,
+                &worker_private_key,
+                &successor_home_prompt_id,
+                LEASED_AGENT_ID,
+                "successor prompt",
+                "worker-run-claim-b",
+            )
+            .await;
+            assert!(
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(300),
+                    listener.accept(),
+                )
+                .await
+                .is_err(),
+                "the same active successor must not be submitted a second time"
+            );
+            vec![
+                (predecessor_home_prompt_id, predecessor_identity),
+                (successor_home_prompt_id, successor_identity),
+            ]
+        });
+
+        let (seen_predecessor_id, seen_predecessor_identity) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), predecessor_seen_rx)
+                .await
+                .expect("fake relay should receive predecessor before timeout")
+                .expect("fake relay should report predecessor request");
+        assert_eq!(seen_predecessor_id, predecessor_id);
+        assert_eq!(
+            seen_predecessor_identity,
+            format!("{LEASED_AGENT_ID}\npredecessor prompt")
+        );
+
+        let cancelled = runtime
+            .owned
+            .cancel_active_prompt_only(session.id(), agent.id())
+            .expect("predecessor should be locally cancelled");
+        assert_eq!(cancelled.id(), predecessor_id);
+        let successor = make_submission("home-prompt-claim-b", "successor prompt");
+        let successor_id = successor.prompt_id.clone();
+        assert_ne!(successor_id, predecessor_id);
+        // This duplicate start only bumps the in-flight claim generation. The task
+        // holding A's ACK must observe it and dispatch the now-current B exactly once.
+        runtime.spawn_remote_prompt_dispatch(successor);
+        release_predecessor_tx
+            .send(())
+            .expect("fake relay should still hold predecessor ACK");
+
+        let requests = tokio::time::timeout(std::time::Duration::from_secs(5), server)
+            .await
+            .expect("temporary relay requests should complete before timeout")
+            .expect("temporary relay fixture should join");
+        assert_eq!(
+            requests,
+            vec![
+                (
+                    predecessor_id,
+                    format!("{LEASED_AGENT_ID}\npredecessor prompt")
+                ),
+                (
+                    successor_id.clone(),
+                    format!("{LEASED_AGENT_ID}\nsuccessor prompt")
+                ),
+            ],
+            "predecessor and exact current successor should each be submitted once"
+        );
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let session_state = runtime
+                    .owned
+                    .session_store
+                    .get_session(session.id())
+                    .expect("home session should remain available");
+                if runtime
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session_state, agent.id())
+                    .is_some_and(|prompt| {
+                        prompt.id() == successor_id
+                            && prompt.durable_delivery_phase()
+                                == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+                    })
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("successor ACK should become the durable active prompt");
     }
 
     async fn superseded_remote_dispatch_fixture(
