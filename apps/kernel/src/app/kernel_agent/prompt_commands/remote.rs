@@ -404,9 +404,10 @@ impl<'a> KernelAgentService<'a> {
         relay_token: Option<&str>,
         expected_next: Option<&PromptQueueItem>,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
+        let mut expected_next = expected_next.cloned();
         loop {
             let next_candidate =
-                self.next_queued_prompt_candidate(session_id, agent_id, expected_next)?;
+                self.next_queued_prompt_candidate(session_id, agent_id, expected_next.as_ref())?;
             let Some(peeked) = next_candidate else {
                 return Ok(None);
             };
@@ -417,27 +418,23 @@ impl<'a> KernelAgentService<'a> {
                 .ensure_attachment_in_session(session_id, peeked.source_attachment_id())
             {
                 if !is_workflow_prompt {
-                    self.app.record_notice(
-                        session_id,
-                        None,
-                        self.app.attachments.list_session_attachment_ids(session_id),
-                        format!(
-                            "Skipped queued prompt `{}` because its source attachment is no longer active: {}",
-                            peeked.id(),
-                            error
-                        ),
-                    );
-                    let _ = self.activate_next_queued_prompt_for_mirror(
+                    self.remove_detached_queued_remote_prompt(
                         session_id,
                         agent_id,
-                        expected_next,
+                        &peeked,
+                        error,
                     )?;
+                    expected_next = None;
                     continue;
                 }
             }
             if !is_workflow_prompt {
                 let Some((active, mut dispatch_intent)) = self
-                    .admit_next_queued_remote_prompt(session_id, agent_id, expected_next)?
+                    .admit_next_queued_remote_prompt(
+                        session_id,
+                        agent_id,
+                        expected_next.as_ref(),
+                    )?
                 else {
                     return Ok(None);
                 };
@@ -543,19 +540,11 @@ impl<'a> KernelAgentService<'a> {
             if let Err(error) = crate::app::KernelSessionReadService::new(self.app)
                 .ensure_attachment_in_session(session_id, candidate.source_attachment_id())
             {
-                self.app.record_notice(
-                    session_id,
-                    None,
-                    self.app.attachments.list_session_attachment_ids(session_id),
-                    format!(
-                        "Skipped queued prompt `{}` because its source attachment is no longer active: {}",
-                        candidate.id(), error
-                    ),
-                );
-                let _ = self.activate_next_queued_prompt_for_mirror(
+                self.remove_detached_queued_remote_prompt(
                     session_id,
                     agent_id,
-                    Some(&candidate),
+                    &candidate,
+                    error,
                 )?;
                 expected_next = None;
                 continue;
@@ -616,6 +605,35 @@ impl<'a> KernelAgentService<'a> {
                 },
             )));
         }
+    }
+
+    fn remove_detached_queued_remote_prompt(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        prompt: &PromptQueueItem,
+        error: DaemonError,
+    ) -> Result<(), DaemonError> {
+        let session = self.app.sessions.get_session(session_id)?;
+        let removed = self
+            .app
+            .prompt_state_owner()
+            .remove_queued_prompt(&session, agent_id, prompt.id());
+        if removed.is_some() {
+            self.app.record_notice(
+                session_id,
+                None,
+                self.app.attachments.list_session_attachment_ids(session_id),
+                format!(
+                    "Skipped queued prompt `{}` because its source attachment is no longer active: {}",
+                    prompt.id(),
+                    error
+                ),
+            );
+            self.app
+                .mirror_prompt_owner_agent_state(session_id, agent_id)?;
+        }
+        Ok(())
     }
 
     fn prepare_promoted_remote_prompt_start(
