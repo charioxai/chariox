@@ -450,9 +450,11 @@ pub(crate) async fn observe_relay_leased_git_after(
 pub(crate) async fn cancel_relay_leased_prompt(
     runtime_state: &KernelRuntimeState,
     leased_agent_id: &str,
+    home_prompt_id: &str,
+    worker_provider_run_id: &str,
 ) -> Result<PromptCancellation, DaemonError> {
     runtime_state
-        .cancel_relay_leased_prompt(leased_agent_id)
+        .cancel_relay_leased_prompt(leased_agent_id, home_prompt_id, worker_provider_run_id)
         .await
 }
 

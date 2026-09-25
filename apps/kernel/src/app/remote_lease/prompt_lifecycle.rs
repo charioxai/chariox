@@ -855,10 +855,12 @@ mod receipt_tests {
                 Some(home_prompt_id.as_str()),
                 "mismatched cancellation must retain the actual home-prompt binding"
             );
+            let active_run_id = app
+                .providers
+                .get_run_for_agent(&session_id, &agent_id)
+                .map(|run| run.id().to_string());
             assert_eq!(
-                app.providers
-                    .get_run_for_agent(&session_id, &agent_id)
-                    .map(|run| run.id()),
+                active_run_id.as_deref(),
                 Some(provider_run_id.as_str()),
                 "mismatched cancellation must not change the active provider run"
             );
