@@ -26,7 +26,9 @@ Those are required implementation and validation work, not per-user setup.
    Create a new session without a controlling terminal. Pass only the intended
    descriptors below; the launcher additionally closes ambient descriptors.
 4. On Linux, the installer-provisioned pinned **bundled** bubblewrap establishes
-   user, mount, PID, IPC and network namespaces and drops every capability. Use
+   user, mount, PID, IPC, network and UTS namespaces and drops every
+   capability. The UTS namespace sets the fixed host name `chariox-app`, so
+   Apps never see the host's name. Use
    a private read-only root containing only the allowed mounts, not a bind of
    host `/`. Attach the worker to its delegated cgroup before continuation.
    The provider sandbox's existing bubblewrap argument list is not this policy.
@@ -136,7 +138,13 @@ initialization failed): a data read of `/` itself (libuv loop init; this
 exposes only the names of top-level entries on the sealed system volume), reads
 under `/System/Library/OpenSSL` (OpenSSL's default configuration), and the
 `hw.pagesize` sysctl as a name prefix, because the page-size lookup by MIB does
-not match its exact name. The native probe asserts the `/` read, the OpenSSL
+not match its exact name. Node startup also needs the `uname(3)` sysctls
+`kern.version`, `hw.machine` and `kern.hostname`: Node's `os` module calls
+`uname` when it loads (and `fs/promises` loads `os`), and libc `uname` fails if
+any of its five sysctls (with `kern.ostype` and `kern.osrelease`) is denied.
+**Accepted exposure:** App code can read the Mac's host name through
+`os.hostname()`; Seatbelt cannot virtualise it. On Linux the UTS namespace
+instead has the fixed host name `chariox-app`. The native probe asserts the `/` read, the OpenSSL
 policy and the page-size sysctl, and that a sibling system file stays denied. Read/executable
 mapping support is restricted to the verified runtime, `/usr/lib`, the system
 dyld directory and OS Cryptex paths. `file-map-executable` has an explicit deny
