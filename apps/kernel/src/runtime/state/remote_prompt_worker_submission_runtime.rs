@@ -886,32 +886,6 @@ impl KernelRuntimeState {
     }
 }
 
-#[cfg(test)]
-fn remote_prompt_dispatch_should_refresh_binding(result: &Result<String, DaemonError>) -> bool {
-    let Err(error) = result else {
-        return false;
-    };
-    remote_prompt_error_should_refresh_binding(error)
-}
-
-#[cfg(test)]
-fn remote_prompt_dispatch_requires_provider_launch_credential(
-    result: &Result<String, DaemonError>,
-) -> bool {
-    let Err(error) = result else {
-        return false;
-    };
-    let required_code =
-        crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE;
-    match error {
-        DaemonError::LocalTransport { message, .. } => message.contains(required_code),
-        DaemonError::RelayTransport { code, message, .. } => {
-            code == required_code || message.contains(required_code)
-        }
-        _ => false,
-    }
-}
-
 pub(super) fn remote_prompt_error_should_refresh_binding(error: &DaemonError) -> bool {
     match error {
         DaemonError::LeasedAgentNotFound { .. } | DaemonError::ExecutionLeaseNotFound { .. } => {
@@ -1809,67 +1783,99 @@ mod tests {
     }
 
     #[test]
-    fn remote_prompt_dispatch_does_not_refresh_binding_after_worker_timeout() {
-        let result = Err(DaemonError::LocalTransport {
-            operation: "submit remote prepared prompt",
-            message: "remote prompt dispatch timed out waiting for worker response".to_string(),
-        });
+    fn remote_prompt_dispatch_holds_after_worker_timeout() {
+        let outcome = classify_error(
+            DaemonError::LocalTransport {
+                operation: "submit remote prepared prompt",
+                message: "remote prompt dispatch timed out waiting for worker response".to_string(),
+            },
+            true,
+        );
 
-        assert!(!remote_prompt_dispatch_should_refresh_binding(&result));
+        assert!(matches!(
+            outcome,
+            RemotePromptSubmissionOutcome::Indeterminate(_)
+        ));
     }
 
     #[test]
-    fn remote_prompt_dispatch_refreshes_binding_for_missing_lease_errors() {
-        let result = Err(DaemonError::LocalTransport {
-            operation: "submit remote prepared prompt",
-            message: "leased_agent_not_found".to_string(),
-        });
+    fn remote_prompt_dispatch_does_not_trust_missing_lease_text_after_send() {
+        let outcome = classify_error(
+            DaemonError::LocalTransport {
+                operation: "submit remote prepared prompt",
+                message: "leased_agent_not_found".to_string(),
+            },
+            true,
+        );
 
-        assert!(remote_prompt_dispatch_should_refresh_binding(&result));
+        assert!(matches!(
+            outcome,
+            RemotePromptSubmissionOutcome::Indeterminate(_)
+        ));
     }
 
     #[test]
     fn remote_prompt_dispatch_refreshes_binding_for_structured_missing_lease_errors() {
-        let result = Err(DaemonError::RelayTransport {
-            operation: "read relay peer response",
-            code: "leased_agent_not_found".to_string(),
-            message: "the leased agent was not found".to_string(),
-            retryable: false,
-        });
+        let outcome = classify_error(
+            DaemonError::RelayTransport {
+                operation: "read relay peer response",
+                code: "leased_agent_not_found".to_string(),
+                message: "the leased agent was not found".to_string(),
+                retryable: false,
+            },
+            true,
+        );
 
-        assert!(remote_prompt_dispatch_should_refresh_binding(&result));
+        assert!(matches!(
+            outcome,
+            RemotePromptSubmissionOutcome::RejectedBeforeAdmission(error)
+                if remote_prompt_error_should_refresh_binding(&error)
+        ));
     }
 
     #[test]
     fn remote_prompt_dispatch_retries_with_a_credential_only_when_worker_requests_it() {
-        let required = Err(DaemonError::LocalTransport {
-            operation: "read relay peer response",
-            message: format!(
-                "transport error: {}: worker run was lost",
-                crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE,
-            ),
-        });
-        assert!(remote_prompt_dispatch_requires_provider_launch_credential(
-            &required
+        let unstructured = classify_error(
+            DaemonError::LocalTransport {
+                operation: "read relay peer response",
+                message: format!(
+                    "transport error: {}: worker run was lost",
+                    crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE,
+                ),
+            },
+            true,
+        );
+        assert!(matches!(
+            unstructured,
+            RemotePromptSubmissionOutcome::Indeterminate(_)
         ));
 
-        let unrelated = Err(DaemonError::LocalTransport {
-            operation: "read relay peer response",
-            message: "worker run was lost".to_string(),
-        });
-        assert!(!remote_prompt_dispatch_requires_provider_launch_credential(
-            &unrelated
+        let unrelated = classify_error(
+            DaemonError::LocalTransport {
+                operation: "read relay peer response",
+                message: "worker run was lost".to_string(),
+            },
+            true,
+        );
+        assert!(matches!(
+            unrelated,
+            RemotePromptSubmissionOutcome::Indeterminate(_)
         ));
 
-        let structured = Err(DaemonError::RelayTransport {
-            operation: "read relay peer response",
-            code: crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE
-                .to_string(),
-            message: "worker requires a launch credential".to_string(),
-            retryable: false,
-        });
-        assert!(remote_prompt_dispatch_requires_provider_launch_credential(
-            &structured
+        let structured = classify_error(
+            DaemonError::RelayTransport {
+                operation: "read relay peer response",
+                code: crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE
+                    .to_string(),
+                message: "worker requires a launch credential".to_string(),
+                retryable: false,
+            },
+            true,
+        );
+        assert!(matches!(
+            structured,
+            RemotePromptSubmissionOutcome::RejectedBeforeAdmission(error)
+                if remote_prompt_error_requires_provider_launch_credential(&error)
         ));
     }
 
