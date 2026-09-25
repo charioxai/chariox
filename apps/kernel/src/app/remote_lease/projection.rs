@@ -16,11 +16,12 @@ use super::RemoteLeaseRuntime;
 const REMOTE_COMPLETION_HARVEST_RESPONSE_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(60);
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(crate) struct RemoteRuntimeProjectionOutcome {
     pub(crate) accepted: bool,
     pub(crate) completions: Vec<PromptCompletion>,
     pub(crate) provider_failure: Option<RemoteProviderFailure>,
+    pub(crate) remote_dispatches: Vec<crate::app::KernelRemotePromptDispatch>,
 }
 
 #[derive(Debug)]
@@ -1111,14 +1112,23 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
                     .is_none()
                 {
-                    let started_next = self.app.advance_next_queued_prompt_remote(
-                        session_id,
-                        agent_id,
-                        &remote_execution.worker_kernel_id,
-                        &remote_execution.leased_agent_id,
-                        remote_execution.relay_url.as_deref(),
-                        remote_execution.relay_token.as_deref(),
-                    )?;
+                    let expected_next = self
+                        .app
+                        .agent_runtime_projection_store()
+                        .next_queued_prompt(session_id, agent_id);
+                    let admitted = crate::app::KernelAgentService::new(self.app)
+                        .admit_next_queued_remote_prompt(
+                            session_id,
+                            agent_id,
+                            expected_next.as_ref(),
+                            &projected_provider_run_id,
+                        )?;
+                    let (started_next, dispatch) = admitted
+                        .map(|(prompt, dispatch)| (Some(prompt), Some(dispatch)))
+                        .unwrap_or((None, None));
+                    if let Some(dispatch) = dispatch {
+                        outcome.remote_dispatches.push(dispatch);
+                    }
                     if started_next.is_none() {
                         self.app.sync_focused_provider_run_if_idle(session_id)?;
                     }

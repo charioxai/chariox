@@ -925,6 +925,9 @@ impl KernelRuntimeState {
         if !outcome.accepted {
             return Ok(());
         }
+        for dispatch in outcome.remote_dispatches {
+            self.spawn_remote_prompt_dispatch(dispatch);
+        }
         if let Some(failure) = outcome.provider_failure {
             self.finish_remote_provider_failure(
                 &session_id,

@@ -62,6 +62,105 @@ async fn room_manifest_fixture() -> RoomManifestFixture {
     }
 }
 
+#[tokio::test]
+async fn projected_remote_completion_admits_queued_prompt_before_ordered_delivery() {
+    let mut fixture = room_manifest_fixture().await;
+    let (completed_prompt_id, queued_prompt_id) = {
+        let mut app = fixture.runtime.app.lock().await;
+        let attachment_id = app
+            .attachments()
+            .list_session_attachment_ids(&fixture.session_id)
+            .into_iter()
+            .next()
+            .expect("fixture session has an attachment");
+        let active = crate::session::PromptQueueItem::new(
+            "remote-active",
+            &attachment_id,
+            &fixture.agent_id,
+            "active prompt",
+            crate::session::PromptStatus::Queued,
+        );
+        let active = app
+            .prompt_owner_submit_prepared_prompt(&fixture.session_id, active, false)
+            .expect("active prompt should be admitted");
+        let crate::session::PromptSubmissionOutcome::Started { prompt: active } = active else {
+            panic!("fixture prompt should start");
+        };
+        let queued = crate::session::PromptQueueItem::new(
+            "remote-queued",
+            &attachment_id,
+            &fixture.agent_id,
+            "queued prompt",
+            crate::session::PromptStatus::Queued,
+        );
+        let queued = app
+            .prompt_owner_submit_prepared_prompt(&fixture.session_id, queued, true)
+            .expect("second prompt should be admitted to queue");
+        let crate::session::PromptSubmissionOutcome::Queued { prompt: queued } = queued else {
+            panic!("second fixture prompt should queue");
+        };
+        (active.id().to_string(), queued.id().to_string())
+    };
+
+    let held_lane = fixture
+        .runtime
+        .leased_agent_operations
+        .lock("leased-agent-1")
+        .await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        fixture.runtime.project_relay_remote_runtime_projection(
+            &fixture.session_id,
+            &fixture.agent_id,
+            "provider-run-current",
+            None,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                message_id: "queued-completion-ordering".to_string(),
+                completed_at_ms: crate::session::unix_epoch_ms(),
+                home_prompt_id: Some(completed_prompt_id),
+                provider_termination: None,
+            }],
+        ),
+    )
+    .await
+    .expect("projection must return without waiting on the leased-agent lane")
+    .expect("worker completion projection should succeed");
+    assert!(fixture.priority_rx.try_recv().is_err());
+
+    let (active, queued_after_promotion) = {
+        let app = fixture.runtime.app.lock().await;
+        (
+            app.prompt_owner_active_prompt_for_agent(&fixture.session_id, &fixture.agent_id)
+                .expect("promoted prompt state should be readable")
+                .expect("queued prompt should become active before dispatch"),
+            app.agent_runtime_projection_store()
+                .next_queued_prompt(&fixture.session_id, &fixture.agent_id),
+        )
+    };
+    assert_eq!(active.id(), queued_prompt_id);
+    assert!(queued_after_promotion.is_none());
+
+    drop(held_lane);
+    let (request_id, request) = next_peer_request(&mut fixture).await;
+    let crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt { prompt, .. } = request
+    else {
+        panic!("expected ordered submission for the promoted prompt");
+    };
+    assert_eq!(prompt, "queued prompt");
+    acknowledge_peer_response(
+        &fixture,
+        request_id,
+        crate::transport::relay_peer::RelayPeerResponse::LeasedPromptSubmitted {
+            provider_run_id: "provider-run-next".to_string(),
+            outcome: crate::session::PromptSubmissionOutcome::Started { prompt: active },
+        },
+    )
+    .await;
+}
+
 fn create_room_slice(runtime: &KernelRuntimeState, name: &str) -> crate::slice::SliceRecord {
     runtime
         .owned

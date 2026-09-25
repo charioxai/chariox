@@ -577,6 +577,151 @@ impl<'a> KernelAgentService<'a> {
             return Ok(Some(active));
         }
     }
+
+    /// Admit an ordinary queued prompt before handing its delivery intent to the
+    /// runtime. The caller must dispatch the returned intent after releasing the
+    /// app lock so binding refreshes and prompt delivery share the ordered lane.
+    pub(crate) fn admit_next_queued_remote_prompt(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        expected_next: Option<&PromptQueueItem>,
+        provider_run_id: &str,
+    ) -> Result<Option<(PromptQueueItem, KernelRemotePromptDispatch)>, DaemonError> {
+        let mut expected_next = expected_next.cloned();
+        loop {
+            let Some(candidate) = self.next_queued_prompt_candidate(
+                session_id,
+                agent_id,
+                expected_next.as_ref(),
+            )? else {
+                return Ok(None);
+            };
+            // Workflow queue advancement remains owned by the workflow scheduler.
+            if crate::app::workflow_runtime::is_workflow_prompt_source(
+                candidate.source_attachment_id(),
+            ) {
+                return Ok(None);
+            }
+            if let Err(error) = crate::app::KernelSessionReadService::new(self.app)
+                .ensure_attachment_in_session(session_id, candidate.source_attachment_id())
+            {
+                self.app.record_notice(
+                    session_id,
+                    None,
+                    self.app.attachments.list_session_attachment_ids(session_id),
+                    format!(
+                        "Skipped queued prompt `{}` because its source attachment is no longer active: {}",
+                        candidate.id(), error
+                    ),
+                );
+                let _ = self.activate_next_queued_prompt_for_mirror(
+                    session_id,
+                    agent_id,
+                    Some(&candidate),
+                )?;
+                expected_next = None;
+                continue;
+            }
+            let agent = self.app.agents.get_agent(agent_id)?;
+            let remote = agent.remote_execution().cloned().ok_or_else(|| {
+                DaemonError::LocalTransport {
+                    operation: "admit remote queued prompt",
+                    message: format!("agent `{agent_id}` lost its remote binding"),
+                }
+            })?;
+            self.app.ensure_remote_agent_binding_protocol(&remote)?;
+            let prompt_id = self.app.sessions_mut().reserve_prompt_id();
+            let (_, Some(active)) = self.activate_next_queued_prompt_for_mirror_with_prompt_id(
+                session_id,
+                agent_id,
+                Some(&candidate),
+                prompt_id,
+            )? else {
+                continue;
+            };
+            let active = self.prepare_promoted_remote_prompt_start(session_id, agent_id, &active)?;
+            let source_attachment_id = self
+                .app
+                .promoted_prompt_source_attachment_id(session_id, active.source_attachment_id())?;
+            self.app.echo_promoted_queued_prompt_to_attachments(
+                session_id,
+                provider_run_id,
+                active.id(),
+                &source_attachment_id,
+                active.prompt(),
+                active.attachments(),
+            );
+            let workflow_context = if crate::app::workflow_runtime::is_workflow_prompt_source(
+                active.source_attachment_id(),
+            ) {
+                Some(crate::app::RemoteWorkflowTurnContextResolver::new(self.app)
+                    .remote_workflow_turn_context_for_prompt(session_id, agent_id, &active)?)
+            } else {
+                None
+            };
+            let dispatch = KernelRemotePromptDispatch {
+                session_id: session_id.to_string(),
+                agent_id: agent_id.to_string(),
+                prompt_id: active.id().to_string(),
+                worker_kernel_id: remote.worker_kernel_id,
+                leased_agent_id: remote.leased_agent_id,
+                relay_url: remote.relay_url,
+                relay_token: remote.relay_token,
+                source_attachment_id: active.source_attachment_id().to_string(),
+                prompt: active.prompt().to_string(),
+                hidden_system_context: active.hidden_system_context().to_string(),
+                attachments: active.attachments().to_vec(),
+                workspace_live_sync_mode: remote_workspace_live_sync_mode_for_agent(
+                    self.app, session_id, agent_id,
+                ),
+                prompt_origin: active.prompt_origin(),
+                external_provider: active.external_provider().map(str::to_string),
+                external_provider_session_id: active
+                    .external_provider_session_id()
+                    .map(str::to_string),
+                external_provider_turn_id: active.external_provider_turn_id().map(str::to_string),
+                workflow_context,
+            };
+            return Ok(Some((active, dispatch)));
+        }
+    }
+
+    fn prepare_promoted_remote_prompt_start(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        prompt: &PromptQueueItem,
+    ) -> Result<PromptQueueItem, DaemonError> {
+        let active = self.app.prompt_owner_mark_active_prompt_running(session_id, agent_id)?;
+        if active.id() != prompt.id() {
+            return Err(DaemonError::LocalTransport {
+                operation: "admit remote queued prompt",
+                message: format!("expected prompt `{}` but activated `{}`", prompt.id(), active.id()),
+            });
+        }
+        let source_attachment_id = self
+            .app
+            .promoted_prompt_source_attachment_id(session_id, active.source_attachment_id())?;
+        let history_text = crate::prompt_transcript::workflow_prompt_history_text(&active);
+        let sent_at_ms = crate::session::unix_epoch_ms();
+        self.app.spawn_user_prompt_history_append_with_prompt_id(
+            session_id,
+            &source_attachment_id,
+            active.target_agent_id(),
+            &history_text,
+            active.attachments(),
+            active.prompt_origin(),
+            active.id(),
+            sent_at_ms,
+            active.workflow_run_id(),
+            active.workflow_node_run_id(),
+        )?;
+        self.app.agents.note_prompt_sent_at(agent_id, sent_at_ms)?;
+        self.app.sessions.note_prompt_sent(session_id, agent_id, sent_at_ms)?;
+        crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)?;
+        Ok(active)
+    }
 }
 
 fn remote_completion_provider_run_id(
