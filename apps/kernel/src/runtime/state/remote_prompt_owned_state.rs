@@ -38,6 +38,8 @@ impl KernelRuntimeOwnedState {
                         active,
                         queued.clone(),
                     )?;
+                    // Persist under the ownership locks so a successor cannot
+                    // race the durable commit. This briefly blocks readers.
                     if let Err(error) =
                         self.persist_prompt_session_state(&mirrored, &dispatch.agent_id)
                     {

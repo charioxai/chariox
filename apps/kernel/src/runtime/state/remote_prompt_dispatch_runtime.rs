@@ -888,6 +888,17 @@ impl KernelRuntimeState {
                         merge_key.clone(),
                         &message,
                     );
+                    let workflow_id = settled_prompt.workflow_run_id().and_then(|run_id| {
+                        owned
+                            .session_store
+                            .get_session(&dispatch.session_id)
+                            .ok()
+                            .and_then(|session| {
+                                session
+                                    .workflow_run(run_id)
+                                    .map(|run| run.workflow_id().to_string())
+                            })
+                    });
                     owned.append_operational_history_entry_with_context(
                         &SessionHistoryEntry::provider_output(
                             &dispatch.session_id,
@@ -900,6 +911,7 @@ impl KernelRuntimeState {
                         .with_prompt_origin(dispatch.prompt_origin)
                         .with_source_attachment_id(Some(dispatch.source_attachment_id.clone())),
                         crate::history::HistoryEventTurnContext {
+                            workflow_id,
                             session_id: Some(dispatch.session_id.clone()),
                             agent_id: Some(dispatch.agent_id.clone()),
                             provider_run_id: Some(provider_run_id.clone()),
@@ -2310,6 +2322,9 @@ mod tests {
             .unwrap();
         let app = Arc::new(Mutex::new(app));
         let runtime = owned_runtime_state(&app).await;
+        runtime
+            .ensure_managed_activity_tracking("remote-dispatch-settlement-fixture")
+            .unwrap();
         let submit = |text: &str| {
             runtime
                 .owned
@@ -2574,9 +2589,6 @@ mod tests {
         let session_id = dispatch.session_id.clone();
         let agent_id = dispatch.agent_id.clone();
         let prompt_id = dispatch.prompt_id.clone();
-        runtime
-            .ensure_managed_activity_tracking("remote-dispatch-durable-rollback")
-            .unwrap();
         let before_session = runtime
             .owned
             .session_store
