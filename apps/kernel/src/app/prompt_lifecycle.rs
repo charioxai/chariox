@@ -370,6 +370,16 @@ pub(crate) struct KernelPromptAbortDispatch {
 }
 
 impl DaemonApp {
+    /// Hand a compatibility-created remote prompt to the runtime's existing
+    /// post-app-lock dispatch drain. The runtime owns the single relay send.
+    pub(crate) fn defer_remote_prompt_dispatch_after_app_side_effect(
+        &mut self,
+        dispatch: KernelRemotePromptDispatch,
+    ) {
+        self.pending_workflow_remote_prompt_dispatches
+            .push(dispatch);
+    }
+
     #[doc(hidden)]
     pub fn submit_prompt(
         &mut self,

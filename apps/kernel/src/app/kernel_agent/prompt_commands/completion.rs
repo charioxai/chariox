@@ -436,10 +436,10 @@ impl<'a> KernelAgentService<'a> {
             }
         };
         self.update_metaagent_event_prompt_delivery(&record.event_id, delivery_status, None);
-        if let Err(error) = self
-            .finish_compat_prompt_dispatch(submitted.dispatch)
-            .and_then(|_| self.finish_compat_remote_prompt_dispatch(submitted.remote_dispatch))
-        {
+        if let Err(error) = self.finish_compat_prompt_submission_dispatches(
+            submitted.dispatch,
+            submitted.remote_dispatch,
+        ) {
             self.update_metaagent_event_prompt_delivery(
                 &record.event_id,
                 crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Failed,
@@ -569,10 +569,10 @@ impl<'a> KernelAgentService<'a> {
             }
         };
         self.update_metaagent_event_prompt_delivery(&record.event_id, delivery_status, None);
-        if let Err(error) = self
-            .finish_compat_prompt_dispatch(submitted.dispatch)
-            .and_then(|_| self.finish_compat_remote_prompt_dispatch(submitted.remote_dispatch))
-        {
+        if let Err(error) = self.finish_compat_prompt_submission_dispatches(
+            submitted.dispatch,
+            submitted.remote_dispatch,
+        ) {
             self.update_metaagent_event_prompt_delivery(
                 &record.event_id,
                 crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Failed,
@@ -689,7 +689,10 @@ impl<'a> KernelAgentService<'a> {
 #[cfg(test)]
 mod tests {
     use super::merge_remote_provider_termination;
+    use crate::app::{DaemonApp, KernelAgentService, KernelRemotePromptDispatch};
+    use crate::config::DaemonConfig;
     use crate::provider::ProviderRunTermination;
+    use crate::session::PromptOrigin;
 
     #[test]
     fn remote_completion_keeps_worker_termination_without_explicit_diagnostic() {
@@ -712,5 +715,39 @@ mod tests {
             ),
             Some(explicit),
         );
+    }
+
+    #[test]
+    fn completion_generated_remote_prompt_uses_the_post_lock_handoff_once() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon should bootstrap");
+        let dispatch = KernelRemotePromptDispatch {
+            session_id: "session-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            prompt_id: "prompt-1".to_string(),
+            worker_kernel_id: "worker-kernel-1".to_string(),
+            leased_agent_id: "leased-agent-1".to_string(),
+            relay_url: None,
+            relay_token: None,
+            source_attachment_id: "attachment-1".to_string(),
+            prompt: "completion event".to_string(),
+            hidden_system_context: String::new(),
+            attachments: Vec::new(),
+            workspace_live_sync_mode: None,
+            prompt_origin: PromptOrigin::Chariox,
+            external_provider: None,
+            external_provider_session_id: None,
+            external_provider_turn_id: None,
+            workflow_context: None,
+        };
+
+        KernelAgentService::new(&mut app)
+            .finish_compat_prompt_submission_dispatches(None, Some(dispatch))
+            .expect("completion event should defer remote delivery");
+
+        let deferred = app.take_deferred_workflow_remote_prompt_dispatches();
+        assert_eq!(deferred.len(), 1, "completion should enqueue one send");
+        assert_eq!(deferred[0].prompt, "completion event");
+        assert!(app.take_deferred_workflow_remote_prompt_dispatches().is_empty());
     }
 }
