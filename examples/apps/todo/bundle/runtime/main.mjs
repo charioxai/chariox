@@ -9,9 +9,17 @@ const SCHEMA = 1;
 // One App automation routes `todo_due` to the workflow the user chose with
 // `/app automation add <installation> reminders todo_due …`.
 const AUTOMATION = 'reminders';
-const MAX_TODOS = 500;
+// One `todos` value is at most 256 KiB and an installation has at most 256
+// wakes, so the App's own limits stay below both.
+const MAX_TODOS = 150;
+const MAX_DUE = 200;
+// Without a configured (active) automation, or for a very old due time, the
+// kernel refuses the occurrence; the reminder is still recorded.
+const OPTIONAL_OCCURRENCE = new Set(['NOT_FOUND', 'AUTOMATION_INACTIVE', 'OCCURRENCE_TOO_OLD']);
 
 export default function register(chariox) {
+  const fail = (code, message) => new chariox.AppError(code, message);
+
   async function load() {
     const record = await chariox.state.get(KEY);
     return { todos: record?.value?.todos ?? [], version: record?.version ?? null };
@@ -36,12 +44,12 @@ export default function register(chariox) {
         if (error?.code !== 'CONFLICT') throw error;
       }
     }
-    throw new Error('Todos changed too often; try again');
+    throw fail('CONFLICT', 'Todos changed too often; try again');
   }
 
   function find(todos, id) {
     const todo = todos.find(item => item.id === id);
-    if (!todo) throw new Error(`No Todo with id ${id}`);
+    if (!todo) throw fail('NOT_FOUND', `No Todo with id ${id}`);
     return todo;
   }
 
@@ -60,7 +68,10 @@ export default function register(chariox) {
   });
 
   chariox.tools.register('create_todo', ({ title, due_at_ms: dueAtMs, notes }) => change(todos => {
-    if (todos.length >= MAX_TODOS) throw new Error(`At most ${MAX_TODOS} Todos`);
+    if (todos.length >= MAX_TODOS) throw fail('LIMIT_EXCEEDED', `At most ${MAX_TODOS} Todos`);
+    if (dueAtMs != null && dueCount(todos) >= MAX_DUE) {
+      throw fail('LIMIT_EXCEEDED', `At most ${MAX_DUE} open Todos with a due time`);
+    }
     const todo = { id: randomUUID().slice(0, 8), title, notes: notes ?? '', due_at_ms: dueAtMs ?? null,
       done: false, reminded: false, revision: 1, created_at_ms: Date.now() };
     todos.push(todo);
@@ -71,7 +82,13 @@ export default function register(chariox) {
     const todo = find(todos, id);
     if (title !== undefined) todo.title = title;
     if (notes !== undefined) todo.notes = notes;
-    if (dueAtMs !== undefined) { todo.due_at_ms = dueAtMs; todo.reminded = false; }
+    if (dueAtMs !== undefined) {
+      if (dueAtMs != null && todo.due_at_ms == null && dueCount(todos) >= MAX_DUE) {
+        throw fail('LIMIT_EXCEEDED', `At most ${MAX_DUE} open Todos with a due time`);
+      }
+      todo.due_at_ms = dueAtMs;
+      todo.reminded = false;
+    }
     todo.revision += 1;
     return todo;
   }, wakesFor));
@@ -85,33 +102,47 @@ export default function register(chariox) {
 
   chariox.tools.register('delete_todo', ({ id }) => change(todos => {
     const index = todos.findIndex(todo => todo.id === id);
-    if (index < 0) throw new Error(`No Todo with id ${id}`);
+    if (index < 0) throw fail('NOT_FOUND', `No Todo with id ${id}`);
     const [todo] = todos.splice(index, 1);
     return { deleted: todo.id };
   }, (_next, result) => ({ wakes: [{ op: 'cancel', id: `todo-${result.deleted}` }] })));
 
   // A due wake marks the Todo reminded and emits one `todo_due` occurrence in
   // the same transaction. Stale revisions (edited or completed since) are
-  // ignored; the occurrence identity keeps redelivered wakes idempotent.
+  // ignored; the occurrence identity keeps redelivered wakes idempotent. When
+  // the kernel refuses the optional occurrence (no active automation, or a
+  // due time too old to deliver), the reminder is recorded without it.
   chariox.schedule.onWake(async wake => {
     if (!wake.id.startsWith('todo-')) return null;
     const id = wake.id.slice('todo-'.length);
-    await change(todos => {
+    const remind = withOccurrence => change(todos => {
       const todo = todos.find(item => item.id === id);
       if (!todo || todo.done || todo.reminded || String(todo.revision) !== wake.revision) return null;
       todo.reminded = true;
       return todo;
-    }, (_next, todo) => todo ? {
-      occurrences: [{
-        automationId: AUTOMATION,
-        occurrenceId: chariox.events.occurrenceId(`todo:${todo.id}:${todo.revision}`, todo.due_at_ms),
-        eventVersion: 1,
-        occurredAtMs: todo.due_at_ms,
-        scheduleRevision: String(todo.revision),
-        payload: { todo_id: todo.id, title: todo.title, due_at_ms: todo.due_at_ms },
-        invocation: { prompt: `The Todo "${todo.title}" is due now.`, artifacts: [] },
-      }],
-    } : {});
+    }, (_next, todo) => todo && withOccurrence ? { occurrences: [occurrence(todo)] } : {});
+    try {
+      await remind(true);
+    } catch (error) {
+      if (!OPTIONAL_OCCURRENCE.has(error?.code)) throw error;
+      await remind(false);
+    }
     return null;
   });
+
+  function occurrence(todo) {
+    return {
+      automationId: AUTOMATION,
+      occurrenceId: chariox.events.occurrenceId(`todo:${todo.id}:${todo.revision}`, todo.due_at_ms),
+      eventVersion: 1,
+      occurredAtMs: todo.due_at_ms,
+      scheduleRevision: String(todo.revision),
+      payload: { todo_id: todo.id, title: todo.title, due_at_ms: todo.due_at_ms },
+      invocation: { prompt: `The Todo "${todo.title}" is due now.`, artifacts: [] },
+    };
+  }
+}
+
+function dueCount(todos) {
+  return todos.filter(todo => todo.due_at_ms != null && !todo.done).length;
 }

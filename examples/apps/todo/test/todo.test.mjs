@@ -4,21 +4,26 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { occurrenceId } from '../../../../packages/app-sdk/src/occurrences.js';
+import { AppError } from '../../../../packages/app-sdk/src/errors.js';
 import register from '../bundle/runtime/main.mjs';
 
-function fakeKernel() {
+function fakeKernel({ automation = true } = {}) {
   const state = new Map();
   const wakes = new Map();
   const occurrences = [];
   const tools = new Map();
   let onWake;
   const chariox = {
+    AppError,
     tools: { register: (name, handler) => tools.set(name, handler) },
     events: { occurrenceId },
     schedule: { onWake: handler => { onWake = handler; } },
     state: {
       async get(key) { return state.get(key) ?? null; },
       async transaction({ checks, writes, wakes: changes = [], occurrences: emitted = [] }) {
+        // Like the kernel, an occurrence for an unconfigured automation rolls
+        // back the whole transaction.
+        if (emitted.length && !automation) throw new AppError('NOT_FOUND', 'App automation was not found');
         for (const check of checks) {
           if ((state.get(check.key)?.version ?? null) !== check.version) {
             throw Object.assign(new Error('conflict'), { code: 'CONFLICT' });
@@ -77,4 +82,21 @@ test('a due wake emits one todo_due occurrence and ignores stale revisions', asy
   assert.match(occurrence.invocation.prompt, /Call the bank/);
   assert.equal(occurrence.occurrenceId, occurrenceId(`todo:${todo.id}:2`, 2000));
   assert.equal(kernel.wakes.has(`todo-${todo.id}`), false, 'a reminded Todo holds no wake');
+});
+
+test('a reminder is recorded without an occurrence when no automation is configured', async () => {
+  const kernel = fakeKernel({ automation: false });
+  const todo = await kernel.tools.get('create_todo')({ title: 'Water plants', due_at_ms: 1000 });
+  await kernel.wake(kernel.wakes.get(`todo-${todo.id}`));
+  assert.equal(kernel.occurrences.length, 0);
+  const [stored] = (await kernel.tools.get('list_todos')({})).todos;
+  assert.equal(stored.reminded, true, 'the wake does not keep failing and retrying');
+  assert.equal(kernel.wakes.has(`todo-${todo.id}`), false);
+});
+
+test('App errors reach callers with a code, and limits match the kernel', async () => {
+  const kernel = fakeKernel();
+  await assert.rejects(kernel.tools.get('delete_todo')({ id: 'missing' }), (error) => error instanceof AppError && error.code === 'NOT_FOUND');
+  for (let index = 0; index < 150; index += 1) await kernel.tools.get('create_todo')({ title: `t${index}` });
+  await assert.rejects(kernel.tools.get('create_todo')({ title: 'one more' }), { code: 'LIMIT_EXCEEDED' });
 });

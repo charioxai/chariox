@@ -4,6 +4,7 @@ const $ = (id) => document.getElementById(id)
 const list = $("todos")
 const status = $("status")
 let todos = []
+let shown = ""
 
 function say(message, error = false) {
   status.textContent = message
@@ -59,8 +60,13 @@ function item(todo) {
   return li
 }
 
+// Re-render only when the list changed, so polling never moves keyboard or
+// screen-reader focus off the row a person is on.
 async function refresh() {
   const result = await call("list_todos")
+  const next = JSON.stringify(result.todos)
+  if (next === shown && !status.classList.contains("error")) return
+  shown = next
   todos = result.todos
   say("")
   render()
@@ -82,7 +88,7 @@ $("new-todo").addEventListener("submit", async (event) => {
   $("new-todo").reset()
   $("title").focus()
 })
-$("open-only").addEventListener("change", render)
+$("open-only").addEventListener("change", () => render())
 
 // Agents and other views change Todos too; a short poll keeps this view current
 // without any network access.

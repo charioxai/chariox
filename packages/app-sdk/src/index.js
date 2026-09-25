@@ -131,6 +131,9 @@ export function createAppSdk({ transport, generation, paths, declarations = {}, 
   });
   const call = (method, params, options) => peer.request(method, params, options);
   const sdk = {
+    // The only error type whose code and message reach callers; any other
+    // thrown value becomes HANDLER_FAILED so private details never leak.
+    AppError,
     paths: Object.freeze({ package: paths.package, data: paths.data, temporary: paths.temporary }),
     tools: Object.freeze({ register: tools.register }),
     events: Object.freeze({
