@@ -641,7 +641,7 @@ async fn assert_remote_native_terminal_resize(
 #[test]
 fn remote_machine_agents_execute_prompts_through_the_home_session() {
     run_async_with_large_test_stack("remote-agents-execute-prompts", || {
-        remote_machine_agents_execute_prompts_through_the_home_session_async(false, false, false)
+        remote_machine_agents_execute_prompts_through_the_home_session_async(false, false, false, false)
     });
 }
 
@@ -650,7 +650,7 @@ fn remote_agent_message_steers_live_worker_without_a_user_queue() {
     // Fixed worker IDs must not retain the previous fixture's generated trust key.
     for _ in 0..2 {
         run_async_with_large_test_stack("remote-agent-direct-message", || {
-            remote_machine_agents_execute_prompts_through_the_home_session_async(true, false, false)
+            remote_machine_agents_execute_prompts_through_the_home_session_async(true, false, false, false)
         });
     }
 }
@@ -658,14 +658,21 @@ fn remote_agent_message_steers_live_worker_without_a_user_queue() {
 #[test]
 fn remote_agent_message_steer_keeps_home_app_lock_available_while_worker_reply_waits() {
     run_async_with_large_test_stack("remote-agent-message-home-lock", || {
-        remote_machine_agents_execute_prompts_through_the_home_session_async(true, true, false)
+        remote_machine_agents_execute_prompts_through_the_home_session_async(true, true, false, false)
+    });
+}
+
+#[test]
+fn remote_agent_message_reply_after_target_completion_does_not_commit_stale_steer() {
+    run_async_with_large_test_stack("remote-agent-message-stale-reply", || {
+        remote_machine_agents_execute_prompts_through_the_home_session_async(true, true, false, true)
     });
 }
 
 #[test]
 fn remote_queued_prompt_steer_reserves_queue_head_and_keeps_home_lock_available_while_worker_reply_waits() {
     run_async_with_large_test_stack("remote-queued-steer-home-lock", || {
-        remote_machine_agents_execute_prompts_through_the_home_session_async(false, false, true)
+        remote_machine_agents_execute_prompts_through_the_home_session_async(false, false, true, false)
     });
 }
 
@@ -673,6 +680,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
     direct_message_only: bool,
     hold_agent_message_reply: bool,
     hold_queued_prompt_reply: bool,
+    finish_target_before_direct_reply: bool,
 ) {
     let _relay_test_guard = relay_client_test_guard().await;
     let _test_home = RelayTestHome::new();
@@ -1071,13 +1079,49 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                 }
                 sleep(Duration::from_millis(10)).await;
             }
+            if finish_target_before_direct_reply {
+                let mut home = app_home
+                    .try_lock()
+                    .expect("the home lock should be free while the worker reply is held");
+                home.prompt_owner_complete_active_prompt_only(&session_id, &remote_agent_id)
+                    .expect("target turn should complete before the steer reply");
+                assert!(home
+                    .prompt_owner_active_prompt_for_agent(&session_id, &remote_agent_id)
+                    .expect("home active prompt should load")
+                    .is_none());
+            }
             drop(worker_app_guard);
-            let direct_message = dispatch
-                .await
-                .expect("agent message dispatch task should join")
-                .expect("agent message should steer to the leased worker");
+            let direct_message_result = dispatch.await.expect("agent message dispatch task should join");
             held_reply_observation = Some((relay_reply_is_waiting, home_app_lock_available));
-            direct_message
+            if finish_target_before_direct_reply {
+                assert!(
+                    !direct_message_result.as_ref().is_ok_and(|result| result.ok),
+                    "a reply for a completed target turn must not commit as a current steer"
+                );
+                let home = app_home.lock().await;
+                assert!(!home.terminal().output_records().iter().any(|record| {
+                    record.kind == crate::terminal::TerminalOutputKind::PromptEcho
+                        && String::from_utf8_lossy(&record.bytes)
+                            .contains("REMOTE_AGENT_MESSAGE_DIRECT")
+                }));
+                assert!(!home
+                    .operational_history_store()
+                    .load_session_events(&session_id, Some(&remote_agent_id))
+                    .expect("home history should load")
+                    .iter()
+                    .any(|event| event.content.as_deref().is_some_and(|content| {
+                        content.contains("REMOTE_AGENT_MESSAGE_DIRECT")
+                    })));
+                drop(home);
+                let _ = shutdown_home_tx.send(true);
+                let _ = shutdown_worker_tx.send(true);
+                connector_home.await.expect("home connector should join");
+                connector_worker.await.expect("worker connector should join");
+                let _ = server_shutdown_tx.send(());
+                server_task.await.expect("server task should join");
+                return;
+            }
+            direct_message_result.expect("agent message should steer to the leased worker")
         } else {
             router
                 .runtime_state()
