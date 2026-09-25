@@ -1,5 +1,4 @@
 use super::*;
-use crate::runtime::state::remote_prompt_owned_state::RemotePromptDispatchSettlement;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use chariox_relay::protocol::RelayEnvelope;
 use futures_util::{SinkExt, StreamExt};
@@ -369,7 +368,7 @@ async fn temporary_cancel_response_wait_keeps_home_app_lock_available() {
 }
 
 #[tokio::test]
-async fn accepted_cancellation_waits_through_dispatch_and_durable_ack_then_forwards_once() {
+async fn accepted_and_dispatching_cancellation_wait_for_exact_receipt_without_replay() {
     let mut config = crate::config::DaemonConfig::for_tests();
     config.relay_url = Some(RELAY_URL.to_string());
     config.relay_token = Some("cancel-ack-test-token".to_string());
@@ -464,6 +463,27 @@ async fn accepted_cancellation_waits_through_dispatch_and_durable_ack_then_forwa
         relay.remember_peer_public_key(WORKER_ID, worker_config.relay_public_key.clone());
     }
 
+    let accepted_cancellation = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        runtime.cancel_remote_agent_prompt_if_remote(&session_id, &agent_id, &attachment_id),
+    )
+    .await
+    .expect("Accepted cancellation should persist without waiting for worker submission")
+    .expect("Accepted cancellation intent should be recorded")
+    .expect("remote prompt should remain held");
+    assert_eq!(
+        accepted_cancellation.cancellation.prompt.id(),
+        prompt_id.as_str()
+    );
+    assert_eq!(
+        accepted_cancellation.cancellation.prompt.status(),
+        crate::session::PromptStatus::Cancelling
+    );
+    assert_eq!(
+        accepted_cancellation.cancellation.prompt.durable_delivery_phase(),
+        Some(crate::session::DurablePromptDeliveryPhase::Accepted)
+    );
+
     let submit_runtime = runtime.clone();
     let submit_dispatch = dispatch.clone();
     let submit = tokio::spawn(async move {
@@ -520,24 +540,31 @@ async fn accepted_cancellation_waits_through_dispatch_and_durable_ack_then_forwa
             )
             .await
     });
+    let cancellation = tokio::time::timeout(std::time::Duration::from_millis(500), cancellation)
+        .await
+        .expect("cancellation intent should persist without waiting for the 240-second submit ACK")
+        .expect("cancellation task should join")
+        .expect("cancellation intent should be recorded")
+        .expect("remote prompt should remain held for receipt reconciliation");
+    assert_eq!(
+        cancellation.cancellation.prompt.id(),
+        prompt_id.as_str(),
+        "the durable cancellation intent must retain the same home prompt"
+    );
+    assert_eq!(
+        cancellation.cancellation.prompt.status(),
+        crate::session::PromptStatus::Cancelling
+    );
+    assert_eq!(
+        cancellation.cancellation.prompt.durable_delivery_phase(),
+        Some(crate::session::DurablePromptDeliveryPhase::Dispatching),
+        "cancellation must not clear the uncertain delivery phase"
+    );
     assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(100), peer_requests.recv())
-            .await
-            .is_err(),
-        "CancelLeasedPrompt must wait for the in-flight submit ACK"
+        peer_requests.try_recv().is_err(),
+        "persisting the cancellation intent must not send cancellation before a verified receipt"
     );
 
-    runtime
-        .owned
-        .mark_active_prompt_delivery(
-            &session_id,
-            &agent_id,
-            &prompt_id,
-            crate::session::DurablePromptDeliveryPhase::Dispatching,
-            None,
-            None,
-        )
-        .expect("home prompt should enter Dispatching before worker submission completes");
     let worker_prompt = prompt.clone();
     acknowledge_peer_request(
         &relay_state,
@@ -559,19 +586,119 @@ async fn accepted_cancellation_waits_through_dispatch_and_durable_ack_then_forwa
             .expect("fake worker should ACK"),
         WORKER_RUN_ID
     );
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(100), peer_requests.recv())
+
+    let first_recovery_runtime = runtime.clone();
+    let first_recovery_session_id = session_id.clone();
+    let first_recovery_agent_id = agent_id.clone();
+    let first_recovery = tokio::spawn(async move {
+        first_recovery_runtime
+            .recover_remote_prompt_after_kernel_restart(
+                &first_recovery_session_id,
+                &first_recovery_agent_id,
+                Some(crate::session::DurablePromptDeliveryPhase::Dispatching),
+                None,
+            )
             .await
-            .is_err(),
-        "worker ACK alone must not outrun the durable home ACK"
-    );
+    });
+    let (receipt_request_id, target_id, request) =
+        next_peer_request(&mut peer_requests, &worker_private_key).await;
+    assert_eq!(target_id, WORKER_ID);
     assert!(matches!(
+        request,
+        RelayPeerRequest::GetLeasedPromptReceipt {
+            leased_agent_id,
+            home_prompt_id,
+        } if leased_agent_id.as_str() == LEASED_AGENT_ID
+            && home_prompt_id.as_str() == prompt_id.as_str()
+    ));
+    acknowledge_peer_request(
+        &relay_state,
+        receipt_request_id,
+        &worker_private_key,
+        &home_public_key,
+        RelayPeerResponse::LeasedPromptReceiptQueried {
+            receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                home_prompt_id: "different-home-prompt".to_string(),
+                worker_provider_run_id: "different-worker-run".to_string(),
+                phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
+            }),
+        },
+    )
+    .await;
+    assert!(first_recovery
+        .await
+        .expect("first receipt recovery should join")
+        .expect("unmatched receipt should keep recovery held"));
+    assert!(
+        peer_requests.try_recv().is_err(),
+        "a receipt for another prompt/run must not trigger cancellation or prompt replay"
+    );
+    let held_prompt = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(
+            &runtime
+                .owned
+                .session_store
+                .get_session(&dispatch.session_id)
+                .expect("home session should remain available"),
+            &dispatch.agent_id,
+        )
+        .expect("the exact home prompt should remain held");
+    assert_eq!(held_prompt.id(), prompt_id.as_str());
+    assert_eq!(held_prompt.status(), crate::session::PromptStatus::Cancelling);
+    assert_eq!(
+        held_prompt.durable_delivery_phase(),
+        Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+    );
+    assert_eq!(
         runtime
             .owned
-            .settle_remote_dispatch_if_current(&dispatch, Some(WORKER_RUN_ID))
-            .expect("home should persist the submission ACK"),
-        RemotePromptDispatchSettlement::Settled(_)
+            .agent_store
+            .get_agent(&dispatch.agent_id)
+            .expect("home agent should remain available")
+            .remote_execution()
+            .and_then(|remote| remote.active_worker_provider_run_id.as_deref()),
+        None,
+        "an unrelated receipt must not bind a provider run"
+    );
+
+    let receipt_recovery_runtime = runtime.clone();
+    let receipt_recovery = tokio::spawn(async move {
+        receipt_recovery_runtime
+            .recover_remote_prompt_after_kernel_restart(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                Some(crate::session::DurablePromptDeliveryPhase::Dispatching),
+                None,
+            )
+            .await
+    });
+    let (receipt_request_id, target_id, request) =
+        next_peer_request(&mut peer_requests, &worker_private_key).await;
+    assert_eq!(target_id, WORKER_ID);
+    assert!(matches!(
+        request,
+        RelayPeerRequest::GetLeasedPromptReceipt {
+            leased_agent_id,
+            home_prompt_id,
+        } if leased_agent_id.as_str() == LEASED_AGENT_ID
+            && home_prompt_id.as_str() == prompt_id.as_str()
     ));
+    acknowledge_peer_request(
+        &relay_state,
+        receipt_request_id,
+        &worker_private_key,
+        &home_public_key,
+        RelayPeerResponse::LeasedPromptReceiptQueried {
+            receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                home_prompt_id: prompt_id.clone(),
+                worker_provider_run_id: WORKER_RUN_ID.to_string(),
+                phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
+            }),
+        },
+    )
+    .await;
 
     let (cancel_request_id, target_id, request) =
         next_peer_request(&mut peer_requests, &worker_private_key).await;
@@ -605,14 +732,13 @@ async fn accepted_cancellation_waits_through_dispatch_and_durable_ack_then_forwa
         },
     )
     .await;
-    cancellation
+    assert!(receipt_recovery
         .await
-        .expect("cancellation task should join")
-        .expect("fake worker cancellation should succeed")
-        .expect("remote cancellation should be handled");
+        .expect("receipt recovery should join")
+        .expect("the exact worker receipt should resume cancellation"));
     assert!(
         peer_requests.try_recv().is_err(),
-        "the home kernel must forward exactly one cancellation request"
+        "the home kernel must forward exactly one cancellation request and no prompt replay"
     );
 
     let session = runtime
@@ -620,20 +746,12 @@ async fn accepted_cancellation_waits_through_dispatch_and_durable_ack_then_forwa
         .session_store
         .get_session(&session_id)
         .expect("home session should remain available");
-    let active = runtime
-        .owned
-        .prompt_state_owner
-        .active_prompt_for_agent(&session, &agent_id)
-        .expect("home should keep one cancelling prompt until worker settlement");
-    let mirrored = session
-        .active_prompt_for_agent(&agent_id)
-        .expect("session projection should mirror the same active prompt");
-    assert_eq!(active.id(), prompt_id.as_str());
-    assert_eq!(active.status(), crate::session::PromptStatus::Cancelling);
-    assert_eq!(
-        active.durable_delivery_provider_run_id(),
-        Some(WORKER_RUN_ID)
+    assert!(
+        runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .is_none(),
+        "the same prompt should finalize after the verified worker cancellation ACK"
     );
-    assert_eq!(mirrored.id(), active.id());
-    assert_eq!(mirrored.status(), active.status());
 }

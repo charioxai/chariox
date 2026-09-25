@@ -17,7 +17,7 @@ const REMOTE_PROMPT_PROJECTION_RESPONSE_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(5);
 
 // Duplicate starts advance the generation so release and restart are one atomic decision.
-struct RemotePromptAgentClaim {
+pub(super) struct RemotePromptAgentClaim {
     key: (String, String),
     claims: Arc<std::sync::Mutex<BTreeMap<(String, String), u64>>>,
     seen_generation: u64,
@@ -122,6 +122,18 @@ impl Drop for RemotePromptAgentClaim {
 }
 
 impl KernelRuntimeState {
+    pub(super) fn try_claim_remote_prompt_cancellation_send(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Option<RemotePromptAgentClaim> {
+        RemotePromptAgentClaim::try_acquire(
+            Arc::clone(&self.owned.remote_prompt_recoveries),
+            session_id,
+            agent_id,
+        )
+    }
+
     pub(super) async fn recover_remote_prompt_after_kernel_restart(
         &self,
         session_id: &str,
@@ -135,6 +147,61 @@ impl KernelRuntimeState {
             .owned
             .prompt_state_owner
             .active_prompt_for_agent(&session, agent_id);
+        if agent.remote_execution().is_some()
+            && active_prompt.as_ref().is_some_and(|prompt| {
+                prompt.status() == crate::session::PromptStatus::Cancelling
+            })
+        {
+            let prompt = active_prompt.as_ref().expect("checked above");
+            match prompt.durable_delivery_phase() {
+                Some(crate::session::DurablePromptDeliveryPhase::Accepted)
+                    if delivery_phase
+                        != Some(crate::session::DurablePromptDeliveryPhase::Dispatching) =>
+                {
+                    // Accepted is persisted before transport starts. On restart no worker run can
+                    // belong to this prompt, so finish its durable cancellation without replay.
+                    self.owned
+                        .finalize_remote_prompt_cancellation_after_worker_settled(
+                            session_id,
+                            agent_id,
+                            prompt.source_attachment_id(),
+                        )?;
+                    return Ok(true);
+                }
+                Some(crate::session::DurablePromptDeliveryPhase::Delivered) => {
+                    let Some(dispatch) = self.remote_prompt_recovery_dispatch(&agent)? else {
+                        return Ok(true);
+                    };
+                    if let Err(error) = self
+                        .resume_delivered_remote_prompt_cancellation_after_restart(
+                            &dispatch,
+                            prompt.durable_delivery_provider_run_id(),
+                        )
+                        .await
+                    {
+                        crate::logging::warn_with_fields(
+                            "daemon.remote_prompt_dispatch",
+                            "restart kept delivered remote cancellation held because its worker receipt was not reconciled",
+                            serde_json::json!({
+                                "session_id": dispatch.session_id,
+                                "agent_id": dispatch.agent_id,
+                                "worker_kernel_id": dispatch.worker_kernel_id,
+                                "leased_agent_id": dispatch.leased_agent_id,
+                                "prompt_id": dispatch.prompt_id,
+                                "error": error.to_string(),
+                            }),
+                        );
+                    }
+                    return Ok(true);
+                }
+                Some(crate::session::DurablePromptDeliveryPhase::Dispatching) => {}
+                None => {
+                    // Older or incomplete state has no proof tying this cancellation to a worker
+                    // run. Keep the same prompt held; never redispatch or cancel a lease by guess.
+                    return Ok(true);
+                }
+            }
+        }
         if agent.remote_execution().is_some()
             && active_prompt.as_ref().is_some_and(|prompt| {
                 prompt.durable_delivery_reconciliation_pending()
@@ -310,6 +377,129 @@ impl KernelRuntimeState {
             }
         }
         Ok(worker_provider_run_id)
+    }
+
+    async fn resume_delivered_remote_prompt_cancellation_after_restart(
+        &self,
+        dispatch: &crate::app::KernelRemotePromptDispatch,
+        expected_provider_run_id: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        let expected_provider_run_id = expected_provider_run_id.ok_or_else(|| {
+            DaemonError::LocalTransport {
+                operation: "resume remote prompt cancellation",
+                message: "delivered cancellation has no durable worker provider-run identity"
+                    .to_string(),
+            }
+        })?;
+        if !self.remote_prompt_receipt_prompt_is_current(dispatch)? {
+            return Err(DaemonError::NoActivePrompt {
+                session_id: dispatch.session_id.clone(),
+            });
+        }
+        let binding_before = self
+            .remote_prompt_receipt_binding(dispatch)
+            .map_err(|detail| DaemonError::LocalTransport {
+                operation: "resume remote prompt cancellation",
+                message: detail,
+            })?;
+        if binding_before.active_worker_provider_run_id.as_deref()
+            != Some(expected_provider_run_id)
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "resume remote prompt cancellation",
+                message: "the current worker binding no longer owns the delivered prompt run"
+                    .to_string(),
+            });
+        }
+        let receipt = query_remote_prompt_worker_receipt(self, dispatch).await?;
+        if !self.remote_prompt_receipt_prompt_is_current(dispatch)? {
+            return Err(DaemonError::NoActivePrompt {
+                session_id: dispatch.session_id.clone(),
+            });
+        }
+        let action = remote_prompt_receipt_action(&dispatch.prompt_id, receipt).map_err(
+            |detail| DaemonError::LocalTransport {
+                operation: "resume remote prompt cancellation",
+                message: detail.to_string(),
+            },
+        )?;
+        let binding_after = self
+            .remote_prompt_receipt_binding(dispatch)
+            .map_err(|detail| DaemonError::LocalTransport {
+                operation: "resume remote prompt cancellation",
+                message: detail,
+            })?;
+        if !same_remote_prompt_worker_binding(&binding_before, &binding_after)
+            || binding_after.active_worker_provider_run_id.as_deref()
+                != Some(expected_provider_run_id)
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "resume remote prompt cancellation",
+                message: "the verified worker binding changed while its receipt was queried"
+                    .to_string(),
+            });
+        }
+        match action {
+            RemotePromptReceiptAction::AssociateActiveRun(provider_run_id)
+                if provider_run_id.as_str() == expected_provider_run_id =>
+            {
+                self.cancel_remote_agent_prompt_if_remote(
+                    &dispatch.session_id,
+                    &dispatch.agent_id,
+                    &dispatch.source_attachment_id,
+                )
+                .await?;
+                Ok(())
+            }
+            RemotePromptReceiptAction::DrainCompletedProjection(provider_run_id)
+                if provider_run_id.as_str() == expected_provider_run_id =>
+            {
+                self.drain_completed_remote_prompt_receipt_projection(
+                    dispatch,
+                    expected_provider_run_id,
+                )
+                .await
+                .map_err(|detail| DaemonError::LocalTransport {
+                    operation: "resume remote prompt cancellation",
+                    message: detail,
+                })?;
+                let binding = self.remote_prompt_receipt_binding(dispatch).map_err(|detail| {
+                    DaemonError::LocalTransport {
+                        operation: "resume remote prompt cancellation",
+                        message: detail,
+                    }
+                })?;
+                let session = self.owned.session_store.get_session(&dispatch.session_id)?;
+                if let Some(prompt) = self
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, &dispatch.agent_id)
+                    .filter(|prompt| {
+                        prompt.id() == dispatch.prompt_id
+                            && prompt.status() == crate::session::PromptStatus::Cancelling
+                            && prompt.durable_delivery_phase()
+                                == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+                            && prompt.durable_delivery_provider_run_id()
+                                == Some(expected_provider_run_id)
+                            && binding.active_worker_provider_run_id.as_deref()
+                                == Some(expected_provider_run_id)
+                    })
+                {
+                    self.owned
+                        .finalize_remote_prompt_cancellation_after_worker_settled(
+                            &dispatch.session_id,
+                            &dispatch.agent_id,
+                            prompt.source_attachment_id(),
+                        )?;
+                }
+                Ok(())
+            }
+            _ => Err(DaemonError::LocalTransport {
+                operation: "resume remote prompt cancellation",
+                message: "worker receipt did not prove the exact delivered provider run"
+                    .to_string(),
+            }),
+        }
     }
 
     fn remote_prompt_receipt_prompt_is_current(
@@ -800,6 +990,17 @@ impl KernelRuntimeState {
         stale_provider_run_id: &str,
         trigger_error: &str,
     ) -> Result<(), DaemonError> {
+        let session = self.owned.session_store.get_session(session_id)?;
+        if self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+            .is_some_and(|prompt| prompt.status() == crate::session::PromptStatus::Cancelling)
+        {
+            // Cancellation owns the exact old worker run. A stale projection must not refresh
+            // its binding and replay the prompt onto a replacement worker.
+            return Ok(());
+        }
         let refresh_agent_id = agent_id.to_string();
         let stale_leased_agent_id = stale_binding.leased_agent_id.clone();
         let refresh_stale_provider_run_id = stale_provider_run_id.to_string();
@@ -1067,11 +1268,27 @@ impl KernelRuntimeState {
         leased_agent_id: &str,
     ) -> Result<bool, DaemonError> {
         let session = self.owned.session_store.get_session(session_id)?;
-        let prompt_is_current = self
+        let active_prompt = self
             .owned
             .prompt_state_owner
-            .active_prompt_for_agent(&session, agent_id)
-            .is_some_and(|prompt| prompt.id() == prompt_id);
+            .active_prompt_for_agent(&session, agent_id);
+        if let Some(prompt) = active_prompt.as_ref().filter(|prompt| {
+            prompt.id() == prompt_id
+                && prompt.status() == crate::session::PromptStatus::Cancelling
+                && prompt.durable_delivery_phase()
+                    == Some(crate::session::DurablePromptDeliveryPhase::Accepted)
+        }) {
+            self.owned
+                .finalize_remote_prompt_cancellation_after_worker_settled(
+                    session_id,
+                    agent_id,
+                    prompt.source_attachment_id(),
+                )?;
+            return Ok(false);
+        }
+        let prompt_is_current = active_prompt.as_ref().is_some_and(|prompt| {
+            prompt.id() == prompt_id && prompt.status() != crate::session::PromptStatus::Cancelling
+        });
         let binding_is_current = self
             .owned
             .agent_store
@@ -1305,6 +1522,7 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         let session_id = dispatch.session_id.clone();
         let agent_id = dispatch.agent_id.clone();
+        let delivery_succeeded = result.is_ok();
         use super::remote_prompt_owned_state::RemotePromptDispatchSettlement;
         let mut append_retry = 0_u8;
         let settlement = loop {
@@ -1522,8 +1740,35 @@ impl KernelRuntimeState {
                 }
             }
         }?;
-        if should_start_projection_drain {
-            self.spawn_remote_prompt_projection_drain(session_id, agent_id);
+        if should_start_projection_drain
+            && settled_prompt.status() != crate::session::PromptStatus::Cancelling
+        {
+            self.spawn_remote_prompt_projection_drain(session_id.clone(), agent_id.clone());
+        }
+        if delivery_succeeded && settled_prompt.status() == crate::session::PromptStatus::Cancelling
+        {
+            if let Err(error) = self
+                .cancel_remote_agent_prompt_if_remote(
+                    &session_id,
+                    &agent_id,
+                    settled_prompt.source_attachment_id(),
+                )
+                .await
+            {
+                crate::logging::warn_with_fields(
+                    "daemon.remote_prompt_dispatch",
+                    "durable remote cancellation intent remains pending after worker ACK",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "agent_id": agent_id,
+                        "prompt_id": settled_prompt.id(),
+                        "worker_kernel_id": dispatch.worker_kernel_id,
+                        "leased_agent_id": dispatch.leased_agent_id,
+                        "provider_run_id": settled_prompt.durable_delivery_provider_run_id(),
+                        "error": error.to_string(),
+                    }),
+                );
+            }
         }
         Ok(())
     }
@@ -1552,6 +1797,19 @@ impl KernelRuntimeState {
         else {
             return Ok(None);
         };
+        if prompt.status() == crate::session::PromptStatus::Cancelling {
+            if prompt.durable_delivery_phase()
+                == Some(crate::session::DurablePromptDeliveryPhase::Accepted)
+            {
+                self.owned
+                    .finalize_remote_prompt_cancellation_after_worker_settled(
+                        session_id,
+                        agent_id,
+                        prompt.source_attachment_id(),
+                    )?;
+            }
+            return Ok(None);
+        }
         if prompt.id() != dispatch.prompt_id
             || prompt.durable_delivery_reconciliation_pending()
             || matches!(
