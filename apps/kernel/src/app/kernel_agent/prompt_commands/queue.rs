@@ -277,16 +277,15 @@ impl<'a> KernelAgentService<'a> {
         agent_id: &str,
         expected_next: Option<&PromptQueueItem>,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
-        if let Some(expected_next) = expected_next {
-            return Ok(select_next_queued_prompt_candidate(
-                Some(expected_next),
+        let candidate = if let Some(expected_next) = expected_next {
+            select_next_queued_prompt_candidate(Some(expected_next), None)
+        } else {
+            select_next_queued_prompt_candidate(
                 None,
-            ));
-        }
-        Ok(select_next_queued_prompt_candidate(
-            None,
-            self.peek_next_queued_prompt(session_id, agent_id)?,
-        ))
+                self.peek_next_queued_prompt(session_id, agent_id)?,
+            )
+        };
+        Ok(candidate.filter(|prompt| !prompt.remote_steer_reserved()))
     }
 
     pub(super) fn activate_next_queued_prompt_for_mirror(

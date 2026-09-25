@@ -5,7 +5,55 @@
 
 use super::*;
 
+struct RemoteQueuedPromptSteerReservation {
+    prompt: crate::session::PromptQueueItem,
+    id: u64,
+}
+
+impl RemoteQueuedPromptSteerReservation {
+    fn new(prompt: crate::session::PromptQueueItem, id: u64) -> Self {
+        Self { prompt, id }
+    }
+
+    fn id(&self) -> u64 {
+        self.id
+    }
+}
+
+impl Drop for RemoteQueuedPromptSteerReservation {
+    fn drop(&mut self) {
+        let _ = self.prompt.release_remote_steer(self.id);
+    }
+}
+
 impl KernelRuntimeState {
+    async fn refresh_remote_agent_binding_for_steer(
+        &self,
+        agent_id: &str,
+        expected_binding: &crate::agent::RemoteAgentBinding,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let expected_binding = expected_binding.clone();
+        let agent_id = agent_id.to_string();
+        let plan = self
+            .with_app_side_effect(move |app| {
+                app.prepare_remote_agent_binding_refresh(&agent_id, &expected_binding)
+            })
+            .await?;
+        let refresh = crate::app::DaemonApp::execute_remote_agent_binding_refresh(plan).await?;
+        let (committed, binding_committed) = self
+            .with_app_side_effect(|app| app.commit_remote_agent_binding_refresh(&refresh))
+            .await;
+        match committed {
+            Ok(agent) => Ok(agent),
+            Err(error) => {
+                if !binding_committed {
+                    crate::app::DaemonApp::cleanup_remote_agent_binding_refresh(&refresh).await;
+                }
+                Err(error)
+            }
+        }
+    }
+
     pub(in crate::runtime::state) async fn steer_remote_agent_message(
         &self,
         session_id: &str,
@@ -75,9 +123,10 @@ impl KernelRuntimeState {
             attachments,
             required_skills,
         };
-        self.with_app_side_effect(|app| {
+        let (mut remote_execution, mut relay_config) = self
+            .with_app_side_effect(|app| {
             let current_agent = owned.agent_store.get_agent(agent_id)?;
-            let mut remote_execution = current_agent
+            let remote_execution = current_agent
                 .remote_execution()
                 .cloned()
                 .ok_or_else(|| DaemonError::LocalTransport {
@@ -101,33 +150,96 @@ impl KernelRuntimeState {
                     message: "active remote provider turn changed before delivery".to_string(),
                 });
             }
-            let mut response = send_remote_queued_prompt_steer(app, &remote_execution, &payload);
-            if response.as_ref().is_err_and(
-                super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_refresh_binding,
-            ) {
-                remote_execution = app
-                    .refresh_remote_agent_binding(agent_id)?
-                    .remote_execution()
-                    .cloned()
-                    .ok_or_else(|| DaemonError::LocalTransport {
-                        operation: "refresh remote agent message binding",
-                        message: format!("agent `{agent_id}` did not retain remote execution"),
-                    })?;
-                response = send_remote_queued_prompt_steer(app, &remote_execution, &payload);
+            Ok((
+                remote_execution.clone(),
+                app.relay_config_for_remote_execution(&remote_execution),
+            ))
+        })
+        .await?;
+        let mut response = send_remote_queued_prompt_steer(
+            &relay_config,
+            &remote_execution,
+            &payload,
+        )
+        .await;
+        if response.as_ref().is_err_and(
+            super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_refresh_binding,
+        ) {
+            let refreshed = self
+                .refresh_remote_agent_binding_for_steer(agent_id, &remote_execution)
+                .await?;
+            remote_execution = refreshed
+                .remote_execution()
+                .cloned()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "refresh remote agent message binding",
+                    message: format!("agent `{agent_id}` did not retain remote execution"),
+                })?;
+            let prepared = self
+                .with_app_side_effect(|app| {
+                    let current_agent = owned.agent_store.get_agent(agent_id)?;
+                    let current_execution = current_agent
+                        .remote_execution()
+                        .cloned()
+                        .ok_or_else(|| DaemonError::LocalTransport {
+                            operation: "retry remote agent message",
+                            message: format!("agent `{agent_id}` is no longer remote"),
+                        })?;
+                    let current_session = owned.session_store.get_session(session_id)?;
+                    let current_active = owned
+                        .prompt_state_owner
+                        .active_prompt_for_agent(&current_session, agent_id)
+                        .ok_or_else(|| DaemonError::NoActivePrompt {
+                            session_id: session_id.to_string(),
+                        })?;
+                    if current_execution != remote_execution
+                        || current_active.id() != payload.target_home_prompt_id
+                        || current_active.status() != crate::session::PromptStatus::Running
+                    {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "retry remote agent message",
+                            message: "active remote provider turn or binding changed before retry".to_string(),
+                        });
+                    }
+                    Ok(app.relay_config_for_remote_execution(&current_execution))
+                })
+                .await?;
+            relay_config = prepared;
+            response = send_remote_queued_prompt_steer(
+                &relay_config,
+                &remote_execution,
+                &payload,
+            )
+            .await;
+        }
+        let provider_run_id = match response? {
+            RelayPeerResponse::LeasedPromptSteered {
+                provider_run_id,
+                steer_id,
+                ..
+            } if steer_id == payload.steer_id => provider_run_id,
+            other => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "steer agent message",
+                    message: format!("unexpected remote message response: {other:?}"),
+                });
             }
-            let provider_run_id = match response? {
-                RelayPeerResponse::LeasedPromptSteered {
-                    provider_run_id,
-                    steer_id,
-                    ..
-                } if steer_id == payload.steer_id => provider_run_id,
-                other => {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "steer agent message",
-                        message: format!("unexpected remote message response: {other:?}"),
-                    });
-                }
-            };
+        };
+        let projected_provider_run_id = crate::provider::projected_leased_provider_run_id(
+            &remote_execution.leased_agent_id,
+            &provider_run_id,
+        );
+        self.with_app_side_effect(|_app| {
+            let current_agent = owned.agent_store.get_agent(agent_id)?;
+            if !remote_steer_binding_identity_matches(
+                current_agent.remote_execution(),
+                Some(&remote_execution),
+            ) {
+                return Err(DaemonError::LocalTransport {
+                    operation: "commit remote agent message steer",
+                    message: "remote binding changed while the agent message was in flight".to_string(),
+                });
+            }
             owned.append_steering_prompt_history(
                 session_id,
                 &provider_run_id,
@@ -138,10 +250,6 @@ impl KernelRuntimeState {
                 prompt.prompt(),
                 prompt.attachments(),
             )?;
-            let projected_provider_run_id = crate::provider::projected_leased_provider_run_id(
-                &remote_execution.leased_agent_id,
-                &provider_run_id,
-            );
             owned.echo_steering_prompt_to_other_attachments(
                 session_id,
                 &projected_provider_run_id,
@@ -155,7 +263,7 @@ impl KernelRuntimeState {
             );
             Ok(Some(projected_provider_run_id))
         })
-        .await
+        .await?
     }
 
     pub(crate) async fn submit_prepared_prompt(
@@ -387,65 +495,162 @@ impl KernelRuntimeState {
         let target_agent_id = target_agent_id.to_string();
         let attachment_id = attachment_id.to_string();
         let prompt_id = prompt_id.to_string();
-        self.with_app_side_effect(|app| {
-            let current = owned
-                .prepare_remote_queued_prompt_steer(
+        let (mut remote_execution, mut relay_config, reservation_guard) = self
+            .with_app_side_effect(|app| {
+                let current = owned
+                    .prepare_remote_queued_prompt_steer(
+                        &session_id,
+                        &target_agent_id,
+                        &attachment_id,
+                        &prompt_id,
+                    )?
+                    .ok_or_else(|| DaemonError::LocalTransport {
+                        operation: "steer remote queued prompt",
+                        message: format!("agent `{target_agent_id}` is no longer remote"),
+                    })?;
+                if current.target_active_prompt_id != payload.target_home_prompt_id
+                    || current.remote_execution != prepared.remote_execution
+                    || current.prompt != prepared.prompt
+                {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "steer remote queued prompt",
+                        message: "queued prompt, active turn, or remote binding changed before delivery".to_string(),
+                    });
+                }
+                let reservation = owned.reserve_remote_queued_prompt_steer(
                     &session_id,
                     &target_agent_id,
                     &attachment_id,
                     &prompt_id,
-                )?
-                .ok_or_else(|| DaemonError::LocalTransport {
-                    operation: "steer remote queued prompt",
-                    message: format!("agent `{target_agent_id}` is no longer remote"),
-                })?;
-            if current.target_active_prompt_id != payload.target_home_prompt_id {
-                return Err(DaemonError::LocalTransport {
-                    operation: "steer remote queued prompt",
-                    message: "active prompt changed before remote steering delivery".to_string(),
-                });
-            }
-            let mut remote_execution = current.remote_execution;
-            let mut response = send_remote_queued_prompt_steer(
-                app,
-                &remote_execution,
-                &payload,
-            );
-            if response
-                .as_ref()
-                .is_err_and(super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_refresh_binding)
-            {
-                let refreshed = app.refresh_remote_agent_binding(&target_agent_id)?;
-                remote_execution = refreshed
-                    .remote_execution()
-                    .cloned()
-                    .ok_or_else(|| DaemonError::LocalTransport {
+                    &prepared,
+                )?;
+                let remote_execution = current.remote_execution;
+                let relay_config = app.relay_config_for_remote_execution(&remote_execution);
+                Ok((
+                    remote_execution,
+                    relay_config,
+                    RemoteQueuedPromptSteerReservation::new(current.prompt, reservation),
+                ))
+            })
+            .await?;
+        let reservation_id = reservation_guard.id();
+
+        let mut response = send_remote_queued_prompt_steer(
+            &relay_config,
+            &remote_execution,
+            &payload,
+        )
+        .await;
+        if response.as_ref().is_err_and(
+            super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_refresh_binding,
+        ) {
+            let refresh = self
+                .refresh_remote_agent_binding_for_steer(&target_agent_id, &remote_execution)
+                .await;
+            let refreshed = match refresh {
+                Ok(agent) => agent,
+                Err(error) => return Err(error),
+            };
+            remote_execution = match refreshed.remote_execution().cloned() {
+                Some(remote_execution) => remote_execution,
+                None => {
+                    return Err(DaemonError::LocalTransport {
                         operation: "refresh remote queued prompt steer binding",
                         message: format!(
                             "agent `{target_agent_id}` did not have remote execution after binding refresh"
                         ),
-                    })?;
-                response = send_remote_queued_prompt_steer(app, &remote_execution, &payload);
-            }
-            match response? {
-                RelayPeerResponse::LeasedPromptSteered { steer_id, .. }
-                    if steer_id == payload.steer_id => {}
-                other => {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "steer remote queued prompt",
-                        message: format!("unexpected remote prompt steer response: {other:?}"),
                     });
                 }
-            }
-            owned.finish_remote_queued_prompt_steer(
-                &session_id,
-                &target_agent_id,
-                &attachment_id,
-                &prompt_id,
-                &payload.target_home_prompt_id,
+            };
+            let prepared_retry = self
+                .with_app_side_effect(|app| {
+                    let current = owned
+                        .prepare_remote_queued_prompt_steer(
+                            &session_id,
+                            &target_agent_id,
+                            &attachment_id,
+                            &prompt_id,
+                        )?
+                        .ok_or_else(|| DaemonError::LocalTransport {
+                            operation: "retry remote queued prompt steer",
+                            message: format!("agent `{target_agent_id}` is no longer remote"),
+                        })?;
+                    if current.remote_execution != remote_execution
+                        || current.target_active_prompt_id != payload.target_home_prompt_id
+                        || !current.prompt.remote_steer_reservation_matches(reservation_id)
+                    {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "retry remote queued prompt steer",
+                            message: "queued prompt, active turn, or remote binding changed before retry".to_string(),
+                        });
+                    }
+                    Ok(app.relay_config_for_remote_execution(&remote_execution))
+                })
+                .await;
+            relay_config = match prepared_retry {
+                Ok(relay_config) => relay_config,
+                Err(error) => return Err(error),
+            };
+            response = send_remote_queued_prompt_steer(
+                &relay_config,
+                &remote_execution,
+                &payload,
             )
-        })
-        .await
+            .await;
+        }
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => return Err(error),
+        };
+        let provider_run_id = match response {
+            RelayPeerResponse::LeasedPromptSteered {
+                provider_run_id,
+                steer_id,
+                ..
+            } if steer_id == payload.steer_id => provider_run_id,
+            other => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "steer remote queued prompt",
+                    message: format!("unexpected remote prompt steer response: {other:?}"),
+                });
+            }
+        };
+        let committed = self
+            .with_app_side_effect(|app| {
+                let steer = owned.finish_remote_queued_prompt_steer(
+                    &session_id,
+                    &target_agent_id,
+                    &attachment_id,
+                    &prepared,
+                    &remote_execution,
+                    reservation_id,
+                    &provider_run_id,
+                )?;
+                let has_active = owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(
+                        &owned.session_store.get_session(&session_id)?,
+                        &target_agent_id,
+                    )
+                    .is_some();
+                let next_dispatch = if has_active {
+                    None
+                } else {
+                    crate::app::KernelAgentService::new(app)
+                        .admit_next_queued_remote_prompt(&session_id, &target_agent_id, None)?
+                        .map(|(_, intent)| intent.dispatch)
+                };
+                Ok((steer, next_dispatch))
+            })
+            .await;
+        match committed {
+            Ok((steer, Some(dispatch))) => {
+                self.spawn_remote_prompt_dispatch(dispatch);
+                Ok(steer)
+            }
+            Ok((steer, None)) => Ok(steer),
+            Err(error) => Err(error),
+        }
     }
 
     pub(crate) async fn cancel_queued_prompt(
@@ -606,6 +811,30 @@ impl KernelRuntimeState {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn queued_steer_reservation_releases_when_dispatch_is_dropped() {
+        let prompt = crate::session::PromptQueueItem::new(
+            "prompt-queued",
+            "attachment-1",
+            "agent-1",
+            "queued",
+            crate::session::PromptStatus::Queued,
+        );
+        let reservation = prompt
+            .reserve_remote_steer()
+            .expect("queued prompt should reserve for one remote steer");
+        let guard = RemoteQueuedPromptSteerReservation::new(prompt.clone(), reservation);
+
+        assert!(prompt.remote_steer_reservation_matches(reservation));
+        drop(guard);
+        assert!(!prompt.remote_steer_reserved());
+    }
+}
+
 #[derive(Clone)]
 struct RemoteQueuedPromptSteerPayload {
     steer_id: String,
@@ -616,15 +845,29 @@ struct RemoteQueuedPromptSteerPayload {
     required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
 }
 
-fn send_remote_queued_prompt_steer(
-    app: &mut crate::app::DaemonApp,
+fn remote_steer_binding_identity_matches(
+    current: Option<&crate::agent::RemoteAgentBinding>,
+    expected: Option<&crate::agent::RemoteAgentBinding>,
+) -> bool {
+    let (Some(current), Some(expected)) = (current, expected) else {
+        return false;
+    };
+    current.worker_kernel_id == expected.worker_kernel_id
+        && current.worker_machine_id == expected.worker_machine_id
+        && current.execution_lease_id == expected.execution_lease_id
+        && current.leased_agent_id == expected.leased_agent_id
+        && current.relay_url == expected.relay_url
+        && current.relay_token == expected.relay_token
+        && current.relay_peer_protocol_version == expected.relay_peer_protocol_version
+}
+
+async fn send_remote_queued_prompt_steer(
+    relay_config: &crate::config::DaemonConfig,
     remote_execution: &crate::agent::RemoteAgentBinding,
     payload: &RemoteQueuedPromptSteerPayload,
 ) -> Result<RelayPeerResponse, DaemonError> {
-    let relay_config = app.relay_config_for_remote_execution(remote_execution);
-    app.block_on_relay_future(
-        crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-            &relay_config,
+    crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+            relay_config,
             ClientTarget {
                 daemon_id: Some(remote_execution.worker_kernel_id.clone()),
                 daemon_alias: None,
@@ -639,6 +882,6 @@ fn send_remote_queued_prompt_steer(
                 required_skills: payload.required_skills.clone(),
             },
             crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
-        ),
     )
+    .await
 }

@@ -132,6 +132,9 @@ impl KernelRuntimeOwnedState {
             else {
                 return Ok(None);
             };
+            if prompt.remote_steer_reserved() {
+                return Ok(None);
+            }
             Some(prompt)
         } else {
             None

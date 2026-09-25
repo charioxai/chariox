@@ -742,6 +742,7 @@ impl PromptStateOwner {
             .ensure_agent_state(session, agent_id)
             .queued_prompts
             .front()
+            .filter(|prompt| !prompt.remote_steer_reserved())
             .cloned()
     }
 
@@ -769,6 +770,9 @@ impl PromptStateOwner {
         let Some(front) = state.queued_prompts.front() else {
             return Ok(None);
         };
+        if front.remote_steer_reserved() {
+            return Ok(None);
+        }
         if let Some(expected_prompt_id) = expected_prompt_id {
             if front.id() != expected_prompt_id {
                 return Err(DaemonError::LocalTransport {
@@ -830,6 +834,9 @@ impl PromptStateOwner {
         let Some(front) = state.queued_prompts.front() else {
             return Ok(None);
         };
+        if front.remote_steer_reserved() {
+            return Ok(None);
+        }
         if let Some(expected_prompt_id) = expected_prompt_id {
             if front.id() != expected_prompt_id {
                 return Err(DaemonError::LocalTransport {
@@ -1602,6 +1609,97 @@ mod tests {
             .expect("dispatching prompt should become running");
         assert_eq!(running.id(), "prompt-real-2");
         assert_eq!(running.status(), PromptStatus::Running);
+    }
+
+    #[test]
+    fn reserved_queued_prompt_is_hidden_from_peek_and_all_activation_paths() {
+        let owner = PromptStateOwner::default();
+        let session = RuntimeSession::new(
+            "session-remote-steer-reservation",
+            None,
+            "workspace-remote-steer-reservation",
+            "worktree-remote-steer-reservation",
+            "machine-1",
+            "daemon-1",
+        );
+        owner
+            .submit_prepared_prompt(
+                &session,
+                PromptQueueItem::new(
+                    "prompt-active",
+                    "attachment-1",
+                    "agent-1",
+                    "active",
+                    PromptStatus::Queued,
+                ),
+                false,
+            )
+            .expect("first prompt should start");
+        owner
+            .submit_prepared_prompt(
+                &session,
+                PromptQueueItem::new(
+                    "prompt-queued",
+                    "attachment-1",
+                    "agent-1",
+                    "queued",
+                    PromptStatus::Queued,
+                ),
+                false,
+            )
+            .expect("second prompt should queue");
+
+        let queued = owner
+            .peek_next_queued_prompt(&session, "agent-1")
+            .expect("queued prompt should exist before reservation");
+        let reservation = queued
+            .reserve_remote_steer()
+            .expect("remote steer should reserve the exact queued prompt");
+        owner
+            .complete_active_prompt_only(&session, "agent-1")
+            .expect("active prompt should complete while the remote reply is pending");
+
+        assert!(owner
+            .peek_next_queued_prompt(&session, "agent-1")
+            .is_none());
+        assert!(owner
+            .activate_next_queued_prompt(&session, "agent-1", Some(queued.id()))
+            .expect("the test activation path should defer a reserved prompt")
+            .is_none());
+        assert!(owner
+            .activate_next_queued_prompt_with_prompt_id(
+                &session,
+                "agent-1",
+                Some(queued.id()),
+                "prompt-real-2".to_string(),
+            )
+            .expect("the remote completion activation path should defer a reserved prompt")
+            .is_none());
+        assert!(owner
+            .active_prompt_for_agent_snapshot(&session, "agent-1")
+            .is_none());
+
+        assert!(queued.release_remote_steer(reservation));
+        assert_eq!(
+            owner
+                .peek_next_queued_prompt(&session, "agent-1")
+                .as_ref()
+                .map(PromptQueueItem::id),
+            Some("prompt-queued")
+        );
+        assert_eq!(
+            owner
+                .activate_next_queued_prompt_with_prompt_id(
+                    &session,
+                    "agent-1",
+                    Some(queued.id()),
+                    "prompt-real-2".to_string(),
+                )
+                .expect("released prompt should be activatable")
+                .expect("queued prompt should remain in place")
+                .id(),
+            "prompt-real-2"
+        );
     }
 
     #[test]

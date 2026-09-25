@@ -1,4 +1,6 @@
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -85,6 +87,8 @@ pub struct PromptQueueItem {
     updated_at_ms: u64,
     #[serde(default, skip_serializing, skip_deserializing)]
     private_metadata: Option<Box<PromptPrivateMetadata>>,
+    #[serde(skip)]
+    remote_steer_reservation: RemoteSteerReservation,
     status: PromptStatus,
     #[serde(default)]
     prompt_origin: PromptOrigin,
@@ -97,6 +101,22 @@ pub struct PromptQueueItem {
     workflow_run_id: Option<String>,
     workflow_node_run_id: Option<String>,
 }
+
+/// Clone-shared transient ownership for an in-flight remote steer. It deliberately
+/// does not participate in value equality or serialization: reservation identity
+/// is runtime coordination, not prompt or protocol state.
+#[derive(Debug, Clone, Default)]
+struct RemoteSteerReservation(Arc<AtomicU64>);
+
+impl PartialEq for RemoteSteerReservation {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for RemoteSteerReservation {}
+
+static NEXT_REMOTE_STEER_RESERVATION: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DurablePromptPrivateState {
@@ -219,6 +239,7 @@ impl PendingPromptSubmission {
             created_at_ms: now,
             updated_at_ms: now,
             private_metadata: prompt.private_metadata,
+            remote_steer_reservation: prompt.remote_steer_reservation,
             prompt_origin: prompt.prompt_origin,
             external_provider: prompt.external_provider,
             external_provider_session_id: prompt.external_provider_session_id,
@@ -239,6 +260,7 @@ impl PendingPromptSubmission {
             created_at_ms: self.created_at_ms,
             updated_at_ms: self.updated_at_ms,
             private_metadata: self.private_metadata,
+            remote_steer_reservation: self.remote_steer_reservation,
             status: PromptStatus::Queued,
             prompt_origin: self.prompt_origin,
             external_provider: self.external_provider,
@@ -446,6 +468,30 @@ impl PromptQueueItem {
 
     pub fn updated_at_ms(&self) -> u64 {
         self.updated_at_ms
+    }
+
+    pub(crate) fn reserve_remote_steer(&self) -> Option<u64> {
+        let reservation = NEXT_REMOTE_STEER_RESERVATION.fetch_add(1, Ordering::Relaxed);
+        self.remote_steer_reservation
+            .0
+            .compare_exchange(0, reservation, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| reservation)
+    }
+
+    pub(crate) fn remote_steer_reserved(&self) -> bool {
+        self.remote_steer_reservation.0.load(Ordering::Acquire) != 0
+    }
+
+    pub(crate) fn remote_steer_reservation_matches(&self, reservation: u64) -> bool {
+        self.remote_steer_reservation.0.load(Ordering::Acquire) == reservation
+    }
+
+    pub(crate) fn release_remote_steer(&self, reservation: u64) -> bool {
+        self.remote_steer_reservation
+            .0
+            .compare_exchange(reservation, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
     }
 
     pub fn hidden_system_context(&self) -> &str {
@@ -798,6 +844,37 @@ mod tests {
         assert!(!payload.contains("provider-run-private"));
         assert!(!payload.contains("provider-session-private"));
         assert!(!payload.contains(&recovery_operation_id));
+    }
+
+    #[test]
+    fn remote_steer_reservation_is_clone_shared_exact_and_transient() {
+        let prompt = PromptQueueItem::new(
+            "prompt-queued",
+            "attachment-1",
+            "agent-1",
+            "queued prompt",
+            PromptStatus::Queued,
+        );
+        let clone = prompt.clone();
+        let before = serde_json::to_value(&prompt).expect("prompt should serialize");
+        let reservation = prompt
+            .reserve_remote_steer()
+            .expect("the first remote steer should own the queue item");
+
+        assert!(clone.remote_steer_reserved());
+        assert!(clone.reserve_remote_steer().is_none());
+        assert!(!clone.release_remote_steer(reservation + 1));
+        assert!(prompt.remote_steer_reservation_matches(reservation));
+        assert_eq!(
+            serde_json::to_value(&prompt).expect("reserved prompt should serialize"),
+            before,
+            "the transient steer reservation must not change serialized prompt state"
+        );
+        let restored: PromptQueueItem = serde_json::from_value(before)
+            .expect("serialized prompt should deserialize");
+        assert!(!restored.remote_steer_reserved());
+        assert!(clone.release_remote_steer(reservation));
+        assert!(!prompt.remote_steer_reserved());
     }
 
     #[test]
