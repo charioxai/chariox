@@ -95,19 +95,15 @@ impl KernelRuntimeState {
         }
     }
 
-    /// The owner's most recently used private session hosts the approval, so
-    /// it appears on the terminals the person is using and the exact
-    /// parameters are never shown to collaborators.
+    /// The owner's most recently used session hosts the approval, so it
+    /// appears on the terminals the person is using. In a shared session
+    /// collaborators see it, but only the owner (the host) can answer.
     fn validation_session(&self, owner: &str) -> Option<String> {
         self.owned
             .session_store
             .list_sessions()
             .into_iter()
-            .filter(|session| {
-                session.has_member(owner)
-                    && session.members().len() == 1
-                    && session.invites().is_empty()
-            })
+            .filter(|session| session.has_member(owner))
             .max_by_key(|session| {
                 session
                     .last_prompt_sent_at_ms()
@@ -123,8 +119,8 @@ fn validation_interaction(operation: &ValidationOperation) -> RuntimeInteraction
         format!("validation:{}", operation.operation_id),
         "Approve App action",
         format!(
-            "An App asks to perform a protected action.\n\nInstallation: {}\nAction: {}\nParameters: {}\n\nApprove only if you expect this exact action with these exact parameters.",
-            operation.installation, operation.action, operation.parameters
+            "An App asks to perform a protected action.\n\nInstallation: {}\nAction: {}\nParameters: {}\n\nOnly {} (the App's owner) can answer. Approve only if you expect this exact action with these exact parameters.",
+            operation.installation, operation.action, operation.parameters, operation.owner
         ),
         vec![
             RuntimeInteractionChoice::new("deny", "Deny", "deny", None),
