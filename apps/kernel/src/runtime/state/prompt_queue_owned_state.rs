@@ -599,13 +599,6 @@ impl KernelRuntimeOwnedState {
         ) {
             return Ok(None);
         }
-        if self
-            .prompt_state_owner
-            .active_prompt_for_agent(&session, agent_id)
-            .is_some_and(|prompt| prompt.is_external())
-        {
-            return Ok(None);
-        }
         let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
         if provider_run.state() != crate::provider::ProviderRunState::Running {
             return Err(DaemonError::InvalidProviderRunState {

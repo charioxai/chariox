@@ -88,7 +88,7 @@ async fn check_leased_agent_on_another_kernel_uses_room_browser() {
         assert_eq!(opened.payload["session_id"], room);
         assert_eq!(opened.payload["agent_id"], home_agent_id);
         assert_eq!(opened.payload["browser"]["url"], url);
-        let (worker_prompt, run_state, after_open_lifecycle) = {
+        let (worker_prompt, run_state, (after_open_pty, after_open_lifecycle)) = {
             let mut app = agent_worker.app.lock().await;
             let run = app
                 .providers()
@@ -135,7 +135,7 @@ async fn check_leased_agent_on_another_kernel_uses_room_browser() {
             "the worker provider must remain live after its first Room browser call; lifecycle={after_open_lifecycle}"
         );
         assert!(
-            after_open_lifecycle.contains("pty_state=Ok(Running)"),
+            matches!(after_open_pty, Ok(crate::pty::PtyProcessState::Running)),
             "the worker provider PTY must remain alive after its first Room browser call; lifecycle={after_open_lifecycle}"
         );
         let environment = fixture
@@ -168,7 +168,7 @@ async fn check_leased_agent_on_another_kernel_uses_room_browser() {
                                 )
                                 .map_err(|lookup_error| lookup_error.to_string())
                             });
-                            let diagnostics = provider_lifecycle_diagnostics(
+                            let (_, diagnostics) = provider_lifecycle_diagnostics(
                                 &mut *app,
                                 &worker_provider_run_id,
                                 run.session_id(),
@@ -398,7 +398,7 @@ fn provider_lifecycle_diagnostics(
     provider_run_id: &str,
     session_id: &str,
     agent_id: &str,
-) -> String {
+) -> (Result<crate::pty::PtyProcessState, crate::error::DaemonError>, String) {
     let original_run = app.providers().get_run(provider_run_id).ok();
     let runtime_mcp_token_present = original_run
         .as_ref()
@@ -412,9 +412,10 @@ fn provider_lifecycle_diagnostics(
         .providers()
         .get_latest_run_for_agent(session_id, agent_id)
         .map(|run| format!("{}:{:?}", run.id(), run.state()));
-    format!(
+    let diagnostics = format!(
         "runtime_mcp_token_present={runtime_mcp_token_present}, pty_state={pty_state:?}, terminal_diagnostic={terminal_diagnostic:?}, latest_agent_run={latest_agent_run:?}"
-    )
+    );
+    (pty_state, diagnostics)
 }
 
 async fn check_forwarded_room_browser_rejects_wrong_authenticated_worker() {
