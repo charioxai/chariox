@@ -198,29 +198,36 @@ test("Path-1 image preparation rejects inherited systemd drop-ins", async (conte
   assert.ok(guard, "Path-1 preparation must define an effective-unit drop-in guard")
   assert.match(
     source,
-    /if \[ "\$managed_provider_topology" = path1 \]; then\n[\s\S]*?assert_path1_unit_has_no_dropins "\$managed_bootstrap_service"/,
-    "Path-1 image preparation must run the guard for its selected service",
+    /if \[ "\$managed_provider_topology" = path1 \]; then\n[\s\S]*?assert_path1_unit_has_no_dropins "\$managed_bootstrap_service"\n\s*assert_path1_unit_has_no_dropins chariox-disposable-worker-bootstrap\.service/,
+    "Path-1 image preparation must guard both home and disposable-worker services",
   )
 
   const scratch = await mkdtemp(join(tmpdir(), "chariox-path1-dropin-test-"))
   context.after(() => rm(scratch, { recursive: true, force: true }))
   const systemctl = join(scratch, "systemctl")
-  await writeFile(systemctl, '#!/bin/sh\nprintf "%s" "${SYSTEMD_DROP_IN_PATHS:-}"\n')
+  await writeFile(systemctl, '#!/bin/sh\ncase "$*" in\n  *chariox-disposable-worker-bootstrap.service) printf "%s" "${SYSTEMD_WORKER_DROP_IN_PATHS:-}" ;;\n  *) printf "%s" "${SYSTEMD_HOME_DROP_IN_PATHS:-}" ;;\nesac\n')
   await chmod(systemctl, 0o755)
-  const command = `fail() { echo "$*" >&2; exit 1; }\n${guard}\nassert_path1_unit_has_no_dropins chariox-path1-managed-bootstrap.service\n`
+  const command = `fail() { echo "$*" >&2; exit 1; }\n${guard}\nassert_path1_unit_has_no_dropins chariox-path1-managed-bootstrap.service\nassert_path1_unit_has_no_dropins chariox-disposable-worker-bootstrap.service\n`
   const env = { ...process.env, PATH: `${scratch}:${process.env.PATH}` }
   const clean = spawnSync("/bin/sh", ["-c", command], {
     encoding: "utf8",
-    env: { ...env, SYSTEMD_DROP_IN_PATHS: "" },
+    env: { ...env, SYSTEMD_HOME_DROP_IN_PATHS: "", SYSTEMD_WORKER_DROP_IN_PATHS: "" },
   })
   assert.equal(clean.status, 0, clean.stderr)
 
-  const inherited = spawnSync("/bin/sh", ["-c", command], {
+  const inheritedHome = spawnSync("/bin/sh", ["-c", command], {
     encoding: "utf8",
-    env: { ...env, SYSTEMD_DROP_IN_PATHS: "/etc/systemd/system/service.d/50-hardening.conf" },
+    env: { ...env, SYSTEMD_HOME_DROP_IN_PATHS: "/etc/systemd/system/service.d/50-hardening.conf" },
   })
-  assert.notEqual(inherited.status, 0)
-  assert.match(inherited.stderr, /systemd drop-ins/)
+  assert.notEqual(inheritedHome.status, 0)
+  assert.match(inheritedHome.stderr, /systemd drop-ins/)
+
+  const inheritedWorker = spawnSync("/bin/sh", ["-c", command], {
+    encoding: "utf8",
+    env: { ...env, SYSTEMD_WORKER_DROP_IN_PATHS: "/etc/systemd/system/service.d/50-hardening.conf" },
+  })
+  assert.notEqual(inheritedWorker.status, 0)
+  assert.match(inheritedWorker.stderr, /systemd drop-ins/)
 })
 
 test("Path-1 verification requires an independently supplied builder trust root", async (context) => {
