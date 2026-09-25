@@ -86,6 +86,17 @@ impl AppViews {
         }
     }
 
+    /// An uninstalled App's open views stay on screen, but every call from
+    /// them is refused (`APP_VIEW_UNBOUND`), even if the installation returns.
+    pub(crate) fn forget_installation(&self, owner: &str, installation: &str) {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        for views in sessions.values_mut() {
+            views.tabs.retain(|_, (binding, _)| {
+                binding.owner != owner || binding.installation != installation
+            });
+        }
+    }
+
     pub(crate) fn forget_session(&self, session: &str) {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(views) = sessions.get_mut(session) {
@@ -134,5 +145,11 @@ mod tests {
         assert!(views.keep_pumping("s"));
         views.set_open_tabs("s", 0);
         assert!(!views.keep_pumping("s"));
+        // Uninstall unbinds only that owner's installation.
+        views.register("s", "t5", binding("a"));
+        views.register("s", "t6", binding("b"));
+        views.forget_installation("user", "a");
+        assert_eq!(views.binding("s", "t5"), None);
+        assert_eq!(views.binding("s", "t6"), Some(binding("b")));
     }
 }

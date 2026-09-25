@@ -429,4 +429,14 @@ async fn uninstall_is_owner_scoped_generation_checked_and_deactivates() {
     };
     assert!(installation.active_release.is_none());
     assert_ne!(installation.generation, generation);
+    // The successful uninstall stopped the App first.
+    let worker = LocalDaemonRequest::GetAppWorker(crate::local::AppWorkerRequest {
+        installation_id: "installed".into(),
+    });
+    let LocalDaemonResponse::AppWorker { worker } =
+        dispatch(&router, &cache, Some("alice"), worker, "u-worker-after").await
+    else {
+        panic!("worker status")
+    };
+    assert!(!worker.enabled);
 }

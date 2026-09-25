@@ -187,6 +187,7 @@ impl KernelRuntimeState {
             .await?;
         let store = self.owned.durable_state_store.clone();
         let permit = self.app_control().try_admit()?;
+        let (view_owner, view_installation) = (owner.clone(), installation.clone());
         let outcome = tokio::task::spawn_blocking(move || {
             let _permit = permit;
             store.mutate_app_installation(
@@ -206,6 +207,9 @@ impl KernelRuntimeState {
             ) => AppRequestErrorCode::Conflict,
             error => crate::runtime::app_control::registry_error(error),
         })?;
+        self.app_control()
+            .views()
+            .forget_installation(&view_owner, &view_installation);
         match outcome {
             crate::durable_state::apps::AppRegistryOutcome::Installation(installation) => {
                 Ok(LocalDaemonResponse::AppInstallation {
