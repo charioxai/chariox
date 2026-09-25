@@ -56,8 +56,11 @@ pub(crate) fn validate(
     if !matches!(level, "debug" | "info" | "warn" | "error") {
         return Err("INVALID_ARGUMENT");
     }
-    if message.len() > MAX_MESSAGE_BYTES || !fields.is_object() {
+    if !fields.is_object() {
         return Err("INVALID_ARGUMENT");
+    }
+    if message.len() > MAX_MESSAGE_BYTES {
+        return Err("LIMIT_EXCEEDED");
     }
     let fields = serde_json::to_string(fields).map_err(|_| "INVALID_ARGUMENT")?;
     if fields.len() > MAX_FIELDS_BYTES {
@@ -187,6 +190,11 @@ mod tests {
                 "x",
                 &serde_json::json!({"big": "x".repeat(9000)})
             ),
+            Err("LIMIT_EXCEEDED")
+        );
+        // UTF-8 bytes, as the SDK counts: 1100 emoji are 4400 bytes.
+        assert_eq!(
+            store.append_app_log("alice", "todo", "info", &"\u{1F600}".repeat(1100), &fields),
             Err("LIMIT_EXCEEDED")
         );
         for index in 0..1005 {

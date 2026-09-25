@@ -180,9 +180,10 @@ function appFailure(response: Record<string, unknown>, action?: string): ShellCo
 
 type AppLogEntry = { sequence: string; at_ms: number; level: string; message: string; fields: Record<string, unknown> }
 
-// App-authored text: control characters are shown escaped, never interpreted.
+// App-authored text: C0/C1 controls and bidi overrides are shown escaped,
+// never interpreted (U+009B is CSI in 8-bit terminals such as xterm.js).
 function formatLogEntry(entry: AppLogEntry): string {
-  const safe = (value: string) => value.replace(/[\u0000-\u001f\u007f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`)
+  const safe = (value: string) => value.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`)
   const fields = Object.keys(entry.fields ?? {}).length ? ` ${safe(JSON.stringify(entry.fields))}` : ""
   return `${new Date(entry.at_ms).toISOString()} ${entry.level.toUpperCase().padEnd(5)} ${safe(entry.message)}${fields}`
 }
