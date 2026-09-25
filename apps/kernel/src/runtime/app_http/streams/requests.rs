@@ -98,24 +98,28 @@ impl HttpStreams {
         deadline: Instant,
         cancellation: BrokerCancellation,
         permit: OwnedSemaphorePermit,
-        consume_approval: &dyn Fn(&str, &str) -> Result<()>,
+        consume_approval: &dyn Fn(&str, &str) -> Result<String>,
     ) -> Result<(HttpJob, oneshot::Receiver<Result<HttpReply>>)> {
         budget.check().map_err(|_| HttpError::Cancelled)?;
         let is_headers = matches!(&command, Command::Headers(_));
         let operation = match command {
             Command::Open(open) => {
                 let target = match open.operation.as_deref() {
-                    // A protected effect: the exact declared route, and the
-                    // approval is consumed (single use) before any I/O.
+                    // A protected effect: the exact declared route, the approval
+                    // consumed (single use) before any I/O, and the approved
+                    // parameters sent as the whole body, so they cannot differ.
                     Some(operation) => {
+                        if open.has_body {
+                            return Err(HttpError::ProtectedEffect);
+                        }
                         let (target, action) = policy.protected_target(
                             &open.url,
                             &open.method,
                             &open.headers,
                             open.connection.as_deref(),
                         )?;
-                        consume_approval(&action, operation)?;
-                        target
+                        let parameters = consume_approval(&action, operation)?;
+                        target.with_approved_body(parameters)
                     }
                     None => policy.anonymous_target(
                         &open.url,

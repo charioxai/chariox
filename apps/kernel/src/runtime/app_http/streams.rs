@@ -149,7 +149,11 @@ impl HttpStreams {
 
     /// Bounds allocation before writer admission. A dropped/expired pending
     /// start releases its buffers and reservation without ever opening a socket.
-    pub(super) fn prepare(&self, target: ApprovedTarget, has_body: bool) -> Result<PendingStart> {
+    pub(super) fn prepare(
+        &self,
+        mut target: ApprovedTarget,
+        has_body: bool,
+    ) -> Result<PendingStart> {
         if self
             .0
             .state
@@ -169,7 +173,10 @@ impl HttpStreams {
             .limits
             .acquire(&scope.owner, scope.catalog.installation_id())?
             .retain_worker(scope._data.clone())?;
-        let (upload, receive, exchange) = transport::channels(has_body);
+        let (upload, receive, exchange) = match target.take_body() {
+            Some(body) => transport::fixed_channels(body),
+            None => transport::channels(has_body),
+        };
         let (stop, _) = watch::channel(false);
         // The sender is installed only when the writer starts the transport.
         let (_, completed) = watch::channel(None);

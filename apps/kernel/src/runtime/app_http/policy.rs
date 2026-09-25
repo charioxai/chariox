@@ -36,6 +36,8 @@ pub(super) struct ApprovedTarget {
     method: Method,
     headers: HeaderMap,
     catalog: Option<Arc<AppCatalog>>,
+    /// Only a protected effect's approved parameters; the App adds no body.
+    body: Option<bytes::Bytes>,
 }
 impl AppHttpPolicy {
     pub(super) fn compile(package: &VerifiedPackage<'_>, catalog: Arc<AppCatalog>) -> Result<Self> {
@@ -146,17 +148,7 @@ impl Rules {
         method: &str,
         headers: &[(String, String)],
     ) -> Result<(ApprovedTarget, String)> {
-        const OVERRIDES: [&str; 3] = [
-            "x-http-method-override",
-            "x-method-override",
-            "x-http-method",
-        ];
-        if headers
-            .iter()
-            .any(|(name, _)| OVERRIDES.contains(&name.to_ascii_lowercase().as_str()))
-        {
-            return Err(HttpError::ProtectedEffect);
-        }
+        // Method-override headers are refused for every request.
         let target = self.target_with(raw, method, headers, true)?;
         let (declared, _) = declared_method(method)?;
         let path = target.url.path().to_owned();
@@ -211,6 +203,7 @@ impl Rules {
             method,
             headers: request_headers(headers)?,
             catalog: None,
+            body: None,
         })
     }
 }
@@ -225,6 +218,18 @@ impl ApprovedTarget {
         } else {
             Err(HttpError::Provenance)
         }
+    }
+    /// The effect sends exactly the approved canonical parameters as JSON.
+    pub(super) fn with_approved_body(mut self, parameters: String) -> Self {
+        self.headers.insert(
+            hyper::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        self.body = Some(parameters.into());
+        self
+    }
+    pub(super) fn take_body(&mut self) -> Option<bytes::Bytes> {
+        self.body.take()
     }
     pub(super) fn url(&self) -> &Url {
         &self.url

@@ -58,7 +58,12 @@ impl Exchange {
     }
 }
 pub(super) fn channels(has_body: bool) -> (UploadPort, ReceivePort, Exchange) {
-    let (upload, body) = body::channel(has_body);
+    exchange(body::channel(has_body))
+}
+pub(super) fn fixed_channels(bytes: Bytes) -> (UploadPort, ReceivePort, Exchange) {
+    exchange(body::fixed(bytes))
+}
+fn exchange((upload, body): (UploadPort, UploadBody)) -> (UploadPort, ReceivePort, Exchange) {
     let (send_head, headers) = oneshot::channel();
     let (send_chunks, chunks) = mpsc::channel(2);
     (

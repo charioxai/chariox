@@ -13,6 +13,9 @@ the request must match one declared effect route exactly (origin, method, path;
 no query, percent-encoding or method-override header), and the kernel consumes
 that action's approved, unexpired validation for this installation and
 generation before any byte is sent; otherwise it fails `VALIDATION_REQUIRED`.
+The App supplies no body: the kernel sends the approved canonical parameters as
+the whole `application/json` body, so the effect cannot differ from what the
+person approved.
 Connection authority remains unsupported.
 
 `HttpTransport` connects directly to a checked numeric address, verifies the

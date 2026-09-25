@@ -137,8 +137,10 @@ impl AppHttpBroker {
                         operation_id: operation.to_owned(),
                         now_ms: crate::session::unix_epoch_ms(),
                     })
-                    .map(|_| ())
-                    .map_err(|_| HttpError::ValidationRequired)
+                    .ok()
+                    .flatten()
+                    .map(|operation| operation.parameters)
+                    .ok_or(HttpError::ValidationRequired)
             };
             let (job, receiver) = broker.streams.job(
                 &broker.policy,

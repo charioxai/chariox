@@ -38,6 +38,16 @@ pub(super) fn channel(has_body: bool) -> (UploadPort, UploadBody) {
         },
     )
 }
+/// A kernel-supplied body (an approved effect's exact parameters), queued whole
+/// before the transport starts; the App's port is already ended.
+pub(super) fn fixed(bytes: Bytes) -> (UploadPort, UploadBody) {
+    let (mut port, body) = channel(true);
+    let queued = port.sender.try_send(Upload::Data(bytes)).is_ok()
+        && port.sender.try_send(Upload::End).is_ok();
+    debug_assert!(queued, "a new channel holds two messages");
+    port.ended = true;
+    (port, body)
+}
 impl UploadPort {
     /// The caller must retain exclusive mutable access through this await;
     /// only two bounded chunks can be queued ahead of the actual socket.

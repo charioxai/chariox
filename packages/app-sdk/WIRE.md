@@ -152,8 +152,10 @@ an existing `operationId` returns it only for the identical binding.
 `validation.status {operationId}` reads it for this installation only.
 `connectionId` is not supported yet.
 An approved operation is spent by `http.open {..., operationId}` on one of the
-action's declared effect routes (exact origin, method and path); any other
-request to a protected origin fails `VALIDATION_REQUIRED` or is denied.
+action's declared effect routes (exact origin, method and path) with
+`hasBody: false`. The kernel sends the approved canonical parameters as the
+whole JSON body. Any other request to a protected origin fails
+`VALIDATION_REQUIRED` or is denied.
 
 `validation.request` and `outputs.request` return durable pending references when
 waiting for human input or model output. They must not retain a worker request
