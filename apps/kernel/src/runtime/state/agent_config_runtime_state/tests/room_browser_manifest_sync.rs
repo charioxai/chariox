@@ -914,11 +914,16 @@ async fn rejected_promoted_workflow_head_is_not_reported_as_delivered() {
     project_ordinary_completion(&fixture, ordinary_prompt_id).await;
 
     let (request_id, request) = next_peer_request(&mut fixture).await;
-    let (workflow_run_id, workflow_node_run_id) = match request {
+    let (home_prompt_id, workflow_run_id, workflow_node_run_id) = match request {
         crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt {
+            home_prompt_id,
             workflow_context: Some(context),
             ..
-        } => (context.workflow_run_id, context.workflow_node_run_id),
+        } => (
+            home_prompt_id,
+            context.workflow_run_id,
+            context.workflow_node_run_id,
+        ),
         other => panic!("expected workflow prompt submission, got {other:?}"),
     };
     crate::transport::relay_client::resolve_pending_peer_error_for_test(
@@ -1019,6 +1024,18 @@ async fn rejected_promoted_workflow_head_is_not_reported_as_delivered() {
         .operational_history_store
         .load_session_events(&fixture.session_id, Some(&fixture.agent_id))
         .expect("workflow history should remain readable");
+    let dispatch_provider_run_id = format!("remote-dispatch:{home_prompt_id}");
+    assert!(
+        durable_history.iter().any(|event| {
+            event.kind == crate::history::HistoryEventKind::ProviderOutput
+                && event.prompt_id.as_deref() == Some(home_prompt_id.as_str())
+                && event.provider_run_id.as_deref() == Some(dispatch_provider_run_id.as_str())
+                && event.workflow_id.as_deref() == Some(workflow_id.as_str())
+                && event.workflow_run_id.as_deref() == Some(workflow_run_id.as_str())
+                && event.workflow_node_id.as_deref() == Some(workflow_node_run_id.as_str())
+        }),
+        "dispatch-failure history must retain the exact workflow, node, and prompt identity"
+    );
     assert!(!durable_history.iter().any(|event| {
         event.kind == crate::history::HistoryEventKind::WorkflowNodeCompleted
             && event.workflow_id.as_deref() == Some(workflow_id.as_str())
