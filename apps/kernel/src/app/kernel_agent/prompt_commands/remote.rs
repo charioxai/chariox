@@ -675,7 +675,6 @@ impl<'a> KernelAgentService<'a> {
                 active,
                 crate::app::KernelRemotePromptDispatchIntent {
                     dispatch,
-                    echo_to_all_attachments: true,
                 },
             )));
         }

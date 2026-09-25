@@ -337,7 +337,6 @@ pub(crate) struct KernelRemotePromptDispatch {
 /// Queued prompt delivery behavior that must occur only after worker ACK.
 pub(crate) struct KernelRemotePromptDispatchIntent {
     pub(crate) dispatch: KernelRemotePromptDispatch,
-    pub(crate) echo_to_all_attachments: bool,
 }
 
 pub(crate) struct KernelPromptCancellation {

@@ -847,16 +847,6 @@ impl KernelRuntimeState {
         dispatch: crate::app::KernelRemotePromptDispatch,
         result: Result<String, DaemonError>,
     ) -> Result<(), DaemonError> {
-        self.finish_remote_prompt_dispatch_with_queued_echo(dispatch, result, false)
-            .await
-    }
-
-    async fn finish_remote_prompt_dispatch_with_queued_echo(
-        &self,
-        dispatch: crate::app::KernelRemotePromptDispatch,
-        result: Result<String, DaemonError>,
-        echo_to_all_attachments: bool,
-    ) -> Result<(), DaemonError> {
         let session_id = dispatch.session_id.clone();
         let agent_id = dispatch.agent_id.clone();
         use super::remote_prompt_owned_state::RemotePromptDispatchSettlement;
@@ -930,6 +920,7 @@ impl KernelRuntimeState {
             }
         };
         self.owned.provider_process_projection.invalidate();
+        let echo_to_all_attachments = settled_prompt.durable_initially_queued() == Some(true);
         let should_start_projection_drain = {
             let owned = &self.owned;
             match result {
@@ -1037,23 +1028,7 @@ impl KernelRuntimeState {
 
     pub(crate) fn spawn_remote_prompt_dispatch(
         &self,
-        dispatch: crate::app::KernelRemotePromptDispatch,
-    ) {
-        self.spawn_remote_prompt_dispatch_inner(dispatch, false);
-    }
-
-    pub(crate) fn spawn_remote_prompt_dispatch_with_queued_echo(
-        &self,
-        dispatch: crate::app::KernelRemotePromptDispatch,
-        echo_to_all_attachments: bool,
-    ) {
-        self.spawn_remote_prompt_dispatch_inner(dispatch, echo_to_all_attachments);
-    }
-
-    fn spawn_remote_prompt_dispatch_inner(
-        &self,
         mut dispatch: crate::app::KernelRemotePromptDispatch,
-        echo_to_all_attachments: bool,
     ) {
         // A stale projection drain can discover a dead lease while the initial
         // dispatch is already refreshing that same binding. Both paths submit
@@ -1167,11 +1142,7 @@ impl KernelRuntimeState {
                 ),
             }
             let _ = state
-                .finish_remote_prompt_dispatch_with_queued_echo(
-                    dispatch,
-                    result,
-                    echo_to_all_attachments,
-                )
+                .finish_remote_prompt_dispatch(dispatch, result)
                 .await;
         });
     }
@@ -1207,6 +1178,51 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use tokio::sync::Mutex;
+
+    #[tokio::test]
+    async fn recovered_queued_remote_prompt_echo_uses_durable_queue_origin() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new("workspace-1", "worktree-1")).unwrap();
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(session.id(), "queued-recovery-source", crate::attachment::ClientCapabilityLevel::FullTerminal)).unwrap();
+        app.agents.bind_remote_execution(agent.id(), crate::agent::RemoteAgentBinding {
+            worker_kernel_id: "worker-1".into(), worker_machine_id: "machine-1".into(),
+            execution_lease_id: "lease-1".into(), leased_agent_id: "leased-agent-1".into(),
+            active_worker_provider_run_id: None, relay_url: None, relay_token: None,
+            relay_peer_protocol_version: Some(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION),
+        }).unwrap();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        runtime.owned.submit_remote_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+            session_id: session.id().to_string(),
+            prompt: crate::session::PromptQueueItem::new("pending", attachment.id(), agent.id(), "queued recovery prompt", crate::session::PromptStatus::Queued),
+            force_queue: true, refresh_projection: true,
+        }).unwrap().unwrap();
+        let promoted = runtime.owned.advance_next_queued_remote_prompt_dispatch(session.id(), agent.id()).unwrap().unwrap();
+        let original_dispatch = promoted.remote_dispatch.unwrap();
+        let session = runtime.owned.session_store.get_session(session.id()).unwrap();
+        let active = runtime.owned.prompt_state_owner.active_prompt_for_agent(&session, agent.id()).unwrap();
+        assert_eq!(active.durable_initially_queued(), Some(true));
+        assert!(active.durable_operation_id().is_none(), "ordinary queue origins must not require a command operation ID");
+        let private = crate::session::DurablePromptPrivateState::from_prompt(session.id(), &active).unwrap();
+        let private: crate::session::DurablePromptPrivateState = serde_json::from_value(serde_json::to_value(private).unwrap()).unwrap();
+        let mut restored: crate::session::PromptQueueItem = serde_json::from_value(serde_json::to_value(&active).unwrap()).unwrap();
+        assert_eq!(restored.durable_initially_queued(), None);
+        restored.restore_durable_private_state(&private);
+        assert!(runtime.owned.prompt_state_owner.replace_active_prompt_if_matches(&session, agent.id(), &active, restored));
+        // Discard the original dispatch intent, as happens on restart. Recovery
+        // must reconstruct its echo policy from durable prompt ownership alone.
+        drop(original_dispatch);
+        let recovered = runtime.remote_prompt_recovery_dispatch(&runtime.owned.agent_store.get_agent(agent.id()).unwrap()).unwrap().unwrap();
+        assert_eq!(recovered.prompt_id, active.id());
+        assert!(runtime.owned.terminal_stream.drain_output_records(session.id(), attachment.id()).iter().all(|record| record.kind != crate::terminal::TerminalOutputKind::PromptEcho));
+        runtime.finish_remote_prompt_dispatch(recovered, Ok("worker-run-recovered".into())).await.unwrap();
+        let echoes = runtime.owned.terminal_stream.drain_output_records(session.id(), attachment.id()).into_iter().filter(|record| record.kind == crate::terminal::TerminalOutputKind::PromptEcho).collect::<Vec<_>>();
+        assert_eq!(echoes.len(), 1, "recovered queued prompt must echo once to its submitting attachment");
+        assert_eq!(echoes[0].prompt_id.as_deref(), Some(active.id()));
+        assert_eq!(echoes[0].provider_run_id, crate::provider::projected_leased_provider_run_id("leased-agent-1", "worker-run-recovered"));
+    }
 
     fn completed_worker_projection(
         session_id: &str,

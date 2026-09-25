@@ -488,12 +488,9 @@ impl PromptQueueItem {
     }
 
     pub(crate) fn set_durable_initially_queued(&mut self, queued: bool) {
-        if let Some(metadata) = self.private_metadata.as_mut() {
-            if metadata.operation_id.is_none() {
-                return;
-            }
-            metadata.initially_queued = Some(queued);
-        }
+        self.private_metadata
+            .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()))
+            .initially_queued = Some(queued);
     }
 
     pub(crate) fn durable_delivery_phase(&self) -> Option<DurablePromptDeliveryPhase> {
