@@ -822,19 +822,27 @@ impl KernelRuntimeState {
     pub(crate) async fn cancel_relay_leased_prompt(
         &self,
         leased_agent_id: &str,
+        home_prompt_id: &str,
+        worker_provider_run_id: &str,
     ) -> Result<crate::session::PromptCancellation, DaemonError> {
-        let authorized_id = leased_agent_id.to_string();
-        self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).consume_leased_agent_authorization(&authorized_id)
-        })
-        .await?;
+        let leased_agent_id = leased_agent_id.to_string();
+        let app_leased_agent_id = leased_agent_id.clone();
+        let home_prompt_id = home_prompt_id.to_string();
+        let worker_provider_run_id = worker_provider_run_id.to_string();
+        let cancellation = self
+            .with_app_side_effect(move |app| {
+                let mut runtime = RemoteLeaseRuntime::new(app);
+                runtime.consume_leased_agent_authorization(&app_leased_agent_id)?;
+                runtime.cancel_leased_prompt(
+                    &app_leased_agent_id,
+                    &home_prompt_id,
+                    &worker_provider_run_id,
+                )
+            })
+            .await?;
         self.cancel_remote_home_extension_invocations_for_leased_agent(leased_agent_id)
             .await;
-        let leased_agent_id = leased_agent_id.to_string();
-        self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).cancel_leased_prompt(&leased_agent_id)
-        })
-        .await
+        Ok(cancellation)
     }
 
     pub(crate) async fn relay_leased_agent_provider_run_id(

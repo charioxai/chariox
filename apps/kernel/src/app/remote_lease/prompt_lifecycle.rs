@@ -613,7 +613,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
     pub(crate) fn cancel_leased_prompt(
         &mut self,
         leased_agent_id: &str,
+        expected_home_prompt_id: &str,
+        expected_worker_provider_run_id: &str,
     ) -> Result<crate::session::PromptCancellation, DaemonError> {
+        if expected_home_prompt_id.is_empty() || expected_worker_provider_run_id.is_empty() {
+            return Err(DaemonError::LocalTransport {
+                operation: "cancel leased prompt",
+                message: "cancellation requires an exact home prompt and worker provider run"
+                    .to_string(),
+            });
+        }
         let leased_agent = self
             .app
             .leased_agents
@@ -622,14 +631,59 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::LeasedAgentNotFound {
                 leased_agent_id: leased_agent_id.to_string(),
             })?;
+        if leased_agent.active_home_prompt_id.as_deref() != Some(expected_home_prompt_id) {
+            return Err(DaemonError::LocalTransport {
+                operation: "cancel leased prompt",
+                message: "active home prompt did not match the cancellation identity".to_string(),
+            });
+        }
+        let active_prompt = self
+            .app
+            .prompt_owner_active_prompt_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )?
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: leased_agent.backing_session_id.clone(),
+            })?;
+        if leased_agent.active_home_prompt_started_at_ms != Some(active_prompt.created_at_ms())
+            || !matches!(
+                active_prompt.status(),
+                crate::session::PromptStatus::Dispatching
+                    | crate::session::PromptStatus::Running
+                    | crate::session::PromptStatus::Cancelling
+            )
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "cancel leased prompt",
+                message: "active worker prompt did not match the cancellation identity".to_string(),
+            });
+        }
+        let provider_run_id = self
+            .app
+            .providers
+            .get_run_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .map(|run| run.id().to_string());
+        if provider_run_id.as_deref() != Some(expected_worker_provider_run_id) {
+            return Err(DaemonError::LocalTransport {
+                operation: "cancel leased prompt",
+                message: "active worker provider run did not match the cancellation identity"
+                    .to_string(),
+            });
+        }
         let cancellation = self.app.cancel_active_prompt_internal(
             &leased_agent.backing_session_id,
             &leased_agent.backing_agent_id,
             None,
         )?;
-        self.app
-            .leased_workflow_turns
-            .retain(|_, binding| binding.leased_agent_id != leased_agent_id);
+        self.app.leased_workflow_turns.retain(|_, binding| {
+            binding.leased_agent_id != leased_agent_id
+                || binding.home_prompt_id != expected_home_prompt_id
+                || binding.provider_run_id != expected_worker_provider_run_id
+        });
         Ok(cancellation)
     }
 
@@ -695,6 +749,121 @@ fn join_hidden_context(first: &str, second: &str) -> String {
 #[cfg(test)]
 mod receipt_tests {
     use super::*;
+
+    fn submit_cancellable_prompt(
+        app: &mut crate::app::DaemonApp,
+        suffix: &str,
+    ) -> (String, String, String, String, String) {
+        let lease = RemoteLeaseRuntime::new(app)
+            .create_execution_lease(
+                "home-kernel-cancel-test",
+                &format!("home-session-{suffix}"),
+                &format!("home-agent-{suffix}"),
+                false,
+                &format!("user-{suffix}"),
+            )
+            .expect("execution lease should be created");
+        let leased_agent = RemoteLeaseRuntime::new(app)
+            .create_leased_agent(
+                &lease.id,
+                "managed-dev-stub",
+                "default",
+                Some("sonnet".to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("leased agent should be created");
+        let home_prompt_id = format!("home-prompt-{suffix}");
+        let context = RemoteGitTurnContext {
+            home_session_id: lease.home_session_id.clone(),
+            home_agent_id: lease.home_agent_id.clone(),
+            home_prompt_id: home_prompt_id.clone(),
+            home_turn_id: format!("home-turn-{suffix}"),
+            source_attachment_id: None,
+            workspace_live_sync_mode: None,
+            prompt_origin: None,
+            external_provider: None,
+            external_provider_session_id: None,
+            external_provider_turn_id: None,
+            prompt_summary: "run-scoped cancellation test".to_string(),
+        };
+        let (provider_run_id, outcome) = RemoteLeaseRuntime::new(app)
+            .submit_leased_prompt_with_workflow_context(
+                &leased_agent.id,
+                "run-scoped cancellation prompt\n",
+                Vec::new(),
+                None,
+                Some(context),
+                Vec::new(),
+                None,
+                crate::extension::RemoteExtensionManifest::default(),
+            )
+            .expect("worker should accept the prompt");
+        assert!(matches!(
+            outcome,
+            PromptSubmissionOutcome::Started { .. }
+        ));
+        (
+            leased_agent.id,
+            leased_agent.backing_session_id,
+            leased_agent.backing_agent_id,
+            home_prompt_id,
+            provider_run_id,
+        )
+    }
+
+    #[test]
+    fn leased_prompt_cancellation_rejects_mismatched_identity_without_touching_active_prompt() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app = crate::app::DaemonApp::bootstrap(config).expect("worker should boot");
+        let (leased_agent_id, session_id, agent_id, home_prompt_id, provider_run_id) =
+            submit_cancellable_prompt(&mut app, "cancel-identity-test");
+        let active_before = app
+            .prompt_owner_active_prompt_for_agent(&session_id, &agent_id)
+            .expect("active prompt lookup should succeed")
+            .expect("leased prompt should be active");
+
+        for (requested_home_prompt_id, requested_run_id) in [
+            ("successor-home-prompt", provider_run_id.as_str()),
+            (home_prompt_id.as_str(), "successor-provider-run"),
+        ] {
+            assert!(
+                RemoteLeaseRuntime::new(&mut app)
+                    .cancel_leased_prompt(
+                        &leased_agent_id,
+                        requested_home_prompt_id,
+                        requested_run_id,
+                    )
+                    .is_err(),
+                "cancellation must reject a different home prompt or provider run"
+            );
+            let active_after = app
+                .prompt_owner_active_prompt_for_agent(&session_id, &agent_id)
+                .expect("active prompt lookup should succeed")
+                .expect("mismatched cancellation must leave the active prompt in place");
+            assert_eq!(active_after.id(), active_before.id());
+            assert_eq!(active_after.status(), active_before.status());
+            assert_eq!(
+                app.leased_agents
+                    .get(&leased_agent_id)
+                    .and_then(|leased_agent| leased_agent.active_home_prompt_id.as_deref()),
+                Some(home_prompt_id.as_str()),
+                "mismatched cancellation must retain the actual home-prompt binding"
+            );
+            assert_eq!(
+                app.providers
+                    .get_run_for_agent(&session_id, &agent_id)
+                    .map(|run| run.id()),
+                Some(provider_run_id.as_str()),
+                "mismatched cancellation must not change the active provider run"
+            );
+        }
+    }
 
     #[test]
     fn leased_prompt_receipt_requires_exact_active_or_completed_worker_evidence() {

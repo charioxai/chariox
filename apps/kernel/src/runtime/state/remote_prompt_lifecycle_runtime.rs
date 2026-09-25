@@ -67,6 +67,13 @@ impl KernelRuntimeState {
         else {
             return Ok(None);
         };
+        if !remote_execution.relay_peer_protocol_compatible() {
+            return Err(DaemonError::LocalTransport {
+                operation: "cancel remote prompt",
+                message: "worker relay peer protocol does not support run-scoped cancellation"
+                    .to_string(),
+            });
+        }
         let prompt_id = active_prompt.id().to_string();
         let prompt_already_cancelling =
             active_prompt.status() == crate::session::PromptStatus::Cancelling;
@@ -110,6 +117,8 @@ impl KernelRuntimeState {
         };
         let request = RelayPeerRequest::CancelLeasedPrompt {
             leased_agent_id: remote_execution.leased_agent_id.clone(),
+            home_prompt_id: prompt_id.clone(),
+            worker_provider_run_id: delivered_run_id.clone(),
         };
         let cancellation_response =
             if let Some(relay_state) = self.connected_relay_state_for_config(&relay_config).await {
@@ -130,13 +139,10 @@ impl KernelRuntimeState {
             };
         match cancellation_response {
             Ok(RelayPeerResponse::LeasedPromptCancelled { cancellation }) => {
-                if cancellation.prompt.id() != prompt_id.as_str() {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "cancel remote prompt",
-                        message: "worker cancellation response named a different home prompt"
-                            .to_string(),
-                    });
-                }
+                // The response contains the worker's local prompt projection, whose ID is
+                // intentionally distinct from the home prompt ID. The request carried both
+                // durable identities and the worker compared them atomically before cancelling.
+                let _worker_cancellation = cancellation;
                 self.verify_remote_prompt_cancellation_run(
                     session_id,
                     target_agent_id,

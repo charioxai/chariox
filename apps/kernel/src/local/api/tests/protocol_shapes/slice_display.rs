@@ -173,7 +173,7 @@ fn room_selkies_worker_admission_contract_is_versioned() {
         RelayPeerRequest, RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
     };
 
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 59);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 60);
     let endpoint = crate::slice::SliceDisplayEndpoint {
         slice_id: "slice-1".to_string(),
         kind: crate::slice::SliceDisplayEndpointKind::Selkies,

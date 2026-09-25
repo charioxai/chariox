@@ -241,7 +241,9 @@ async fn temporary_cancel_response_wait_keeps_home_app_lock_available() {
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();
     let attachment_id = attachment.id().to_string();
-    let response_prompt = prompt.clone();
+    let response_prompt = prompt
+        .clone()
+        .with_id("worker-local-cancel-lock-prompt");
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
     let (request_seen_tx, request_seen_rx) = tokio::sync::oneshot::channel();
@@ -306,8 +308,13 @@ async fn temporary_cancel_response_wait_keeps_home_app_lock_available() {
             .expect("fake worker request should decode");
         assert!(matches!(
             request,
-            RelayPeerRequest::CancelLeasedPrompt { leased_agent_id }
-                if leased_agent_id == LEASED_AGENT_ID
+            RelayPeerRequest::CancelLeasedPrompt {
+                leased_agent_id,
+                home_prompt_id,
+                worker_provider_run_id,
+            } if leased_agent_id == LEASED_AGENT_ID
+                && home_prompt_id == "home-prompt-cancel-lock"
+                && worker_provider_run_id == WORKER_RUN_ID
         ));
         request_seen_tx
             .send(())
@@ -565,7 +572,7 @@ async fn accepted_and_dispatching_cancellation_wait_for_exact_receipt_without_re
         "persisting the cancellation intent must not send cancellation before a verified receipt"
     );
 
-    let worker_prompt = prompt.clone();
+    let worker_prompt = prompt.clone().with_id("worker-local-cancel-ack-prompt");
     acknowledge_peer_request(
         &relay_state,
         submit_request_id,
@@ -703,10 +710,17 @@ async fn accepted_and_dispatching_cancellation_wait_for_exact_receipt_without_re
     let (cancel_request_id, target_id, request) =
         next_peer_request(&mut peer_requests, &worker_private_key).await;
     assert_eq!(target_id, WORKER_ID);
-    let RelayPeerRequest::CancelLeasedPrompt { leased_agent_id } = request else {
+    let RelayPeerRequest::CancelLeasedPrompt {
+        leased_agent_id,
+        home_prompt_id,
+        worker_provider_run_id,
+    } = request
+    else {
         panic!("expected one CancelLeasedPrompt after worker ACK, got {request:?}");
     };
     assert_eq!(leased_agent_id, LEASED_AGENT_ID);
+    assert_eq!(home_prompt_id, prompt_id);
+    assert_eq!(worker_provider_run_id, WORKER_RUN_ID);
     let binding = runtime
         .owned
         .agent_store

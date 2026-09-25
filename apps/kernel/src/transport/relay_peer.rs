@@ -85,7 +85,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// for `chariox.send_agent_message`; mixed-version peers fail before dispatch.
 /// Version 58 carries the home-owned Room browser capability in extension manifests.
 /// Version 59 adds read-only exact-home-prompt receipt queries for leased workers.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 59;
+/// Version 60 requires exact home-prompt and worker-run identities for leased cancellation.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 60;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
@@ -730,6 +731,8 @@ pub enum RelayPeerRequest {
     },
     CancelLeasedPrompt {
         leased_agent_id: String,
+        home_prompt_id: String,
+        worker_provider_run_id: String,
     },
     StartLeasedProjectEnvironmentSetup {
         leased_agent_id: String,
@@ -1141,8 +1144,45 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     #[test]
-    fn remote_room_browser_capability_manifest_is_versioned_at_protocol_59() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 59);
+    fn leased_prompt_cancellation_requires_exact_prompt_and_run_at_protocol_60() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 60);
+        let request = RelayPeerRequest::CancelLeasedPrompt {
+            leased_agent_id: "leased-agent-1".to_string(),
+            home_prompt_id: "home-prompt-1".to_string(),
+            worker_provider_run_id: "worker-run-1".to_string(),
+        };
+        let snapshot = serde_json::to_value(&request).expect("request should serialize");
+        assert_eq!(
+            snapshot,
+            serde_json::json!({
+                "kind": "cancel_leased_prompt",
+                "leased_agent_id": "leased-agent-1",
+                "home_prompt_id": "home-prompt-1",
+                "worker_provider_run_id": "worker-run-1"
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<RelayPeerRequest>(snapshot.clone())
+                .expect("exact cancellation request should deserialize"),
+            request
+        );
+
+        for missing_field in ["home_prompt_id", "worker_provider_run_id"] {
+            let mut old_request = snapshot.clone();
+            old_request
+                .as_object_mut()
+                .expect("request snapshot should be an object")
+                .remove(missing_field);
+            assert!(
+                serde_json::from_value::<RelayPeerRequest>(old_request).is_err(),
+                "mixed-version cancellation without {missing_field} must fail closed"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_room_browser_capability_manifest_is_versioned_at_protocol_60() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 60);
         let request = RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
             leased_agent_id: "leased-agent-1".to_string(),
             remote_extension_manifest: crate::extension::RemoteExtensionManifest {
@@ -1164,7 +1204,7 @@ mod tests {
 
     #[test]
     fn leased_completion_provider_termination_shape_is_versioned() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 59);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 60);
         let completion = RelayProjectedCompletion {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,
@@ -1229,8 +1269,8 @@ mod tests {
     }
 
     #[test]
-    fn project_environment_setup_relay_shapes_round_trip_at_protocol_59() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 59);
+    fn project_environment_setup_relay_shapes_round_trip_at_protocol_60() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 60);
         let definition = crate::session::ProjectEnvironmentDefinition {
             schema_version: 1,
             origin: crate::session::ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
@@ -1347,8 +1387,8 @@ mod tests {
     }
 
     #[test]
-    fn leased_prompt_receipt_query_is_read_only_and_versioned_at_protocol_59() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 59);
+    fn leased_prompt_receipt_query_is_read_only_and_versioned_at_protocol_60() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 60);
         let request = RelayPeerRequest::GetLeasedPromptReceipt {
             leased_agent_id: "leased-agent-1".to_string(),
             home_prompt_id: "home-prompt-1".to_string(),

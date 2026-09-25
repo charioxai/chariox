@@ -1047,8 +1047,18 @@ pub(super) async fn handle_daemon_peer_request(
                 };
             }
         },
-        RelayPeerRequest::CancelLeasedPrompt { leased_agent_id } => {
-            let cancellation = router.relay_cancel_leased_prompt(&leased_agent_id).await;
+        RelayPeerRequest::CancelLeasedPrompt {
+            leased_agent_id,
+            home_prompt_id,
+            worker_provider_run_id,
+        } => {
+            let cancellation = router
+                .relay_cancel_leased_prompt(
+                    &leased_agent_id,
+                    &home_prompt_id,
+                    &worker_provider_run_id,
+                )
+                .await;
             match cancellation {
                 Ok(cancellation) => RelayPeerResponse::LeasedPromptCancelled { cancellation },
                 Err(error) => {
@@ -1931,7 +1941,9 @@ fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
         | RelayPeerRequest::ObserveLeasedGitAfter {
             leased_agent_id, ..
         }
-        | RelayPeerRequest::CancelLeasedPrompt { leased_agent_id }
+        | RelayPeerRequest::CancelLeasedPrompt {
+            leased_agent_id, ..
+        }
         | RelayPeerRequest::StartLeasedProjectEnvironmentSetup {
             leased_agent_id, ..
         }

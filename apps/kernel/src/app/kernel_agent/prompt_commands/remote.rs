@@ -73,6 +73,27 @@ impl<'a> KernelAgentService<'a> {
         active_prompt: &PromptQueueItem,
         remote_execution: RemoteAgentBinding,
     ) -> Result<PromptCancellation, DaemonError> {
+        let expected_worker_provider_run_id = active_prompt.durable_delivery_provider_run_id();
+        if active_prompt.durable_delivery_phase()
+            != Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+            || expected_worker_provider_run_id.is_none()
+            || remote_execution.active_worker_provider_run_id.as_deref()
+                != expected_worker_provider_run_id
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "cancel remote prompt",
+                message: "remote prompt has no matching durable worker-run receipt".to_string(),
+            });
+        }
+        if !remote_execution.relay_peer_protocol_compatible() {
+            return Err(DaemonError::LocalTransport {
+                operation: "cancel remote prompt",
+                message: "worker relay peer protocol does not support run-scoped cancellation"
+                    .to_string(),
+            });
+        }
+        let expected_worker_provider_run_id =
+            expected_worker_provider_run_id.expect("checked above").to_string();
         let relay_config = self
             .app
             .relay_config_for_remote_execution(&remote_execution);
@@ -86,6 +107,8 @@ impl<'a> KernelAgentService<'a> {
                     },
                     RelayPeerRequest::CancelLeasedPrompt {
                         leased_agent_id: remote_execution.leased_agent_id.clone(),
+                        home_prompt_id: active_prompt.id().to_string(),
+                        worker_provider_run_id: expected_worker_provider_run_id,
                     },
                 ));
         match cancellation_response {
