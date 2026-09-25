@@ -58,6 +58,10 @@ export function cancelAppInstallOperationRequest(requestId: string) {
   return { CancelAppInstallOperation: { request_id: requestId } }
 }
 
+export function uninstallAppRequest(installationId: string, expectedGeneration: string) {
+  return { UninstallApp: { installation_id: installationId, expected_generation: expectedGeneration } }
+}
+
 export function openAppViewRequest(sessionId: string, installationId: string) {
   return { OpenAppView: { session_id: sessionId, installation_id: installationId } }
 }

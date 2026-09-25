@@ -268,6 +268,15 @@ pub struct DisableAppAutomationRequest {
     pub expected_revision: u64,
 }
 
+/// Protocol 347: stops the worker and deactivates the installation at the
+/// caller's expected generation. App data and user workflows are retained.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UninstallAppRequest {
+    pub installation_id: String,
+    pub expected_generation: String,
+}
+
 /// Opens the installation's view as a managed Tab in the session's Room
 /// browser. The kernel serves only the active release's signed UI files.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

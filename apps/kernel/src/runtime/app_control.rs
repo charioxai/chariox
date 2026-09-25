@@ -263,6 +263,12 @@ fn read(
     }
 }
 
+pub(crate) fn installation_summary(
+    value: chariox_app_runtime::installation::Installation,
+) -> AppInstallationSummary {
+    projection::installation(value)
+}
+
 pub(crate) fn registry_error(error: AppRegistryError) -> AppRequestErrorCode {
     match error {
         AppRegistryError::Registry(InstallationError::NotFound) => AppRequestErrorCode::NotFound,

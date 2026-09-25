@@ -109,4 +109,5 @@ pub use workspace::*;
 /// and App automation list/configure/disable requests.
 /// Version 346 opens App views as managed Room Tabs (`OpenAppView`) and adds
 /// the room-controller `app_view` command.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 346;
+/// Version 347 adds owner-scoped `UninstallApp` at an expected generation.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 347;

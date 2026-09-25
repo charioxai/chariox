@@ -98,13 +98,28 @@ impl KernelRuntimeState {
             session_id,
             &opened.target_id,
             AppViewBinding {
-                owner,
+                owner: owner.clone(),
                 installation: installation.to_owned(),
             },
         ) {
             let state = self.clone();
             let session = session_id.to_owned();
             tokio::spawn(async move { state.pump_app_view_calls(session).await });
+        }
+        // An uninstall commits, then unbinds the installation's views. Checking
+        // only after registering means an Open racing it ends unbound either way.
+        let store = self.owned.durable_state_store.clone();
+        let (check_owner, check_installation) = (owner.clone(), installation.to_owned());
+        let active = tokio::task::spawn_blocking(move || {
+            store
+                .active_app_release(&check_owner, &check_installation)
+                .is_ok()
+        })
+        .await
+        .unwrap_or(false);
+        if !active {
+            views.forget_installation(&owner, installation);
+            return Err(AppRequestErrorCode::NotFound);
         }
         // Project the new Tab into the Room so viewers and agents see it.
         let _ = self

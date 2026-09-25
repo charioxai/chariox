@@ -758,6 +758,7 @@ mod tests {
                 "app-start",
                 "app-stop",
                 "app-restart",
+                "app-uninstall",
                 "app-automation",
                 "app-automation-list",
                 "app-automation-add",

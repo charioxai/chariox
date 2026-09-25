@@ -89,6 +89,16 @@
         ]
       },
       {
+        "id": "app-uninstall",
+        "label": "uninstall",
+        "description": "Stop an App and remove its installation; its data is kept",
+        "value": "/app uninstall ",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
+      },
+      {
         "id": "app-automation",
         "label": "automation",
         "description": "Route an App event to a workflow",

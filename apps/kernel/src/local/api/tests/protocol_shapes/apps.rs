@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 346);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 347);
     let release = AppReleaseSummary {
         version: "1.0.0".into(),
         publisher_id: "publisher".into(),
@@ -85,7 +85,7 @@ fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
 
 #[test]
 fn app_package_upload_protocol_shapes_bind_retry_bytes_and_opaque_handles() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 346);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 347);
     let handle = format!("upload_{}", "a".repeat(64));
     let digest = format!("sha256:{:064x}", 1);
     let requests = vec![
@@ -167,7 +167,7 @@ fn app_package_upload_protocol_shapes_bind_retry_bytes_and_opaque_handles() {
 
 #[test]
 fn app_worker_control_and_automation_shapes_are_versioned_and_owner_free() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 346);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 347);
     let requests = vec![
         LocalDaemonRequest::GetAppWorker(AppWorkerRequest {
             installation_id: "todo".into(),
@@ -259,7 +259,7 @@ fn app_worker_control_and_automation_shapes_are_versioned_and_owner_free() {
 fn app_view_shapes_are_versioned_and_name_no_owner_or_asset() {
     use crate::runtime::browser_controller_app_view::{BrowserAppViewError, BrowserAppViewRequest};
     use crate::transport::room_browser_controller::RoomBrowserControllerCommand;
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 346);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 347);
     let request = LocalDaemonRequest::OpenAppView(OpenAppViewRequest {
         session_id: "session-1".into(),
         installation_id: "todo".into(),
@@ -312,4 +312,27 @@ fn app_view_shapes_are_versioned_and_name_no_owner_or_asset() {
         }))
         .is_err()
     );
+}
+
+#[test]
+fn app_uninstall_shape_is_versioned_and_names_no_owner() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 347);
+    let request = LocalDaemonRequest::UninstallApp(UninstallAppRequest {
+        installation_id: "todo".into(),
+        expected_generation: "3".into(),
+    });
+    let encoded = serde_json::to_vec(&request).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<LocalDaemonRequest>(&encoded).unwrap(),
+        request
+    );
+    let digest = format!("{:x}", Sha256::digest(&encoded));
+    assert_eq!(
+        digest,
+        "43dd00eda2df4b70378a7fc6056cdf37173361a38225ebbeaa8e826e7272d46e"
+    );
+    assert!(serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({
+        "UninstallApp": {"installation_id": "todo", "expected_generation": "3", "owner_id": "other"}
+    }))
+    .is_err());
 }

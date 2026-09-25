@@ -24,6 +24,7 @@ impl KernelRuntimeState {
             LocalDaemonRequest::ListAppAutomations(request) => &request.installation_id,
             LocalDaemonRequest::ConfigureAppAutomation(request) => &request.installation_id,
             LocalDaemonRequest::DisableAppAutomation(request) => &request.installation_id,
+            LocalDaemonRequest::UninstallApp(request) => &request.installation_id,
             _ => return None,
         };
         let owner = match crate::runtime::app_control::owner(command) {
@@ -53,7 +54,7 @@ impl KernelRuntimeState {
         let store = self.owned.durable_state_store.clone();
         let (check_owner, check_installation) = (owner.clone(), installation.clone());
         let permit = self.app_control().try_admit()?;
-        tokio::task::spawn_blocking(move || {
+        let current = tokio::task::spawn_blocking(move || {
             let _permit = permit;
             store.get_app_installation(&check_owner, &check_installation)
         })
@@ -148,9 +149,75 @@ impl KernelRuntimeState {
                     automation: summary(&disabled),
                 });
             }
+            LocalDaemonRequest::UninstallApp(request) => {
+                return self
+                    .uninstall_app(
+                        owner,
+                        installation,
+                        current.generation,
+                        &request.expected_generation,
+                    )
+                    .await;
+            }
             _ => return Err(AppRequestErrorCode::InvalidRequest),
         }
         self.app_worker_summary(owner, installation).await
+    }
+
+    /// The generation is checked before any side effect, so a stale request
+    /// changes nothing. Then a user stop (which also withdraws the dormant
+    /// catalog, so agents stop seeing its tools) runs before deactivation, so
+    /// no App code runs once the installation is inactive. An update committed
+    /// between that stop and the deactivation makes the final fence fail with
+    /// `Conflict` and leaves the App stopped until an explicit start.
+    async fn uninstall_app(
+        &self,
+        owner: String,
+        installation: String,
+        current_generation: u64,
+        expected_generation: &str,
+    ) -> Result<LocalDaemonResponse, AppRequestErrorCode> {
+        let expected: u64 = expected_generation
+            .parse()
+            .map_err(|_| AppRequestErrorCode::InvalidRequest)?;
+        if expected != current_generation {
+            return Err(AppRequestErrorCode::Conflict);
+        }
+        self.control_app_worker(&owner, &installation, AppWorkerAction::Stop)
+            .await?;
+        let store = self.owned.durable_state_store.clone();
+        let permit = self.app_control().try_admit()?;
+        let (view_owner, view_installation) = (owner.clone(), installation.clone());
+        let outcome = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            store.mutate_app_installation(
+                &owner,
+                crate::durable_state::apps::AppRegistryMutation::Uninstall {
+                    installation_id: installation,
+                    expected_generation: expected,
+                    now_ms: crate::session::unix_epoch_ms(),
+                },
+            )
+        })
+        .await
+        .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
+        .map_err(|error| match error {
+            crate::durable_state::apps::AppRegistryError::Registry(
+                chariox_app_runtime::installation::InstallationError::Conflict,
+            ) => AppRequestErrorCode::Conflict,
+            error => crate::runtime::app_control::registry_error(error),
+        })?;
+        self.app_control()
+            .views()
+            .forget_installation(&view_owner, &view_installation);
+        match outcome {
+            crate::durable_state::apps::AppRegistryOutcome::Installation(installation) => {
+                Ok(LocalDaemonResponse::AppInstallation {
+                    installation: crate::runtime::app_control::installation_summary(installation),
+                })
+            }
+            _ => Err(AppRequestErrorCode::StorageUnavailable),
+        }
     }
 
     /// Returns whether a new start was accepted (an owner thread was spawned).
