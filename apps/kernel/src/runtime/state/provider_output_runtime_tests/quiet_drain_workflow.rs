@@ -1,18 +1,5 @@
 use super::*;
 
-struct InertPtyCleanup {
-    app: Arc<Mutex<DaemonApp>>,
-    provider_run_id: String,
-}
-
-impl Drop for InertPtyCleanup {
-    fn drop(&mut self) {
-        if let Ok(mut app) = self.app.try_lock() {
-            let _ = app.pty_mut().remove_process(&self.provider_run_id);
-        }
-    }
-}
-
 fn submit_delivered_prompt_fixture(
     app: &mut DaemonApp,
     session_id: &str,
@@ -172,22 +159,7 @@ async fn codex_completion_output_does_not_settle_before_authoritative_turn_compl
         },
     );
     run.mark_running();
-    app.pty_mut()
-        .spawn(crate::pty::PtySpawnRequest {
-            process_key: run.id().to_string(),
-            provider_run_id: run.id().to_string(),
-            program: "/bin/sh".to_string(),
-            args: ["-c", "exec sleep 300"]
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
-            env: Default::default(),
-            env_remove: Vec::new(),
-            working_directory: None,
-            cols: 80,
-            rows: 24,
-        })
-        .expect("inert Codex fixture PTY should stay live");
+    spawn_inert_pty_for_run(&mut app, run.id());
     app.providers_mut().insert_run_for_test(run.clone());
     app.sessions
         .set_active_provider_run(session.id(), Some(run.id().to_string()))
@@ -354,22 +326,7 @@ async fn codex_turn_completion_survives_dispatching_delivery_retry() {
         },
     );
     run.mark_running();
-    app.pty_mut()
-        .spawn(crate::pty::PtySpawnRequest {
-            process_key: run.id().to_string(),
-            provider_run_id: run.id().to_string(),
-            program: "/bin/sh".to_string(),
-            args: ["-c", "exec sleep 300"]
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
-            env: Default::default(),
-            env_remove: Vec::new(),
-            working_directory: None,
-            cols: 80,
-            rows: 24,
-        })
-        .expect("inert Codex fixture PTY should stay live");
+    spawn_inert_pty_for_run(&mut app, run.id());
     app.providers_mut().insert_run_for_test(run.clone());
     app.sessions
         .set_active_provider_run(session.id(), Some(run.id().to_string()))

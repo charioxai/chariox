@@ -7,6 +7,9 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+mod inert_pty;
+use inert_pty::{spawn_inert_pty_for_run, InertPtyCleanup};
+
 async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
     let (
         config_projection,
