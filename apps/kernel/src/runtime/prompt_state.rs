@@ -90,11 +90,14 @@ impl PromptStateOwner {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent_id);
-        let Some(current) = state
-            .active_prompt
-            .as_ref()
-            .filter(|prompt| prompt.id() == prompt_id)
-        else {
+        let Some(current) = state.active_prompt.as_ref().filter(|prompt| {
+            prompt.id() == prompt_id
+                && matches!(
+                    prompt.durable_delivery_phase(),
+                    Some(crate::session::DurablePromptDeliveryPhase::Accepted)
+                        | Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+                )
+        }) else {
             return Ok(None);
         };
         let mut settled = current.clone();

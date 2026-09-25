@@ -882,27 +882,12 @@ impl KernelRuntimeState {
                         format!("Remote prompt dispatch failed after acknowledgement: {error}");
                     let provider_run_id = format!("remote-dispatch:{}", dispatch.prompt_id);
                     let merge_key = Some(format!("remote-dispatch-error:{}", dispatch.prompt_id));
-                    let recipients = owned
-                        .attachment_store
-                        .list_session_attachment_ids(&dispatch.session_id);
-                    let recipients = owned.agent_trace_recipient_attachment_ids(
-                        &dispatch.session_id,
-                        Some(&dispatch.agent_id),
-                        recipients,
+                    owned.fan_out_remote_dispatch_error(
+                        &dispatch,
+                        &provider_run_id,
+                        merge_key.clone(),
+                        &message,
                     );
-                    owned.terminal_stream.fan_out_outputs(vec![
-                        crate::terminal::TerminalOutputAppend {
-                            session_id: dispatch.session_id.clone(),
-                            provider_run_id: provider_run_id.clone(),
-                            agent_id: Some(dispatch.agent_id.clone()),
-                            prompt_origin: Some(dispatch.prompt_origin),
-                            source_attachment_id: Some(dispatch.source_attachment_id.clone()),
-                            kind: crate::terminal::TerminalOutputKind::ProviderError,
-                            merge_key: merge_key.clone(),
-                            recipient_attachment_ids: recipients,
-                            bytes: message.as_bytes().to_vec(),
-                        },
-                    ]);
                     owned.append_operational_history_entry_with_context(
                         &SessionHistoryEntry::provider_output(
                             &dispatch.session_id,
@@ -2464,6 +2449,103 @@ mod tests {
     async fn late_remote_dispatch_success_preserves_successor() {
         assert_late_remote_dispatch_preserves_successor(Ok("worker-run-a-late".to_string()), true)
             .await;
+    }
+
+    async fn assert_duplicate_remote_settlement_is_inert(result: Result<String, DaemonError>) {
+        let (runtime, mut dispatch) = superseded_remote_dispatch_fixture(false).await;
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&dispatch.session_id)
+            .unwrap();
+        let before_prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &dispatch.agent_id)
+            .unwrap();
+        assert_eq!(
+            before_prompt.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+        );
+        dispatch.prompt_id = before_prompt.id().to_string();
+        dispatch.prompt = before_prompt.prompt().to_string();
+        {
+            let mut app = runtime.app.lock().await;
+            crate::app::KernelSessionService::new(&mut app)
+                .attach(crate::attachment::AttachRequest::new(
+                    &dispatch.session_id,
+                    "duplicate-dispatch-observer",
+                    crate::attachment::ClientCapabilityLevel::FullTerminal,
+                ))
+                .unwrap();
+        }
+        let before_agent = runtime
+            .owned
+            .agent_store
+            .get_agent(&dispatch.agent_id)
+            .unwrap();
+        let before_history = runtime
+            .owned
+            .operational_history_store
+            .load_session_history_entries(&dispatch.session_id, Some(&dispatch.agent_id))
+            .unwrap();
+        let before_terminal_count = runtime.owned.terminal_stream.output_records().len();
+        let before_terminal_sequence = runtime.owned.terminal_stream.change_sequence();
+        let session_id = dispatch.session_id.clone();
+        let agent_id = dispatch.agent_id.clone();
+        let _ = runtime
+            .finish_remote_prompt_dispatch(dispatch, result)
+            .await;
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        assert_eq!(
+            runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &agent_id),
+            Some(before_prompt)
+        );
+        let after_agent = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
+        assert_eq!(
+            after_agent.remote_execution(),
+            before_agent.remote_execution()
+        );
+        assert_eq!(after_agent.state(), before_agent.state());
+        assert_eq!(after_agent.is_processing(), before_agent.is_processing());
+        assert_eq!(
+            runtime
+                .owned
+                .operational_history_store
+                .load_session_history_entries(&session_id, Some(&agent_id))
+                .unwrap(),
+            before_history
+        );
+        assert_eq!(
+            runtime.owned.terminal_stream.output_records().len(),
+            before_terminal_count
+        );
+        assert_eq!(
+            runtime.owned.terminal_stream.change_sequence(),
+            before_terminal_sequence,
+            "duplicate settlement must not echo or notify terminal output"
+        );
+    }
+
+    #[tokio::test]
+    async fn duplicate_remote_dispatch_success_after_delivered_is_inert() {
+        assert_duplicate_remote_settlement_is_inert(Ok("worker-run-b".to_string())).await;
+    }
+
+    #[tokio::test]
+    async fn late_remote_dispatch_error_after_delivered_is_inert() {
+        assert_duplicate_remote_settlement_is_inert(Err(DaemonError::LocalTransport {
+            operation: "submit remote prompt",
+            message: "late transport error after delivery".to_string(),
+        }))
+        .await;
     }
 
     #[tokio::test]

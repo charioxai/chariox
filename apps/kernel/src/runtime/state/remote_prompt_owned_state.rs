@@ -11,16 +11,18 @@ impl KernelRuntimeOwnedState {
         dispatch: &crate::app::KernelRemotePromptDispatch,
         delivered_run_id: Option<&str>,
     ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
+        let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();
         let session = sessions.get_session(&dispatch.session_id)?;
-        self.prompt_state_owner
+        let settled = self
+            .prompt_state_owner
             .settle_active_remote_dispatch_if_matches(
                 &session,
                 &dispatch.agent_id,
                 &dispatch.prompt_id,
                 delivered_run_id,
                 |previous, active, queued| {
-                    // Lock order: session store -> prompt owner -> agent store.
+                    // Lock order: activity -> session -> prompt owner -> agent.
                     // No projection/history helper may reenter prompt ownership here.
                     let mut agents = self.agent_store.write();
                     let agent = agents.get_agent(&dispatch.agent_id)?;
@@ -65,7 +67,14 @@ impl KernelRuntimeOwnedState {
                     }
                     Ok(true)
                 },
-            )
+            )?;
+        // Recording activity samples session state; never do it while holding
+        // the session write lock or the nested ownership locks.
+        drop(sessions);
+        if settled.is_some() {
+            activity_mutation.record();
+        }
+        Ok(settled)
     }
 
     pub(super) fn advance_next_queued_remote_prompt_dispatch(

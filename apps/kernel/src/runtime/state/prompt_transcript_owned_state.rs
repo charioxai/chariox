@@ -26,6 +26,62 @@ pub(super) struct ActivePromptTranscriptMetadata {
 type AgentOutputSequenceUpdate = (String, String, u64);
 
 impl KernelRuntimeOwnedState {
+    /// Fan out a dispatch failure using the settled prompt, never a successor's
+    /// active prompt metadata. Keep the normal output bounds and trace routing.
+    pub(super) fn fan_out_remote_dispatch_error(
+        &self,
+        dispatch: &crate::app::KernelRemotePromptDispatch,
+        provider_run_id: &str,
+        merge_key: Option<String>,
+        message: &str,
+    ) {
+        let kind = crate::terminal::TerminalOutputKind::ProviderError;
+        let delta = terminal_output_delta_bytes(
+            &dispatch.session_id,
+            provider_run_id,
+            Some(&dispatch.agent_id),
+            &kind,
+            &merge_key,
+            message.as_bytes(),
+        );
+        let bytes = bounded_terminal_output_bytes(&kind, &delta);
+        self.log_provider_output_truncation(
+            &dispatch.session_id,
+            provider_run_id,
+            Some(&dispatch.agent_id),
+            &kind,
+            delta.len(),
+            bytes.len(),
+        );
+        if bytes.is_empty() {
+            return;
+        }
+        let recipients = self.agent_trace_recipient_attachment_ids(
+            &dispatch.session_id,
+            Some(&dispatch.agent_id),
+            self.attachment_store
+                .list_session_attachment_ids(&dispatch.session_id),
+        );
+        let recipients = self.with_metaagent_trace_recipient_ids(
+            &dispatch.session_id,
+            Some(&dispatch.agent_id),
+            recipients,
+        );
+        self.terminal_stream
+            .fan_out_outputs(vec![crate::terminal::TerminalOutputAppend {
+                session_id: dispatch.session_id.clone(),
+                provider_run_id: provider_run_id.to_string(),
+                agent_id: Some(dispatch.agent_id.clone()),
+                prompt_origin: Some(dispatch.prompt_origin),
+                source_attachment_id: Some(dispatch.source_attachment_id.clone()),
+                kind,
+                merge_key,
+                recipient_attachment_ids: recipients.into(),
+                bytes,
+            }]);
+        self.notify_metaagent_trace_activity(&dispatch.session_id, Some(&dispatch.agent_id));
+    }
+
     pub(super) fn record_provider_failure_output(
         &self,
         session_id: &str,
