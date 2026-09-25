@@ -34,6 +34,7 @@ pub(crate) mod app_state;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_tools;
 pub(crate) mod app_logs;
+pub(crate) mod app_validations;
 pub(crate) mod app_wakes;
 pub(crate) mod app_worker_lifecycle;
 pub(crate) mod app_view_assets;
@@ -156,6 +157,7 @@ enum DurableWriterRequest {
     AppState(Box<app_state::AppStateRequest>),
     AppWake(Box<app_wakes::AppWakeRequest>),
     AppLog(Box<app_logs::AppLogRequest>),
+    AppValidation(Box<app_validations::ValidationRequest>),
     AppBinding(Box<app_bindings::AppBindingRequest>),
     AppAutomation(Box<app_automations::AppAutomationRequest>),
     AppActivation(Box<app_activation::AppActivationRequest>),
@@ -342,6 +344,10 @@ impl DurableKernelStateStore {
         app_state::initialize(&mut connection)?;
         app_automations::initialize(&mut connection)?;
         app_worker_lifecycle::initialize(&connection)?;
+        app_validations::initialize(&connection).map_err(|_| DaemonError::LocalTransport {
+            operation: "durable_state.app_validations",
+            message: "App validation schema could not be initialized".into(),
+        })?;
         app_logs::initialize(&connection).map_err(|_| DaemonError::LocalTransport {
             operation: "durable_state.app_logs",
             message: "App log schema could not be initialized".into(),
@@ -1429,6 +1435,10 @@ fn run_durable_writer(
                 app_logs::execute(&mut connection, *request);
                 continue;
             }
+            DurableWriterRequest::AppValidation(request) => {
+                app_validations::execute(&mut connection, *request);
+                continue;
+            }
             DurableWriterRequest::AppBinding(request) => {
                 app_bindings::execute(&mut connection, *request);
                 continue;
@@ -1528,6 +1538,7 @@ fn run_durable_writer(
                     | DurableWriterRequest::AppState(_)
                     | DurableWriterRequest::AppWake(_)
                     | DurableWriterRequest::AppLog(_)
+                    | DurableWriterRequest::AppValidation(_)
                     | DurableWriterRequest::AppBinding(_)
                     | DurableWriterRequest::AppAutomation(_)
                     | DurableWriterRequest::AppActivation(_)

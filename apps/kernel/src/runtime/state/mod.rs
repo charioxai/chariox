@@ -47,6 +47,8 @@ mod app_wake_pump_runtime;
 mod app_control_requests;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_view_runtime;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_validation_pump_runtime;
 mod computer_secret_input_runtime_state;
 mod config_runtime_state;
 mod native_catalog_refresh;

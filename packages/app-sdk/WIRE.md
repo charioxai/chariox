@@ -138,6 +138,20 @@ Other typed methods use the names and parameter shapes documented in
 return a typed error. The supervisor owns capability checks and rejects unknown
 or undeclared effect routes; it never dispatches arbitrary kernel method names.
 
+`validation.request {action, parameters, operationId?}` accepts only actions
+the signed package declares with `criticalValidation`; `parameters` must match
+that action's `inputSchema` (at most 16 KiB) and are bound canonically (sorted
+keys) with the installation, generation and action into a durable operation.
+The reply `{operationId, state}` is `pending` at once; the kernel shows a
+trusted approval outside App content (in the owner's most recent session, preferring one they host; one
+operation per installation at a time; collaborators in a shared session see it,
+but only the owner can answer), and only the owner's answer
+there moves it to `approved` or `denied` (undecided operations expire after 10
+minutes, approvals must be used within 10 minutes and are single-use). Passing
+an existing `operationId` returns it only for the identical binding.
+`validation.status {operationId}` reads it for this installation only.
+`connectionId` is not supported yet.
+
 `validation.request` and `outputs.request` return durable pending references when
 waiting for human input or model output. They must not retain a worker request
 slot for the duration of that wait. App-specific meaning stays in App handlers

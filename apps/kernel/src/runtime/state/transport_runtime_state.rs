@@ -47,6 +47,7 @@ impl KernelRuntimeState {
         {
             self.schedule_app_event_pump();
             self.schedule_app_wake_pump();
+            self.schedule_app_validation_pump();
         }
         if !self.owned.publication_activation.is_active() {
             return;

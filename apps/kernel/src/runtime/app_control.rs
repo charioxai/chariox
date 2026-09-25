@@ -35,6 +35,9 @@ pub(crate) struct AppControlService {
     event_pump: super::app_event_pump::AppEventPump,
     wake_pump: super::app_wake_pump::AppWakePump,
     views: super::app_views::AppViews,
+    validation_pump: super::app_wake_pump::AppWakePump,
+    /// Live approvals: operation → owner.
+    validation_prompts: Arc<std::sync::Mutex<std::collections::BTreeMap<String, String>>>,
     publishers: super::app_publisher_control::AppPublisherControl,
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
     workers: workers::ActiveWorkers,
@@ -84,6 +87,8 @@ impl AppControlService {
             event_pump,
             wake_pump: Default::default(),
             views: Default::default(),
+            validation_pump: Default::default(),
+            validation_prompts: Default::default(),
             publishers,
             #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
             workers,
@@ -120,6 +125,38 @@ impl AppControlService {
 
     pub(crate) fn views(&self) -> &super::app_views::AppViews {
         &self.views
+    }
+
+    pub(crate) fn validation_pump(&self) -> &super::app_wake_pump::AppWakePump {
+        &self.validation_pump
+    }
+
+    /// At most one live approval per validation operation, and a few per
+    /// owner, so App validations never take the owner's whole share of kernel
+    /// decisions (install and publisher approvals keep room).
+    pub(crate) fn begin_validation_prompt(&self, operation_id: &str, owner: &str) -> bool {
+        const PER_OWNER: usize = 4;
+        // Half of the kernel-wide decision limit (32) stays for other kinds.
+        const TOTAL: usize = 16;
+        let mut prompts = self
+            .validation_prompts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if prompts.contains_key(operation_id)
+            || prompts.len() >= TOTAL
+            || prompts.values().filter(|live| *live == owner).count() >= PER_OWNER
+        {
+            return false;
+        }
+        prompts.insert(operation_id.to_owned(), owner.to_owned());
+        true
+    }
+
+    pub(crate) fn end_validation_prompt(&self, operation_id: &str) {
+        self.validation_prompts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(operation_id);
     }
 
     pub(crate) fn try_admit(

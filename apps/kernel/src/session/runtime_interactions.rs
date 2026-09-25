@@ -263,6 +263,12 @@ impl RuntimeInteraction {
         }
     }
 
+    /// A kernel decision that must close before its subject expires.
+    pub(crate) fn with_timeout_sec(mut self, seconds: u64) -> Self {
+        self.timeout_sec = Some(seconds);
+        self
+    }
+
     pub fn kind(&self) -> RuntimeInteractionKind {
         self.kind
     }
