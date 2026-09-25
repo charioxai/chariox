@@ -30,6 +30,7 @@ mod controller_upload_recovery;
 mod controller_worker_mcp;
 mod display;
 mod lease_release;
+mod room_home_local_slice;
 mod room_slice_cross_placement;
 mod screenshot;
 mod session;
