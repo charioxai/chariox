@@ -1,5 +1,40 @@
 use super::support::*;
 
+fn leased_prompt_submission_request(
+    leased_agent_id: &str,
+    expected_profile: crate::transport::relay_peer::RelayAgentExecutionProfile,
+    home_session_id: &str,
+    home_agent_id: &str,
+    home_prompt_id: &str,
+    prompt: &str,
+) -> RelayPeerRequest {
+    RelayPeerRequest::SubmitLeasedPrompt {
+        leased_agent_id: leased_agent_id.to_string(),
+        expected_profile,
+        prompt: prompt.to_string(),
+        hidden_system_context: String::new(),
+        attachments: Vec::new(),
+        workflow_context: None,
+        git_context: Some(crate::transport::relay_peer::RemoteGitTurnContext {
+            home_session_id: home_session_id.to_string(),
+            home_agent_id: home_agent_id.to_string(),
+            home_prompt_id: home_prompt_id.to_string(),
+            home_turn_id: format!("home-turn-{home_prompt_id}"),
+            source_attachment_id: None,
+            workspace_live_sync_mode: None,
+            prompt_origin: None,
+            external_provider: None,
+            external_provider_session_id: None,
+            external_provider_turn_id: None,
+            prompt_summary: "worker receipt restart fixture".to_string(),
+        }),
+        required_mcps: Vec::new(),
+        required_skills: None,
+        remote_extension_manifest: Default::default(),
+        provider_launch_credential: None,
+    }
+}
+
 fn isolate_test_config(
     mut config: DaemonConfig,
     root: &std::path::Path,
@@ -166,38 +201,68 @@ async fn accepted_queued_steer_receipt_reconciles_after_worker_restart_without_r
         other => panic!("unexpected leased-agent response: {other:?}"),
     };
 
-    let target_home_prompt_id = "home-prompt-before-worker-restart";
-    let (worker_provider_run_id, outcome) = {
-        let mut worker = app_worker.lock().await;
-        RemoteLeaseRuntime::new(&mut worker)
-            .submit_leased_prompt_with_workflow_context(
-                &leased_agent.id,
-                "initial worker prompt\n",
-                Vec::new(),
-                None,
-                Some(crate::transport::relay_peer::RemoteGitTurnContext {
-                    home_session_id: home_session_id.clone(),
-                    home_agent_id: lease.home_agent_id.clone(),
-                    home_prompt_id: target_home_prompt_id.to_string(),
-                    home_turn_id: "home-turn-before-worker-restart".to_string(),
-                    source_attachment_id: None,
-                    workspace_live_sync_mode: None,
-                    prompt_origin: None,
-                    external_provider: None,
-                    external_provider_session_id: None,
-                    external_provider_turn_id: None,
-                    prompt_summary: "restart receipt fixture".to_string(),
-                }),
-                Vec::new(),
-                None,
-                crate::extension::RemoteExtensionManifest::default(),
-            )
-            .expect("worker should start the exact target home prompt")
+    let worker_profile = crate::transport::relay_peer::RelayAgentExecutionProfile {
+        provider: leased_agent.provider.clone(),
+        account_profile: leased_agent.account_profile.clone(),
+        model: leased_agent.model.clone(),
+        effort: leased_agent.effort.clone(),
     };
-    assert!(matches!(
-        outcome,
-        crate::session::PromptSubmissionOutcome::Started { .. }
-    ));
+    let target_home_prompt_id = "home-prompt-before-worker-restart";
+    state_worker
+        .write()
+        .await
+        .test_lose_next_peer_response_payload();
+    assert!(
+        send_peer_request_via_relay(
+            &app_home,
+            &state_home,
+            ClientTarget {
+                daemon_id: Some(worker_config.daemon_id.clone()),
+                daemon_alias: None,
+            },
+            leased_prompt_submission_request(
+                &leased_agent.id,
+                worker_profile.clone(),
+                &home_session_id,
+                &lease.home_agent_id,
+                target_home_prompt_id,
+                "initial worker prompt\n",
+            ),
+        )
+        .await
+        .is_err(),
+        "the accepted prompt response should be lost on the relay path"
+    );
+    let accepted = send_peer_request_via_relay(
+        &app_home,
+        &state_home,
+        ClientTarget {
+            daemon_id: Some(worker_config.daemon_id.clone()),
+            daemon_alias: None,
+        },
+        RelayPeerRequest::GetLeasedPromptReceipt {
+            leased_agent_id: leased_agent.id.clone(),
+            home_prompt_id: target_home_prompt_id.to_string(),
+        },
+    )
+    .await
+    .expect("worker should report the accepted prompt after a lost reply");
+    let accepted = match accepted {
+        RelayPeerResponse::LeasedPromptReceiptQueried {
+            receipt: Some(receipt),
+        } => receipt,
+        other => panic!("unexpected accepted prompt receipt: {other:?}"),
+    };
+    assert_eq!(accepted.home_prompt_id, target_home_prompt_id);
+    assert_eq!(
+        accepted.execution_lease_id.as_deref(),
+        Some(lease.id.as_str())
+    );
+    assert_eq!(
+        accepted.phase,
+        crate::transport::relay_peer::LeasedPromptReceiptPhase::Active
+    );
+    let worker_provider_run_id = accepted.worker_provider_run_id.clone();
 
     let steer_id = "home-queued-steer-before-worker-restart";
     state_worker
@@ -243,6 +308,102 @@ async fn accepted_queued_steer_receipt_reconciles_after_worker_restart_without_r
             "worker must accept and record the steer before its reply is lost"
         );
     }
+
+    let rejected_prompt_id = "home-prompt-rejected-while-active";
+    let changed_profile = crate::transport::relay_peer::RelayAgentExecutionProfile {
+        model: Some("native-tui-idle-after-rejection".to_string()),
+        ..worker_profile
+    };
+    let rejected_submission = leased_prompt_submission_request(
+        &leased_agent.id,
+        changed_profile.clone(),
+        &home_session_id,
+        &lease.home_agent_id,
+        rejected_prompt_id,
+        "prompt rejected while the prior turn is active\n",
+    );
+    assert!(
+        send_peer_request_via_relay(
+            &app_home,
+            &state_home,
+            ClientTarget {
+                daemon_id: Some(worker_config.daemon_id.clone()),
+                daemon_alias: None,
+            },
+            rejected_submission,
+        )
+        .await
+        .is_err(),
+        "a profile change while the prior turn is active must be rejected"
+    );
+    let rejection = send_peer_request_via_relay(
+        &app_home,
+        &state_home,
+        ClientTarget {
+            daemon_id: Some(worker_config.daemon_id.clone()),
+            daemon_alias: None,
+        },
+        RelayPeerRequest::GetLeasedPromptReceipt {
+            leased_agent_id: leased_agent.id.clone(),
+            home_prompt_id: rejected_prompt_id.to_string(),
+        },
+    )
+    .await
+    .expect("worker should report definite non-admission");
+    let rejection = match rejection {
+        RelayPeerResponse::LeasedPromptReceiptQueried {
+            receipt: Some(receipt),
+        } => receipt,
+        other => panic!("unexpected rejected prompt receipt: {other:?}"),
+    };
+    assert_eq!(rejection.home_prompt_id, rejected_prompt_id);
+    assert_eq!(rejection.worker_provider_run_id, "");
+    assert_eq!(
+        rejection.execution_lease_id.as_deref(),
+        Some(lease.id.as_str())
+    );
+    assert!(rejection.target_home_prompt_id.is_none());
+    assert_eq!(
+        rejection.phase,
+        crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerRejected
+    );
+    assert!(matches!(
+        send_peer_request_via_relay(
+            &app_home,
+            &state_home,
+            ClientTarget {
+                daemon_id: Some(worker_config.daemon_id.clone()),
+                daemon_alias: None,
+            },
+            RelayPeerRequest::CompleteLeasedPrompt {
+                leased_agent_id: leased_agent.id.clone(),
+            },
+        )
+        .await
+        .expect("worker should complete the original prompt"),
+        RelayPeerResponse::LeasedPromptCompleted { .. }
+    ));
+    assert!(
+        send_peer_request_via_relay(
+            &app_home,
+            &state_home,
+            ClientTarget {
+                daemon_id: Some(worker_config.daemon_id.clone()),
+                daemon_alias: None,
+            },
+            leased_prompt_submission_request(
+                &leased_agent.id,
+                changed_profile,
+                &home_session_id,
+                &lease.home_agent_id,
+                rejected_prompt_id,
+                "prompt rejected while the prior turn is active\n",
+            ),
+        )
+        .await
+        .is_err(),
+        "the rejection tombstone must fence a delayed duplicate after completion"
+    );
 
     let _ = shutdown_worker_tx.send(true);
     connector_worker
@@ -384,7 +545,7 @@ async fn accepted_queued_steer_receipt_reconciles_after_worker_restart_without_r
             leased_agent_id: leased_agent.id.clone(),
             steer_id: steer_id.to_string(),
             target_home_prompt_id: target_home_prompt_id.to_string(),
-            worker_provider_run_id,
+            worker_provider_run_id: worker_provider_run_id.clone(),
             execution_lease_id: lease.id.clone(),
         },
     )
@@ -409,6 +570,47 @@ async fn accepted_queued_steer_receipt_reconciles_after_worker_restart_without_r
         recovered.phase,
         crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerAccepted
     );
+    for (home_prompt_id, expected_phase, expected_run) in [
+        (
+            target_home_prompt_id,
+            crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
+            worker_provider_run_id.as_str(),
+        ),
+        (
+            rejected_prompt_id,
+            crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerRejected,
+            "",
+        ),
+    ] {
+        let result = send_peer_request_via_relay(
+            &app_home,
+            &state_home,
+            ClientTarget {
+                daemon_id: Some(worker_config.daemon_id.clone()),
+                daemon_alias: None,
+            },
+            RelayPeerRequest::GetLeasedPromptReceipt {
+                leased_agent_id: leased_agent.id.clone(),
+                home_prompt_id: home_prompt_id.to_string(),
+            },
+        )
+        .await
+        .expect("original-prompt receipt should survive worker restart");
+        let receipt = match result {
+            RelayPeerResponse::LeasedPromptReceiptQueried {
+                receipt: Some(receipt),
+            } => receipt,
+            other => panic!("unexpected restored prompt receipt: {other:?}"),
+        };
+        assert_eq!(receipt.home_prompt_id, home_prompt_id);
+        assert_eq!(receipt.worker_provider_run_id, expected_run);
+        assert_eq!(
+            receipt.execution_lease_id.as_deref(),
+            Some(lease.id.as_str())
+        );
+        assert_eq!(receipt.phase, expected_phase);
+        assert!(receipt.target_home_prompt_id.is_none());
+    }
     assert!(
         restarted_worker
             .lock()

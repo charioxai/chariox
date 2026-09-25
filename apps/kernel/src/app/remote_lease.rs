@@ -241,6 +241,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 self.app
                     .worker_steer_receipts
                     .caller_for_leased_agent(leased_agent_id)
+            })
+            .or_else(|| {
+                self.app
+                    .worker_prompt_receipts
+                    .caller_for_leased_agent(leased_agent_id)
             });
         if owner.as_ref() == Some(caller) {
             Ok(())

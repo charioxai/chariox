@@ -1708,6 +1708,18 @@ Workflow trigger and deployment direction:
   agent and home session/agent binding before replying. The local-daemon shape
   and client minimum versions do not change; remote Project setup requires
   both home and worker kernels to support relay peer protocol 61.
+- relay peer protocol 62 gives original leased prompts a durable worker admission
+  receipt using the existing `GetLeasedPromptReceipt` response. A receipt with
+  no `target_home_prompt_id` and an exact `execution_lease_id` reports
+  `steer_dispatching` before the worker starts provider admission, then
+  `active` or `completed` after admission, or `steer_rejected` only when
+  non-admission is known. A lost reply must be reconciled against the current
+  leased agent and execution lease; an absent or dispatching receipt is not
+  proof that resubmission is safe. Worker restart retains the receipt, so a
+  delayed duplicate cannot launch a second provider prompt. The wire shape
+  is unchanged, but the receipt's original-prompt semantics require both home
+  and worker kernels to support relay peer protocol 62. Local-daemon client
+  minimum versions do not change.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

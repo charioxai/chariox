@@ -16,8 +16,9 @@ use serde::{Deserialize, Serialize};
 use crate::error::DaemonError;
 
 pub(crate) mod browser_import;
-pub(crate) mod worker_steer_receipts;
 mod owner;
+pub(crate) mod worker_prompt_receipts;
+pub(crate) mod worker_steer_receipts;
 pub(crate) mod workflow_runtime;
 
 #[derive(Debug, Clone)]

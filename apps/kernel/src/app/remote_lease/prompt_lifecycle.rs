@@ -1,3 +1,6 @@
+use crate::durable_state::worker_prompt_receipts::{
+    WorkerPromptReceipt, WorkerPromptReceiptPhase, WorkerPromptReceiptRecord,
+};
 use crate::error::DaemonError;
 use crate::execution_lease::{LeasedAgent, LeasedWorkflowTurnBinding, RemoteWorkflowTurnContext};
 use crate::execution_lease::{LeasedPromptSteerReceipt, LeasedPromptSteerReceiptPhase};
@@ -43,7 +46,98 @@ fn leased_prompt_steer_receipt_projection(
     }
 }
 
+fn leased_prompt_admission_receipt_projection(
+    receipt: &WorkerPromptReceiptRecord,
+) -> LeasedPromptReceipt {
+    let phase = match receipt.receipt.phase {
+        WorkerPromptReceiptPhase::Dispatching => LeasedPromptReceiptPhase::SteerDispatching,
+        WorkerPromptReceiptPhase::Accepted => LeasedPromptReceiptPhase::Active,
+        WorkerPromptReceiptPhase::Rejected => LeasedPromptReceiptPhase::SteerRejected,
+    };
+    LeasedPromptReceipt {
+        home_prompt_id: receipt.receipt.home_prompt_id.clone(),
+        worker_provider_run_id: receipt
+            .receipt
+            .worker_provider_run_id
+            .clone()
+            .unwrap_or_default(),
+        phase,
+        target_home_prompt_id: None,
+        execution_lease_id: Some(receipt.receipt.execution_lease_id.clone()),
+    }
+}
+
 impl<'a> RemoteLeaseRuntime<'a> {
+    pub(crate) fn begin_leased_prompt_receipt(
+        &mut self,
+        leased_agent_id: &str,
+        home_prompt_id: &str,
+    ) -> Result<Option<WorkerPromptReceiptRecord>, DaemonError> {
+        if home_prompt_id.trim().is_empty() {
+            return Ok(None);
+        }
+        let leased_agent = self
+            .app
+            .leased_agents
+            .get(leased_agent_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            })?;
+        if let Some(existing) = self
+            .app
+            .worker_prompt_receipts
+            .get(leased_agent_id, home_prompt_id)
+            .cloned()
+        {
+            if existing.receipt.execution_lease_id != leased_agent.lease_id {
+                return Err(DaemonError::LocalTransport {
+                    operation: "begin leased prompt admission",
+                    message: "existing worker receipt belongs to a different execution lease"
+                        .to_string(),
+                });
+            }
+            return Ok(Some(existing));
+        }
+        let caller = self.app.leased_agent_callers.get(leased_agent_id).cloned();
+        let record = WorkerPromptReceiptRecord {
+            leased_agent_id: leased_agent_id.to_string(),
+            receipt: WorkerPromptReceipt {
+                home_prompt_id: home_prompt_id.to_string(),
+                worker_provider_run_id: None,
+                execution_lease_id: leased_agent.lease_id,
+                phase: WorkerPromptReceiptPhase::Dispatching,
+            },
+            caller,
+        };
+        self.app.worker_prompt_receipts.persist(record)?;
+        Ok(None)
+    }
+
+    pub(crate) fn update_leased_prompt_receipt(
+        &mut self,
+        leased_agent_id: &str,
+        home_prompt_id: &str,
+        phase: WorkerPromptReceiptPhase,
+        worker_provider_run_id: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        let mut record = self
+            .app
+            .worker_prompt_receipts
+            .get(leased_agent_id, home_prompt_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "update leased prompt admission receipt",
+                message: "worker prompt admission receipt is missing".to_string(),
+            })?;
+        if let Some(worker_provider_run_id) = worker_provider_run_id {
+            record.receipt.worker_provider_run_id = Some(worker_provider_run_id.to_string());
+        }
+        record.receipt.phase = phase;
+        self.app.worker_prompt_receipts.persist(record)?;
+        Ok(())
+    }
+
     fn worker_steer_receipt(
         &self,
         leased_agent_id: &str,
@@ -69,11 +163,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         leased_agent_id: &str,
         receipt: LeasedPromptSteerReceipt,
     ) -> Result<(), DaemonError> {
-        let caller = self
-            .app
-            .leased_agent_callers
-            .get(leased_agent_id)
-            .cloned();
+        let caller = self.app.leased_agent_callers.get(leased_agent_id).cloned();
         let record = crate::durable_state::worker_steer_receipts::WorkerSteerReceiptRecord {
             leased_agent_id: leased_agent_id.to_string(),
             receipt: receipt.clone(),
@@ -120,6 +210,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
     ) -> Result<Option<String>, DaemonError> {
         if let Some(receipt) = self
             .app
+            .worker_prompt_receipts
+            .get(leased_agent_id, home_prompt_id)
+        {
+            return Ok(receipt.receipt.worker_provider_run_id.clone());
+        }
+        if let Some(receipt) = self
+            .app
             .worker_steer_receipts
             .get(leased_agent_id, home_prompt_id)
         {
@@ -154,6 +251,26 @@ impl<'a> RemoteLeaseRuntime<'a> {
     ) -> Result<Option<LeasedPromptReceipt>, DaemonError> {
         if home_prompt_id.is_empty() {
             return Ok(None);
+        }
+        if let Some(record) = self
+            .app
+            .worker_prompt_receipts
+            .get(leased_agent_id, home_prompt_id)
+        {
+            if self
+                .app
+                .leased_agents
+                .get(leased_agent_id)
+                .is_some_and(|leased_agent| {
+                    leased_agent.lease_id != record.receipt.execution_lease_id
+                })
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "query leased prompt receipt",
+                    message: "worker receipt belongs to a different execution lease".to_string(),
+                });
+            }
+            return Ok(Some(leased_prompt_admission_receipt_projection(record)));
         }
         if let Some(record) = self
             .app
@@ -211,7 +328,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 worker_provider_run_id: receipt.provider_run_id.clone(),
                 phase: LeasedPromptReceiptPhase::Completed,
                 target_home_prompt_id: None,
-                execution_lease_id: None,
+                execution_lease_id: Some(leased_agent.lease_id.clone()),
             }));
         }
 
@@ -257,7 +374,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             worker_provider_run_id: provider_run.id().to_string(),
             phase: LeasedPromptReceiptPhase::Active,
             target_home_prompt_id: None,
-            execution_lease_id: None,
+            execution_lease_id: Some(leased_agent.lease_id.clone()),
         }))
     }
 
@@ -878,7 +995,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let Some(leased_agent) = self.app.leased_agents.get(leased_agent_id).cloned() else {
             return Ok(false);
         };
-        if self.worker_steer_receipt(leased_agent_id, steer_id).is_some() {
+        if self
+            .worker_steer_receipt(leased_agent_id, steer_id)
+            .is_some()
+        {
             // A caller without a dispatch-specific proof must never turn an
             // existing in-flight or accepted receipt into a rejection.
             return Ok(false);

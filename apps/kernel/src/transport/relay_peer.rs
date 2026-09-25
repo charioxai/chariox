@@ -87,8 +87,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version 59 adds read-only exact-home-prompt receipt queries for leased workers.
 /// Version 60 requires exact home-prompt and worker-run identities for leased cancellation
 /// and carries durable exact-identity receipts for queued prompt steers.
-/// Version 61 lets the selected lease worker resolve its authoritative setup platform.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 61;
+/// Version 62 also persists worker admission receipts for original leased prompts.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 62;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
@@ -1169,8 +1169,8 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     #[test]
-    fn leased_prompt_cancellation_requires_exact_prompt_and_run_at_protocol_61() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 61);
+    fn leased_prompt_cancellation_requires_exact_prompt_and_run_at_protocol_62() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 62);
         let request = RelayPeerRequest::CancelLeasedPrompt {
             leased_agent_id: "leased-agent-1".to_string(),
             home_prompt_id: "home-prompt-1".to_string(),
@@ -1206,8 +1206,8 @@ mod tests {
     }
 
     #[test]
-    fn remote_room_browser_capability_manifest_is_versioned_at_protocol_61() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 61);
+    fn remote_room_browser_capability_manifest_is_versioned_at_protocol_62() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 62);
         let request = RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
             leased_agent_id: "leased-agent-1".to_string(),
             remote_extension_manifest: crate::extension::RemoteExtensionManifest {
@@ -1229,7 +1229,7 @@ mod tests {
 
     #[test]
     fn leased_completion_provider_termination_shape_is_versioned() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 61);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 62);
         let completion = RelayProjectedCompletion {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,
@@ -1294,8 +1294,8 @@ mod tests {
     }
 
     #[test]
-    fn leased_project_setup_target_resolution_is_versioned_at_protocol_61() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 61);
+    fn leased_project_setup_target_resolution_is_versioned_at_protocol_62() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 62);
         let request = RelayPeerRequest::ResolveLeasedProjectEnvironmentSetupTarget {
             leased_agent_id: "leased-agent-1".to_string(),
             home_session_id: "home-session-1".to_string(),
@@ -1338,8 +1338,8 @@ mod tests {
     }
 
     #[test]
-    fn project_environment_setup_relay_shapes_round_trip_at_protocol_61() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 61);
+    fn project_environment_setup_relay_shapes_round_trip_at_protocol_62() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 62);
         let definition = crate::session::ProjectEnvironmentDefinition {
             schema_version: 1,
             origin: crate::session::ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
@@ -1465,8 +1465,8 @@ mod tests {
     }
 
     #[test]
-    fn leased_prompt_receipt_query_and_steer_reconciliation_are_versioned_at_protocol_61() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 61);
+    fn leased_prompt_receipt_query_and_steer_reconciliation_are_versioned_at_protocol_62() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 62);
         let request = RelayPeerRequest::GetLeasedPromptReceipt {
             leased_agent_id: "leased-agent-1".to_string(),
             home_prompt_id: "home-prompt-1".to_string(),
@@ -1565,6 +1565,43 @@ mod tests {
                 .expect("completed receipt should deserialize"),
             completed
         );
+
+        for (phase, phase_wire) in [
+            (
+                LeasedPromptReceiptPhase::SteerDispatching,
+                "steer_dispatching",
+            ),
+            (LeasedPromptReceiptPhase::SteerRejected, "steer_rejected"),
+        ] {
+            let original_prompt = RelayPeerResponse::LeasedPromptReceiptQueried {
+                receipt: Some(LeasedPromptReceipt {
+                    home_prompt_id: "home-prompt-1".to_string(),
+                    worker_provider_run_id: String::new(),
+                    phase,
+                    target_home_prompt_id: None,
+                    execution_lease_id: Some("lease-1".to_string()),
+                }),
+            };
+            let snapshot = serde_json::to_value(&original_prompt)
+                .expect("original-prompt admission receipt should serialize");
+            assert_eq!(
+                snapshot,
+                serde_json::json!({
+                    "kind": "leased_prompt_receipt_queried",
+                    "receipt": {
+                        "home_prompt_id": "home-prompt-1",
+                        "worker_provider_run_id": "",
+                        "phase": phase_wire,
+                        "execution_lease_id": "lease-1"
+                    }
+                })
+            );
+            assert_eq!(
+                serde_json::from_value::<RelayPeerResponse>(snapshot)
+                    .expect("original-prompt admission receipt should deserialize"),
+                original_prompt
+            );
+        }
 
         let none = RelayPeerResponse::LeasedPromptReceiptQueried { receipt: None };
         let none_snapshot = serde_json::to_value(&none).expect("empty response should serialize");
