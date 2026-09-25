@@ -2044,7 +2044,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        runtime
+        let queued_successor_submission = runtime
             .owned
             .submit_remote_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
                 session_id: session.id().to_string(),
@@ -2058,7 +2058,16 @@ mod tests {
                 force_queue: true,
                 refresh_projection: true,
             })
-            .unwrap();
+            .unwrap()
+            .expect("queued successor should be handled");
+        let queued_successor_id = match queued_successor_submission.outcome {
+            crate::session::PromptSubmissionOutcome::Queued { prompt } => {
+                prompt.id().to_string()
+            }
+            crate::session::PromptSubmissionOutcome::Started { .. } => {
+                panic!("forced successor should remain queued")
+            }
+        };
         let session_before_recovery = runtime.owned.session_store.get_session(session.id()).unwrap();
         assert!(!runtime
             .owned
@@ -2091,7 +2100,8 @@ mod tests {
         );
         assert!(active.durable_delivery_reconciliation_pending());
         assert_eq!(queued.len(), 1, "successor must not be promoted");
-        assert_eq!(queued[0].id(), "queued-successor");
+        assert_eq!(queued[0].id(), queued_successor_id);
+        assert_eq!(queued[0].prompt(), "must remain queued");
         assert!(runtime
             .owned
             .agent_store
