@@ -1,0 +1,151 @@
+{
+  "tools": [
+    {
+      "name": "list_documents",
+      "description": "List documents, optionally only those in one folder.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "folder": {
+            "type": "string",
+            "maxLength": 200
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "read_document",
+      "description": "Read a document's content, optionally at an earlier revision.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "create_document",
+      "description": "Create a Markdown or HTML document.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "markdown",
+              "html"
+            ]
+          },
+          "folder": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 524288
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "update_document",
+      "description": "Change a document's content, title or folder. expected_revision must be the revision you read; a newer revision is a conflict to resolve by re-reading.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 524288
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "folder": {
+            "type": "string",
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "id",
+          "expected_revision"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "restore_version",
+      "description": "Restore an earlier revision's content as the newest revision. Title and folder are not restored, so a rename or move revision restores nothing visible.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "id",
+          "revision",
+          "expected_revision"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "delete_document",
+      "description": "Delete a document and its history.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 64
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

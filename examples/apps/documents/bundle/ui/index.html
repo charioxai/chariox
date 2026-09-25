@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Documents</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <div class="layout">
+    <nav aria-label="Documents">
+      <div class="nav-head">
+        <h1>Documents</h1>
+        <span>
+          <select id="new-kind" aria-label="Format for a new document">
+            <option value="markdown">Markdown</option>
+            <option value="html">HTML</option>
+          </select>
+          <button type="button" id="new-doc">New</button>
+        </span>
+      </div>
+      <ul id="docs"></ul>
+    </nav>
+    <main id="editor" hidden>
+      <div class="doc-head">
+        <input id="title" aria-label="Title" maxlength="200">
+        <input id="folder" aria-label="Folder" maxlength="200" placeholder="Folder">
+        <select id="kind" aria-label="Format" disabled>
+          <option value="markdown">Markdown</option>
+          <option value="html">HTML</option>
+        </select>
+      </div>
+      <div class="toolbar">
+        <button type="button" id="save">Save</button>
+        <button type="button" class="link" id="toggle-preview" aria-pressed="false">Preview</button>
+        <label class="link">History <select id="versions" aria-label="Restore an earlier revision"></select></label>
+        <button type="button" class="link danger" id="delete">Delete</button>
+        <span id="revision" class="muted"></span>
+      </div>
+      <p id="status" role="status" aria-live="polite"></p>
+      <textarea id="content" aria-label="Content" spellcheck="true"></textarea>
+      <article id="preview" hidden aria-label="Preview"></article>
+    </main>
+    <main id="empty"><p class="muted">Choose or create a document.</p></main>
+  </div>
+</body>
+</html>
