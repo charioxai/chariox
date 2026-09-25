@@ -74,6 +74,14 @@ impl CommandRouter {
         {
             return Ok(Some(response));
         }
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        if let Some(response) = self
+            .runtime_state
+            .execute_app_view_request(command, request)
+            .await
+        {
+            return Ok(Some(response));
+        }
         if matches!(
             request,
             LocalDaemonRequest::PrepareBrowserImport(_)

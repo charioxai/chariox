@@ -252,7 +252,7 @@ pub use api::{
     AppAutomationStatus, AppAutomationSummary, AppCapabilityDecisionStatus,
     AppInstallationRequest, AppInstallationSummary, AppReleaseSummary, AppWorkerAction,
     AppWorkerPhase, AppWorkerRequest, AppWorkerSummary, ConfigureAppAutomationRequest,
-    ControlAppWorkerRequest, DisableAppAutomationRequest,
+    ControlAppWorkerRequest, DisableAppAutomationRequest, OpenAppViewRequest,
     AppRequestErrorCode, AppUpdatePhase, AppUpdateSummary, ListAppInstallationsRequest,
 };
 pub use client::LocalDaemonClient;

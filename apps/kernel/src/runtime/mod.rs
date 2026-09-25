@@ -15,6 +15,7 @@ pub(crate) mod app_http;
 pub(crate) mod app_install_control;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_lifecycle;
+pub(crate) mod app_views;
 pub(crate) mod app_lock;
 pub(crate) mod app_operation_budget;
 mod app_package_preparation;
@@ -26,6 +27,7 @@ pub(crate) mod app_wake_pump;
 pub(crate) mod app_worker;
 mod browser_controller;
 pub(crate) mod browser_controller_action;
+pub(crate) mod browser_controller_app_view;
 pub(crate) mod browser_controller_compatibility;
 pub(crate) mod browser_controller_event;
 pub(crate) mod browser_controller_file_transfer;

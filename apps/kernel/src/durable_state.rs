@@ -35,6 +35,7 @@ pub(crate) mod app_state;
 pub(crate) mod app_tools;
 pub(crate) mod app_wakes;
 pub(crate) mod app_worker_lifecycle;
+pub(crate) mod app_view_assets;
 pub(crate) mod apps;
 #[cfg(test)]
 mod apps_tests;

@@ -19,20 +19,21 @@ runtime_source_revision() {
   fi
   (
     cd "$REPO_ROOT"
+    local roots=() root
+    while IFS= read -r root || [[ -n "$root" ]]; do
+      if [[ -n "$root" ]]; then
+        roots+=("$root")
+      fi
+    done < "$SCRIPT_DIR/runtime-source-roots.txt"
+    if [[ "${#roots[@]}" -eq 0 ]]; then
+      echo "runtime-source-roots.txt lists no runtime source roots" >&2
+      exit 1
+    fi
     if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-      git ls-files --cached --others --exclude-standard \
-        Cargo.toml Cargo.lock \
-        adapters/rust \
-        apps/aegs-dummy apps/kernel apps/relay \
-        examples/workflow-code \
-        packages/aegs-sdk packages/event-protocol
+      git ls-files --cached --others --exclude-standard "${roots[@]}"
     else
       find \
-        Cargo.toml Cargo.lock \
-        adapters/rust \
-        apps/aegs-dummy apps/kernel apps/relay \
-        examples/workflow-code \
-        packages/aegs-sdk packages/event-protocol \
+        "${roots[@]}" \
         -type f \
         ! -path '*/target/*' \
         ! -path '*/node_modules/*' \
@@ -421,6 +422,8 @@ refresh_slice_support_files() {
     || fail "failed to refresh required slice support overlay: Browser Controller dialogs"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-compatibility.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-compatibility.mjs" \
     || fail "failed to refresh required slice support overlay: Browser Controller compatibility"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-apps.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-apps.mjs" \
+    || fail "failed to refresh required slice support overlay: Browser Controller App views"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-events.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-events.mjs" \
     || fail "failed to refresh required slice support overlay: Browser Controller events"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-files.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-files.mjs" \
@@ -457,6 +460,7 @@ refresh_slice_support_files() {
     /opt/chariox-slice/browser-controller-cookie-fence.mjs \
     /opt/chariox-slice/browser-controller-dialogs.mjs \
     /opt/chariox-slice/browser-controller-compatibility.mjs \
+    /opt/chariox-slice/browser-controller-apps.mjs \
     /opt/chariox-slice/browser-controller-events.mjs \
     /opt/chariox-slice/browser-controller-files.mjs \
     /opt/chariox-slice/browser-controller-frames.mjs \

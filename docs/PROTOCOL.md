@@ -1762,6 +1762,31 @@ Workflow trigger and deployment direction:
   workflow ownership. The kernel derives the owner; requests name only the
   installation and cannot supply an owner, generation or host path. Automation
   requests use the active release's verified catalog and need no running worker.
+- protocol 346 adds `OpenAppView {session_id, installation_id}`, which returns
+  `AppViewOpened {installation_id, target_id, origin}`. The view is a managed
+  Tab in the session's Room browser, so people and agents share one DOM and
+  profile. The kernel re-verifies the active release and serves only its signed
+  `ui/` files on a per-owner, per-installation `https://<label>.app.chariox.internal`
+  origin through browser request interception. All other requests from the Tab
+  are blocked, a strict CSP applies, and popups are closed. The room-controller
+  relay command `app_view` (`open`, `calls`, `respond`) carries this between
+  the home and worker kernels. `window.chariox.call(tool, input)` runs the App's
+  own tool as the human owner through the same catalog validation and durable
+  path as agent tool calls; the kernel binds each call to the Tab's
+  installation, never to page-supplied identity. A view call runs as the view
+  owner whoever drives the Tab (a person or an agent in the shared Room): the
+  view is the owner's surface and there is no separate view privilege
+  (V-SDK-04); critical effects still require kernel human validation, which a
+  view click cannot supply. The App document's CSP includes
+  `sandbox allow-scripts allow-same-origin allow-forms` (no popups, top
+  navigation, downloads or modals), responses send `X-DNS-Prefetch-Control:
+  off`, and WebRTC constructors are removed before App code runs (an in-page
+  defense per document; a browser-level WebRTC policy is future work). Every new
+  controller CDP connection (whatever command caused it) drops the previous
+  connection's App Tabs and closes App-origin Tabs it does not own. Each poll
+  reports the controller's open App targets; the kernel drops bindings for
+  closed Tabs registered before that poll and stops polling when none remain. UI files are limited to
+  2 MiB per view.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

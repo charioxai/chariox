@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { BrowserCdpClient, BrowserControllerError } from "./browser-controller-cdp.mjs";
 import { BrowserActionError } from "./browser-controller-actions.mjs";
+import { AppTabs } from "./browser-controller-apps.mjs";
 import {
   BrowserResourceInventoryError,
   observeBrowserResources,
@@ -25,6 +26,9 @@ export async function handleBrowserControllerRequest(
     signal,
   } = {},
 ) {
+  // Installed on the first request so the connection hook exists before any
+  // command (not only App commands) reconnects the browser.
+  if (browser && typeof browser === "object") browser.appTabs ??= new AppTabs(browser);
   if (!request || !Number.isSafeInteger(request.id) || request.id <= 0) {
     return errorResponse(request?.id ?? null, "invalid_request", "request id must be a positive integer");
   }
@@ -110,6 +114,12 @@ export async function handleBrowserControllerRequest(
         request.id,
         await browser.setPermission(request.params, { signal }),
       );
+    }
+    if (request.method.startsWith?.("browser.app.")) {
+      const apps = browser.appTabs;
+      if (request.method === "browser.app.open") return successResponse(request.id, await apps.open(request.params));
+      if (request.method === "browser.app.calls") return successResponse(request.id, await apps.takeCalls());
+      if (request.method === "browser.app.respond") return successResponse(request.id, await apps.respond(request.params));
     }
     if (request.method === "browser.events.poll") {
       return successResponse(

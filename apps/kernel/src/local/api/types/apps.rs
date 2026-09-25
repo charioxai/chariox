@@ -268,6 +268,15 @@ pub struct DisableAppAutomationRequest {
     pub expected_revision: u64,
 }
 
+/// Opens the installation's view as a managed Tab in the session's Room
+/// browser. The kernel serves only the active release's signed UI files.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpenAppViewRequest {
+    pub session_id: String,
+    pub installation_id: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AppAutomationStatus {

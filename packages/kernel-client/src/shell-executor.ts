@@ -63,7 +63,7 @@ export async function executeShellCommand(
   }
   switch (parsed.command) {
     case "app":
-      return executeAppCommand(parsed.args, deps.client)
+      return executeAppCommand(parsed.args, deps.client, { sessionId: context.sessionId })
     case "session":
       return executeSessionCommand(parsed, context, deps)
     case "agent":

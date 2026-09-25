@@ -58,6 +58,10 @@ export function cancelAppInstallOperationRequest(requestId: string) {
   return { CancelAppInstallOperation: { request_id: requestId } }
 }
 
+export function openAppViewRequest(sessionId: string, installationId: string) {
+  return { OpenAppView: { session_id: sessionId, installation_id: installationId } }
+}
+
 export function getAppWorkerRequest(installationId: string) {
   return { GetAppWorker: { installation_id: installationId } }
 }

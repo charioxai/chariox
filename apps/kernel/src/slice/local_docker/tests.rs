@@ -1023,6 +1023,7 @@ fn linux_docker_slice_support_refresh_includes_runtime_dependencies() {
         "tint2rc",
         "browser-cdp.mjs",
         "browser-controller-actions.mjs",
+        "browser-controller-apps.mjs",
         "browser-controller-cdp.mjs",
         "browser-controller-dialogs.mjs",
         "browser-controller-events.mjs",
@@ -1321,6 +1322,11 @@ fn linux_docker_slice_auto_build_refreshes_protocol_or_runtime_incompatible_work
         Path::new(env!("CARGO_MANIFEST_DIR")).join("slice-linux-docker/docker/Dockerfile"),
     )
     .expect("slice Dockerfile should be readable");
+    let roots = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("slice-linux-docker/runtime-source-roots.txt"),
+    )
+    .expect("slice runtime source roots should be readable");
+    let roots: Vec<&str> = roots.lines().collect();
 
     assert!(script.contains("io.chariox.relay-peer-protocol-version"));
     assert!(script.contains("io.chariox.runtime-source-revision"));
@@ -1332,13 +1338,31 @@ fn linux_docker_slice_auto_build_refreshes_protocol_or_runtime_incompatible_work
         "saved state image $SLICE_IMAGE is missing; restoring the saved home archive on $SLICE_BASE_IMAGE"
     ));
     assert!(script.contains("git rev-parse --is-inside-work-tree"));
-    assert!(script.contains("Cargo.toml Cargo.lock"));
-    assert!(script.contains("adapters/rust"));
-    assert!(script.contains("apps/aegs-dummy apps/kernel apps/relay"));
-    assert!(script.contains("packages/aegs-sdk packages/event-protocol"));
+    assert!(script.contains("runtime-source-roots.txt"));
+    for root in [
+        "Cargo.toml",
+        "Cargo.lock",
+        "adapters/rust",
+        "apps/aegs-dummy",
+        "apps/kernel",
+        "apps/relay",
+        "packages/aegs-sdk",
+        "packages/event-protocol",
+    ] {
+        assert!(roots.contains(&root), "missing runtime source root {root}");
+    }
     assert!(!script.contains("grep -v '^apps/kernel/slice-linux-docker/'"));
-    assert!(script.contains("packages/event-protocol"));
     assert!(dockerfile.contains("COPY packages/event-protocol packages/event-protocol"));
+    // The kernel links the App packages; the runtime image must build them.
+    for package in ["app-package", "app-runtime", "app-sdk"] {
+        let root = format!("packages/{package}");
+        assert!(dockerfile.contains(&format!("COPY {root} {root}")));
+        assert!(roots.contains(&root.as_str()));
+    }
+    let bundle_lock = "apps/app-worker/bundle.lock.json";
+    assert!(dockerfile.contains(&format!("COPY {bundle_lock} {bundle_lock}")));
+    assert!(roots.contains(&bundle_lock));
+    assert!(!dockerfile.contains("chariox-app-storage.service"));
     assert!(dockerfile.contains("COPY Cargo.toml Cargo.lock ./"));
     assert!(dockerfile.contains("cargo build --locked --release"));
     assert!(dockerfile.contains("npm ci --omit=dev"));

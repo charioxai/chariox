@@ -294,6 +294,8 @@ export class BrowserCdpClient {
         { method: "Chariox.browserConnected", params: {} },
         this.eventContext(),
       );
+      // Connection-scoped state owners (App Tabs) re-establish their fences.
+      if (this.onConnected) queueMicrotask(() => this.onConnected(connection));
       return connection;
     } catch (error) {
       this.unsubscribeFromConnection?.();

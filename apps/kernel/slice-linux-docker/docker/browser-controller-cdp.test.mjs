@@ -933,6 +933,19 @@ test("timed-out or disconnected dialog replies terminate and do not leak default
   assert.equal(JSON.stringify(trace).includes("old private default"), false);
 });
 
+test("any command's new controller connection sweeps leftover App Tabs", async () => {
+  const connection = new FakeConnection();
+  connection.extraTargets = [{ targetId: "app-left", type: "page", url: "https://a1.app.chariox.internal/", title: "App" }];
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  const response = await handleBrowserControllerRequest({ id: 1, method: "browser.reconcile", params: { viewport } }, {
+    browser, resourceInventory: async () => ({ browser_ids: ["browser-pid-fixture"], profile_ids: ["profile-sha256-fixture"] }),
+  });
+  assert.equal(response.ok, true, JSON.stringify(response.error));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(connection.closedTargetIds.has("app-left"), "the non-App command's connection ran the App sweep");
+  assert.ok(!connection.closedTargetIds.has("target-a"));
+});
+
 class FakeConnection {
   constructor() {
     this.calls = [];
@@ -972,6 +985,7 @@ class FakeConnection {
             ? [{ targetId: "worker-a", type: "worker", url: "https://a.test/worker.js" }]
             : []),
           { targetId: "target-b", type: "page", url: "https://b.test/", title: "B" },
+          ...(this.extraTargets ?? []),
         ].filter(({ targetId }) => !this.closedTargetIds.has(targetId)),
       };
     }
@@ -980,6 +994,7 @@ class FakeConnection {
         "target-a": "session-a",
         "target-b": "session-b",
         "worker-a": "worker-session-a",
+        ...Object.fromEntries((this.extraTargets ?? []).map(({ targetId }) => [targetId, `session-${targetId}`])),
       };
       return { sessionId: sessions[params.targetId] };
     }

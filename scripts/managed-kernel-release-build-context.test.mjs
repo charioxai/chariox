@@ -24,6 +24,8 @@ test("managed release stages every local Dockerfile COPY source", async (context
       "--kernel", artifacts.kernel,
       "--supervisor", artifacts.supervisor,
       "--relay", artifacts.relay,
+      "--app-package", artifacts.appPackage,
+      "--app-storage", artifacts.appStorage,
       "--builder-attestation", artifacts.builderAttestation,
       "--builder-attestation-signature", artifacts.builderAttestationSignature,
       "--trusted-builder-public-key", artifacts.trustedBuilderPublicKey,
@@ -147,6 +149,8 @@ async function makeArtifacts(root, sourceCommit, sourceTree) {
     kernel: "kernel fixture\n",
     supervisor: "supervisor fixture\n",
     relay: "relay fixture\n",
+    appPackage: "app package fixture\n",
+    appStorage: "app storage fixture\n",
   }
   const paths = {}
   for (const [name, bytes] of Object.entries(contents)) {
@@ -166,6 +170,8 @@ async function makeArtifacts(root, sourceCommit, sourceTree) {
       { name: "chariox-kernel", sha256: digest(contents.kernel) },
       { name: "chariox-managed-bootstrap", sha256: digest(contents.supervisor) },
       { name: "chariox-relay", sha256: digest(contents.relay) },
+      { name: "chariox-app-package", sha256: digest(contents.appPackage) },
+      { name: "chariox-app-storage", sha256: digest(contents.appStorage) },
     ],
   }))
   const builderAttestation = join(root, "build-attestation.json")
