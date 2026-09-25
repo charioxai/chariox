@@ -28,18 +28,14 @@ impl KernelRuntimeOwnedState {
                     .to_string(),
             });
         }
-        let alias = request.alias.or_else(|| {
-            let name = agent.alias().unwrap_or(agent.id());
-            let reason = match request.reason {
-                crate::session::WorkflowOriginReason::Trigger => "trigger",
-                crate::session::WorkflowOriginReason::Deploy => "deploy",
-            };
-            Some(format!("{name}-{reason}"))
-        });
+        let alias = match request.alias {
+            Some(alias) => alias,
+            None => self.unused_agent_workflow_alias(&request.session_id, &agent, request.reason),
+        };
         let workflow = self
             .session_store
             .write()
-            .create_workflow_controlled_by_metaagent(&request.session_id, alias, None)?;
+            .create_workflow_controlled_by_metaagent(&request.session_id, Some(alias), None)?;
         self.session_store.write().set_workflow_origin(
             &request.session_id,
             workflow.id(),
@@ -80,5 +76,31 @@ impl KernelRuntimeOwnedState {
             endpoint,
             session,
         })
+    }
+
+    /// `<agent>-<reason>`, then `-2`, `-3`... so repeated triggers or
+    /// deployments of one agent each get their own ordinary alias.
+    fn unused_agent_workflow_alias(
+        &self,
+        session_id: &str,
+        agent: &crate::agent::AgentInstance,
+        reason: crate::session::WorkflowOriginReason,
+    ) -> String {
+        let reason = match reason {
+            crate::session::WorkflowOriginReason::Trigger => "trigger",
+            crate::session::WorkflowOriginReason::Deploy => "deploy",
+        };
+        let base = format!("{}-{reason}", agent.alias().unwrap_or(agent.id()));
+        let sessions = self.session_store.read();
+        (1..)
+            .map(|n| {
+                if n == 1 {
+                    base.clone()
+                } else {
+                    format!("{base}-{n}")
+                }
+            })
+            .find(|alias| sessions.resolve_workflow_ref(session_id, alias).is_err())
+            .unwrap_or(base)
     }
 }

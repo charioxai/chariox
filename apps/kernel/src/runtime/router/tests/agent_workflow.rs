@@ -48,6 +48,22 @@ async fn a_trigger_gives_the_agent_one_visible_workflow_with_its_origin() {
     assert_eq!(origin.reason, WorkflowOriginReason::Trigger);
     assert_eq!(origin.surface, WorkflowOriginSurface::Web);
 
+    // Another trigger for the same agent gets its own ordinary alias.
+    let again = create(agent.id());
+    match router
+        .dispatch(
+            KernelCommand::from_local_request("agent-workflow-again", None, None, &again),
+            again,
+        )
+        .await
+        .expect("a second workflow for the agent should be created")
+    {
+        LocalDaemonResponse::AgentWorkflowCreated { workflow, .. } => {
+            assert_eq!(workflow.alias(), Some("builder-trigger-2"))
+        }
+        other => panic!("unexpected response: {other:?}"),
+    }
+
     let unknown = create("agent-missing");
     assert!(matches!(
         router
