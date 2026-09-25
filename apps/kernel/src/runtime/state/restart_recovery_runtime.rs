@@ -72,6 +72,7 @@ impl KernelRuntimeState {
         let recovery_targets = self.durable_restart_recovery_targets();
         let dispatch_targets = self.durable_restart_dispatch_targets(&recovery_targets);
         let queued_recovery_targets = self.durable_restart_queued_recovery_targets();
+        let uncertain_steer_targets = self.durable_restart_uncertain_remote_steer_targets();
         crate::logging::info_with_fields(
             "durable_state.recovery",
             "captured durable restart recovery targets",
@@ -79,12 +80,20 @@ impl KernelRuntimeState {
                 "active_prompt_targets": recovery_targets.len(),
                 "unobserved_dispatch_targets": dispatch_targets.len(),
                 "queued_publication_targets": queued_recovery_targets.len(),
+                "uncertain_remote_steer_targets": uncertain_steer_targets.len(),
             }),
         );
         let state = self.clone();
         DurableRestartRecoveryTask(tokio::spawn(async move {
             state.owned.publication_activation.wait().await;
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            for (session_id, agent_id, prompt_id) in uncertain_steer_targets {
+                state.spawn_remote_queued_steer_receipt_reconciliation(
+                    session_id,
+                    agent_id,
+                    prompt_id,
+                );
+            }
             let mut attempt = 0_u32;
             let mut pending_dispatch_targets = dispatch_targets;
             let summary = loop {
@@ -264,6 +273,34 @@ impl KernelRuntimeState {
                                 prompt.id().to_string(),
                             )
                         })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    fn durable_restart_uncertain_remote_steer_targets(&self) -> BTreeSet<DurableRestartRecoveryTarget> {
+        self.owned
+            .session_store
+            .list_all_sessions()
+            .into_iter()
+            .flat_map(|session| {
+                session
+                    .prompt_states()
+                    .iter()
+                    .flat_map(|(agent_id, prompt_state)| {
+                        prompt_state
+                            .queued_prompts()
+                            .iter()
+                            .filter(|prompt| prompt.remote_steer_outcome_uncertainty().is_some())
+                            .map(|prompt| {
+                                (
+                                    session.id().to_string(),
+                                    agent_id.to_string(),
+                                    prompt.id().to_string(),
+                                )
+                            })
+                            .collect::<Vec<_>>()
                     })
                     .collect::<Vec<_>>()
             })

@@ -85,7 +85,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// for `chariox.send_agent_message`; mixed-version peers fail before dispatch.
 /// Version 58 carries the home-owned Room browser capability in extension manifests.
 /// Version 59 adds read-only exact-home-prompt receipt queries for leased workers.
-/// Version 60 requires exact home-prompt and worker-run identities for leased cancellation.
+/// Version 60 requires exact home-prompt and worker-run identities for leased cancellation
+/// and carries durable exact-identity receipts for queued prompt steers.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 60;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
@@ -440,6 +441,9 @@ pub struct RemoteGitTurnContext {
 pub enum LeasedPromptReceiptPhase {
     Active,
     Completed,
+    SteerDispatching,
+    SteerAccepted,
+    SteerRejected,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -447,6 +451,10 @@ pub struct LeasedPromptReceipt {
     pub home_prompt_id: String,
     pub worker_provider_run_id: String,
     pub phase: LeasedPromptReceiptPhase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_home_prompt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_lease_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -703,6 +711,13 @@ pub enum RelayPeerRequest {
     GetLeasedPromptReceipt {
         leased_agent_id: String,
         home_prompt_id: String,
+    },
+    ReconcileLeasedPromptSteerReceipt {
+        leased_agent_id: String,
+        steer_id: String,
+        target_home_prompt_id: String,
+        worker_provider_run_id: String,
+        execution_lease_id: String,
     },
     SteerLeasedPrompt {
         leased_agent_id: String,
@@ -1387,7 +1402,7 @@ mod tests {
     }
 
     #[test]
-    fn leased_prompt_receipt_query_is_read_only_and_versioned_at_protocol_60() {
+    fn leased_prompt_receipt_query_and_steer_reconciliation_are_versioned_at_protocol_60() {
         assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 60);
         let request = RelayPeerRequest::GetLeasedPromptReceipt {
             leased_agent_id: "leased-agent-1".to_string(),
@@ -1407,12 +1422,39 @@ mod tests {
                 .expect("request should deserialize"),
             request
         );
+        let reconcile = RelayPeerRequest::ReconcileLeasedPromptSteerReceipt {
+            leased_agent_id: "leased-agent-1".to_string(),
+            steer_id: "queued-steer-1".to_string(),
+            target_home_prompt_id: "active-home-prompt-1".to_string(),
+            worker_provider_run_id: "worker-run-1".to_string(),
+            execution_lease_id: "lease-1".to_string(),
+        };
+        let reconcile_snapshot =
+            serde_json::to_value(&reconcile).expect("reconcile request should serialize");
+        assert_eq!(
+            reconcile_snapshot,
+            serde_json::json!({
+                "kind": "reconcile_leased_prompt_steer_receipt",
+                "leased_agent_id": "leased-agent-1",
+                "steer_id": "queued-steer-1",
+                "target_home_prompt_id": "active-home-prompt-1",
+                "worker_provider_run_id": "worker-run-1",
+                "execution_lease_id": "lease-1"
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<RelayPeerRequest>(reconcile_snapshot)
+                .expect("reconcile request should deserialize"),
+            reconcile
+        );
 
         let active = RelayPeerResponse::LeasedPromptReceiptQueried {
             receipt: Some(LeasedPromptReceipt {
                 home_prompt_id: "home-prompt-1".to_string(),
                 worker_provider_run_id: "worker-run-1".to_string(),
                 phase: LeasedPromptReceiptPhase::Active,
+                target_home_prompt_id: None,
+                execution_lease_id: None,
             }),
         };
         let active_snapshot = serde_json::to_value(&active).expect("response should serialize");
@@ -1438,6 +1480,8 @@ mod tests {
                 home_prompt_id: "home-prompt-1".to_string(),
                 worker_provider_run_id: "worker-run-1".to_string(),
                 phase: LeasedPromptReceiptPhase::Completed,
+                target_home_prompt_id: None,
+                execution_lease_id: None,
             }),
         };
         let completed_snapshot =
@@ -1470,6 +1514,46 @@ mod tests {
                 .expect("empty response should deserialize"),
             none
         );
+
+        let steer_receipts = [
+            (
+                LeasedPromptReceiptPhase::SteerDispatching,
+                "steer_dispatching",
+            ),
+            (LeasedPromptReceiptPhase::SteerAccepted, "steer_accepted"),
+            (LeasedPromptReceiptPhase::SteerRejected, "steer_rejected"),
+        ];
+        for (phase, phase_wire) in steer_receipts {
+            let response = RelayPeerResponse::LeasedPromptReceiptQueried {
+                receipt: Some(LeasedPromptReceipt {
+                    home_prompt_id: "queued-steer-1".to_string(),
+                    worker_provider_run_id: "worker-run-1".to_string(),
+                    phase,
+                    target_home_prompt_id: Some("active-home-prompt-1".to_string()),
+                    execution_lease_id: Some("lease-1".to_string()),
+                }),
+            };
+            let snapshot = serde_json::to_value(&response)
+                .expect("queued-steer receipt should serialize");
+            assert_eq!(
+                snapshot,
+                serde_json::json!({
+                    "kind": "leased_prompt_receipt_queried",
+                    "receipt": {
+                        "home_prompt_id": "queued-steer-1",
+                        "worker_provider_run_id": "worker-run-1",
+                        "phase": phase_wire,
+                        "target_home_prompt_id": "active-home-prompt-1",
+                        "execution_lease_id": "lease-1"
+                    }
+                })
+            );
+            assert_eq!(
+                serde_json::from_value::<RelayPeerResponse>(snapshot)
+                    .expect("queued-steer receipt should deserialize"),
+                response
+            );
+        }
     }
 
     #[test]

@@ -886,6 +886,32 @@ pub(super) async fn handle_daemon_peer_request(
                 };
             }
         },
+        RelayPeerRequest::ReconcileLeasedPromptSteerReceipt {
+            leased_agent_id,
+            steer_id,
+            target_home_prompt_id,
+            worker_provider_run_id,
+            execution_lease_id,
+        } => match router
+            .relay_reconcile_leased_prompt_steer_receipt(
+                &leased_agent_id,
+                &steer_id,
+                &target_home_prompt_id,
+                &worker_provider_run_id,
+                &execution_lease_id,
+            )
+            .await
+        {
+            Ok(receipt) => RelayPeerResponse::LeasedPromptReceiptQueried {
+                receipt: Some(receipt),
+            },
+            Err(error) => {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(map_relay_error(&error)),
+                };
+            }
+        },
         RelayPeerRequest::SteerLeasedPrompt {
             leased_agent_id,
             steer_id,
@@ -1931,6 +1957,9 @@ fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
         | RelayPeerRequest::GetLeasedPromptReceipt {
             leased_agent_id, ..
         }
+        | RelayPeerRequest::ReconcileLeasedPromptSteerReceipt {
+            leased_agent_id, ..
+        }
         | RelayPeerRequest::SteerLeasedPrompt {
             leased_agent_id, ..
         }
@@ -2164,7 +2193,7 @@ mod tests {
     }
 
     #[test]
-    fn lease_worker_receipt_query_returns_only_exact_active_prompt_without_mutation() {
+    fn lease_worker_receipt_query_and_reconciliation_preserve_exact_identity() {
         std::thread::Builder::new()
             .name("lease-worker-prompt-receipt".to_string())
             .stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
@@ -2287,6 +2316,8 @@ mod tests {
                     home_prompt_id: home_prompt_id.to_string(),
                     worker_provider_run_id: provider_run_id.clone(),
                     phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
+                    target_home_prompt_id: None,
+                    execution_lease_id: None,
                 }),
             }
         );
@@ -2312,7 +2343,7 @@ mod tests {
             &state,
             &outgoing_tx,
             "source-kernel-1",
-            identity,
+            identity.clone(),
             &source_private_key,
             &target_public_key,
             query(home_prompt_id),
@@ -2323,8 +2354,113 @@ mod tests {
             RelayPeerResponse::LeasedPromptReceiptQueried {
                 receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
                     home_prompt_id: home_prompt_id.to_string(),
-                    worker_provider_run_id: provider_run_id,
+                    worker_provider_run_id: provider_run_id.clone(),
                     phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
+                    target_home_prompt_id: None,
+                    execution_lease_id: None,
+                }),
+            }
+        );
+
+        let tombstone_steer_id = "queued-steer-tombstone-handler";
+        let reconcile_request = RelayPeerRequest::ReconcileLeasedPromptSteerReceipt {
+            leased_agent_id: leased_agent.id.clone(),
+            steer_id: tombstone_steer_id.to_string(),
+            target_home_prompt_id: home_prompt_id.to_string(),
+            worker_provider_run_id: provider_run_id.clone(),
+            execution_lease_id: lease.id.clone(),
+        };
+        let reconciled = send_lease_worker_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "source-kernel-1",
+            identity.clone(),
+            &source_private_key,
+            &target_public_key,
+            reconcile_request,
+        )
+        .await;
+        assert_eq!(
+            decode_lease_worker_response(&source_private_key, reconciled),
+            RelayPeerResponse::LeasedPromptReceiptQueried {
+                receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                    home_prompt_id: tombstone_steer_id.to_string(),
+                    worker_provider_run_id: provider_run_id.clone(),
+                    phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerRejected,
+                    target_home_prompt_id: Some(home_prompt_id.to_string()),
+                    execution_lease_id: Some(lease.id.clone()),
+                }),
+            }
+        );
+
+        let input_count_before_late_request = worker_app
+            .lock()
+            .await
+            .terminal()
+            .input_records()
+            .len();
+        let late_steer = send_lease_worker_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "source-kernel-1",
+            identity.clone(),
+            &source_private_key,
+            &target_public_key,
+            RelayPeerRequest::SteerLeasedPrompt {
+                leased_agent_id: leased_agent.id.clone(),
+                steer_id: tombstone_steer_id.to_string(),
+                target_home_prompt_id: home_prompt_id.to_string(),
+                prompt: "late original steer must not reach provider input\n".to_string(),
+                hidden_system_context: String::new(),
+                attachments: Vec::new(),
+                required_skills: None,
+            },
+        )
+        .await;
+        let late_steer_error = late_steer
+            .error
+            .expect("a late original request must be rejected by its exact tombstone");
+        assert_eq!(late_steer_error.code, "transport_error");
+        assert!(late_steer_error.message.contains("already rejected"));
+        assert_eq!(
+            worker_app
+                .lock()
+                .await
+                .terminal()
+                .input_records()
+                .len(),
+            input_count_before_late_request,
+            "rejected late request must not reach provider input"
+        );
+
+        let tombstone_retry = send_lease_worker_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "source-kernel-1",
+            identity,
+            &source_private_key,
+            &target_public_key,
+            RelayPeerRequest::ReconcileLeasedPromptSteerReceipt {
+                leased_agent_id: leased_agent.id,
+                steer_id: tombstone_steer_id.to_string(),
+                target_home_prompt_id: home_prompt_id.to_string(),
+                worker_provider_run_id: provider_run_id.clone(),
+                execution_lease_id: lease.id.clone(),
+            },
+        )
+        .await;
+        assert_eq!(
+            decode_lease_worker_response(&source_private_key, tombstone_retry),
+            RelayPeerResponse::LeasedPromptReceiptQueried {
+                receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                    home_prompt_id: tombstone_steer_id.to_string(),
+                    worker_provider_run_id: provider_run_id,
+                    phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerRejected,
+                    target_home_prompt_id: Some(home_prompt_id.to_string()),
+                    execution_lease_id: Some(lease.id),
                 }),
             }
         );

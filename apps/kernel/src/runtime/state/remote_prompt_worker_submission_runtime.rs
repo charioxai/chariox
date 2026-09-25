@@ -220,6 +220,80 @@ pub(super) async fn query_remote_prompt_worker_receipt(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn query_remote_queued_steer_receipt(
+    state: &KernelRuntimeState,
+    agent_id: &str,
+    queued_prompt_id: &str,
+    worker_kernel_id: &str,
+    worker_machine_id: &str,
+    leased_agent_id: &str,
+    target_home_prompt_id: &str,
+    worker_provider_run_id: &str,
+    execution_lease_id: &str,
+) -> Result<Option<crate::transport::relay_peer::LeasedPromptReceipt>, DaemonError> {
+    let agent = state.owned.agent_store.get_agent(agent_id)?;
+    let remote_execution = agent
+        .remote_execution()
+        .cloned()
+        .filter(|binding| {
+            binding.worker_kernel_id == worker_kernel_id
+                && binding.worker_machine_id == worker_machine_id
+                && binding.leased_agent_id == leased_agent_id
+                && binding.execution_lease_id == execution_lease_id
+        })
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "query queued steer receipt",
+            message: "the current remote worker binding no longer matches the queued steer".to_string(),
+        })?;
+    if !remote_execution.relay_peer_protocol_compatible() {
+        return Err(DaemonError::LocalTransport {
+            operation: "query queued steer receipt",
+            message: format!(
+                "worker `{worker_kernel_id}` does not support queued-steer receipt reconciliation"
+            ),
+        });
+    }
+    let relay_config = state
+        .with_app_side_effect(move |app| app.relay_config_for_remote_execution(&remote_execution))
+        .await;
+    let response =
+        crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+            &relay_config,
+            ClientTarget {
+                daemon_id: Some(worker_kernel_id.to_string()),
+                daemon_alias: None,
+            },
+            RelayPeerRequest::ReconcileLeasedPromptSteerReceipt {
+                leased_agent_id: leased_agent_id.to_string(),
+                steer_id: queued_prompt_id.to_string(),
+                target_home_prompt_id: target_home_prompt_id.to_string(),
+                worker_provider_run_id: worker_provider_run_id.to_string(),
+                execution_lease_id: execution_lease_id.to_string(),
+            },
+            REMOTE_PROMPT_RECEIPT_QUERY_TIMEOUT,
+        )
+        .await?;
+    match response {
+        RelayPeerResponse::LeasedPromptReceiptQueried { receipt } => {
+            if receipt
+                .as_ref()
+                .is_some_and(|receipt| receipt.home_prompt_id != queued_prompt_id)
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "reconcile queued steer receipt",
+                    message: "worker returned a receipt for a different queued prompt".to_string(),
+                });
+            }
+            Ok(receipt)
+        }
+        other => Err(DaemonError::LocalTransport {
+            operation: "query queued steer receipt",
+            message: format!("unexpected worker receipt response: {other:?}"),
+        }),
+    }
+}
+
 pub(super) async fn query_remote_prompt_worker_receipt_with_transport<F, Fut>(
     state: &KernelRuntimeState,
     dispatch: &crate::app::KernelRemotePromptDispatch,

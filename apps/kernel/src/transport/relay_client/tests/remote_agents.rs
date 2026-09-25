@@ -696,7 +696,7 @@ fn failed_remote_queued_prompt_steer_advances_after_concurrent_completion() {
 }
 
 #[test]
-fn ambiguous_remote_queued_steer_reply_keeps_exact_prompt_blocked_across_restore() {
+fn ambiguous_remote_queued_steer_reply_reconciles_exact_receipt_without_replay() {
     run_async_with_large_test_stack("remote-queued-steer-uncertain", || {
         remote_machine_agents_execute_prompts_through_the_home_session_async(
             false, false, true, false, false, true,
@@ -1390,6 +1390,27 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                     Some(uncertainty),
                     "durable state must identify the worker run before any reply can be lost"
                 );
+                let public_session = serde_json::to_vec(&snapshot)
+                    .expect("home prompt state should serialize for restart");
+                let mut restarted_session = serde_json::from_slice::<
+                    crate::session::RuntimeSession,
+                >(&public_session)
+                .expect("home prompt state should deserialize for restart");
+                restarted_session
+                    .restore_durable_prompt_private_states(&durable.private_states);
+                let restarted_prompt_owner = crate::runtime::prompt_state::PromptStateOwner::default();
+                assert!(restarted_prompt_owner
+                    .peek_next_queued_prompt(&restarted_session, &remote_agent_id)
+                    .is_none(), "restart must not promote an uncertain queued steer");
+                assert!(restarted_prompt_owner
+                    .activate_next_queued_prompt_with_prompt_id(
+                        &restarted_session,
+                        &remote_agent_id,
+                        Some(&queued_prompt_id),
+                        "restart-must-not-promote-uncertain-steer".to_string(),
+                    )
+                    .expect("restored uncertain queue should remain fail closed")
+                    .is_none());
             }
         }
         if fail_queued_prompt_reply {
@@ -1541,88 +1562,80 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                 "the worker must accept the steer before its response payload is lost"
             );
 
-            let mut home = app_home.lock().await;
-            let ordinary_advance = crate::app::KernelAgentService::new(&mut home)
-                .admit_next_queued_remote_prompt(&session_id, &remote_agent_id, None)
-                .expect("uncertain queue admission should fail closed");
+            let steering_merge_key =
+                crate::history::steering_prompt_merge_key(&queued_prompt_id);
+            let mut reconciled = false;
+            for _ in 0..240 {
+                let (queued, active, matching_history) = {
+                    let mut home = app_home.lock().await;
+                    let snapshot = home
+                        .session_snapshot(&session_id)
+                        .expect("home session should remain available");
+                    let queued = snapshot
+                        .queued_prompts_for_agent(&remote_agent_id)
+                        .is_some_and(|prompts| {
+                            prompts.iter().any(|prompt| prompt.id() == queued_prompt_id)
+                        });
+                    let active = snapshot.active_prompt_for_agent(&remote_agent_id).is_some();
+                    let matching_history = home
+                        .operational_history_store()
+                        .load_session_events(&session_id, Some(&remote_agent_id))
+                        .expect("home history should load")
+                        .into_iter()
+                        .filter(|event| {
+                            event
+                                .metadata
+                                .get("merge_key")
+                                .and_then(serde_json::Value::as_str)
+                                == Some(steering_merge_key.as_str())
+                        })
+                        .count();
+                    (queued, active, matching_history)
+                };
+                if !queued && !active && matching_history == 1 {
+                    reconciled = true;
+                    break;
+                }
+                sleep(Duration::from_millis(25)).await;
+            }
             assert!(
-                ordinary_advance.is_none(),
-                "ordinary advancement must not submit a steer the worker may already have accepted"
+                reconciled,
+                "the exact accepted worker receipt should remove only its queue item and merge one history event"
             );
-            let snapshot = home
-                .sessions()
-                .get_session(&session_id)
-                .expect("home session should remain available");
-            let queued = snapshot
-                .queued_prompts_for_agent(&remote_agent_id)
-                .and_then(|prompts| prompts.front())
-                .expect("uncertain exact prompt must remain in the queue");
-            assert_eq!(queued.id(), queued_prompt_id);
-            assert!(queued.remote_steer_reserved());
-            let uncertainty = queued
-                .remote_steer_outcome_uncertainty()
-                .expect("uncertain state should retain exact worker binding and run identity");
-            let expected_binding = home
-                .agents()
-                .get_agent(&remote_agent_id)
-                .expect("remote agent should remain available")
-                .remote_execution()
-                .cloned()
-                .expect("remote binding should remain available");
-            assert_eq!(uncertainty.0, "prompt-1");
+            let (queued, active, history) = {
+                let mut home = app_home.lock().await;
+                let snapshot = home
+                    .session_snapshot(&session_id)
+                    .expect("reconciled home session should snapshot");
+                let queued = snapshot
+                    .queued_prompts_for_agent(&remote_agent_id)
+                    .is_some_and(|prompts| {
+                        prompts.iter().any(|prompt| prompt.id() == queued_prompt_id)
+                    });
+                let active = snapshot.active_prompt_for_agent(&remote_agent_id).is_some();
+                let history = home
+                    .operational_history_store()
+                    .load_session_events(&session_id, Some(&remote_agent_id))
+                    .expect("reconciled history should load")
+                    .into_iter()
+                    .filter(|event| {
+                        event
+                            .metadata
+                            .get("merge_key")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(steering_merge_key.as_str())
+                    })
+                    .collect::<Vec<_>>();
+                (queued, active, history)
+            };
+            assert!(!queued, "receipt reconciliation must settle the exact queued ID");
+            assert!(!active, "accepted steer reconciliation must not promote a second prompt");
+            assert_eq!(history.len(), 1, "history reconciliation must be idempotent");
             assert_eq!(
-                uncertainty.1.as_deref(),
-                Some(worker_provider_run_id.as_str())
+                history[0].provider_run_id.as_deref(),
+                Some(projected_provider_run_id.as_str()),
+                "reconciled history must identify the exact worker run projection"
             );
-            assert_eq!(uncertainty.2, expected_binding.worker_kernel_id);
-            assert_eq!(uncertainty.3, expected_binding.worker_machine_id);
-            assert_eq!(uncertainty.4, expected_binding.execution_lease_id);
-            assert_eq!(uncertainty.5, leased_agent_id);
-
-            let durable = crate::durable_prompt_state::DurablePromptStateEventPayload::capture(
-                &snapshot,
-                &remote_agent_id,
-            );
-            let encoded = serde_json::to_vec(&durable)
-                .expect("uncertain prompt state should serialize durably");
-            let mut restored = serde_json::from_slice::<
-                crate::durable_prompt_state::DurablePromptStateEventPayload,
-            >(&encoded)
-            .expect("durable uncertain prompt state should restore");
-            restored.restore_private_states();
-            let restored_prompt = restored
-                .queued_prompts
-                .front()
-                .expect("restored uncertain prompt should remain queued");
-            assert_eq!(restored_prompt.id(), queued_prompt_id);
-            assert!(restored_prompt.remote_steer_reserved());
-            assert_eq!(
-                restored_prompt.remote_steer_outcome_uncertainty(),
-                Some(uncertainty),
-                "restart restoration must preserve the exact steer receipt context"
-            );
-            let public_session = serde_json::to_vec(&snapshot)
-                .expect("home prompt state should serialize for restart");
-            let mut restarted_session = serde_json::from_slice::<crate::session::RuntimeSession>(
-                &public_session,
-            )
-            .expect("home prompt state should deserialize for restart");
-            restarted_session
-                .restore_durable_prompt_private_states(&durable.private_states);
-            let restarted_prompt_owner = crate::runtime::prompt_state::PromptStateOwner::default();
-            assert!(restarted_prompt_owner
-                .peek_next_queued_prompt(&restarted_session, &remote_agent_id)
-                .is_none());
-            assert!(restarted_prompt_owner
-                .activate_next_queued_prompt_with_prompt_id(
-                    &restarted_session,
-                    &remote_agent_id,
-                    Some(&queued_prompt_id),
-                    "restart-must-not-promote-uncertain-steer".to_string(),
-                )
-                .expect("restored uncertain queue should remain fail closed")
-                .is_none());
-
             let worker_steer_deliveries = app_worker
                 .lock()
                 .await
@@ -1634,8 +1647,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                         .contains("REMOTE_QUEUE_STEER_DELIVERY")
                 })
                 .count();
-            assert_eq!(worker_steer_deliveries, 1, "no duplicate worker prompt is allowed");
-            drop(home);
+            assert_eq!(worker_steer_deliveries, 1, "receipt recovery must never resend the steer");
             let _ = shutdown_home_tx.send(true);
             let _ = shutdown_worker_tx.send(true);
             connector_home.await.expect("home connector should join");

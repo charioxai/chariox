@@ -56,6 +56,11 @@ fn remote_prompt_receipt_action(
         crate::transport::relay_peer::LeasedPromptReceiptPhase::Completed => Ok(
             RemotePromptReceiptAction::DrainCompletedProjection(receipt.worker_provider_run_id),
         ),
+        crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerDispatching
+        | crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerAccepted
+        | crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerRejected => Err(
+            "worker returned a queued-steer receipt while reconciling an active prompt",
+        ),
     }
 }
 
@@ -2728,6 +2733,8 @@ mod tests {
                         home_prompt_id: listener_prompt_id.clone(),
                         worker_provider_run_id: "worker-run-completed-receipt".to_string(),
                         phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Completed,
+                        target_home_prompt_id: None,
+                        execution_lease_id: None,
                     }),
                 },
             )
@@ -2886,6 +2893,8 @@ mod tests {
                         home_prompt_id: "different-home-prompt".to_string(),
                         worker_provider_run_id: "worker-run-conflicting-receipt".to_string(),
                         phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
+                        target_home_prompt_id: None,
+                        execution_lease_id: None,
                     }),
                 },
             )
@@ -2975,6 +2984,8 @@ mod tests {
             home_prompt_id: "home-prompt-1".to_string(),
             worker_provider_run_id: "worker-run-1".to_string(),
             phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
+            target_home_prompt_id: None,
+            execution_lease_id: None,
         };
         assert_eq!(
             remote_prompt_receipt_action("home-prompt-1", Some(active.clone())),
@@ -2990,6 +3001,8 @@ mod tests {
             home_prompt_id: "home-prompt-1".to_string(),
             worker_provider_run_id: "worker-run-2".to_string(),
             phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Completed,
+            target_home_prompt_id: None,
+            execution_lease_id: None,
         };
         assert_eq!(
             remote_prompt_receipt_action("home-prompt-1", Some(completed.clone())),
@@ -3013,6 +3026,8 @@ mod tests {
                     home_prompt_id: "other-prompt".to_string(),
                     worker_provider_run_id: "worker-run-3".to_string(),
                     phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
+                    target_home_prompt_id: None,
+                    execution_lease_id: None,
                 })
             ),
             Err("worker receipt names a different home prompt")
@@ -3112,6 +3127,8 @@ mod tests {
                         home_prompt_id: active_prompt_id,
                         worker_provider_run_id: "worker-receipt-run".to_string(),
                         phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
+                        target_home_prompt_id: None,
+                        execution_lease_id: None,
                     }),
                 })
             },
@@ -3132,6 +3149,8 @@ mod tests {
                         home_prompt_id: prompt_id.to_string(),
                         worker_provider_run_id: "worker-completed-run".to_string(),
                         phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Completed,
+                        target_home_prompt_id: None,
+                        execution_lease_id: None,
                     }),
                 })
             },

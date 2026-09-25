@@ -584,6 +584,37 @@ impl PromptQueueItem {
             })
     }
 
+    pub(crate) fn clear_remote_steer_outcome_uncertainty_for_receipt(
+        &self,
+        target_home_prompt_id: &str,
+        worker_provider_run_id: &str,
+        worker_kernel_id: &str,
+        worker_machine_id: &str,
+        execution_lease_id: &str,
+        leased_agent_id: &str,
+    ) -> bool {
+        let mut uncertainty = self
+            .remote_steer_reservation
+            .uncertainty
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(current) = uncertainty.as_ref() else {
+            return false;
+        };
+        if current.target_home_prompt_id != target_home_prompt_id
+            || current.worker_provider_run_id.as_deref() != Some(worker_provider_run_id)
+            || current.worker_kernel_id != worker_kernel_id
+            || current.worker_machine_id != worker_machine_id
+            || current.execution_lease_id != execution_lease_id
+            || current.leased_agent_id != leased_agent_id
+        {
+            return false;
+        }
+        uncertainty.take();
+        self.remote_steer_reservation.id.store(0, Ordering::Release);
+        true
+    }
+
     pub(crate) fn remote_steer_outcome_uncertainty(
         &self,
     ) -> Option<(String, Option<String>, String, String, String, String)> {

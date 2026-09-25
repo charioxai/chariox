@@ -165,6 +165,8 @@ struct KernelRuntimeOwnedState {
     remote_prompt_projection_drains:
         Arc<std::sync::Mutex<BTreeMap<(String, String), u64>>>,
     remote_prompt_recoveries: Arc<std::sync::Mutex<BTreeMap<(String, String), u64>>>,
+    remote_steer_receipt_reconciliations:
+        Arc<std::sync::Mutex<BTreeSet<(String, String, String)>>>,
     slice_private_relay_connectors: Arc<Mutex<BTreeMap<String, SlicePrivateRelayConnector>>>,
     workflow_publication_runtimes:
         crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore,
@@ -648,6 +650,9 @@ impl KernelRuntimeState {
                 relay_state,
                 remote_prompt_projection_drains: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
                 remote_prompt_recoveries: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
+                remote_steer_receipt_reconciliations: Arc::new(std::sync::Mutex::new(
+                    BTreeSet::new(),
+                )),
                 slice_private_relay_connectors: Arc::new(Mutex::new(BTreeMap::new())),
                 workflow_publication_runtimes:
                     crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore::default(),

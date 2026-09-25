@@ -430,10 +430,49 @@ impl KernelRuntimeState {
         let _operation = self.leased_agent_operations.lock(leased_agent_id).await;
         let leased_agent_id = leased_agent_id.to_string();
         let home_prompt_id = home_prompt_id.to_string();
+        let provider_run_id = self
+            .with_app_side_effect(|app| {
+                RemoteLeaseRuntime::new(app)
+                    .leased_prompt_receipt_provider_run_id(&leased_agent_id, &home_prompt_id)
+            })
+            .await?;
+        let _provider_lane = match provider_run_id.as_deref() {
+            Some(provider_run_id) => Some(self.provider_runtime_lanes.acquire(provider_run_id).await),
+            None => None,
+        };
         self.with_app_side_effect(move |app| {
             let mut runtime = RemoteLeaseRuntime::new(app);
             runtime.consume_leased_agent_authorization(&leased_agent_id)?;
             runtime.leased_prompt_receipt(&leased_agent_id, &home_prompt_id)
+        })
+        .await
+    }
+
+    pub(crate) async fn reconcile_relay_leased_prompt_steer_receipt(
+        &self,
+        leased_agent_id: &str,
+        steer_id: &str,
+        target_home_prompt_id: &str,
+        worker_provider_run_id: &str,
+        execution_lease_id: &str,
+    ) -> Result<crate::transport::relay_peer::LeasedPromptReceipt, DaemonError> {
+        let _operation = self.leased_agent_operations.lock(leased_agent_id).await;
+        let _provider_lane = self.provider_runtime_lanes.acquire(worker_provider_run_id).await;
+        let leased_agent_id = leased_agent_id.to_string();
+        let steer_id = steer_id.to_string();
+        let target_home_prompt_id = target_home_prompt_id.to_string();
+        let worker_provider_run_id = worker_provider_run_id.to_string();
+        let execution_lease_id = execution_lease_id.to_string();
+        self.with_app_side_effect(move |app| {
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            runtime.consume_leased_agent_authorization(&leased_agent_id)?;
+            runtime.reconcile_leased_prompt_steer_receipt(
+                &leased_agent_id,
+                &steer_id,
+                &target_home_prompt_id,
+                &worker_provider_run_id,
+                &execution_lease_id,
+            )
         })
         .await
     }
@@ -557,11 +596,14 @@ impl KernelRuntimeState {
                     session_id: format!("leased-agent:{leased_agent_id}"),
                 })?;
             let _permit = self.provider_runtime_lanes.acquire(&provider_run_id).await;
-            let (prepared_provider_run_id, dispatch) = self
+            self.with_app_side_effect(|app| {
+                RemoteLeaseRuntime::new(app)
+                    .consume_leased_agent_authorization(&leased_agent_id)
+            })
+            .await?;
+            let prepared_result = self
                 .with_app_side_effect(|app| {
-                    let mut runtime = RemoteLeaseRuntime::new(app);
-                    runtime.consume_leased_agent_authorization(&leased_agent_id)?;
-                    runtime.prepare_leased_prompt_steer(
+                    RemoteLeaseRuntime::new(app).prepare_leased_prompt_steer(
                         &leased_agent_id,
                         &steer_id,
                         &target_home_prompt_id,
@@ -571,32 +613,95 @@ impl KernelRuntimeState {
                         required_skills.clone(),
                     )
                 })
-                .await?;
+                .await;
+            let (prepared_provider_run_id, dispatch) = match prepared_result {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    let _ = self
+                        .with_app_side_effect(|app| {
+                            RemoteLeaseRuntime::new(app).mark_leased_prompt_steer_rejected(
+                                &leased_agent_id,
+                                &steer_id,
+                                &target_home_prompt_id,
+                                &provider_run_id,
+                            )
+                        })
+                        .await;
+                    return Err(error);
+                }
+            };
             if prepared_provider_run_id != provider_run_id {
                 continue;
             }
             let Some(dispatch) = dispatch else {
                 return Ok((provider_run_id, true));
             };
-            let reserved = self
+            let reserve_result = self
                 .with_app_side_effect(|app| {
                     RemoteLeaseRuntime::new(app).reserve_leased_prompt_steer(
                         &leased_agent_id,
                         &steer_id,
                         &target_home_prompt_id,
+                        &prepared_provider_run_id,
                     )
                 })
-                .await?;
+                .await;
+            let reserved = match reserve_result {
+                Ok(reserved) => reserved,
+                Err(error) => {
+                    let _ = self
+                        .with_app_side_effect(|app| {
+                            RemoteLeaseRuntime::new(app)
+                                .mark_leased_prompt_steer_definitely_not_accepted(
+                                &leased_agent_id,
+                                &steer_id,
+                                &target_home_prompt_id,
+                                &prepared_provider_run_id,
+                            )
+                        })
+                        .await;
+                    return Err(error);
+                }
+            };
             if !reserved {
                 return Ok((provider_run_id, true));
             }
-            if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
-                self.with_app_side_effect(|app| {
-                    RemoteLeaseRuntime::new(app)
-                        .rollback_leased_prompt_steer(&leased_agent_id, &steer_id);
-                })
-                .await;
-                return Err(error);
+            match self.enqueue_prompt_dispatch_with_acceptance(&dispatch).await {
+                Ok(true) => {
+                    self.with_app_side_effect(|app| {
+                        RemoteLeaseRuntime::new(app).mark_leased_prompt_steer_accepted(
+                            &leased_agent_id,
+                            &steer_id,
+                            &target_home_prompt_id,
+                            &prepared_provider_run_id,
+                        )
+                    })
+                    .await?;
+                }
+                Ok(false) => {
+                    let rejected = self
+                        .with_app_side_effect(|app| {
+                            RemoteLeaseRuntime::new(app)
+                                .mark_leased_prompt_steer_definitely_not_accepted(
+                                &leased_agent_id,
+                                &steer_id,
+                                &target_home_prompt_id,
+                                &prepared_provider_run_id,
+                            )
+                        })
+                        .await?;
+                    if !rejected {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "steer leased prompt",
+                            message: "worker did not enqueue the steer and could not persist an exact rejection receipt"
+                                .to_string(),
+                        });
+                    }
+                    return Err(DaemonError::NoActivePrompt {
+                        session_id: format!("leased-agent:{leased_agent_id}"),
+                    });
+                }
+                Err(error) => return Err(error),
             }
             return Ok((provider_run_id, false));
         }

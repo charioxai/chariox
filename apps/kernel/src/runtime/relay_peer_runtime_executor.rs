@@ -284,6 +284,25 @@ pub(crate) async fn query_relay_leased_prompt_receipt(
         .await
 }
 
+pub(crate) async fn reconcile_relay_leased_prompt_steer_receipt(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    steer_id: &str,
+    target_home_prompt_id: &str,
+    worker_provider_run_id: &str,
+    execution_lease_id: &str,
+) -> Result<crate::transport::relay_peer::LeasedPromptReceipt, DaemonError> {
+    runtime_state
+        .reconcile_relay_leased_prompt_steer_receipt(
+            leased_agent_id,
+            steer_id,
+            target_home_prompt_id,
+            worker_provider_run_id,
+            execution_lease_id,
+        )
+        .await
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn steer_relay_leased_prompt(
     runtime_state: &KernelRuntimeState,

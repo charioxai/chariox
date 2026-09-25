@@ -116,6 +116,7 @@ impl KernelRuntimeState {
                 )
             })
             .await;
+        let persisted_ok = persisted.is_ok();
         let prefix = match persisted {
             Ok(()) => format!(
                 "queued prompt `{}` remote steer outcome is uncertain for home prompt `{}` on worker `{}` run `{}`; the exact item is durably blocked until an exact worker receipt is reconciled",
@@ -136,10 +137,174 @@ impl KernelRuntimeState {
                     .unwrap_or("unknown"),
             ),
         };
+        if persisted_ok {
+            self.spawn_remote_queued_steer_receipt_reconciliation(
+                session_id.to_string(),
+                agent_id.to_string(),
+                queued_prompt.id().to_string(),
+            );
+        }
         DaemonError::LocalTransport {
             operation: "steer remote queued prompt",
             message: format!("{prefix}; relay result: {cause}"),
         }
+    }
+
+    pub(crate) fn spawn_remote_queued_steer_receipt_reconciliation(
+        &self,
+        session_id: String,
+        agent_id: String,
+        queued_prompt_id: String,
+    ) {
+        let key = (
+            session_id.clone(),
+            agent_id.clone(),
+            queued_prompt_id.clone(),
+        );
+        let inserted = self
+            .owned
+            .remote_steer_receipt_reconciliations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key.clone());
+        if !inserted {
+            return;
+        }
+        let state = self.clone();
+        tokio::spawn(async move {
+            let mut attempt = 0_u64;
+            let mut delay = std::time::Duration::from_secs(1);
+            loop {
+                match state
+                    .reconcile_remote_queued_steer_receipt_once(
+                        &session_id,
+                        &agent_id,
+                        &queued_prompt_id,
+                    )
+                    .await
+                {
+                    Ok(
+                        super::prompt_queue_owned_state::RemoteQueuedPromptSteerReceiptSettlement::Accepted
+                        | super::prompt_queue_owned_state::RemoteQueuedPromptSteerReceiptSettlement::Rejected
+                        | super::prompt_queue_owned_state::RemoteQueuedPromptSteerReceiptSettlement::AlreadySettled,
+                    ) => break,
+                    Ok(super::prompt_queue_owned_state::RemoteQueuedPromptSteerReceiptSettlement::Pending) => {
+                        if attempt == 0 || attempt % 60 == 0 {
+                            crate::logging::warn_with_fields(
+                                "daemon.remote_prompt_dispatch",
+                                "queued steer remains held because its exact worker receipt is still dispatching",
+                                serde_json::json!({
+                                    "session_id": session_id,
+                                    "agent_id": agent_id,
+                                    "queued_prompt_id": queued_prompt_id,
+                                }),
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        if attempt == 0 || attempt % 60 == 0 {
+                            crate::logging::warn_with_fields(
+                                "daemon.remote_prompt_dispatch",
+                                "queued steer remains held while waiting for its exact worker receipt",
+                                serde_json::json!({
+                                    "session_id": session_id,
+                                    "agent_id": agent_id,
+                                    "queued_prompt_id": queued_prompt_id,
+                                    "error": error.to_string(),
+                                }),
+                            );
+                        }
+                    }
+                }
+                attempt = attempt.saturating_add(1);
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(std::time::Duration::from_secs(30));
+            }
+            state
+                .owned
+                .remote_steer_receipt_reconciliations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&key);
+        });
+    }
+
+    async fn reconcile_remote_queued_steer_receipt_once(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        queued_prompt_id: &str,
+    ) -> Result<super::prompt_queue_owned_state::RemoteQueuedPromptSteerReceiptSettlement, DaemonError>
+    {
+        let Some(query) = self
+            .owned
+            .remote_queued_prompt_steer_receipt_query(
+                session_id,
+                agent_id,
+                queued_prompt_id,
+            )?
+        else {
+            return Ok(super::prompt_queue_owned_state::RemoteQueuedPromptSteerReceiptSettlement::AlreadySettled);
+        };
+        let Some(receipt) = super::remote_prompt_worker_submission_runtime::query_remote_queued_steer_receipt(
+            self,
+            agent_id,
+            queued_prompt_id,
+            &query.worker_kernel_id,
+            &query.worker_machine_id,
+            &query.leased_agent_id,
+            &query.target_home_prompt_id,
+            &query.worker_provider_run_id,
+            &query.execution_lease_id,
+        )
+        .await?
+        else {
+            // A conforming worker returns an exact accepted, dispatching, or
+            // rejection-tombstone receipt. A missing response is not evidence
+            // that the original relay request was never accepted.
+            return Ok(super::prompt_queue_owned_state::RemoteQueuedPromptSteerReceiptSettlement::Pending);
+        };
+        if receipt.worker_provider_run_id != query.worker_provider_run_id
+            || receipt.target_home_prompt_id.as_deref() != Some(query.target_home_prompt_id.as_str())
+            || receipt.execution_lease_id.as_deref() != Some(query.execution_lease_id.as_str())
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "reconcile remote queued prompt steer",
+                message: format!(
+                    "worker receipt for queued prompt `{queued_prompt_id}` did not match its durable run, target, and lease"
+                ),
+            });
+        }
+        let owned = &self.owned;
+        let (settlement, next_dispatch) = self
+            .with_app_side_effect(|app| {
+                let settlement = owned.reconcile_remote_queued_prompt_steer_receipt(
+                    session_id,
+                    agent_id,
+                    queued_prompt_id,
+                    &receipt,
+                )?;
+                let next_dispatch = if matches!(
+                    &settlement,
+                    super::prompt_queue_owned_state::RemoteQueuedPromptSteerReceiptSettlement::Rejected
+                ) && owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&owned.session_store.get_session(session_id)?, agent_id)
+                    .is_none()
+                {
+                    crate::app::KernelAgentService::new(app)
+                        .admit_next_queued_remote_prompt(session_id, agent_id, None)?
+                        .map(|(_, intent)| intent.dispatch)
+                } else {
+                    None
+                };
+                Ok::<_, DaemonError>((settlement, next_dispatch))
+            })
+            .await?;
+        if let Some(dispatch) = next_dispatch {
+            self.spawn_remote_prompt_dispatch(dispatch);
+        }
+        Ok(settlement)
     }
 
     async fn refresh_remote_agent_binding_for_steer(
