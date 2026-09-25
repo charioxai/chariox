@@ -727,7 +727,7 @@ test("Path-1 upgrade leaves the kernel stopped and rollback pending when a worke
   })
   assert.equal(result.status, 1, result.stderr)
   assert.match(result.stderr, /Path-1 service chariox-disposable-worker-bootstrap\.service has systemd drop-ins/)
-  assert.match(result.stderr, /Path-1 systemd drop-ins blocked activation; rollback remains pending and the kernel is stopped/)
+  assert.match(result.stderr, /Path-1 systemd drop-ins blocked activation; rollback remains pending; verify the managed kernel service state before retry/)
   const calls = (await readFile(join(harness.state, "systemctl.log"), "utf8")).trim().split("\n")
   assert.ok(calls.includes("daemon-reload"), calls.join("\n"))
   assert.ok(calls.includes("stop chariox-path1-managed-bootstrap.service"), calls.join("\n"))
