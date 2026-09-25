@@ -25,7 +25,41 @@ static CAPABILITY_PUSH_LOCK_OBSERVERS: std::sync::LazyLock<
     std::sync::Mutex<std::collections::BTreeMap<usize, tokio::sync::oneshot::Sender<bool>>>,
 > = std::sync::LazyLock::new(Default::default);
 
+#[cfg(test)]
+static FORWARDED_META_REQUEST_PAUSES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::BTreeMap<usize, CapabilityResponsePause>>,
+> = std::sync::LazyLock::new(Default::default);
+
 impl KernelRuntimeState {
+    #[cfg(test)]
+    pub(crate) fn pause_forwarded_meta_request_for_test(
+        &self,
+        entered: tokio::sync::oneshot::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        FORWARDED_META_REQUEST_PAUSES.lock().unwrap().insert(
+            std::sync::Arc::as_ptr(&self.app) as usize,
+            (entered, release),
+        );
+    }
+
+    #[cfg(test)]
+    fn pause_forwarded_meta_request_before_dispatch_for_test(&self) {
+        let pause = FORWARDED_META_REQUEST_PAUSES
+            .lock()
+            .unwrap()
+            .remove(&(std::sync::Arc::as_ptr(&self.app) as usize));
+        if let Some((entered, release)) = pause {
+            let _ = entered.send(());
+            match release.recv_timeout(std::time::Duration::from_secs(30)) {
+                Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    panic!("forwarded meta request test barrier timed out");
+                }
+            }
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn pause_capability_response_before_apply_for_test(
         &self,
@@ -88,7 +122,7 @@ impl KernelRuntimeState {
         }
     }
 
-    pub(super) async fn try_dispatch_remote_meta_runtime_tool_call(
+    pub(crate) async fn try_dispatch_remote_meta_runtime_tool_call(
         &self,
         provider_run: &crate::provider::RuntimeProviderRun,
         tool_name: &str,
@@ -162,6 +196,8 @@ impl KernelRuntimeState {
                     .to_string(),
             });
         }
+        #[cfg(test)]
+        self.pause_forwarded_meta_request_before_dispatch_for_test();
         self.dispatch_meta_runtime_tool_call_for_agent(
             &context.home_session_id,
             &context.home_agent_id,

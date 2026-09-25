@@ -7,6 +7,7 @@ use futures_util::FutureExt;
 
 mod capability_request_grant;
 mod capability_response_ordering;
+mod meta_forwarding_lock;
 
 #[test]
 fn leased_agent_on_another_kernel_uses_room_browser() {
@@ -401,7 +402,10 @@ fn provider_lifecycle_diagnostics(
     provider_run_id: &str,
     session_id: &str,
     agent_id: &str,
-) -> (Result<crate::pty::PtyProcessState, crate::error::DaemonError>, String) {
+) -> (
+    Result<crate::pty::PtyProcessState, crate::error::DaemonError>,
+    String,
+) {
     let original_run = app.providers().get_run(provider_run_id).ok();
     let runtime_mcp_token_present = original_run
         .as_ref()
