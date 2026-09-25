@@ -1977,13 +1977,13 @@ mod tests {
         else {
             panic!("expected SubmitLeasedPrompt with home turn context");
         };
-        Ok((
+        (
             peer,
             request_id,
             decrypted.sender_public_key,
             git_context.home_prompt_id,
             format!("{leased_agent_id}\n{prompt}"),
-        ))
+        )
     }
 
     async fn acknowledge_claim_test_prompt(
