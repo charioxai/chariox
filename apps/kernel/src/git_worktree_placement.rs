@@ -182,7 +182,7 @@ pub(crate) fn preflight_managed_repository_root(canonical_root: &Path) -> Result
         return Err(working_directory_error(
             operation,
             format!(
-                "managed repository root `{}` is protected Chariox service state",
+                "managed repository path `{}` is protected Chariox service state",
                 canonical_root.display()
             ),
         ));
