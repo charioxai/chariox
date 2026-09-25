@@ -668,6 +668,7 @@ impl DaemonApp {
 #[cfg(test)]
 mod tests {
     use super::owned_orphan_provider_process_ids_from_ps_output;
+    use crate::config::DaemonConfig;
     use std::collections::BTreeSet;
 
     const MCP_URL: &str = "http://127.0.0.1:49999/mcp";
@@ -676,6 +677,31 @@ mod tests {
         format!(
             "codex app-server -c mcp_servers.chariox.url=\"{MCP_URL}\" --listen ws://127.0.0.1:{port}"
         )
+    }
+
+    #[test]
+    fn test_config_never_reaps_another_live_kernels_provider_process() {
+        let config = DaemonConfig::for_tests();
+        let mcp_url = format!(
+            "http://{}:{}/mcp",
+            config.runtime_mcp_host, config.runtime_mcp_port
+        );
+        let ps_output = format!(
+            "200 943303 200 45 /opt/codex codex app-server -c mcp_servers.chariox.url=\"{mcp_url}\" --listen ws://127.0.0.1:50002\n"
+        );
+
+        let orphan_ids = owned_orphan_provider_process_ids_from_ps_output(
+            &ps_output,
+            999,
+            &BTreeSet::new(),
+            config.provider_process_orphan_ttl_ms,
+            &mcp_url,
+        );
+
+        assert!(
+            orphan_ids.is_empty(),
+            "a test kernel must not reap a live kernel's provider process"
+        );
     }
 
     #[test]
