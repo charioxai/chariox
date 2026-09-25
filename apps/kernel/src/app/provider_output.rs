@@ -946,10 +946,12 @@ impl<'a> ProviderOutputPumpContext<'a> {
                 &completion.message_id,
                 completion.completed_at_ms,
             );
-            // Codex assistant-message completion can be replayed independently
-            // of the authoritative turn-completed notification. Do not let a
-            // reconnect or duplicate output record arm quiet-gap settlement.
-            if provider_run.adapter_key() != "codex" || prompt_completed {
+            // An adapter can require authoritative turn completion because
+            // assistant-message completion may replay after reconnect. Do not
+            // let that duplicate record arm quiet-gap settlement.
+            if !crate::provider::provider_run_requires_authoritative_turn_completion(&provider_run)
+                || prompt_completed
+            {
                 self.mark_prompt_completion_recorded(provider_run_id);
             }
         }
