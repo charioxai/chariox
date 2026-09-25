@@ -450,6 +450,19 @@ impl CommandRouter {
         .await
     }
 
+    pub(crate) async fn relay_query_leased_prompt_receipt(
+        &self,
+        leased_agent_id: &str,
+        home_prompt_id: &str,
+    ) -> Result<Option<crate::transport::relay_peer::LeasedPromptReceipt>, DaemonError> {
+        relay_peer_runtime::query_relay_leased_prompt_receipt(
+            &self.runtime_state,
+            leased_agent_id,
+            home_prompt_id,
+        )
+        .await
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn relay_steer_leased_prompt(
         &self,

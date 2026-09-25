@@ -422,6 +422,22 @@ impl KernelRuntimeState {
         .await
     }
 
+    pub(crate) async fn query_relay_leased_prompt_receipt(
+        &self,
+        leased_agent_id: &str,
+        home_prompt_id: &str,
+    ) -> Result<Option<crate::transport::relay_peer::LeasedPromptReceipt>, DaemonError> {
+        let _operation = self.leased_agent_operations.lock(leased_agent_id).await;
+        let leased_agent_id = leased_agent_id.to_string();
+        let home_prompt_id = home_prompt_id.to_string();
+        self.with_app_side_effect(move |app| {
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            runtime.consume_leased_agent_authorization(&leased_agent_id)?;
+            runtime.leased_prompt_receipt(&leased_agent_id, &home_prompt_id)
+        })
+        .await
+    }
+
     // Keep the relay request fields explicit, like the adjacent lease adapters.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn submit_relay_leased_prompt(

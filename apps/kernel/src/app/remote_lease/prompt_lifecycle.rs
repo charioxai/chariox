@@ -3,7 +3,8 @@ use crate::execution_lease::{LeasedAgent, LeasedWorkflowTurnBinding, RemoteWorkf
 use crate::provider::LaunchProviderRequest;
 use crate::session::{PromptAttachment, PromptSubmissionOutcome};
 use crate::transport::relay_peer::{
-    RelayPromptAttachment, RemoteGitTurnContext, RequiredRemoteMcp,
+    LeasedPromptReceipt, LeasedPromptReceiptPhase, RelayPromptAttachment, RemoteGitTurnContext,
+    RequiredRemoteMcp,
 };
 
 use super::provider_run::LeasedProviderRunMatch;
@@ -25,6 +26,94 @@ pub(crate) struct PreparedLeasedPromptSubmission {
 }
 
 impl<'a> RemoteLeaseRuntime<'a> {
+    pub(crate) fn leased_prompt_receipt(
+        &self,
+        leased_agent_id: &str,
+        home_prompt_id: &str,
+    ) -> Result<Option<LeasedPromptReceipt>, DaemonError> {
+        if home_prompt_id.is_empty() {
+            return Ok(None);
+        }
+        let leased_agent = self
+            .app
+            .leased_agents
+            .get(leased_agent_id)
+            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            })?;
+
+        let active_match = leased_agent.active_home_prompt_id.as_deref() == Some(home_prompt_id);
+        let completed_receipt = leased_agent
+            .replayable_completion
+            .as_ref()
+            .filter(|receipt| receipt.home_prompt_id.as_deref() == Some(home_prompt_id));
+        if active_match && completed_receipt.is_some() {
+            return Ok(None);
+        }
+
+        if let Some(receipt) = completed_receipt {
+            let Some(provider_run) = self.app.providers.get_run(&receipt.provider_run_id).ok()
+            else {
+                return Ok(None);
+            };
+            if receipt.provider_run_id.is_empty()
+                || provider_run.session_id() != leased_agent.backing_session_id.as_str()
+                || provider_run.agent_instance_id()
+                    != Some(leased_agent.backing_agent_id.as_str())
+            {
+                return Ok(None);
+            }
+            return Ok(Some(LeasedPromptReceipt {
+                home_prompt_id: home_prompt_id.to_string(),
+                worker_provider_run_id: receipt.provider_run_id.clone(),
+                phase: LeasedPromptReceiptPhase::Completed,
+            }));
+        }
+
+        if !active_match {
+            return Ok(None);
+        }
+        let Some(active_prompt_started_at_ms) = leased_agent.active_home_prompt_started_at_ms else {
+            return Ok(None);
+        };
+        let active_prompt = self.app.prompt_owner_active_prompt_for_agent(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        )?;
+        let Some(active_prompt) = active_prompt else {
+            return Ok(None);
+        };
+        if active_prompt.created_at_ms() != active_prompt_started_at_ms
+            || !matches!(
+                active_prompt.status(),
+                crate::session::PromptStatus::Dispatching | crate::session::PromptStatus::Running
+            )
+        {
+            return Ok(None);
+        }
+        let Some(provider_run) = self
+            .app
+            .providers
+            .get_run_for_agent(&leased_agent.backing_session_id, &leased_agent.backing_agent_id)
+        else {
+            return Ok(None);
+        };
+        if provider_run.agent_instance_id() != Some(leased_agent.backing_agent_id.as_str())
+            || !matches!(
+                provider_run.state(),
+                crate::provider::ProviderRunState::Starting
+                    | crate::provider::ProviderRunState::Running
+            )
+        {
+            return Ok(None);
+        }
+        Ok(Some(LeasedPromptReceipt {
+            home_prompt_id: home_prompt_id.to_string(),
+            worker_provider_run_id: provider_run.id().to_string(),
+            phase: LeasedPromptReceiptPhase::Active,
+        }))
+    }
+
     #[cfg(test)]
     pub(crate) fn submit_leased_prompt(
         &mut self,
@@ -599,5 +688,116 @@ fn join_hidden_context(first: &str, second: &str) -> String {
         ("", second) => second.to_string(),
         (first, "") => first.to_string(),
         (first, second) => format!("{first}\n\n{second}"),
+    }
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::*;
+
+    #[test]
+    fn leased_prompt_receipt_requires_exact_active_or_completed_worker_evidence() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app = crate::app::DaemonApp::bootstrap(config).expect("worker should boot");
+        let lease = RemoteLeaseRuntime::new(&mut app)
+            .create_execution_lease(
+                "home-kernel-receipt-test",
+                "home-session-receipt-test",
+                "home-agent-receipt-test",
+                false,
+                "user-receipt-test",
+            )
+            .expect("execution lease should be created");
+        let leased_agent = RemoteLeaseRuntime::new(&mut app)
+            .create_leased_agent(
+                &lease.id,
+                "managed-dev-stub",
+                "default",
+                Some("sonnet".to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("leased agent should be created");
+        let home_prompt_id = "home-prompt-receipt-test";
+        let context = RemoteGitTurnContext {
+            home_session_id: lease.home_session_id.clone(),
+            home_agent_id: lease.home_agent_id.clone(),
+            home_prompt_id: home_prompt_id.to_string(),
+            home_turn_id: "home-turn-receipt-test".to_string(),
+            source_attachment_id: None,
+            workspace_live_sync_mode: None,
+            prompt_origin: None,
+            external_provider: None,
+            external_provider_session_id: None,
+            external_provider_turn_id: None,
+            prompt_summary: "receipt query test".to_string(),
+        };
+        let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
+            .submit_leased_prompt_with_workflow_context(
+                &leased_agent.id,
+                "receipt query prompt\n",
+                Vec::new(),
+                None,
+                Some(context),
+                Vec::new(),
+                None,
+                crate::extension::RemoteExtensionManifest::default(),
+            )
+            .expect("worker should accept the prompt");
+        assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
+
+        let active = RemoteLeaseRuntime::new(&mut app)
+            .leased_prompt_receipt(&leased_agent.id, home_prompt_id)
+            .expect("active receipt query should succeed")
+            .expect("exact active prompt should have a receipt");
+        assert_eq!(active.home_prompt_id, home_prompt_id);
+        assert_eq!(active.worker_provider_run_id, provider_run_id);
+        assert_eq!(active.phase, LeasedPromptReceiptPhase::Active);
+        assert!(RemoteLeaseRuntime::new(&mut app)
+            .leased_prompt_receipt(&leased_agent.id, "different-home-prompt")
+            .expect("unmatched receipt query should succeed")
+            .is_none());
+
+        RemoteLeaseRuntime::new(&mut app)
+            .complete_leased_prompt(&leased_agent.id)
+            .expect("worker prompt should complete");
+        let agent = app
+            .leased_agents
+            .get_mut(&leased_agent.id)
+            .expect("leased agent should remain registered");
+        agent.active_home_prompt_id = None;
+        agent.active_home_prompt_started_at_ms = None;
+        agent.replayable_completion = Some(crate::execution_lease::LeasedCompletionReplay {
+            provider_run_id: provider_run_id.clone(),
+            message_id: "worker-completion-receipt-test".to_string(),
+            completed_at_ms: crate::session::unix_epoch_ms(),
+            home_prompt_id: Some(home_prompt_id.to_string()),
+            provider_termination: None,
+        });
+
+        let completed = RemoteLeaseRuntime::new(&mut app)
+            .leased_prompt_receipt(&leased_agent.id, home_prompt_id)
+            .expect("completed receipt query should succeed")
+            .expect("exact completed prompt should have a receipt");
+        assert_eq!(completed.home_prompt_id, home_prompt_id);
+        assert_eq!(completed.worker_provider_run_id, provider_run_id);
+        assert_eq!(completed.phase, LeasedPromptReceiptPhase::Completed);
+
+        app.leased_agents
+            .get_mut(&leased_agent.id)
+            .expect("leased agent should remain registered")
+            .replayable_completion
+            .as_mut()
+            .expect("completion receipt should exist")
+            .provider_run_id = "unrelated-worker-run".to_string();
+        assert!(RemoteLeaseRuntime::new(&mut app)
+            .leased_prompt_receipt(&leased_agent.id, home_prompt_id)
+            .expect("invalid completion receipt query should succeed")
+            .is_none());
     }
 }

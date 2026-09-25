@@ -84,7 +84,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version 57 rejects worker kernels that cannot supply the required origin turn
 /// for `chariox.send_agent_message`; mixed-version peers fail before dispatch.
 /// Version 58 carries the home-owned Room browser capability in extension manifests.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 58;
+/// Version 59 adds read-only exact-home-prompt receipt queries for leased workers.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 59;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
@@ -433,6 +434,20 @@ pub struct RemoteGitTurnContext {
     pub prompt_summary: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LeasedPromptReceiptPhase {
+    Active,
+    Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeasedPromptReceipt {
+    pub home_prompt_id: String,
+    pub worker_provider_run_id: String,
+    pub phase: LeasedPromptReceiptPhase,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteGitObservation {
     pub kind: HistoryEventKind,
@@ -683,6 +698,10 @@ pub enum RelayPeerRequest {
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_launch_credential: Option<RemoteProviderLaunchCredential>,
+    },
+    GetLeasedPromptReceipt {
+        leased_agent_id: String,
+        home_prompt_id: String,
     },
     SteerLeasedPrompt {
         leased_agent_id: String,
@@ -955,6 +974,10 @@ pub enum RelayPeerResponse {
         provider_run_id: String,
         outcome: PromptSubmissionOutcome,
     },
+    LeasedPromptReceiptQueried {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        receipt: Option<LeasedPromptReceipt>,
+    },
     LeasedPromptSteered {
         provider_run_id: String,
         steer_id: String,
@@ -1118,8 +1141,8 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     #[test]
-    fn remote_room_browser_capability_manifest_is_versioned_at_protocol_58() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 58);
+    fn remote_room_browser_capability_manifest_is_versioned_at_protocol_59() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 59);
         let request = RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
             leased_agent_id: "leased-agent-1".to_string(),
             remote_extension_manifest: crate::extension::RemoteExtensionManifest {
@@ -1141,7 +1164,7 @@ mod tests {
 
     #[test]
     fn leased_completion_provider_termination_shape_is_versioned() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 58);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 59);
         let completion = RelayProjectedCompletion {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,
@@ -1206,8 +1229,8 @@ mod tests {
     }
 
     #[test]
-    fn project_environment_setup_relay_shapes_round_trip_at_protocol_58() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 58);
+    fn project_environment_setup_relay_shapes_round_trip_at_protocol_59() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 59);
         let definition = crate::session::ProjectEnvironmentDefinition {
             schema_version: 1,
             origin: crate::session::ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
@@ -1321,6 +1344,92 @@ mod tests {
                 serde_json::from_value(encoded).expect("setup response should decode");
             assert_eq!(decoded, response);
         }
+    }
+
+    #[test]
+    fn leased_prompt_receipt_query_is_read_only_and_versioned_at_protocol_59() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 59);
+        let request = RelayPeerRequest::GetLeasedPromptReceipt {
+            leased_agent_id: "leased-agent-1".to_string(),
+            home_prompt_id: "home-prompt-1".to_string(),
+        };
+        let request_snapshot = serde_json::to_value(&request).expect("request should serialize");
+        assert_eq!(
+            request_snapshot,
+            serde_json::json!({
+                "kind": "get_leased_prompt_receipt",
+                "leased_agent_id": "leased-agent-1",
+                "home_prompt_id": "home-prompt-1"
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<RelayPeerRequest>(request_snapshot)
+                .expect("request should deserialize"),
+            request
+        );
+
+        let active = RelayPeerResponse::LeasedPromptReceiptQueried {
+            receipt: Some(LeasedPromptReceipt {
+                home_prompt_id: "home-prompt-1".to_string(),
+                worker_provider_run_id: "worker-run-1".to_string(),
+                phase: LeasedPromptReceiptPhase::Active,
+            }),
+        };
+        let active_snapshot = serde_json::to_value(&active).expect("response should serialize");
+        assert_eq!(
+            active_snapshot,
+            serde_json::json!({
+                "kind": "leased_prompt_receipt_queried",
+                "receipt": {
+                    "home_prompt_id": "home-prompt-1",
+                    "worker_provider_run_id": "worker-run-1",
+                    "phase": "active"
+                }
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<RelayPeerResponse>(active_snapshot)
+                .expect("active receipt should deserialize"),
+            active
+        );
+
+        let completed = RelayPeerResponse::LeasedPromptReceiptQueried {
+            receipt: Some(LeasedPromptReceipt {
+                home_prompt_id: "home-prompt-1".to_string(),
+                worker_provider_run_id: "worker-run-1".to_string(),
+                phase: LeasedPromptReceiptPhase::Completed,
+            }),
+        };
+        let completed_snapshot =
+            serde_json::to_value(&completed).expect("completed response should serialize");
+        assert_eq!(
+            completed_snapshot,
+            serde_json::json!({
+                "kind": "leased_prompt_receipt_queried",
+                "receipt": {
+                    "home_prompt_id": "home-prompt-1",
+                    "worker_provider_run_id": "worker-run-1",
+                    "phase": "completed"
+                }
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<RelayPeerResponse>(completed_snapshot)
+                .expect("completed receipt should deserialize"),
+            completed
+        );
+
+        let none = RelayPeerResponse::LeasedPromptReceiptQueried { receipt: None };
+        let none_snapshot = serde_json::to_value(&none).expect("empty response should serialize");
+        assert_eq!(
+            none_snapshot,
+            serde_json::json!({ "kind": "leased_prompt_receipt_queried" })
+        );
+        assert_eq!(
+            serde_json::from_value::<RelayPeerResponse>(none_snapshot)
+                .expect("empty response should deserialize"),
+            none
+        );
     }
 
     #[test]

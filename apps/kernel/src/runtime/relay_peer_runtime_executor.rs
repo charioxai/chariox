@@ -274,6 +274,16 @@ pub(crate) async fn submit_relay_leased_prompt(
         .await
 }
 
+pub(crate) async fn query_relay_leased_prompt_receipt(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    home_prompt_id: &str,
+) -> Result<Option<crate::transport::relay_peer::LeasedPromptReceipt>, DaemonError> {
+    runtime_state
+        .query_relay_leased_prompt_receipt(leased_agent_id, home_prompt_id)
+        .await
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn steer_relay_leased_prompt(
     runtime_state: &KernelRuntimeState,
