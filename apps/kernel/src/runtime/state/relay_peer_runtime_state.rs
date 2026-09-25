@@ -769,6 +769,31 @@ impl KernelRuntimeState {
         .await
     }
 
+    pub(crate) async fn relay_resolve_leased_project_environment_setup_target(
+        &self,
+        leased_agent_id: &str,
+        home_session_id: String,
+        home_agent_id: String,
+    ) -> Result<(String, String), DaemonError> {
+        let authorization_id = leased_agent_id.to_string();
+        self.with_app_side_effect(move |app| {
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            runtime.consume_leased_agent_authorization(&authorization_id)?;
+            runtime.project_environment_setup_target(
+                &authorization_id,
+                &home_session_id,
+                &home_agent_id,
+                None,
+            )
+        })
+        .await?;
+        let config = self.owned.config_projection.snapshot();
+        Ok((
+            config.host_machine_id,
+            super::project_environment_setup::current_worker_platform(),
+        ))
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn start_relay_leased_project_environment_setup(
         &self,

@@ -1695,6 +1695,15 @@ Workflow trigger and deployment direction:
   receipt reconciliation, and at-most-once worker input. The local daemon
   request and response shapes are unchanged, so client minimum versions do not
   change; home and worker kernels must both support relay peer protocol 60.
+- relay peer protocol 61 adds `ResolveLeasedProjectEnvironmentSetupTarget` and
+  `LeasedProjectEnvironmentSetupTargetResolved`. Before starting Project setup,
+  the home kernel derives the selected worker from the agent binding and asks
+  that authenticated lease worker for its actual platform. An explicitly
+  supplied worker or platform remains an assertion and must match the resolved
+  values; empty fields request resolution. The worker verifies the leased
+  agent and home session/agent binding before replying. The local-daemon shape
+  and client minimum versions do not change; remote Project setup requires
+  both home and worker kernels to support relay peer protocol 61.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

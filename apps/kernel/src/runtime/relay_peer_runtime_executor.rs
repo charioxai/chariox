@@ -366,6 +366,21 @@ pub(crate) async fn complete_relay_leased_prompt(
         .await
 }
 
+pub(crate) async fn resolve_relay_leased_project_environment_setup_target(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    home_session_id: String,
+    home_agent_id: String,
+) -> Result<(String, String), DaemonError> {
+    runtime_state
+        .relay_resolve_leased_project_environment_setup_target(
+            leased_agent_id,
+            home_session_id,
+            home_agent_id,
+        )
+        .await
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn start_relay_leased_project_environment_setup(
     runtime_state: &KernelRuntimeState,

@@ -40,6 +40,11 @@ struct WorkerExecutionContext {
     environment: BTreeMap<String, String>,
 }
 
+struct PreparedProjectEnvironmentSetup {
+    execution: SetupExecution,
+    requested_target_platform: Option<String>,
+}
+
 enum ReusedDefinitionSetupOutcome {
     ContinueToRepair,
     Ready(ProjectEnvironmentDefinition),
@@ -98,6 +103,10 @@ use project_environment_setup_storage::{
 };
 use project_environment_setup_validation::*;
 
+pub(super) fn current_worker_platform() -> String {
+    actual_worker_platform()
+}
+
 fn remote_setup_recovery_should_dispatch(
     decision: RemoteSetupRecoveryDecision,
 ) -> Result<bool, DaemonError> {
@@ -126,7 +135,10 @@ impl KernelRuntimeState {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         match request {
             LocalDaemonRequest::StartProjectEnvironmentSetup(request) => {
-                let execution = self.prepare_setup_execution(request, caller_user_id)?;
+                let prepared = self.prepare_setup_execution(request, caller_user_id)?;
+                let execution = self
+                    .resolve_setup_execution_target_platform(prepared)
+                    .await?;
                 let (status, should_spawn) = self
                     .owned
                     .project_environment_setups
@@ -1031,12 +1043,9 @@ impl KernelRuntimeState {
         &self,
         request: StartProjectEnvironmentSetupRequest,
         caller_user_id: &str,
-    ) -> Result<SetupExecution, DaemonError> {
+    ) -> Result<PreparedProjectEnvironmentSetup, DaemonError> {
         validate_operation_id(&request.operation_id)?;
         let config = self.owned.config_projection.snapshot();
-        if request.target_platform.trim().is_empty() {
-            return Err(setup_error("target platform must not be empty"));
-        }
         validate_commands(&request.validation_commands)?;
         let session = self.owned.session_store.get_session(&request.session_id)?;
         let project = self.owned.session_store.get_project(&request.project_id)?;
@@ -1058,11 +1067,6 @@ impl KernelRuntimeState {
         let remote_execution = agent.remote_execution().cloned();
         let is_remote_worker_dispatch = match config.kernel_runtime_role {
             KernelRuntimeRole::RemoteLeaseWorker => {
-                validate_local_worker_target(
-                    &config,
-                    &request.target_worker_id,
-                    &request.target_platform,
-                )?;
                 if remote_execution.is_some() {
                     return Err(setup_error(
                         "a lease worker cannot execute setup for another remote worker",
@@ -1072,11 +1076,6 @@ impl KernelRuntimeState {
             }
             KernelRuntimeRole::General => {
                 if let Some(remote_execution) = remote_execution.as_ref() {
-                    if request.target_worker_id != remote_execution.worker_machine_id {
-                        return Err(setup_error(
-                            "requested worker does not match the remote agent binding",
-                        ));
-                    }
                     if remote_execution.worker_kernel_id.trim().is_empty()
                         || remote_execution.worker_machine_id.trim().is_empty()
                         || remote_execution.leased_agent_id.trim().is_empty()
@@ -1088,23 +1087,34 @@ impl KernelRuntimeState {
                     }
                     true
                 } else {
-                    validate_local_worker_target(
-                        &config,
-                        &request.target_worker_id,
-                        &request.target_platform,
-                    )?;
                     false
                 }
             }
         };
+        let target_worker_id = if is_remote_worker_dispatch {
+            remote_execution
+                .as_ref()
+                .expect("remote dispatch binding was checked")
+                .worker_machine_id
+                .clone()
+        } else {
+            config.host_machine_id.clone()
+        };
+        if target_worker_id.trim().is_empty() {
+            return Err(setup_error("selected setup worker identity is empty"));
+        }
+        if !request.target_worker_id.trim().is_empty()
+            && request.target_worker_id != target_worker_id
+        {
+            return Err(setup_error(
+                "requested worker does not match the selected agent binding",
+            ));
+        }
+        let requested_target_platform =
+            (!request.target_platform.trim().is_empty()).then_some(request.target_platform);
         let definition = request
             .definition
             .or_else(|| project.environment_definition().cloned());
-        let definition = validate_setup_definition(
-            definition,
-            &request.target_platform,
-            &request.validation_commands,
-        )?;
         // A home worktree path is not a worker worktree path. The worker
         // derives its canonical backing worktree from the authenticated lease
         // and rejects any non-empty path that does not match it.
@@ -1116,27 +1126,62 @@ impl KernelRuntimeState {
                 .unwrap_or_else(|| session.worktree_id())
                 .to_string()
         };
-        Ok(SetupExecution {
-            owner_user_id: caller_user_id.to_string(),
-            operation_id: request.operation_id,
-            project_id: request.project_id,
-            session_id: request.session_id.clone(),
-            agent_id: request.agent_id.clone(),
-            execution_session_id: request.session_id,
-            execution_agent_id: request.agent_id,
-            workspace_id,
-            target_worker_id: request.target_worker_id,
-            target_platform: request.target_platform,
-            definition,
-            validation_commands: request.validation_commands,
-            persist_project_definition: true,
-            remote_leased_agent_id: is_remote_worker_dispatch.then(|| {
-                remote_execution
-                    .expect("remote dispatch binding was checked")
-                    .leased_agent_id
-                    .clone()
-            }),
+        Ok(PreparedProjectEnvironmentSetup {
+            execution: SetupExecution {
+                owner_user_id: caller_user_id.to_string(),
+                operation_id: request.operation_id,
+                project_id: request.project_id,
+                session_id: request.session_id.clone(),
+                agent_id: request.agent_id.clone(),
+                execution_session_id: request.session_id,
+                execution_agent_id: request.agent_id,
+                workspace_id,
+                target_worker_id,
+                target_platform: String::new(),
+                definition,
+                validation_commands: request.validation_commands,
+                persist_project_definition: true,
+                remote_leased_agent_id: is_remote_worker_dispatch.then(|| {
+                    remote_execution
+                        .expect("remote dispatch binding was checked")
+                        .leased_agent_id
+                        .clone()
+                }),
+            },
+            requested_target_platform,
         })
+    }
+
+    async fn resolve_setup_execution_target_platform(
+        &self,
+        mut prepared: PreparedProjectEnvironmentSetup,
+    ) -> Result<SetupExecution, DaemonError> {
+        let platform = if prepared.execution.remote_leased_agent_id.is_some() {
+            resolve_remote_setup_target_platform(self, &prepared.execution).await?
+        } else {
+            actual_worker_platform()
+        };
+        if platform.trim().is_empty() {
+            return Err(setup_error(
+                "selected setup worker returned an empty platform",
+            ));
+        }
+        if prepared
+            .requested_target_platform
+            .as_deref()
+            .is_some_and(|requested| requested != platform)
+        {
+            return Err(setup_error(
+                "requested platform does not match the selected setup worker",
+            ));
+        }
+        prepared.execution.target_platform = platform;
+        prepared.execution.definition = validate_setup_definition(
+            prepared.execution.definition,
+            &prepared.execution.target_platform,
+            &prepared.execution.validation_commands,
+        )?;
+        Ok(prepared.execution)
     }
 
     fn spawn_project_environment_setup(&self, execution: SetupExecution, attempt: u32) {

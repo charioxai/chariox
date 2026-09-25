@@ -1108,6 +1108,33 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::ResolveLeasedProjectEnvironmentSetupTarget {
+            leased_agent_id,
+            home_session_id,
+            home_agent_id,
+        } => {
+            let resolved = router
+                .relay_resolve_leased_project_environment_setup_target(
+                    &leased_agent_id,
+                    home_session_id,
+                    home_agent_id,
+                )
+                .await;
+            match resolved {
+                Ok((worker_id, platform)) => {
+                    RelayPeerResponse::LeasedProjectEnvironmentSetupTargetResolved {
+                        worker_id,
+                        platform,
+                    }
+                }
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
         RelayPeerRequest::StartLeasedProjectEnvironmentSetup {
             leased_agent_id,
             operation_id,
@@ -2030,6 +2057,9 @@ fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
             leased_agent_id, ..
         }
         | RelayPeerRequest::CancelLeasedPrompt {
+            leased_agent_id, ..
+        }
+        | RelayPeerRequest::ResolveLeasedProjectEnvironmentSetupTarget {
             leased_agent_id, ..
         }
         | RelayPeerRequest::StartLeasedProjectEnvironmentSetup {

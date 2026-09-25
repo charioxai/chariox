@@ -60,6 +60,57 @@ pub(super) async fn start_remote_setup(
     start_remote_setup_with_timeout(state, execution, attempt, REMOTE_SETUP_RESPONSE_TIMEOUT).await
 }
 
+pub(super) async fn resolve_remote_setup_target_platform(
+    state: &KernelRuntimeState,
+    execution: &SetupExecution,
+) -> Result<String, DaemonError> {
+    let (relay_config, target) = remote_relay_context(state, execution).await?;
+    let timeout = remote_setup_observation_budget(&relay_config);
+    let request = RelayPeerRequest::ResolveLeasedProjectEnvironmentSetupTarget {
+        leased_agent_id: remote_leased_agent_id(execution)?,
+        home_session_id: execution.session_id.clone(),
+        home_agent_id: execution.agent_id.clone(),
+    };
+    let response = match state.connected_relay_state_for_config(&relay_config).await {
+        Some(relay_state) => {
+            crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
+                &relay_config,
+                &relay_state,
+                target,
+                request,
+                timeout,
+            )
+            .await
+        }
+        None => {
+            crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+                &relay_config,
+                target,
+                request,
+                timeout,
+            )
+            .await
+        }
+    }?;
+    let (worker_id, platform) = match response {
+        RelayPeerResponse::LeasedProjectEnvironmentSetupTargetResolved {
+            worker_id,
+            platform,
+        } => (worker_id, platform),
+        other => {
+            return Err(setup_error(&format!(
+                "remote setup target resolution returned an unexpected response: {other:?}"
+            )))
+        }
+    };
+    if worker_id != execution.target_worker_id || platform.trim().is_empty() {
+        return Err(setup_error(
+            "remote setup target resolution did not match the selected worker binding",
+        ));
+    }
+    Ok(platform)
+}
+
 pub(super) async fn start_remote_setup_with_timeout(
     state: &KernelRuntimeState,
     execution: &SetupExecution,

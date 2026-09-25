@@ -87,7 +87,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version 59 adds read-only exact-home-prompt receipt queries for leased workers.
 /// Version 60 requires exact home-prompt and worker-run identities for leased cancellation
 /// and carries durable exact-identity receipts for queued prompt steers.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 60;
+/// Version 61 lets the selected lease worker resolve its authoritative setup platform.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 61;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
@@ -749,6 +750,11 @@ pub enum RelayPeerRequest {
         home_prompt_id: String,
         worker_provider_run_id: String,
     },
+    ResolveLeasedProjectEnvironmentSetupTarget {
+        leased_agent_id: String,
+        home_session_id: String,
+        home_agent_id: String,
+    },
     StartLeasedProjectEnvironmentSetup {
         leased_agent_id: String,
         operation_id: String,
@@ -1027,6 +1033,10 @@ pub enum RelayPeerResponse {
     LeasedPromptCancelled {
         cancellation: PromptCancellation,
     },
+    LeasedProjectEnvironmentSetupTargetResolved {
+        worker_id: String,
+        platform: String,
+    },
     LeasedProjectEnvironmentSetupStarted {
         setup: RelayProjectEnvironmentSetupStatus,
     },
@@ -1159,8 +1169,8 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     #[test]
-    fn leased_prompt_cancellation_requires_exact_prompt_and_run_at_protocol_60() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 60);
+    fn leased_prompt_cancellation_requires_exact_prompt_and_run_at_protocol_61() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 61);
         let request = RelayPeerRequest::CancelLeasedPrompt {
             leased_agent_id: "leased-agent-1".to_string(),
             home_prompt_id: "home-prompt-1".to_string(),
@@ -1196,8 +1206,8 @@ mod tests {
     }
 
     #[test]
-    fn remote_room_browser_capability_manifest_is_versioned_at_protocol_60() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 60);
+    fn remote_room_browser_capability_manifest_is_versioned_at_protocol_61() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 61);
         let request = RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
             leased_agent_id: "leased-agent-1".to_string(),
             remote_extension_manifest: crate::extension::RemoteExtensionManifest {
@@ -1219,7 +1229,7 @@ mod tests {
 
     #[test]
     fn leased_completion_provider_termination_shape_is_versioned() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 60);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 61);
         let completion = RelayProjectedCompletion {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,
@@ -1284,8 +1294,8 @@ mod tests {
     }
 
     #[test]
-    fn project_environment_setup_relay_shapes_round_trip_at_protocol_60() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 60);
+    fn project_environment_setup_relay_shapes_round_trip_at_protocol_61() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 61);
         let definition = crate::session::ProjectEnvironmentDefinition {
             schema_version: 1,
             origin: crate::session::ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
@@ -1315,6 +1325,11 @@ mod tests {
             validation_commands: vec!["command -v sh".to_string()],
         };
         let requests = vec![
+            RelayPeerRequest::ResolveLeasedProjectEnvironmentSetupTarget {
+                leased_agent_id: "leased-agent-1".to_string(),
+                home_session_id: "home-session-1".to_string(),
+                home_agent_id: "home-agent-1".to_string(),
+            },
             RelayPeerRequest::StartLeasedProjectEnvironmentSetup {
                 leased_agent_id: "leased-agent-1".to_string(),
                 operation_id: "setup-1".to_string(),
@@ -1347,7 +1362,7 @@ mod tests {
                 home_agent_id: "home-agent-1".to_string(),
             },
         ];
-        let start_wire = serde_json::to_value(&requests[0]).expect("setup Start should encode");
+        let start_wire = serde_json::to_value(&requests[1]).expect("setup Start should encode");
         assert_eq!(
             start_wire.pointer("/attempt"),
             Some(&serde_json::json!(2)),
@@ -1383,6 +1398,10 @@ mod tests {
             definition: Some(definition),
         };
         for response in [
+            RelayPeerResponse::LeasedProjectEnvironmentSetupTargetResolved {
+                worker_id: "worker-machine-1".to_string(),
+                platform: "linux-x86_64".to_string(),
+            },
             RelayPeerResponse::LeasedProjectEnvironmentSetupStarted {
                 setup: setup.clone(),
             },
@@ -1402,8 +1421,8 @@ mod tests {
     }
 
     #[test]
-    fn leased_prompt_receipt_query_and_steer_reconciliation_are_versioned_at_protocol_60() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 60);
+    fn leased_prompt_receipt_query_and_steer_reconciliation_are_versioned_at_protocol_61() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 61);
         let request = RelayPeerRequest::GetLeasedPromptReceipt {
             leased_agent_id: "leased-agent-1".to_string(),
             home_prompt_id: "home-prompt-1".to_string(),

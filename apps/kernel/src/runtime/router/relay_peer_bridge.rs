@@ -562,6 +562,21 @@ impl CommandRouter {
         relay_peer_runtime::complete_relay_leased_prompt(&self.runtime_state, leased_agent_id).await
     }
 
+    pub(crate) async fn relay_resolve_leased_project_environment_setup_target(
+        &self,
+        leased_agent_id: &str,
+        home_session_id: String,
+        home_agent_id: String,
+    ) -> Result<(String, String), DaemonError> {
+        relay_peer_runtime::resolve_relay_leased_project_environment_setup_target(
+            &self.runtime_state,
+            leased_agent_id,
+            home_session_id,
+            home_agent_id,
+        )
+        .await
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn relay_start_leased_project_environment_setup(
         &self,
