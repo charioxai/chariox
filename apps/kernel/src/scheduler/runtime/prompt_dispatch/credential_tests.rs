@@ -144,7 +144,7 @@ impl Fixture {
                         None,
                         Some(&prompt),
                     )
-                    .map(|_| ()),
+                    .map(|_| ())
             }
             Caller::Workflow => {
                 let workflow = self
@@ -204,7 +204,10 @@ impl Fixture {
                     &self.agent_id,
                     &prompt,
                 )?;
-                assert!(dispatch.is_some(), "remote workflow dispatch should be deferred");
+                assert!(
+                    dispatch.is_some(),
+                    "remote workflow dispatch should be deferred"
+                );
                 Ok(())
             }
         }
@@ -291,5 +294,8 @@ fn remote_workflow_dispatch_returns_an_intent_without_opening_transport() {
     let _env = crate::env_lock::lock();
     let mut fixture = Fixture::new();
     let result = fixture.dispatch(Caller::Workflow);
-    assert!(result.is_ok(), "workflow should defer transport: {result:?}");
+    assert!(
+        result.is_ok(),
+        "workflow should defer transport: {result:?}"
+    );
 }

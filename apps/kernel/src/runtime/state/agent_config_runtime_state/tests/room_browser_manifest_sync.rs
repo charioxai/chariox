@@ -611,9 +611,7 @@ async fn acknowledge_peer_response(
     .await;
 }
 
-async fn queue_workflow_successor_after_ordinary_prompt(
-    fixture: &RoomManifestFixture,
-) -> String {
+async fn queue_workflow_successor_after_ordinary_prompt(fixture: &RoomManifestFixture) -> String {
     let session_id = fixture.session_id.clone();
     let agent_id = fixture.agent_id.clone();
     fixture
@@ -642,9 +640,9 @@ async fn queue_workflow_successor_after_ordinary_prompt(
             let workflow = app
                 .sessions_mut()
                 .create_workflow(&session_id, Some("queued successor".to_string()))?;
-            let node = app
-                .sessions_mut()
-                .add_workflow_node(&session_id, workflow.id(), &agent_id)?;
+            let node =
+                app.sessions_mut()
+                    .add_workflow_node(&session_id, workflow.id(), &agent_id)?;
             let endpoint = app.sessions_mut().create_workflow_endpoint(
                 &session_id,
                 workflow.id(),
@@ -680,11 +678,8 @@ async fn queue_workflow_successor_after_ordinary_prompt(
                 crate::session::PromptStatus::Queued,
             )
             .with_workflow_context(run.id(), &node_run_id);
-            let queued = app.prompt_owner_submit_prepared_prompt(
-                &session_id,
-                workflow_prompt,
-                false,
-            )?;
+            let queued =
+                app.prompt_owner_submit_prepared_prompt(&session_id, workflow_prompt, false)?;
             assert!(matches!(
                 queued,
                 crate::session::PromptSubmissionOutcome::Queued { .. }
@@ -819,19 +814,17 @@ async fn ordinary_completion_restores_persisted_workflow_ids_before_ordered_disp
     };
     assert_eq!(prompt, "workflow successor");
     assert_eq!(
-        workflow_context.workflow_run_id,
-        expected_workflow_run_id,
+        workflow_context.workflow_run_id, expected_workflow_run_id,
         "successor dispatch should restore its persisted workflow run id"
     );
     assert_eq!(
-        workflow_context.workflow_node_run_id,
-        expected_workflow_node_run_id,
+        workflow_context.workflow_node_run_id, expected_workflow_node_run_id,
         "successor dispatch should restore its persisted workflow node run id"
     );
     assert_eq!(
         git_context
             .as_ref()
-            .and_then(|context| context.home_prompt_id.as_deref()),
+            .map(|context| context.home_prompt_id.as_str()),
         Some(promoted.id())
     );
 
@@ -882,14 +875,11 @@ async fn ordinary_completion_restores_persisted_workflow_ids_before_ordered_disp
     .await;
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
-            if active_prompt_for(&fixture)
-                .await
-                .is_some_and(|active| {
-                    active.id() == promoted.id()
-                        && active.durable_delivery_phase()
-                            == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
-                })
-            {
+            if active_prompt_for(&fixture).await.is_some_and(|active| {
+                active.id() == promoted.id()
+                    && active.durable_delivery_phase()
+                        == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+            }) {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
