@@ -77,7 +77,8 @@ async fn public_remote_completion_preserves_worker_termination_async() {
         .expect("worker registration should send");
     wait_for_daemon_registration(registry, &worker_config.daemon_id).await;
 
-    let (active_prompt_tx, active_prompt_rx) = oneshot::channel();
+    let (active_prompt_tx, active_prompt_rx) =
+        oneshot::channel::<crate::session::PromptQueueItem>();
     let worker_response = tokio::spawn(async move {
         let (submit_relay_request_id, submit_home_public_key) = loop {
             let message = timeout(Duration::from_secs(2), worker_socket.next())
@@ -173,13 +174,85 @@ async fn public_remote_completion_preserves_worker_termination_async() {
                 &encrypted_request,
             )
             .expect("worker should decrypt completion request");
-            assert!(matches!(
-                serde_json::from_slice::<RelayPeerRequest>(&decrypted.plaintext)
-                    .expect("completion request should decode"),
-                RelayPeerRequest::CompleteLeasedPrompt { leased_agent_id }
-                    if leased_agent_id == "termination-leased-agent"
-            ));
-            break (relay_request_id, decrypted.sender_public_key);
+            let request = serde_json::from_slice::<RelayPeerRequest>(&decrypted.plaintext)
+                .expect("completion request should decode");
+            match request {
+                RelayPeerRequest::GetLeasedPromptReceipt {
+                    leased_agent_id,
+                    home_prompt_id,
+                } => {
+                    assert_eq!(leased_agent_id, "termination-leased-agent");
+                    assert_eq!(home_prompt_id, active_prompt.id());
+                    let response = RelayPeerResponse::LeasedPromptReceiptQueried {
+                        receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                            home_prompt_id,
+                            worker_provider_run_id: "worker-provider-run".to_string(),
+                            phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
+                            target_home_prompt_id: None,
+                            execution_lease_id: Some("termination-lease".to_string()),
+                        }),
+                    };
+                    let encrypted_response = crate::transport::relay_crypto::encrypt_payload_for_peer(
+                        &worker_private_key,
+                        &decrypted.sender_public_key,
+                        &serde_json::to_vec(&response)
+                            .expect("worker receipt response should serialize"),
+                    )
+                    .expect("worker receipt response should encrypt");
+                    worker_socket
+                        .send(Message::Text(
+                            serde_json::to_string(
+                                &chariox_relay::protocol::RelayEnvelope::DaemonIncomingPeerResponse {
+                                    relay_request_id,
+                                    encrypted_response: Some(encrypted_response),
+                                    error: None,
+                                },
+                            )
+                            .expect("worker receipt envelope should serialize")
+                            .into(),
+                        ))
+                        .await
+                        .expect("worker receipt response should send");
+                }
+                RelayPeerRequest::DrainLeasedRuntimeProjection {
+                    leased_agent_id,
+                    provider_run_id,
+                    ..
+                } => {
+                    assert_eq!(leased_agent_id, "termination-leased-agent");
+                    assert_eq!(provider_run_id, "worker-provider-run");
+                    let response = RelayPeerResponse::LeasedRuntimeProjectionDrained {
+                        event: None,
+                    };
+                    let encrypted_response =
+                        crate::transport::relay_crypto::encrypt_payload_for_peer(
+                            &worker_private_key,
+                            &decrypted.sender_public_key,
+                            &serde_json::to_vec(&response)
+                                .expect("empty projection response should serialize"),
+                        )
+                        .expect("empty projection response should encrypt");
+                    worker_socket
+                        .send(Message::Text(
+                            serde_json::to_string(
+                                &chariox_relay::protocol::RelayEnvelope::DaemonIncomingPeerResponse {
+                                    relay_request_id,
+                                    encrypted_response: Some(encrypted_response),
+                                    error: None,
+                                },
+                            )
+                            .expect("empty projection envelope should serialize")
+                            .into(),
+                        ))
+                        .await
+                        .expect("empty projection response should send");
+                }
+                RelayPeerRequest::CompleteLeasedPrompt { leased_agent_id } => {
+                    assert_eq!(leased_agent_id, "termination-leased-agent");
+                    break (relay_request_id, decrypted.sender_public_key);
+                }
+                other => panic!("unexpected remote completion request: {other:?}"),
+            }
         };
         let response = RelayPeerResponse::LeasedPromptCompleted {
             provider_run_id: Some("worker-provider-run".to_string()),
@@ -222,8 +295,11 @@ async fn public_remote_completion_preserves_worker_termination_async() {
     home_config.relay_url = Some(relay_url);
     home_config.relay_token = Some("termination-test-token".to_string());
     home_config.relay_request_timeout_ms = 2_000;
-    let mut app = DaemonApp::bootstrap(home_config).expect("home daemon should bootstrap");
-    let (session_id, agent_id, prompt_id, active_prompt) = {
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(home_config).expect("home daemon should bootstrap"),
+    ));
+    let (session_id, agent_id, attachment_id) = {
+        let mut app = app.lock().await;
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new(
                 "workspace-remote-termination",
@@ -254,38 +330,76 @@ async fn public_remote_completion_preserves_worker_termination_async() {
                 },
             )
             .expect("home agent should bind to worker");
-        let PromptSubmissionOutcome::Started { prompt } = app
-            .submit_prompt(
-                session.id(),
-                attachment.id(),
-                Some(agent.id()),
-                "remote prompt with worker termination",
-                Vec::new(),
-            )
-            .expect("remote prompt should start")
-        else {
-            panic!("remote prompt should be active");
-        };
         (
             session.id().to_string(),
             agent.id().to_string(),
-            prompt.id().to_string(),
-            prompt,
+            attachment.id().to_string(),
         )
     };
+
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+        Arc::clone(&app),
+        1,
+    );
+    let prompt_request = LocalDaemonRequest::SubmitPrompt(crate::local::SubmitPromptRequest {
+        session_id: session_id.clone(),
+        attachment_id: attachment_id.clone(),
+        target_agent_id: Some(agent_id.clone()),
+        prompt: "remote prompt with worker termination".to_string(),
+        attachments: Vec::new(),
+    });
+    let prompt_command = KernelCommand::from_local_request(
+        "public-remote-completion-worker-termination-submit",
+        None,
+        None,
+        &prompt_request,
+    );
+    let LocalDaemonResponse::PromptSubmitted {
+        outcome: PromptSubmissionOutcome::Started { prompt },
+        ..
+    } = router
+        .dispatch(prompt_command, prompt_request)
+        .await
+        .expect("remote prompt should start through the public kernel runtime")
+    else {
+        panic!("public remote prompt submission should start");
+    };
+    let prompt_id = prompt.id().to_string();
+    let active_prompt = wait_for_home_remote_prompt_receipt(
+        &app,
+        &session_id,
+        &agent_id,
+        &prompt_id,
+    )
+    .await;
 
     active_prompt_tx
         .send(active_prompt)
         .expect("worker should wait for the home prompt before completion");
 
-    let completion =
-        crate::transport::TransportService::complete_active_prompt(&mut app, &session_id)
-            .expect("public remote completion should succeed");
+    let completion_request = LocalDaemonRequest::CompletePrompt(crate::local::CompletePromptRequest {
+        session_id: session_id.clone(),
+    });
+    let completion_command = KernelCommand::from_local_request(
+        "public-remote-completion-worker-termination-complete",
+        None,
+        None,
+        &completion_request,
+    );
+    let LocalDaemonResponse::PromptCompleted { completion } = router
+        .dispatch(completion_command, completion_request)
+        .await
+        .expect("public remote completion should succeed")
+    else {
+        panic!("public remote completion should return a completed prompt");
+    };
     worker_response
         .await
         .expect("worker response task should join");
     assert_eq!(completion.completed.id(), prompt_id);
     let projected = app
+        .lock()
+        .await
         .completed_git_turn_snapshot_store()
         .latest_projection_for_agent(&session_id, &agent_id)
         .expect("remote completion should be projected");
@@ -302,7 +416,9 @@ async fn public_remote_completion_preserves_worker_termination_async() {
         "worker-reported termination must not project a successful turn"
     );
     assert_eq!(
-        app.agents()
+        app.lock()
+            .await
+            .agents()
             .get_agent(&agent_id)
             .expect("remote agent should remain available")
             .state(),
@@ -311,6 +427,43 @@ async fn public_remote_completion_preserves_worker_termination_async() {
 
     let _ = server_shutdown_tx.send(());
     server_task.await.expect("relay server task should join");
+}
+
+async fn wait_for_home_remote_prompt_receipt(
+    app: &Arc<Mutex<DaemonApp>>,
+    session_id: &str,
+    agent_id: &str,
+    prompt_id: &str,
+) -> crate::session::PromptQueueItem {
+    for _ in 0..400 {
+        let delivered_prompt = {
+            let app = app.lock().await;
+            let active_prompt = app
+                .prompt_owner_active_prompt_for_agent_snapshot(session_id, agent_id)
+                .expect("home active remote prompt should be readable");
+            let active_worker_provider_run_id = app
+                .agents()
+                .get_agent(agent_id)
+                .expect("home remote agent should remain available")
+                .remote_execution()
+                .and_then(|binding| binding.active_worker_provider_run_id.clone());
+            active_prompt.filter(|prompt| {
+                prompt.id() == prompt_id
+                    && prompt.durable_delivery_phase()
+                        == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+                    && prompt.durable_delivery_provider_run_id()
+                        == active_worker_provider_run_id.as_deref()
+                    && active_worker_provider_run_id.is_some()
+            })
+        };
+        if let Some(prompt) = delivered_prompt {
+            return prompt;
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+    panic!(
+        "home prompt `{prompt_id}` did not receive its exact durable worker-run receipt for agent `{agent_id}`"
+    );
 }
 
 #[test]
@@ -1967,9 +2120,17 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
         );
     }
 }
-#[tokio::test(flavor = "multi_thread")]
-async fn remote_machine_agents_materialize_file_attachments_on_the_worker() {
+#[test]
+fn remote_machine_agents_materialize_file_attachments_on_the_worker() {
+    run_async_with_large_test_stack(
+        "remote-machine-agent-attachment-materialization",
+        remote_machine_agents_materialize_file_attachments_on_the_worker_async,
+    );
+}
+
+async fn remote_machine_agents_materialize_file_attachments_on_the_worker_async() {
     let _relay_test_guard = relay_client_test_guard().await;
+    let _test_home = RelayTestHome::new();
     let server = RelayServer::new(RelayConfig {
         host: "127.0.0.1".to_string(),
         port: 0,
@@ -2101,25 +2262,48 @@ async fn remote_machine_agents_materialize_file_attachments_on_the_worker() {
     std::fs::write(&source_path, b"remote attachment body")
         .expect("source attachment should be written");
 
-    let outcome = app_home
-        .lock()
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+        Arc::clone(&app_home),
+        1,
+    );
+    let submit_request = LocalDaemonRequest::SubmitPrompt(crate::local::SubmitPromptRequest {
+        session_id: session_id.clone(),
+        attachment_id: attachment_id.clone(),
+        target_agent_id: Some(remote_agent_id.clone()),
+        prompt: "prompt with attachment\n".to_string(),
+        attachments: vec![crate::session::PromptAttachment::new(
+            format!("file://{}", source_path.display()),
+            "text/plain",
+            Some("note.txt".to_string()),
+        )],
+    });
+    let submit_command = KernelCommand::from_local_request(
+        "remote-machine-agent-attachment-submit",
+        None,
+        None,
+        &submit_request,
+    );
+    let LocalDaemonResponse::PromptSubmitted { outcome, .. } = router
+        .dispatch(submit_command, submit_request)
         .await
-        .submit_prompt(
-            &session_id,
-            &attachment_id,
-            Some(&remote_agent_id),
-            "prompt with attachment\n",
-            vec![crate::session::PromptAttachment::new(
-                format!("file://{}", source_path.display()),
-                "text/plain",
-                Some("note.txt".to_string()),
-            )],
-        )
-        .expect("remote prompt should submit");
+        .expect("remote prompt should submit through the public kernel runtime")
+    else {
+        panic!("public remote attachment submission should return prompt state");
+    };
     assert!(matches!(
-        outcome,
+        &outcome,
         crate::session::PromptSubmissionOutcome::Started { .. }
     ));
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = &outcome else {
+        panic!("remote attachment prompt should start");
+    };
+    let _delivered_prompt = wait_for_home_remote_prompt_receipt(
+        &app_home,
+        &session_id,
+        &remote_agent_id,
+        prompt.id(),
+    )
+    .await;
 
     let worker_attachments = wait_for_leased_agent_active_prompt_attachments(
         app_worker.clone(),
@@ -2171,9 +2355,17 @@ async fn wait_for_leased_agent_active_prompt_attachments(
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn remote_machine_agents_cancel_prompts_through_the_home_session() {
+#[test]
+fn remote_machine_agents_cancel_prompts_through_the_home_session() {
+    run_async_with_large_test_stack(
+        "remote-machine-agent-home-session-cancellation",
+        remote_machine_agents_cancel_prompts_through_the_home_session_async,
+    );
+}
+
+async fn remote_machine_agents_cancel_prompts_through_the_home_session_async() {
     let _relay_test_guard = relay_client_test_guard().await;
+    let _test_home = RelayTestHome::new();
     let server = RelayServer::new(RelayConfig {
         host: "127.0.0.1".to_string(),
         port: 0,
@@ -2286,7 +2478,7 @@ async fn remote_machine_agents_cancel_prompts_through_the_home_session() {
             .spawn_agent(
                 CreateAgentRequest::new(&session_id, &provider)
                     .with_alias("remote-reviewer")
-                    .with_model("default")
+                    .with_model("native-tui-idle")
                     .with_kernel(&config_worker.daemon_id),
             )
             .expect("remote agent should spawn")
@@ -2294,27 +2486,77 @@ async fn remote_machine_agents_cancel_prompts_through_the_home_session() {
             .to_string()
     };
 
-    let (outcome, cancellation, forced_cancellation) = {
-        // Keep the home state locked from admission through the repeated
-        // cancellation. The remote dev-stub may otherwise finish the prompt
-        // between these assertions when the full suite is under load.
-        let mut app_home = app_home.lock().await;
-        let outcome = app_home
-            .submit_prompt(
-                &session_id,
-                &attachment_id,
-                Some(&remote_agent_id),
-                "cancel this remote prompt\n",
-                Vec::new(),
-            )
-            .expect("remote prompt should submit");
-        let cancellation = app_home
-            .cancel_active_prompt(&session_id, &attachment_id)
-            .expect("remote prompt should cancel");
-        let forced_cancellation = app_home
-            .cancel_active_prompt(&session_id, &attachment_id)
-            .expect("a repeated remote cancellation should force settlement");
-        (outcome, cancellation, forced_cancellation)
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+        Arc::clone(&app_home),
+        1,
+    );
+    let submit_request = LocalDaemonRequest::SubmitPrompt(crate::local::SubmitPromptRequest {
+        session_id: session_id.clone(),
+        attachment_id: attachment_id.clone(),
+        target_agent_id: Some(remote_agent_id.clone()),
+        prompt: "cancel this remote prompt\n".to_string(),
+        attachments: Vec::new(),
+    });
+    let submit_command = KernelCommand::from_local_request(
+        "remote-machine-agent-cancel-submit",
+        None,
+        None,
+        &submit_request,
+    );
+    let LocalDaemonResponse::PromptSubmitted { outcome, .. } = router
+        .dispatch(submit_command, submit_request)
+        .await
+        .expect("remote prompt should submit through the public kernel runtime")
+    else {
+        panic!("public remote prompt submission should return prompt state");
+    };
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = &outcome else {
+        panic!("remote prompt should start before cancellation");
+    };
+    let _delivered_prompt = wait_for_home_remote_prompt_receipt(
+        &app_home,
+        &session_id,
+        &remote_agent_id,
+        prompt.id(),
+    )
+    .await;
+
+    let cancel_request = || {
+        LocalDaemonRequest::CancelActivePrompt(crate::local::CancelActivePromptRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment_id.clone(),
+            target_agent_id: None,
+        })
+    };
+    let cancellation_request = cancel_request();
+    let cancellation_command = KernelCommand::from_local_request(
+        "remote-machine-agent-cancel-first",
+        None,
+        None,
+        &cancellation_request,
+    );
+    let LocalDaemonResponse::PromptCancelled { cancellation } = router
+        .dispatch(cancellation_command, cancellation_request)
+        .await
+        .expect("remote prompt should cancel through the public kernel runtime")
+    else {
+        panic!("public remote cancellation should return prompt state");
+    };
+    let forced_cancellation_request = cancel_request();
+    let forced_cancellation_command = KernelCommand::from_local_request(
+        "remote-machine-agent-cancel-repeat",
+        None,
+        None,
+        &forced_cancellation_request,
+    );
+    let LocalDaemonResponse::PromptCancelled {
+        cancellation: forced_cancellation,
+    } = router
+        .dispatch(forced_cancellation_command, forced_cancellation_request)
+        .await
+        .expect("a repeated remote cancellation should force settlement")
+    else {
+        panic!("repeated remote cancellation should return prompt state");
     };
     assert!(matches!(
         outcome,
