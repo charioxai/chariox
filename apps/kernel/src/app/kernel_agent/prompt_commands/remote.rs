@@ -936,7 +936,7 @@ mod tests {
             .expect("completion should not wait for relay I/O under the app lock")
             .expect("queued prompt should promote");
         assert_eq!(promoted.prompt(), "queued second");
-        assert_eq!(promoted.status(), PromptStatus::Running);
+        assert_eq!(promoted.status(), PromptStatus::Dispatching);
 
         let deferred = app.take_deferred_workflow_remote_prompt_dispatches();
         assert_eq!(deferred.len(), 1, "promotion should enqueue exactly one send");

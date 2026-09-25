@@ -2581,6 +2581,23 @@ mod explicit_completion_tests {
                 panic!("initial leased prompt should start")
             }
         };
+        app.agents
+            .bind_remote_execution(
+                &leased_agent.backing_agent_id,
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "worker-kernel-1".to_string(),
+                    worker_machine_id: "worker-machine-1".to_string(),
+                    execution_lease_id: lease.id.clone(),
+                    leased_agent_id: leased_agent.id.clone(),
+                    active_worker_provider_run_id: Some(provider_run_id.clone()),
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .expect("home projection agent should bind to its remote worker");
 
         let detached_source = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::new(
@@ -2720,7 +2737,7 @@ mod explicit_completion_tests {
             started_next.workflow_node_run_id(),
             Some(workflow_node_run_id.as_str())
         );
-        assert_eq!(started_next.status(), PromptStatus::Running);
+        assert_eq!(started_next.status(), PromptStatus::Dispatching);
         let active = app
             .prompt_owner_active_prompt_for_agent_snapshot(
                 &leased_agent.backing_session_id,
