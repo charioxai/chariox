@@ -3,25 +3,29 @@ import test from "node:test";
 
 import { APP_CSP, AppTabs, appOrigin } from "./browser-controller-apps.mjs";
 
-function fakeBrowser() {
+function fakeConnection(targets = []) {
   const sent = [];
   let listener;
-  const connection = {
+  return {
     sent,
+    targets,
     subscribe(fn) { listener = fn; return () => { listener = null; }; },
     async send(method, params, sessionId) {
       sent.push({ method, params, sessionId });
+      if (method === "Target.getTargets") return { targetInfos: this.targets };
       return method === "Target.createTarget" ? { targetId: "t1" } : {};
     },
     async emit(message) { listener?.(message); await new Promise((r) => setImmediate(r)); },
   };
-  return {
-    connection,
-    browser: {
-      ensureConnection: async () => connection,
-      ensureTargetSession: async () => "s1",
-    },
+}
+
+function fakeBrowser() {
+  const browser = {
+    connection: fakeConnection(),
+    ensureConnection: async () => browser.connection,
+    ensureTargetSession: async () => "s1",
   };
+  return { connection: browser.connection, browser };
 }
 
 const asset = (path, body, type = "text/html") => ({ path, content_type: type, body_base64: Buffer.from(body).toString("base64") });
@@ -89,9 +93,9 @@ test("queues bridge calls bound to the installation and resolves responses", asy
   await bind(JSON.stringify({ id: "1", method: "list_todos", params: { open_only: true } }));
   await bind("not json");
   await bind(JSON.stringify({ id: "2", method: "x" }), "other");
-  assert.deepEqual(tabs.takeCalls().calls, [{ installation_id: "inst-1", target_id: "t1", call_id: "1",
+  assert.deepEqual((await tabs.takeCalls()).calls, [{ installation_id: "inst-1", target_id: "t1", call_id: "1",
     method: "list_todos", params: { open_only: true } }]);
-  assert.deepEqual(tabs.takeCalls().calls, []);
+  assert.deepEqual((await tabs.takeCalls()).calls, []);
   connection.sent.length = 0;
   await tabs.respond({ target_id: "t1", call_id: "1", result: { todos: [] } });
   assert.equal(connection.sent[0].method, "Runtime.evaluate");
@@ -119,7 +123,22 @@ test("malformed escapes are 404s and DNS prefetch is off", async () => {
 
 test("polls report open App targets so closed views can be dropped", async () => {
   const { tabs, connection } = await opened();
-  assert.deepEqual(tabs.takeCalls().open_targets, ["t1"]);
+  assert.deepEqual((await tabs.takeCalls()).open_targets, ["t1"]);
   await connection.emit({ method: "Target.detachedFromTarget", params: { sessionId: "s1" } });
-  assert.deepEqual(tabs.takeCalls().open_targets, []);
+  assert.deepEqual((await tabs.takeCalls()).open_targets, []);
+});
+
+test("a CDP reconnect drops unconfined App Tabs and closes unowned App-origin Tabs", async () => {
+  const { browser } = fakeBrowser();
+  const tabs = new AppTabs(browser);
+  await tabs.open({ origin_label: "todo-1", installation_id: "inst-1", assets: [asset("index.html", "x")] });
+  assert.deepEqual((await tabs.takeCalls()).open_targets, ["t1"]);
+  // The socket dropped and another command reconnected: interception is gone.
+  browser.connection = fakeConnection([
+    { targetId: "t1", url: "https://todo-1.app.chariox.internal/" },
+    { targetId: "user", url: "https://example.test/" },
+  ]);
+  assert.deepEqual((await tabs.takeCalls()).open_targets, []);
+  assert.deepEqual(browser.connection.sent.filter((m) => m.method === "Target.closeTarget").map((m) => m.params.targetId), ["t1"]);
+  await assert.rejects(tabs.respond({ target_id: "t1", call_id: "1", result: null }));
 });

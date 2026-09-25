@@ -13,7 +13,9 @@ pub(crate) struct AppViewBinding {
 
 #[derive(Default)]
 struct SessionViews {
-    tabs: HashMap<String, AppViewBinding>,
+    /// Target → (binding, registration number).
+    tabs: HashMap<String, (AppViewBinding, u64)>,
+    registrations: u64,
     pumping: bool,
 }
 
@@ -26,21 +28,38 @@ impl AppViews {
     pub(crate) fn register(&self, session: &str, target: &str, binding: AppViewBinding) -> bool {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let views = sessions.entry(session.to_owned()).or_default();
-        views.tabs.insert(target.to_owned(), binding);
+        views.registrations += 1;
+        views
+            .tabs
+            .insert(target.to_owned(), (binding, views.registrations));
         !std::mem::replace(&mut views.pumping, true)
     }
 
     pub(crate) fn binding(&self, session: &str, target: &str) -> Option<AppViewBinding> {
         let sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        sessions.get(session)?.tabs.get(target).cloned()
+        sessions
+            .get(session)?
+            .tabs
+            .get(target)
+            .map(|(binding, _)| binding.clone())
+    }
+
+    /// Registration count to capture before a poll is sent.
+    pub(crate) fn registrations(&self, session: &str) -> u64 {
+        let sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.get(session).map_or(0, |views| views.registrations)
     }
 
     /// Drops bindings whose Tab the controller no longer serves (closed,
-    /// crashed or lost on reconnect), so the pump can stop.
-    pub(crate) fn retain_open(&self, session: &str, open_targets: &[String]) {
+    /// crashed or lost on reconnect), so the pump can stop. Only Tabs
+    /// registered before the poll (`up_to`) are judged: a view opened while the
+    /// poll was in flight is not in its answer yet.
+    pub(crate) fn retain_open(&self, session: &str, open_targets: &[String], up_to: u64) {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(views) = sessions.get_mut(session) {
-            views.tabs.retain(|target, _| open_targets.contains(target));
+            views.tabs.retain(|target, (_, registered)| {
+                *registered > up_to || open_targets.contains(target)
+            });
         }
     }
 
@@ -95,8 +114,14 @@ mod tests {
         views.forget_session("s");
         assert!(!views.keep_pumping("s"));
         assert!(views.register("s", "t3", binding("a")));
+        // A view opened while a poll was in flight survives that poll's answer.
+        let before = views.registrations("s");
+        assert!(!views.register("s", "t4", binding("b")));
+        views.retain_open("s", &[], before);
+        assert_eq!(views.binding("s", "t4"), Some(binding("b")));
+        assert_eq!(views.binding("s", "t3"), None);
         // A Tab closed in the browser stops the pump on the next poll.
-        views.retain_open("s", &[]);
+        views.retain_open("s", &[], views.registrations("s"));
         assert!(!views.keep_pumping("s"));
     }
 }

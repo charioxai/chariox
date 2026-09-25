@@ -64,7 +64,10 @@ impl KernelRuntimeState {
         .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
         .map_err(|code| {
             tracing::warn!(code, "App view assets unavailable");
-            AppRequestErrorCode::NotFound
+            match code {
+                "app_view_too_large" => AppRequestErrorCode::LimitExceeded,
+                _ => AppRequestErrorCode::NotFound,
+            }
         })?;
         let engine = base64::engine::general_purpose::STANDARD;
         let request = BrowserAppViewRequest::Open {
@@ -134,6 +137,7 @@ impl KernelRuntimeState {
         let mut failures = 0;
         while views.keep_pumping(&session_id) {
             tokio::time::sleep(POLL_INTERVAL).await;
+            let polled_up_to = views.registrations(&session_id);
             let Some(batch) = self
                 .app_view_command::<BrowserAppViewCalls>(&session_id, BrowserAppViewRequest::Calls)
                 .await
@@ -145,7 +149,9 @@ impl KernelRuntimeState {
                 continue;
             };
             failures = 0;
-            views.retain_open(&session_id, &batch.open_targets);
+            if let Some(open) = &batch.open_targets {
+                views.retain_open(&session_id, open, polled_up_to);
+            }
             for call in batch.calls {
                 let state = self.clone();
                 let session = session_id.clone();

@@ -78,6 +78,7 @@ pub(crate) struct BrowserAppViewCall {
 pub(crate) struct BrowserAppViewCalls {
     pub(crate) calls: Vec<BrowserAppViewCall>,
     /// App targets the controller still serves; any other binding is closed.
+    /// Absent (an older controller) means "unknown": nothing is pruned.
     #[serde(default)]
-    pub(crate) open_targets: Vec<String>,
+    pub(crate) open_targets: Option<Vec<String>>,
 }

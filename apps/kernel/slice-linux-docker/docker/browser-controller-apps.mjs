@@ -117,6 +117,7 @@ export class AppTabs {
     this.unsubscribe?.();
     this.apps.clear();
     this.calls = [];
+    this.swept = false;
     this.connection = connection;
     this.unsubscribe = connection.subscribe((message) => {
       void this.handle(connection, message).catch(() => {});
@@ -178,8 +179,28 @@ export class AppTabs {
       method: call.method, params: call.params ?? {} });
   }
 
+  // A lost CDP connection ends Fetch interception and the bridge for every
+  // App Tab. Forget those Tabs and close any App-origin Tab this controller
+  // does not own (including ones left by an earlier controller process).
+  async reconcile() {
+    const connection = await this.browser.ensureConnection();
+    this.listen(connection);
+    if (this.swept) return;
+    const { targetInfos = [] } = await connection.send("Target.getTargets", {});
+    const owned = new Set([...this.apps.values()].map((app) => app.targetId));
+    for (const target of targetInfos) {
+      let host = "";
+      try { host = new URL(target.url).hostname; } catch {}
+      if (host.endsWith(APP_ORIGIN_SUFFIX) && !owned.has(target.targetId)) {
+        await connection.send("Target.closeTarget", { targetId: target.targetId }).catch(() => {});
+      }
+    }
+    this.swept = true;
+  }
+
   /** Drain pending view calls; the kernel answers each with `respond`. */
-  takeCalls() {
+  async takeCalls() {
+    await this.reconcile();
     const calls = this.calls;
     this.calls = [];
     // Open App targets let the kernel drop views that closed or crashed.
@@ -187,6 +208,7 @@ export class AppTabs {
   }
 
   async respond(params) {
+    await this.reconcile();
     const entry = [...this.apps.entries()].find(([, app]) => app.targetId === params?.target_id);
     if (!entry || typeof params.call_id !== "string") throw invalid("unknown App tab or call");
     const [sessionId] = entry;

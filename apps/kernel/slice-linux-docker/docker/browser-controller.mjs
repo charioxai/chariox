@@ -116,7 +116,7 @@ export async function handleBrowserControllerRequest(
       browser.appTabs ??= new AppTabs(browser);
       const apps = browser.appTabs;
       if (request.method === "browser.app.open") return successResponse(request.id, await apps.open(request.params));
-      if (request.method === "browser.app.calls") return successResponse(request.id, apps.takeCalls());
+      if (request.method === "browser.app.calls") return successResponse(request.id, await apps.takeCalls());
       if (request.method === "browser.app.respond") return successResponse(request.id, await apps.respond(request.params));
     }
     if (request.method === "browser.events.poll") {
