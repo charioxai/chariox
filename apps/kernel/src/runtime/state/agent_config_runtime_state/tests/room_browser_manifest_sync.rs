@@ -242,7 +242,7 @@ async fn projected_remote_completion_admits_queued_prompt_before_ordered_deliver
 }
 
 #[tokio::test]
-async fn ordinary_completion_keeps_workflow_head_on_legacy_advancement_path() {
+async fn ordinary_completion_dispatches_workflow_head_after_projection() {
     let mut fixture = room_manifest_fixture().await;
     let (completed_prompt_id, attachment_id, workflow_run_id, node_run_id) = {
         let mut app = fixture.runtime.app.lock().await;
@@ -345,10 +345,12 @@ async fn ordinary_completion_keeps_workflow_head_on_legacy_advancement_path() {
                 .await
         }
     });
-    let (request_id, request) = tokio::select! {
-        result = &mut projection => panic!("completion projection ended before workflow dispatch: {result:?}"),
-        request = next_peer_request(&mut fixture) => request,
-    };
+    tokio::time::timeout(std::time::Duration::from_secs(2), &mut projection)
+        .await
+        .expect("completion projection should finish before workflow dispatch")
+        .expect("projection task should join")
+        .expect("ordinary completion with queued workflow should succeed");
+    let (request_id, request) = next_peer_request(&mut fixture).await;
     let crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt {
         prompt,
         workflow_context,
@@ -356,7 +358,7 @@ async fn ordinary_completion_keeps_workflow_head_on_legacy_advancement_path() {
         ..
     } = request
     else {
-        panic!("workflow head should retain its legacy submission path");
+        panic!("workflow head should enter ordered submission");
     };
     let git_context = git_context.expect("workflow prompt should carry git context");
     assert_eq!(prompt, "queued workflow prompt");
@@ -391,11 +393,6 @@ async fn ordinary_completion_keeps_workflow_head_on_legacy_advancement_path() {
         },
     )
     .await;
-    tokio::time::timeout(std::time::Duration::from_secs(2), projection)
-        .await
-        .expect("completion projection should finish")
-        .expect("projection task should join")
-        .expect("ordinary completion with queued workflow should succeed");
     let mut app = fixture.runtime.app.lock().await;
     let active = app
         .prompt_owner_active_prompt_for_agent(&fixture.session_id, &fixture.agent_id)
@@ -639,7 +636,7 @@ async fn queue_workflow_successor_after_ordinary_prompt(fixture: &RoomManifestFi
 
             let workflow = app
                 .sessions_mut()
-                .create_workflow(&session_id, Some("queued successor".to_string()))?;
+                .create_workflow(&session_id, Some("queued-successor".to_string()))?;
             let node =
                 app.sessions_mut()
                     .add_workflow_node(&session_id, workflow.id(), &agent_id)?;
