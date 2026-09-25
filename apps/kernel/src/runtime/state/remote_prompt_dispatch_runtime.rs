@@ -4,10 +4,10 @@
 //! settlement after owned prompt state has already admitted the prompt.
 
 use super::remote_prompt_worker_submission_runtime::{
-    persist_remote_prompt_reconciliation_pending, remote_prompt_error_is_reconciliation_pending,
-    query_remote_prompt_worker_receipt, remote_prompt_reconciliation_pending,
+    persist_remote_prompt_reconciliation_pending, query_remote_prompt_worker_receipt,
+    remote_prompt_error_is_reconciliation_pending, remote_prompt_error_should_refresh_binding,
+    remote_prompt_error_should_retry_transport, remote_prompt_reconciliation_pending,
     remote_prompt_reconciliation_pending_error, remote_prompt_transport_retry_delay,
-    remote_prompt_error_should_refresh_binding, remote_prompt_error_should_retry_transport,
     submit_remote_prompt_to_worker_with_binding_refresh,
 };
 use super::*;
@@ -60,7 +60,10 @@ fn remote_prompt_receipt_action(
 }
 
 fn remote_prompt_receipt_action_requires_projection(action: &RemotePromptReceiptAction) -> bool {
-    matches!(action, RemotePromptReceiptAction::DrainCompletedProjection(_))
+    matches!(
+        action,
+        RemotePromptReceiptAction::DrainCompletedProjection(_)
+    )
 }
 
 impl RemotePromptAgentClaim {
@@ -195,8 +198,8 @@ impl KernelRuntimeState {
             self.spawn_remote_prompt_projection_drain(session_id.to_string(), agent_id.to_string());
             return Ok(true);
         }
-        let Some(mut dispatch) = self
-            .remote_prompt_recovery_dispatch_for_phase(&agent, delivery_phase)?
+        let Some(mut dispatch) =
+            self.remote_prompt_recovery_dispatch_for_phase(&agent, delivery_phase)?
         else {
             return Ok(false);
         };
@@ -276,9 +279,7 @@ impl KernelRuntimeState {
         let completed = remote_prompt_receipt_action_requires_projection(&action);
         let worker_provider_run_id = match action {
             RemotePromptReceiptAction::AssociateActiveRun(provider_run_id) => provider_run_id,
-            RemotePromptReceiptAction::DrainCompletedProjection(provider_run_id) => {
-                provider_run_id
-            }
+            RemotePromptReceiptAction::DrainCompletedProjection(provider_run_id) => provider_run_id,
         };
         if let Err(error) = self
             .owned
@@ -302,10 +303,7 @@ impl KernelRuntimeState {
 
         if completed {
             if let Err(detail) = self
-                .drain_completed_remote_prompt_receipt_projection(
-                    dispatch,
-                    &worker_provider_run_id,
-                )
+                .drain_completed_remote_prompt_receipt_projection(dispatch, &worker_provider_run_id)
                 .await
             {
                 return Err(self.hold_remote_prompt_receipt_reconciliation(dispatch, detail));
@@ -370,7 +368,9 @@ impl KernelRuntimeState {
     ) -> Result<(), String> {
         let binding = self.remote_prompt_receipt_binding(dispatch)?;
         if binding.active_worker_provider_run_id.as_deref() != Some(worker_provider_run_id) {
-            return Err("worker provider-run association changed before projection drain".to_string());
+            return Err(
+                "worker provider-run association changed before projection drain".to_string(),
+            );
         }
         let relay_config = self
             .with_app_side_effect(move |app| app.relay_config_for_remote_execution(&binding))
@@ -412,11 +412,14 @@ impl KernelRuntimeState {
             RelayPeerResponse::LeasedRuntimeProjectionDrained { event: Some(event) } => event,
             RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None } => {
                 return Err(
-                    "worker returned no replayable projection for its completed receipt".to_string(),
+                    "worker returned no replayable projection for its completed receipt"
+                        .to_string(),
                 );
             }
             other => {
-                return Err(format!("unexpected completed receipt drain response: {other:?}"));
+                return Err(format!(
+                    "unexpected completed receipt drain response: {other:?}"
+                ));
             }
         };
         if !completed_receipt_projection_matches(dispatch, worker_provider_run_id, &event) {
@@ -930,8 +933,7 @@ impl KernelRuntimeState {
                 }
                 Err(error) => {
                     if remote_prompt_error_is_reconciliation_pending(&error)
-                        || remote_prompt_reconciliation_pending(self, &dispatch)
-                            .unwrap_or(true)
+                        || remote_prompt_reconciliation_pending(self, &dispatch).unwrap_or(true)
                     {
                         return Err(error);
                     }
@@ -1854,8 +1856,8 @@ fn remote_prompt_recovery_delay(attempt: u32) -> std::time::Duration {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::remote_prompt_worker_submission_runtime::query_remote_prompt_worker_receipt_with_transport;
+    use super::*;
     use chariox_relay::protocol::RelayEnvelope;
     use futures_util::{SinkExt, StreamExt};
     use std::sync::Arc;
@@ -1863,9 +1865,7 @@ mod tests {
     use tokio::sync::Mutex;
     use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
 
-    async fn receive_claim_test_envelope(
-        socket: &mut WebSocketStream<TcpStream>,
-    ) -> RelayEnvelope {
+    async fn receive_claim_test_envelope(socket: &mut WebSocketStream<TcpStream>) -> RelayEnvelope {
         let message = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next())
             .await
             .expect("temporary relay should receive a client envelope before timeout")
@@ -1899,20 +1899,12 @@ mod tests {
         machine_id: &str,
         worker_public_key: &str,
         worker_private_key: &str,
-    ) -> (
-        WebSocketStream<TcpStream>,
-        String,
-        String,
-        String,
-        String,
-    ) {
-        let (stream, _) = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            listener.accept(),
-        )
-        .await
-        .expect("temporary relay should accept discovery connection before timeout")
-        .expect("temporary relay listener should remain open");
+    ) -> (WebSocketStream<TcpStream>, String, String, String, String) {
+        let (stream, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
+                .await
+                .expect("temporary relay should accept discovery connection before timeout")
+                .expect("temporary relay listener should remain open");
         let mut discovery = accept_async(stream)
             .await
             .expect("temporary relay should upgrade discovery connection");
@@ -1940,13 +1932,11 @@ mod tests {
         .await;
         drop(discovery);
 
-        let (stream, _) = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            listener.accept(),
-        )
-        .await
-        .expect("temporary relay should accept peer connection before timeout")
-        .expect("temporary relay listener should remain open");
+        let (stream, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
+                .await
+                .expect("temporary relay should accept peer connection before timeout")
+                .expect("temporary relay listener should remain open");
         let mut peer = accept_async(stream)
             .await
             .expect("temporary relay should upgrade peer connection");
@@ -2027,6 +2017,98 @@ mod tests {
         .await;
     }
 
+    async fn assert_no_duplicate_claim_submission(
+        listener: &TcpListener,
+        worker_id: &str,
+        machine_id: &str,
+        worker_public_key: &str,
+        worker_private_key: &str,
+    ) {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(300);
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let Ok(Ok((stream, _))) = tokio::time::timeout(remaining, listener.accept()).await
+            else {
+                return;
+            };
+            let mut socket = accept_async(stream)
+                .await
+                .expect("temporary relay should upgrade observation connection");
+            match receive_claim_test_envelope(&mut socket).await {
+                RelayEnvelope::ClientMetadataRequest { request_id, .. } => {
+                    let presence = serde_json::from_value(serde_json::json!({
+                        "kernel_id": worker_id,
+                        "machine_id": machine_id,
+                        "public_key": worker_public_key,
+                    }))
+                    .expect("fake worker presence should deserialize");
+                    send_claim_test_envelope(
+                        &mut socket,
+                        RelayEnvelope::ClientMetadataResponse {
+                            request_id,
+                            machines: None,
+                            kernels: None,
+                            kernel: Some(presence),
+                            error: None,
+                        },
+                    )
+                    .await;
+                }
+                RelayEnvelope::DaemonRegister { .. } => {
+                    let RelayEnvelope::DaemonPeerRequest {
+                        request_id,
+                        encrypted_request,
+                        ..
+                    } = receive_claim_test_envelope(&mut socket).await
+                    else {
+                        panic!("expected a fake worker peer request after registration");
+                    };
+                    let decrypted =
+                        crate::transport::relay_crypto::decrypt_payload_for_private_key(
+                            worker_private_key,
+                            &encrypted_request,
+                        )
+                        .expect("fake worker should decrypt the observed request");
+                    let request: crate::transport::relay_peer::RelayPeerRequest =
+                        serde_json::from_slice(&decrypted.plaintext)
+                            .expect("observed worker request should decode");
+                    match request {
+                        crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt {
+                            ..
+                        } => panic!("the same active successor must not be submitted twice"),
+                        crate::transport::relay_peer::RelayPeerRequest::DrainLeasedRuntimeProjection {
+                            ..
+                        } => {
+                            let response = crate::transport::relay_peer::RelayPeerResponse::LeasedRuntimeProjectionDrained {
+                                event: None,
+                            };
+                            let encrypted_response =
+                                crate::transport::relay_crypto::encrypt_payload_for_peer(
+                                    worker_private_key,
+                                    &decrypted.sender_public_key,
+                                    &serde_json::to_vec(&response)
+                                        .expect("projection response should encode"),
+                                )
+                                .expect("fake worker should encrypt projection response");
+                            send_claim_test_envelope(
+                                &mut socket,
+                                RelayEnvelope::DaemonPeerResponse {
+                                    request_id,
+                                    from_daemon_id: worker_id.to_string(),
+                                    encrypted_response: Some(encrypted_response),
+                                    error: None,
+                                },
+                            )
+                            .await;
+                        }
+                        other => panic!("unexpected observed worker request: {other:?}"),
+                    }
+                }
+                other => panic!("unexpected fake relay observation envelope: {other:?}"),
+            }
+        }
+    }
+
     struct FakeRelayPeerRequest {
         socket: WebSocketStream<TcpStream>,
         request_id: String,
@@ -2034,9 +2116,7 @@ mod tests {
         request: RelayPeerRequest,
     }
 
-    async fn receive_fake_relay_envelope(
-        socket: &mut WebSocketStream<TcpStream>,
-    ) -> RelayEnvelope {
+    async fn receive_fake_relay_envelope(socket: &mut WebSocketStream<TcpStream>) -> RelayEnvelope {
         let message = tokio::time::timeout(std::time::Duration::from_secs(3), socket.next())
             .await
             .expect("fake relay frame should arrive before timeout")
@@ -2071,13 +2151,11 @@ mod tests {
         worker_public_key: &str,
         worker_private_key: &str,
     ) -> FakeRelayPeerRequest {
-        let (stream, _) = tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            listener.accept(),
-        )
-        .await
-        .expect("fake relay should accept metadata connection")
-        .expect("fake relay metadata listener should accept");
+        let (stream, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept())
+                .await
+                .expect("fake relay should accept metadata connection")
+                .expect("fake relay metadata listener should accept");
         let mut discovery = accept_async(stream)
             .await
             .expect("fake relay should upgrade metadata connection");
@@ -2105,13 +2183,11 @@ mod tests {
         .await;
         drop(discovery);
 
-        let (stream, _) = tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            listener.accept(),
-        )
-        .await
-        .expect("fake relay should accept temporary peer connection")
-        .expect("fake relay peer listener should accept");
+        let (stream, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept())
+                .await
+                .expect("fake relay should accept temporary peer connection")
+                .expect("fake relay peer listener should accept");
         let mut socket = accept_async(stream)
             .await
             .expect("fake relay should upgrade peer connection");
@@ -2238,12 +2314,12 @@ mod tests {
         let session_id = session.id().to_string();
         let agent_id = agent.id().to_string();
         let attachment_id = attachment.id().to_string();
-        let prompt_id = format!("uncertain-prompt-{suffix}");
+        let requested_prompt_id = format!("uncertain-prompt-{suffix}");
         let started = app
             .prompt_owner_submit_prepared_prompt(
                 &session_id,
                 crate::session::PromptQueueItem::new(
-                    &prompt_id,
+                    &requested_prompt_id,
                     &attachment_id,
                     &agent_id,
                     "exact prompt whose worker admission is uncertain",
@@ -2258,7 +2334,7 @@ mod tests {
         else {
             panic!("uncertain home prompt should be active");
         };
-        assert_eq!(active_prompt.id(), prompt_id);
+        let prompt_id = active_prompt.id().to_string();
         app.mark_active_prompt_delivery(
             &session_id,
             &agent_id,
@@ -2356,7 +2432,10 @@ mod tests {
             )
             .await;
             assert_eq!(receipt_request.target_id, listener_worker_id);
-            assert!(app.try_lock().is_ok(), "receipt query must not hold DaemonApp");
+            assert!(
+                app.try_lock().is_ok(),
+                "receipt query must not hold DaemonApp"
+            );
             assert!(matches!(
                 &receipt_request.request,
                 RelayPeerRequest::GetLeasedPromptReceipt {
@@ -2389,7 +2468,10 @@ mod tests {
             )
             .await;
             assert_eq!(projection_request.target_id, listener_worker_id);
-            assert!(app.try_lock().is_ok(), "projection drain must not hold DaemonApp");
+            assert!(
+                app.try_lock().is_ok(),
+                "projection drain must not hold DaemonApp"
+            );
             assert!(matches!(
                 &projection_request.request,
                 RelayPeerRequest::DrainLeasedRuntimeProjection {
@@ -2413,14 +2495,12 @@ mod tests {
                         prompts: Vec::new(),
                         output_chunks: Vec::new(),
                         notices: Vec::new(),
-                        completions: vec![
-                            crate::transport::relay_peer::RelayProjectedCompletion {
-                                message_id: "completed-receipt-assistant-message".to_string(),
-                                completed_at_ms: 1,
-                                home_prompt_id: Some(listener_prompt_id),
-                                provider_termination: None,
-                            },
-                        ],
+                        completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                            message_id: "completed-receipt-assistant-message".to_string(),
+                            completed_at_ms: 1,
+                            home_prompt_id: Some(listener_prompt_id),
+                            provider_termination: None,
+                        }],
                     }),
                 },
             )
@@ -2437,7 +2517,9 @@ mod tests {
             )
             .await
             .expect("completed worker receipt should reconcile"));
-        server.await.expect("fake relay should serve receipt and projection");
+        server
+            .await
+            .expect("fake relay should serve receipt and projection");
 
         let session = fixture
             .runtime
@@ -2475,7 +2557,10 @@ mod tests {
                         .contains_key(crate::history::PROMPT_SETTLED_AT_MS_METADATA_KEY)
             })
             .count();
-        assert_eq!(settlements, 1, "home settlement should be durable exactly once");
+        assert_eq!(
+            settlements, 1,
+            "home settlement should be durable exactly once"
+        );
     }
 
     #[tokio::test]
@@ -2503,7 +2588,10 @@ mod tests {
             )
             .await;
             assert_eq!(receipt_request.target_id, listener_worker_id);
-            assert!(app.try_lock().is_ok(), "receipt query must not hold DaemonApp");
+            assert!(
+                app.try_lock().is_ok(),
+                "receipt query must not hold DaemonApp"
+            );
             assert!(matches!(
                 &receipt_request.request,
                 RelayPeerRequest::GetLeasedPromptReceipt {
@@ -2545,7 +2633,9 @@ mod tests {
             .await
             .expect("conflicting receipt should leave recovery handled"));
         assert!(
-            !server.await.expect("fake relay should finish conflict check"),
+            !server
+                .await
+                .expect("fake relay should finish conflict check"),
             "conflicting receipt must not trigger a replay request"
         );
 
@@ -2562,7 +2652,10 @@ mod tests {
             .state_parts(&session, &fixture.agent_id);
         let active = active.expect("uncertain prompt should remain active");
         assert_eq!(active.id(), fixture.dispatch.prompt_id);
-        assert_eq!(active.prompt(), "exact prompt whose worker admission is uncertain");
+        assert_eq!(
+            active.prompt(),
+            "exact prompt whose worker admission is uncertain"
+        );
         assert_eq!(
             active.durable_delivery_phase(),
             Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
@@ -2614,7 +2707,9 @@ mod tests {
             ))
         );
         let active_action = remote_prompt_receipt_action("home-prompt-1", Some(active)).unwrap();
-        assert!(!remote_prompt_receipt_action_requires_projection(&active_action));
+        assert!(!remote_prompt_receipt_action_requires_projection(
+            &active_action
+        ));
         let completed = crate::transport::relay_peer::LeasedPromptReceipt {
             home_prompt_id: "home-prompt-1".to_string(),
             worker_provider_run_id: "worker-run-2".to_string(),
@@ -2681,18 +2776,19 @@ mod tests {
                 },
             )
             .unwrap();
-        let submitted = app.prompt_owner_submit_prepared_prompt(
-            session.id(),
-            crate::session::PromptQueueItem::new(
-                "home-prompt-receipt-query",
-                attachment.id(),
-                agent.id(),
-                "uncertain prompt",
-                crate::session::PromptStatus::Queued,
-            ),
-            false,
-        )
-        .unwrap();
+        let submitted = app
+            .prompt_owner_submit_prepared_prompt(
+                session.id(),
+                crate::session::PromptQueueItem::new(
+                    "home-prompt-receipt-query",
+                    attachment.id(),
+                    agent.id(),
+                    "uncertain prompt",
+                    crate::session::PromptStatus::Queued,
+                ),
+                false,
+            )
+            .unwrap();
         let prompt_id = match submitted {
             crate::session::PromptSubmissionOutcome::Started { prompt } => prompt.id().to_string(),
             crate::session::PromptSubmissionOutcome::Queued { .. } => {
@@ -2827,45 +2923,126 @@ mod tests {
     async fn recovered_queued_remote_prompt_echo_uses_durable_queue_origin() {
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(crate::session::CreateSessionRequest::new("workspace-1", "worktree-1")).unwrap();
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-1",
+                "worktree-1",
+            ))
+            .unwrap();
         let attachment = crate::app::KernelSessionService::new(&mut app)
-            .attach(crate::attachment::AttachRequest::new(session.id(), "queued-recovery-source", crate::attachment::ClientCapabilityLevel::FullTerminal)).unwrap();
-        app.agents.bind_remote_execution(agent.id(), crate::agent::RemoteAgentBinding {
-            worker_kernel_id: "worker-1".into(), worker_machine_id: "machine-1".into(),
-            execution_lease_id: "lease-1".into(), leased_agent_id: "leased-agent-1".into(),
-            active_worker_provider_run_id: None, relay_url: None, relay_token: None,
-            relay_peer_protocol_version: Some(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION),
-        }).unwrap();
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "queued-recovery-source",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        app.agents
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "worker-1".into(),
+                    worker_machine_id: "machine-1".into(),
+                    execution_lease_id: "lease-1".into(),
+                    leased_agent_id: "leased-agent-1".into(),
+                    active_worker_provider_run_id: None,
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .unwrap();
         let app = Arc::new(Mutex::new(app));
         let runtime = owned_runtime_state(&app).await;
-        runtime.owned.submit_remote_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
-            session_id: session.id().to_string(),
-            prompt: crate::session::PromptQueueItem::new("pending", attachment.id(), agent.id(), "queued recovery prompt", crate::session::PromptStatus::Queued),
-            force_queue: true, refresh_projection: true,
-        }).unwrap().unwrap();
-        let promoted = runtime.owned.advance_next_queued_remote_prompt_dispatch(session.id(), agent.id()).unwrap().unwrap();
+        runtime
+            .owned
+            .submit_remote_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+                session_id: session.id().to_string(),
+                prompt: crate::session::PromptQueueItem::new(
+                    "pending",
+                    attachment.id(),
+                    agent.id(),
+                    "queued recovery prompt",
+                    crate::session::PromptStatus::Queued,
+                ),
+                force_queue: true,
+                refresh_projection: true,
+            })
+            .unwrap()
+            .unwrap();
+        let promoted = runtime
+            .owned
+            .advance_next_queued_remote_prompt_dispatch(session.id(), agent.id())
+            .unwrap()
+            .unwrap();
         let original_dispatch = promoted.remote_dispatch.unwrap();
-        let session = runtime.owned.session_store.get_session(session.id()).unwrap();
-        let active = runtime.owned.prompt_state_owner.active_prompt_for_agent(&session, agent.id()).unwrap();
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap();
+        let active = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent.id())
+            .unwrap();
         assert_eq!(active.durable_initially_queued(), Some(true));
-        assert!(active.durable_operation_id().is_none(), "ordinary queue origins must not require a command operation ID");
-        let private = crate::session::DurablePromptPrivateState::from_prompt(session.id(), &active).unwrap();
-        let private: crate::session::DurablePromptPrivateState = serde_json::from_value(serde_json::to_value(private).unwrap()).unwrap();
-        let mut restored: crate::session::PromptQueueItem = serde_json::from_value(serde_json::to_value(&active).unwrap()).unwrap();
+        assert!(
+            active.durable_operation_id().is_none(),
+            "ordinary queue origins must not require a command operation ID"
+        );
+        let private =
+            crate::session::DurablePromptPrivateState::from_prompt(session.id(), &active).unwrap();
+        let private: crate::session::DurablePromptPrivateState =
+            serde_json::from_value(serde_json::to_value(private).unwrap()).unwrap();
+        let mut restored: crate::session::PromptQueueItem =
+            serde_json::from_value(serde_json::to_value(&active).unwrap()).unwrap();
         assert_eq!(restored.durable_initially_queued(), None);
         restored.restore_durable_private_state(&private);
-        assert!(runtime.owned.prompt_state_owner.replace_active_prompt_if_matches(&session, agent.id(), &active, restored));
+        assert!(runtime
+            .owned
+            .prompt_state_owner
+            .replace_active_prompt_if_matches(&session, agent.id(), &active, restored));
         // Discard the original dispatch intent, as happens on restart. Recovery
         // must reconstruct its echo policy from durable prompt ownership alone.
         drop(original_dispatch);
-        let recovered = runtime.remote_prompt_recovery_dispatch(&runtime.owned.agent_store.get_agent(agent.id()).unwrap()).unwrap().unwrap();
+        let recovered = runtime
+            .remote_prompt_recovery_dispatch(
+                &runtime.owned.agent_store.get_agent(agent.id()).unwrap(),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(recovered.prompt_id, active.id());
-        assert!(runtime.owned.terminal_stream.drain_output_records(session.id(), attachment.id()).iter().all(|record| record.kind != crate::terminal::TerminalOutputKind::PromptEcho));
-        runtime.finish_remote_prompt_dispatch(recovered, Ok("worker-run-recovered".into())).await.unwrap();
-        let echoes = runtime.owned.terminal_stream.drain_output_records(session.id(), attachment.id()).into_iter().filter(|record| record.kind == crate::terminal::TerminalOutputKind::PromptEcho).collect::<Vec<_>>();
-        assert_eq!(echoes.len(), 1, "recovered queued prompt must echo once to its submitting attachment");
+        assert!(runtime
+            .owned
+            .terminal_stream
+            .drain_output_records(session.id(), attachment.id())
+            .iter()
+            .all(|record| record.kind != crate::terminal::TerminalOutputKind::PromptEcho));
+        runtime
+            .finish_remote_prompt_dispatch(recovered, Ok("worker-run-recovered".into()))
+            .await
+            .unwrap();
+        let echoes = runtime
+            .owned
+            .terminal_stream
+            .drain_output_records(session.id(), attachment.id())
+            .into_iter()
+            .filter(|record| record.kind == crate::terminal::TerminalOutputKind::PromptEcho)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            echoes.len(),
+            1,
+            "recovered queued prompt must echo once to its submitting attachment"
+        );
         assert_eq!(echoes[0].prompt_id.as_deref(), Some(active.id()));
-        assert_eq!(echoes[0].provider_run_id, crate::provider::projected_leased_provider_run_id("leased-agent-1", "worker-run-recovered"));
+        assert_eq!(
+            echoes[0].provider_run_id,
+            crate::provider::projected_leased_provider_run_id(
+                "leased-agent-1",
+                "worker-run-recovered"
+            )
+        );
     }
 
     #[tokio::test]
@@ -2949,14 +3126,16 @@ mod tests {
             .unwrap()
             .expect("queued successor should be handled");
         let queued_successor_id = match queued_successor_submission.outcome {
-            crate::session::PromptSubmissionOutcome::Queued { prompt } => {
-                prompt.id().to_string()
-            }
+            crate::session::PromptSubmissionOutcome::Queued { prompt } => prompt.id().to_string(),
             crate::session::PromptSubmissionOutcome::Started { .. } => {
                 panic!("forced successor should remain queued")
             }
         };
-        let session_before_recovery = runtime.owned.session_store.get_session(session.id()).unwrap();
+        let session_before_recovery = runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap();
         assert!(!runtime
             .owned
             .prompt_state_owner
@@ -2974,8 +3153,15 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(recovered, "uncertain dispatch should be handled without replay");
-        let session_after = runtime.owned.session_store.get_session(session.id()).unwrap();
+        assert!(
+            recovered,
+            "uncertain dispatch should be handled without replay"
+        );
+        let session_after = runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap();
         let (active, queued) = runtime
             .owned
             .prompt_state_owner
@@ -4283,18 +4469,25 @@ mod tests {
         let (release_predecessor_tx, release_predecessor_rx) =
             tokio::sync::oneshot::channel::<()>();
         let server = tokio::spawn(async move {
-            let (mut predecessor_peer, predecessor_request_id, predecessor_sender_key,
-                predecessor_home_prompt_id, predecessor_identity) =
-                accept_claim_test_prompt(
-                    &listener,
-                    WORKER_ID,
-                    MACHINE_ID,
-                    &worker_public_key,
-                    &worker_private_key,
-                )
-                .await;
+            let (
+                mut predecessor_peer,
+                predecessor_request_id,
+                predecessor_sender_key,
+                predecessor_home_prompt_id,
+                predecessor_identity,
+            ) = accept_claim_test_prompt(
+                &listener,
+                WORKER_ID,
+                MACHINE_ID,
+                &worker_public_key,
+                &worker_private_key,
+            )
+            .await;
             predecessor_seen_tx
-                .send((predecessor_home_prompt_id.clone(), predecessor_identity.clone()))
+                .send((
+                    predecessor_home_prompt_id.clone(),
+                    predecessor_identity.clone(),
+                ))
                 .expect("test should still await the predecessor request");
             release_predecessor_rx
                 .await
@@ -4312,16 +4505,20 @@ mod tests {
             )
             .await;
 
-            let (mut successor_peer, successor_request_id, successor_sender_key,
-                successor_home_prompt_id, successor_identity) =
-                accept_claim_test_prompt(
-                    &listener,
-                    WORKER_ID,
-                    MACHINE_ID,
-                    &worker_public_key,
-                    &worker_private_key,
-                )
-                .await;
+            let (
+                mut successor_peer,
+                successor_request_id,
+                successor_sender_key,
+                successor_home_prompt_id,
+                successor_identity,
+            ) = accept_claim_test_prompt(
+                &listener,
+                WORKER_ID,
+                MACHINE_ID,
+                &worker_public_key,
+                &worker_private_key,
+            )
+            .await;
             acknowledge_claim_test_prompt(
                 &mut successor_peer,
                 successor_request_id,
@@ -4334,15 +4531,14 @@ mod tests {
                 "worker-run-claim-b",
             )
             .await;
-            assert!(
-                tokio::time::timeout(
-                    std::time::Duration::from_millis(300),
-                    listener.accept(),
-                )
-                .await
-                .is_err(),
-                "the same active successor must not be submitted a second time"
-            );
+            assert_no_duplicate_claim_submission(
+                &listener,
+                WORKER_ID,
+                MACHINE_ID,
+                &worker_public_key,
+                &worker_private_key,
+            )
+            .await;
             vec![
                 (predecessor_home_prompt_id, predecessor_identity),
                 (successor_home_prompt_id, successor_identity),
@@ -4884,9 +5080,11 @@ mod tests {
             .await
             .unwrap();
         let injected_failures: i64 = connection
-            .query_row("SELECT count FROM remote_ack_injected_failures", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT count FROM remote_ack_injected_failures",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(injected_failures, 1, "the first ACK append alone must fail");
         connection
