@@ -2737,7 +2737,7 @@ mod explicit_completion_tests {
             started_next.workflow_node_run_id(),
             Some(workflow_node_run_id.as_str())
         );
-        assert_eq!(started_next.status(), PromptStatus::Dispatching);
+        assert_eq!(started_next.status(), PromptStatus::Running);
         let active = app
             .prompt_owner_active_prompt_for_agent_snapshot(
                 &leased_agent.backing_session_id,

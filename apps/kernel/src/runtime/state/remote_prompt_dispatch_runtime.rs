@@ -1800,11 +1800,10 @@ mod tests {
                 },
             )
             .unwrap();
-        let prompt_id = "home-prompt-receipt-query";
-        app.prompt_owner_submit_prepared_prompt(
+        let submitted = app.prompt_owner_submit_prepared_prompt(
             session.id(),
             crate::session::PromptQueueItem::new(
-                prompt_id,
+                "home-prompt-receipt-query",
                 attachment.id(),
                 agent.id(),
                 "uncertain prompt",
@@ -1813,10 +1812,16 @@ mod tests {
             false,
         )
         .unwrap();
+        let prompt_id = match submitted {
+            crate::session::PromptSubmissionOutcome::Started { prompt } => prompt.id().to_string(),
+            crate::session::PromptSubmissionOutcome::Queued { .. } => {
+                panic!("receipt query prompt should start")
+            }
+        };
         app.mark_active_prompt_delivery(
             session.id(),
             agent.id(),
-            prompt_id,
+            &prompt_id,
             crate::session::DurablePromptDeliveryPhase::Dispatching,
             None,
             None,
@@ -1831,6 +1836,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let app_during_send = Arc::clone(&app);
+        let active_prompt_id = prompt_id.clone();
         let receipt = query_remote_prompt_worker_receipt_with_transport(
             &runtime,
             &dispatch,
@@ -1846,11 +1852,11 @@ mod tests {
                         leased_agent_id,
                         home_prompt_id,
                     } if leased_agent_id == "leased-receipt-query"
-                        && home_prompt_id == prompt_id
+                        && home_prompt_id == active_prompt_id
                 ));
                 Ok(RelayPeerResponse::LeasedPromptReceiptQueried {
                     receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
-                        home_prompt_id: prompt_id.to_string(),
+                        home_prompt_id: active_prompt_id,
                         worker_provider_run_id: "worker-receipt-run".to_string(),
                         phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
                     }),
@@ -2120,8 +2126,8 @@ mod tests {
             .filter(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderError)
             .collect::<Vec<_>>();
         assert!(errors.iter().any(|record| {
-            record.prompt_id.as_deref() == Some(dispatch.prompt_id.as_str())
-                && String::from_utf8_lossy(&record.bytes).contains("exact worker receipt")
+            let message = String::from_utf8_lossy(&record.bytes);
+            message.contains(&dispatch.prompt_id) && message.contains("exact worker receipt")
         }));
     }
 

@@ -119,6 +119,25 @@ pub(crate) async fn resolve_pending_peer_response_for_test(
     .await;
 }
 
+#[cfg(test)]
+pub(crate) async fn resolve_pending_peer_error_for_test(
+    state: &Arc<RwLock<RelayClientState>>,
+    request_id: String,
+    from_daemon_id: String,
+    error: RelayError,
+) {
+    resolve_pending_peer_response(
+        state,
+        request_id,
+        RelayPeerResponseEnvelope {
+            from_daemon_id,
+            encrypted_response: None,
+            error: Some(error),
+        },
+    )
+    .await;
+}
+
 const RELAY_HEARTBEAT_INTERVAL_TICKS: u64 = 50;
 const RELAY_REMOTE_MACHINE_DISCOVERY_INTERVAL_TICKS: u64 = 150;
 const RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS: u64 = 100;

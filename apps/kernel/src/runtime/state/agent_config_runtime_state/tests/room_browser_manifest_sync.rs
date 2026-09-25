@@ -904,12 +904,14 @@ async fn rejected_promoted_workflow_head_is_not_reported_as_delivered() {
         } => (context.workflow_run_id, context.workflow_node_run_id),
         other => panic!("expected workflow prompt submission, got {other:?}"),
     };
-    acknowledge_peer_response(
-        &fixture,
+    crate::transport::relay_client::resolve_pending_peer_error_for_test(
+        &fixture.relay_state,
         request_id,
-        crate::transport::relay_peer::RelayPeerResponse::Pong {
-            value: "rejected workflow submission".to_string(),
-            daemon_id: "worker-1".to_string(),
+        "worker-1".to_string(),
+        chariox_relay::protocol::RelayError {
+            code: "action_not_allowed".to_string(),
+            message: "rejected workflow submission before worker admission".to_string(),
+            retryable: false,
         },
     )
     .await;
