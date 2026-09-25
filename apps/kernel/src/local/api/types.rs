@@ -114,4 +114,6 @@ pub use workspace::*;
 /// Version 349 adds `BeginAppUpdate`, a local release replacement.
 /// Version 350 binds a foreground App to the focus agent: `AppViewOpened`
 /// gains `bound_agent_id`.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 350;
+/// Version 351 marks App view Tabs in the Room snapshot: `EnvironmentTab.app`
+/// with the installation and the reserved private conversation panel.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 351;

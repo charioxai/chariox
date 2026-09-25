@@ -127,6 +127,27 @@ $("new-todo").addEventListener("submit", async (event) => {
 })
 $("open-only").addEventListener("change", () => render())
 
+// On a wide window, keep the right side for Chariox's private conversation
+// panel: the agent's work shows next to the list, drawn by the terminal. The
+// App only learns that the area is reserved.
+const PANEL_WIDTH = 380
+async function reservePanel() {
+  const panel = window.chariox?.panel
+  if (!panel) return
+  const wide = innerWidth >= 960
+  document.body.classList.toggle("with-panel", wide)
+  try {
+    await (wide
+      ? panel.reserve({ x: innerWidth - PANEL_WIDTH, y: 0, width: PANEL_WIDTH, height: innerHeight })
+      : panel.release())
+  } catch {
+    document.body.classList.remove("with-panel")
+  }
+}
+let resized
+addEventListener("resize", () => { clearTimeout(resized); resized = setTimeout(reservePanel, 150) })
+reservePanel()
+
 // Agents and other views change Todos too; a short poll keeps this view current
 // without any network access.
 refresh()

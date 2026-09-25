@@ -1,7 +1,8 @@
 //! Open App view Tabs per session. The kernel, not the page or controller,
 //! decides which owner and installation a view call runs as.
+use crate::session::EnvironmentTabApp;
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex},
 };
 
@@ -24,6 +25,8 @@ struct SessionViews {
     /// App Tabs the controller last reported open, bound or not.
     open_tabs: usize,
     pumping: bool,
+    /// The App Tab markers the Room last showed, by target.
+    published: BTreeMap<String, EnvironmentTabApp>,
 }
 
 #[derive(Clone, Default)]
@@ -120,6 +123,35 @@ impl AppViews {
         }
     }
 
+    /// Bound Tabs: target → installation.
+    pub(crate) fn installations(&self, session: &str) -> Vec<(String, String)> {
+        let sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.get(session).map_or_else(Vec::new, |views| {
+            views
+                .tabs
+                .iter()
+                .map(|(target, (binding, _))| (target.clone(), binding.installation.clone()))
+                .collect()
+        })
+    }
+
+    /// Records the Room's App Tab markers; true when they changed.
+    pub(crate) fn publish(
+        &self,
+        session: &str,
+        apps: &BTreeMap<String, EnvironmentTabApp>,
+    ) -> bool {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(views) = sessions.get_mut(session) else {
+            return false;
+        };
+        if views.published == *apps {
+            return false;
+        }
+        views.published = apps.clone();
+        true
+    }
+
     pub(crate) fn forget_session(&self, session: &str) {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(views) = sessions.get_mut(session) {
@@ -175,5 +207,26 @@ mod tests {
         views.forget_installation("user", "a");
         assert_eq!(views.binding("s", "t5"), None);
         assert_eq!(views.binding("s", "t6"), Some(binding("b")));
+    }
+
+    #[test]
+    fn app_tab_markers_are_published_only_when_they_change() {
+        let views = AppViews::default();
+        views.register("s", "t1", binding("a"));
+        assert_eq!(
+            views.installations("s"),
+            vec![("t1".to_string(), "a".to_string())]
+        );
+        let apps = BTreeMap::from([(
+            "t1".to_string(),
+            EnvironmentTabApp {
+                installation_id: "a".into(),
+                panel: None,
+            },
+        )]);
+        assert!(views.publish("s", &apps));
+        assert!(!views.publish("s", &apps));
+        assert!(views.publish("s", &BTreeMap::new()));
+        assert!(!views.publish("other", &apps));
     }
 }

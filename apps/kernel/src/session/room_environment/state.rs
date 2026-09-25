@@ -238,6 +238,15 @@ impl RoomEnvironment {
         self.tabs.tab_id_for_controller_target(controller_target_id)
     }
 
+    pub(crate) fn set_app_tabs(
+        &mut self,
+        apps: &std::collections::BTreeMap<String, super::model::EnvironmentTabApp>,
+    ) {
+        if self.tabs.set_apps(apps) {
+            self.emit(EnvironmentEventKind::TabsChanged);
+        }
+    }
+
     pub(crate) fn register_element_references(
         &mut self,
         tab_id: &str,

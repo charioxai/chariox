@@ -49,6 +49,22 @@ export type RoomEnvironmentTab = {
   title: string
   document_revision: number
   focused: boolean
+  /** An App view Tab (protocol 351); absent on every other Tab. */
+  app?: RoomEnvironmentTabApp
+}
+
+/** Desktop pixels. The trusted terminal draws `agent_id`'s conversation there. */
+export type RoomEnvironmentAppPanel = {
+  x: number
+  y: number
+  width: number
+  height: number
+  agent_id: string | null
+}
+
+export type RoomEnvironmentTabApp = {
+  installation_id: string
+  panel?: RoomEnvironmentAppPanel
 }
 
 export type RoomEnvironmentInputTarget =

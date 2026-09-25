@@ -217,6 +217,29 @@ pub struct EnvironmentTab {
     pub title: String,
     pub document_revision: u64,
     pub focused: bool,
+    /// Set on an App view Tab. Absent on every other Tab.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<EnvironmentTabApp>,
+}
+
+/// An App view Tab: its installation and, while the App reserves one, the
+/// area where the trusted terminal draws the private conversation panel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentTabApp {
+    pub installation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub panel: Option<EnvironmentAppPanel>,
+}
+
+/// Desktop pixels of the canonical viewport (the App's window is fullscreen).
+/// The panel shows the focus agent's conversation; the App never sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentAppPanel {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub agent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

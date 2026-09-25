@@ -9,10 +9,14 @@ function fakeConnection(targets = []) {
   return {
     sent,
     targets,
+    windowState: "normal",
     subscribe(fn) { listener = fn; return () => { listener = null; }; },
     async send(method, params, sessionId) {
       sent.push({ method, params, sessionId });
       if (method === "Target.getTargets") return { targetInfos: this.targets };
+      if (method === "Browser.getWindowForTarget") return { windowId: 1 };
+      if (method === "Browser.getWindowBounds") return { bounds: { windowState: this.windowState } };
+      if (method === "Browser.setWindowBounds") this.windowState = params.bounds.windowState;
       return method === "Target.createTarget" ? { targetId: "t1" } : {};
     },
     async emit(message) { listener?.(message); await new Promise((r) => setImmediate(r)); },
@@ -46,8 +50,12 @@ test("app origin labels are DNS labels", () => {
 test("open intercepts every request, installs the bridge, and navigates to the App origin", async () => {
   const { connection, result } = await opened();
   assert.deepEqual(result, { target_id: "t1", origin: "https://todo-1.app.chariox.internal" });
-  assert.deepEqual(connection.sent.map((m) => m.method), ["Target.createTarget", "Fetch.enable",
+  assert.deepEqual(connection.sent.map((m) => m.method), ["Target.createTarget", "Browser.getWindowForTarget",
+    "Browser.getWindowBounds", "Browser.setWindowBounds", "Fetch.enable",
     "Runtime.addBinding", "Page.addScriptToEvaluateOnNewDocument", "Page.navigate"]);
+  // Its own fullscreen window: page coordinates are desktop coordinates.
+  assert.equal(connection.sent[0].params.newWindow, true);
+  assert.equal(connection.windowState, "fullscreen");
   assert.equal(connection.sent.at(-1).params.url, "https://todo-1.app.chariox.internal/");
 });
 
@@ -151,4 +159,39 @@ test("a reconnect sweeps App-origin Tabs without waiting for an App command", as
   browser.onConnected(connection);
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.deepEqual(connection.sent.filter((m) => m.method === "Target.closeTarget").map((m) => m.params.targetId), ["left"]);
+});
+
+test("a reserved panel is answered by the controller and reported only while fullscreen", async () => {
+  const { tabs, connection } = await opened();
+  const bind = (id, rect) => connection.emit({ method: "Runtime.bindingCalled", sessionId: "s1",
+    params: { name: "__charioxAppCall", payload: JSON.stringify({ id, method: "chariox.panel", params: { rect } }) } });
+  const resolved = () => connection.sent.filter((m) => m.method === "Runtime.evaluate").map((m) => m.params.expression);
+  await bind("1", { x: 880.4, y: 0, width: 400, height: 800 });
+  await bind("2", { x: 0, y: 0, width: 100, height: 100 });
+  await bind("3", { x: -1, y: 0, width: 400, height: 800 });
+  assert.deepEqual(resolved(), [
+    'globalThis.__charioxAppResolve("1", true, {"reserved":true})',
+    'globalThis.__charioxAppResolve("2", false, {"code":"INVALID_PANEL","message":"A panel is {x, y, width, height} in CSS pixels, at least 240x160"})',
+    'globalThis.__charioxAppResolve("3", false, {"code":"INVALID_PANEL","message":"A panel is {x, y, width, height} in CSS pixels, at least 240x160"})',
+  ]);
+  // Panel requests never reach the kernel as App calls.
+  let poll = await tabs.takeCalls();
+  assert.deepEqual(poll.calls, []);
+  assert.deepEqual(poll.panels, [{ target_id: "t1", x: 880, y: 0, width: 400, height: 800 }]);
+  // Someone left fullscreen: no panel until the window is fullscreen again.
+  connection.windowState = "normal";
+  assert.deepEqual((await tabs.takeCalls()).panels, []);
+  assert.equal(connection.windowState, "fullscreen");
+  assert.equal((await tabs.takeCalls()).panels.length, 1);
+  await bind("4", null);
+  assert.equal(resolved().at(-1), 'globalThis.__charioxAppResolve("4", true, {"released":true})');
+  assert.deepEqual((await tabs.takeCalls()).panels, []);
+});
+
+test("the bridge exposes panel reserve and release next to call", async () => {
+  const { connection } = await opened();
+  const bridge = connection.sent.find((m) => m.method === "Page.addScriptToEvaluateOnNewDocument").params.source;
+  assert.match(bridge, /panel: Object\.freeze\(\{/);
+  assert.match(bridge, /request\("chariox\.panel", \{ rect \}\)/);
+  assert.match(bridge, /request\("chariox\.panel", \{ rect: null \}\)/);
 });

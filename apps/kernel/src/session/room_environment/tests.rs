@@ -279,6 +279,61 @@ fn controller_tab_reconciliation_preserves_identity_and_tracks_documents_and_foc
 }
 
 #[test]
+fn app_view_tabs_carry_their_app_and_panel_and_changes_emit_tabs_changed() {
+    let mut environment = ready_environment();
+    environment.reconcile_controller_tabs(
+        vec![
+            observed_tab("target-a", "loader-a1", "https://a.test", "A"),
+            observed_tab(
+                "target-app",
+                "loader-p1",
+                "https://p.app.chariox.internal/",
+                "Todo",
+            ),
+        ],
+        Some("target-app"),
+    );
+    let cursor = environment.snapshot().event_cursor;
+    let app = super::EnvironmentTabApp {
+        installation_id: "app_1".into(),
+        panel: Some(super::EnvironmentAppPanel {
+            x: 880,
+            y: 0,
+            width: 400,
+            height: 800,
+            agent_id: Some("agent-1".into()),
+        }),
+    };
+    let apps = std::collections::BTreeMap::from([("target-app".to_string(), app.clone())]);
+    environment.set_app_tabs(&apps);
+    environment.set_app_tabs(&apps);
+    let snapshot = environment.snapshot();
+    assert_eq!(
+        snapshot
+            .tabs
+            .iter()
+            .map(|tab| (tab.tab_id.as_str(), tab.app.clone()))
+            .collect::<Vec<_>>(),
+        vec![("tab-1", None), ("tab-2", Some(app))]
+    );
+    // One change, one event; an identical set emits nothing.
+    assert!(matches!(
+        environment.events_after(cursor),
+        EnvironmentReplay::Events { events, .. }
+            if matches!(events.as_slice(), [EnvironmentEvent {
+                kind: EnvironmentEventKind::TabsChanged,
+                ..
+            }])
+    ));
+    environment.set_app_tabs(&std::collections::BTreeMap::new());
+    assert!(environment
+        .snapshot()
+        .tabs
+        .iter()
+        .all(|tab| tab.app.is_none()));
+}
+
+#[test]
 fn controller_tab_reconciliation_retires_missing_targets_and_detects_same_url_reload() {
     let mut environment = ready_environment();
     environment.reconcile_controller_tabs(

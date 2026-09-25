@@ -4,6 +4,8 @@
 // App's tools through the kernel's call pump. It also checks that App calls
 // and other Room commands can overlap: the call poll and answers must not
 // make Room commands fail with "already has an active" operation errors.
+// Protocol 351: the page reserves a private conversation panel and the Room
+// snapshot marks the App Tab with it, in desktop pixels, for the focus agent.
 //
 // Runs against a live kernel with a Room bound to a local Docker slice and an
 // installed, running App:
@@ -49,6 +51,16 @@ try {
   assert.deepEqual([unknown.ok, unknown.code], [false, "UNKNOWN_TOOL"])
   evidence.steps.push({ step: "unknown_tool", error: unknown })
 
+  const reserved = await evaluate(view.target_id, `window.chariox.panel.reserve({ x: 880, y: 0, width: 400, height: 800 })`)
+  assert.deepEqual(reserved, { reserved: true })
+  const marked = await roomApps((apps) => apps.find((app) => app.panel))
+  assert.deepEqual({ ...marked.panel, agent_id: undefined }, { x: 880, y: 0, width: 400, height: 800, agent_id: undefined })
+  assert.equal(marked.installation_id, options.installation)
+  assert.equal(marked.panel.agent_id, view.bound_agent_id ?? null)
+  assert.deepEqual(await evaluate(view.target_id, `window.chariox.panel.release()`), { released: true })
+  await roomApps((apps) => apps.every((app) => !app.panel))
+  evidence.steps.push({ step: "panel", marked })
+
   // Room commands run while the page makes calls back to back.
   let calling = true
   const room = { ok: 0, busy: 0, other: [] }
@@ -93,6 +105,20 @@ try {
   evidence.finished_at = new Date().toISOString()
   if (options.evidence) await writeFile(options.evidence, `${JSON.stringify(evidence, null, 2)}\n`)
   client.close?.()
+}
+
+// Waits until the Room snapshot's Tabs of this installation satisfy `ready`
+// and returns its result.
+async function roomApps(ready) {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const state = await client.send({ GetRoomEnvironmentState: { session_id: options.session } })
+    const apps = (state.RoomEnvironmentState?.environment?.tabs ?? [])
+      .map((tab) => tab.app).filter((app) => app?.installation_id === options.installation)
+    const result = apps.length > 0 && ready(apps)
+    if (result) return result
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  }
+  throw new Error("the Room never showed the expected App Tabs")
 }
 
 async function pageCall(targetId, tool, input) {
