@@ -250,6 +250,9 @@ impl AppLifecycleService {
     /// re-evaluated under the operation guard, so use that arrived after
     /// candidate selection keeps the worker running; callers also treat an App
     /// with undelivered events as busy, because delivery needs a live lease.
+    /// An event emitted between that check and the join waits for the App's
+    /// next tool call or wake (bounded by receipt expiry). Receipts held by a
+    /// paused automation also keep the App live, as before idle stop existed.
     pub(crate) fn idle_stop_blocking(
         &self,
         owner: &str,

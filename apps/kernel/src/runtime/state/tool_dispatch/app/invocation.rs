@@ -169,13 +169,29 @@ impl KernelRuntimeState {
             .iter()
             .map(|lease| {
                 (
-                    lease.owner(),
-                    lease.catalog().installation_id(),
+                    lease.owner().to_owned(),
+                    lease.catalog().installation_id().to_owned(),
                     lease.idle_ms(now),
                 )
             })
             .collect();
-        let Some(index) = eviction_victim(&candidates, (owner, installation)) else {
+        let store = self.owned.durable_state_store.clone();
+        let target = (owner.to_owned(), installation.to_owned());
+        // Workers with undelivered events are not idle; rank only the others,
+        // so one busy App cannot block eviction of an idle one.
+        let Ok(Some(index)) = tokio::task::spawn_blocking(move || {
+            let candidates: Vec<_> = candidates
+                .iter()
+                .map(|(owner, installation, idle)| (owner.as_str(), installation.as_str(), *idle))
+                .collect();
+            eviction_victim(
+                &candidates,
+                (&target.0, &target.1),
+                |owner, installation| store.has_deliverable_app_events(owner, installation),
+            )
+        })
+        .await
+        else {
             return;
         };
         let lease = leases.swap_remove(index);
@@ -241,13 +257,20 @@ fn require_binding(
 }
 
 /// The longest-idle worker other than `target`, if idle for at least
-/// `EVICTABLE_IDLE_MS`. Candidates are `(owner, installation, idle_ms)`.
-fn eviction_victim(candidates: &[(&str, &str, u64)], target: (&str, &str)) -> Option<usize> {
+/// `EVICTABLE_IDLE_MS` and not `busy`. Candidates are `(owner, installation,
+/// idle_ms)`; `busy` is checked only for otherwise eligible workers.
+fn eviction_victim(
+    candidates: &[(&str, &str, u64)],
+    target: (&str, &str),
+    busy: impl Fn(&str, &str) -> bool,
+) -> Option<usize> {
     candidates
         .iter()
         .enumerate()
         .filter(|(_, (owner, installation, idle))| {
-            (*owner, *installation) != target && *idle >= EVICTABLE_IDLE_MS
+            (*owner, *installation) != target
+                && *idle >= EVICTABLE_IDLE_MS
+                && !busy(owner, installation)
         })
         .max_by_key(|(_, (_, _, idle))| *idle)
         .map(|(index, _)| index)
@@ -266,11 +289,18 @@ mod tests {
             ("bob", "slack", old * 2),
             ("bob", "todo", old * 3),
         ];
+        let idle = |_: &str, _: &str| false;
         // The target itself is never chosen, even when it is the idlest.
-        assert_eq!(eviction_victim(&candidates, ("alice", "todo")), Some(3));
-        assert_eq!(eviction_victim(&candidates, ("bob", "todo")), Some(0));
+        assert_eq!(
+            eviction_victim(&candidates, ("alice", "todo"), idle),
+            Some(3)
+        );
+        assert_eq!(eviction_victim(&candidates, ("bob", "todo"), idle), Some(0));
         // Nothing idle long enough: no eviction.
-        assert_eq!(eviction_victim(&candidates[1..2], ("x", "y")), None);
-        assert_eq!(eviction_victim(&[], ("x", "y")), None);
+        assert_eq!(eviction_victim(&candidates[1..2], ("x", "y"), idle), None);
+        assert_eq!(eviction_victim(&[], ("x", "y"), idle), None);
+        // A busy (undelivered events) idlest worker is skipped for the next one.
+        let busy = |owner: &str, installation: &str| (owner, installation) == ("alice", "todo");
+        assert_eq!(eviction_victim(&candidates, ("bob", "todo"), busy), Some(2));
     }
 }
