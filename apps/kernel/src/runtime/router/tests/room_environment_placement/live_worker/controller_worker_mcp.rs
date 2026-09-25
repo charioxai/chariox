@@ -476,10 +476,9 @@ async fn prepare_cross_worker_room_display(fixture: &LiveWorker) -> (String, Str
         .expect("Room viewer attachment ID")
         .to_string();
     let viewer_private_key = crate::transport::relay_crypto::generate_private_key_base64();
-    let viewer_public_key = crate::transport::relay_crypto::public_key_from_private_key_base64(
-        &viewer_private_key,
-    )
-    .expect("Room viewer public key");
+    let viewer_public_key =
+        crate::transport::relay_crypto::public_key_from_private_key_base64(&viewer_private_key)
+            .expect("Room viewer public key");
     (room, attachment_id, viewer_public_key)
 }
 
