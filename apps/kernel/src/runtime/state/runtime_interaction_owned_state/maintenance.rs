@@ -41,7 +41,8 @@ impl KernelRuntimeOwnedState {
     /// A kernel-operation decision persisted in a session outlives its
     /// responder when the kernel stops without its shutdown sweep. Nothing can
     /// answer it after a restart, and its subject would block a retry of the
-    /// same operation, so it is dropped from the session.
+    /// same operation, so it is dropped from the session. Hidden sessions are
+    /// scanned too: decisions can be registered in them.
     fn remove_orphaned_kernel_operation_interactions(&self, shutdown: bool) {
         if !self.orphan_sweep_due(shutdown) {
             return;
@@ -52,7 +53,7 @@ impl KernelRuntimeOwnedState {
         let orphans = {
             let pending = self.pending_interactions.write();
             self.session_store
-                .list_sessions()
+                .list_non_ended_sessions_including_hidden()
                 .iter()
                 .flat_map(|session| {
                     session
