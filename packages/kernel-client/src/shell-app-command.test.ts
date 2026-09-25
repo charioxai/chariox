@@ -16,7 +16,7 @@ test("App list preserves large generations and pages without unbounded collectio
 })
 
 test("App command rejects unsupported or malformed arguments before sending", async () => {
-  for (const args of [["list", "--limit", "101"], ["list", "--limit", "1e2"], ["list", "--after"], ["list", "--limit", "1", "--limit", "2"], ["status"], ["status", "todo", "extra"], ["install", "/host/file"]]) {
+  for (const args of [["list", "--limit", "101"], ["list", "--limit", "1e2"], ["list", "--after"], ["list", "--limit", "1", "--limit", "2"], ["status"], ["status", "todo", "extra"], ["install", "/host/file"], ["update", "todo", "/host/file"]]) {
     const result = await executeAppCommand(args, { send: async () => { throw new Error("unexpected request") } })
     assert.equal(result.ok, false)
   }

@@ -68,6 +68,8 @@ use this same retained lifecycle owner, rather than constructing a second owner.
 No new terminal request or protocol version is introduced here; start/stop/status
 are currently internal kernel APIs. Production macOS preparation/signing,
 end-to-end signed embedded Node execution, heartbeat/quarantine and bounded
-restart policy, user-visible log/status projection, and update data migration
-remain explicit Phase 1 work. Physical Linux provisioning and its hosted tests
+restart policy and update data migration remain explicit Phase 1 work. A local
+update (protocol 349) reuses the first-install path with `replace`: the old
+generation's owner is drained under the installation's operation guard, then the
+new generation must pass health before its commit. Physical Linux provisioning and its hosted tests
 are separate evidence from these fixed-worker lifecycle tests.

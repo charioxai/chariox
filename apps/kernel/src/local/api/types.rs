@@ -111,4 +111,5 @@ pub use workspace::*;
 /// the room-controller `app_view` command.
 /// Version 347 adds owner-scoped `UninstallApp` at an expected generation.
 /// Version 348 adds `GetAppLogs` for the App's own `log.write` entries.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 348;
+/// Version 349 adds `BeginAppUpdate`, a local release replacement.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 349;

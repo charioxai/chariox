@@ -100,6 +100,7 @@ impl KernelRuntimeState {
             AppViewBinding {
                 owner: owner.clone(),
                 installation: installation.to_owned(),
+                generation: view.generation,
             },
         ) {
             let state = self.clone();
@@ -248,6 +249,12 @@ impl KernelRuntimeState {
             .app_lease_on_demand(&binding.owner, &binding.installation)
             .await
             .map_err(|_| unavailable())?;
+        if lease.catalog().generation() != binding.generation {
+            return Err(view_error(
+                "APP_VIEW_STALE",
+                "The App was updated; reopen its view",
+            ));
+        }
         let tool = view_tool(lease.catalog().app_catalog(), tool)
             .ok_or_else(|| view_error("UNKNOWN_TOOL", "The App declares no such tool"))?;
         let slot = lease
@@ -354,6 +361,7 @@ mod tests {
         let binding = AppViewBinding {
             owner: "alice".into(),
             installation: "todo".into(),
+            generation: 1,
         };
         let caller = view_caller(&binding, "session-1");
         assert!(matches!(&caller.actor, Actor::Human(owner) if owner == "alice"));

@@ -29,26 +29,32 @@ pub(super) fn first_committed(
 ) -> Result<ActiveStartAdmission> {
     identity(owner)?;
     identity(attempt)?;
-    if binding.token().base_generation != 0 || binding.token().generation != 1 {
-        return Err(LifecycleStoreError::Stale);
-    }
     binding
         .require_active(tx, owner, trust)
         .map_err(|_| LifecycleStoreError::Stale)?;
-    let installation = &binding.token().installation_id;
+    let token = binding.token();
+    let installation = &token.installation_id;
+    let generation = checked(token.generation)?;
+    let now = checked(crate::session::unix_epoch_ms())?;
     match status(tx, owner, installation)? {
+        // Reconciling this same commit.
         Some(current)
-            if current.generation != 1
-                || current.attempt != attempt
-                || current.phase != WorkerPhase::Starting
-                || !current.desired_running =>
+            if current.generation == token.generation
+                && current.attempt == attempt
+                && current.phase == WorkerPhase::Starting
+                && current.desired_running => {}
+        // A local update moves the installation's worker to the new generation.
+        Some(current)
+            if token.base_generation > 0 && current.generation == token.base_generation =>
         {
-            return Err(LifecycleStoreError::Stale)
+            sql(tx.execute("UPDATE app_worker_lifecycle SET generation=?3,attempt=?4,phase='starting',desired_running=1,failure=NULL,updated_ms=?5
+                WHERE installation_id=?1 AND owner_id=?2", params![installation,owner,generation,attempt,now]))?;
         }
-        Some(_) => {}
+        Some(_) => return Err(LifecycleStoreError::Stale),
+        // A first install, or an update of an installation never started.
         None => {
             sql(tx.execute("INSERT INTO app_worker_lifecycle(installation_id,owner_id,generation,attempt,phase,desired_running,failure,updated_ms)
-                VALUES(?1,?2,1,?3,'starting',1,NULL,?4)", params![installation,owner,attempt,checked(crate::session::unix_epoch_ms())?]))?;
+                VALUES(?1,?2,?3,?4,'starting',1,NULL,?5)", params![installation,owner,generation,attempt,now]))?;
         }
     }
     Ok(ActiveStartAdmission {

@@ -10,7 +10,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chariox_app_runtime::installation::{CapabilityApproval, CapabilityDecision};
 use sha2::{Digest, Sha256};
 
-fn enrolled(store: &DurableKernelStateStore) -> Vec<u8> {
+pub(super) fn enrolled(store: &DurableKernelStateStore) -> Vec<u8> {
     let (bytes, publisher) = fixture_event_package();
     store
         .mutate_app_publisher(
@@ -65,7 +65,7 @@ async fn upload(control: &AppControlService, bytes: &[u8]) -> String {
     ));
     upload.handle
 }
-fn prepare(
+pub(super) fn prepare(
     control: &AppControlService,
     runtime: &Runtime,
     bytes: &[u8],
@@ -84,7 +84,7 @@ fn prepare(
         (handle, operation)
     })
 }
-fn approve(store: &DurableKernelStateStore, operation: &InstallOperation) {
+pub(super) fn approve(store: &DurableKernelStateStore, operation: &InstallOperation) {
     store
         .mutate_app_installation(
             "alice",

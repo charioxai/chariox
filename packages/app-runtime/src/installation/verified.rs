@@ -14,7 +14,7 @@ use serde::Serialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-mod first_install;
+mod supervised;
 
 #[derive(Debug, thiserror::Error)]
 pub enum VerifiedStageError {

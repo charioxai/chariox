@@ -3,10 +3,12 @@
 mod tests;
 use super::{store::*, *};
 use chariox_app_runtime::{
-    installation::{CapabilityDecision, InstallationRegistry},
+    installation::{
+        CapabilityDecision, InstallationError, InstallationRegistry, VerifiedStageError,
+    },
     publisher_trust::PublisherTrustRegistry,
 };
-use rusqlite::{params, TransactionBehavior};
+use rusqlite::{params, OptionalExtension, TransactionBehavior};
 
 pub(crate) struct InstallApprovalChallenge {
     owner: String,
@@ -21,6 +23,10 @@ pub(crate) struct InstallApprovalChallenge {
 impl InstallApprovalChallenge {
     pub(crate) fn installation_id(&self) -> &str {
         &self.binding.token().installation_id
+    }
+    /// A local update of an installed App rather than a first install.
+    pub(crate) fn is_update(&self) -> bool {
+        self.binding.token().base_generation > 0
     }
     pub(crate) fn interaction_id(&self) -> &str {
         &self.interaction_id
@@ -180,6 +186,39 @@ impl DurableKernelStateStore {
         sql(rows.collect())
     }
 }
+/// An update targets the owner's active installation at its current
+/// generation, with no other unfinished install or update operation.
+fn require_updatable(
+    tx: &rusqlite::Transaction<'_>,
+    owner: &str,
+    target: &UpdateTarget,
+) -> Result<()> {
+    identity(&target.installation_id)?;
+    let row: Option<(String, i64, bool, bool)> = sql(tx
+        .query_row(
+            "SELECT owner_id,generation,pending_generation IS NOT NULL,active_json IS NOT NULL
+             FROM app_installations WHERE installation_id=?1",
+            [&target.installation_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional())?;
+    let Some((installed_by, generation, pending, active)) = row else {
+        return Err(InstallOperationError::NotFound);
+    };
+    if installed_by != owner {
+        return Err(InstallOperationError::NotFound);
+    }
+    let unfinished: bool = sql(tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM app_installation_operations WHERE installation_id=?1
+         AND phase IN ('preparing','approval','starting'))",
+        [&target.installation_id],
+        |r| r.get(0),
+    ))?;
+    if !active || pending || unfinished || generation != target.expected_generation as i64 {
+        return Err(InstallOperationError::Conflict);
+    }
+    Ok(())
+}
 fn commit(
     tx: rusqlite::Transaction<'_>,
     budget: &AppOperationBudget,
@@ -222,10 +261,20 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
                 return commit(tx, &budget, old);
             }
             admit(&tx, &owner)?;
-            let id = format!("app_{:032x}", rand::random::<u128>());
+            let (id, base, generation) = match &input.update {
+                None => (format!("app_{:032x}", rand::random::<u128>()), 0, 1),
+                Some(target) => {
+                    require_updatable(&tx, &owner, target)?;
+                    (
+                        target.installation_id.clone(),
+                        target.expected_generation,
+                        0,
+                    )
+                }
+            };
             let time = now()?;
-            sql(tx.execute("INSERT INTO app_installation_operations(owner_id,request_id,installation_id,package_digest,phase,session_id,upload_handle,created_ms,updated_ms)
-                VALUES(?1,?2,?3,?4,'preparing',?5,?6,?7,?7)", params![owner,request_id,id,digest,input.session_id,input.upload_handle,time]))?;
+            sql(tx.execute("INSERT INTO app_installation_operations(owner_id,request_id,installation_id,package_digest,phase,session_id,upload_handle,created_ms,updated_ms,base_generation,generation)
+                VALUES(?1,?2,?3,?4,'preparing',?5,?6,?7,?7,?8,?9)", params![owner,request_id,id,digest,input.session_id,input.upload_handle,time,base as i64,generation]))?;
             let value = load(&tx, &owner, &request_id)?.ok_or(InstallOperationError::Storage)?;
             commit(tx, &budget, value)
         }
@@ -250,10 +299,28 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
                 return commit(tx, &budget, current);
             }
             let time = now()?;
-            candidate
-                .stage_first_in(&tx, &owner, &current.token.installation_id, time as u64)
-                .map_err(|_| InstallOperationError::Stale)?;
-            sql(tx.execute("UPDATE app_installation_operations SET phase='approval',review_json=?1,updated_ms=?2 WHERE owner_id=?3 AND request_id=?4",params![review,time,owner,request_id]))?;
+            let installation = &current.token.installation_id;
+            let staged = match current
+                .input
+                .as_ref()
+                .and_then(|input| input.update.as_ref())
+            {
+                None => candidate.stage_first_in(&tx, &owner, installation, time as u64),
+                Some(target) => candidate.stage_update_in(
+                    &tx,
+                    &owner,
+                    installation,
+                    target.expected_generation,
+                    time as u64,
+                ),
+            }
+            .map_err(|error| match error {
+                VerifiedStageError::Installation(InstallationError::Invalid(
+                    "data migration required",
+                )) => InstallOperationError::MigrationRequired,
+                _ => InstallOperationError::Stale,
+            })?;
+            sql(tx.execute("UPDATE app_installation_operations SET phase='approval',review_json=?1,updated_ms=?2,generation=?3 WHERE owner_id=?4 AND request_id=?5",params![review,time,staged.token.generation as i64,owner,request_id]))?;
             let result = load(&tx, &owner, &request_id)?.ok_or(InstallOperationError::Storage)?;
             commit(tx, &budget, result)
         }
@@ -285,7 +352,7 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
                 return Err(InstallOperationError::Conflict);
             }
             let update = binding
-                .review_first_in(&tx, &owner, &trust)
+                .review_in(&tx, &owner, &trust)
                 .map_err(|_| InstallOperationError::Stale)?;
             if matches!(update.decision, CapabilityDecision::Approved { .. }) {
                 limit(&budget)?;
@@ -337,7 +404,7 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
             }
             let record = challenge
                 .binding
-                .review_first_in(&tx, &challenge.owner, &challenge.trust)
+                .review_in(&tx, &challenge.owner, &challenge.trust)
                 .map_err(|_| InstallOperationError::Stale)?;
             if record.release.capabilities_digest != challenge.capabilities_digest {
                 return Err(InstallOperationError::Conflict);
@@ -357,7 +424,7 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
             };
             challenge
                 .binding
-                .decide_first_in(
+                .decide_in(
                     &tx,
                     &challenge.owner,
                     &challenge.trust,
@@ -394,7 +461,7 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
                 let binding = StageTrustBinding::staged_in(&tx, &owner, &current.token)
                     .map_err(|_| InstallOperationError::Stale)?;
                 binding
-                    .abort_first_in(&tx, &owner, &code, now()? as u64)
+                    .abort_in(&tx, &owner, &code, now()? as u64)
                     .map_err(|_| InstallOperationError::Conflict)?;
             }
             sql(tx.execute("UPDATE app_installation_operations SET phase='failed',failure=?1,interaction_id=NULL,cleanup_pending=1,updated_ms=?2 WHERE owner_id=?3 AND request_id=?4",params![code,now()?,owner,request_id]))?;

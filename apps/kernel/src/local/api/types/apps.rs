@@ -46,6 +46,18 @@ pub struct BeginAppInstallRequest {
     pub upload_handle: String,
     pub expected_package_digest: String,
 }
+/// Replaces the release of the caller's installation, fenced on the
+/// generation the caller read; progress uses the install operation requests.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginAppUpdateRequest {
+    pub session_id: String,
+    pub request_id: String,
+    pub installation_id: String,
+    pub expected_generation: String,
+    pub upload_handle: String,
+    pub expected_package_digest: String,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AppInstallOperationRequest {

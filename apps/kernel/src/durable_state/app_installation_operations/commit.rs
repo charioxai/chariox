@@ -25,7 +25,7 @@ pub(super) fn commit(
     let time = now()?;
     admission
         .binding
-        .commit_first_in(
+        .commit_in(
             &tx,
             &admission.owner,
             &admission.trust,

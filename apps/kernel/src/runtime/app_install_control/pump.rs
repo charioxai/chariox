@@ -237,15 +237,20 @@ impl AppInstallControl {
                 }
                 continue;
             }
-            let message=format!("Install this App with the declared capabilities?\n\n{}\n\nDeclared information sets are shown for review only. This decision does not grant information-set access.",
+            let (title, question, action) = if prompt.challenge.is_update() {
+                ("Update App", "Replace the installed App with this release and its declared capabilities? Its data is kept.", "Update")
+            } else {
+                ("Install App", "Install this App with the declared capabilities?", "Install")
+            };
+            let message=format!("{question}\n\n{}\n\nDeclared information sets are shown for review only. This decision does not grant information-set access.",
                 serde_json::to_string_pretty(prompt.challenge.review()).unwrap_or_default());
             let interaction = RuntimeInteraction::for_kernel_operation(
                 prompt.challenge.interaction_id(),
                 format!("install:{}", prompt.challenge.installation_id()),
-                "Install App",
+                title,
                 message,
                 vec![
-                    RuntimeInteractionChoice::new("approve", "Install", "approve", None),
+                    RuntimeInteractionChoice::new("approve", action, "approve", None),
                     RuntimeInteractionChoice::new("decline", "Cancel", "decline", None),
                 ],
             );

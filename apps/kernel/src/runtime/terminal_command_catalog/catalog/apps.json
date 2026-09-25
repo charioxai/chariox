@@ -109,6 +109,19 @@
         ]
       },
       {
+        "id": "app-update",
+        "label": "update",
+        "description": "Replace an installed App's release with a local .cxapp package; its data is kept",
+        "value": "/app update ",
+        "execution_target": "terminal_local",
+        "examples": [
+          "/app update todo \"./My App.cxapp\""
+        ],
+        "surfaces": [
+          "session"
+        ]
+      },
+      {
         "id": "app-automation",
         "label": "automation",
         "description": "Route an App event to a workflow",

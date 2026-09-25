@@ -63,7 +63,13 @@ int main(int argc, char** argv) {
       fixture_sdk_mode(argv[1]) ? "installed" : "installation_1";
   const int installation_matches = fixture_sdk_mode(argv[1]) && strcmp(argv[1], "sdk_other_installation") ?
       fixture_installation(record.installation) : !strcmp(record.installation, installation);
-  if (strcmp(record.generation, fixture_sdk_mode(argv[1]) ? "1" : "7") || !installation_matches ||
+  const size_t generation_digits = strspn(record.generation, "0123456789");
+  const int generation_matches = fixture_sdk_mode(argv[1])
+      ? generation_digits > 0 && generation_digits < sizeof(fixture_sdk_generation) &&
+          !record.generation[generation_digits] && record.generation[0] != '0'
+      : !strcmp(record.generation, "7");
+  if (fixture_sdk_mode(argv[1]) && generation_matches) strcpy(fixture_sdk_generation, record.generation);
+  if (!generation_matches || !installation_matches ||
       record.nofile != 128 || record.cpu_seconds != 30 || record.heap_mib != 64 ||
       record.v8_threads != 1 || record.max_file_bytes != 1048576 ||
       strcmp(record.bootstrap, "// trusted fixture bootstrap\n")) return 86;

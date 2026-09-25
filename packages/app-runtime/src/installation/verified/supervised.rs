@@ -1,5 +1,7 @@
-//! Transaction composition for supervised first installs. The kernel owns
-//! approvals and actual worker health; these functions never attest either.
+//! Transaction composition for supervised installs and local updates. The
+//! kernel owns approvals and actual worker health; these functions never
+//! attest either. Every transition is fenced by `current_update`: the stage's
+//! base is the installation's current generation and it is still pending.
 use super::*;
 use crate::installation::{
     clear_pending, save_update, CapabilityApproval, CapabilityDecision, UpdatePhase,
@@ -17,7 +19,47 @@ impl VerifiedInstallCandidate {
     ) -> Result<UpdateRecord> {
         self.trust.require_current(tx, owner)?;
         create_installation(tx, installation, &self.release.app_id, owner)?;
-        let record = stage_release(tx, installation, 0, self.release.clone(), now_ms)?;
+        self.stage_supervised_in(tx, owner, installation, 0, now_ms)
+    }
+
+    /// A local replacement of the owner's active installation. The App's data
+    /// is reused as is, so a release that changes its data schema is refused
+    /// until restricted migrations run as part of the update.
+    pub fn stage_update_in(
+        &self,
+        tx: &Transaction<'_>,
+        owner: &str,
+        installation: &str,
+        expected_generation: u64,
+        now_ms: u64,
+    ) -> Result<UpdateRecord> {
+        self.trust.require_current(tx, owner)?;
+        let current = load_installation(tx, installation)?;
+        if current.owner_id != owner {
+            return Err(InstallationError::NotFound.into());
+        }
+        let active = current.active.ok_or(InstallationError::Inactive)?;
+        if active.release.schema_version != self.release.schema_version {
+            return Err(InstallationError::Invalid("data migration required").into());
+        }
+        self.stage_supervised_in(tx, owner, installation, expected_generation, now_ms)
+    }
+
+    fn stage_supervised_in(
+        &self,
+        tx: &Transaction<'_>,
+        owner: &str,
+        installation: &str,
+        expected_generation: u64,
+        now_ms: u64,
+    ) -> Result<UpdateRecord> {
+        let record = stage_release(
+            tx,
+            installation,
+            expected_generation,
+            self.release.clone(),
+            now_ms,
+        )?;
         save_binding(tx, owner, &record, &self.trust)?;
         tx.execute(
             "INSERT INTO app_installation_supervised_stages(installation_id,generation)
@@ -35,20 +77,34 @@ impl StageTrustBinding {
         load_binding(tx, owner, token)
     }
 
-    pub fn review_first_in(
+    fn require_supervised(&self, tx: &Transaction<'_>) -> Result<()> {
+        let supervised: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM app_installation_supervised_stages
+             WHERE installation_id=?1 AND generation=?2)",
+            params![
+                self.token.installation_id,
+                sql_generation(self.token.generation)?
+            ],
+            |row| row.get(0),
+        )?;
+        if !supervised {
+            return Err(InstallationError::InvalidTransition.into());
+        }
+        Ok(())
+    }
+
+    pub fn review_in(
         &self,
         tx: &Transaction<'_>,
         owner: &str,
         trust: &TrustedPublisherSnapshot,
     ) -> Result<UpdateRecord> {
-        if self.token.base_generation != 0 || self.token.generation != 1 {
-            return Err(InstallationError::InvalidTransition.into());
-        }
+        self.require_supervised(tx)?;
         self.require_current(tx, owner, trust)?;
         current_update(tx, &self.token).map_err(Into::into)
     }
     /// Trusted kernel decision, fenced inside its original committing transaction.
-    pub fn decide_first_in(
+    pub fn decide_in(
         &self,
         tx: &Transaction<'_>,
         owner: &str,
@@ -56,24 +112,20 @@ impl StageTrustBinding {
         decision: CapabilityDecision,
         now_ms: u64,
     ) -> Result<UpdateRecord> {
-        self.review_first_in(tx, owner, trust)?;
+        self.review_in(tx, owner, trust)?;
         crate::installation::decide_generation(tx, &self.token, decision, now_ms)
             .map_err(Into::into)
     }
 
     /// Reads the existing approval; no caller can supply an approval boolean.
     /// The caller passes an enrollment snapshot, which is rechecked in this tx.
-    pub fn require_first_approved_in(
+    pub fn require_approved_in(
         &self,
         tx: &Transaction<'_>,
         owner: &str,
         trust: &TrustedPublisherSnapshot,
     ) -> Result<CapabilityApproval> {
-        if self.token.base_generation != 0 || self.token.generation != 1 {
-            return Err(InstallationError::InvalidTransition.into());
-        }
-        self.require_current(tx, owner, trust)?;
-        let record = current_update(tx, &self.token)?;
+        let record = self.review_in(tx, owner, trust)?;
         if !matches!(record.phase, UpdatePhase::Staged | UpdatePhase::Quiescing) {
             return Err(InstallationError::InvalidTransition.into());
         }
@@ -83,16 +135,16 @@ impl StageTrustBinding {
         }
     }
 
-    /// Quiescing a new generation only fences admission; there is no prior
-    /// worker/data snapshot to restore. Health has not run at this point.
-    pub fn quiesce_first_in(
+    /// Fences admission to the installation (for an update, the old
+    /// generation too); the caller stops its worker. Health has not run yet.
+    pub fn quiesce_in(
         &self,
         tx: &Transaction<'_>,
         owner: &str,
         trust: &TrustedPublisherSnapshot,
         now_ms: u64,
     ) -> Result<CapabilityApproval> {
-        let approval = self.require_first_approved_in(tx, owner, trust)?;
+        let approval = self.require_approved_in(tx, owner, trust)?;
         let mut record = current_update(tx, &self.token)?;
         record.phase = UpdatePhase::Quiescing;
         record.updated_at_ms = now_ms;
@@ -107,7 +159,7 @@ impl StageTrustBinding {
     /// The kernel must hold the exact supervised worker's local health proof.
     /// This joins preparation, signer/approval fencing and activation into the
     /// SAME transaction as the kernel's durable operation/worker-health record.
-    pub fn commit_first_in(
+    pub fn commit_in(
         &self,
         tx: &Transaction<'_>,
         owner: &str,
@@ -115,7 +167,7 @@ impl StageTrustBinding {
         approval: &CapabilityApproval,
         now_ms: u64,
     ) -> Result<ActiveGeneration> {
-        if self.require_first_approved_in(tx, owner, trust)? != *approval {
+        if self.require_approved_in(tx, owner, trust)? != *approval {
             return Err(InstallationError::ApprovalRequired.into());
         }
         let mut record = current_update(tx, &self.token)?;
@@ -128,18 +180,17 @@ impl StageTrustBinding {
         commit_generation(tx, &self.token, now_ms).map_err(Into::into)
     }
 
-    /// Cancels only a still-pending first generation. A committed generation is
-    /// never silently rolled back, even when the worker failed before publish.
-    pub fn abort_first_in(
+    /// Cancels only a still-pending generation; an update's base generation
+    /// stays active and admission reopens. A committed generation is never
+    /// silently rolled back, even when the worker failed before publish.
+    pub fn abort_in(
         &self,
         tx: &Transaction<'_>,
         owner: &str,
         reason: &str,
         now_ms: u64,
     ) -> Result<()> {
-        if self.token.base_generation != 0
-            || self.token.generation != 1
-            || reason.is_empty()
+        if reason.is_empty()
             || reason.len() > 96
             || !reason
                 .bytes()
@@ -147,17 +198,15 @@ impl StageTrustBinding {
         {
             return Err(InstallationError::InvalidTransition.into());
         }
+        self.require_supervised(tx)?;
         self.require_binding(tx, owner)?;
         let stored = load_update(tx, &self.token.installation_id, self.token.generation)?;
         if stored.token == self.token && stored.phase == UpdatePhase::Aborted {
             let installation = load_installation(tx, &self.token.installation_id)?;
-            if installation.generation == 0
-                && installation.active.is_none()
-                && installation.pending_generation.is_none()
-            {
-                // A separate existing capability decline may have aborted the
-                // same first stage. Preserve that reason while the operation
-                // receipt is terminalized in this surrounding transaction.
+            if installation.pending_generation != Some(self.token.generation) {
+                // A capability decline or an uninstall already aborted this
+                // stage. Preserve that reason while the operation receipt is
+                // terminalized in this surrounding transaction.
                 return Ok(());
             }
         }

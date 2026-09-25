@@ -81,7 +81,7 @@ test("App slash commands preserve arguments and delegate to the shared shell", (
   assert.deepEqual(parseSlashCommand("/app\tstatus install-1")?.kind, "app")
   assert.equal(parseSlashCommand("/application list"), null)
   assert.equal(sharedShellCommandForSlashCommand("/application list"), null)
-  for (const command of ['/app install "local App.cxapp"', "/app operation", "/app cancel"]) {
+  for (const command of ['/app install "local App.cxapp"', '/app update install-1 "local App.cxapp"', "/app operation", "/app cancel"]) {
     assert.equal(sharedShellCommandForSlashCommand(command), null, command)
   }
 })

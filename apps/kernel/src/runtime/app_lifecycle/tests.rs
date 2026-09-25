@@ -453,6 +453,7 @@ fn shutdown_reports_failed_stop_persistence_and_retains_it_for_retry() {
 
 #[path = "tests/first_install.rs"]
 mod first_install;
+mod local_update;
 
 #[test]
 fn stale_manual_stop_selection_cannot_stop_a_foreground_replacement() {

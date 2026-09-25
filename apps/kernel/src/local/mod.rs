@@ -10,7 +10,7 @@ pub(crate) use api::redact_client_response_value;
 pub use api::{
     AppInstallOperationPhase, AppInstallOperationRequest, AppInstallOperationSummary,
     AppPublisherEnrollmentPhase, AppPublisherEnrollmentRequest, AppPublisherEnrollmentSummary,
-    BeginAppInstallRequest, BeginAppPublisherEnrollmentRequest,
+    BeginAppInstallRequest, BeginAppUpdateRequest, BeginAppPublisherEnrollmentRequest,
 };
 pub use api::{
     deployment_credential_enrollment_interaction_id,

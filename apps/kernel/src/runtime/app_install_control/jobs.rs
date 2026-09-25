@@ -37,6 +37,7 @@ fn error(error: InstallOperationError) -> Error {
         InstallOperationError::Stale => Error::Failed("app_install_authority_changed"),
         InstallOperationError::Limit => Error::Failed("app_install_limit"),
         InstallOperationError::NotFound => Error::Failed("app_install_not_found"),
+        InstallOperationError::MigrationRequired => Error::Failed("app_update_migration_required"),
         _ => Error::Failed("app_install_conflict"),
     }
 }

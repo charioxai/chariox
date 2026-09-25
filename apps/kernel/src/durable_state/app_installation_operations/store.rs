@@ -20,27 +20,42 @@ pub(super) fn limit(value: &AppOperationBudget) -> Result<()> {
     value.check().map_err(|_| InstallOperationError::Stopped)
 }
 pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
+    // An installation has one first-install operation and any number of
+    // update operations; at most one of them is unfinished (see `reserve`).
     let schema = "CREATE TABLE IF NOT EXISTS app_installation_operations (
-        owner_id TEXT NOT NULL, request_id TEXT NOT NULL, installation_id TEXT NOT NULL UNIQUE,
+        owner_id TEXT NOT NULL, request_id TEXT NOT NULL, installation_id TEXT NOT NULL,
         package_digest TEXT NOT NULL, phase TEXT NOT NULL CHECK(phase IN ('preparing','approval','starting','committed','cancelled','failed')),
         attempt TEXT, approval_json TEXT, failure TEXT,
         cleanup_pending INTEGER NOT NULL DEFAULT 0 CHECK(cleanup_pending IN (0,1)),
         created_ms INTEGER NOT NULL CHECK(created_ms>=0), updated_ms INTEGER NOT NULL CHECK(updated_ms>=0),
         session_id TEXT, upload_handle TEXT, review_json TEXT, interaction_id TEXT,
-        PRIMARY KEY(owner_id,request_id));";
+        base_generation INTEGER NOT NULL DEFAULT 0 CHECK(base_generation>=0),
+        generation INTEGER NOT NULL DEFAULT 1 CHECK(generation>=0),
+        PRIMARY KEY(owner_id,request_id));
+        CREATE INDEX IF NOT EXISTS app_installation_operations_installation
+        ON app_installation_operations(installation_id);";
     let existing: Option<String> = connection.query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='app_installation_operations'", [], |r|r.get(0)).optional()?;
-    if existing.is_some_and(|sql| !sql.contains("'preparing'")) {
-        let tx = connection.unchecked_transaction()?;
-        tx.execute_batch(
-            "ALTER TABLE app_installation_operations RENAME TO app_installation_operations_v1;",
-        )?;
-        tx.execute_batch(schema)?;
-        tx.execute_batch("INSERT INTO app_installation_operations(owner_id,request_id,installation_id,package_digest,phase,attempt,approval_json,failure,cleanup_pending,created_ms,updated_ms)
-        SELECT owner_id,request_id,installation_id,package_digest,phase,attempt,approval_json,failure,cleanup_pending,created_ms,updated_ms FROM app_installation_operations_v1;
-        DROP TABLE app_installation_operations_v1;")?;
-        tx.commit()?;
-    } else {
-        connection.execute_batch(schema)?;
+    match existing {
+        Some(sql) if !sql.contains("base_generation") => {
+            // Earlier layouts are first installs only (generation 1 of base 0).
+            let columns = if sql.contains("'preparing'") {
+                "owner_id,request_id,installation_id,package_digest,phase,attempt,approval_json,failure,cleanup_pending,created_ms,updated_ms,session_id,upload_handle,review_json,interaction_id"
+            } else {
+                "owner_id,request_id,installation_id,package_digest,phase,attempt,approval_json,failure,cleanup_pending,created_ms,updated_ms"
+            };
+            let tx = connection.unchecked_transaction()?;
+            tx.execute_batch(
+                "ALTER TABLE app_installation_operations RENAME TO app_installation_operations_old;",
+            )?;
+            tx.execute_batch(schema)?;
+            tx.execute_batch(&format!(
+                "INSERT INTO app_installation_operations({columns})
+                 SELECT {columns} FROM app_installation_operations_old;
+                 DROP TABLE app_installation_operations_old;"
+            ))?;
+            tx.commit()?;
+        }
+        _ => connection.execute_batch(schema)?,
     }
     Ok(())
 }
@@ -63,10 +78,12 @@ pub(super) fn load(
         Option<String>,
         Option<String>,
         Option<String>,
+        i64,
+        i64,
     );
     let row: Option<Row> = sql(connection
         .query_row(
-            "SELECT installation_id,package_digest,phase,attempt,failure,cleanup_pending,session_id,upload_handle,review_json,interaction_id
+            "SELECT installation_id,package_digest,phase,attempt,failure,cleanup_pending,session_id,upload_handle,review_json,interaction_id,base_generation,generation
          FROM app_installation_operations WHERE owner_id=?1 AND request_id=?2",
             params![owner, request],
             |r| {
@@ -76,7 +93,7 @@ pub(super) fn load(
                     r.get(2)?,
                     r.get(3)?,
                     r.get(4)?,
-                    r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?,
+                    r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?,
                 ))
             },
         )
@@ -93,11 +110,21 @@ pub(super) fn load(
             upload,
             review,
             interaction_id,
+            base_generation,
+            generation,
         )| {
+            let base_generation =
+                u64::try_from(base_generation).map_err(|_| InstallOperationError::Storage)?;
+            let generation =
+                u64::try_from(generation).map_err(|_| InstallOperationError::Storage)?;
             let input = match (session, upload) {
                 (Some(session_id), Some(upload_handle)) => Some(InstallInput {
                     session_id,
                     upload_handle,
+                    update: (base_generation > 0).then(|| UpdateTarget {
+                        installation_id: installation.clone(),
+                        expected_generation: base_generation,
+                    }),
                 }),
                 (None, None) => None,
                 _ => return Err(InstallOperationError::Storage),
@@ -110,10 +137,12 @@ pub(super) fn load(
                 review,
                 interaction_id,
                 request_id: request.into(),
+                // An update's generation is allocated when it is staged; 0
+                // until then (the operation is still preparing).
                 token: StageToken {
                     installation_id: installation,
-                    base_generation: 0,
-                    generation: 1,
+                    base_generation,
+                    generation,
                 },
                 package_digest,
                 phase: match phase.as_str() {
@@ -150,7 +179,7 @@ pub(super) fn require_start(
     if recorded.as_ref() != Some(&admission.approval)
         || admission
             .binding
-            .require_first_approved_in(tx, &admission.owner, &admission.trust)
+            .require_approved_in(tx, &admission.owner, &admission.trust)
             .map_err(|_| InstallOperationError::Stale)?
             != admission.approval
     {
@@ -192,7 +221,7 @@ pub(super) fn candidates(
     after: Option<(&str, &str)>,
 ) -> Result<Vec<(String, String)>> {
     let mut statement = sql(connection.prepare("SELECT o.owner_id,o.request_id FROM app_installation_operations o
-        JOIN app_installation_updates u ON u.installation_id=o.installation_id AND u.generation=1
+        JOIN app_installation_updates u ON u.installation_id=o.installation_id AND u.generation=o.generation
         WHERE o.phase IN ('preparing','approval','starting') AND json_extract(u.record_json,'$.decision.status')='approved'
         AND (?1 IS NULL OR (o.owner_id,o.request_id)>(?1,?2)) ORDER BY o.owner_id,o.request_id LIMIT 8"))?;
     let rows = sql(

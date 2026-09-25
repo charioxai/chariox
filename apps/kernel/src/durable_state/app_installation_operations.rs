@@ -1,5 +1,6 @@
-//! Idempotent first installs on the existing kernel writer. This records no
-//! client assertion of trust, approval, containment or worker health.
+//! Idempotent first installs and local updates on the existing kernel writer.
+//! This records no client assertion of trust, approval, containment or worker
+//! health.
 mod api;
 mod commit;
 mod public_ops;
@@ -44,6 +45,8 @@ pub(crate) enum InstallOperationError {
     Storage,
     #[error("app_install_commit_unknown")]
     CommitUnknown,
+    #[error("app_update_migration_required")]
+    MigrationRequired,
 }
 type Result<T> = std::result::Result<T, InstallOperationError>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +75,13 @@ pub(crate) struct InstallOperation {
 pub(crate) struct InstallInput {
     pub(crate) session_id: String,
     pub(crate) upload_handle: String,
+    /// A local replacement of an existing installation; `None` installs anew.
+    pub(crate) update: Option<UpdateTarget>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UpdateTarget {
+    pub(crate) installation_id: String,
+    pub(crate) expected_generation: u64,
 }
 
 /// Minted only after reading the existing exact staged capability approval and

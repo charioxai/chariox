@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 348);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 349);
     let release = AppReleaseSummary {
         version: "1.0.0".into(),
         publisher_id: "publisher".into(),
@@ -85,7 +85,7 @@ fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
 
 #[test]
 fn app_package_upload_protocol_shapes_bind_retry_bytes_and_opaque_handles() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 348);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 349);
     let handle = format!("upload_{}", "a".repeat(64));
     let digest = format!("sha256:{:064x}", 1);
     let requests = vec![
@@ -167,7 +167,7 @@ fn app_package_upload_protocol_shapes_bind_retry_bytes_and_opaque_handles() {
 
 #[test]
 fn app_worker_control_and_automation_shapes_are_versioned_and_owner_free() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 348);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 349);
     let requests = vec![
         LocalDaemonRequest::GetAppWorker(AppWorkerRequest {
             installation_id: "todo".into(),
@@ -259,7 +259,7 @@ fn app_worker_control_and_automation_shapes_are_versioned_and_owner_free() {
 fn app_view_shapes_are_versioned_and_name_no_owner_or_asset() {
     use crate::runtime::browser_controller_app_view::{BrowserAppViewError, BrowserAppViewRequest};
     use crate::transport::room_browser_controller::RoomBrowserControllerCommand;
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 348);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 349);
     let request = LocalDaemonRequest::OpenAppView(OpenAppViewRequest {
         session_id: "session-1".into(),
         installation_id: "todo".into(),
@@ -316,7 +316,7 @@ fn app_view_shapes_are_versioned_and_name_no_owner_or_asset() {
 
 #[test]
 fn app_uninstall_shape_is_versioned_and_names_no_owner() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 348);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 349);
     let request = LocalDaemonRequest::UninstallApp(UninstallAppRequest {
         installation_id: "todo".into(),
         expected_generation: "3".into(),
@@ -339,7 +339,7 @@ fn app_uninstall_shape_is_versioned_and_names_no_owner() {
 
 #[test]
 fn app_logs_shape_is_versioned_and_names_no_owner() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 348);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 349);
     let request = LocalDaemonRequest::GetAppLogs(GetAppLogsRequest {
         installation_id: "todo".into(),
         after_sequence: Some("7".into()),
@@ -372,6 +372,37 @@ fn app_logs_shape_is_versioned_and_names_no_owner() {
     assert!(
         serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({
             "GetAppLogs": {"installation_id": "todo", "owner_id": "other"}
+        }))
+        .is_err()
+    );
+}
+
+#[test]
+fn app_update_shape_is_versioned_fenced_and_names_no_owner() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 349);
+    let request = LocalDaemonRequest::BeginAppUpdate(BeginAppUpdateRequest {
+        session_id: "session-1".into(),
+        request_id: "update-1".into(),
+        installation_id: "todo".into(),
+        expected_generation: "3".into(),
+        upload_handle: format!("upload_{}", "a".repeat(64)),
+        expected_package_digest: format!("sha256:{:064x}", 1),
+    });
+    let encoded = serde_json::to_vec(&request).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<LocalDaemonRequest>(&encoded).unwrap(),
+        request
+    );
+    let digest = format!("{:x}", Sha256::digest(&encoded));
+    assert_eq!(
+        digest,
+        "413ddaba55fa0d7ed72db9ffa2e4186cef09cbc6a1127521372b6fdf76172efb"
+    );
+    assert!(
+        serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({
+            "BeginAppUpdate": {"session_id": "s", "request_id": "r", "installation_id": "todo",
+                "expected_generation": "3", "upload_handle": "u", "expected_package_digest": "d",
+                "owner_id": "other"}
         }))
         .is_err()
     );

@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, rm, rename, symlink, open } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
-import { AppFileInstaller } from "./app-install-file.js"
+import { AppFileInstaller, formatInstallOperation } from "./app-install-file.js"
 import { AppFileSource, chunkBytes, maxArchiveBytes, InstallFileChanged } from "./app-install-file/source.js"
 import { handleAppSlashCommand } from "./app-command-handler.js"
 import { parseSlashCommand, sharedShellCommandForSlashCommand } from "./commands.js"
@@ -61,8 +61,10 @@ function kernel() {
       } else if (request.AbortAppPackageUpload) {
         assert.equal(request.AbortAppPackageUpload.handle, handle)
         upload!.phase = "aborted"
-      } else if (request.BeginAppInstall) {
-        const v = request.BeginAppInstall
+      } else if (request.GetAppInstallation) {
+        return { AppInstallation: { installation: { installation_id: request.GetAppInstallation.installation_id, app_id: "com.example.todo", generation: "7", active_release: null, pending_generation: null, admission_paused: false } } }
+      } else if (request.BeginAppInstall || request.BeginAppUpdate) {
+        const v = request.BeginAppInstall ?? request.BeginAppUpdate
         assert.equal(upload?.phase, "receiving")
         assert.equal(body.length, upload.expected_size)
         assert.equal(v.expected_package_digest, digest(body))
@@ -128,6 +130,32 @@ test("normal quoted /app install uses current session and only bytes cross the s
   assert.equal((await installer.status()).phase, "awaiting_approval")
   assert.equal(k.upload!.phase, "aborted")
   assert.ok(!k.requests.some(v => v.RespondToInteraction))
+})
+
+test("/app update fences the shared upload on the generation it read first", async t => {
+  const f = await sourceFixture(t)
+  const k = kernel()
+  const installer = new AppFileInstaller(k.send, () => {}, f.root)
+  t.after(() => installer.dispose())
+  const notices: string[] = []
+  const deps = {
+    sendAppRequest: k.send, appFileInstaller: installer, currentAppSessionId: () => "current-session",
+    appendNotice: (value: string) => { notices.push(value) }, flashFooter: (value: string) => assert.fail(value),
+  }
+  const parsed = parseSlashCommand('/app update todo "local App.cxapp"')!
+  const command = parsed as Extract<typeof parsed, { kind: "app" }>
+  assert.equal(sharedShellCommandForSlashCommand(command.raw), null)
+  await assert.rejects(handleAppSlashCommand(deps, { ...command, raw: '/app update "local App.cxapp"' }), /usage: \/app update/)
+  await handleAppSlashCommand(deps, command)
+  assert.deepEqual(k.bytes, f.bytes)
+  assert.deepEqual([...new Set(k.requests.map(v => Object.keys(v)[0]))], ["GetAppInstallation", "BeginAppPackageUpload", "PutAppPackageUploadChunk", "BeginAppUpdate"])
+  const { session_id, request_id, installation_id, expected_generation } = k.requests.find(v => v.BeginAppUpdate)!.BeginAppUpdate
+  assert.deepEqual([session_id, installation_id, expected_generation], ["current-session", "todo", "7"])
+  assert.match(request_id, /^app-update-/)
+  assert.match(notices.at(-1)!, /Preparing App/)
+  await assert.rejects(installer.install(f.path, "current-session"), /Another App installation or update is retained/)
+  assert.equal(formatInstallOperation({ ...k.status!, phase: "committed", installation_id: "todo" } as never), `App operation complete: todo. Operation ${request_id}. Use /app operation for status; /app cancel to cancel before it completes.`)
+  assert.match(formatInstallOperation({ ...k.status!, phase: "failed", failure: "app_update_migration_required" } as never), /^App operation failed\. This release changes the App's data schema; updating with data migrations is not supported yet/)
 })
 
 test("lost chunk and install replies resume using original IDs and authoritative offset", async t => {

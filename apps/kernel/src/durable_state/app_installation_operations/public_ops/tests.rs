@@ -71,6 +71,7 @@ fn input() -> InstallInput {
     InstallInput {
         session_id: "session".into(),
         upload_handle: format!("upload_{}", "a".repeat(64)),
+        update: None,
     }
 }
 
@@ -227,4 +228,166 @@ fn old_operation_table_migrates_without_losing_receipts() {
     assert_eq!(receipt.phase, InstallPhase::Cancelled);
     assert!(receipt.input.is_none());
     assert_eq!(receipt.failure.as_deref(), Some("declined"));
+}
+
+fn release(
+    version: &str,
+    schema: u32,
+    store: &DurableKernelStateStore,
+) -> VerifiedInstallCandidate {
+    let (bytes, publisher) =
+        crate::durable_state::app_state::fixture_release_package(version, schema);
+    let package = verify(
+        &bytes,
+        &VerificationPolicy::new(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, vec![publisher]),
+    )
+    .unwrap();
+    let trust = store
+        .trusted_app_publisher("alice", "com.example", "state-key")
+        .unwrap();
+    VerifiedInstallCandidate::from_verified(&package, &trust).unwrap()
+}
+fn update_input(expected_generation: u64) -> InstallInput {
+    InstallInput {
+        update: Some(UpdateTarget {
+            installation_id: "installed".into(),
+            expected_generation,
+        }),
+        ..input()
+    }
+}
+
+#[test]
+fn an_update_stages_onto_the_active_installation_and_a_failed_start_keeps_it() {
+    let f = Fixture::new();
+    let next = release("1.1.0", 0, &f.store);
+    let digest = next.release_metadata().package_digest.clone();
+    let reserve = |id: &str, owner: &str, input: InstallInput| {
+        f.store
+            .reserve_app_install(owner, id, input, &digest, budget())
+    };
+    assert_eq!(
+        reserve("stale", "alice", update_input(2)).unwrap_err(),
+        InstallOperationError::Conflict
+    );
+    assert_eq!(
+        reserve("foreign", "bob", update_input(1)).unwrap_err(),
+        InstallOperationError::NotFound
+    );
+    let preparing = reserve("update", "alice", update_input(1)).unwrap();
+    assert_eq!(preparing.phase, InstallPhase::Preparing);
+    assert_eq!(preparing.token.installation_id, "installed");
+    assert_eq!(preparing.token.base_generation, 1);
+    // One unfinished operation per installation.
+    assert_eq!(
+        reserve("second", "alice", update_input(1)).unwrap_err(),
+        InstallOperationError::Conflict
+    );
+    let staged = f
+        .store
+        .complete_app_install_preparation("alice", "update", next, budget())
+        .unwrap();
+    assert_eq!(staged.phase, InstallPhase::AwaitingApproval);
+    assert_eq!(staged.token.generation, 2);
+    let installed = f.store.get_app_installation("alice", "installed").unwrap();
+    assert_eq!(installed.generation, 1);
+    assert_eq!(installed.pending_generation, Some(2));
+    let challenge = Arc::new(f.arm("update", "yes"));
+    f.store
+        .decide_app_install(challenge, true, budget())
+        .unwrap();
+    let admission = Arc::new(
+        f.store
+            .claim_first_app_install("alice", "update", "attempt", budget())
+            .unwrap(),
+    );
+    assert!(
+        f.store
+            .get_app_installation("alice", "installed")
+            .unwrap()
+            .admission_paused
+    );
+    f.store
+        .finish_first_app_install(admission, false, "app_worker_health", budget())
+        .unwrap();
+    let failed = f.store.first_app_install_status("alice", "update").unwrap();
+    assert_eq!(failed.phase, InstallPhase::Failed);
+    // The old generation stays active and admits work again; its data is kept.
+    let installed = f.store.get_app_installation("alice", "installed").unwrap();
+    assert_eq!(installed.generation, 1);
+    assert_eq!(installed.pending_generation, None);
+    assert!(!installed.admission_paused);
+    assert!(installed.active.is_some());
+    // A release that changes the data schema needs migrations (not yet).
+    let migrating = release("2.0.0", 1, &f.store);
+    let digest = migrating.release_metadata().package_digest.clone();
+    f.store
+        .reserve_app_install("alice", "migrate", update_input(1), &digest, budget())
+        .unwrap();
+    assert_eq!(
+        f.store
+            .complete_app_install_preparation("alice", "migrate", migrating, budget())
+            .unwrap_err(),
+        InstallOperationError::MigrationRequired
+    );
+}
+
+#[test]
+fn uninstalling_during_an_update_leaves_its_operation_cancellable() {
+    let f = Fixture::new();
+    let next = release("1.1.0", 0, &f.store);
+    let digest = next.release_metadata().package_digest.clone();
+    f.store
+        .reserve_app_install("alice", "update", update_input(1), &digest, budget())
+        .unwrap();
+    f.store
+        .complete_app_install_preparation("alice", "update", next, budget())
+        .unwrap();
+    f.store
+        .mutate_app_installation(
+            "alice",
+            crate::durable_state::apps::AppRegistryMutation::Uninstall {
+                installation_id: "installed".into(),
+                expected_generation: 1,
+                now_ms: 5,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        f.store
+            .cancel_first_app_install("alice", "update", budget())
+            .unwrap()
+            .phase,
+        InstallPhase::Cancelled
+    );
+}
+
+#[test]
+fn protocol_348_operation_table_migrates_to_generations() {
+    let connection = Connection::open_in_memory().unwrap();
+    connection.execute_batch("CREATE TABLE app_installation_operations (
+        owner_id TEXT NOT NULL, request_id TEXT NOT NULL, installation_id TEXT NOT NULL UNIQUE,
+        package_digest TEXT NOT NULL, phase TEXT NOT NULL CHECK(phase IN ('preparing','approval','starting','committed','cancelled','failed')),
+        attempt TEXT, approval_json TEXT, failure TEXT,
+        cleanup_pending INTEGER NOT NULL DEFAULT 0 CHECK(cleanup_pending IN (0,1)),
+        created_ms INTEGER NOT NULL CHECK(created_ms>=0), updated_ms INTEGER NOT NULL CHECK(updated_ms>=0),
+        session_id TEXT, upload_handle TEXT, review_json TEXT, interaction_id TEXT,
+        PRIMARY KEY(owner_id,request_id));
+        INSERT INTO app_installation_operations(owner_id,request_id,installation_id,package_digest,phase,created_ms,updated_ms,session_id,upload_handle,interaction_id)
+        VALUES('alice','inflight','app_1','sha256:x','approval',1,2,'session','upload_x','nonce');").unwrap();
+    initialize(&connection).unwrap();
+    initialize(&connection).unwrap();
+    let operation = load(&connection, "alice", "inflight").unwrap().unwrap();
+    assert_eq!(operation.phase, InstallPhase::AwaitingApproval);
+    assert_eq!(
+        (operation.token.base_generation, operation.token.generation),
+        (0, 1)
+    );
+    let input = operation.input.unwrap();
+    assert_eq!(
+        (input.session_id.as_str(), input.upload_handle.as_str()),
+        ("session", "upload_x")
+    );
+    assert!(input.update.is_none());
+    assert_eq!(operation.interaction_id.as_deref(), Some("nonce"));
 }

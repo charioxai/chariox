@@ -47,7 +47,7 @@ pub(super) fn apply(connection: &mut Connection, command: Command) -> Result<Rep
                 let binding = StageTrustBinding::staged_in(&tx, &owner, &current.token)
                     .map_err(|_| InstallOperationError::Stale)?;
                 binding
-                    .abort_first_in(&tx, &owner, "app_install_cancelled", time as u64)
+                    .abort_in(&tx, &owner, "app_install_cancelled", time as u64)
                     .map_err(|_| InstallOperationError::Conflict)?;
             }
             sql(tx.execute("UPDATE app_installation_operations SET phase='cancelled',failure='app_install_cancelled',interaction_id=NULL,cleanup_pending=1,updated_ms=?1
@@ -120,7 +120,7 @@ pub(super) fn apply(connection: &mut Connection, command: Command) -> Result<Rep
             }
             let time = now()?;
             let approval = binding
-                .quiesce_first_in(&tx, &owner, &trust, time as u64)
+                .quiesce_in(&tx, &owner, &trust, time as u64)
                 .map_err(|error| match error {
                     chariox_app_runtime::installation::VerifiedStageError::Installation(
                         chariox_app_runtime::installation::InstallationError::ApprovalRequired,
@@ -210,7 +210,7 @@ pub(super) fn apply(connection: &mut Connection, command: Command) -> Result<Rep
             let time = now()?;
             admission
                 .binding
-                .abort_first_in(&tx, &admission.owner, &failure, time as u64)
+                .abort_in(&tx, &admission.owner, &failure, time as u64)
                 .map_err(|_| InstallOperationError::Conflict)?;
             sql(tx.execute("UPDATE app_installation_operations SET phase=?1,failure=?2,cleanup_pending=1,updated_ms=?3
                 WHERE owner_id=?4 AND request_id=?5", params![if cancelled {"cancelled"} else {"failed"},failure,time,admission.owner,admission.request_id]))?;
