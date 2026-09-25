@@ -1781,9 +1781,9 @@ Workflow trigger and deployment direction:
   `sandbox allow-scripts allow-same-origin allow-forms` (no popups, top
   navigation, downloads or modals), responses send `X-DNS-Prefetch-Control:
   off`, and WebRTC constructors are removed before App code runs (an in-page
-  defense per document; a browser-level WebRTC policy is future work). A lost
-  controller connection drops its App Tabs and closes App-origin Tabs it does
-  not own. Each poll
+  defense per document; a browser-level WebRTC policy is future work). Every new
+  controller CDP connection (whatever command caused it) drops the previous
+  connection's App Tabs and closes App-origin Tabs it does not own. Each poll
   reports the controller's open App targets; the kernel drops bindings for
   closed Tabs registered before that poll and stops polling when none remain. UI files are limited to
   2 MiB per view.

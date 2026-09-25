@@ -142,3 +142,13 @@ test("a CDP reconnect drops unconfined App Tabs and closes unowned App-origin Ta
   assert.deepEqual(browser.connection.sent.filter((m) => m.method === "Target.closeTarget").map((m) => m.params.targetId), ["t1"]);
   await assert.rejects(tabs.respond({ target_id: "t1", call_id: "1", result: null }));
 });
+
+test("a reconnect sweeps App-origin Tabs without waiting for an App command", async () => {
+  const { browser } = fakeBrowser();
+  new AppTabs(browser);
+  const connection = fakeConnection([{ targetId: "left", url: "https://a1.app.chariox.internal/" }]);
+  browser.connection = connection;
+  browser.onConnected(connection);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(connection.sent.filter((m) => m.method === "Target.closeTarget").map((m) => m.params.targetId), ["left"]);
+});

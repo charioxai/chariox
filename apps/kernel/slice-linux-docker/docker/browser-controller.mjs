@@ -26,6 +26,9 @@ export async function handleBrowserControllerRequest(
     signal,
   } = {},
 ) {
+  // Installed on the first request so the connection hook exists before any
+  // command (not only App commands) reconnects the browser.
+  if (browser && typeof browser === "object") browser.appTabs ??= new AppTabs(browser);
   if (!request || !Number.isSafeInteger(request.id) || request.id <= 0) {
     return errorResponse(request?.id ?? null, "invalid_request", "request id must be a positive integer");
   }
@@ -113,7 +116,6 @@ export async function handleBrowserControllerRequest(
       );
     }
     if (request.method.startsWith?.("browser.app.")) {
-      browser.appTabs ??= new AppTabs(browser);
       const apps = browser.appTabs;
       if (request.method === "browser.app.open") return successResponse(request.id, await apps.open(request.params));
       if (request.method === "browser.app.calls") return successResponse(request.id, await apps.takeCalls());
