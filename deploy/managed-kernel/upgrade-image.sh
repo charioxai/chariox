@@ -126,6 +126,7 @@ assert_path1_units_have_no_dropins() {
       return 1
     }
     if [ -n "$drop_in_paths" ]; then
+      path1_drop_in_failure=1
       echo "Path-1 service $unit has systemd drop-ins: $drop_in_paths" >&2
       return 1
     fi
@@ -830,7 +831,13 @@ if ! systemctl daemon-reload \
   || ! health_not_before_ms=$(node -e 'process.stdout.write(String(Date.now()))') \
   || ! systemctl start "$service_name" \
   || ! check_health "$target_protocol" "$expected_new_digest" "$health_not_before_ms"; then
-  if rollback_transaction; then
+  if [ "${path1_drop_in_failure:-0}" -eq 1 ]; then
+    if rollback_transaction; then
+      echo "Path-1 systemd drop-ins blocked activation; restored previous managed kernel release" >&2
+    else
+      echo "Path-1 systemd drop-ins blocked activation; rollback remains pending and the kernel is stopped" >&2
+    fi
+  elif rollback_transaction; then
     echo "managed kernel health check failed; restored previous managed kernel release" >&2
   else
     echo "managed kernel health check failed; rollback remains pending" >&2
