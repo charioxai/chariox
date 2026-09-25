@@ -897,13 +897,13 @@ async fn rejected_promoted_workflow_head_is_not_reported_as_delivered() {
     project_ordinary_completion(&fixture, ordinary_prompt_id).await;
 
     let (request_id, request) = next_peer_request(&mut fixture).await;
-    assert!(matches!(
-        request,
+    let (workflow_run_id, workflow_node_run_id) = match request {
         crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt {
-            workflow_context: Some(_),
+            workflow_context: Some(context),
             ..
-        }
-    ));
+        } => (context.workflow_run_id, context.workflow_node_run_id),
+        other => panic!("expected workflow prompt submission, got {other:?}"),
+    };
     acknowledge_peer_response(
         &fixture,
         request_id,
@@ -923,6 +923,50 @@ async fn rejected_promoted_workflow_head_is_not_reported_as_delivered() {
     })
     .await
     .expect("a rejected relay response should cancel the undispatched prompt");
+
+    let host_daemon_id = fixture
+        .runtime
+        .owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .expect("session should remain available")
+        .host_daemon_id()
+        .to_string();
+    let failed_workflow = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let terminal = fixture
+                .runtime
+                .owned
+                .durable_state_store
+                .resolve_workflow_run(
+                    &host_daemon_id,
+                    &fixture.session_id,
+                    &workflow_run_id,
+                )
+                .ok()
+                .flatten()
+                .filter(|run| run.status() == crate::session::WorkflowRunStatus::Failed);
+            if let Some(run) = terminal {
+                break run;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("rejected SubmitLeasedPrompt must fail the workflow run durably");
+    assert_eq!(
+        failed_workflow.status(),
+        crate::session::WorkflowRunStatus::Failed
+    );
+    assert!(failed_workflow.node_runs().iter().any(|node_run| {
+        node_run.id() == workflow_node_run_id.as_str()
+            && node_run.status() == crate::session::WorkflowNodeRunStatus::Failed
+    }));
+    assert!(failed_workflow.failure_events().iter().any(|event| {
+        event.kind() == crate::session::WorkflowFailureKind::TransportFailure
+            && event.source_node_run_id() == workflow_node_run_id.as_str()
+    }));
+
     let binding = fixture
         .runtime
         .owned
