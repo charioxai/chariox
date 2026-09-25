@@ -247,3 +247,10 @@ test('Apps receive AppError and the occurrence identity helper', async () => {
   assert.equal(sdk.events.occurrenceId('todo:1:2', 1000), occurrenceId('todo:1:2', 1000));
   sdk.close();
 });
+
+test('log messages are limited in UTF-8 bytes, like the kernel', () => {
+  const { sdk } = setup();
+  assert.throws(() => sdk.log.write('info', '\u{1F600}'.repeat(1100)), { code: 'LIMIT_EXCEEDED' });
+  assert.throws(() => sdk.log.write('trace', 'x'), { code: 'INVALID_ARGUMENT' });
+  sdk.close();
+});

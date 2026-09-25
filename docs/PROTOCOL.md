@@ -1796,6 +1796,13 @@ Workflow trigger and deployment direction:
   App views stay on screen but are unbound, so their calls fail. App data, user
   workflows and agents are retained; wakes and events of the inactive
   installation are refused by the normal start gate.
+- protocol 348 adds `GetAppLogs {installation_id, after_sequence?, limit?}`,
+  returning `AppLogs {installation_id, entries}` oldest first (at most 200 per
+  page). Entries come from the SDK's `log.write` (level `debug|info|warn|error`,
+  message up to 4 KiB of UTF-8, object fields up to 8 KiB), stored per owner and
+  installation with the last 1000 kept and 50 writes per second per worker.
+  They are App-authored data: never written to the kernel log, and clients
+  display control characters escaped.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

@@ -440,3 +440,67 @@ async fn uninstall_is_owner_scoped_generation_checked_and_deactivates() {
     };
     assert!(!worker.enabled);
 }
+
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+#[tokio::test]
+async fn app_logs_are_owner_scoped_and_page_by_sequence() {
+    use crate::local::{AppRequestErrorCode, GetAppLogsRequest};
+    let root = TestRoot::new();
+    let app = crate::DaemonApp::bootstrap(root.config()).unwrap();
+    let store = app.durable_state_store();
+    crate::durable_state::app_state::fixture_event_catalog(&store);
+    for message in ["one", "two", "three"] {
+        store
+            .append_app_log(
+                "alice",
+                "installed",
+                "info",
+                message,
+                &serde_json::json!({}),
+            )
+            .unwrap();
+    }
+    let router =
+        CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 8);
+    let cache = CommandResultCache::default();
+    let logs = |after: Option<&str>| {
+        LocalDaemonRequest::GetAppLogs(GetAppLogsRequest {
+            installation_id: "installed".into(),
+            after_sequence: after.map(str::to_owned),
+            limit: Some(2),
+        })
+    };
+    let LocalDaemonResponse::AppLogs { entries, .. } =
+        dispatch(&router, &cache, Some("alice"), logs(None), "logs-1").await
+    else {
+        panic!("Alice reads her App's log")
+    };
+    assert_eq!(
+        entries
+            .iter()
+            .map(|e| e.message.as_str())
+            .collect::<Vec<_>>(),
+        ["one", "two"]
+    );
+    let LocalDaemonResponse::AppLogs { entries: rest, .. } = dispatch(
+        &router,
+        &cache,
+        Some("alice"),
+        logs(Some(&entries[1].sequence)),
+        "logs-2",
+    )
+    .await
+    else {
+        panic!("next page")
+    };
+    assert_eq!(
+        rest.iter().map(|e| e.message.as_str()).collect::<Vec<_>>(),
+        ["three"]
+    );
+    assert_eq!(
+        dispatch(&router, &cache, Some("bob"), logs(None), "logs-bob").await,
+        LocalDaemonResponse::AppRequestFailed {
+            code: AppRequestErrorCode::NotFound
+        }
+    );
+}

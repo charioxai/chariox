@@ -182,9 +182,11 @@ export function createAppSdk({ transport, generation, paths, declarations = {}, 
     http: createHttp(call),
     log: Object.freeze({
       write(level, message, fields = {}, options) {
-        if (!['debug', 'info', 'warn', 'error'].includes(level) || typeof message !== 'string' || message.length > 4096) {
+        if (!['debug', 'info', 'warn', 'error'].includes(level) || typeof message !== 'string') {
           throw new AppError('INVALID_ARGUMENT', 'Invalid App log record');
         }
+        // The kernel measures UTF-8 bytes, as here.
+        if (Buffer.byteLength(message) > 4096) throw new AppError('LIMIT_EXCEEDED', 'App log message exceeds 4 KiB');
         return call('log.write', { level, message, fields: record(fields, 'log fields') }, options);
       },
     }),

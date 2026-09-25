@@ -115,3 +115,17 @@ test("App uninstall is fenced by the generation it just read", async () => {
   } })
   assert.deepEqual(pinned, [{ UninstallApp: { installation_id: "todo", expected_generation: "5" } }])
 })
+
+test("App logs page by sequence and escape App-authored control characters", async () => {
+  const sent: Record<string, unknown>[] = []
+  const result = await executeAppCommand(["logs", "todo", "--after", "7"], { send: async (request) => {
+    sent.push(request)
+    return { AppLogs: { installation_id: "todo", entries: [
+      { sequence: "8", at_ms: 0, level: "warn", message: "bad\u001b[31mred\u009b2J\u202eevil", fields: { n: 1 } },
+    ] } }
+  } })
+  assert.deepEqual(sent, [{ GetAppLogs: { installation_id: "todo", after_sequence: "7" } }])
+  assert.match(result.message!, /1970-01-01T00:00:00.000Z WARN  bad\\u001b\[31mred\\u009b2J\\u202eevil \{"n":1\}/)
+  assert.match(result.message!, /More: app logs todo --after 8/)
+  assert.equal((await executeAppCommand(["logs", "todo", "--after", "x"], { send: async () => ({}) })).ok, false)
+})

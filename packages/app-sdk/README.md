@@ -59,7 +59,7 @@ Wire control events never dispatch App event handlers.
 - `http.request`: bounded HTTP broker request with optional opaque connection and
   operation references. There is no direct network fallback.
 - `host.notify`, `openLink`, `writeClipboard`, `pickFile`: authorized host actions.
-- `log.write`: bounded structured logging through the kernel's App log policy.
+- `log.write`: bounded structured logging, kept per installation (last 1000, 50/s) and read with `app logs`.
 - `schedule.set`, `cancel`, `list`, `onWake`: kernel-owned wakes. The kernel
   starts the App when a wake falls due and delivers it at least once, so the App
   does not stay running to wait. A user stop holds wakes until the App starts.

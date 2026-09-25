@@ -22,6 +22,7 @@ pub enum LocalDaemonRequest {
     DisableAppAutomation(DisableAppAutomationRequest),
     OpenAppView(OpenAppViewRequest),
     UninstallApp(UninstallAppRequest),
+    GetAppLogs(GetAppLogsRequest),
     CreateSession(CreateSessionRequest),
     AttachToSession(AttachToSessionRequest),
     DetachFromSession(DetachFromSessionRequest),

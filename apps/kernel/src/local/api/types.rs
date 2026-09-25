@@ -110,4 +110,5 @@ pub use workspace::*;
 /// Version 346 opens App views as managed Room Tabs (`OpenAppView`) and adds
 /// the room-controller `app_view` command.
 /// Version 347 adds owner-scoped `UninstallApp` at an expected generation.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 347;
+/// Version 348 adds `GetAppLogs` for the App's own `log.write` entries.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 348;

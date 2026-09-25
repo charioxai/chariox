@@ -754,6 +754,7 @@ mod tests {
                 "app-list",
                 "app-status",
                 "app-journal",
+                "app-logs",
                 "app-worker",
                 "app-start",
                 "app-stop",
