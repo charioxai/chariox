@@ -1741,12 +1741,15 @@ mod tests {
         let reservation = std::thread::scope(|scope| {
             let reservation_entered_for_thread = std::sync::Arc::clone(&reservation_entered);
             let reservation_continue_for_thread = std::sync::Arc::clone(&reservation_continue);
-            let reservation_thread = scope.spawn(|| {
-                owner.reserve_queued_prompt_remote_steer_with_hook(
-                    &session,
+            let reservation_owner = &owner;
+            let reservation_session = &session;
+            let reservation_queued = &queued;
+            let reservation_thread = scope.spawn(move || {
+                reservation_owner.reserve_queued_prompt_remote_steer_with_hook(
+                    reservation_session,
                     "agent-1",
                     "prompt-active",
-                    &queued,
+                    reservation_queued,
                     || {
                         reservation_entered_for_thread.wait();
                         reservation_continue_for_thread.wait();
@@ -1762,15 +1765,18 @@ mod tests {
 
             let activation_start = std::sync::Arc::new(std::sync::Barrier::new(2));
             let activation_start_for_thread = std::sync::Arc::clone(&activation_start);
-            let completion_thread = scope.spawn(|| {
+            let completion_owner = &owner;
+            let completion_session = &session;
+            let completion_queued = &queued;
+            let completion_thread = scope.spawn(move || {
                 activation_start_for_thread.wait();
-                owner
-                    .complete_active_prompt_only(&session, "agent-1")
+                completion_owner
+                    .complete_active_prompt_only(completion_session, "agent-1")
                     .expect("active prompt should complete after reservation commits");
-                owner.activate_next_queued_prompt_with_prompt_id(
-                    &session,
+                completion_owner.activate_next_queued_prompt_with_prompt_id(
+                    completion_session,
                     "agent-1",
-                    Some(queued.id()),
+                    Some(completion_queued.id()),
                     "prompt-real-2".to_string(),
                 )
             });
