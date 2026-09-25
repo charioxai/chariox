@@ -19,6 +19,7 @@
 #if defined(__APPLE__)
 #include <dlfcn.h>
 #include <sys/sysctl.h>
+#include <sys/utsname.h>
 extern int sandbox_check(pid_t, const char*, int, ...);
 #endif
 #if defined(__linux__)
@@ -107,6 +108,9 @@ int chariox_app_runtime_run(const struct chariox_runtime_config* config) {
   page_size_length = sizeof(page_size);
   check("page_size_mib_sysctl_allowed",
       sysctl(page_size_mib, 2, &page_size, &page_size_length, NULL, 0) == 0 && page_size > 0);
+  // Node's os module calls uname(3) at load (fs/promises imports it).
+  struct utsname host;
+  check("uname_allowed", uname(&host) == 0 && host.machine[0] != '\0');
 #endif
   snprintf(path, sizeof(path), "%s/fixture.bin", getenv("CHARIOX_APP_PACKAGE"));
 #if defined(__APPLE__)

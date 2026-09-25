@@ -46,7 +46,11 @@ static const char profile[] =
     "(sysctl-name-prefix \"hw.pagesize\") "
     "(sysctl-name \"hw.cputype\") (sysctl-name \"hw.cpusubtype\") "
     "(sysctl-name-prefix \"hw.optional.\") (sysctl-name \"kern.osrelease\") "
-    "(sysctl-name \"kern.ostype\") (sysctl-name \"kern.osversion\"))\n";
+    "(sysctl-name \"kern.ostype\") (sysctl-name \"kern.osversion\") "
+    // uname(3) reads these; Node's os module calls it at load, and
+    // fs/promises loads os, so without them Node aborts on that import.
+    "(sysctl-name \"kern.version\") (sysctl-name \"hw.machine\") "
+    "(sysctl-name \"kern.hostname\"))\n";
 
 static bool append_literal(char* buffer, size_t capacity, size_t* used,
                            const char* path, size_t length) {
