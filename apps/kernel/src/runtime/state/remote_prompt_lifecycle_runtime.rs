@@ -92,29 +92,23 @@ impl KernelRuntimeState {
         let request = RelayPeerRequest::CancelLeasedPrompt {
             leased_agent_id: remote_execution.leased_agent_id.clone(),
         };
-        let cancellation_response = if let Some(relay_state) = self
-            .connected_relay_state_for_config(&relay_config)
-            .await
-        {
-            crate::transport::relay_client::send_peer_request_via_connected_relay(
-                &relay_config,
-                &relay_state,
-                target,
-                request,
-            )
-            .await
-        } else {
-            self.with_app_side_effect(|app| {
-                app.block_on_relay_future(
-                    crate::transport::relay_client::send_peer_request_via_temporary_connection(
-                        &relay_config,
-                        target,
-                        request,
-                    ),
+        let cancellation_response =
+            if let Some(relay_state) = self.connected_relay_state_for_config(&relay_config).await {
+                crate::transport::relay_client::send_peer_request_via_connected_relay(
+                    &relay_config,
+                    &relay_state,
+                    target,
+                    request,
                 )
-            })
-            .await
-        };
+                .await
+            } else {
+                crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                    &relay_config,
+                    target,
+                    request,
+                )
+                .await
+            };
         match cancellation_response {
             Ok(RelayPeerResponse::LeasedPromptCancelled { .. }) => {
                 if prompt_already_cancelling {
