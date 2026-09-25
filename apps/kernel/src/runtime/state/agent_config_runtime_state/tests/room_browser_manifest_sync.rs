@@ -614,8 +614,7 @@ struct WorkflowSuccessorSetup {
     workflow_id: String,
 }
 
-type WorkflowSuccessorSetupResult =
-    Result<WorkflowSuccessorSetup, crate::error::DaemonError>;
+type WorkflowSuccessorSetupResult = Result<WorkflowSuccessorSetup, crate::error::DaemonError>;
 
 async fn queue_workflow_successor_after_ordinary_prompt(
     fixture: &RoomManifestFixture,
@@ -912,18 +911,18 @@ async fn rejected_promoted_workflow_head_is_not_reported_as_delivered() {
     let workflow_id = successor.workflow_id;
     let ordinary_prompt_id = successor.ordinary_prompt_id;
     project_ordinary_completion(&fixture, ordinary_prompt_id).await;
+    let home_prompt_id = active_prompt_for(&fixture)
+        .await
+        .expect("workflow successor should be active before remote submission")
+        .id()
+        .to_string();
 
     let (request_id, request) = next_peer_request(&mut fixture).await;
-    let (home_prompt_id, workflow_run_id, workflow_node_run_id) = match request {
+    let (workflow_run_id, workflow_node_run_id) = match request {
         crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt {
-            home_prompt_id,
             workflow_context: Some(context),
             ..
-        } => (
-            home_prompt_id,
-            context.workflow_run_id,
-            context.workflow_node_run_id,
-        ),
+        } => (context.workflow_run_id, context.workflow_node_run_id),
         other => panic!("expected workflow prompt submission, got {other:?}"),
     };
     crate::transport::relay_client::resolve_pending_peer_error_for_test(
@@ -962,11 +961,7 @@ async fn rejected_promoted_workflow_head_is_not_reported_as_delivered() {
                 .runtime
                 .owned
                 .durable_state_store
-                .resolve_workflow_run(
-                    &host_daemon_id,
-                    &fixture.session_id,
-                    &workflow_run_id,
-                )
+                .resolve_workflow_run(&host_daemon_id, &fixture.session_id, &workflow_run_id)
                 .ok()
                 .flatten()
                 .filter(|run| run.status() == crate::session::WorkflowRunStatus::Failed);
