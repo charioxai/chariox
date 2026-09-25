@@ -1973,6 +1973,10 @@ fn managed_import_rejects_repository_root_alias_into_kernel_state_before_copy() 
         "transfer-1".to_string(),
     )
     .expect_err("custom root resolving inside kernel state must fail before copy");
+    assert!(
+        error.to_string().contains("protected Chariox service state"),
+        "unexpected import rejection: {error}"
+    );
     assert!(matches!(error, DaemonError::ManagedContext { .. }));
     assert!(!protected_repositories.join("source-project").exists());
     assert!(!control_parent.join("transfer-1").exists());
