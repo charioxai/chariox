@@ -22,6 +22,13 @@ async fn room_manifest_fixture() -> RoomManifestFixture {
     let worker_private_key = worker_config.relay_private_key.clone();
     let (app, runtime, session_id, agent_id) =
         agent_config_runtime_with_config(home_config).await;
+    crate::app::KernelSessionService::new(&mut *app.lock().await)
+        .attach(crate::attachment::AttachRequest::new(
+            &session_id,
+            "room-manifest-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("fixture session should have an attachment");
     app.lock()
         .await
         .agents_mut()
