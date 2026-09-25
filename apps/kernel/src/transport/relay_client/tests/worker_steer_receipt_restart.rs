@@ -23,6 +23,15 @@ fn isolate_test_config(
     config.with_session_history_root(state_root.join("sessions"))
 }
 
+fn assert_unauthorized(result: Result<RelayPeerResponse, crate::error::DaemonError>) {
+    match result {
+        Err(crate::error::DaemonError::RelayTransport { code, .. }) => {
+            assert_eq!(code, "unauthorized");
+        }
+        other => panic!("different authenticated home must be denied, got {other:?}"),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn accepted_queued_steer_receipt_reconciles_after_worker_restart_without_replay() {
     let _relay_test_guard = relay_client_test_guard().await;
@@ -271,6 +280,60 @@ async fn accepted_queued_steer_receipt_reconciles_after_worker_restart_without_r
     ));
     wait_for_daemon_registration(registry.clone(), &worker_config.daemon_id).await;
 
+    let mut other_home_config =
+        isolate_test_config(DaemonConfig::for_tests(), &test_root, "other-home");
+    other_home_config.daemon_id = "steer-restart-other-home".to_string();
+    other_home_config.host_machine_id = "steer-restart-other-machine".to_string();
+    other_home_config.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
+    other_home_config.relay_token = Some("secret".to_string());
+    other_home_config.relay_heartbeat_ms = 50;
+    assert_ne!(other_home_config.daemon_id, home_config.daemon_id);
+    assert_ne!(other_home_config.host_machine_id, home_config.host_machine_id);
+    assert_ne!(other_home_config.relay_public_key, home_config.relay_public_key);
+    let app_other_home = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(other_home_config.clone()).expect("other home should bootstrap"),
+    ));
+    let state_other_home = Arc::new(RwLock::new(RelayClientState::default()));
+    let (shutdown_other_home_tx, shutdown_other_home_rx) = watch::channel(false);
+    let connector_other_home = tokio::spawn(run_daemon_relay_connector(
+        Arc::clone(&app_other_home),
+        Arc::clone(&state_other_home),
+        shutdown_other_home_rx,
+    ));
+    wait_for_daemon_registration(registry.clone(), &other_home_config.daemon_id).await;
+
+    let other_target = ClientTarget {
+        daemon_id: Some(worker_config.daemon_id.clone()),
+        daemon_alias: None,
+    };
+    assert_unauthorized(
+        send_peer_request_via_relay(
+            &app_other_home,
+            &state_other_home,
+            other_target.clone(),
+            RelayPeerRequest::GetLeasedPromptReceipt {
+                leased_agent_id: leased_agent.id.clone(),
+                home_prompt_id: steer_id.to_string(),
+            },
+        )
+        .await,
+    );
+    assert_unauthorized(
+        send_peer_request_via_relay(
+            &app_other_home,
+            &state_other_home,
+            other_target,
+            RelayPeerRequest::ReconcileLeasedPromptSteerReceipt {
+                leased_agent_id: leased_agent.id.clone(),
+                steer_id: steer_id.to_string(),
+                target_home_prompt_id: target_home_prompt_id.to_string(),
+                worker_provider_run_id: worker_provider_run_id.clone(),
+                execution_lease_id: lease.id.clone(),
+            },
+        )
+        .await,
+    );
+
     for (requested_run, requested_lease) in [
         ("wrong-worker-run", lease.id.as_str()),
         (worker_provider_run_id.as_str(), "wrong-execution-lease"),
@@ -345,15 +408,21 @@ async fn accepted_queued_steer_receipt_reconciles_after_worker_restart_without_r
 
     let _ = shutdown_home_tx.send(true);
     let _ = shutdown_restarted_tx.send(true);
+    let _ = shutdown_other_home_tx.send(true);
     connector_home.await.expect("home connector should stop");
     restarted_connector
         .await
         .expect("restarted worker connector should stop");
+    connector_other_home
+        .await
+        .expect("other home connector should stop");
     let _ = server_shutdown_tx.send(());
     server_task.await.expect("relay server should stop");
     drop(state_home);
     drop(restarted_state);
     drop(app_home);
     drop(restarted_worker);
+    drop(state_other_home);
+    drop(app_other_home);
     std::fs::remove_dir_all(test_root).expect("isolated restart test artifacts should clean up");
 }
