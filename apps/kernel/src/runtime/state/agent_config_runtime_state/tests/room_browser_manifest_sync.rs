@@ -65,7 +65,7 @@ async fn room_manifest_fixture() -> RoomManifestFixture {
 #[tokio::test]
 async fn projected_remote_completion_admits_queued_prompt_before_ordered_delivery() {
     let mut fixture = room_manifest_fixture().await;
-    let (completed_prompt_id, queued_prompt_id) = {
+    let (completed_prompt_id, pending_prompt_id, attachment_id) = {
         let mut app = fixture.runtime.app.lock().await;
         let attachment_id = app
             .attachments()
@@ -99,7 +99,11 @@ async fn projected_remote_completion_admits_queued_prompt_before_ordered_deliver
         let crate::session::PromptSubmissionOutcome::Queued { prompt: queued } = queued else {
             panic!("second fixture prompt should queue");
         };
-        (active.id().to_string(), queued.id().to_string())
+        (
+            active.id().to_string(),
+            queued.id().to_string(),
+            attachment_id,
+        )
     };
 
     let held_lane = fixture
@@ -140,16 +144,27 @@ async fn projected_remote_completion_admits_queued_prompt_before_ordered_deliver
                 .next_queued_prompt(&fixture.session_id, &fixture.agent_id),
         )
     };
-    assert_eq!(active.id(), queued_prompt_id);
+    assert_ne!(active.id(), pending_prompt_id, "promotion allocates a fresh prompt ID");
+    assert_eq!(active.prompt(), "queued prompt");
+    assert_eq!(active.source_attachment_id(), attachment_id.as_str());
+    assert_eq!(active.target_agent_id(), fixture.agent_id.as_str());
     assert!(queued_after_promotion.is_none());
 
     drop(held_lane);
     let (request_id, request) = next_peer_request(&mut fixture).await;
-    let crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt { prompt, .. } = request
+    let crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt {
+        prompt,
+        git_context,
+        ..
+    } = request
     else {
         panic!("expected ordered submission for the promoted prompt");
     };
     assert_eq!(prompt, "queued prompt");
+    assert_eq!(
+        git_context.expect("queued prompt delivery carries git turn context").home_prompt_id,
+        active.id(),
+    );
     acknowledge_peer_response(
         &fixture,
         request_id,
@@ -159,6 +174,265 @@ async fn projected_remote_completion_admits_queued_prompt_before_ordered_deliver
         },
     )
     .await;
+}
+
+#[tokio::test]
+async fn ordinary_completion_keeps_workflow_head_on_legacy_advancement_path() {
+    let mut fixture = room_manifest_fixture().await;
+    let (completed_prompt_id, attachment_id, workflow_run_id, node_run_id) = {
+        let mut app = fixture.runtime.app.lock().await;
+        let attachment_id = app
+            .attachments()
+            .list_session_attachment_ids(&fixture.session_id)
+            .into_iter()
+            .next()
+            .expect("fixture session has an attachment");
+        let active = crate::session::PromptQueueItem::new(
+            "ordinary-active",
+            &attachment_id,
+            &fixture.agent_id,
+            "ordinary prompt",
+            crate::session::PromptStatus::Queued,
+        );
+        let active = app
+            .prompt_owner_submit_prepared_prompt(&fixture.session_id, active, false)
+            .expect("ordinary prompt should start");
+        let crate::session::PromptSubmissionOutcome::Started { prompt: active } = active else {
+            panic!("ordinary fixture prompt should start");
+        };
+        let workflow = app
+            .sessions_mut()
+            .create_workflow(&fixture.session_id, None)
+            .expect("workflow should be created");
+        let node = app
+            .sessions_mut()
+            .add_workflow_node(&fixture.session_id, workflow.id(), &fixture.agent_id)
+            .expect("workflow node should be created");
+        let endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(&fixture.session_id, workflow.id(), node.id(), None)
+            .expect("workflow endpoint should be created");
+        let run = app
+            .sessions_mut()
+            .invoke_workflow_endpoint(
+                &fixture.session_id,
+                workflow.id(),
+                endpoint.id(),
+                Some("queued workflow prompt".to_string()),
+            )
+            .expect("workflow should be invoked");
+        let node_run_id = run.node_runs()[0].id().to_string();
+        app.sessions_mut()
+            .prepare_workflow_turn(
+                &fixture.session_id,
+                run.id(),
+                &node_run_id,
+                "workflow-turn".to_string(),
+                "queued workflow prompt".to_string(),
+                None,
+                None,
+            )
+            .expect("workflow turn should be prepared");
+        let workflow_prompt = crate::session::PromptQueueItem::new(
+            "queued-workflow",
+            crate::scheduler::runtime::workflow_prompt_source_attachment_id(run.id()),
+            &fixture.agent_id,
+            "queued workflow prompt",
+            crate::session::PromptStatus::Queued,
+        )
+        .with_workflow_context(run.id(), &node_run_id);
+        let queued = app
+            .prompt_owner_submit_prepared_prompt(&fixture.session_id, workflow_prompt, true)
+            .expect("workflow prompt should queue behind ordinary work");
+        assert!(matches!(queued, crate::session::PromptSubmissionOutcome::Queued { .. }));
+        (
+            active.id().to_string(),
+            attachment_id,
+            run.id().to_string(),
+            node_run_id,
+        )
+    };
+
+    let projection = tokio::spawn({
+        let runtime = fixture.runtime.clone();
+        let session_id = fixture.session_id.clone();
+        let agent_id = fixture.agent_id.clone();
+        async move {
+            runtime
+                .project_relay_remote_runtime_projection(
+                    &session_id,
+                    &agent_id,
+                    "provider-run-current",
+                    None,
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                        message_id: "ordinary-completes-before-workflow".to_string(),
+                        completed_at_ms: crate::session::unix_epoch_ms(),
+                        home_prompt_id: Some(completed_prompt_id),
+                        provider_termination: None,
+                    }],
+                )
+                .await
+        }
+    });
+    let (request_id, request) = next_peer_request(&mut fixture).await;
+    let crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt {
+        prompt,
+        workflow_context,
+        git_context,
+        ..
+    } = request
+    else {
+        panic!("workflow head should retain its legacy submission path");
+    };
+    let git_context = git_context.expect("workflow prompt should carry git context");
+    assert_eq!(prompt, "queued workflow prompt");
+    assert_eq!(git_context.source_attachment_id.as_deref(), Some(
+        crate::scheduler::runtime::workflow_prompt_source_attachment_id(&workflow_run_id).as_str()
+    ));
+    assert_eq!(git_context.home_prompt_id, git_context.home_turn_id);
+    assert_eq!(
+        workflow_context.expect("workflow head carries workflow context").workflow_run_id,
+        workflow_run_id,
+    );
+    let promoted = crate::session::PromptQueueItem::new(
+        git_context.home_prompt_id.clone(),
+        crate::scheduler::runtime::workflow_prompt_source_attachment_id(&workflow_run_id),
+        &fixture.agent_id,
+        "queued workflow prompt",
+        crate::session::PromptStatus::Running,
+    )
+    .with_workflow_context(&workflow_run_id, &node_run_id);
+    acknowledge_peer_response(
+        &fixture,
+        request_id,
+        crate::transport::relay_peer::RelayPeerResponse::LeasedPromptSubmitted {
+            provider_run_id: "provider-run-workflow-next".to_string(),
+            outcome: crate::session::PromptSubmissionOutcome::Started { prompt: promoted },
+        },
+    )
+    .await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), projection)
+        .await
+        .expect("completion projection should finish")
+        .expect("projection task should join")
+        .expect("ordinary completion with queued workflow should succeed");
+    let app = fixture.runtime.app.lock().await;
+    let active = app
+        .prompt_owner_active_prompt_for_agent(&fixture.session_id, &fixture.agent_id)
+        .expect("active prompt state should be readable")
+        .expect("workflow prompt should remain active");
+    assert_eq!(active.prompt(), "queued workflow prompt");
+    assert_eq!(active.target_agent_id(), fixture.agent_id.as_str());
+    assert_eq!(
+        active.source_attachment_id(),
+        git_context.source_attachment_id.as_deref().unwrap(),
+    );
+    assert_eq!(active.workflow_node_run_id(), Some(node_run_id.as_str()));
+    assert_ne!(active.id(), "queued-workflow");
+    assert_ne!(attachment_id.as_str(), active.source_attachment_id());
+}
+
+#[tokio::test]
+async fn rejected_ordered_queued_dispatch_uses_shared_sender_failure_semantics() {
+    let mut fixture = room_manifest_fixture().await;
+    let completed_prompt_id = {
+        let mut app = fixture.runtime.app.lock().await;
+        let attachment_id = app
+            .attachments()
+            .list_session_attachment_ids(&fixture.session_id)
+            .into_iter()
+            .next()
+            .expect("fixture session has an attachment");
+        let active = crate::session::PromptQueueItem::new(
+            "reject-active",
+            &attachment_id,
+            &fixture.agent_id,
+            "active prompt",
+            crate::session::PromptStatus::Queued,
+        );
+        let active = app
+            .prompt_owner_submit_prepared_prompt(&fixture.session_id, active, false)
+            .expect("active prompt should start");
+        let crate::session::PromptSubmissionOutcome::Started { prompt: active } = active else {
+            panic!("active fixture prompt should start");
+        };
+        let queued = crate::session::PromptQueueItem::new(
+            "reject-queued",
+            &attachment_id,
+            &fixture.agent_id,
+            "queued prompt",
+            crate::session::PromptStatus::Queued,
+        );
+        assert!(matches!(
+            app.prompt_owner_submit_prepared_prompt(&fixture.session_id, queued, true)
+                .expect("second prompt should queue"),
+            crate::session::PromptSubmissionOutcome::Queued { .. }
+        ));
+        active.id().to_string()
+    };
+
+    let held_lane = fixture
+        .runtime
+        .leased_agent_operations
+        .lock("leased-agent-1")
+        .await;
+    fixture
+        .runtime
+        .project_relay_remote_runtime_projection(
+            &fixture.session_id,
+            &fixture.agent_id,
+            "provider-run-current",
+            None,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                message_id: "reject-queued-dispatch".to_string(),
+                completed_at_ms: crate::session::unix_epoch_ms(),
+                home_prompt_id: Some(completed_prompt_id),
+                provider_termination: None,
+            }],
+        )
+        .await
+        .expect("completion projection should return before delivery");
+    drop(held_lane);
+    let (request_id, request) = next_peer_request(&mut fixture).await;
+    assert!(matches!(
+        request,
+        crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt { .. }
+    ));
+    // The shared ordered sender treats rejection as a failed admitted active
+    // prompt and cancels it. The old queued sender rejected before promotion,
+    // leaving the item queued for another advancement attempt; retry policy is
+    // therefore intentionally different in this bounded partial change.
+    acknowledge_peer_response(
+        &fixture,
+        request_id,
+        crate::transport::relay_peer::RelayPeerResponse::Pong {
+            value: "wrong response for prompt submission".to_string(),
+            daemon_id: "worker-1".to_string(),
+        },
+    )
+    .await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let app = fixture.runtime.app.lock().await;
+            if app
+                .prompt_owner_active_prompt_for_agent(&fixture.session_id, &fixture.agent_id)
+                .expect("active prompt state should be readable")
+                .is_none()
+            {
+                break;
+            }
+            drop(app);
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("shared sender should settle and cancel a rejected promoted prompt");
 }
 
 fn create_room_slice(runtime: &KernelRuntimeState, name: &str) -> crate::slice::SliceRecord {

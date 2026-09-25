@@ -1116,19 +1116,41 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         .app
                         .agent_runtime_projection_store()
                         .next_queued_prompt(session_id, agent_id);
-                    let admitted = crate::app::KernelAgentService::new(self.app)
-                        .admit_next_queued_remote_prompt(
+                    let queued_head = expected_next.clone().or(
+                        self.app
+                            .prompt_owner_peek_next_queued_prompt(session_id, agent_id)?,
+                    );
+                    // Workflow prompt admission and retry remain owned by the existing
+                    // lifecycle path. Only ordinary queued prompts cross the new intent
+                    // boundary; the legacy sender must still advance a workflow head.
+                    let started_next = if queued_head.as_ref().is_some_and(|prompt| {
+                        crate::app::workflow_runtime::is_workflow_prompt_source(
+                            prompt.source_attachment_id(),
+                        )
+                    }) {
+                        self.app.advance_next_queued_prompt_remote(
                             session_id,
                             agent_id,
-                            expected_next.as_ref(),
-                            &projected_provider_run_id,
-                        )?;
-                    let (started_next, dispatch) = admitted
-                        .map(|(prompt, dispatch)| (Some(prompt), Some(dispatch)))
-                        .unwrap_or((None, None));
-                    if let Some(dispatch) = dispatch {
-                        outcome.remote_dispatches.push(dispatch);
-                    }
+                            &remote_execution.worker_kernel_id,
+                            &remote_execution.leased_agent_id,
+                            remote_execution.relay_url.as_deref(),
+                            remote_execution.relay_token.as_deref(),
+                        )?
+                    } else {
+                        let admitted = crate::app::KernelAgentService::new(self.app)
+                            .admit_next_queued_remote_prompt(
+                                session_id,
+                                agent_id,
+                                expected_next.as_ref(),
+                                &projected_provider_run_id,
+                            )?;
+                        if let Some((prompt, dispatch)) = admitted {
+                            outcome.remote_dispatches.push(dispatch);
+                            Some(prompt)
+                        } else {
+                            None
+                        }
+                    };
                     if started_next.is_none() {
                         self.app.sync_focused_provider_run_if_idle(session_id)?;
                     }
