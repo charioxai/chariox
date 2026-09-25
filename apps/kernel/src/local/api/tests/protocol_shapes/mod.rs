@@ -5,6 +5,7 @@ use crate::local::{
     TerminalCommandCatalogNodeKind, TerminalCommandCatalogSurface,
 };
 
+mod agent_workflow;
 mod app_events;
 mod app_fetch;
 mod app_install;

@@ -363,6 +363,7 @@ pub enum LocalDaemonResponse {
     AgentExtensionRevoked { agent: AgentInstance, },
     AgentsListed { agents: Vec<AgentInstance>, },
     WorkflowCreated { workflow: WorkflowDefinition, session: RuntimeSession, },
+    AgentWorkflowCreated { workflow: WorkflowDefinition, endpoint: crate::session::WorkflowEndpointDefinition, session: RuntimeSession, },
     WorkflowCodeValidated { result: crate::workflow_code::WorkflowCodeCompileResult, },
     WorkflowCodeApplied { result: crate::workflow_code::WorkflowCodeCompileAndApplyResult, session: RuntimeSession, },
     WorkflowCodeRun { result: crate::workflow_code::WorkflowCodeRunResult, session: RuntimeSession, },

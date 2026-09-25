@@ -1837,6 +1837,15 @@ Workflow trigger and deployment direction:
   the session's focus `agent_id`; the trusted terminal draws that agent's
   conversation there, over the stream and outside the App's page. A panel
   change emits `TabsChanged`.
+- protocol 352: `CreateAgentWorkflow {session_id, agent_id, reason:
+  trigger|deploy, surface: web|tui|cli, alias?}` creates a visible workflow
+  for one of the caller's own agents when it gets a trigger or deployment:
+  one node for that agent and one entry endpoint (`AgentWorkflowCreated
+  {workflow, endpoint, session}`); the client then completes the trigger or
+  deployment setup on that endpoint. `WorkflowDefinition.origin
+  {source_agent_id, reason, surface, created_at_ms}` records why it exists;
+  the alias (default `<agent>-<reason>`) is ordinary and editable. Binding Apps
+  or Extensions to an agent never creates a workflow. Metaagents cannot use it.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

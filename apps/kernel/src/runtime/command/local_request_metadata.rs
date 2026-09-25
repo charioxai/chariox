@@ -807,6 +807,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListHomeExtensionAudit(_) => "agent.extension.audit",
         LocalDaemonRequest::ListAgents(_) => "agent.list",
         LocalDaemonRequest::CreateWorkflow(_) => "workflow.create",
+        LocalDaemonRequest::CreateAgentWorkflow(_) => "workflow.create_from_agent",
         LocalDaemonRequest::ValidateWorkflowCode(_) => "workflow_code.validate",
         LocalDaemonRequest::ApplyWorkflowCode(_) => "workflow_code.apply",
         LocalDaemonRequest::ApplyWorkflowCodeArtifact(_) => "workflow_code_artifact.apply",

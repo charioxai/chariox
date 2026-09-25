@@ -306,6 +306,7 @@ pub enum LocalDaemonRequest {
     RevokeAgentExtension(RevokeAgentExtensionRequest),
     ListAgents(ListAgentsRequest),
     CreateWorkflow(CreateWorkflowRequest),
+    CreateAgentWorkflow(CreateAgentWorkflowRequest),
     ValidateWorkflowCode(ValidateWorkflowCodeRequest),
     ApplyWorkflowCode(ApplyWorkflowCodeRequest),
     ApplyWorkflowCodeArtifact(ApplyWorkflowCodeArtifactRequest),

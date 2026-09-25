@@ -88,6 +88,7 @@ pub use types::{
     WorkflowEndpointDefinition, WorkflowFailureEvent, WorkflowFailureKind, WorkflowFailurePolicy,
     WorkflowFailurePolicyMode, WorkflowHandoffPayload, WorkflowIntermediateOutput, WorkflowMessage,
     WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowNodeThinkingTrace,
+    WorkflowOrigin, WorkflowOriginReason, WorkflowOriginSurface,
     WorkflowOutputPayload, WorkflowPromptQueueDefinition, WorkflowPublicationDefinition,
     WorkflowPublicationInvocationEnvelope, WorkflowQueuedPrompt, WorkflowQueuedPromptSource,
     WorkflowQueuedPromptStatus, WorkflowRun, WorkflowRunOutputSubmission, WorkflowRunStatus,

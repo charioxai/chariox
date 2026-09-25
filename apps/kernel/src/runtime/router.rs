@@ -217,6 +217,7 @@ mod tests {
     mod stack_budget;
     mod status_projection;
     mod terminal_output_projection;
+    mod agent_workflow;
     mod workflow_revision;
 
     fn attach_request(session_id: &str, client_id: &str) -> LocalDaemonRequest {
