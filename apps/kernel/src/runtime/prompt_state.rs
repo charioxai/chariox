@@ -1806,7 +1806,7 @@ mod tests {
                 .peek_next_queued_prompt(&session, "agent-1")
                 .as_ref()
                 .map(PromptQueueItem::id),
-            Some("prompt-queued")
+            Some(queued.id())
         );
         assert_eq!(
             owner
