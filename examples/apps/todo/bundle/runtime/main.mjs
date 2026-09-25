@@ -5,7 +5,8 @@
 import { randomUUID } from 'node:crypto';
 
 const KEY = 'todos';
-const SCHEMA = 1;
+// The package's data schema version: 0 until it declares migrations.
+const SCHEMA = 0;
 // One App automation routes `todo_due` to the workflow the user chose with
 // `/app automation add <installation> reminders todo_due …`.
 const AUTOMATION = 'reminders';

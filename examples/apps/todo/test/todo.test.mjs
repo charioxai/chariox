@@ -20,7 +20,10 @@ function fakeKernel({ automation = true } = {}) {
     schedule: { onWake: handler => { onWake = handler; } },
     state: {
       async get(key) { return state.get(key) ?? null; },
-      async transaction({ checks, writes, wakes: changes = [], occurrences: emitted = [] }) {
+      async transaction({ schemaVersion, checks, writes, wakes: changes = [], occurrences: emitted = [] }) {
+        // Like the kernel: the package declares no migrations, so its data
+        // schema is 0.
+        if (schemaVersion !== 0) throw new AppError('SCHEMA_MISMATCH', 'App state schema version does not match');
         // Like the kernel, an occurrence for an unconfigured automation rolls
         // back the whole transaction.
         if (emitted.length && !automation) throw new AppError('NOT_FOUND', 'App automation was not found');
