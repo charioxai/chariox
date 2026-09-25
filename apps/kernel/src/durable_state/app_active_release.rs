@@ -28,6 +28,36 @@ pub(crate) struct ActiveRelease {
 }
 
 impl ActiveRelease {
+    /// Reads the stored archive of an already-resolved binding. Worker start
+    /// and worker-free reads share this and `verify`, so their policy matches.
+    pub(crate) fn load(
+        store_path: &std::path::Path,
+        binding: StageTrustBinding,
+        trust: TrustedPublisherSnapshot,
+    ) -> Result<Self, ActiveReleaseError> {
+        let bytes = ReleaseStore::open_or_create(store_path)
+            .and_then(|store| store.open_stored_archive(binding.package_digest()))
+            .and_then(|mut archive| archive.read_bytes())
+            .map_err(|_| ActiveReleaseError::Unavailable)?;
+        Ok(Self {
+            bytes,
+            binding,
+            trust,
+        })
+    }
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+    pub(crate) fn event_catalog(
+        &self,
+        verified: &VerifiedPackage<'_>,
+    ) -> Result<Arc<EventCatalog>, ActiveReleaseError> {
+        let catalog = AppCatalog::compile(verified, &self.binding, &self.trust)
+            .map_err(|_| ActiveReleaseError::Untrusted)?;
+        EventCatalog::compile(verified, Arc::new(catalog))
+            .map(Arc::new)
+            .map_err(|_| ActiveReleaseError::Invalid)
+    }
     pub(crate) fn verify(&self) -> Result<VerifiedPackage<'_>, ActiveReleaseError> {
         let verified = verify(
             &self.bytes,
@@ -62,15 +92,7 @@ impl DurableKernelStateStore {
                 .map_err(|_| ActiveReleaseError::Untrusted)?;
             (binding, trust)
         };
-        let bytes = ReleaseStore::open_or_create(self.path())
-            .and_then(|store| store.open_stored_archive(binding.package_digest()))
-            .and_then(|mut archive| archive.read_bytes())
-            .map_err(|_| ActiveReleaseError::Unavailable)?;
-        Ok(ActiveRelease {
-            bytes,
-            binding,
-            trust,
-        })
+        ActiveRelease::load(self.path(), binding, trust)
     }
 
     /// The installation's verified event catalog, whether or not it runs.
@@ -81,10 +103,6 @@ impl DurableKernelStateStore {
     ) -> Result<Arc<EventCatalog>, ActiveReleaseError> {
         let release = self.active_app_release(owner, installation)?;
         let verified = release.verify()?;
-        let catalog = AppCatalog::compile(&verified, &release.binding, &release.trust)
-            .map_err(|_| ActiveReleaseError::Untrusted)?;
-        EventCatalog::compile(&verified, Arc::new(catalog))
-            .map(Arc::new)
-            .map_err(|_| ActiveReleaseError::Invalid)
+        release.event_catalog(&verified)
     }
 }

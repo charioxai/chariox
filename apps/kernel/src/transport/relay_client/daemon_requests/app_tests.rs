@@ -299,6 +299,22 @@ async fn app_worker_and_automation_requests_are_owner_scoped_and_need_no_worker(
         dispatch(&router, &cache, None, worker, "worker").await,
         failed(AppRequestErrorCode::Unauthorized)
     );
+    // A user stop is recorded without a running worker and disables on-demand use.
+    let stop = LocalDaemonRequest::ControlAppWorker(crate::local::ControlAppWorkerRequest {
+        installation_id: "installed".into(),
+        action: crate::local::AppWorkerAction::Stop,
+    });
+    let LocalDaemonResponse::AppWorker { worker: stopped } =
+        dispatch(&router, &cache, Some("alice"), stop.clone(), "stop").await
+    else {
+        panic!("Alice stops her App")
+    };
+    assert_eq!(stopped.phase, AppWorkerPhase::Stopped);
+    assert!(!stopped.enabled);
+    assert_eq!(
+        dispatch(&router, &cache, Some("bob"), stop, "stop").await,
+        failed(AppRequestErrorCode::NotFound)
+    );
     // Automations are durable configuration: no running worker is needed.
     let list = LocalDaemonRequest::ListAppAutomations(AppWorkerRequest {
         installation_id: "installed".into(),

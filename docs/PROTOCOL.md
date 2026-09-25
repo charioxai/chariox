@@ -1753,7 +1753,9 @@ Workflow trigger and deployment direction:
   (`start`/`stop`/`restart`) return `AppWorker` with a phase of `not_started`,
   `starting`, `running`, `dormant` (idle-stopped; the next tool call, wake or
   event starts it), `stopped` or `failed`, plus `enabled` (false after a user
-  stop, which on-demand use never overrides). `ListAppAutomations`,
+  stop, which on-demand use never overrides). `restart` is a user stop followed
+  by an explicit start; if that start fails the App stays stopped (`enabled`
+  false) until the next explicit `start`. `ListAppAutomations`,
   `ConfigureAppAutomation` (expected revision zero creates) and
   `DisableAppAutomation` return `AppAutomations`/`AppAutomation`; one automation
   routes one App event to one workflow endpoint and queue, resolved under

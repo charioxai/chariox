@@ -67,3 +67,11 @@ test("App automation commands route one event to one workflow and validate argum
     assert.equal(invalid.ok, false)
   }
 })
+
+test("App automation errors describe revision conflicts, missing targets and limits", async () => {
+  const run = (code: string) => executeAppCommand(["automation", "disable", "todo", "reminders", "1"],
+    { send: async () => ({ AppRequestFailed: { code } }) })
+  assert.match((await run("conflict")).message!, /stale revision/)
+  assert.match((await run("not_found")).message!, /session, workflow or automation/)
+  assert.equal((await run("limit_exceeded")).message, "An App limit was reached.")
+})

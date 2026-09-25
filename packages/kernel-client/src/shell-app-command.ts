@@ -45,11 +45,14 @@ export async function executeAppCommand(args: string[], client: Client): Promise
   if (failure) {
     const messages: Record<string, string> = {
       unauthorized: "This connection is not authorized to access Apps.",
-      not_found: "App installation not found.",
+      not_found: action === "automation"
+        ? "Not found: check the App installation, session, workflow or automation."
+        : "App installation not found.",
       invalid_request: "Invalid App request.",
       busy: "App requests are busy. Try again shortly.",
       storage_unavailable: "App storage is unavailable.",
-      conflict: "The App is not running, or the request conflicts with its current state.",
+      conflict: "The request conflicts with the App's current state (for example a stale revision). Refresh and try again.",
+      limit_exceeded: "An App limit was reached.",
     }
     return { ok: false, message: messages[failure.code ?? ""] ?? "App request failed.", data: failure }
   }
