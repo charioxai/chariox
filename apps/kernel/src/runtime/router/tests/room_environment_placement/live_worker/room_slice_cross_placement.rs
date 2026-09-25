@@ -454,6 +454,77 @@ async fn agent_on_second_home_local_slice_uses_the_room_environment_without_dire
                 .url,
             url
         );
+
+        let attached = dispatch_json(
+            &fixture.home,
+            json!({"AttachToSession": {
+                "session_id": &room,
+                "client_id": "cross-slice-web-viewer",
+                "capability_level": "FullTerminal"
+            }}),
+        )
+        .await
+        .expect("attach a Room viewer for the public Web View request");
+        let attachment_id = attached["SessionAttached"]["attachment"]["id"]
+            .as_str()
+            .expect("Room viewer attachment ID")
+            .to_string();
+        let viewer_private_key = crate::transport::relay_crypto::generate_private_key_base64();
+        let viewer_public_key =
+            crate::transport::relay_crypto::public_key_from_private_key_base64(&viewer_private_key)
+                .expect("Room viewer public key");
+
+        let public_environment = dispatch_json(
+            &fixture.home,
+            json!({"GetRoomEnvironmentState":{"session_id":&room}}),
+        )
+        .await
+        .expect("read the Room Environment through the public kernel API after Browser and Computer calls");
+        let public_environment = &public_environment["RoomEnvironmentState"]["environment"];
+        assert_eq!(public_environment["session_id"], room);
+        assert_eq!(public_environment["environment_id"], environment_id);
+        assert_eq!(public_environment["focused_tab_id"], stable_tab_id);
+        let public_tab = public_environment["tabs"]
+            .as_array()
+            .and_then(|tabs| tabs.iter().find(|tab| tab["tab_id"] == stable_tab_id))
+            .expect("public Room state retains the stable Browser Tab after Computer status");
+        assert_eq!(public_tab["url"], url);
+
+        let binding = dispatch_json(
+            &fixture.home,
+            json!({"GetRoomEnvironmentSlice":{"session_id":&room}}),
+        )
+        .await
+        .expect("read the public Room Environment worker binding");
+        let binding = &binding["RoomEnvironmentSlice"]["binding"];
+        assert_eq!(binding["session_id"], room);
+        assert_eq!(binding["slice_id"], browser_slice.id);
+
+        let display = dispatch_json(
+            &fixture.home,
+            json!({"GetSliceDisplayEndpoint": {
+                "slice_ref":"desktop",
+                "session_id": &room,
+                "attachment_id": attachment_id,
+                "viewer_public_key": viewer_public_key
+            }}),
+        )
+        .await
+        .expect("open Web View through the public Room Environment worker binding");
+        let endpoint = &display["SliceDisplayEndpoint"]["endpoint"];
+        assert_eq!(endpoint["slice_id"], binding["slice_id"]);
+        assert_eq!(endpoint["kind"], "selkies");
+        assert_eq!(endpoint["stream_protocol"], "chariox-display-v1");
+        assert_eq!(
+            endpoint["peer_public_key"],
+            fixture._worker_state.config.relay_public_key,
+            "Web View must terminate at the worker hosting the Room Environment"
+        );
+        let stream_id = endpoint["stream_id"].as_str().expect("Web View stream ID");
+        assert_eq!(
+            endpoint["url"],
+            format!("ws://{}/display/{stream_id}/stream", fixture.address)
+        );
     })
     .catch_unwind()
     .await;
