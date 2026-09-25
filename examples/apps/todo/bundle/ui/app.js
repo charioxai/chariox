@@ -25,8 +25,9 @@ async function call(tool, input = {}) {
 function render() {
   const openOnly = $("open-only").checked
   const visible = openOnly ? todos.filter((todo) => !todo.done) : todos
-  // Keep keyboard/screen-reader focus on the same row and control; if that
-  // row left the list, on the row now in its place (or the list itself).
+  // Keep keyboard/screen-reader focus on the same row and control. If that
+  // row left the list, focus the checkbox of the row now in its place (not
+  // its Delete, which a repeated Enter would press), or the list itself.
   const active = document.activeElement
   const row = active?.closest?.("li")?.dataset.id
   const index = [...list.children].findIndex((li) => li.dataset.id === row)
@@ -34,7 +35,7 @@ function render() {
   list.replaceChildren(...visible.map(item))
   if (row && control) {
     const target = list.querySelector(`li[data-id="${CSS.escape(row)}"] ${control}`)
-      ?? list.children[Math.min(index, list.children.length - 1)]?.querySelector(control)
+      ?? list.children[Math.min(index, list.children.length - 1)]?.querySelector("input")
       ?? list
     target.focus()
   }
