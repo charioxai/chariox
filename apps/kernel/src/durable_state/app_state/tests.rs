@@ -154,8 +154,20 @@ pub(super) fn http_package() -> (Vec<u8>, TrustedPublisher) {
     package_with_options(false, true)
 }
 fn package_with_options(with_tools: bool, with_network: bool) -> (Vec<u8>, TrustedPublisher) {
+    package_variant(with_tools, with_network, "1.0.0", 0)
+}
+/// Another release of the same App; `schema` > 0 declares data migrations.
+pub(super) fn release_package(version: &str, schema: u32) -> (Vec<u8>, TrustedPublisher) {
+    package_variant(false, false, version, schema)
+}
+fn package_variant(
+    with_tools: bool,
+    with_network: bool,
+    version: &str,
+    schema: u32,
+) -> (Vec<u8>, TrustedPublisher) {
     let mut manifest: Manifest=serde_json::from_value(json!({
-        "schema":"chariox.app.v1","appId":"com.example.state","version":"1.0.0",
+        "schema":"chariox.app.v1","appId":"com.example.state","version":version,
         "publisher":{"id":"com.example","keyId":"state-key","name":"Developer"},
         "sdkVersion":chariox_app_package::SUPPORTED_SDK_VERSION,"appContractVersion":1,"minKernelProtocol":crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
         "resourcePolicy":"chariox.app.resources.v1","runtime":{"engine":"node","entry":"runtime/main.js"},
@@ -189,6 +201,25 @@ fn package_with_options(with_tools: bool, with_network: bool) -> (Vec<u8>, Trust
             .unwrap(),
         ),
     ]);
+    if schema > 0 {
+        manifest.migrations = Some(chariox_app_package::Migrations {
+            directory: "migrations".into(),
+            target_version: schema,
+            steps: (0..schema)
+                .map(|from| chariox_app_package::Migration {
+                    from,
+                    to: from + 1,
+                    entry: format!("migrations/{}.js", from + 1),
+                })
+                .collect(),
+        });
+        for step in 1..=schema {
+            files.insert(
+                format!("migrations/{step}.js"),
+                b"export default function migrate() {}".to_vec(),
+            );
+        }
+    }
     if with_tools {
         manifest.tools = Some("schemas/tools.json".into());
         files.insert("schemas/tools.json".into(), serde_json::to_vec(&json!({"tools":[{

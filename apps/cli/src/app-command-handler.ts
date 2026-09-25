@@ -36,7 +36,7 @@ export async function handleAppSlashCommand(
     } else throw new Error("usage: /app publisher enroll|status|cancel")
     return
   }
-  if (["install", "operation", "cancel"].includes(command.args[0] ?? "")) {
+  if (["install", "update", "operation", "cancel"].includes(command.args[0] ?? "")) {
     const installer = deps.appFileInstaller
     if (!installer) throw new Error("File installation is unavailable in this terminal")
     // Tokenization preserves quoted local paths; it never expands variables or executes a shell.
@@ -48,6 +48,12 @@ export async function handleAppSlashCommand(
       deps.appendNotice("Reading and uploading App. Use /app cancel to stop the transfer.")
       const value = await installer.install(args[0], session)
       deps.appendNotice(formatInstallOperation(value))
+    } else if (action === "update") {
+      if (args.length !== 2 || !args[0] || !args[1]) throw new Error('usage: /app update INSTALLATION "FILE.cxapp"')
+      const session = deps.currentAppSessionId?.()
+      if (!session) throw new Error("Attach to a session before updating an App")
+      deps.appendNotice("Reading and uploading App update. Use /app cancel to stop the transfer.")
+      deps.appendNotice(formatInstallOperation(await installer.update(args[0], args[1], session)))
     } else {
       if (args.length > 1) throw new Error(`usage: /app ${action} [request-id]`)
       const value = action === "cancel" ? await installer.cancel(args[0]) : await installer.status(args[0])

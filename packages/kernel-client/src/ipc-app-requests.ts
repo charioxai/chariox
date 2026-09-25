@@ -50,6 +50,11 @@ export function beginAppInstallRequest(options: { sessionId: string; requestId: 
   return { BeginAppInstall: { session_id: options.sessionId, request_id: options.requestId, upload_handle: options.uploadHandle, expected_package_digest: options.expectedPackageDigest } }
 }
 
+/** Replaces the release of an existing installation, fenced on the generation the caller read. */
+export function beginAppUpdateRequest(options: { sessionId: string; requestId: string; installationId: string; expectedGeneration: string; uploadHandle: string; expectedPackageDigest: string }) {
+  return { BeginAppUpdate: { session_id: options.sessionId, request_id: options.requestId, installation_id: options.installationId, expected_generation: options.expectedGeneration, upload_handle: options.uploadHandle, expected_package_digest: options.expectedPackageDigest } }
+}
+
 export function getAppInstallOperationRequest(requestId: string) {
   return { GetAppInstallOperation: { request_id: requestId } }
 }

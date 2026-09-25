@@ -48,6 +48,9 @@ impl ActiveRelease {
     pub(crate) fn bytes(&self) -> &[u8] {
         &self.bytes
     }
+    pub(crate) fn generation(&self) -> u64 {
+        self.binding.token().generation
+    }
     pub(crate) fn event_catalog(
         &self,
         verified: &VerifiedPackage<'_>,

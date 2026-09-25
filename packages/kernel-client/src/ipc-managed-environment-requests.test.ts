@@ -213,7 +213,7 @@ test("managed environment requests use the shared local daemon shape", () => {
 })
 
 test("managed environment reimage preflight exposes only retained identity and desired release", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 348)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 349)
   assert.equal(managedEnvironmentReimagePreflightMinimumProtocolVersion, 341)
   assert.equal(managedEnvironmentCreateMinimumProtocolVersion, 342)
   const preflight: ManagedEnvironmentReimagePreflight = {

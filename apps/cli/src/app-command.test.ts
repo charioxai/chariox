@@ -44,7 +44,7 @@ test("standalone App journal preserves relay target and authorization options", 
 
 test("standalone App command rejects unsupported actions and invalid flags before connecting", async () => {
   for (const args of [
-    ["install", "path.cxapp"], ["open", "install-1"], ["restart", "install-1"],
+    ["install", "path.cxapp"], ["update", "install-1", "path.cxapp"], ["open", "install-1"],
     ["list", "--limit", "101"], ["status"], ["journal", "one", "two"],
     ["list", "--session", "session-1"], ["list", "--kernel-url"],
     ["list", "--relay-url", "wss://relay.example.test"],

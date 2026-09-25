@@ -86,7 +86,9 @@ impl From<InstallOperationError> for LifecycleError {
 #[derive(Clone)]
 enum StartKind {
     Active { recovery: bool },
-    First { request_id: String },
+    /// A supervised install operation. `replace` is a local update: the
+    /// installation's current worker is drained (not user-stopped) first.
+    First { request_id: String, replace: bool },
 }
 type Result<T> = std::result::Result<T, LifecycleError>;
 #[derive(Debug, Clone, PartialEq, Eq)]

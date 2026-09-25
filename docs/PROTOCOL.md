@@ -1803,6 +1803,18 @@ Workflow trigger and deployment direction:
   installation with the last 1000 kept and 50 writes per second per worker.
   They are App-authored data: never written to the kernel log, and clients
   display control characters escaped.
+- protocol 349 adds `BeginAppUpdate {session_id, request_id, installation_id,
+  expected_generation, upload_handle, expected_package_digest}`, a local
+  replacement of the caller's installation with a newly uploaded release of the
+  same App and publisher. It returns `AppInstallOperationStatus` and then uses
+  the install operation requests and the same owner approval ("Update App").
+  A stale generation, another unfinished install/update of the installation or
+  a release that changes the data schema (`app_update_migration_required`,
+  until migrations land) is refused. After approval the kernel fences admission,
+  drains the old worker (not a user stop), starts the new generation and
+  commits it only after its health check; a failure before commit leaves the
+  old generation active, and it restarts on use. App data is kept. Views opened
+  on the old generation answer `APP_VIEW_STALE` until reopened.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

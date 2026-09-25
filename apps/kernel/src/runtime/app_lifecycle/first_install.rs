@@ -1,5 +1,6 @@
-//! First installs reuse the exact process/peer owner, limits and publisher used
-//! by restart. This module cannot enroll keys or manufacture capability consent.
+//! First installs and local updates reuse the exact process/peer owner, limits
+//! and publisher used by restart. This module cannot enroll keys or
+//! manufacture capability consent.
 use super::*;
 
 impl AppLifecycleService {
@@ -22,6 +23,7 @@ impl AppLifecycleService {
                 &operation.token.installation_id,
                 StartKind::First {
                     request_id: request_id.into(),
+                    replace: operation.token.base_generation > 0,
                 },
                 runtime,
             ),

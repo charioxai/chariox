@@ -62,10 +62,40 @@ impl AppLifecycleService {
         if self.0.stopped.load(Ordering::Acquire) {
             return Err(LifecycleError::Stopped);
         }
-        if let Some(entry) = entries.get(&key) {
-            return Ok(StartDisposition::Existing {
-                attempt: entry.attempt.clone(),
-            });
+        if let Some(entry) = entries.get(&key).cloned() {
+            let replacing = match &kind {
+                StartKind::First {
+                    request_id,
+                    replace,
+                } => *replace && entry.control.first_request.as_ref() != Some(request_id),
+                StartKind::Active { .. } => false,
+            };
+            if !replacing {
+                return Ok(StartDisposition::Existing {
+                    attempt: entry.attempt.clone(),
+                });
+            }
+            // A local update drains the old generation's owner under this
+            // installation's operation guard, so no other start interleaves.
+            // It is not a user stop: a failed update restarts the old
+            // generation on demand.
+            drop(entries);
+            entry.control.cancel(false);
+            entry.join();
+            entries = self
+                .0
+                .entries
+                .lock()
+                .map_err(|_| LifecycleError::Supervisor)?;
+            if entries
+                .get(&key)
+                .is_some_and(|current| Arc::ptr_eq(current, &entry))
+            {
+                entries.remove(&key);
+            }
+            if entries.contains_key(&key) {
+                return Err(LifecycleError::Busy);
+            }
         }
         // Completed owners with uncommitted manual-stop intent retain an entry
         // until maintenance persists it. Bound those entries as well as workers.
@@ -92,7 +122,7 @@ impl AppLifecycleService {
             .map_err(|_| LifecycleError::Busy)?;
         let attempt = format!("{:032x}", rand::random::<u128>());
         let mut control = Control::new();
-        if let StartKind::First { request_id } = &kind {
+        if let StartKind::First { request_id, .. } = &kind {
             control.first_request = Some(request_id.clone());
         }
         let control = Arc::new(control);

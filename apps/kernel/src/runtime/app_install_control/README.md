@@ -1,7 +1,9 @@
 # Installation operation control
 
 Protocol 295 adds `BeginAppInstall`, `GetAppInstallOperation`, and
-`CancelAppInstallOperation`, returning `AppInstallOperationStatus`. Begin accepts
+`CancelAppInstallOperation`, returning `AppInstallOperationStatus`. Protocol 349
+adds `BeginAppUpdate`, the same operation for a new release of an existing
+installation (fenced on its current generation; see PROTOCOL.md). Begin accepts
 the current session, a stable request ID, an already uploaded opaque handle and
 the canonical expected package digest. The authenticated owner is derived by the
 same App control route used for local, relay and browser requests. No request can

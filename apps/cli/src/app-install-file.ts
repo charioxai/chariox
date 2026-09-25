@@ -4,22 +4,22 @@ import { isAbsolute, resolve } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import {
   beginAppPackageUploadRequest, putAppPackageUploadChunkRequest, abortAppPackageUploadRequest,
-  beginAppInstallRequest, getAppInstallOperationRequest, cancelAppInstallOperationRequest,
+  beginAppInstallRequest, beginAppUpdateRequest, getAppInstallOperationRequest, cancelAppInstallOperationRequest, getAppInstallationRequest,
 } from "@chariox/kernel-client/ipc-requests"
-import type { AppInstallOperationSummary, AppPackageUploadSummary } from "@chariox/kernel-client/kernel-types"
+import type { AppInstallationSummary, AppInstallOperationSummary, AppPackageUploadSummary } from "@chariox/kernel-client/kernel-types"
 import { AppFileSource, checkCancelled, chunkBytes, InstallCancelled, InstallFileChanged } from "./app-install-file/source.js"
 
 type Send = (request: Record<string, unknown>) => Promise<Record<string, unknown>>
 export type InstallProgress = { phase: "hashing" | "uploading"; bytes: number; total: number }
 type Attempt = {
-  path: string; session: string; uploadRequest: string; request: string; cancelled: boolean;
+  path: string; session: string; update?: { installation: string; generation?: string }; uploadRequest: string; request: string; cancelled: boolean;
   digest?: string; size?: number; handle?: string; beginSent: boolean; status?: AppInstallOperationSummary; closed: boolean;
 }
 class KernelFailure extends Error { constructor(readonly code: string) { super(messages[code] ?? `App request failed: ${code}`) } }
-class ConnectionFailure extends Error { constructor() { super("Connection interrupted. Run the same /app install command to resume this attempt, or /app cancel to cancel it.") } }
+class ConnectionFailure extends Error { constructor() { super("Connection interrupted. Run the same /app install or update command to resume this attempt, or /app cancel to cancel it.") } }
 const messages: Record<string, string> = {
   unauthorized: "This connection is not authorized to install Apps.", busy: "App requests are busy. Try again shortly.",
-  conflict: "The App operation changed; check /app operation.", not_found: "App operation or upload was not found.",
+  conflict: "The App operation or installation changed; check /app operation, or /app cancel and try again.", not_found: "App operation or upload was not found.",
   storage_unavailable: "App storage is unavailable. Retry this operation when the kernel is available.",
   limit_exceeded: "The kernel's App storage or operation limit has been reached.",
 }
@@ -35,16 +35,26 @@ export class AppFileInstaller {
     private cwd: string = terminalCwd()) {}
 
   install(selected: string, session: string): Promise<AppInstallOperationSummary> {
+    return this.start(selected, session)
+  }
+
+  /** Same transfer and operation as install; the kernel replaces the release at the generation read first. */
+  update(installation: string, selected: string, session: string): Promise<AppInstallOperationSummary> {
+    if (!installation || Buffer.byteLength(installation) > 128) return Promise.reject(new Error("Invalid App installation ID"))
+    return this.start(selected, session, installation)
+  }
+
+  private start(selected: string, session: string, installation?: string): Promise<AppInstallOperationSummary> {
     if (this.disposed) return Promise.reject(new Error("This terminal is closing"))
     if (this.running) return Promise.reject(new Error("An App upload is already running. Use /app cancel to stop it."))
-    if (!session || Buffer.byteLength(session) > 128) return Promise.reject(new Error("Attach to a session before installing an App"))
+    if (!session || Buffer.byteLength(session) > 128) return Promise.reject(new Error(`Attach to a session before ${installation ? "updating" : "installing"} an App`))
     const path = resolve(this.cwd, selected)
     let attempt = this.attempt
     if (!attempt || attempt.closed) {
-      attempt = { path, session, uploadRequest: `app-upload-${randomUUID()}`, request: `app-install-${randomUUID()}`, cancelled: false, beginSent: false, closed: false }
+      attempt = { path, session, ...(installation ? { update: { installation } } : {}), uploadRequest: `app-upload-${randomUUID()}`, request: `app-${installation ? "update" : "install"}-${randomUUID()}`, cancelled: false, beginSent: false, closed: false }
       this.attempt = attempt
-    } else if (attempt.path !== path || attempt.session !== session) {
-      return Promise.reject(new Error("Another App installation is retained. Use /app operation or /app cancel before selecting another file."))
+    } else if (attempt.path !== path || attempt.session !== session || attempt.update?.installation !== installation) {
+      return Promise.reject(new Error("Another App installation or update is retained. Use /app operation or /app cancel before selecting another file."))
     }
     const operation = this.transfer(attempt)
     this.running = operation
@@ -109,6 +119,8 @@ export class AppFileInstaller {
       if (attempt.beginSent) {
         try { return await this.loadStatus(attempt.request) } catch (error) { if (!(error instanceof KernelFailure) || error.code !== "not_found") throw error }
       }
+      // Read once per attempt: a resumed Begin must repeat the exact same fence.
+      const generation = attempt.update && (attempt.update.generation ??= await this.generation(attempt.update.installation, cancelled))
       source = await AppFileSource.open(attempt.path, this.cwd, cancelled, (bytes, total) => this.progress({ phase: "hashing", bytes, total }))
       if (attempt.digest && (attempt.digest !== source.digest || attempt.size !== source.size)) throw new InstallFileChanged()
       attempt.digest = source.digest; attempt.size = source.size
@@ -128,7 +140,8 @@ export class AppFileInstaller {
       await source.unchanged()
       checkCancelled(cancelled)
       attempt.beginSent = true
-      const status = operation(await this.request(beginAppInstallRequest({ sessionId: attempt.session, requestId: attempt.request, uploadHandle: upload.handle, expectedPackageDigest: source.digest }), cancelled), attempt.request)
+      const begin = { sessionId: attempt.session, requestId: attempt.request, uploadHandle: upload.handle, expectedPackageDigest: source.digest }
+      const status = operation(await this.request(attempt.update && generation ? beginAppUpdateRequest({ ...begin, installationId: attempt.update.installation, expectedGeneration: generation }) : beginAppInstallRequest(begin), cancelled), attempt.request)
       attempt.status = status
       checkCancelled(cancelled)
       await this.releaseUpload(attempt, status)
@@ -137,6 +150,15 @@ export class AppFileInstaller {
       if (error instanceof InstallCancelled || error instanceof InstallFileChanged) await this.cleanup(attempt).catch(() => {})
       throw error
     } finally { await source?.close() }
+  }
+
+  private async generation(installation: string, cancelled: () => boolean): Promise<string> {
+    const reply = await this.request(getAppInstallationRequest(installation), cancelled).catch((error: unknown) => {
+      throw error instanceof KernelFailure && error.code === "not_found" ? new Error("App installation not found.") : error
+    })
+    const value = (reply.AppInstallation as { installation?: AppInstallationSummary } | undefined)?.installation
+    if (value?.installation_id !== installation || !/^[1-9]\d{0,19}$/.test(value.generation)) throw new Error("Kernel returned an invalid App installation")
+    return value.generation
   }
 
   private cleanup(attempt: Attempt): Promise<AppInstallOperationSummary | undefined> {
@@ -212,8 +234,9 @@ export function formatInstallOperation(value: AppInstallOperationSummary): strin
     app_install_upload_missing_or_expired: "The upload expired before preparation. Select the file again.",
     app_install_approval_expired: "The approval request expired.",
     app_install_insufficient_storage: "The kernel has insufficient App storage.",
+    app_update_migration_required: "This release changes the App's data schema; updating with data migrations is not supported yet.",
   }
-  const fallback = value.failure && /^app_install_[a-z_]{1,96}$/.test(value.failure) ? `Kernel failure: ${value.failure}.` : "The kernel could not complete installation."
+  const fallback = value.failure && /^app_(?:install|update)_[a-z_]{1,96}$/.test(value.failure) ? `Kernel failure: ${value.failure}.` : "The kernel could not complete installation."
   const detail = value.failure ? ` ${failures[value.failure] ?? fallback}` : ""
   return `${label}${value.installation_id ? `: ${value.installation_id}` : ""}.${detail} Operation ${value.request_id}. Use /app operation for status; /app cancel to cancel before installation completes.`
 }

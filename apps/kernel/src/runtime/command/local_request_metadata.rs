@@ -82,6 +82,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 (request.session_id.len() <= 128).then_some(request.session_id.as_str()),
             )
         }
+        LocalDaemonRequest::BeginAppUpdate(request) => {
+            LocalRequestMetadata::new("app.update.begin", Interactive).optional_session(
+                (request.session_id.len() <= 128).then_some(request.session_id.as_str()),
+            )
+        }
         LocalDaemonRequest::PrepareBrowserImport(request) => {
             LocalRequestMetadata::new("browser.import.prepare", Interactive)
                 .session(&request.selection.session_id)
@@ -517,6 +522,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CancelAppPublisherEnrollment(_) => "app.publisher.cancel",
         LocalDaemonRequest::ListAppInstallations(_) => "app.list",
         LocalDaemonRequest::BeginAppInstall(_) => "app.install.begin",
+        LocalDaemonRequest::BeginAppUpdate(_) => "app.update.begin",
         LocalDaemonRequest::GetAppInstallOperation(_) => "app.install.status",
         LocalDaemonRequest::CancelAppInstallOperation(_) => "app.install.cancel",
         LocalDaemonRequest::BeginAppPackageUpload(_) => "app.package_upload.begin",

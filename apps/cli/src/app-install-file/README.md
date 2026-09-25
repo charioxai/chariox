@@ -22,6 +22,11 @@ Installation requests never approve capabilities or information-set access.
 `/app operation ID` and `/app cancel ID` inspect or cancel a retained operation
 from another terminal without supplying local file paths.
 
+`/app update INSTALLATION "./My App.cxapp"` uses the same transfer and operation
+to replace an installation's release (same App ID, publisher and data schema;
+its data is kept). It reads the installation's generation once and fences the
+update on it, so a concurrent change fails as a conflict without effect.
+
 A transfer holds one descriptor, hashes the archive and each bounded chunk, and
 checks descriptor/path identity and chunk contents before upload. Files must be
 regular, nonempty `.cxapp` files at most 128 MiB. Each request carries at most

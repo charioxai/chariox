@@ -15,6 +15,8 @@ pub(crate) struct AppViewAsset {
 
 #[derive(Debug)]
 pub(crate) struct AppViewAssets {
+    /// The active generation these files belong to.
+    pub(crate) generation: u64,
     /// Entry path relative to `ui/`.
     pub(crate) entry: String,
     pub(crate) assets: Vec<AppViewAsset>,
@@ -53,7 +55,11 @@ impl DurableKernelStateStore {
                 bytes: bytes.to_vec(),
             });
         }
-        Ok(AppViewAssets { entry, assets })
+        Ok(AppViewAssets {
+            generation: release.generation(),
+            entry,
+            assets,
+        })
     }
 }
 

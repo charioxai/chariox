@@ -29,7 +29,25 @@ static int fixture_sdk_io(void* buffer, size_t size, int writing, int64_t deadli
   return 1;
 }
 
-static int fixture_sdk_send(const char* message) {
+/* The launch record's generation. Messages here are written for generation
+ * "1"; they are rewritten on send and normalized on receive, so the same fixed
+ * expectations serve a later generation (a local update). */
+static char fixture_sdk_generation[24] = "1";
+
+static int fixture_sdk_swap_generation(const char* in, char* out, size_t out_size,
+    const char* from, const char* to) {
+  static const char key[] = "\"generation\":\"";
+  const char* at = strstr(in, key);
+  const size_t from_size = strlen(from), prefix = at ? (size_t)(at - in) + sizeof(key) - 1 : 0;
+  const int count = at && !strncmp(in + prefix, from, from_size) && in[prefix + from_size] == '"'
+      ? snprintf(out, out_size, "%.*s%s%s", (int)prefix, in, to, in + prefix + from_size)
+      : snprintf(out, out_size, "%s", in);
+  return count < 0 || (size_t)count >= out_size ? -1 : 0;
+}
+
+static int fixture_sdk_send(const char* original) {
+  char message[4200];
+  if (fixture_sdk_swap_generation(original, message, sizeof(message), "1", fixture_sdk_generation)) return -1;
   const size_t size = strlen(message);
   if (!size || size > 4096) return -1;
   unsigned char header[4] = {(unsigned char)(size >> 24), (unsigned char)(size >> 16),
@@ -48,6 +66,9 @@ static int fixture_sdk_receive(char response[8193], int64_t deadline) {
   if (!size || size > 8192) return -1;
   if (fixture_sdk_io(response, size, 0, deadline) != 1 || memchr(response, 0, size)) return -1;
   response[size] = 0;
+  char normalized[8193];
+  if (fixture_sdk_swap_generation(response, normalized, sizeof(normalized), fixture_sdk_generation, "1")) return -1;
+  memcpy(response, normalized, strlen(normalized) + 1);
   return 1;
 }
 

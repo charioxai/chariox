@@ -163,7 +163,12 @@ fn spawn(
         };
         let (process, observation) = fixture
             .native
-            .spawn_for_installation_blocking(mode, verified, &binding.token().installation_id)
+            .spawn_for_generation_blocking(
+                mode,
+                verified,
+                &binding.token().installation_id,
+                binding.token().generation,
+            )
             .map_err(|_| LifecycleError::Preparation)?;
         fixture
             .observations

@@ -67,7 +67,7 @@ pub(super) fn run(
             )
             .map(Admitted::Restart)
             .map_err(LifecycleError::from),
-        StartKind::First { request_id } => context
+        StartKind::First { request_id, .. } => context
             .store
             .claim_first_app_install(&context.owner, request_id, &context.attempt, claim_budget)
             .map(|value| Admitted::First {
@@ -87,7 +87,7 @@ pub(super) fn run(
         }
         Err(_) => {
             if first_authority_withdrawn {
-                if let StartKind::First { request_id } = &context.kind {
+                if let StartKind::First { request_id, .. } = &context.kind {
                     // A revoked/re-enrolled signer or changed stage cannot be
                     // retried into authority. Keep a terminal receipt; a new
                     // install request needs fresh verification and approval.

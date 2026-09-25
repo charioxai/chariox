@@ -235,6 +235,14 @@ pub(crate) fn fixture_event_package() -> (Vec<u8>, chariox_app_package::TrustedP
 }
 
 #[cfg(test)]
+pub(crate) fn fixture_release_package(
+    version: &str,
+    schema: u32,
+) -> (Vec<u8>, chariox_app_package::TrustedPublisher) {
+    tests::release_package(version, schema)
+}
+
+#[cfg(test)]
 pub(crate) fn fixture_http_catalog(store: &DurableKernelStateStore) -> Arc<EventCatalog> {
     tests::http_catalog(store)
 }

@@ -2,11 +2,11 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 import { abortAppPackageUploadRequest, beginAppPackageUploadRequest, getAppPackageUploadRequest, putAppPackageUploadChunkRequest, getAppInstallationJournalRequest, getAppInstallationRequest, listAppInstallationsRequest } from "./ipc-app-requests.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
-import { beginAppInstallRequest, getAppInstallOperationRequest, cancelAppInstallOperationRequest } from "./ipc-app-requests.js"
+import { beginAppInstallRequest, beginAppUpdateRequest, getAppInstallOperationRequest, cancelAppInstallOperationRequest } from "./ipc-app-requests.js"
 import { beginAppPublisherEnrollmentRequest, getAppPublisherEnrollmentRequest, cancelAppPublisherEnrollmentRequest } from "./ipc-app-requests.js"
 
 test("App inspection shares protocol 297 without client owner or host paths", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 348)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 349)
   assert.deepEqual(listAppInstallationsRequest(), { ListAppInstallations: { after: null, limit: null } })
   assert.deepEqual(listAppInstallationsRequest({ after: "todo", limit: 1 }), { ListAppInstallations: { after: "todo", limit: 1 } })
   assert.deepEqual(getAppInstallationRequest("todo"), { GetAppInstallation: { installation_id: "todo" } })
@@ -26,6 +26,12 @@ test("install operation retry and cancellation share kernel ownership without cl
   assert.deepEqual(getAppInstallOperationRequest("retry"), { GetAppInstallOperation: { request_id: "retry" } })
   assert.deepEqual(cancelAppInstallOperationRequest("retry"), { CancelAppInstallOperation: { request_id: "retry" } })
   assert.deepEqual(Object.keys(beginAppInstallRequest(options).BeginAppInstall).sort(), ["expected_package_digest", "request_id", "session_id", "upload_handle"])
+})
+
+test("update is fenced on the reviewed generation and otherwise matches install", () => {
+  const options = { sessionId: "session", requestId: "retry", installationId: "todo", expectedGeneration: "9007199254740993", uploadHandle: `upload_${"a".repeat(64)}`, expectedPackageDigest: `sha256:${"b".repeat(64)}` }
+  assert.deepEqual(beginAppUpdateRequest(options), { BeginAppUpdate: { session_id: "session", request_id: "retry", installation_id: "todo", expected_generation: "9007199254740993", upload_handle: options.uploadHandle, expected_package_digest: options.expectedPackageDigest } })
+  assert.deepEqual(Object.keys(beginAppUpdateRequest(options).BeginAppUpdate).sort(), ["expected_generation", "expected_package_digest", "installation_id", "request_id", "session_id", "upload_handle"])
 })
 
 test("publisher enrollment sends review material and exact revisions without a client trust decision", () => {

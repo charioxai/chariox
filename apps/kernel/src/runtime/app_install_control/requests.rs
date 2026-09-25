@@ -1,6 +1,6 @@
 //! Shared authenticated terminal adapter. Slow work is owned after a durable ACK.
 use super::*;
-use crate::durable_state::app_installation_operations::InstallInput;
+use crate::durable_state::app_installation_operations::{InstallInput, UpdateTarget};
 use crate::{local::*, runtime::command::KernelCommand};
 
 fn failed(code: AppRequestErrorCode) -> LocalDaemonResponse {
@@ -14,6 +14,7 @@ fn code(error: InstallOperationError) -> AppRequestErrorCode {
         InstallOperationError::Storage | InstallOperationError::CommitUnknown => {
             AppRequestErrorCode::StorageUnavailable
         }
+        InstallOperationError::MigrationRequired => AppRequestErrorCode::InvalidRequest,
         _ => AppRequestErrorCode::Conflict,
     }
 }
@@ -50,6 +51,7 @@ impl AppInstallControl {
     ) -> Option<LocalDaemonResponse> {
         let request_id = match request {
             LocalDaemonRequest::BeginAppInstall(value) => &value.request_id,
+            LocalDaemonRequest::BeginAppUpdate(value) => &value.request_id,
             LocalDaemonRequest::GetAppInstallOperation(value)
             | LocalDaemonRequest::CancelAppInstallOperation(value) => &value.request_id,
             _ => return None,
@@ -64,17 +66,54 @@ impl AppInstallControl {
         if self.0.stopped.load(Ordering::Acquire) {
             return Some(failed(AppRequestErrorCode::StorageUnavailable));
         }
-        if let LocalDaemonRequest::BeginAppInstall(value) = request {
-            if !identity(&value.session_id)
-                || value.upload_handle.len() != 71
-                || value.expected_package_digest.len() != 71
-            {
-                return Some(failed(AppRequestErrorCode::InvalidRequest));
+        let begin = match request {
+            LocalDaemonRequest::BeginAppInstall(value) => Some((
+                &value.session_id,
+                &value.upload_handle,
+                &value.expected_package_digest,
+                None,
+            )),
+            LocalDaemonRequest::BeginAppUpdate(value) => {
+                let Some(expected) = value
+                    .expected_generation
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|generation| *generation > 0)
+                    .filter(|_| identity(&value.installation_id))
+                else {
+                    return Some(failed(AppRequestErrorCode::InvalidRequest));
+                };
+                Some((
+                    &value.session_id,
+                    &value.upload_handle,
+                    &value.expected_package_digest,
+                    Some(UpdateTarget {
+                        installation_id: value.installation_id.clone(),
+                        expected_generation: expected,
+                    }),
+                ))
             }
-            if !runtime.app_install_session_member(&value.session_id, &owner) {
-                return Some(failed(AppRequestErrorCode::Unauthorized));
+            _ => None,
+        };
+        let begin = match begin {
+            Some((session, upload, digest, update)) => {
+                if !identity(session) || upload.len() != 71 || digest.len() != 71 {
+                    return Some(failed(AppRequestErrorCode::InvalidRequest));
+                }
+                if !runtime.app_install_session_member(session, &owner) {
+                    return Some(failed(AppRequestErrorCode::Unauthorized));
+                }
+                Some((
+                    InstallInput {
+                        session_id: session.clone(),
+                        upload_handle: upload.clone(),
+                        update,
+                    },
+                    digest.clone(),
+                ))
             }
-        }
+            None => None,
+        };
         let key = (owner.clone(), request_id.clone());
         if matches!(request, LocalDaemonRequest::CancelAppInstallOperation(_)) {
             self.cancel_admission(&key);
@@ -116,18 +155,13 @@ impl AppInstallControl {
             state.requests.spawn_blocking(move || {
                 let _permit = permit;
                 let value = (|| match request {
-                    LocalDaemonRequest::BeginAppInstall(value) => store
-                        .reserve_app_install(
-                            &owner,
-                            &value.request_id,
-                            InstallInput {
-                                session_id: value.session_id,
-                                upload_handle: value.upload_handle,
-                            },
-                            &value.expected_package_digest,
-                            budget,
-                        )
-                        .map(|value| (value, None)),
+                    LocalDaemonRequest::BeginAppInstall(_)
+                    | LocalDaemonRequest::BeginAppUpdate(_) => {
+                        let (input, digest) = begin.ok_or(InstallOperationError::Invalid)?;
+                        store
+                            .reserve_app_install(&owner, &request_id, input, &digest, budget)
+                            .map(|value| (value, None))
+                    }
                     LocalDaemonRequest::GetAppInstallOperation(_) => store
                         .replay_public_app_install(&owner, &request_id, budget)
                         .map(|value| (value, None)),

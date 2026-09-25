@@ -216,6 +216,17 @@ impl Fixture {
         package: &chariox_app_package::VerifiedPackage<'_>,
         installation: &str,
     ) -> Result<(WorkerProcess, Observation), WorkerError> {
+        self.spawn_for_generation_blocking(mode, package, installation, 1)
+    }
+
+    /// As above, for a later generation (a local update of the installation).
+    pub fn spawn_for_generation_blocking(
+        &self,
+        mode: Mode,
+        package: &chariox_app_package::VerifiedPackage<'_>,
+        installation: &str,
+        generation: u64,
+    ) -> Result<(WorkerProcess, Observation), WorkerError> {
         if installation.is_empty()
             || installation.len() > 128
             || !installation
@@ -255,7 +266,7 @@ impl Fixture {
                     program: CString::new(self.executable.as_os_str().as_bytes()).unwrap(),
                     arguments: vec![CString::new(mode.argument()).unwrap()],
                     record: LaunchRecord {
-                        generation: "1".into(),
+                        generation: generation.to_string(),
                         installation: installation.into(),
                         release_digest: package.package_digest().into(),
                         roots,

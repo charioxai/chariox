@@ -9,6 +9,9 @@ use std::{
 pub(crate) struct AppViewBinding {
     pub(crate) owner: String,
     pub(crate) installation: String,
+    /// The generation whose UI files the Tab runs; calls after an update are
+    /// refused so a view never talks to a backend it was not built for.
+    pub(crate) generation: u64,
 }
 
 #[derive(Default)]
@@ -112,6 +115,7 @@ mod tests {
 
     fn binding(installation: &str) -> AppViewBinding {
         AppViewBinding {
+            generation: 1,
             owner: "user".into(),
             installation: installation.into(),
         }
