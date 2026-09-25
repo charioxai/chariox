@@ -2539,6 +2539,219 @@ mod tests {
         assert_duplicate_remote_settlement_is_inert(Ok("worker-run-b".to_string())).await;
     }
 
+    async fn pending_remote_settlement_fixture(
+    ) -> (KernelRuntimeState, crate::app::KernelRemotePromptDispatch) {
+        let (runtime, mut dispatch) = superseded_remote_dispatch_fixture(false).await;
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&dispatch.session_id)
+            .unwrap();
+        let prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &dispatch.agent_id)
+            .unwrap();
+        dispatch.prompt_id = prompt.id().to_string();
+        dispatch.prompt = prompt.prompt().to_string();
+        runtime
+            .owned
+            .mark_active_prompt_delivery(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                &dispatch.prompt_id,
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+                None,
+                None,
+            )
+            .unwrap();
+        (runtime, dispatch)
+    }
+
+    #[tokio::test]
+    async fn remote_dispatch_durable_append_failure_rolls_back_and_retries_once() {
+        let (runtime, dispatch) = pending_remote_settlement_fixture().await;
+        let session_id = dispatch.session_id.clone();
+        let agent_id = dispatch.agent_id.clone();
+        let prompt_id = dispatch.prompt_id.clone();
+        runtime
+            .ensure_managed_activity_tracking("remote-dispatch-durable-rollback")
+            .unwrap();
+        let before_session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        let before_prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&before_session, &agent_id)
+            .unwrap();
+        let before_agent = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
+        let before_history = runtime
+            .owned
+            .operational_history_store
+            .load_session_history_entries(&session_id, Some(&agent_id))
+            .unwrap();
+        let before_terminal = runtime.owned.terminal_stream.change_sequence();
+        let before_activity = runtime.managed_activity_change_sequence();
+        let event_count = || {
+            runtime
+                .owned
+                .durable_state_store
+                .load_events_by_kind("session.prompt_state.updated")
+                .unwrap()
+                .len()
+        };
+        let before_events = event_count();
+        let connection =
+            rusqlite::Connection::open(runtime.owned.durable_state_store.path()).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_remote_settlement_append BEFORE INSERT ON durable_state_events
+             WHEN NEW.kind = 'session.prompt_state.updated'
+             BEGIN SELECT RAISE(FAIL, 'injected remote settlement append failure'); END;",
+            )
+            .unwrap();
+        let result = runtime
+            .finish_remote_prompt_dispatch(dispatch, Ok("worker-run-after-retry".to_string()))
+            .await;
+        connection
+            .execute_batch("DROP TRIGGER fail_remote_settlement_append;")
+            .unwrap();
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("injected remote settlement append failure"));
+        let after_session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        assert_eq!(
+            runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&after_session, &agent_id),
+            Some(before_prompt.clone())
+        );
+        assert_eq!(
+            after_session.active_prompt_for_agent(&agent_id),
+            Some(&before_prompt)
+        );
+        let after_agent = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
+        assert_eq!(
+            after_agent.remote_execution(),
+            before_agent.remote_execution()
+        );
+        assert_eq!(after_agent.state(), before_agent.state());
+        assert_eq!(after_agent.is_processing(), before_agent.is_processing());
+        assert_eq!(
+            runtime
+                .owned
+                .operational_history_store
+                .load_session_history_entries(&session_id, Some(&agent_id))
+                .unwrap(),
+            before_history
+        );
+        assert_eq!(
+            runtime.owned.terminal_stream.change_sequence(),
+            before_terminal
+        );
+        assert_eq!(runtime.managed_activity_change_sequence(), before_activity);
+        assert_eq!(event_count(), before_events);
+
+        let retry = runtime
+            .remote_prompt_recovery_dispatch(&after_agent)
+            .unwrap()
+            .unwrap();
+        assert_eq!(retry.prompt_id, prompt_id);
+        runtime
+            .finish_remote_prompt_dispatch(retry, Ok("worker-run-after-retry".to_string()))
+            .await
+            .unwrap();
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        let delivered = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .unwrap();
+        assert_eq!(delivered.id(), prompt_id);
+        assert_eq!(
+            delivered.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+        );
+        assert_eq!(
+            delivered.durable_delivery_provider_run_id(),
+            Some("worker-run-after-retry")
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .agent_store
+                .get_agent(&agent_id)
+                .unwrap()
+                .remote_execution()
+                .unwrap()
+                .active_worker_provider_run_id
+                .as_deref(),
+            Some("worker-run-after-retry")
+        );
+        assert_eq!(
+            event_count(),
+            before_events + 1,
+            "retry must publish exactly one prompt-state settlement"
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_dispatch_success_preserves_cancellation_in_flight() {
+        let (runtime, dispatch) = pending_remote_settlement_fixture().await;
+        let session_id = dispatch.session_id.clone();
+        let agent_id = dispatch.agent_id.clone();
+        let prompt_id = dispatch.prompt_id.clone();
+        runtime
+            .owned
+            .begin_remote_prompt_cancellation(
+                &session_id,
+                &agent_id,
+                &dispatch.source_attachment_id,
+            )
+            .unwrap();
+        runtime
+            .finish_remote_prompt_dispatch(dispatch, Ok("worker-run-cancelling".to_string()))
+            .await
+            .unwrap();
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        let prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .unwrap();
+        assert_eq!(prompt.id(), prompt_id);
+        assert_eq!(prompt.status(), crate::session::PromptStatus::Cancelling);
+        assert_eq!(
+            prompt.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+        );
+        assert_eq!(
+            prompt.durable_delivery_provider_run_id(),
+            Some("worker-run-cancelling")
+        );
+        assert_eq!(
+            session.active_prompt_for_agent(&agent_id).unwrap().status(),
+            crate::session::PromptStatus::Cancelling
+        );
+    }
+
     #[tokio::test]
     async fn late_remote_dispatch_error_after_delivered_is_inert() {
         assert_duplicate_remote_settlement_is_inert(Err(DaemonError::LocalTransport {
