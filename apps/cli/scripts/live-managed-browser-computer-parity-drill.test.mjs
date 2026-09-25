@@ -113,10 +113,10 @@ function placementProof(kind) {
     tabId: "tab-stable-1",
   }
   if (kind === "browser-action") {
-    return { ...common, source: "public-room-action", kind, actionId: "browser-action-1", actorId: "agent:browser-agent-1" }
+    return { ...common, source: "public-room-action", kind, actionId: "browser-action-1", actorId: "agent:room-agent-1" }
   }
   if (kind === "computer-action") {
-    return { ...common, source: "public-room-action", kind, actionId: "computer-action-1", actorId: "agent:computer-agent-1" }
+    return { ...common, source: "public-room-action", kind, actionId: "computer-action-1", actorId: "agent:room-agent-1" }
   }
   return { ...common, source: "public-web-view", kind: "web-view", visible: true }
 }
@@ -255,6 +255,33 @@ test("live M0 rejects public Browser, Computer, and Web View evidence split acro
   assert.equal(report.failure.code, "browser_computer_placement_proof_required")
   assert.equal(report.browserComputerGuard.placement.ok, false)
   assert.ok(report.browserComputerGuard.placement.violations.includes("web_view_tab_mismatch"))
+})
+
+test("live M0 rejects Browser and Computer placement evidence attributed to different agents", async () => {
+  const injected = transport()
+  const run = injected.run.bind(injected)
+  injected.run = async (step, input, options) => {
+    const result = await run(step, input, options)
+    if (step === "selkies.computer") {
+      return {
+        ...result,
+        placementProof: { ...result.placementProof, actorId: "agent:computer-agent-2" },
+      }
+    }
+    return result
+  }
+
+  const report = await runManagedBrowserComputerParityLive({
+    config: config(),
+    transport: injected,
+    evidenceRoot: EVIDENCE_ROOT,
+    collectResourceSnapshot: ({ phase }) => sample(phase),
+  })
+
+  assert.equal(report.status, "failed")
+  assert.equal(report.failure.code, "browser_computer_placement_proof_required")
+  assert.equal(report.browserComputerGuard.placement.ok, false)
+  assert.ok(report.browserComputerGuard.placement.violations.includes("browser_computer_actor_mismatch"))
 })
 
 test("live M0 wrapper validates the released kernel lifecycle plan without Docker argv assumptions", async () => {
