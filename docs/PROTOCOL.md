@@ -1661,6 +1661,20 @@ Workflow trigger and deployment direction:
   turn for `chariox.send_agent_message`. A new home kernel rejects a v56 worker
   at peer binding before provider dispatch rather than failing on a missing
   tool field mid-turn. The local daemon shape and client minimums do not change.
+- protocol 344 and relay peer protocol 58 add `room_browser_available` to the
+  home-authored remote extension manifest. The field defaults to false and is
+  omitted when false. It advertises the Room's shared browser independently of
+  the leased agent's execution placement. It does not grant authority: home
+  validates current Room membership, worker/run binding, and Environment
+  binding on every forwarded browser call. Client minimums remain unchanged.
+  Current refresh limitation: binding or releasing an Environment does not
+  push a manifest update to agents already leased in that Room. The flag is
+  refreshed on the next idle prompt submission or an extension-grant sync;
+  submitting while a provider turn is busy does not refresh it. Tools may
+  therefore remain hidden after binding, or advertised after release, until
+  that refresh. Calls after release still fail closed at home. Immediate
+  bind/release synchronization remains a separate live-capability requirement;
+  tests with an Environment bound before agent launch do not validate it.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic
