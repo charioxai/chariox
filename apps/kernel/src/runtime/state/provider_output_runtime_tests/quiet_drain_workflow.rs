@@ -316,6 +316,147 @@ async fn codex_completion_output_does_not_settle_before_authoritative_turn_compl
 }
 
 #[tokio::test]
+async fn codex_turn_completion_survives_dispatching_delivery_retry() {
+    let worktree = crate::test_support::TestWorktree::new("codex-dispatching-completion");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-codex-dispatching-completion",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "codex",
+        "codex",
+        "default",
+        "gpt-5.6",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-codex-dispatching-completion",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-codex-dispatching-completion".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("ws://test-codex-dispatching-completion".to_string()),
+        },
+    );
+    run.mark_running();
+    app.pty_mut()
+        .spawn(crate::pty::PtySpawnRequest {
+            process_key: run.id().to_string(),
+            provider_run_id: run.id().to_string(),
+            program: "/bin/sh".to_string(),
+            args: ["-c", "exec sleep 300"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            env: Default::default(),
+            env_remove: Vec::new(),
+            working_directory: None,
+            cols: 80,
+            rows: 24,
+        })
+        .expect("inert Codex fixture PTY should stay live");
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    app.update_provider_run_projection(run.clone());
+    let prompt = crate::session::PromptQueueItem::new(
+        "prompt-codex-dispatching-completion",
+        attachment.id(),
+        agent.id(),
+        "finish after delivery acknowledgement",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("prompt should start")
+    else {
+        panic!("prompt should start immediately");
+    };
+    app.mark_active_prompt_delivery(
+        session.id(),
+        agent.id(),
+        prompt.id(),
+        crate::session::DurablePromptDeliveryPhase::Dispatching,
+        Some(run.id().to_string()),
+        run.provider_session_id().map(str::to_string),
+    )
+    .expect("prompt should enter durable dispatch");
+
+    let app = Arc::new(Mutex::new(app));
+    let _pty_cleanup = InertPtyCleanup {
+        app: Arc::clone(&app),
+        provider_run_id: run.id().to_string(),
+    };
+    let runtime = owned_runtime_state(&app).await;
+    runtime.owned.note_prompt_started(run.id());
+    runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            crate::provider::ProviderPromptSignalBatch {
+                prompt_completed: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("authoritative completion should be retained during dispatch");
+    let dispatching_session = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("session should remain available during dispatch");
+    assert!(runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&dispatching_session, agent.id())
+        .expect("dispatching prompt should remain active")
+        .delivery_pending());
+
+    runtime
+        .owned
+        .mark_active_prompt_delivery(
+            session.id(),
+            agent.id(),
+            prompt.id(),
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some(run.id().to_string()),
+            run.provider_session_id().map(str::to_string),
+        )
+        .expect("provider acknowledgement should complete prompt delivery");
+    runtime
+        .settle_owned_provider_prompt(session.id(), run.id(), false, false, false)
+        .await
+        .expect("retained turn completion should settle after delivery acknowledgement");
+    let settled_session = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should exist after settlement");
+    assert!(
+        settled_session
+            .active_prompt_for_agent(agent.id())
+            .is_none(),
+        "authoritative completion received during Dispatching must survive delivery retry"
+    );
+}
+
+#[tokio::test]
 async fn metaagent_quiet_drain_settlement_recovers_orphaned_task() {
     let worktree = crate::test_support::TestWorktree::new("quiet-drain-metaagent");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())

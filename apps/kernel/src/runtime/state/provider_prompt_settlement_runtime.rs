@@ -113,6 +113,9 @@ impl KernelRuntimeState {
                 started_next_prompt: false,
             });
         }
+        if prompt_completed {
+            owned.mark_prompt_completion_recorded(provider_run_id);
+        }
         if !force && active_prompt.delivery_pending() {
             owned.schedule_provider_output_check_after(
                 provider_run_id,
@@ -136,9 +139,6 @@ impl KernelRuntimeState {
             });
         }
 
-        if prompt_completed {
-            owned.mark_prompt_completion_recorded(provider_run_id);
-        }
         let completion_recorded = owned.prompt_completion_recorded(provider_run_id);
         let settlement_pending = owned.prompt_completion_settlement_pending(provider_run_id);
         let codex_provider = provider_run.adapter_key() == "codex";
