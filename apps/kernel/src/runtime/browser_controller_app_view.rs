@@ -77,4 +77,7 @@ pub(crate) struct BrowserAppViewCall {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub(crate) struct BrowserAppViewCalls {
     pub(crate) calls: Vec<BrowserAppViewCall>,
+    /// App targets the controller still serves; any other binding is closed.
+    #[serde(default)]
+    pub(crate) open_targets: Vec<String>,
 }

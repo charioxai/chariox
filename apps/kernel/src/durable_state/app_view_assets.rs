@@ -2,8 +2,9 @@
 //! re-verified against the owner's current publisher trust.
 use super::DurableKernelStateStore;
 
-/// UI bytes sent to the browser controller in one request.
-const MAX_VIEW_BYTES: usize = 8 * 1024 * 1024;
+/// UI bytes sent to the browser controller in one relayed request (about
+/// 2.7 MiB as base64). Larger views need chunked delivery first.
+const MAX_VIEW_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug)]
 pub(crate) struct AppViewAsset {

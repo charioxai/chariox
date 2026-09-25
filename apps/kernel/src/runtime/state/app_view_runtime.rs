@@ -145,6 +145,7 @@ impl KernelRuntimeState {
                 continue;
             };
             failures = 0;
+            views.retain_open(&session_id, &batch.open_targets);
             for call in batch.calls {
                 let state = self.clone();
                 let session = session_id.clone();
@@ -205,13 +206,7 @@ impl KernelRuntimeState {
             .map_err(|error| view_error("INVALID_INPUT", &error.to_string()))?;
         let permit = self.app_control().try_admit().map_err(|_| unavailable())?;
         let store = self.owned.durable_state_store.clone();
-        let caller = CallerContext {
-            actor: Actor::Human(binding.owner.clone()),
-            room_id: session_id.into(),
-            operation_id: format!("app-operation-{:016x}", rand::random::<u64>()),
-            task_id: None,
-            turn_id: None,
-        };
+        let caller = view_caller(binding, session_id);
         let tool_name = tool.to_owned();
         let response = tokio::task::spawn_blocking(move || {
             let _permit = permit;
@@ -233,6 +228,21 @@ impl KernelRuntimeState {
         .await
         .map_err(|_| unavailable())?
         .map_err(|error| view_error("APP_ERROR", &error.to_string()))
+    }
+}
+
+/// A view call runs as the view's owner, whoever drives the Tab: the view is
+/// the owner's human surface, and a person or an agent operating the shared
+/// Room browser acts through it with the owner's App authority (V-SDK-04: no
+/// separate view privilege). Critical effects still need the kernel's human
+/// validation, which a view click cannot provide.
+fn view_caller(binding: &AppViewBinding, session_id: &str) -> CallerContext {
+    CallerContext {
+        actor: Actor::Human(binding.owner.clone()),
+        room_id: session_id.into(),
+        operation_id: format!("app-operation-{:016x}", rand::random::<u64>()),
+        task_id: None,
+        turn_id: None,
     }
 }
 
@@ -264,6 +274,18 @@ fn failed(code: AppRequestErrorCode) -> LocalDaemonResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn view_calls_run_as_the_views_owner_in_its_room() {
+        let binding = AppViewBinding {
+            owner: "alice".into(),
+            installation: "todo".into(),
+        };
+        let caller = view_caller(&binding, "session-1");
+        assert!(matches!(&caller.actor, Actor::Human(owner) if owner == "alice"));
+        assert_eq!(caller.room_id, "session-1");
+        assert!(caller.task_id.is_none() && caller.turn_id.is_none());
+    }
 
     #[test]
     fn origin_labels_are_stable_dns_labels_per_owner_and_installation() {

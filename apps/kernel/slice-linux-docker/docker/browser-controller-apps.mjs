@@ -16,11 +16,19 @@ export const APP_CSP = [
   "img-src 'self' data: blob:", "font-src 'self'", "connect-src 'none'", "frame-src 'none'",
   "child-src 'none'", "worker-src 'none'", "object-src 'none'", "form-action 'none'",
   "base-uri 'none'", "frame-ancestors 'none'",
+  // No allow-popups/top-navigation/downloads/modals: a popup or new window
+  // would be a new, unintercepted target that can reach the network.
+  "sandbox allow-scripts allow-same-origin allow-forms",
 ].join("; ");
 
 // Installed before any App script runs. The binding carries only JSON strings;
 // the kernel binds every call to this tab's installation, never to page data.
 const BRIDGE_SOURCE = `(() => {
+  // WebRTC is outside CSP and request interception; remove it before App code.
+  for (const name of ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel",
+    "RTCSessionDescription", "RTCIceCandidate"]) {
+    try { Object.defineProperty(globalThis, name, { value: undefined, writable: false, configurable: false }) } catch {}
+  }
   const call = globalThis.${BINDING};
   if (typeof call !== "function") return;
   delete globalThis.${BINDING};
@@ -143,13 +151,18 @@ export class AppTabs {
       await connection.send("Fetch.failRequest", { requestId, errorReason: "BlockedByClient" }, sessionId);
       return;
     }
-    const path = url.pathname === "/" ? app.entry : decodeURIComponent(url.pathname.slice(1));
-    const asset = app.assets.get(path);
+    let path = null;
+    try {
+      path = url.pathname === "/" ? app.entry : decodeURIComponent(url.pathname.slice(1));
+    } catch {}
+
+    const asset = path === null ? undefined : app.assets.get(path);
     const headers = [
       { name: "Content-Security-Policy", value: APP_CSP },
       { name: "X-Content-Type-Options", value: "nosniff" },
       { name: "Cache-Control", value: "no-store" },
       { name: "Referrer-Policy", value: "no-referrer" },
+      { name: "X-DNS-Prefetch-Control", value: "off" },
     ];
     await connection.send("Fetch.fulfillRequest", asset
       ? { requestId, responseCode: 200, responseHeaders: [{ name: "Content-Type", value: asset.contentType }, ...headers], body: asset.body }
@@ -169,7 +182,8 @@ export class AppTabs {
   takeCalls() {
     const calls = this.calls;
     this.calls = [];
-    return { calls };
+    // Open App targets let the kernel drop views that closed or crashed.
+    return { calls, open_targets: [...this.apps.values()].map((app) => app.targetId) };
   }
 
   async respond(params) {

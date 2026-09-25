@@ -35,6 +35,15 @@ impl AppViews {
         sessions.get(session)?.tabs.get(target).cloned()
     }
 
+    /// Drops bindings whose Tab the controller no longer serves (closed,
+    /// crashed or lost on reconnect), so the pump can stop.
+    pub(crate) fn retain_open(&self, session: &str, open_targets: &[String]) {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(views) = sessions.get_mut(session) {
+            views.tabs.retain(|target, _| open_targets.contains(target));
+        }
+    }
+
     pub(crate) fn remove(&self, session: &str, target: &str) {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(views) = sessions.get_mut(session) {
@@ -86,5 +95,8 @@ mod tests {
         views.forget_session("s");
         assert!(!views.keep_pumping("s"));
         assert!(views.register("s", "t3", binding("a")));
+        // A Tab closed in the browser stops the pump on the next poll.
+        views.retain_open("s", &[]);
+        assert!(!views.keep_pumping("s"));
     }
 }

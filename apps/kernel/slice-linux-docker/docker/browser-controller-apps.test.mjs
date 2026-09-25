@@ -98,3 +98,28 @@ test("queues bridge calls bound to the installation and resolves responses", asy
   assert.equal(connection.sent[0].params.expression, 'globalThis.__charioxAppResolve("1", true, {"todos":[]})');
   await assert.rejects(tabs.respond({ target_id: "nope", call_id: "1" }));
 });
+
+test("the App document cannot open popups or new windows and has no WebRTC", async () => {
+  assert.match(APP_CSP, /sandbox allow-scripts allow-same-origin allow-forms(;|$)/);
+  assert.doesNotMatch(APP_CSP, /allow-popups|allow-top-navigation|allow-downloads|allow-modals/);
+  const { connection } = await opened();
+  const bridge = connection.sent.find((m) => m.method === "Page.addScriptToEvaluateOnNewDocument").params.source;
+  assert.match(bridge, /RTCPeerConnection/);
+  assert.ok(bridge.indexOf("RTCPeerConnection") < bridge.indexOf("__charioxAppCall"), "WebRTC is removed before the bridge exists");
+});
+
+test("malformed escapes are 404s and DNS prefetch is off", async () => {
+  const { connection } = await opened();
+  connection.sent.length = 0;
+  await connection.emit({ method: "Fetch.requestPaused", sessionId: "s1",
+    params: { requestId: "bad", request: { url: "https://todo-1.app.chariox.internal/%E0%A4%A", method: "GET" } } });
+  assert.equal(connection.sent[0].params.responseCode, 404);
+  assert.ok(connection.sent[0].params.responseHeaders.some((h) => h.name === "X-DNS-Prefetch-Control" && h.value === "off"));
+});
+
+test("polls report open App targets so closed views can be dropped", async () => {
+  const { tabs, connection } = await opened();
+  assert.deepEqual(tabs.takeCalls().open_targets, ["t1"]);
+  await connection.emit({ method: "Target.detachedFromTarget", params: { sessionId: "s1" } });
+  assert.deepEqual(tabs.takeCalls().open_targets, []);
+});

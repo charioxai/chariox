@@ -75,6 +75,10 @@ impl KernelRuntimeState {
                 | Command::ComputerInput { .. }
                 | Command::CancelDownload { .. }
                 | Command::ImportCookies { .. }
+                | Command::AppView {
+                    request:
+                        crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Open { .. }
+                }
         );
         let response = if let Some(slice) = self.owned.slice_store.environment_slice(session_id) {
             // Keep the relay client's large future off callers' async stacks. Local

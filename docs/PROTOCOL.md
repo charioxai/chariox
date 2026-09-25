@@ -1773,7 +1773,17 @@ Workflow trigger and deployment direction:
   the home and worker kernels. `window.chariox.call(tool, input)` runs the App's
   own tool as the human owner through the same catalog validation and durable
   path as agent tool calls; the kernel binds each call to the Tab's
-  installation, never to page-supplied identity.
+  installation, never to page-supplied identity. A view call runs as the view
+  owner whoever drives the Tab (a person or an agent in the shared Room): the
+  view is the owner's surface and there is no separate view privilege
+  (V-SDK-04); critical effects still require kernel human validation, which a
+  view click cannot supply. The App document's CSP includes
+  `sandbox allow-scripts allow-same-origin allow-forms` (no popups, top
+  navigation, downloads or modals), responses send `X-DNS-Prefetch-Control:
+  off`, and WebRTC constructors are removed before App code runs. Each poll
+  reports the controller's open App targets; the kernel drops bindings for
+  closed Tabs and stops polling when none remain. UI files are limited to
+  2 MiB per view.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic
