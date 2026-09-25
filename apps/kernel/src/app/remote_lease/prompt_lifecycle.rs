@@ -38,6 +38,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .app
             .leased_agents
             .get(leased_agent_id)
+            .cloned()
             .ok_or_else(|| DaemonError::LeasedAgentNotFound {
                 leased_agent_id: leased_agent_id.to_string(),
             })?;
