@@ -10,9 +10,6 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
     dispatch: &mut crate::app::KernelRemotePromptDispatch,
     prompt: String,
     attachments: Vec<crate::transport::relay_peer::RelayPromptAttachment>,
-    required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
-    required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
-    remote_extension_manifest: crate::extension::RemoteExtensionManifest,
 ) -> Result<String, DaemonError> {
     let mut attempt = 0_u32;
     let transport_retry_started_at = tokio::time::Instant::now();
@@ -27,18 +24,15 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
                 session_id: dispatch.session_id.clone(),
             });
         }
-        let mut result = submit_remote_prompt_to_worker(
-            state,
-            dispatch,
-            prompt.clone(),
-            attachments.clone(),
-            required_mcps.clone(),
-            required_skills.clone(),
-            remote_extension_manifest.clone(),
-            provider_launch_credential.clone(),
-            "unexpected remote prompt response",
-        )
-        .await;
+        let mut result = state
+            .submit_remote_prompt_attempt(
+                dispatch,
+                prompt.clone(),
+                attachments.clone(),
+                provider_launch_credential.clone(),
+                "unexpected remote prompt response",
+            )
+            .await;
         if provider_launch_credential.is_none()
             && remote_prompt_dispatch_requires_provider_launch_credential(&result)
         {
@@ -49,36 +43,30 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
                     "relaunch remote provider run",
                 )
                 .await?;
-            result = submit_remote_prompt_to_worker(
-                state,
-                dispatch,
-                prompt.clone(),
-                attachments.clone(),
-                required_mcps.clone(),
-                required_skills.clone(),
-                remote_extension_manifest.clone(),
-                provider_launch_credential.clone(),
-                "unexpected remote prompt response after credential request",
-            )
-            .await;
+            result = state
+                .submit_remote_prompt_attempt(
+                    dispatch,
+                    prompt.clone(),
+                    attachments.clone(),
+                    provider_launch_credential.clone(),
+                    "unexpected remote prompt response after credential request",
+                )
+                .await;
         }
         if remote_prompt_dispatch_should_refresh_binding(&result) {
             result = match refresh_remote_prompt_binding(state, dispatch).await {
                 Ok(()) => {
                     provider_launch_credential =
                         remote_prompt_provider_launch_credential_if_needed(state, dispatch).await?;
-                    submit_remote_prompt_to_worker(
-                        state,
-                        dispatch,
-                        prompt.clone(),
-                        attachments.clone(),
-                        required_mcps.clone(),
-                        required_skills.clone(),
-                        remote_extension_manifest.clone(),
-                        provider_launch_credential.clone(),
-                        "unexpected remote prompt response after binding refresh",
-                    )
-                    .await
+                    state
+                        .submit_remote_prompt_attempt(
+                            dispatch,
+                            prompt.clone(),
+                            attachments.clone(),
+                            provider_launch_credential.clone(),
+                            "unexpected remote prompt response after binding refresh",
+                        )
+                        .await
                 }
                 Err(error) => Err(error),
             };
@@ -252,85 +240,120 @@ fn remote_prompt_slice_status_allows_transport_retry(status: &crate::slice::Slic
     )
 }
 
-async fn submit_remote_prompt_to_worker(
-    state: &KernelRuntimeState,
-    dispatch: &crate::app::KernelRemotePromptDispatch,
-    prompt: String,
-    attachments: Vec<crate::transport::relay_peer::RelayPromptAttachment>,
-    required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
-    required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
-    remote_extension_manifest: crate::extension::RemoteExtensionManifest,
-    provider_launch_credential: Option<
-        crate::transport::relay_peer::RemoteProviderLaunchCredential,
-    >,
-    unexpected_response_message: &'static str,
-) -> Result<String, DaemonError> {
-    let agent = state.owned.agent_store.get_agent(&dispatch.agent_id)?;
-    let remote_execution = agent
-        .remote_execution()
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation: "dispatch remote agent prompt",
-            message: format!("agent `{}` lost its remote binding", dispatch.agent_id),
-        })?;
-    if !remote_execution.relay_peer_protocol_compatible() {
-        return Err(DaemonError::LocalTransport {
-            operation: "dispatch remote agent prompt",
-            message: format!(
-                "remote worker `{}` has an incompatible or legacy relay peer protocol {:?}; rebind the remote agent before dispatch (current protocol {})",
-                remote_execution.worker_kernel_id,
-                remote_execution.relay_peer_protocol_version,
-                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-            ),
-        });
-    }
-    let config = remote_dispatch_relay_config(state.config_snapshot().await, dispatch);
-    let target = ClientTarget {
-        daemon_id: Some(dispatch.worker_kernel_id.clone()),
-        daemon_alias: None,
-    };
-    let request = RelayPeerRequest::SubmitLeasedPrompt {
-        leased_agent_id: dispatch.leased_agent_id.clone(),
-        expected_profile: crate::transport::relay_peer::RelayAgentExecutionProfile::from(&agent),
-        prompt,
-        hidden_system_context: dispatch.hidden_system_context.clone(),
-        attachments,
-        workflow_context: dispatch.workflow_context.clone(),
-        git_context: Some(remote_git_turn_context(dispatch)),
-        required_mcps,
-        required_skills,
-        remote_extension_manifest,
-        provider_launch_credential,
-    };
-    let response = match state.connected_relay_state_for_config(&config).await {
-        Some(relay_state) => {
-            crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
-                &config,
-                &relay_state,
-                target,
-                request,
-                crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
-            )
-            .await
-        }
-        None => {
-            crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-                &config,
-                target,
-                request,
-                crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
-            )
-            .await
-        }
-    };
-    match response {
-        Ok(RelayPeerResponse::LeasedPromptSubmitted {
-            provider_run_id, ..
-        }) => Ok(provider_run_id),
-        Ok(other) => Err(DaemonError::LocalTransport {
-            operation: "submit remote prepared prompt",
-            message: format!("{unexpected_response_message}: {other:?}"),
-        }),
-        Err(error) => Err(error),
+impl KernelRuntimeState {
+    pub(in crate::runtime::state) async fn submit_remote_prompt_attempt(
+        &self,
+        dispatch: &crate::app::KernelRemotePromptDispatch,
+        prompt: String,
+        attachments: Vec<crate::transport::relay_peer::RelayPromptAttachment>,
+        provider_launch_credential: Option<
+            crate::transport::relay_peer::RemoteProviderLaunchCredential,
+        >,
+        unexpected_response_message: &'static str,
+    ) -> Result<String, DaemonError> {
+        let agent_id = dispatch.agent_id.clone();
+        let expected_leased_agent_id = dispatch.leased_agent_id.clone();
+        let hidden_system_context = dispatch.hidden_system_context.clone();
+        let workflow_context = dispatch.workflow_context.clone();
+        let git_context = remote_git_turn_context(dispatch);
+        let callback_state = self.clone();
+        self.with_current_remote_extension_manifest(
+            &agent_id,
+            &expected_leased_agent_id,
+            move |agent, remote_execution, manifest| async move {
+                if !remote_execution.relay_peer_protocol_compatible() {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "dispatch remote agent prompt",
+                        message: format!(
+                            "remote worker `{}` has an incompatible or legacy relay peer protocol {:?}; rebind the remote agent before dispatch (current protocol {})",
+                            remote_execution.worker_kernel_id,
+                            remote_execution.relay_peer_protocol_version,
+                            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                        ),
+                    });
+                }
+                let native_provider_run =
+                    callback_state.remote_agent_has_native_provider_run(&agent);
+                let required_mcps = if native_provider_run {
+                    callback_state.required_remote_mcps_for_native_provider_launch(&agent)?
+                } else {
+                    callback_state.required_remote_mcps_for_agent(&agent)?
+                };
+                let required_skills = if native_provider_run {
+                    Some(
+                        callback_state
+                            .required_remote_skills_for_native_provider_launch(&agent)?,
+                    )
+                } else {
+                    None
+                };
+                let manifest = if native_provider_run {
+                    manifest.without_mcp_tools()
+                } else {
+                    manifest
+                };
+                let mut config = callback_state.config_snapshot().await;
+                if let (Some(relay_url), Some(relay_token)) = (
+                    remote_execution.relay_url.clone(),
+                    remote_execution.relay_token.clone(),
+                ) {
+                    config.apply_remote_relay_override(relay_url, relay_token);
+                }
+                let target = ClientTarget {
+                    daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+                    daemon_alias: None,
+                };
+                let request = RelayPeerRequest::SubmitLeasedPrompt {
+                    leased_agent_id: remote_execution.leased_agent_id,
+                    expected_profile:
+                        crate::transport::relay_peer::RelayAgentExecutionProfile::from(&agent),
+                    prompt,
+                    hidden_system_context,
+                    attachments,
+                    workflow_context,
+                    git_context: Some(git_context),
+                    required_mcps,
+                    required_skills,
+                    remote_extension_manifest: manifest,
+                    provider_launch_credential,
+                };
+                let response = match callback_state
+                    .connected_relay_state_for_config(&config)
+                    .await
+                {
+                    Some(relay_state) => {
+                        crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
+                            &config,
+                            &relay_state,
+                            target,
+                            request,
+                            crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
+                        )
+                        .await
+                    }
+                    None => {
+                        crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+                            &config,
+                            target,
+                            request,
+                            crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
+                        )
+                        .await
+                    }
+                };
+                match response {
+                    Ok(RelayPeerResponse::LeasedPromptSubmitted {
+                        provider_run_id, ..
+                    }) => Ok(provider_run_id),
+                    Ok(other) => Err(DaemonError::LocalTransport {
+                        operation: "submit remote prepared prompt",
+                        message: format!("{unexpected_response_message}: {other:?}"),
+                    }),
+                    Err(error) => Err(error),
+                }
+            },
+        )
+        .await
     }
 }
 
@@ -456,18 +479,6 @@ fn remote_git_turn_context(
             &dispatch.attachments,
         ),
     }
-}
-
-fn remote_dispatch_relay_config(
-    mut config: crate::config::DaemonConfig,
-    dispatch: &crate::app::KernelRemotePromptDispatch,
-) -> crate::config::DaemonConfig {
-    if let (Some(relay_url), Some(relay_token)) =
-        (dispatch.relay_url.clone(), dispatch.relay_token.clone())
-    {
-        config.apply_remote_relay_override(relay_url, relay_token);
-    }
-    config
 }
 
 #[cfg(test)]

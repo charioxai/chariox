@@ -249,11 +249,9 @@ impl KernelRuntimeState {
         }
         if let Some(started_next) = completion.started_next.as_ref() {
             let agent = self.owned.agent_store.get_agent(target_agent_id)?;
-            let (remote_prompt, required_skills) = self
+            let (remote_prompt, _) = self
                 .prepare_remote_prompt_skill_context(&agent, started_next.prompt())
                 .await?;
-            let (required_mcps, remote_extension_manifest) =
-                self.remote_prompt_mcp_capabilities_for_agent(&agent)?;
             let attachments = self
                 .with_app_side_effect(|app| {
                     app.serialize_remote_prompt_attachments(started_next.attachments())
@@ -311,9 +309,6 @@ impl KernelRuntimeState {
                 &mut dispatch,
                 remote_prompt,
                 attachments,
-                required_mcps,
-                required_skills,
-                remote_extension_manifest,
             )
             .await?;
             owned

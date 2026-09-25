@@ -89,15 +89,15 @@ fn create_room_slice(runtime: &KernelRuntimeState, name: &str) -> crate::slice::
         .expect("Room slice should be created")
 }
 
-async fn next_manifest_update(
+async fn next_peer_request(
     fixture: &mut RoomManifestFixture,
-) -> (String, crate::extension::RemoteExtensionManifest) {
+) -> (String, crate::transport::relay_peer::RelayPeerRequest) {
     let envelope = tokio::time::timeout(
         std::time::Duration::from_secs(2),
         fixture.priority_rx.recv(),
     )
     .await
-    .expect("manifest refresh should be queued")
+    .expect("peer request should be queued")
     .expect("connected relay queue should remain open");
     let RelayEnvelope::DaemonPeerRequest {
         request_id,
@@ -111,27 +111,46 @@ async fn next_manifest_update(
         &fixture.worker_private_key,
         &encrypted_request,
     )
-    .expect("worker should decrypt the manifest update");
+    .expect("worker should decrypt the peer request");
+    let request = serde_json::from_slice(&decrypted.plaintext).expect("peer request should decode");
+    (request_id, request)
+}
+
+async fn next_manifest_update(
+    fixture: &mut RoomManifestFixture,
+) -> (String, crate::extension::RemoteExtensionManifest) {
+    let (request_id, request) = next_peer_request(fixture).await;
     let crate::transport::relay_peer::RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
         leased_agent_id,
         remote_extension_manifest,
-    } = serde_json::from_slice(&decrypted.plaintext).expect("manifest request should decode")
+    } = request
     else {
-        panic!("expected a manifest update, not a prompt request");
+        panic!("expected a manifest update, not another peer request");
     };
     assert_eq!(leased_agent_id, "leased-agent-1");
     (request_id, remote_extension_manifest)
 }
 
 async fn acknowledge_manifest_update(fixture: &RoomManifestFixture, request_id: String) {
-    let response =
+    acknowledge_peer_response(
+        fixture,
+        request_id,
         crate::transport::relay_peer::RelayPeerResponse::LeasedAgentRemoteExtensionManifestUpdated {
             leased_agent_id: "leased-agent-1".to_string(),
-        };
+        },
+    )
+    .await;
+}
+
+async fn acknowledge_peer_response(
+    fixture: &RoomManifestFixture,
+    request_id: String,
+    response: crate::transport::relay_peer::RelayPeerResponse,
+) {
     let encrypted = crate::transport::relay_crypto::encrypt_payload_for_peer(
         &fixture.worker_private_key,
         &fixture.home_public_key,
-        &serde_json::to_vec(&response).expect("manifest response should encode"),
+        &serde_json::to_vec(&response).expect("peer response should encode"),
     )
     .expect("worker should encrypt the manifest response");
     crate::transport::relay_client::resolve_pending_peer_response_for_test(
@@ -267,6 +286,218 @@ async fn delayed_bind_refresh_recomputes_after_delete_before_sending() {
     let (second_request, second_manifest) = next_manifest_update(&mut fixture).await;
     assert!(!second_manifest.room_browser_available);
     acknowledge_manifest_update(&fixture, second_request).await;
+}
+
+#[tokio::test]
+async fn paused_prompt_dispatch_and_provider_launch_serialize_with_room_bind_and_delete() {
+    let mut fixture = room_manifest_fixture().await;
+    let slice = create_room_slice(&fixture.runtime, "room-manifest-producer-ordering");
+    let initial_agent = fixture
+        .runtime
+        .owned
+        .agent_store
+        .get_agent(&fixture.agent_id)
+        .expect("leased agent should exist");
+    assert!(!fixture
+        .runtime
+        .remote_extension_manifest_for_agent(&initial_agent)
+        .expect("initial manifest should build")
+        .room_browser_available);
+
+    let prompt_dispatch = crate::app::KernelRemotePromptDispatch {
+        session_id: fixture.session_id.clone(),
+        agent_id: fixture.agent_id.clone(),
+        prompt_id: "room-manifest-dispatch-prompt".to_string(),
+        worker_kernel_id: "worker-1".to_string(),
+        leased_agent_id: "leased-agent-1".to_string(),
+        relay_url: None,
+        relay_token: None,
+        source_attachment_id: "room-manifest-dispatch-attachment".to_string(),
+        prompt: "dispatch prompt".to_string(),
+        hidden_system_context: String::new(),
+        attachments: Vec::new(),
+        workspace_live_sync_mode: None,
+        prompt_origin: crate::session::PromptOrigin::Chariox,
+        external_provider: None,
+        external_provider_session_id: None,
+        external_provider_turn_id: None,
+        workflow_context: None,
+    };
+    let dispatch_state = fixture.runtime.clone();
+    let dispatch = tokio::spawn(async move {
+        dispatch_state
+            .submit_remote_prompt_attempt(
+                &prompt_dispatch,
+                "dispatch prompt".to_string(),
+                Vec::new(),
+                None,
+                "unexpected prompt test response",
+            )
+            .await
+    });
+    let (prompt_request_id, prompt_request) = next_peer_request(&mut fixture).await;
+    let crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt {
+        leased_agent_id,
+        remote_extension_manifest,
+        ..
+    } = prompt_request
+    else {
+        panic!("expected the actual remote prompt sender request");
+    };
+    assert_eq!(leased_agent_id, "leased-agent-1");
+    assert!(!remote_extension_manifest.room_browser_available);
+
+    let bind_waiting = fixture
+        .runtime
+        .leased_agent_operations
+        .notify_on_next_acquire_for_tests("leased-agent-1");
+    fixture
+        .runtime
+        .bind_room_environment_slice(
+            crate::local::BindRoomEnvironmentSliceRequest {
+                session_id: fixture.session_id.clone(),
+                slice_ref: slice.id.clone(),
+            },
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        )
+        .expect("Room slice should bind while dispatch is paused");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        bind_waiting.notified(),
+    )
+    .await
+    .expect("bind refresh should wait behind the paused dispatch");
+    assert!(fixture.priority_rx.try_recv().is_err());
+
+    let prompt = crate::session::PromptQueueItem::new(
+        "room-manifest-dispatch-prompt",
+        "room-manifest-dispatch-attachment",
+        &fixture.agent_id,
+        "dispatch prompt",
+        crate::session::PromptStatus::Running,
+    );
+    acknowledge_peer_response(
+        &fixture,
+        prompt_request_id,
+        crate::transport::relay_peer::RelayPeerResponse::LeasedPromptSubmitted {
+            provider_run_id: "worker-run-after-dispatch".to_string(),
+            outcome: crate::session::PromptSubmissionOutcome::Started { prompt },
+        },
+    )
+    .await;
+    dispatch
+        .await
+        .expect("dispatch task should complete")
+        .expect("actual remote prompt sender should succeed");
+    let (bind_request, bind_manifest) = next_manifest_update(&mut fixture).await;
+    assert!(bind_manifest.room_browser_available);
+    acknowledge_manifest_update(&fixture, bind_request).await;
+
+    let stale_agent = fixture
+        .runtime
+        .owned
+        .agent_store
+        .get_agent(&fixture.agent_id)
+        .expect("leased agent should remain available");
+    let stale_launch_manifest = fixture
+        .runtime
+        .remote_extension_manifest_for_agent(&stale_agent)
+        .expect("bound manifest should build");
+    assert!(stale_launch_manifest.room_browser_available);
+
+    let request = crate::local::LaunchProviderRunRequest {
+        session_id: fixture.session_id.clone(),
+        agent_id: Some(fixture.agent_id.clone()),
+        adapter_key: "codex".to_string(),
+        provider: "codex".to_string(),
+        account_profile: "default".to_string(),
+        model: "test-model".to_string(),
+        variant: None,
+        structured_endpoint: None,
+        provider_session_id: None,
+        native_tui: true,
+    };
+    let remote_execution = stale_agent
+        .remote_execution()
+        .cloned()
+        .expect("agent should retain its lease");
+    let held_lane = fixture
+        .runtime
+        .leased_agent_operations
+        .lock("leased-agent-1")
+        .await;
+    let launch_waiting = fixture
+        .runtime
+        .leased_agent_operations
+        .notify_on_next_acquire_for_tests("leased-agent-1");
+    let launch_state = fixture.runtime.clone();
+    let launch_agent_id = fixture.agent_id.clone();
+    let launch = tokio::spawn(async move {
+        launch_state
+            .send_remote_native_provider_launch_attempt(
+                &request,
+                &launch_agent_id,
+                &remote_execution,
+                None,
+            )
+            .await
+    });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        launch_waiting.notified(),
+    )
+    .await
+    .expect("actual provider launch sender should wait in the lease lane");
+
+    let delete_waiting = fixture
+        .runtime
+        .leased_agent_operations
+        .notify_on_next_acquire_for_tests("leased-agent-1");
+    fixture
+        .runtime
+        .delete_slice(&slice.id)
+        .expect("bound Room slice should delete while launch is paused");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        delete_waiting.notified(),
+    )
+    .await
+    .expect("delete refresh should enter the shared lease lane");
+    drop(held_lane);
+
+    let (launch_request_id, launch_request) = next_peer_request(&mut fixture).await;
+    let crate::transport::relay_peer::RelayPeerRequest::LaunchLeasedNativeProviderRun {
+        remote_extension_manifest,
+        ..
+    } = launch_request
+    else {
+        panic!("expected the actual provider launch sender request");
+    };
+    assert!(!remote_extension_manifest.room_browser_available);
+    assert!(fixture.priority_rx.try_recv().is_err());
+    acknowledge_peer_response(
+        &fixture,
+        launch_request_id,
+        crate::transport::relay_peer::RelayPeerResponse::Pong {
+            value: "launch request observed".to_string(),
+            daemon_id: "worker-1".to_string(),
+        },
+    )
+    .await;
+    let launch_response = launch
+        .await
+        .expect("launch task should complete")
+        .expect("actual provider launch sender should return its peer response");
+    assert!(matches!(
+        launch_response,
+        crate::transport::relay_peer::RelayPeerResponse::Pong { ref value, ref daemon_id }
+            if value == "launch request observed" && daemon_id == "worker-1"
+    ));
+
+    let (delete_request, delete_manifest) = next_manifest_update(&mut fixture).await;
+    assert!(!delete_manifest.room_browser_available);
+    acknowledge_manifest_update(&fixture, delete_request).await;
+    assert!(fixture.priority_rx.try_recv().is_err());
 }
 
 #[tokio::test]

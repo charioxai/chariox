@@ -839,9 +839,6 @@ mod tests {
                 &mut dispatch,
                 "prompt for stopped slice".to_string(),
                 Vec::new(),
-                Vec::new(),
-                None,
-                crate::extension::RemoteExtensionManifest::default(),
             )
             .await
             .expect_err("stopped slice must fail before relay transport");

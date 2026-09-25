@@ -538,7 +538,7 @@ impl KernelRuntimeState {
                 return Ok(());
             }
             let agent = self.owned.agent_store.get_agent(agent_id)?;
-            let (prompt, required_skills) = match self
+            let (prompt, _) = match self
                 .prepare_remote_prompt_skill_context(&agent, &dispatch.prompt)
                 .await
             {
@@ -552,18 +552,6 @@ impl KernelRuntimeState {
                     continue;
                 }
             };
-            let (required_mcps, remote_extension_manifest) =
-                match self.remote_prompt_mcp_capabilities_for_agent(&agent) {
-                    Ok(capabilities) => capabilities,
-                    Err(error) => {
-                        attempt = attempt.saturating_add(1);
-                        self.log_remote_prompt_recovery_retry(
-                            session_id, agent_id, &dispatch, attempt, &error,
-                        );
-                        tokio::time::sleep(remote_prompt_recovery_delay(attempt)).await;
-                        continue;
-                    }
-                };
             let attachments = dispatch.attachments.clone();
             let attachments = match tokio::task::spawn_blocking(move || {
                 crate::app::serialize_remote_prompt_attachments(&attachments)
@@ -584,9 +572,6 @@ impl KernelRuntimeState {
                 &mut dispatch,
                 prompt,
                 attachments,
-                required_mcps,
-                required_skills,
-                remote_extension_manifest,
             )
             .await;
             match result {
@@ -1020,7 +1005,7 @@ impl KernelRuntimeState {
                     return;
                 }
             };
-            let (prompt, required_skills) = match state
+            let (prompt, _) = match state
                 .prepare_remote_prompt_skill_context(&agent, &dispatch.prompt)
                 .await
             {
@@ -1032,16 +1017,6 @@ impl KernelRuntimeState {
                     return;
                 }
             };
-            let (required_mcps, remote_extension_manifest) =
-                match state.remote_prompt_mcp_capabilities_for_agent(&agent) {
-                    Ok(capabilities) => capabilities,
-                    Err(error) => {
-                        let _ = state
-                            .finish_remote_prompt_dispatch(dispatch, Err(error))
-                            .await;
-                        return;
-                    }
-                };
             let attachments = dispatch.attachments.clone();
             let serialized_attachments = match tokio::task::spawn_blocking(move || {
                 crate::app::serialize_remote_prompt_attachments(&attachments)
@@ -1068,9 +1043,6 @@ impl KernelRuntimeState {
                 &mut dispatch,
                 prompt,
                 attachments,
-                required_mcps,
-                required_skills,
-                remote_extension_manifest,
             )
             .await;
             match &result {
