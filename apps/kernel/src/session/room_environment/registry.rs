@@ -242,6 +242,20 @@ impl RoomEnvironmentRegistry {
         Ok(environment.snapshot())
     }
 
+    pub(crate) fn set_app_tabs(
+        &mut self,
+        session_id: &str,
+        apps: &std::collections::BTreeMap<String, super::EnvironmentTabApp>,
+    ) -> Result<(), EnvironmentError> {
+        self.environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?
+            .set_app_tabs(apps);
+        Ok(())
+    }
+
     pub(crate) fn controller_tab_binding(
         &self,
         session_id: &str,

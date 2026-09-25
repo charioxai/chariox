@@ -53,7 +53,7 @@ pub use room_environment::{
     EnvironmentComponentHealth, EnvironmentComponentHealthState, EnvironmentError,
     EnvironmentEvent, EnvironmentEventKind, EnvironmentLifecycle, EnvironmentMode,
     EnvironmentPointer, EnvironmentPointerButton, EnvironmentPointerPosition, EnvironmentReplay,
-    EnvironmentTab, InputOwnership, InputTarget, PendingInputTakeover, RoomEnvironment,
+    EnvironmentAppPanel, EnvironmentTab, EnvironmentTabApp, InputOwnership, InputTarget, PendingInputTakeover, RoomEnvironment,
     RoomEnvironmentSnapshot, TakeoverOutcome,
 };
 pub(crate) use room_environment::{

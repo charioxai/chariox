@@ -1827,6 +1827,16 @@ Workflow trigger and deployment direction:
   the App). A later focus change binds the new focus agent too; bindings are
   additive grants. Uninstall revokes the App's grants from every agent, which
   refreshes their runtime tool catalogs.
+- protocol 351: App view Tabs carry `app` in the Room snapshot
+  (`{installation_id, panel?}`; absent on every other Tab). An App view opens
+  in its own fullscreen browser window, so its page covers the desktop. The
+  page reserves an area with `window.chariox.panel.reserve({x, y, width,
+  height})` (CSS pixels, at least 240x160; `release()` removes it), answered
+  by the controller with `{reserved: true}` and nothing else. While the window
+  is fullscreen the Tab's `app.panel` gives that area in desktop pixels plus
+  the session's focus `agent_id`; the trusted terminal draws that agent's
+  conversation there, over the stream and outside the App's page. A panel
+  change emits `TabsChanged`.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

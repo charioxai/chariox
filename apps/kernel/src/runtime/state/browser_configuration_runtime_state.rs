@@ -165,6 +165,7 @@ mod tests {
             title: String::new(),
             document_revision: 1,
             focused: false,
+            app: None,
         }
     }
 

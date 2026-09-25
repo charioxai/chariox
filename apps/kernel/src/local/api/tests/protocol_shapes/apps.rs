@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 350);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 351);
     let release = AppReleaseSummary {
         version: "1.0.0".into(),
         publisher_id: "publisher".into(),
@@ -85,7 +85,7 @@ fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
 
 #[test]
 fn app_package_upload_protocol_shapes_bind_retry_bytes_and_opaque_handles() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 350);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 351);
     let handle = format!("upload_{}", "a".repeat(64));
     let digest = format!("sha256:{:064x}", 1);
     let requests = vec![
@@ -167,7 +167,7 @@ fn app_package_upload_protocol_shapes_bind_retry_bytes_and_opaque_handles() {
 
 #[test]
 fn app_worker_control_and_automation_shapes_are_versioned_and_owner_free() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 350);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 351);
     let requests = vec![
         LocalDaemonRequest::GetAppWorker(AppWorkerRequest {
             installation_id: "todo".into(),
@@ -259,7 +259,7 @@ fn app_worker_control_and_automation_shapes_are_versioned_and_owner_free() {
 fn app_view_shapes_are_versioned_and_name_no_owner_or_asset() {
     use crate::runtime::browser_controller_app_view::{BrowserAppViewError, BrowserAppViewRequest};
     use crate::transport::room_browser_controller::RoomBrowserControllerCommand;
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 350);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 351);
     let request = LocalDaemonRequest::OpenAppView(OpenAppViewRequest {
         session_id: "session-1".into(),
         installation_id: "todo".into(),
@@ -317,7 +317,7 @@ fn app_view_shapes_are_versioned_and_name_no_owner_or_asset() {
 
 #[test]
 fn app_uninstall_shape_is_versioned_and_names_no_owner() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 350);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 351);
     let request = LocalDaemonRequest::UninstallApp(UninstallAppRequest {
         installation_id: "todo".into(),
         expected_generation: "3".into(),
@@ -340,7 +340,7 @@ fn app_uninstall_shape_is_versioned_and_names_no_owner() {
 
 #[test]
 fn app_logs_shape_is_versioned_and_names_no_owner() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 350);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 351);
     let request = LocalDaemonRequest::GetAppLogs(GetAppLogsRequest {
         installation_id: "todo".into(),
         after_sequence: Some("7".into()),
@@ -380,7 +380,7 @@ fn app_logs_shape_is_versioned_and_names_no_owner() {
 
 #[test]
 fn app_update_shape_is_versioned_fenced_and_names_no_owner() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 350);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 351);
     let request = LocalDaemonRequest::BeginAppUpdate(BeginAppUpdateRequest {
         session_id: "session-1".into(),
         request_id: "update-1".into(),
