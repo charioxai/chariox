@@ -937,6 +937,257 @@ fn remote_git_turn_context(
 mod tests {
     use super::*;
 
+    const WORKFLOW_CREDENTIAL_CANARY: &str = "workflow-submit-token-canary";
+
+    #[derive(Clone, Copy)]
+    enum WorkflowCredentialState {
+        MissingVault,
+        MissingCredential,
+        Locked,
+        Unlocked,
+        ActiveWorkerRun,
+    }
+
+    struct WorkflowSubmissionFixture {
+        runtime: KernelRuntimeState,
+        dispatch: crate::app::KernelRemotePromptDispatch,
+        root: std::path::PathBuf,
+        previous_home: Option<std::ffi::OsString>,
+    }
+
+    impl WorkflowSubmissionFixture {
+        fn new(credential_state: WorkflowCredentialState) -> Self {
+            use crate::app::KernelSessionService;
+            use crate::attachment::{AttachRequest, ClientCapabilityLevel};
+            use crate::config::{CredentialVaultBackend, DaemonConfig};
+            use crate::session::{CreateSessionRequest, DEFAULT_LOCAL_USER_ID};
+            use std::sync::Arc;
+
+            static NEXT_FIXTURE_ID: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(0);
+            let fixture_id = NEXT_FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!(
+                "chariox-remote-workflow-submit-credential-{}-{}-{fixture_id}",
+                std::process::id(),
+                crate::session::unix_epoch_ms()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            let previous_home = std::env::var_os("CHARIOX_HOME");
+            std::env::set_var("CHARIOX_HOME", &root);
+            crate::secret::clear_vault_secret_process_cache().unwrap();
+
+            let mut config =
+                DaemonConfig::for_tests().with_session_history_root(root.join("history"));
+            config.user_config.state.path = Some(root.join("state.db").display().to_string());
+            config.user_config.history.operational.path =
+                Some(root.join("operations.db").display().to_string());
+            config.user_config.artifacts.operational.root =
+                Some(root.join("artifacts").display().to_string());
+            config.user_config.artifacts.operational.index_path =
+                Some(root.join("artifacts.db").display().to_string());
+            config.user_config.credential_vault.backend =
+                CredentialVaultBackend::CharioxEncrypted;
+            config.user_config.credential_vault.path =
+                root.join("credentials.vault").display().to_string();
+            // A missing relay makes reaching transport distinguishable from failing credential
+            // admission, without sending a SubmitLeasedPrompt to any worker.
+            config.relay_url = None;
+            let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+            let (session, _) = KernelSessionService::new(&mut app)
+                .create_session(CreateSessionRequest::new(
+                    root.to_string_lossy(),
+                    root.to_string_lossy(),
+                ))
+                .unwrap();
+            let profile = app
+                .provider_account_profile_registry()
+                .create_managed(DEFAULT_LOCAL_USER_ID, "claude", "Workflow submit fixture")
+                .unwrap();
+            let agent = KernelSessionService::new(&mut app)
+                .spawn_agent(
+                    crate::agent::CreateAgentRequest::new(session.id(), "claude")
+                        .with_account_profile(profile.profile_id.clone()),
+                )
+                .unwrap();
+            let attachment = KernelSessionService::new(&mut app)
+                .attach(AttachRequest::new(
+                    session.id(),
+                    "workflow-submit-credential-test",
+                    ClientCapabilityLevel::FullTerminal,
+                ))
+                .unwrap();
+            let vault_path = root.join("credentials.vault");
+            if matches!(credential_state, WorkflowCredentialState::MissingCredential) {
+                crate::secret::unlock_chariox_encrypted_vault(
+                    &vault_path,
+                    "fixture passphrase",
+                    crate::secret::VaultUnlockLease::KernelShutdown,
+                )
+                .unwrap();
+            } else if matches!(
+                credential_state,
+                WorkflowCredentialState::Locked | WorkflowCredentialState::Unlocked
+            ) {
+                crate::secret::unlock_chariox_encrypted_vault(
+                    &vault_path,
+                    "fixture passphrase",
+                    crate::secret::VaultUnlockLease::KernelShutdown,
+                )
+                .unwrap();
+                crate::provider::store_provider_account_credential(
+                    app.config(),
+                    DEFAULT_LOCAL_USER_ID,
+                    "claude",
+                    &profile.profile_id,
+                    WORKFLOW_CREDENTIAL_CANARY,
+                    false,
+                )
+                .unwrap();
+                if matches!(credential_state, WorkflowCredentialState::Locked) {
+                    crate::secret::lock_chariox_encrypted_vault(&vault_path).unwrap();
+                    crate::secret::clear_vault_secret_process_cache().unwrap();
+                }
+            }
+            app.agents()
+                .bind_remote_execution(
+                    agent.id(),
+                    crate::agent::RemoteAgentBinding {
+                        worker_kernel_id: "workflow-worker".into(),
+                        worker_machine_id: "workflow-worker-machine".into(),
+                        execution_lease_id: "workflow-lease".into(),
+                        leased_agent_id: "workflow-leased-agent".into(),
+                        active_worker_provider_run_id: matches!(
+                            credential_state,
+                            WorkflowCredentialState::ActiveWorkerRun
+                        )
+                        .then(|| "already-active-worker-run".into()),
+                        relay_url: None,
+                        relay_token: None,
+                        relay_peer_protocol_version: Some(
+                            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                        ),
+                    },
+                )
+                .unwrap();
+
+            let app = Arc::new(tokio::sync::Mutex::new(app));
+            let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+                app,
+                crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+            );
+            let runtime = router.runtime_state();
+            let session_id = session.id().to_string();
+            let agent_id = agent.id().to_string();
+            let attachment_id = attachment.id().to_string();
+            let submission = runtime
+                .owned
+                .submit_remote_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+                    session_id: session_id.clone(),
+                    prompt: crate::session::PromptQueueItem::new(
+                        "pending:workflow-submit-credential",
+                        &attachment_id,
+                        &agent_id,
+                        "workflow prompt credential admission",
+                        crate::session::PromptStatus::Queued,
+                    ),
+                    force_queue: false,
+                    refresh_projection: true,
+                })
+                .unwrap()
+                .unwrap();
+            let mut dispatch = submission.remote_dispatch.unwrap();
+            dispatch.workflow_context = Some(crate::execution_lease::RemoteWorkflowTurnContext {
+                home_kernel_id: "home-kernel".into(),
+                home_session_id: session_id,
+                home_agent_id: agent_id,
+                workflow_run_id: "workflow-run".into(),
+                workflow_node_run_id: "workflow-node-run".into(),
+                delivery_token: "workflow-delivery-token".into(),
+                event_reply_enabled: false,
+                event_context_enabled: false,
+                event_actions_enabled: false,
+            });
+            Self {
+                runtime,
+                dispatch,
+                root,
+                previous_home,
+            }
+        }
+
+        async fn submit(&mut self) -> Result<String, DaemonError> {
+            let prompt = self.dispatch.prompt.clone();
+            submit_remote_prompt_to_worker_with_binding_refresh(
+                &self.runtime,
+                &mut self.dispatch,
+                prompt,
+                Vec::new(),
+            )
+            .await
+        }
+
+        async fn submit_after_rejecting_vault_unlock(&self) -> Result<String, DaemonError> {
+            let runtime = self.runtime.clone();
+            let mut dispatch = self.dispatch.clone();
+            let session_id = dispatch.session_id.clone();
+            let agent_id = dispatch.agent_id.clone();
+            let prompt = dispatch.prompt.clone();
+            let submission = submit_remote_prompt_to_worker_with_binding_refresh(
+                &runtime,
+                &mut dispatch,
+                prompt,
+                Vec::new(),
+            );
+            tokio::pin!(submission);
+            let mut completed_submission = None;
+            let interaction = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    let session = runtime
+                        .owned
+                        .session_store
+                        .get_session(&session_id)
+                        .expect("session should remain available");
+                    if let Some(interaction) = session.active_interaction_for_agent(&agent_id) {
+                        break Some(interaction.clone());
+                    }
+                    tokio::select! {
+                        result = &mut submission => {
+                            completed_submission = Some(result);
+                            return None;
+                        }
+                        _ = tokio::task::yield_now() => {}
+                    }
+                }
+            })
+            .await
+            .expect("locked vault should request a passphrase before transport");
+            if let Some(result) = completed_submission {
+                return result;
+            }
+            let interaction = interaction.expect("vault interaction should be observed");
+            assert_eq!(interaction.title(), Some("Unlock Chariox Vault"));
+            runtime
+                .resolve_runtime_interaction(&session_id, interaction.id(), "cancel", None)
+                .await
+                .expect("vault cancellation should resolve");
+            submission.await
+        }
+    }
+
+    impl Drop for WorkflowSubmissionFixture {
+        fn drop(&mut self) {
+            let _ = crate::secret::lock_chariox_encrypted_vault(
+                &self.root.join("credentials.vault"),
+            );
+            let _ = crate::secret::clear_vault_secret_process_cache();
+            match self.previous_home.take() {
+                Some(value) => std::env::set_var("CHARIOX_HOME", value),
+                None => std::env::remove_var("CHARIOX_HOME"),
+            }
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
     fn classify_error(
         error: DaemonError,
         request_transport_started: bool,
@@ -1191,5 +1442,68 @@ mod tests {
             crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT
                 > std::time::Duration::from_secs(180)
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn remote_workflow_submit_rejects_missing_vault_credential_before_transport() {
+        let _env = crate::env_lock::lock();
+        let mut fixture =
+            WorkflowSubmissionFixture::new(WorkflowCredentialState::MissingCredential);
+        assert!(fixture.dispatch.workflow_context.is_some());
+        let error = fixture
+            .submit()
+            .await
+            .expect_err("workflow submit must reject a missing credential before transport");
+        assert!(error
+            .to_string()
+            .contains("remote Claude launch requires"));
+        assert!(!error.to_string().contains("relay_url is not configured"));
+        assert!(!format!("{error:?}").contains(WORKFLOW_CREDENTIAL_CANARY));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn remote_workflow_submit_rejects_missing_or_locked_vault_before_transport() {
+        let _env = crate::env_lock::lock();
+        for credential_state in [
+            WorkflowCredentialState::MissingVault,
+            WorkflowCredentialState::Locked,
+        ] {
+            let fixture = WorkflowSubmissionFixture::new(credential_state);
+            assert!(fixture.dispatch.workflow_context.is_some());
+            let error = fixture
+                .submit_after_rejecting_vault_unlock()
+                .await
+                .expect_err("rejected vault unlock must stop before relay transport");
+            assert!(
+                crate::secret::is_chariox_vault_locked_error(&error)
+                    || error.to_string().contains("vault unlock was cancelled")
+                    || error.to_string().contains("remote Claude launch requires"),
+                "missing or locked vault should reject before sending: {error}"
+            );
+            assert!(!error.to_string().contains("relay_url is not configured"));
+            assert!(!format!("{error:?}").contains(WORKFLOW_CREDENTIAL_CANARY));
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn remote_workflow_submit_admits_vaulted_token_or_active_worker_run_without_exposing_it() {
+        let _env = crate::env_lock::lock();
+        for credential_state in [
+            WorkflowCredentialState::Unlocked,
+            WorkflowCredentialState::ActiveWorkerRun,
+        ] {
+            let mut fixture = WorkflowSubmissionFixture::new(credential_state);
+            assert!(fixture.dispatch.workflow_context.is_some());
+            let error = fixture
+                .submit()
+                .await
+                .expect_err("fixture relay is absent after credential admission");
+            assert!(
+                error.to_string().contains("relay_url is not configured"),
+                "credential admission should reach the transport boundary: {error}"
+            );
+            assert!(!error.to_string().contains(WORKFLOW_CREDENTIAL_CANARY));
+            assert!(!format!("{error:?}").contains(WORKFLOW_CREDENTIAL_CANARY));
+        }
     }
 }
