@@ -104,6 +104,13 @@ pub(crate) fn managed_repository_root_from_env() -> Result<std::path::PathBuf, D
     Ok(std::path::PathBuf::from(normalized))
 }
 
+/// Re-apply the bootstrap's fixed managed roots after resolving path aliases.
+pub(crate) fn canonical_managed_repository_root_is_protected(root: &std::path::Path) -> bool {
+    root.to_str()
+        .map(state::overlaps_protected_managed_root)
+        .unwrap_or(true)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ConfirmedManagedKernelRegistration {
     pub environment_id: String,

@@ -722,8 +722,12 @@ pub(super) fn managed_materialization_root_for_control(
     validate_real_directory(&root, "managed repository root")?;
     let canonical = fs::canonicalize(&root)
         .map_err(|error| context_io_error("resolve managed repository root", error))?;
-    crate::git_worktree_placement::preflight_managed_repository_root(&canonical)
-        .map_err(|error| context_error(error.to_string()))?;
+    crate::git_worktree_placement::preflight_managed_repository_root(&canonical).map_err(
+        |error| match error {
+            DaemonError::LocalTransport { message, .. } => context_error(message),
+            other => context_error(other.to_string()),
+        },
+    )?;
     if canonical == control_destination
         || control_destination.starts_with(&canonical)
         || canonical.starts_with(
