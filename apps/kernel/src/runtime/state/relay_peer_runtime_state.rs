@@ -308,15 +308,30 @@ impl KernelRuntimeState {
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     ) -> Result<(), DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
-        self.with_app_side_effect(move |app| {
+        let operation = move |app: &mut DaemonApp| {
             let mut runtime = RemoteLeaseRuntime::new(app);
             runtime.consume_leased_agent_authorization(&leased_agent_id)?;
             runtime.update_leased_agent_remote_extension_manifest(
                 &leased_agent_id,
                 remote_extension_manifest,
             )
-        })
-        .await
+        };
+        #[cfg(test)]
+        if let Some(observer) = self.take_capability_push_lock_observer_for_test() {
+            use std::future::Future;
+            let mut observer = Some(observer);
+            let mut lock = Box::pin(self.app.lock());
+            let mut app = std::future::poll_fn(|cx| {
+                let result = lock.as_mut().poll(cx);
+                if let Some(observer) = observer.take() {
+                    let _ = observer.send(result.is_ready());
+                }
+                result
+            })
+            .await;
+            return operation(&mut app);
+        }
+        self.with_app_side_effect(operation).await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1104,8 +1119,8 @@ mod relay_native_provider_launch_tests {
     fn native_lease_fixture() -> NativeLeaseFixture {
         let mut config = crate::config::DaemonConfig::for_tests();
         config.accept_remote_leases = true;
-        let mut app = crate::app::DaemonApp::bootstrap(config)
-            .expect("worker app should bootstrap");
+        let mut app =
+            crate::app::DaemonApp::bootstrap(config).expect("worker app should bootstrap");
         let (leased_agent_id, matching_request) = {
             let mut runtime = RemoteLeaseRuntime::new(&mut app);
             let lease = runtime

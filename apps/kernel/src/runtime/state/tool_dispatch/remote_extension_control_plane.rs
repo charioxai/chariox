@@ -6,7 +6,85 @@ use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 
 use super::*;
 
+#[cfg(test)]
+type CapabilityResponsePause = (
+    tokio::sync::oneshot::Sender<()>,
+    std::sync::mpsc::Receiver<()>,
+);
+
+#[cfg(test)]
+static CAPABILITY_RESPONSE_PAUSES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::BTreeMap<usize, CapabilityResponsePause>>,
+> = std::sync::LazyLock::new(Default::default);
+
+#[cfg(test)]
+static CAPABILITY_PUSH_LOCK_OBSERVERS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::BTreeMap<usize, tokio::sync::oneshot::Sender<bool>>>,
+> = std::sync::LazyLock::new(Default::default);
+
 impl KernelRuntimeState {
+    #[cfg(test)]
+    pub(crate) fn pause_capability_response_before_apply_for_test(
+        &self,
+        entered: tokio::sync::oneshot::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        CAPABILITY_RESPONSE_PAUSES.lock().unwrap().insert(
+            std::sync::Arc::as_ptr(&self.app) as usize,
+            (entered, release),
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_capability_response_pause_for_test(&self) {
+        CAPABILITY_RESPONSE_PAUSES
+            .lock()
+            .unwrap()
+            .remove(&(std::sync::Arc::as_ptr(&self.app) as usize));
+        CAPABILITY_PUSH_LOCK_OBSERVERS
+            .lock()
+            .unwrap()
+            .remove(&(std::sync::Arc::as_ptr(&self.app) as usize));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observe_capability_push_lock_for_test(
+        &self,
+        observer: tokio::sync::oneshot::Sender<bool>,
+    ) {
+        CAPABILITY_PUSH_LOCK_OBSERVERS
+            .lock()
+            .unwrap()
+            .insert(std::sync::Arc::as_ptr(&self.app) as usize, observer);
+    }
+
+    #[cfg(test)]
+    pub(in crate::runtime::state) fn take_capability_push_lock_observer_for_test(
+        &self,
+    ) -> Option<tokio::sync::oneshot::Sender<bool>> {
+        CAPABILITY_PUSH_LOCK_OBSERVERS
+            .lock()
+            .unwrap()
+            .remove(&(std::sync::Arc::as_ptr(&self.app) as usize))
+    }
+
+    #[cfg(test)]
+    fn pause_capability_response_before_apply(&self) {
+        let pause = CAPABILITY_RESPONSE_PAUSES
+            .lock()
+            .unwrap()
+            .remove(&(std::sync::Arc::as_ptr(&self.app) as usize));
+        if let Some((entered, release)) = pause {
+            let _ = entered.send(());
+            match release.recv_timeout(std::time::Duration::from_secs(30)) {
+                Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    panic!("capability response application barrier timed out");
+                }
+            }
+        }
+    }
+
     pub(super) async fn try_dispatch_remote_meta_runtime_tool_call(
         &self,
         provider_run: &crate::provider::RuntimeProviderRun,
@@ -172,6 +250,8 @@ impl KernelRuntimeState {
                 });
             }
         };
+        #[cfg(test)]
+        self.pause_capability_response_before_apply();
         let updated = self
             .owned
             .provider_store

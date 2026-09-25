@@ -5,6 +5,8 @@ use base64::Engine as _;
 use chariox_relay::protocol::ClientTarget;
 use futures_util::FutureExt;
 
+mod capability_response_ordering;
+
 #[test]
 fn leased_agent_on_another_kernel_uses_room_browser() {
     run_test(check_leased_agent_on_another_kernel_uses_room_browser);
