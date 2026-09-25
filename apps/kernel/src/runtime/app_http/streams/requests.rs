@@ -187,8 +187,12 @@ pub(super) fn spend(
             _ => HttpError::Busy,
         })?;
     transaction
-        .execute_batch("COMMIT; BEGIN IMMEDIATE")
-        .map_err(|_| HttpError::Busy)
+        .execute_batch("COMMIT")
+        .map_err(|_| HttpError::Busy)?;
+    // The spend is durable; nothing else uses this transaction. A deferred
+    // BEGIN takes no lock, and the writer's rollback of it is a no-op.
+    let _ = transaction.execute_batch("BEGIN");
+    Ok(())
 }
 impl HttpJob {
     pub(crate) fn reject(self, error: HttpError) {

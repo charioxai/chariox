@@ -171,7 +171,8 @@ package's exact approved origins/methods. A declared critical effect route is
 reached only with the `operationId` of an approved `validation.request`; the
 kernel consumes that single-use approval before sending, sends the approved
 parameters as the JSON body (the App passes none), and otherwise returns
-`VALIDATION_REQUIRED`. Opaque connections return explicit unsupported responses.
+`VALIDATION_REQUIRED`. Effect routes use `POST`, `PUT` or `PATCH`, and the request
+may carry no header but `accept`. Opaque connections return explicit unsupported responses.
 No provider account credentials, redirects, cookies, automatic decompression,
 raw sockets, or body retries are supplied by these methods.
 

@@ -410,11 +410,12 @@ impl PendingStart {
         if state.entries.contains_key(&self.id) {
             return Err(HttpError::Busy);
         }
-        admitted_hook()?;
         let (complete, completed) = watch::channel(None);
         Arc::get_mut(&mut self.entry)
             .ok_or(HttpError::Provenance)?
             .completed = completed;
+        // Only the infallible insert and spawn follow a spent approval.
+        admitted_hook()?;
         let stopped = self.entry.stop.subscribe();
         let lifetime = self.entry.deadline;
         let owner = TaskOwner {

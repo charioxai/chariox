@@ -15,6 +15,8 @@ pub(in crate::runtime::app_http) struct UploadBody {
     receiver: mpsc::Receiver<Upload>,
     ended: bool,
     received: u64,
+    /// A kernel-supplied body's exact length, sent as Content-Length.
+    exact: Option<u64>,
 }
 pub(in crate::runtime::app_http) struct UploadPort {
     sender: mpsc::Sender<Upload>,
@@ -35,13 +37,15 @@ pub(super) fn channel(has_body: bool) -> (UploadPort, UploadBody) {
             receiver,
             received: 0,
             ended: !has_body,
+            exact: None,
         },
     )
 }
 /// A kernel-supplied body (an approved effect's exact parameters), queued whole
 /// before the transport starts; the App's port is already ended.
 pub(super) fn fixed(bytes: Bytes) -> (UploadPort, UploadBody) {
-    let (mut port, body) = channel(true);
+    let (mut port, mut body) = channel(true);
+    body.exact = Some(bytes.len() as u64);
     let queued = port.sender.try_send(Upload::Data(bytes)).is_ok()
         && port.sender.try_send(Upload::End).is_ok();
     debug_assert!(queued, "a new channel holds two messages");
@@ -131,6 +135,8 @@ impl Body for UploadBody {
         let mut hint = SizeHint::new();
         if self.ended {
             hint.set_exact(0);
+        } else if let Some(exact) = self.exact {
+            hint.set_exact(exact.saturating_sub(self.received));
         }
         hint
     }

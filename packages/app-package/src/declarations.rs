@@ -247,6 +247,15 @@ impl Declarations {
                         "effect route must declare an exact path and symbolic connection",
                     );
                 }
+                // The approved parameters are the effect's body.
+                if !matches!(
+                    route.method,
+                    crate::manifest::HttpMethod::Post
+                        | crate::manifest::HttpMethod::Put
+                        | crate::manifest::HttpMethod::Patch
+                ) {
+                    return invalid("effect route method must be POST, PUT or PATCH");
+                }
                 if !manifest
                     .capabilities
                     .network
