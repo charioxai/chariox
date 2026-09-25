@@ -294,6 +294,7 @@ fn spawn(
             binding,
             &storage_root,
             committed,
+            migrate_from,
         )
         .map_err(|error| failed("prepare", error.to_string()))?;
         if context.control.stopped() {
