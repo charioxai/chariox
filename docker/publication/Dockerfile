@@ -48,7 +48,6 @@ COPY packages/app-package packages/app-package
 COPY packages/app-runtime packages/app-runtime
 COPY packages/app-sdk packages/app-sdk
 COPY apps/app-worker/bundle.lock.json apps/app-worker/bundle.lock.json
-COPY deploy/managed-kernel/chariox-app-storage.service deploy/managed-kernel/chariox-app-storage.service
 COPY packages/event-protocol packages/event-protocol
 RUN CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS}" cargo build --locked --manifest-path apps/kernel/Cargo.toml --release --bin chariox-kernel \
   && test "$(target/release/chariox-kernel --print-local-daemon-protocol-version)" = "${CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION}"

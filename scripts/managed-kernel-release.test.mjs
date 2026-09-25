@@ -20,6 +20,33 @@ const rootlessDockerService = join(repositoryRoot, "deploy/managed-kernel/chario
 const sliceBrokerService = join(repositoryRoot, "deploy/managed-kernel/chariox-slice-broker.service")
 const sourceDateEpoch = "946684800"
 
+test("managed slice build context covers every repository path the slice Dockerfile copies", async () => {
+  const [dockerfile, packagerSource, runtimeSourceRoots] = await Promise.all([
+    readFile(join(repositoryRoot, "apps/kernel/slice-linux-docker/docker/Dockerfile"), "utf8"),
+    readFile(packager, "utf8"),
+    readFile(join(repositoryRoot, "apps/kernel/slice-linux-docker/runtime-source-roots.txt"), "utf8"),
+  ])
+  const staticSources = /const SLICE_BUILD_CONTEXT_SOURCES = \[([^\]]*)\]/.exec(packagerSource)?.[1]
+  assert.ok(staticSources, "packager slice build context sources are missing")
+  const contextSources = [
+    ...[...staticSources.matchAll(/"([^"]+)"/g)].map((match) => match[1]),
+    ...runtimeSourceRoots.split("\n").filter(Boolean),
+  ]
+  const copies = dockerfile.replace(/\\\n\s*/g, " ").split("\n").filter((line) => /^COPY\s/.test(line))
+  assert.ok(copies.length > 0, "slice Dockerfile should copy sources")
+  for (const copy of copies) {
+    const args = copy.trim().split(/\s+/).slice(1)
+    if (args.some((arg) => arg.startsWith("--from="))) continue
+    for (const source of args.filter((arg) => !arg.startsWith("--")).slice(0, -1)) {
+      const path = source.replace(/\/+$/, "")
+      assert.ok(
+        contextSources.some((root) => path === root || path.startsWith(`${root}/`)),
+        `slice Dockerfile copies ${path}, which the managed slice build context omits`,
+      )
+    }
+  }
+})
+
 test("managed prebuilt slice runtime materializes its runtime output directory", async () => {
   const dockerfile = await readFile(
     join(repositoryRoot, "apps/kernel/slice-linux-docker/docker/Dockerfile"),
@@ -237,6 +264,11 @@ async function makeFixture(root, variant = "") {
       return [path, await readFile(join(repositoryRoot, path))]
     })),
     ["apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh", "#!/bin/sh\nSLICE_BUILD_IMAGE=fixture\n"],
+    [
+      "apps/kernel/slice-linux-docker/runtime-source-roots.txt",
+      await readFile(join(repositoryRoot, "apps/kernel/slice-linux-docker/runtime-source-roots.txt")),
+    ],
+    ["apps/app-worker/bundle.lock.json", "{}\n"],
     ["apps/kernel/slice-linux-docker/managed-publication-access.sh", "#!/bin/sh\nexit 0\n"],
     [
       "apps/kernel/slice-linux-docker/managed-publication-acl.awk",
@@ -383,6 +415,8 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/chariox-rootless-engine.service",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/chariox-rootless-user-manager.conf",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh",
+    "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/runtime-source-roots.txt",
+    "usr/lib/chariox/slice-build-context/apps/app-worker/bundle.lock.json",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-publication-access.sh",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-publication-acl.awk",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-docker-broker.mjs",

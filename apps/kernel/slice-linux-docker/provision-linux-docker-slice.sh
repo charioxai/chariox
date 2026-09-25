@@ -19,22 +19,21 @@ runtime_source_revision() {
   fi
   (
     cd "$REPO_ROOT"
+    local roots=() root
+    while IFS= read -r root || [[ -n "$root" ]]; do
+      if [[ -n "$root" ]]; then
+        roots+=("$root")
+      fi
+    done < "$SCRIPT_DIR/runtime-source-roots.txt"
+    if [[ "${#roots[@]}" -eq 0 ]]; then
+      echo "runtime-source-roots.txt lists no runtime source roots" >&2
+      exit 1
+    fi
     if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-      git ls-files --cached --others --exclude-standard \
-        Cargo.toml Cargo.lock \
-        adapters/rust \
-        apps/aegs-dummy apps/kernel apps/relay \
-        examples/workflow-code \
-        packages/aegs-sdk packages/event-protocol packages/app-package packages/app-runtime packages/app-sdk \
-        apps/app-worker/bundle.lock.json deploy/managed-kernel/chariox-app-storage.service
+      git ls-files --cached --others --exclude-standard "${roots[@]}"
     else
       find \
-        Cargo.toml Cargo.lock \
-        adapters/rust \
-        apps/aegs-dummy apps/kernel apps/relay \
-        examples/workflow-code \
-        packages/aegs-sdk packages/event-protocol packages/app-package packages/app-runtime packages/app-sdk \
-        apps/app-worker/bundle.lock.json deploy/managed-kernel/chariox-app-storage.service \
+        "${roots[@]}" \
         -type f \
         ! -path '*/target/*' \
         ! -path '*/node_modules/*' \

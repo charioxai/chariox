@@ -38,6 +38,7 @@ const SLICE_BUILD_CONTEXT_SOURCES = [
   "packages/app-sdk",
   "packages/event-protocol",
 ]
+const SLICE_RUNTIME_SOURCE_ROOTS = "apps/kernel/slice-linux-docker/runtime-source-roots.txt"
 
 function usage() {
   return "usage: package-managed-kernel-release --kernel <path> --supervisor <path> --relay <path> --app-package <path> --app-storage <path> --builder-attestation <path> --builder-attestation-signature <path> --trusted-builder-public-key <path> --signing-key <path> --source-repository <git-worktree> --source-commit <40-hex-commit> --output <directory>"
@@ -161,9 +162,16 @@ function resolveSourceIdentity(repositoryRoot, sourceCommit) {
 
 async function installSliceBuildContext(repositoryRoot, destination, sourceCommit) {
   await mkdir(destination, { recursive: true, mode: 0o755 })
+  // The provisioner fingerprints these roots, so the context must carry every one of them.
+  const runtimeSourceRoots = gitBlob(repositoryRoot, sourceCommit, SLICE_RUNTIME_SOURCE_ROOTS,
+    "slice runtime source roots cannot be read from source commit").toString("utf8").split("\n").filter(Boolean)
+  if (runtimeSourceRoots.some((root) => !/^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/.test(root) || root.split("/").includes(".."))) {
+    throw new Error("slice runtime source roots contain an unsupported path")
+  }
+  const sources = [...new Set([...SLICE_BUILD_CONTEXT_SOURCES, SLICE_RUNTIME_SOURCE_ROOTS, ...runtimeSourceRoots])]
   const listing = spawnSync(
     "git",
-    ["ls-tree", "-r", "-z", "--full-tree", sourceCommit, "--", ...SLICE_BUILD_CONTEXT_SOURCES],
+    ["ls-tree", "-r", "-z", "--full-tree", sourceCommit, "--", ...sources],
     { cwd: repositoryRoot, maxBuffer: 128 * 1024 * 1024, env: gitEnvironment() },
   )
   if (listing.status !== 0) {

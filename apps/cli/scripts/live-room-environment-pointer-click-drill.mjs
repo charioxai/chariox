@@ -2277,17 +2277,10 @@ async function captureSourceIdentity(kernelBinary, relayBinary) {
 }
 
 async function currentRuntimeSourceRevision() {
-  const roots = [
-    "Cargo.toml",
-    "Cargo.lock",
-    "adapters/rust",
-    "apps/aegs-dummy",
-    "apps/kernel",
-    "apps/relay",
-    "examples/workflow-code",
-    "packages/aegs-sdk",
-    "packages/event-protocol",
-  ]
+  const roots = (await readFile(
+    path.join(repoRoot, "apps", "kernel", "slice-linux-docker", "runtime-source-roots.txt"),
+    "utf8",
+  )).split("\n").filter(Boolean)
   const listed = await runCommand(
     "git",
     ["ls-files", "--cached", "--others", "--exclude-standard", ...roots],
