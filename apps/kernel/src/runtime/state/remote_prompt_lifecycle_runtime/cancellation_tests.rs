@@ -241,6 +241,7 @@ async fn temporary_cancel_response_wait_keeps_home_app_lock_available() {
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();
     let attachment_id = attachment.id().to_string();
+    let expected_home_prompt_id = prompt.id().to_string();
     let response_prompt = prompt.clone().with_id("worker-local-cancel-lock-prompt");
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
@@ -311,7 +312,7 @@ async fn temporary_cancel_response_wait_keeps_home_app_lock_available() {
                 home_prompt_id,
                 worker_provider_run_id,
             } if leased_agent_id == LEASED_AGENT_ID
-                && home_prompt_id == "home-prompt-cancel-lock"
+                && home_prompt_id == expected_home_prompt_id
                 && worker_provider_run_id == WORKER_RUN_ID
         ));
         request_seen_tx
