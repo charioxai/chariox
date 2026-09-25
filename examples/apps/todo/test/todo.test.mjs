@@ -100,3 +100,13 @@ test('App errors reach callers with a code, and limits match the kernel', async 
   for (let index = 0; index < 150; index += 1) await kernel.tools.get('create_todo')({ title: `t${index}` });
   await assert.rejects(kernel.tools.get('create_todo')({ title: 'one more' }), { code: 'LIMIT_EXCEEDED' });
 });
+
+test('the App reports its own limit before the kernel value cap, for any text', async () => {
+  const kernel = fakeKernel();
+  const notes = '\u{1F600}'.repeat(1000);
+  let created = 0;
+  await assert.rejects(async () => {
+    for (; created < 150; created += 1) await kernel.tools.get('create_todo')({ title: `t${created}`, notes });
+  }, (error) => error instanceof AppError && error.code === 'LIMIT_EXCEEDED' && /too large/.test(error.message));
+  assert.ok(created > 0 && created < 150);
+});

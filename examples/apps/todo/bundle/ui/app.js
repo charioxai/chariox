@@ -23,7 +23,12 @@ async function call(tool, input = {}) {
 function render() {
   const openOnly = $("open-only").checked
   const shown = openOnly ? todos.filter((todo) => !todo.done) : todos
+  // Keep keyboard/screen-reader focus on the same row and control.
+  const active = document.activeElement
+  const row = active?.closest?.("li")?.dataset.id
+  const control = active?.tagName === "BUTTON" ? "button" : active?.type === "checkbox" ? "input" : null
   list.replaceChildren(...shown.map(item))
+  if (row && control) list.querySelector(`li[data-id="${CSS.escape(row)}"] ${control}`)?.focus()
   if (!status.classList.contains("error")) {
     say(shown.length ? `${todos.filter((t) => !t.done).length} open` : "Nothing to do.")
   }
@@ -65,15 +70,16 @@ function item(todo) {
 async function refresh() {
   const result = await call("list_todos")
   const next = JSON.stringify(result.todos)
-  if (next === shown && !status.classList.contains("error")) return
+  if (next === shown) return
   shown = next
   todos = result.todos
-  say("")
   render()
 }
 
+// An error stays visible until the person's next successful change.
 async function mutate(tool, input) {
   await call(tool, input)
+  say("")
   await refresh()
 }
 

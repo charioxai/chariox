@@ -9,10 +9,11 @@ const SCHEMA = 1;
 // One App automation routes `todo_due` to the workflow the user chose with
 // `/app automation add <installation> reminders todo_due …`.
 const AUTOMATION = 'reminders';
-// One `todos` value is at most 256 KiB and an installation has at most 256
-// wakes, so the App's own limits stay below both.
+// An installation has at most 256 wakes; MAX_TODOS keeps due Todos below
+// that. The single `todos` value is at most 256 KiB of UTF-8, checked before
+// each write so the App reports its own limit.
 const MAX_TODOS = 150;
-const MAX_DUE = 200;
+const MAX_VALUE_BYTES = 256 * 1024;
 // Without a configured (active) automation, or for a very old due time, the
 // kernel refuses the occurrence; the reminder is still recorded.
 const OPTIONAL_OCCURRENCE = new Set(['NOT_FOUND', 'AUTOMATION_INACTIVE', 'OCCURRENCE_TOO_OLD']);
@@ -32,6 +33,9 @@ export default function register(chariox) {
       const { todos, version } = await load();
       const next = todos.map(todo => ({ ...todo }));
       const result = mutate(next);
+      if (Buffer.byteLength(JSON.stringify({ todos: next })) > MAX_VALUE_BYTES) {
+        throw fail('LIMIT_EXCEEDED', 'Todos are too large; shorten notes or delete finished Todos');
+      }
       try {
         await chariox.state.transaction({
           schemaVersion: SCHEMA,
@@ -69,9 +73,6 @@ export default function register(chariox) {
 
   chariox.tools.register('create_todo', ({ title, due_at_ms: dueAtMs, notes }) => change(todos => {
     if (todos.length >= MAX_TODOS) throw fail('LIMIT_EXCEEDED', `At most ${MAX_TODOS} Todos`);
-    if (dueAtMs != null && dueCount(todos) >= MAX_DUE) {
-      throw fail('LIMIT_EXCEEDED', `At most ${MAX_DUE} open Todos with a due time`);
-    }
     const todo = { id: randomUUID().slice(0, 8), title, notes: notes ?? '', due_at_ms: dueAtMs ?? null,
       done: false, reminded: false, revision: 1, created_at_ms: Date.now() };
     todos.push(todo);
@@ -83,9 +84,6 @@ export default function register(chariox) {
     if (title !== undefined) todo.title = title;
     if (notes !== undefined) todo.notes = notes;
     if (dueAtMs !== undefined) {
-      if (dueAtMs != null && todo.due_at_ms == null && dueCount(todos) >= MAX_DUE) {
-        throw fail('LIMIT_EXCEEDED', `At most ${MAX_DUE} open Todos with a due time`);
-      }
       todo.due_at_ms = dueAtMs;
       todo.reminded = false;
     }
@@ -141,8 +139,4 @@ export default function register(chariox) {
       invocation: { prompt: `The Todo "${todo.title}" is due now.`, artifacts: [] },
     };
   }
-}
-
-function dueCount(todos) {
-  return todos.filter(todo => todo.due_at_ms != null && !todo.done).length;
 }
