@@ -200,6 +200,37 @@ test("upgrade recovers interrupted phases and rolls back failed migration or hea
   assert.ok(upgradeSource.includes("write_phase rolled_back"))
 })
 
+test("Path-1 upgrade checks both effective units before recovery and after reload", async (context) => {
+  const guard = upgradeSource.match(/assert_path1_units_have_no_dropins\(\) \{\n[\s\S]*?^\}/m)?.[0]
+  assert.ok(guard, "upgrade must inspect effective systemd drop-ins")
+
+  const initialGuard = indexOf(upgradeSource, "assert_path1_units_have_no_dropins\nrecover_transaction", "pre-recovery guard")
+  const transaction = indexOf(upgradeSource, "pending_transaction=$chariox_root/.managed-kernel-upgrade.pending", "transaction preparation")
+  assert.ok(initialGuard < transaction, "drop-ins must block recovery and transaction writes")
+  assert.match(upgradeSource, /systemctl daemon-reload \|\| return 1\n\s*assert_path1_units_have_no_dropins \|\| return 1\n[\s\S]*?systemctl start "\$service_name"/, "rollback must recheck after reload before starting")
+  assert.match(upgradeSource, /if ! systemctl daemon-reload \\\n\s*\|\| ! assert_path1_units_have_no_dropins \\\n[\s\S]*?\|\| ! systemctl start "\$service_name"/, "activation must recheck after reload before starting")
+
+  const scratch = await mkdtemp(join(tmpdir(), "chariox-upgrade-dropin-test-"))
+  context.after(() => rm(scratch, { recursive: true, force: true }))
+  const systemctl = join(scratch, "systemctl")
+  await writeFile(systemctl, '#!/bin/sh\ncase "$*" in\n  *chariox-disposable-worker-bootstrap.service) printf "%s" "${SYSTEMD_WORKER_DROP_IN_PATHS:-}" ;;\n  *) printf "%s" "${SYSTEMD_HOME_DROP_IN_PATHS:-}" ;;\nesac\n')
+  await chmod(systemctl, 0o755)
+  const command = `${guard}\nassert_path1_units_have_no_dropins\n`
+  const env = { ...process.env, PATH: `${scratch}:${process.env.PATH}`, managed_provider_topology: "path1" }
+  for (const [name, home, worker, expectedExit] of [
+    ["clean", "", "", 0],
+    ["home drop-in", "/etc/systemd/system/home.d/50-hardening.conf", "", 1],
+    ["worker drop-in", "", "/etc/systemd/system/worker.d/50-hardening.conf", 1],
+  ]) {
+    const result = spawnSync("/bin/sh", ["-c", command], {
+      encoding: "utf8",
+      env: { ...env, SYSTEMD_HOME_DROP_IN_PATHS: home, SYSTEMD_WORKER_DROP_IN_PATHS: worker },
+    })
+    assert.equal(result.status, expectedExit, `${name}: ${result.stderr}`)
+    if (expectedExit) assert.match(result.stderr, /Path-1 service .* has systemd drop-ins/)
+  }
+})
+
 test("release paths stay separate from mutable managed home state", () => {
   assert.ok(installSource.includes("managed_home=$install_root/home/chariox"))
   assert.ok(installSource.includes("managed_state=$managed_home/.chariox"))
