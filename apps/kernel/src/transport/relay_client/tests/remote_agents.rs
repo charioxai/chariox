@@ -641,7 +641,7 @@ async fn assert_remote_native_terminal_resize(
 #[test]
 fn remote_machine_agents_execute_prompts_through_the_home_session() {
     run_async_with_large_test_stack("remote-agents-execute-prompts", || {
-        remote_machine_agents_execute_prompts_through_the_home_session_async(false)
+        remote_machine_agents_execute_prompts_through_the_home_session_async(false, false)
     });
 }
 
@@ -650,13 +650,21 @@ fn remote_agent_message_steers_live_worker_without_a_user_queue() {
     // Fixed worker IDs must not retain the previous fixture's generated trust key.
     for _ in 0..2 {
         run_async_with_large_test_stack("remote-agent-direct-message", || {
-            remote_machine_agents_execute_prompts_through_the_home_session_async(true)
+            remote_machine_agents_execute_prompts_through_the_home_session_async(true, false)
         });
     }
 }
 
+#[test]
+fn remote_agent_message_steer_keeps_home_app_lock_available_while_worker_reply_waits() {
+    run_async_with_large_test_stack("remote-agent-message-home-lock", || {
+        remote_machine_agents_execute_prompts_through_the_home_session_async(true, true)
+    });
+}
+
 async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
     direct_message_only: bool,
+    hold_agent_message_reply: bool,
 ) {
     let _relay_test_guard = relay_client_test_guard().await;
     let _test_home = RelayTestHome::new();
@@ -979,6 +987,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
     );
     assert_ne!(projected_provider_run_id, local_provider_run_id);
 
+    let mut held_reply_observation = None;
     if direct_message_only {
         let sender_prompt_id = {
             let mut app = app_home.lock().await;
@@ -1019,15 +1028,59 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
             "origin_prompt_id": sender_prompt_id,
             "idempotency_key": "remote-direct-message",
         });
-        let direct_message = router
-            .runtime_state()
-            .dispatch_authenticated_runtime_tool_call(
-                &sender_token,
-                crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
-                direct_message_args.clone(),
-            )
+        let direct_message = if hold_agent_message_reply {
+            let pending_before = registry.read().await.pending_request_count();
+            // Keep the worker from producing a reply until the relay has recorded the steer.
+            let worker_app_guard = app_worker.lock().await;
+            let dispatch_router = Arc::clone(&router);
+            let dispatch_sender_token = sender_token.clone();
+            let dispatch_args = direct_message_args.clone();
+            let dispatch = tokio::spawn(async move {
+                dispatch_router
+                    .runtime_state()
+                    .dispatch_authenticated_runtime_tool_call(
+                        &dispatch_sender_token,
+                        crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
+                        dispatch_args,
+                    )
+                    .await
+            });
+            let relay_reply_is_waiting = tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if registry.read().await.pending_request_count() > pending_before {
+                        break;
+                    }
+                    sleep(Duration::from_millis(10)).await;
+                }
+            })
             .await
-            .expect("agent message should steer to the leased worker");
+            .is_ok();
+            let mut home_app_lock_available = false;
+            for _ in 0..20 {
+                if let Ok(guard) = app_home.try_lock() {
+                    home_app_lock_available = true;
+                    drop(guard);
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+            drop(worker_app_guard);
+            let direct_message = dispatch
+                .await
+                .expect("agent message dispatch task should join")
+                .expect("agent message should steer to the leased worker");
+            held_reply_observation = Some((relay_reply_is_waiting, home_app_lock_available));
+            direct_message
+        } else {
+            router
+                .runtime_state()
+                .dispatch_authenticated_runtime_tool_call(
+                    &sender_token,
+                    crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
+                    direct_message_args.clone(),
+                )
+                .await
+                .expect("agent message should steer to the leased worker")
+        };
         assert!(direct_message.ok, "{:?}", direct_message.payload);
         assert_eq!(direct_message.payload["status"], "steered");
         assert_eq!(
@@ -1393,6 +1446,16 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
         .expect("worker connector should join");
     let _ = server_shutdown_tx.send(());
     server_task.await.expect("server task should join");
+    if let Some((relay_reply_is_waiting, home_app_lock_available)) = held_reply_observation {
+        assert!(
+            relay_reply_is_waiting,
+            "fake relay should have a routed agent-message request pending while the worker is paused"
+        );
+        assert!(
+            home_app_lock_available,
+            "home DaemonApp lock must remain available while the remote worker reply is pending"
+        );
+    }
 }
 #[tokio::test(flavor = "multi_thread")]
 async fn remote_machine_agents_materialize_file_attachments_on_the_worker() {
