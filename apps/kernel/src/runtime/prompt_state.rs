@@ -71,6 +71,54 @@ struct PromptStateOwnerState {
 }
 
 impl PromptStateOwner {
+    /// Commit delivery settlement while admission/cancellation cannot replace
+    /// this prompt. The callback must not reenter this owner.
+    pub(crate) fn settle_active_remote_dispatch_if_matches(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        prompt_id: &str,
+        delivered_run_id: Option<&str>,
+        commit: impl FnOnce(
+            &PromptQueueItem,
+            Option<PromptQueueItem>,
+            VecDeque<PromptQueueItem>,
+        ) -> Result<bool, DaemonError>,
+    ) -> Result<Option<PromptQueueItem>, DaemonError> {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = owner.ensure_agent_state(session, agent_id);
+        let Some(current) = state
+            .active_prompt
+            .as_ref()
+            .filter(|prompt| prompt.id() == prompt_id)
+        else {
+            return Ok(None);
+        };
+        let mut settled = current.clone();
+        let next = if let Some(run_id) = delivered_run_id {
+            settled.set_durable_delivery(
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some(run_id.to_string()),
+                None,
+            );
+            if settled.status() == PromptStatus::Dispatching {
+                settled.set_status(PromptStatus::Running);
+            }
+            Some(settled.clone())
+        } else {
+            settled.set_status(PromptStatus::Cancelled);
+            None
+        };
+        if !commit(current, next.clone(), state.queued_prompts.clone())? {
+            return Ok(None);
+        }
+        state.active_prompt = next;
+        Ok(Some(settled))
+    }
+
     pub(crate) fn try_claim_active_prompt_delivery_settlement(
         &self,
         session: &RuntimeSession,

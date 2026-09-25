@@ -6,6 +6,68 @@
 use super::*;
 
 impl KernelRuntimeOwnedState {
+    pub(super) fn settle_remote_dispatch_if_current(
+        &self,
+        dispatch: &crate::app::KernelRemotePromptDispatch,
+        delivered_run_id: Option<&str>,
+    ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
+        let mut sessions = self.session_store.write();
+        let session = sessions.get_session(&dispatch.session_id)?;
+        self.prompt_state_owner
+            .settle_active_remote_dispatch_if_matches(
+                &session,
+                &dispatch.agent_id,
+                &dispatch.prompt_id,
+                delivered_run_id,
+                |previous, active, queued| {
+                    // Lock order: session store -> prompt owner -> agent store.
+                    // No projection/history helper may reenter prompt ownership here.
+                    let mut agents = self.agent_store.write();
+                    let agent = agents.get_agent(&dispatch.agent_id)?;
+                    if !agent.remote_execution().is_some_and(|binding| {
+                        binding.worker_kernel_id == dispatch.worker_kernel_id
+                            && binding.leased_agent_id == dispatch.leased_agent_id
+                    }) {
+                        return Ok(false);
+                    }
+                    let mirrored = sessions.mirror_agent_prompt_state(
+                        &dispatch.session_id,
+                        &dispatch.agent_id,
+                        active,
+                        queued.clone(),
+                    )?;
+                    if let Err(error) =
+                        self.persist_prompt_session_state(&mirrored, &dispatch.agent_id)
+                    {
+                        sessions.mirror_agent_prompt_state(
+                            &dispatch.session_id,
+                            &dispatch.agent_id,
+                            Some(previous.clone()),
+                            queued,
+                        )?;
+                        return Err(error);
+                    }
+                    agents.set_remote_execution_active_worker_provider_run_id(
+                        &dispatch.agent_id,
+                        delivered_run_id.map(str::to_string),
+                    )?;
+                    if delivered_run_id.is_some() {
+                        if agent.state() == crate::agent::AgentState::Error {
+                            agents.set_agent_state(
+                                &dispatch.agent_id,
+                                crate::agent::AgentState::Idle,
+                            )?;
+                        }
+                    } else {
+                        agents.set_agent_processing(&dispatch.agent_id, false)?;
+                        agents
+                            .set_agent_state(&dispatch.agent_id, crate::agent::AgentState::Error)?;
+                    }
+                    Ok(true)
+                },
+            )
+    }
+
     pub(super) fn advance_next_queued_remote_prompt_dispatch(
         &self,
         session_id: &str,

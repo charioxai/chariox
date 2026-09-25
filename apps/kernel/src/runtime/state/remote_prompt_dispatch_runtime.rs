@@ -849,23 +849,18 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         let session_id = dispatch.session_id.clone();
         let agent_id = dispatch.agent_id.clone();
+        let Some(settled_prompt) = self.owned.settle_remote_dispatch_if_current(
+            &dispatch,
+            result.as_ref().ok().map(String::as_str),
+        )?
+        else {
+            return Ok(());
+        };
+        self.owned.provider_process_projection.invalidate();
         let should_start_projection_drain = {
             let owned = &self.owned;
             match result {
                 Ok(remote_provider_run_id) => {
-                    if owned.agent_store.get_agent(&dispatch.agent_id)?.state()
-                        == crate::agent::AgentState::Error
-                    {
-                        let _ = owned
-                            .agent_store
-                            .set_agent_state(&dispatch.agent_id, crate::agent::AgentState::Idle)?;
-                    }
-                    let _ = owned
-                        .agent_store
-                        .set_remote_execution_active_worker_provider_run_id(
-                            &dispatch.agent_id,
-                            Some(remote_provider_run_id.clone()),
-                        )?;
                     let _ = owned.session_snapshot(&dispatch.session_id)?;
                     owned.echo_prompt_to_other_attachments(
                         &dispatch.session_id,
@@ -880,14 +875,6 @@ impl KernelRuntimeState {
                         crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Delivered,
                         None,
                     );
-                    owned.mark_active_prompt_delivery(
-                        &dispatch.session_id,
-                        &dispatch.agent_id,
-                        &dispatch.prompt_id,
-                        crate::session::DurablePromptDeliveryPhase::Delivered,
-                        Some(remote_provider_run_id),
-                        None,
-                    )?;
                     Ok(true)
                 }
                 Err(error) => {
@@ -898,22 +885,26 @@ impl KernelRuntimeState {
                     let recipients = owned
                         .attachment_store
                         .list_session_attachment_ids(&dispatch.session_id);
-                    owned.fan_out_terminal_outputs_to_recipients(
+                    let recipients = owned.agent_trace_recipient_attachment_ids(
                         &dispatch.session_id,
+                        Some(&dispatch.agent_id),
                         recipients,
-                        vec![
-                            super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
-                                provider_run_id: provider_run_id.clone(),
-                                agent_id: Some(dispatch.agent_id.clone()),
-                                kind: crate::terminal::TerminalOutputKind::ProviderError,
-                                merge_key: merge_key.clone(),
-                                bytes: message.as_bytes().to_vec(),
-                            },
-                        ],
                     );
-                    owned.append_history_entry(
-                        &dispatch.session_id,
-                        SessionHistoryEntry::provider_output(
+                    owned.terminal_stream.fan_out_outputs(vec![
+                        crate::terminal::TerminalOutputAppend {
+                            session_id: dispatch.session_id.clone(),
+                            provider_run_id: provider_run_id.clone(),
+                            agent_id: Some(dispatch.agent_id.clone()),
+                            prompt_origin: Some(dispatch.prompt_origin),
+                            source_attachment_id: Some(dispatch.source_attachment_id.clone()),
+                            kind: crate::terminal::TerminalOutputKind::ProviderError,
+                            merge_key: merge_key.clone(),
+                            recipient_attachment_ids: recipients,
+                            bytes: message.as_bytes().to_vec(),
+                        },
+                    ]);
+                    owned.append_operational_history_entry_with_context(
+                        &SessionHistoryEntry::provider_output(
                             &dispatch.session_id,
                             &provider_run_id,
                             Some(&dispatch.agent_id),
@@ -923,26 +914,30 @@ impl KernelRuntimeState {
                         )
                         .with_prompt_origin(dispatch.prompt_origin)
                         .with_source_attachment_id(Some(dispatch.source_attachment_id.clone())),
+                        crate::history::HistoryEventTurnContext {
+                            session_id: Some(dispatch.session_id.clone()),
+                            agent_id: Some(dispatch.agent_id.clone()),
+                            provider_run_id: Some(provider_run_id.clone()),
+                            prompt_id: Some(dispatch.prompt_id.clone()),
+                            turn_id: Some(dispatch.prompt_id.clone()),
+                            workflow_run_id: settled_prompt.workflow_run_id().map(str::to_string),
+                            workflow_node_id: settled_prompt
+                                .workflow_node_run_id()
+                                .map(str::to_string),
+                            ..Default::default()
+                        },
                     );
                     owned.update_metaagent_event_prompt_delivery_for_prompt(
                         &dispatch.prompt_id,
                         crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Failed,
                         Some(error.to_string()),
                     );
-                    let _ = owned
-                        .agent_store
-                        .set_remote_execution_active_worker_provider_run_id(
-                            &dispatch.agent_id,
-                            None,
-                        );
-                    let _ =
-                        owned.cancel_active_prompt_only(&dispatch.session_id, &dispatch.agent_id);
-                    let _ = owned
-                        .agent_store
-                        .set_agent_processing(&dispatch.agent_id, false);
-                    let _ = owned
-                        .agent_store
-                        .set_agent_state(&dispatch.agent_id, crate::agent::AgentState::Error);
+                    owned.record_cancelled_prompt_settlement(
+                        &dispatch.session_id,
+                        &dispatch.agent_id,
+                        &settled_prompt,
+                        settled_prompt.durable_delivery_provider_run_id(),
+                    );
                     let _ = owned.session_snapshot(&dispatch.session_id);
                     Err(error)
                 }
@@ -2297,6 +2292,7 @@ mod tests {
     }
 
     async fn superseded_remote_dispatch_fixture(
+        rebind: bool,
     ) -> (KernelRuntimeState, crate::app::KernelRemotePromptDispatch) {
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -2367,10 +2363,12 @@ mod tests {
             .unwrap();
         assert_eq!(cancelled.id(), stale_dispatch.prompt_id);
         let mut successor_binding = binding;
-        successor_binding.worker_kernel_id = "worker-b".to_string();
-        successor_binding.worker_machine_id = "machine-b".to_string();
-        successor_binding.execution_lease_id = "lease-b".to_string();
-        successor_binding.leased_agent_id = "leased-agent-b".to_string();
+        if rebind {
+            successor_binding.worker_kernel_id = "worker-b".to_string();
+            successor_binding.worker_machine_id = "machine-b".to_string();
+            successor_binding.execution_lease_id = "lease-b".to_string();
+            successor_binding.leased_agent_id = "leased-agent-b".to_string();
+        }
         successor_binding.active_worker_provider_run_id = Some("worker-run-b".to_string());
         runtime
             .owned
@@ -2394,8 +2392,11 @@ mod tests {
         (runtime, stale_dispatch)
     }
 
-    async fn assert_late_remote_dispatch_preserves_successor(result: Result<String, DaemonError>) {
-        let (runtime, stale_dispatch) = superseded_remote_dispatch_fixture().await;
+    async fn assert_late_remote_dispatch_preserves_successor(
+        result: Result<String, DaemonError>,
+        rebind: bool,
+    ) {
+        let (runtime, stale_dispatch) = superseded_remote_dispatch_fixture(rebind).await;
         let session_id = stale_dispatch.session_id.clone();
         let agent_id = stale_dispatch.agent_id.clone();
         let before_agent = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
@@ -2461,15 +2462,37 @@ mod tests {
 
     #[tokio::test]
     async fn late_remote_dispatch_success_preserves_successor() {
-        assert_late_remote_dispatch_preserves_successor(Ok("worker-run-a-late".to_string())).await;
+        assert_late_remote_dispatch_preserves_successor(Ok("worker-run-a-late".to_string()), true)
+            .await;
     }
 
     #[tokio::test]
     async fn late_remote_dispatch_error_preserves_successor() {
-        assert_late_remote_dispatch_preserves_successor(Err(DaemonError::LocalTransport {
-            operation: "submit remote prompt",
-            message: "late rejection of prompt A".to_string(),
-        }))
+        assert_late_remote_dispatch_preserves_successor(
+            Err(DaemonError::LocalTransport {
+                operation: "submit remote prompt",
+                message: "late rejection of prompt A".to_string(),
+            }),
+            true,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn late_remote_dispatch_success_on_same_binding_preserves_successor() {
+        assert_late_remote_dispatch_preserves_successor(Ok("worker-run-a-late".to_string()), false)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn late_remote_dispatch_error_on_same_binding_preserves_successor() {
+        assert_late_remote_dispatch_preserves_successor(
+            Err(DaemonError::LocalTransport {
+                operation: "submit remote prompt",
+                message: "late rejection of prompt A on the same binding".to_string(),
+            }),
+            false,
+        )
         .await;
     }
 

@@ -502,6 +502,14 @@ impl KernelRuntimeOwnedState {
             workflow_run_id_override,
             workflow_node_run_id_override,
         );
+        self.append_operational_history_entry_with_context(entry, context);
+    }
+
+    pub(super) fn append_operational_history_entry_with_context(
+        &self,
+        entry: &crate::history::SessionHistoryEntry,
+        context: crate::history::HistoryEventTurnContext,
+    ) {
         let update = {
             let _append_guard = self.transcript_history_append_guard();
             self.append_operational_history_entry_unlocked(entry, context)
