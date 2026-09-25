@@ -144,6 +144,62 @@ test("waiting room activation prepares a selected remote owner before creating t
   assert.equal(harness.createdLaunches[0]?.launch.workerKernelRef ?? null, null)
 })
 
+test("waiting room waits for kernel-owned Project setup before attaching an ordinary session", async () => {
+  let releaseSetup = () => {}
+  let setupStarted = () => {}
+  const setupGate = new Promise<void>((resolve) => { releaseSetup = resolve })
+  const enteredSetup = new Promise<void>((resolve) => { setupStarted = resolve })
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: {
+      action: "create",
+      launch: {
+        provider: "opencode",
+        model: "gpt-5.4",
+        effort: "high",
+        projectSelection: { kind: "existing", project_id: "project-1" },
+      },
+    },
+    sessionOverrides: { project_id: "project-1" },
+    prepareProjectEnvironment: async () => {
+      harness.calls.push("prepareProjectEnvironment")
+      setupStarted()
+      await setupGate
+    },
+  })
+
+  const pending = harness.controller.activate()
+  await enteredSetup
+  assert.deepEqual(harness.attachedSessions, [])
+  releaseSetup()
+  await pending
+  assert.deepEqual(harness.calls.slice(0, 4), [
+    "createSession", "prepareProjectEnvironment", "attachBinding", "flash:info:created session Review in /worktree · workspace live sync config default",
+  ])
+})
+
+test("waiting room deletes an ordinary session whose Project setup fails", async () => {
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: {
+      action: "create",
+      launch: {
+        provider: "opencode",
+        model: "gpt-5.4",
+        effort: "high",
+        projectSelection: { kind: "existing", project_id: "project-1" },
+      },
+    },
+    sessionOverrides: { project_id: "project-1" },
+    prepareProjectEnvironment: async () => { throw new Error("validation failed") },
+  })
+
+  await harness.controller.activate()
+  assert.deepEqual(harness.attachedSessions, [])
+  assert.deepEqual(harness.deletedSessions, [{ sessionId: "created-session", workspacePath: "/workspace" }])
+  assert.match(harness.calls.at(-1) ?? "", /flash:error:validation failed/)
+})
+
 test("waiting room activation creates and starts new headed slices before session creation", async () => {
   const launch: WaitingRoomLaunchConfig = {
     provider: "opencode",
@@ -627,6 +683,9 @@ test("waiting room activation creates the session on the prepared managed kernel
         assertActive: () => {
           harness.calls.push("assertManagedLaunchActive")
         },
+        prepareProject: async () => {
+          harness.calls.push("prepareProject")
+        },
         commit: async () => {
           harness.calls.push("commitManagedLaunch")
         },
@@ -662,6 +721,8 @@ test("waiting room activation creates the session on the prepared managed kernel
     "assertManagedLaunchActive",
     "assertManagedLaunchActive",
     "createSession",
+    "assertManagedLaunchActive",
+    "prepareProject",
     "assertManagedLaunchActive",
     "attachBinding",
     "assertManagedLaunchActive",
@@ -705,6 +766,7 @@ test("waiting room activation removes a managed session cancelled during creatio
       assertActive: () => {
         if (!active) throw new Error("managed launch cancelled")
       },
+      prepareProject: async () => {},
       commit: async () => {
         harness.calls.push("commitManagedLaunch")
       },
@@ -765,6 +827,7 @@ test("waiting room activation undoes target attachment before rolling back its c
       assertActive: () => {
         if (!active) throw new Error("managed launch cancelled")
       },
+      prepareProject: async () => {},
       commit: async () => {
         harness.calls.push("commitManagedLaunch")
       },
@@ -811,6 +874,7 @@ function createHarness(options: {
   prepareManagedSessionLaunch?: (
     launch: WaitingRoomLaunchConfig,
   ) => Promise<WaitingRoomPreparedManagedLaunch>
+  prepareProjectEnvironment?: (session: RuntimeSession) => Promise<void>
   waitingRoomState?: Partial<WaitingRoomState>
   remoteState?: WaitingRoomRemoteState
 }) {
@@ -944,6 +1008,7 @@ function createHarness(options: {
         },
       }
       : {}),
+    prepareProjectEnvironment: options.prepareProjectEnvironment ?? (async () => {}),
     attachBinding: async (session, createdSession, launch) => {
       calls.push("attachBinding")
       attachedSessions.push({ sessionId: session.id, createdSession, launch })
