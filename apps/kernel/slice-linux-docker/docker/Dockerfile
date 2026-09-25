@@ -22,6 +22,9 @@ COPY apps/relay apps/relay
 COPY examples/workflow-code examples/workflow-code
 COPY packages/aegs-sdk packages/aegs-sdk
 COPY packages/event-protocol packages/event-protocol
+COPY packages/app-package packages/app-package
+COPY packages/app-runtime packages/app-runtime
+COPY packages/app-sdk packages/app-sdk
 COPY apps/kernel/slice-linux-docker/prebuilt /opt/chariox-prebuilt
 ARG CHARIOX_PREBUILT_RUNTIME=0
 ARG CARGO_PROFILE_RELEASE_OPT_LEVEL=3

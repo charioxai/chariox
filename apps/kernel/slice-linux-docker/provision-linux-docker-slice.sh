@@ -25,14 +25,14 @@ runtime_source_revision() {
         adapters/rust \
         apps/aegs-dummy apps/kernel apps/relay \
         examples/workflow-code \
-        packages/aegs-sdk packages/event-protocol
+        packages/aegs-sdk packages/event-protocol packages/app-package packages/app-runtime packages/app-sdk
     else
       find \
         Cargo.toml Cargo.lock \
         adapters/rust \
         apps/aegs-dummy apps/kernel apps/relay \
         examples/workflow-code \
-        packages/aegs-sdk packages/event-protocol \
+        packages/aegs-sdk packages/event-protocol packages/app-package packages/app-runtime packages/app-sdk \
         -type f \
         ! -path '*/target/*' \
         ! -path '*/node_modules/*' \
