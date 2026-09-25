@@ -88,8 +88,9 @@ export async function executeAppCommand(
     return { ok: true, message: formatInstallation(data.installation), data }
   }
   if (response.AppViewOpened) {
-    const data = expect<{ installation_id: string; target_id: string; origin: string }>(response, "AppViewOpened")
-    return { ok: true, message: `Opened ${data.installation_id} as a Room browser Tab (${data.origin}). Use /room view to see it.`, data }
+    const data = expect<{ installation_id: string; target_id: string; origin: string; bound_agent_id?: string | null }>(response, "AppViewOpened")
+    const bound = data.bound_agent_id ? ` Its tools are available to the focus agent (${data.bound_agent_id}).` : ""
+    return { ok: true, message: `Opened ${data.installation_id} as a Room browser Tab (${data.origin}). Use /room view to see it.${bound}`, data }
   }
   if (response.AppWorker) {
     const data = expect<{ worker: AppWorkerSummary }>(response, "AppWorker")

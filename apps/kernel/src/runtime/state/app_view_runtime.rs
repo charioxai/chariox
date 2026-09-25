@@ -126,10 +126,12 @@ impl KernelRuntimeState {
         let _ = self
             .reconcile_browser_controller_environment(session_id)
             .await;
+        let bound_agent_id = self.foreground_app(session_id, &owner, installation).await;
         Ok(LocalDaemonResponse::AppViewOpened {
             installation_id: installation.to_owned(),
             target_id: opened.target_id,
             origin: opened.origin,
+            bound_agent_id,
         })
     }
 

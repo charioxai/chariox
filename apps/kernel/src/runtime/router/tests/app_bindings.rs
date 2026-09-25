@@ -319,3 +319,47 @@ async fn ask_app_self_grant_waits_for_the_existing_permission_interaction() {
         );
     }
 }
+
+async fn granted(app: &Arc<Mutex<DaemonApp>>, agent: &str) -> bool {
+    app.lock()
+        .await
+        .agents()
+        .get_agent(agent)
+        .unwrap()
+        .has_extension_grant(ExtensionKind::App, "installed")
+}
+
+#[tokio::test]
+async fn a_foreground_app_binds_the_focus_agent_follows_focus_and_uninstall_unbinds() {
+    let fixture = Fixture::new();
+    // Ask mode: a person foregrounding an App is an explicit selection.
+    let (app, router, session, first, _auth) =
+        fixture.router(crate::provider::AgentPermissionLevel::Required);
+    let second = {
+        let mut app = app.lock().await;
+        crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(CreateAgentRequest::new(&session, "dev-stub").with_owner_user_id("alice"))
+            .unwrap()
+            .id()
+            .to_owned()
+    };
+    let state = &router.runtime_state;
+    state.focus_agent(&session, &first, "alice").await.unwrap();
+    // Only the App's owner foregrounds it for their agents.
+    assert_eq!(
+        state.foreground_app(&session, "bob", "installed").await,
+        None
+    );
+    assert!(!granted(&app, &first).await);
+    assert_eq!(
+        state.foreground_app(&session, "alice", "installed").await,
+        Some(first.clone())
+    );
+    assert!(granted(&app, &first).await && !granted(&app, &second).await);
+    // The next focus agent gets the foreground App too.
+    state.focus_agent(&session, &second, "alice").await.unwrap();
+    assert!(granted(&app, &second).await);
+    state.unbind_uninstalled_app("alice", "installed").await;
+    assert!(!granted(&app, &first).await && !granted(&app, &second).await);
+    assert_eq!(state.app_control().views().foreground(&session), None);
+}

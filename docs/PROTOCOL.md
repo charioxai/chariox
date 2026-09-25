@@ -1819,6 +1819,14 @@ Workflow trigger and deployment direction:
   generation must run to pass its health check, so an App the user had
   stopped is running after a committed update. Views opened
   on the old generation answer `APP_VIEW_STALE` until reopened.
+- protocol 350: opening an App view foregrounds the App in its session and
+  binds it to the session's focus agent with the same `ExtensionGrant::App` an
+  explicit grant or an agent's self-grant creates (a direct user action, so no
+  separate approval, under YOLO or Ask). `AppViewOpened` gains
+  `bound_agent_id` (null with no focus agent or when the opener does not own
+  the App). A later focus change binds the new focus agent too; bindings are
+  additive grants. Uninstall revokes the App's grants from every agent, which
+  refreshes their runtime tool catalogs.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic
