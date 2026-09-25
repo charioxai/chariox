@@ -849,12 +849,75 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         let session_id = dispatch.session_id.clone();
         let agent_id = dispatch.agent_id.clone();
-        let Some(settled_prompt) = self.owned.settle_remote_dispatch_if_current(
+        use super::remote_prompt_owned_state::RemotePromptDispatchSettlement;
+        let settled_prompt = match self.owned.settle_remote_dispatch_if_current(
             &dispatch,
             result.as_ref().ok().map(String::as_str),
-        )?
-        else {
-            return Ok(());
+        )? {
+            RemotePromptDispatchSettlement::Settled(prompt) => prompt,
+            RemotePromptDispatchSettlement::Superseded => return Ok(()),
+            RemotePromptDispatchSettlement::BindingChanged(prompt) => {
+                let workflow_id = prompt.workflow_run_id().and_then(|run_id| {
+                    self.owned
+                        .session_store
+                        .get_session(&dispatch.session_id)
+                        .ok()
+                        .and_then(|session| {
+                            session
+                                .workflow_run(run_id)
+                                .map(|run| run.workflow_id().to_string())
+                        })
+                });
+                let message = format!(
+                    "Remote delivery of prompt `{}` is uncertain because its worker binding changed before acknowledgement. The prompt remains pending; it was not replayed or cancelled. Check the previous worker's turn before deciding whether to retry.",
+                    dispatch.prompt_id,
+                );
+                crate::logging::warn_with_fields(
+                    "daemon.remote_prompt_dispatch",
+                    &message,
+                    serde_json::json!({
+                        "session_id": dispatch.session_id,
+                        "agent_id": dispatch.agent_id,
+                        "prompt_id": dispatch.prompt_id,
+                        "worker_kernel_id": dispatch.worker_kernel_id,
+                        "leased_agent_id": dispatch.leased_agent_id,
+                        "delivery_uncertain": true,
+                        "prompt_replayed": false,
+                    }),
+                );
+                let provider_run_id = format!("remote-dispatch:{}", dispatch.prompt_id);
+                let merge_key = Some(format!("remote-dispatch-uncertain:{}", dispatch.prompt_id));
+                self.owned.fan_out_remote_dispatch_error(
+                    &dispatch,
+                    &provider_run_id,
+                    merge_key.clone(),
+                    &message,
+                );
+                self.owned.append_operational_history_entry_with_context(
+                    &SessionHistoryEntry::provider_output(
+                        &dispatch.session_id,
+                        &provider_run_id,
+                        Some(&dispatch.agent_id),
+                        crate::terminal::TerminalOutputKind::ProviderError,
+                        merge_key,
+                        message,
+                    )
+                    .with_prompt_origin(dispatch.prompt_origin)
+                    .with_source_attachment_id(Some(dispatch.source_attachment_id.clone())),
+                    crate::history::HistoryEventTurnContext {
+                        session_id: Some(dispatch.session_id.clone()),
+                        agent_id: Some(dispatch.agent_id.clone()),
+                        provider_run_id: Some(provider_run_id),
+                        prompt_id: Some(dispatch.prompt_id.clone()),
+                        turn_id: Some(dispatch.prompt_id.clone()),
+                        workflow_id,
+                        workflow_run_id: prompt.workflow_run_id().map(str::to_string),
+                        workflow_node_id: prompt.workflow_node_run_id().map(str::to_string),
+                        ..Default::default()
+                    },
+                );
+                return Ok(());
+            }
         };
         self.owned.provider_process_projection.invalidate();
         let should_start_projection_drain = {
@@ -2761,6 +2824,112 @@ mod tests {
         assert_eq!(
             session.active_prompt_for_agent(&agent_id).unwrap().status(),
             crate::session::PromptStatus::Cancelling
+        );
+    }
+
+    #[tokio::test]
+    async fn current_remote_dispatch_binding_change_is_not_silently_settled() {
+        let (runtime, dispatch) = pending_remote_settlement_fixture().await;
+        let session_id = dispatch.session_id.clone();
+        let agent_id = dispatch.agent_id.clone();
+        let prompt_id = dispatch.prompt_id.clone();
+        let before_session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        let before_prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&before_session, &agent_id)
+            .unwrap();
+        assert_eq!(before_prompt.id(), prompt_id);
+        assert!(before_prompt.delivery_pending());
+        let mut replacement = runtime
+            .owned
+            .agent_store
+            .get_agent(&agent_id)
+            .unwrap()
+            .remote_execution()
+            .unwrap()
+            .clone();
+        replacement.worker_kernel_id = "replacement-worker".to_string();
+        replacement.leased_agent_id = "replacement-leased-agent".to_string();
+        replacement.execution_lease_id = "replacement-lease".to_string();
+        replacement.active_worker_provider_run_id = None;
+        runtime
+            .owned
+            .agent_store
+            .bind_remote_execution(&agent_id, replacement.clone())
+            .unwrap();
+        let before_history = runtime
+            .owned
+            .operational_history_store
+            .load_session_history_entries(&session_id, Some(&agent_id))
+            .unwrap();
+        let before_terminal = runtime.owned.terminal_stream.change_sequence();
+
+        assert!(matches!(
+            runtime.owned.settle_remote_dispatch_if_current(&dispatch, Some("old-worker-run")).unwrap(),
+            super::super::remote_prompt_owned_state::RemotePromptDispatchSettlement::BindingChanged(ref prompt)
+                if prompt.id() == prompt_id && prompt.delivery_pending()
+        ));
+        let result = runtime
+            .finish_remote_prompt_dispatch(dispatch, Ok("old-worker-run".to_string()))
+            .await;
+
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        assert_eq!(
+            runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &agent_id),
+            Some(before_prompt)
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .agent_store
+                .get_agent(&agent_id)
+                .unwrap()
+                .remote_execution(),
+            Some(&replacement)
+        );
+        let after_history = runtime
+            .owned
+            .operational_history_store
+            .load_session_history_entries(&session_id, Some(&agent_id))
+            .unwrap();
+        assert_eq!(after_history.len(), before_history.len() + 1);
+        let warning = after_history
+            .iter()
+            .find(|entry| {
+                entry.merge_key.as_deref()
+                    == Some(format!("remote-dispatch-uncertain:{prompt_id}").as_str())
+            })
+            .expect("delivery-uncertain diagnostic must be durable");
+        assert!(warning.text.contains("remains pending"));
+        assert!(warning.text.contains("not replayed or cancelled"));
+        assert!(runtime.owned.terminal_stream.change_sequence() > before_terminal);
+        assert!(
+            runtime
+                .remote_prompt_projection_drain_target(&session_id, &agent_id)
+                .is_none(),
+            "ordinary projection drain cannot reconcile pending delivery after a binding change"
+        );
+        assert!(result.is_ok());
+        assert!(
+            runtime
+                .owned
+                .remote_prompt_recoveries
+                .lock()
+                .unwrap()
+                .is_empty(),
+            "uncertain delivery must not replay the original prompt"
         );
     }
 

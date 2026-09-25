@@ -5,15 +5,22 @@
 
 use super::*;
 
+pub(super) enum RemotePromptDispatchSettlement {
+    Settled(crate::session::PromptQueueItem),
+    Superseded,
+    BindingChanged(crate::session::PromptQueueItem),
+}
+
 impl KernelRuntimeOwnedState {
     pub(super) fn settle_remote_dispatch_if_current(
         &self,
         dispatch: &crate::app::KernelRemotePromptDispatch,
         delivered_run_id: Option<&str>,
-    ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
+    ) -> Result<RemotePromptDispatchSettlement, DaemonError> {
         let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();
         let session = sessions.get_session(&dispatch.session_id)?;
+        let mut binding_changed = None;
         let settled = self
             .prompt_state_owner
             .settle_active_remote_dispatch_if_matches(
@@ -30,6 +37,7 @@ impl KernelRuntimeOwnedState {
                         binding.worker_kernel_id == dispatch.worker_kernel_id
                             && binding.leased_agent_id == dispatch.leased_agent_id
                     }) {
+                        binding_changed = Some(previous.clone());
                         return Ok(false);
                     }
                     let mirrored = sessions.mirror_agent_prompt_state(
@@ -76,7 +84,11 @@ impl KernelRuntimeOwnedState {
         if settled.is_some() {
             activity_mutation.record();
         }
-        Ok(settled)
+        Ok(match (settled, binding_changed) {
+            (Some(prompt), _) => RemotePromptDispatchSettlement::Settled(prompt),
+            (None, Some(prompt)) => RemotePromptDispatchSettlement::BindingChanged(prompt),
+            (None, None) => RemotePromptDispatchSettlement::Superseded,
+        })
     }
 
     pub(super) fn advance_next_queued_remote_prompt_dispatch(
