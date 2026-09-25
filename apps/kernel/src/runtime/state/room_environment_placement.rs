@@ -92,20 +92,22 @@ impl KernelRuntimeState {
         caller_user_id: &str,
     ) -> Result<RoomEnvironmentSliceBinding, DaemonError> {
         let sessions = self.owned.session_store.read();
-        let session = sessions.get_session(&request.session_id)?;
-        if session.owner_user_id() != caller_user_id {
-            return Err(DaemonError::OwnershipAccessDenied {
-                user_id: caller_user_id.to_string(),
-                owner_user_id: session.owner_user_id().to_string(),
-                resource: request.session_id.clone(),
-                operation: "environment.slice.bind",
-            });
-        }
-        if sessions.is_ephemeral_session(&request.session_id) {
-            return Err(DaemonError::LocalTransport {
-                operation: "environment.slice.bind",
-                message: "environment_slice_binding_rejected: a durable Environment requires a durable Room".to_string(),
-            });
+        {
+            let session = sessions.get_session(&request.session_id)?;
+            if session.owner_user_id() != caller_user_id {
+                return Err(DaemonError::OwnershipAccessDenied {
+                    user_id: caller_user_id.to_string(),
+                    owner_user_id: session.owner_user_id().to_string(),
+                    resource: request.session_id.clone(),
+                    operation: "environment.slice.bind",
+                });
+            }
+            if sessions.is_ephemeral_session(&request.session_id) {
+                return Err(DaemonError::LocalTransport {
+                    operation: "environment.slice.bind",
+                    message: "environment_slice_binding_rejected: a durable Environment requires a durable Room".to_string(),
+                });
+            }
         }
         let slice = self.owned.slice_store.bind_environment(
             &request.session_id,
@@ -120,8 +122,11 @@ impl KernelRuntimeState {
                 Ok(())
             },
         )?;
+        drop(sessions);
         self.owned.runtime_projection_changes.record_change();
-        Ok(binding(&request.session_id, slice))
+        let binding = binding(&request.session_id, slice);
+        self.enqueue_room_browser_manifest_sync_for_session(&request.session_id);
+        Ok(binding)
     }
 }
 

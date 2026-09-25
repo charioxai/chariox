@@ -55,6 +55,7 @@ mod provider_relaunch_runtime;
 mod provider_reload_pending_runtime;
 mod provider_run_read_state;
 mod publication_activation;
+mod room_browser_manifest_sync;
 mod room_browser_controller;
 mod room_computer_observation;
 mod room_display;

@@ -3,13 +3,28 @@ use std::sync::{Arc, Mutex, Weak};
 
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 
-/// Serialize profile changes with prompt admission, without blocking other leases.
+/// Serialize remote lease updates with prompt admission, without blocking other leases.
 #[derive(Clone, Default)]
 pub(super) struct LeasedAgentOperations {
     lanes: Arc<Mutex<BTreeMap<String, Weak<AsyncMutex<()>>>>>,
+    #[cfg(test)]
+    acquire_probes: Arc<Mutex<BTreeMap<String, Arc<tokio::sync::Notify>>>>,
 }
 
 impl LeasedAgentOperations {
+    #[cfg(test)]
+    pub(crate) fn notify_on_next_acquire_for_tests(
+        &self,
+        leased_agent_id: &str,
+    ) -> Arc<tokio::sync::Notify> {
+        let probe = Arc::new(tokio::sync::Notify::new());
+        self.acquire_probes
+            .lock()
+            .expect("leased agent acquire probe map poisoned")
+            .insert(leased_agent_id.to_string(), Arc::clone(&probe));
+        probe
+    }
+
     pub(super) async fn lock(&self, leased_agent_id: &str) -> OwnedMutexGuard<()> {
         let lane = {
             let mut lanes = self
@@ -25,6 +40,15 @@ impl LeasedAgentOperations {
                 lane
             }
         };
+        #[cfg(test)]
+        if let Some(probe) = self
+            .acquire_probes
+            .lock()
+            .expect("leased agent acquire probe map poisoned")
+            .remove(leased_agent_id)
+        {
+            probe.notify_one();
+        }
         lane.lock_owned().await
     }
 }

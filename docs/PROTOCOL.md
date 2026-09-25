@@ -1667,14 +1667,15 @@ Workflow trigger and deployment direction:
   the leased agent's execution placement. It does not grant authority: home
   validates current Room membership, worker/run binding, and Environment
   binding on every forwarded browser call. Client minimums remain unchanged.
-  Current refresh limitation: binding or releasing an Environment does not
-  push a manifest update to agents already leased in that Room. The flag is
-  refreshed on the next idle prompt submission or an extension-grant sync;
-  submitting while a provider turn is busy does not refresh it. Tools may
-  therefore remain hidden after binding, or advertised after release, until
-  that refresh. Calls after release still fail closed at home. Immediate
-  bind/release synchronization remains a separate live-capability requirement;
-  tests with an Environment bound before agent launch do not validate it.
+  Successful Environment binding and deletion enqueue manifest refreshes for
+  agents already leased in the Room, without waiting for another prompt.
+  Refreshes share the leased-agent operation lane with grant updates and
+  retries, and recompute the manifest after acquiring that lane. The binding
+  operation does not wait for relay I/O. Until delivery succeeds, tools may
+  remain hidden after binding or advertised after deletion; forwarded calls
+  still validate the current binding at home. Stop and input release do not
+  remove the Environment binding. Live validation must cover updates to an
+  already-running agent, not only an Environment bound before agent launch.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic
