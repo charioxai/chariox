@@ -112,6 +112,21 @@ async fn public_setup_lifecycle_runs_on_an_ordinary_local_worker_without_cloud_r
 
 #[cfg(unix)]
 #[tokio::test]
+async fn public_setup_resolves_ordinary_worker_and_platform_from_selected_agent() {
+    exercise_public_setup_lifecycle_with_failure_timing(
+        DefinitionScenario::Supplied,
+        true,
+        None,
+        false,
+        None,
+        KernelRuntimeRole::General,
+        true,
+    )
+    .await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn public_setup_lifecycle_generates_definition_through_worker_boundary() {
     exercise_public_setup_lifecycle(DefinitionScenario::Generated).await;
 }
@@ -214,6 +229,7 @@ async fn exercise_public_setup_lifecycle_at_role(
         false,
         None,
         runtime_role,
+        false,
     )
     .await;
 }
@@ -231,6 +247,7 @@ async fn exercise_public_setup_lifecycle_with_options(
         false,
         None,
         KernelRuntimeRole::RemoteLeaseWorker,
+        false,
     )
     .await;
 }
@@ -246,6 +263,7 @@ async fn exercise_public_setup_lifecycle_with_second_restart_failure(
         true,
         None,
         KernelRuntimeRole::RemoteLeaseWorker,
+        false,
     )
     .await;
 }
@@ -259,6 +277,7 @@ async fn exercise_public_setup_lifecycle_with_candidate_failure(failure: Candida
         false,
         Some(failure),
         KernelRuntimeRole::RemoteLeaseWorker,
+        false,
     )
     .await;
 }
@@ -271,6 +290,7 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
     fail_on_second_restart: bool,
     candidate_failure: Option<CandidateFailureMode>,
     runtime_role: KernelRuntimeRole,
+    infer_target: bool,
 ) {
     let _environment_lock = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
@@ -616,8 +636,16 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
                 project_id: project_id.clone(),
                 session_id: session.id().to_string(),
                 agent_id: agent.id().to_string(),
-                target_worker_id: "worker-machine".into(),
-                target_platform: target_platform.clone(),
+                target_worker_id: if infer_target {
+                    String::new()
+                } else {
+                    "worker-machine".into()
+                },
+                target_platform: if infer_target {
+                    String::new()
+                } else {
+                    target_platform.clone()
+                },
                 definition: None,
                 validation_commands: match scenario {
                     DefinitionScenario::Supplied
@@ -638,6 +666,8 @@ async fn exercise_public_setup_lifecycle_with_failure_timing(
     };
     assert_eq!(status.phase, ProjectEnvironmentSetupPhase::Requested);
     assert_eq!(status.attempt, 1);
+    assert_eq!(status.worker_id, "worker-machine");
+    assert_eq!(status.platform, target_platform);
 
     let validation_marker = workspace.join("validation-started");
     if fail_on_second_restart {
@@ -2109,8 +2139,8 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
                 project_id: project_id.clone(),
                 session_id: session_id.clone(),
                 agent_id: agent_id.clone(),
-                target_worker_id: config_worker.host_machine_id.clone(),
-                target_platform: target_platform.clone(),
+                target_worker_id: String::new(),
+                target_platform: String::new(),
                 definition: Some(repairable_definition.clone()),
                 validation_commands: Vec::new(),
             }),
@@ -2124,6 +2154,11 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         ProjectEnvironmentSetupPhase::Requested,
         "home admission should return the immediate worker-boundary status"
     );
+    assert_eq!(
+        repair_started_status.worker_id,
+        config_worker.host_machine_id
+    );
+    assert_eq!(repair_started_status.platform, target_platform);
 
     let utility_prompt_deadline = Instant::now() + Duration::from_secs(3);
     while !provider_fixture.diagnostics().contains("prompt_async") {

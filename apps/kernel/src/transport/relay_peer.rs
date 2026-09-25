@@ -1294,6 +1294,50 @@ mod tests {
     }
 
     #[test]
+    fn leased_project_setup_target_resolution_is_versioned_at_protocol_61() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 61);
+        let request = RelayPeerRequest::ResolveLeasedProjectEnvironmentSetupTarget {
+            leased_agent_id: "leased-agent-1".to_string(),
+            home_session_id: "home-session-1".to_string(),
+            home_agent_id: "home-agent-1".to_string(),
+        };
+        let request_wire = serde_json::to_value(&request).expect("request should serialize");
+        assert_eq!(
+            request_wire,
+            serde_json::json!({
+                "kind": "resolve_leased_project_environment_setup_target",
+                "leased_agent_id": "leased-agent-1",
+                "home_session_id": "home-session-1",
+                "home_agent_id": "home-agent-1",
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<RelayPeerRequest>(request_wire)
+                .expect("request should deserialize"),
+            request
+        );
+
+        let response = RelayPeerResponse::LeasedProjectEnvironmentSetupTargetResolved {
+            worker_id: "worker-machine-1".to_string(),
+            platform: "linux-x86_64".to_string(),
+        };
+        let response_wire = serde_json::to_value(&response).expect("response should serialize");
+        assert_eq!(
+            response_wire,
+            serde_json::json!({
+                "kind": "leased_project_environment_setup_target_resolved",
+                "worker_id": "worker-machine-1",
+                "platform": "linux-x86_64",
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<RelayPeerResponse>(response_wire)
+                .expect("response should deserialize"),
+            response
+        );
+    }
+
+    #[test]
     fn project_environment_setup_relay_shapes_round_trip_at_protocol_61() {
         assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 61);
         let definition = crate::session::ProjectEnvironmentDefinition {
