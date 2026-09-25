@@ -2296,6 +2296,183 @@ mod tests {
             .is_none());
     }
 
+    async fn superseded_remote_dispatch_fixture(
+    ) -> (KernelRuntimeState, crate::app::KernelRemotePromptDispatch) {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-1",
+                "worktree-1",
+            ))
+            .unwrap();
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-late-remote-dispatch",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        let binding = crate::agent::RemoteAgentBinding {
+            worker_kernel_id: "worker-a".to_string(),
+            worker_machine_id: "machine-a".to_string(),
+            execution_lease_id: "lease-a".to_string(),
+            leased_agent_id: "leased-agent-a".to_string(),
+            active_worker_provider_run_id: None,
+            relay_url: None,
+            relay_token: None,
+            relay_peer_protocol_version: Some(
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+            ),
+        };
+        app.agents
+            .bind_remote_execution(agent.id(), binding.clone())
+            .unwrap();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let submit = |text: &str| {
+            runtime
+                .owned
+                .submit_remote_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+                    session_id: session.id().to_string(),
+                    prompt: crate::session::PromptQueueItem::new(
+                        "pending-fixture",
+                        attachment.id(),
+                        agent.id(),
+                        text,
+                        crate::session::PromptStatus::Queued,
+                    ),
+                    force_queue: false,
+                    refresh_projection: true,
+                })
+                .unwrap()
+                .unwrap()
+                .remote_dispatch
+                .unwrap()
+        };
+        let stale_dispatch = submit("prompt A");
+        runtime
+            .owned
+            .mark_active_prompt_delivery(
+                session.id(),
+                agent.id(),
+                &stale_dispatch.prompt_id,
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+                None,
+                None,
+            )
+            .unwrap();
+        let cancelled = runtime
+            .owned
+            .cancel_active_prompt_only(session.id(), agent.id())
+            .unwrap();
+        assert_eq!(cancelled.id(), stale_dispatch.prompt_id);
+        let mut successor_binding = binding;
+        successor_binding.worker_kernel_id = "worker-b".to_string();
+        successor_binding.worker_machine_id = "machine-b".to_string();
+        successor_binding.execution_lease_id = "lease-b".to_string();
+        successor_binding.leased_agent_id = "leased-agent-b".to_string();
+        successor_binding.active_worker_provider_run_id = Some("worker-run-b".to_string());
+        runtime
+            .owned
+            .agent_store
+            .bind_remote_execution(agent.id(), successor_binding)
+            .unwrap();
+        let successor = submit("prompt B");
+        assert_ne!(successor.prompt_id, stale_dispatch.prompt_id);
+        runtime
+            .owned
+            .mark_active_prompt_delivery(
+                session.id(),
+                agent.id(),
+                &successor.prompt_id,
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some("worker-run-b".to_string()),
+                None,
+            )
+            .unwrap();
+        runtime.owned.session_snapshot(session.id()).unwrap();
+        (runtime, stale_dispatch)
+    }
+
+    async fn assert_late_remote_dispatch_preserves_successor(result: Result<String, DaemonError>) {
+        let (runtime, stale_dispatch) = superseded_remote_dispatch_fixture().await;
+        let session_id = stale_dispatch.session_id.clone();
+        let agent_id = stale_dispatch.agent_id.clone();
+        let before_agent = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
+        let before_session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        let before_prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&before_session, &agent_id)
+            .unwrap();
+        let before_history = runtime
+            .owned
+            .operational_history_store
+            .load_session_history_entries(&session_id, Some(&agent_id))
+            .unwrap();
+
+        // Exercise the actual async dispatch settlement entry point after A has
+        // lost ownership. Whether the stale result is reported or ignored is
+        // secondary; it must not mutate B's state or transcript.
+        let _ = runtime
+            .finish_remote_prompt_dispatch(stale_dispatch, result)
+            .await;
+
+        let after_agent = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
+        let after_session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        let after_prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&after_session, &agent_id);
+        let after_history = runtime
+            .owned
+            .operational_history_store
+            .load_session_history_entries(&session_id, Some(&agent_id))
+            .unwrap();
+        assert_eq!(
+            after_prompt.as_ref(),
+            Some(&before_prompt),
+            "late A settlement must preserve B's active prompt"
+        );
+        assert_eq!(
+            after_agent.remote_execution(),
+            before_agent.remote_execution(),
+            "late A settlement must preserve B's worker binding"
+        );
+        assert_eq!(after_agent.state(), before_agent.state());
+        assert_eq!(after_agent.is_processing(), before_agent.is_processing());
+        assert_eq!(
+            after_history, before_history,
+            "late A settlement must not append an error to B's transcript"
+        );
+        assert_eq!(
+            after_prompt.unwrap().durable_delivery_provider_run_id(),
+            Some("worker-run-b")
+        );
+    }
+
+    #[tokio::test]
+    async fn late_remote_dispatch_success_preserves_successor() {
+        assert_late_remote_dispatch_preserves_successor(Ok("worker-run-a-late".to_string())).await;
+    }
+
+    #[tokio::test]
+    async fn late_remote_dispatch_error_preserves_successor() {
+        assert_late_remote_dispatch_preserves_successor(Err(DaemonError::LocalTransport {
+            operation: "submit remote prompt",
+            message: "late rejection of prompt A".to_string(),
+        }))
+        .await;
+    }
+
     #[test]
     fn remote_prompt_projection_drain_claims_coalesce_restart_before_release() {
         let claims = Arc::new(std::sync::Mutex::new(BTreeMap::new()));
