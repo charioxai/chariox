@@ -24,8 +24,7 @@ async fn check_remote_room_agent_uses_home_local_environment_browser_computer_an
         let (room, attachment_id, viewer_public_key, environment_slice) =
             prepare_home_slice_room_display(&fixture).await;
         assert_eq!(
-            environment_slice.owner_kernel_id,
-            fixture.home_state.config.daemon_id,
+            environment_slice.owner_kernel_id, fixture.home_state.config.daemon_id,
             "the headed Environment slice is owned by the home kernel"
         );
         assert_eq!(
@@ -78,12 +77,18 @@ async fn check_remote_room_agent_uses_home_local_environment_browser_computer_an
         );
         assert_ne!(
             leased.remote_execution.worker_kernel_id,
-            environment_slice.worker_kernel_id.as_deref().unwrap_or_default(),
+            environment_slice
+                .worker_kernel_id
+                .as_deref()
+                .unwrap_or_default(),
             "the remote agent kernel must not be the home slice Environment worker"
         );
         assert_ne!(
             leased.remote_execution.worker_machine_id,
-            environment_slice.worker_machine_id.as_deref().unwrap_or_default(),
+            environment_slice
+                .worker_machine_id
+                .as_deref()
+                .unwrap_or_default(),
             "the remote agent must not be represented as another local slice"
         );
         assert_eq!(
@@ -108,17 +113,16 @@ async fn check_remote_room_agent_uses_home_local_environment_browser_computer_an
             .map(|spec| spec.name)
             .collect::<std::collections::BTreeSet<_>>();
         for tool in ["slice_open_url", "slice_browser_status", "slice_mouse"] {
-            assert!(advertised.contains(tool), "leased Room agent is missing {tool}");
+            assert!(
+                advertised.contains(tool),
+                "leased Room agent is missing {tool}"
+            );
         }
 
         let url = "https://remote-agent.home-local-slice.test/";
         let browser = agent_worker
             .runtime_state
-            .dispatch_authenticated_runtime_tool_call(
-                &token,
-                "slice_open_url",
-                json!({"url":url}),
-            )
+            .dispatch_authenticated_runtime_tool_call(&token, "slice_open_url", json!({"url":url}))
             .await
             .expect("remote Browser tool must reach the home Environment through admission");
         assert!(browser.ok, "{:?}", browser.payload);
@@ -183,14 +187,22 @@ async fn check_remote_room_agent_uses_home_local_environment_browser_computer_an
         assert_eq!(before_environment["session_id"], room);
         assert_eq!(before_environment["environment_id"], environment_id);
         assert_eq!(before_environment["focused_tab_id"], stable_tab_id);
-        let tabs = before_environment["tabs"].as_array().expect("public Room Tabs");
-        assert_eq!(tabs.len(), 1, "the Environment retains one stable Browser Tab");
+        let tabs = before_environment["tabs"]
+            .as_array()
+            .expect("public Room Tabs");
+        assert_eq!(
+            tabs.len(),
+            1,
+            "the Environment retains one stable Browser Tab"
+        );
         let stable_tab = tabs
             .iter()
             .find(|tab| tab["tab_id"] == stable_tab_id)
             .expect("public Room state retains the original Tab");
         assert_eq!(stable_tab["url"], url);
-        let actions = before_environment["actions"].as_array().expect("public action ledger");
+        let actions = before_environment["actions"]
+            .as_array()
+            .expect("public action ledger");
         for (action_id, action_kind) in [
             (&browser_action_id, "navigate"),
             (&computer_action_id, "pointer_move"),
@@ -290,7 +302,10 @@ async fn check_remote_room_agent_uses_home_local_environment_browser_computer_an
         let after_environment = &after_denials["RoomEnvironmentState"]["environment"];
         assert_eq!(after_environment["environment_id"], environment_id);
         assert_eq!(after_environment["focused_tab_id"], stable_tab_id);
-        assert_eq!(after_environment["actions"].as_array().unwrap().len(), action_count);
+        assert_eq!(
+            after_environment["actions"].as_array().unwrap().len(),
+            action_count
+        );
         assert_eq!(after_environment["tabs"][0]["url"], url);
 
         let binding = dispatch_json(
@@ -425,9 +440,7 @@ async fn prepare_home_slice_room_display(
     (room, attachment_id, viewer_public_key, slice)
 }
 
-async fn start_remote_agent_worker(
-    fixture: &mut LiveWorker,
-) -> (TestState, Arc<CommandRouter>) {
+async fn start_remote_agent_worker(fixture: &mut LiveWorker) -> (TestState, Arc<CommandRouter>) {
     let mut worker_state = TestState::new();
     worker_state.config.relay_url = fixture.home_state.config.relay_url.clone();
     worker_state.config.relay_token = fixture.home_state.config.relay_token.clone();
