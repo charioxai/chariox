@@ -835,7 +835,7 @@ if ! systemctl daemon-reload \
     if rollback_transaction; then
       echo "Path-1 systemd drop-ins blocked activation; restored previous managed kernel release" >&2
     else
-      echo "Path-1 systemd drop-ins blocked activation; rollback remains pending and the kernel is stopped" >&2
+      echo "Path-1 systemd drop-ins blocked activation; rollback remains pending; verify the managed kernel service state before retry" >&2
     fi
   elif rollback_transaction; then
     echo "managed kernel health check failed; restored previous managed kernel release" >&2
