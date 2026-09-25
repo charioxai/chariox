@@ -365,25 +365,37 @@ impl KernelRuntimeState {
                 };
                 match state.connected_relay_state_for_config(&relay_config).await {
                     Some(relay_state) => {
-                        crate::transport::relay_client::send_peer_request_via_connected_relay(
+                        crate::transport::relay_client::enqueue_peer_request_via_connected_relay_with_timeout(
                             &relay_config,
                             &relay_state,
                             target,
                             peer_request,
+                            std::time::Duration::from_millis(
+                                relay_config.relay_request_timeout_ms,
+                            ),
                         )
                         .await
                     }
                     None => {
-                        crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                        // Preserve serialized ordering when there is no shared relay sender.
+                        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
                             &relay_config,
                             target,
                             peer_request,
+                            std::time::Duration::from_millis(
+                                relay_config.relay_request_timeout_ms,
+                            ),
                         )
-                        .await
+                        .await?;
+                        Ok(crate::transport::relay_client::RelayPeerResponseWaiter::ready(
+                            response,
+                        ))
                     }
                 }
             },
         )
+        .await?
+        .wait()
         .await
     }
 

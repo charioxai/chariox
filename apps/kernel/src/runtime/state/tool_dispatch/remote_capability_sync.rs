@@ -278,6 +278,9 @@ impl KernelRuntimeState {
         ) -> OperationFuture,
         OperationFuture: Future<Output = Result<T, DaemonError>>,
     {
+        // The operation runs inside the leased-agent ordering lane. Connected-relay callers
+        // return after enqueueing their request and await the response waiter only after this
+        // method returns, so manifest sync can proceed while the worker handles the request.
         let _lease_operation = self
             .leased_agent_operations
             .lock(expected_leased_agent_id)

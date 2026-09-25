@@ -835,10 +835,10 @@ impl KernelRuntimeState {
                     provider_launch_credential,
                 };
                 let relay_state = callback_state.connected_relay_state_for_config(&config).await;
-                let response = match relay_state {
+                match relay_state {
                     Some(relay_state) => {
                         mark_transport_started.store(true, Ordering::Relaxed);
-                        crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
+                        crate::transport::relay_client::enqueue_peer_request_via_connected_relay_with_timeout(
                             &config,
                             &relay_state,
                             target,
@@ -849,28 +849,36 @@ impl KernelRuntimeState {
                     }
                     None => {
                         mark_transport_started.store(true, Ordering::Relaxed);
-                        crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+                        // Temporary sockets have no shared FIFO sender with manifest updates, so
+                        // keep this fallback serialized through its response.
+                        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
                             &config,
                             target,
                             request,
                             crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
                         )
-                        .await
+                        .await?;
+                        Ok(crate::transport::relay_client::RelayPeerResponseWaiter::ready(
+                            response,
+                        ))
                     }
-                };
-                match response {
-                    Ok(RelayPeerResponse::LeasedPromptSubmitted {
-                        provider_run_id, ..
-                    }) => Ok(provider_run_id),
-                    Ok(other) => Err(DaemonError::LocalTransport {
-                        operation: "submit remote prepared prompt",
-                        message: format!("{unexpected_response_message}: {other:?}"),
-                    }),
-                    Err(error) => Err(error),
                 }
             },
         )
         .await;
+        let result = match result {
+            Ok(waiter) => match waiter.wait().await {
+                Ok(RelayPeerResponse::LeasedPromptSubmitted {
+                    provider_run_id, ..
+                }) => Ok(provider_run_id),
+                Ok(other) => Err(DaemonError::LocalTransport {
+                    operation: "submit remote prepared prompt",
+                    message: format!("{unexpected_response_message}: {other:?}"),
+                }),
+                Err(error) => Err(error),
+            },
+            Err(error) => Err(error),
+        };
         RemotePromptSubmissionAttempt {
             result,
             request_transport_started: transport_started.load(Ordering::Relaxed),
@@ -1265,7 +1273,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn held_prompt_response_does_not_block_remote_manifest_sync() {
+    async fn connected_held_prompt_response_does_not_block_remote_manifest_sync() {
         let mut config = crate::config::DaemonConfig::for_tests();
         config.relay_url = Some(CANCELLATION_GUARD_RELAY_URL.to_string());
         config.relay_token = Some("manifest-lane-test-token".to_string());
@@ -1362,7 +1370,7 @@ mod tests {
         .await;
         assert!(
             matches!(
-                request,
+                &request,
                 crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt { .. }
             ),
             "first fake relay request should submit the held prompt: {request:?}"
@@ -1385,6 +1393,7 @@ mod tests {
             &worker_config.relay_private_key,
         )
         .await;
+        assert_ne!(manifest_request_id, submit_request_id);
         let crate::transport::relay_peer::RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
             leased_agent_id,
             ..
