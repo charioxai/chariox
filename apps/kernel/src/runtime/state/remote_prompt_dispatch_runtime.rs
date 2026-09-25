@@ -850,10 +850,38 @@ impl KernelRuntimeState {
         let session_id = dispatch.session_id.clone();
         let agent_id = dispatch.agent_id.clone();
         use super::remote_prompt_owned_state::RemotePromptDispatchSettlement;
-        let settled_prompt = match self.owned.settle_remote_dispatch_if_current(
-            &dispatch,
-            result.as_ref().ok().map(String::as_str),
-        )? {
+        let mut append_retry = 0_u8;
+        let settlement = loop {
+            match self.owned.settle_remote_dispatch_if_current(
+                &dispatch,
+                result.as_ref().ok().map(String::as_str),
+            ) {
+                Err(error)
+                    if result.is_ok()
+                        && matches!(&error, DaemonError::SessionHistoryFailed { .. })
+                        && append_retry < 2 =>
+                {
+                    append_retry += 1;
+                    crate::logging::warn_with_fields(
+                        "daemon.remote_prompt_dispatch",
+                        "worker accepted prompt but durable acknowledgement failed; retrying acknowledgement only",
+                        serde_json::json!({
+                            "session_id": dispatch.session_id,
+                            "agent_id": dispatch.agent_id,
+                            "prompt_id": dispatch.prompt_id,
+                            "attempt": append_retry,
+                            "error": error.to_string(),
+                        }),
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        50 * u64::from(append_retry),
+                    ))
+                    .await;
+                }
+                outcome => break outcome?,
+            }
+        };
+        let settled_prompt = match settlement {
             RemotePromptDispatchSettlement::Settled(prompt) => prompt,
             RemotePromptDispatchSettlement::Superseded => return Ok(()),
             RemotePromptDispatchSettlement::BindingChanged(prompt) => {
@@ -1141,9 +1169,52 @@ impl KernelRuntimeState {
                     }),
                 ),
             }
-            let _ = state
-                .finish_remote_prompt_dispatch(dispatch, result)
-                .await;
+            match result {
+                Ok(remote_provider_run_id) => {
+                    if let Err(error) = state
+                        .finish_remote_prompt_dispatch(dispatch.clone(), Ok(remote_provider_run_id))
+                        .await
+                    {
+                        let message = format!(
+                            "Worker accepted prompt `{}`, but the home kernel could not record its acknowledgement: {error}. Delivery is uncertain; do not replay this prompt without checking the worker.",
+                            dispatch.prompt_id,
+                        );
+                        crate::logging::warn_with_fields(
+                            "daemon.remote_prompt_dispatch",
+                            &message,
+                            serde_json::json!({
+                                "session_id": dispatch.session_id,
+                                "agent_id": dispatch.agent_id,
+                                "prompt_id": dispatch.prompt_id,
+                                "worker_kernel_id": dispatch.worker_kernel_id,
+                                "leased_agent_id": dispatch.leased_agent_id,
+                                "delivery_uncertain": true,
+                            }),
+                        );
+                        state.owned.fan_out_remote_dispatch_error(
+                            &dispatch,
+                            &format!("remote-dispatch:{}", dispatch.prompt_id),
+                            Some(format!(
+                                "remote-dispatch-ack-persist-failed:{}",
+                                dispatch.prompt_id
+                            )),
+                            &message,
+                        );
+                    }
+                }
+                Err(error) => {
+                    if let Err(settlement_error) = state
+                        .finish_remote_prompt_dispatch(dispatch, Err(error))
+                        .await
+                    {
+                        crate::logging::warn_with_fields(
+                            "daemon.remote_prompt_dispatch",
+                            "remote prompt failure could not be settled",
+                            serde_json::json!({"error": settlement_error.to_string()}),
+                        );
+                    }
+                }
+            }
         });
     }
 }
@@ -2711,7 +2782,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remote_dispatch_durable_append_failure_rolls_back_and_retries_once() {
+    async fn remote_dispatch_durable_append_failure_rolls_back_then_manual_settlement_succeeds() {
         let (runtime, dispatch) = pending_remote_settlement_fixture().await;
         let session_id = dispatch.session_id.clone();
         let agent_id = dispatch.agent_id.clone();
@@ -2844,6 +2915,71 @@ mod tests {
             event_count(),
             before_events + 1,
             "retry must publish exactly one prompt-state settlement"
+        );
+    }
+
+    #[tokio::test]
+    async fn acknowledged_remote_dispatch_retries_only_durable_settlement() {
+        let (runtime, dispatch) = pending_remote_settlement_fixture().await;
+        let session_id = dispatch.session_id.clone();
+        let agent_id = dispatch.agent_id.clone();
+        let prompt_id = dispatch.prompt_id.clone();
+        let before_events = runtime
+            .owned
+            .durable_state_store
+            .load_events_by_kind("session.prompt_state.updated")
+            .unwrap()
+            .len();
+        let connection =
+            rusqlite::Connection::open(runtime.owned.durable_state_store.path()).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_first_remote_ack BEFORE INSERT ON durable_state_events
+             WHEN NEW.kind = 'session.prompt_state.updated'
+             BEGIN SELECT RAISE(FAIL, 'injected transient acknowledgement failure'); END;",
+            )
+            .unwrap();
+        let settling = tokio::spawn({
+            let runtime = runtime.clone();
+            async move {
+                runtime
+                    .finish_remote_prompt_dispatch(dispatch, Ok("worker-run-accepted".to_string()))
+                    .await
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+        connection
+            .execute_batch("DROP TRIGGER fail_first_remote_ack;")
+            .unwrap();
+        settling.await.unwrap().unwrap();
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        let delivered = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .unwrap();
+        assert_eq!(delivered.id(), prompt_id);
+        assert_eq!(
+            delivered.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+        );
+        assert_eq!(
+            delivered.durable_delivery_provider_run_id(),
+            Some("worker-run-accepted")
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .durable_state_store
+                .load_events_by_kind("session.prompt_state.updated")
+                .unwrap()
+                .len(),
+            before_events + 1,
+            "retry must persist exactly one acknowledgement for the already accepted run"
         );
     }
 

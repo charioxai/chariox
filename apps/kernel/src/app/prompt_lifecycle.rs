@@ -314,6 +314,7 @@ pub(crate) struct KernelPromptDispatch {
     pub(crate) steering: bool,
 }
 
+#[derive(Clone)]
 pub(crate) struct KernelRemotePromptDispatch {
     pub(crate) session_id: String,
     pub(crate) agent_id: String,
