@@ -88,8 +88,8 @@ async fn check_leased_agent_on_another_kernel_uses_room_browser() {
         assert_eq!(opened.payload["session_id"], room);
         assert_eq!(opened.payload["agent_id"], home_agent_id);
         assert_eq!(opened.payload["browser"]["url"], url);
-        let worker_prompt = {
-            let app = agent_worker.app.lock().await;
+        let (worker_prompt, run_state, after_open_lifecycle) = {
+            let mut app = agent_worker.app.lock().await;
             let run = app
                 .providers()
                 .get_run(&worker_provider_run_id)
@@ -106,11 +106,16 @@ async fn check_leased_agent_on_another_kernel_uses_room_browser() {
                     &worker_agent_id,
                 )
                 .expect("leased worker prompt state");
-            (worker_prompt, run_state)
+            let diagnostics = provider_lifecycle_diagnostics(
+                &mut *app,
+                &worker_provider_run_id,
+                &worker_session_id,
+                &worker_agent_id,
+            );
+            (worker_prompt, run_state, diagnostics)
         };
         assert!(
             worker_prompt
-                .0
                 .as_ref()
                 .is_some_and(|prompt| {
                     matches!(
@@ -119,9 +124,19 @@ async fn check_leased_agent_on_another_kernel_uses_room_browser() {
                             | crate::session::PromptStatus::Running
                     )
                 }),
-            "the leased worker prompt must remain active after its Room browser call; prompt={:?}, provider_run_state={:?}",
-            worker_prompt.0,
-            worker_prompt.1
+            "the leased worker prompt must remain active after its Room browser call; prompt={:?}, provider_run_state={:?}, lifecycle={}",
+            worker_prompt,
+            run_state,
+            after_open_lifecycle
+        );
+        assert_eq!(
+            run_state,
+            crate::provider::ProviderRunState::Running,
+            "the worker provider must remain live after its first Room browser call; lifecycle={after_open_lifecycle}"
+        );
+        assert!(
+            after_open_lifecycle.contains("pty_state=Ok(Running)"),
+            "the worker provider PTY must remain alive after its first Room browser call; lifecycle={after_open_lifecycle}"
         );
         let environment = fixture
             .home
@@ -143,7 +158,7 @@ async fn check_leased_agent_on_another_kernel_uses_room_browser() {
             Ok(status) => status,
             Err(error) => {
                 let (prompt, run_state) = {
-                    let app = agent_worker.app.lock().await;
+                    let mut app = agent_worker.app.lock().await;
                     match app.providers().get_run(&worker_provider_run_id) {
                         Ok(run) => {
                             let prompt = run.agent_instance_id().map(|worker_agent_id| {
@@ -153,7 +168,16 @@ async fn check_leased_agent_on_another_kernel_uses_room_browser() {
                                 )
                                 .map_err(|lookup_error| lookup_error.to_string())
                             });
-                            (format!("{prompt:?}"), format!("{:?}", run.state()))
+                            let diagnostics = provider_lifecycle_diagnostics(
+                                &mut *app,
+                                &worker_provider_run_id,
+                                run.session_id(),
+                                run.agent_instance_id().unwrap_or_default(),
+                            );
+                            (
+                                format!("{prompt:?}; lifecycle={diagnostics}"),
+                                format!("{:?}", run.state()),
+                            )
                         }
                         Err(lookup_error) => (
                             "unavailable because provider lookup failed".to_string(),
@@ -162,9 +186,10 @@ async fn check_leased_agent_on_another_kernel_uses_room_browser() {
                     }
                 };
                 panic!(
-                    "leased agent reads the same Tab after navigation: {error}; after_open_prompt={:?}, after_open_provider_run={:?}, after_failed_status_prompt={:?}, after_failed_status_provider_run={:?}",
-                    worker_prompt.0,
-                    worker_prompt.1,
+                    "leased agent reads the same Tab after navigation: {error}; after_open_prompt={:?}, after_open_provider_run={:?}, after_open_lifecycle={}, after_failed_status_prompt={:?}, after_failed_status_provider_run={:?}",
+                    worker_prompt,
+                    run_state,
+                    after_open_lifecycle,
                     prompt,
                     run_state
                 );
@@ -288,6 +313,108 @@ async fn check_leased_room_without_home_environment_is_not_advertised_or_dispatc
 #[test]
 fn forwarded_room_browser_rejects_wrong_authenticated_worker() {
     run_test(check_forwarded_room_browser_rejects_wrong_authenticated_worker);
+}
+
+#[test]
+fn forwarded_room_browser_rejects_correct_worker_with_stale_provider_binding() {
+    run_test(check_forwarded_room_browser_rejects_correct_worker_with_stale_provider_binding);
+}
+
+async fn check_forwarded_room_browser_rejects_correct_worker_with_stale_provider_binding() {
+    let mut fixture = LiveWorker::start().await;
+    let (agent_worker_state, agent_worker) = start_agent_worker(&mut fixture).await;
+    let check = std::panic::AssertUnwindSafe(async {
+        wait_for_agent_worker(&fixture).await;
+        let leased = launch_leased_room_provider(
+            &fixture,
+            &agent_worker,
+            "launch a worker provider before testing a stale binding",
+        )
+        .await;
+        let remote_execution = {
+            let app = fixture.home.app.lock().await;
+            app.agents()
+                .get_agent(&leased.home_agent_id)
+                .expect("home leased agent")
+                .remote_execution()
+                .expect("home agent has an authoritative worker binding")
+                .clone()
+        };
+        assert_eq!(
+            remote_execution.active_worker_provider_run_id.as_deref(),
+            Some(leased.worker_provider_run_id.as_str()),
+            "the home binding must be current before sending a stale request"
+        );
+
+        let result = send_peer_request_via_temporary_connection(
+            &agent_worker_state.config,
+            ClientTarget {
+                daemon_id: Some(fixture.home_state.config.daemon_id.clone()),
+                daemon_alias: None,
+            },
+            RelayPeerRequest::ForwardRoomBrowserRuntimeTool {
+                context: crate::transport::relay_peer::RemoteExtensionInvocationContext {
+                    home_kernel_id: fixture.home_state.config.daemon_id.clone(),
+                    home_session_id: fixture.rooms[0].clone(),
+                    home_agent_id: leased.home_agent_id.clone(),
+                    leased_agent_id: remote_execution.leased_agent_id.clone(),
+                    worker_provider_run_id: "stale-worker-provider-run".to_string(),
+                    worker_kernel_id: Some(remote_execution.worker_kernel_id.clone()),
+                    worker_machine_id: Some(remote_execution.worker_machine_id.clone()),
+                },
+                call: crate::transport::relay_peer::RemoteRoomBrowserRuntimeToolCall {
+                    tool_name: "slice_browser_status".to_string(),
+                    arguments: json!({}),
+                },
+            },
+        )
+        .await;
+        let error = result.expect_err(
+            "the correctly authenticated worker must not dispatch with a stale provider binding",
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("worker provider run does not match active remote agent binding"),
+            "the home authorizer must reject the stale run binding: {error}"
+        );
+    })
+    .catch_unwind()
+    .await;
+    let provider_cleanup = agent_worker
+        .app
+        .lock()
+        .await
+        .teardown_provider_processes(Some("managed-dev-stub"), true);
+    fixture.stop().await;
+    provider_cleanup.expect("stop the leased provider after stale-binding denial");
+    if let Err(panic) = check {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+fn provider_lifecycle_diagnostics(
+    app: &mut crate::app::DaemonApp,
+    provider_run_id: &str,
+    session_id: &str,
+    agent_id: &str,
+) -> String {
+    let original_run = app.providers().get_run(provider_run_id).ok();
+    let runtime_mcp_token_present = original_run
+        .as_ref()
+        .and_then(|run| run.runtime_mcp_auth_token())
+        .is_some();
+    let terminal_diagnostic = original_run
+        .as_ref()
+        .and_then(|run| run.terminal_diagnostic());
+    let pty_state = app.pty_mut().poll_process_state(provider_run_id);
+    let latest_agent_run = app
+        .providers()
+        .get_latest_run_for_agent(session_id, agent_id)
+        .map(|run| format!("{}:{:?}", run.id(), run.state()));
+    format!(
+        "runtime_mcp_token_present={runtime_mcp_token_present}, pty_state={pty_state:?}, terminal_diagnostic={terminal_diagnostic:?}, latest_agent_run={latest_agent_run:?}"
+    )
 }
 
 async fn check_forwarded_room_browser_rejects_wrong_authenticated_worker() {

@@ -542,6 +542,14 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         provider_run_id: &str,
     ) -> Result<Option<crate::app::KernelPromptDispatch>, DaemonError> {
+        let idle_check_session = self.session_store.get_session(session_id)?;
+        if self
+            .prompt_state_owner
+            .active_prompt_for_agent(&idle_check_session, agent_id)
+            .is_some()
+        {
+            return Ok(None);
+        }
         let (session, next_prompt) = loop {
             let session = self.session_store.get_session(session_id)?;
             let Some(next_prompt) = self
@@ -645,6 +653,17 @@ impl KernelRuntimeOwnedState {
                         next_prompt.workflow_run_id().unwrap_or_default(),
                         next_prompt.workflow_node_run_id().unwrap_or_default(),
                     );
+                }
+                // Another queue-advancement path may have promoted a prompt
+                // after our initial idle check. That path now owns the active
+                // turn; leave any later queued work for its completion instead
+                // of treating this provider run as a launch failure.
+                if self
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, agent_id)
+                    .is_some()
+                {
+                    return Ok(None);
                 }
                 return Err(error);
             }
