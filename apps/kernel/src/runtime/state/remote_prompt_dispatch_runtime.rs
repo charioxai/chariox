@@ -1478,6 +1478,22 @@ impl KernelRuntimeState {
                         &settled_prompt,
                         settled_prompt.durable_delivery_provider_run_id(),
                     );
+                    if let (Some(workflow_run_id), Some(workflow_node_run_id)) = (
+                        settled_prompt.workflow_run_id(),
+                        settled_prompt.workflow_node_run_id(),
+                    ) {
+                        owned.release_workflow_node_workspace_claim(
+                            &dispatch.session_id,
+                            workflow_run_id,
+                            workflow_node_run_id,
+                        );
+                        owned.workflow_fail_node_after_dispatch_error(
+                            &dispatch.session_id,
+                            workflow_run_id,
+                            workflow_node_run_id,
+                            &error,
+                        );
+                    }
                     let _ = owned.session_snapshot(&dispatch.session_id);
                     Err(error)
                 }
