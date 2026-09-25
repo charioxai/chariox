@@ -104,9 +104,8 @@ impl AppHttpPolicy {
         method: &str,
         headers: &[(String, String)],
         connection_id: Option<&str>,
-        operation_id: Option<&str>,
     ) -> Result<ApprovedTarget> {
-        if connection_id.is_some() || operation_id.is_some() {
+        if connection_id.is_some() {
             return Err(HttpError::ConnectionAuthority);
         }
         let mut target = self.rules.target(url, method, headers)?;
@@ -116,8 +115,9 @@ impl AppHttpPolicy {
     /// A request carrying a validation operation reaches a protected service
     /// only on an exact declared effect route of a critical action: no query,
     /// no percent-encoded path and no method-override header, so an alias of
-    /// the route cannot be approved by accident. Returns the action it effects;
-    /// the caller consumes the matching approval before any I/O.
+    /// the route cannot be approved by accident, and no App header but
+    /// `accept`. Returns the action it effects; the writer spends the matching
+    /// approval before any I/O.
     pub(super) fn protected_target(
         &self,
         url: &str,
@@ -148,9 +148,23 @@ impl Rules {
         method: &str,
         headers: &[(String, String)],
     ) -> Result<(ApprovedTarget, String)> {
-        // Method-override headers are refused for every request.
+        // The effect is the approved body on the declared route: no App-chosen
+        // header can change it (method overrides are refused everywhere).
+        if headers
+            .iter()
+            .any(|(name, _)| !name.eq_ignore_ascii_case("accept"))
+        {
+            return Err(HttpError::ProtectedEffect);
+        }
         let target = self.target_with(raw, method, headers, true)?;
         let (declared, _) = declared_method(method)?;
+        // Only methods that carry the approved parameters as their body.
+        if !matches!(
+            declared,
+            HttpMethod::Post | HttpMethod::Put | HttpMethod::Patch
+        ) {
+            return Err(HttpError::ProtectedEffect);
+        }
         let path = target.url.path().to_owned();
         if target.url.query().is_some() || path.contains('%') {
             return Err(HttpError::ProtectedEffect);
@@ -190,11 +204,10 @@ impl Rules {
         {
             return Err(HttpError::Destination);
         }
-        // Until the scoped connection/receipt executor exists, do not expose
-        // alternate unauthenticated URLs on a protected service. String path
+        // A protected service is reached only through `protected` (an exact
+        // declared effect route whose approval the writer spends). String path
         // matching cannot establish how a service interprets encoded aliases or
-        // method overrides. This conservative fence is explicit, never bypassed
-        // by supplying an App-chosen operation/connection ID.
+        // method overrides, so every other request to its origin is refused.
         if !allow_protected && self.protected_origins.contains(&origin) {
             return Err(HttpError::ProtectedEffect);
         }

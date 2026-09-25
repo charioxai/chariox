@@ -9,13 +9,15 @@ critical operation.
 the same verified package as the retained `AppCatalog`. App-chosen connection or
 operation IDs never create authority. Without an operation, every request to an
 origin containing a declared critical effect is rejected. With `operationId`,
-the request must match one declared effect route exactly (origin, method, path;
-no query, percent-encoding or method-override header), and the kernel consumes
-that action's approved, unexpired validation for this installation and
-generation before any byte is sent; otherwise it fails `VALIDATION_REQUIRED`.
-The App supplies no body: the kernel sends the approved canonical parameters as
-the whole `application/json` body, so the effect cannot differ from what the
-person approved.
+the request must match one declared effect route exactly (origin, `POST`/`PUT`/
+`PATCH`, path; no query or percent-encoding) and carry no App header except
+`accept`. The App supplies no body: the kernel sends the approved canonical
+parameters as the whole `application/json` body. The durable writer spends the
+approval (bound to that parameter digest, installation, generation and action)
+after local admission and commits it before the task that sends any byte
+exists; otherwise the request fails `VALIDATION_REQUIRED` and nothing is sent.
+The route's symbolic `connection` class is not enforced yet: no credential is
+attached, and scoped connections arrive with the Slack App (P1.11).
 Connection authority remains unsupported.
 
 `HttpTransport` connects directly to a checked numeric address, verifies the

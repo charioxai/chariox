@@ -358,6 +358,7 @@ impl PendingStart {
         self.start_with(
             transaction,
             budget,
+            || Ok(()),
             move |transport, target, exchange, stopped, lease, admitted| async move {
                 execution.check().map_err(|_| HttpError::Cancelled)?;
                 transport
@@ -373,6 +374,7 @@ impl PendingStart {
         mut self,
         transaction: &rusqlite::Transaction<'_>,
         budget: &AppOperationBudget,
+        admitted_hook: impl FnOnce() -> Result<()>,
         run: F,
     ) -> Result<String>
     where
@@ -408,6 +410,7 @@ impl PendingStart {
         if state.entries.contains_key(&self.id) {
             return Err(HttpError::Busy);
         }
+        admitted_hook()?;
         let (complete, completed) = watch::channel(None);
         Arc::get_mut(&mut self.entry)
             .ok_or(HttpError::Provenance)?

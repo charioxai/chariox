@@ -13,14 +13,25 @@ fn rules() -> Rules {
             ),
         ]),
         protected_origins: BTreeSet::from(["https://pay.example.com".into()]),
-        protected_routes: BTreeMap::from([(
+        protected_routes: BTreeMap::from([
             (
-                "https://pay.example.com".into(),
-                HttpMethod::Post,
-                "/payments".into(),
+                (
+                    "https://pay.example.com".into(),
+                    HttpMethod::Post,
+                    "/payments".into(),
+                ),
+                "send_payment".into(),
             ),
-            "send_payment".into(),
-        )]),
+            // Declared, but a GET cannot carry the approved parameters.
+            (
+                (
+                    "https://pay.example.com".into(),
+                    HttpMethod::Get,
+                    "/payments".into(),
+                ),
+                "list_payments".into(),
+            ),
+        ]),
     }
 }
 
@@ -28,7 +39,11 @@ fn rules() -> Rules {
 fn a_protected_effect_matches_only_its_exact_declared_route() {
     let rules = rules();
     let (_, action) = rules
-        .protected("https://pay.example.com/payments", "POST", &[])
+        .protected(
+            "https://pay.example.com/payments",
+            "POST",
+            &[("Accept".into(), "application/json".into())],
+        )
         .unwrap();
     assert_eq!(action, "send_payment");
     for (url, method, headers) in [
@@ -42,6 +57,17 @@ fn a_protected_effect_matches_only_its_exact_declared_route() {
             "https://pay.example.com/payments",
             "POST",
             vec![("X-HTTP-Method-Override".to_owned(), "DELETE".to_owned())],
+        ),
+        // App headers cannot change the approved effect.
+        (
+            "https://pay.example.com/payments",
+            "POST",
+            vec![("Content-Type".to_owned(), "text/plain".to_owned())],
+        ),
+        (
+            "https://pay.example.com/payments",
+            "POST",
+            vec![("Idempotency-Key".to_owned(), "k".to_owned())],
         ),
     ] {
         assert!(

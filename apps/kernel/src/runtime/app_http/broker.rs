@@ -1,7 +1,7 @@
 //! HTTP namespace on the existing worker peer. Current authority is checked
 //! by the durable writer before every socket start or stream operation enqueue.
 use super::{decode, policy::AppHttpPolicy, streams::HttpStreams, HttpError, HttpLimits};
-use crate::durable_state::app_validations::ValidationCommand;
+use crate::durable_state::app_validations::EffectReceipt;
 use crate::{
     durable_state::DurableKernelStateStore, runtime::app_operation_budget::AppOperationBudget,
 };
@@ -126,21 +126,23 @@ impl AppHttpBroker {
         let broker = self.clone();
         let prepared = tokio::task::spawn_blocking(move || {
             let catalog = broker.policy.catalog().clone();
-            let consume = |action: &str, operation: &str| {
-                broker
+            // Reads the approval; the writer spends it (see `HttpJob::submit`).
+            let approved = |action: &str, operation: &str| {
+                let mut receipt = EffectReceipt {
+                    owner: broker.owner.clone(),
+                    installation: catalog.installation_id().to_owned(),
+                    generation: catalog.generation(),
+                    action: action.to_owned(),
+                    operation_id: operation.to_owned(),
+                    digest: String::new(),
+                };
+                let operation = broker
                     .store
-                    .app_validation(ValidationCommand::Consume {
-                        owner: broker.owner.clone(),
-                        installation: catalog.installation_id().to_owned(),
-                        generation: catalog.generation(),
-                        action: action.to_owned(),
-                        operation_id: operation.to_owned(),
-                        now_ms: crate::session::unix_epoch_ms(),
-                    })
-                    .ok()
-                    .flatten()
-                    .map(|operation| operation.parameters)
-                    .ok_or(HttpError::ValidationRequired)
+                    .approved_app_validation(&receipt, crate::session::unix_epoch_ms())
+                    .map_err(|_| HttpError::Busy)?
+                    .ok_or(HttpError::ValidationRequired)?;
+                receipt.digest = operation.digest;
+                Ok((operation.parameters, receipt))
             };
             let (job, receiver) = broker.streams.job(
                 &broker.policy,
@@ -149,7 +151,7 @@ impl AppHttpBroker {
                 request.deadline,
                 request.cancellation,
                 permit,
-                &consume,
+                &approved,
             )?;
             broker.store.enqueue_app_http(job);
             Ok::<_, HttpError>(receiver)
