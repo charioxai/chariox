@@ -9,6 +9,14 @@ impl Fixture {
         ));
         std::fs::create_dir(&root).unwrap();
         let store = DurableKernelStateStore::open_owned(root.join("kernel.sqlite")).unwrap();
+        // The active generation the operations below belong to.
+        rusqlite::Connection::open(store.path())
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO app_installations(installation_id,app_id,owner_id,generation,allocated_generation,active_json)
+                 VALUES('pay','com.example.pay','alice',3,3,'{}')",
+            )
+            .unwrap();
         Self(root, store)
     }
     fn create(&self, id: &str, amount: u64, expires_ms: u64) -> ValidationOperation {
@@ -237,4 +245,26 @@ fn finished_operations_are_removed_after_retention() {
         .app_validation_status("alice", "pay", "open")
         .unwrap()
         .is_some());
+}
+
+#[test]
+fn an_updated_or_uninstalled_apps_open_operations_expire() {
+    let f = Fixture::new();
+    f.create("open", 1, u64::MAX / 4);
+    f.1.app_validation(ValidationCommand::Expire { now_ms: 2 })
+        .unwrap();
+    let state = || {
+        f.1.app_validation_status("alice", "pay", "open")
+            .unwrap()
+            .unwrap()
+            .state
+    };
+    assert_eq!(state(), ValidationState::Pending);
+    rusqlite::Connection::open(f.1.path())
+        .unwrap()
+        .execute_batch("UPDATE app_installations SET generation=4,allocated_generation=4")
+        .unwrap();
+    f.1.app_validation(ValidationCommand::Expire { now_ms: 3 })
+        .unwrap();
+    assert_eq!(state(), ValidationState::Expired);
 }

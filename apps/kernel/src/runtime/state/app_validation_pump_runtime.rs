@@ -53,7 +53,10 @@ impl KernelRuntimeState {
                     .end_validation_prompt(&operation.operation_id);
                 continue;
             };
-            let interaction = validation_interaction(&operation);
+            // The prompt closes no later than the operation expires.
+            let remaining_sec = operation.expires_ms.saturating_sub(now_ms) / 1000;
+            let interaction =
+                validation_interaction(&operation).with_timeout_sec(remaining_sec.clamp(1, 300));
             let receiver = match self
                 .create_kernel_operation_interaction(&session, &operation.owner, interaction)
                 .await
@@ -96,8 +99,8 @@ impl KernelRuntimeState {
     }
 
     /// The owner's most recently used session hosts the approval, so it
-    /// appears on the terminals the person is using. In a shared session
-    /// collaborators see it, but only the owner (the host) can answer.
+    /// appears on the terminals the person is using: preferably one the owner
+    /// hosts. Collaborators in that session see it; only the owner answers.
     fn validation_session(&self, owner: &str) -> Option<String> {
         self.owned
             .session_store
@@ -105,9 +108,12 @@ impl KernelRuntimeState {
             .into_iter()
             .filter(|session| session.has_member(owner))
             .max_by_key(|session| {
-                session
-                    .last_prompt_sent_at_ms()
-                    .unwrap_or(session.created_at_ms())
+                (
+                    session.owner_user_id() == owner,
+                    session
+                        .last_prompt_sent_at_ms()
+                        .unwrap_or(session.created_at_ms()),
+                )
             })
             .map(|session| session.id().to_owned())
     }

@@ -143,7 +143,7 @@ the signed package declares with `criticalValidation`; `parameters` must match
 that action's `inputSchema` (at most 16 KiB) and are bound canonically (sorted
 keys) with the installation, generation and action into a durable operation.
 The reply `{operationId, state}` is `pending` at once; the kernel shows a
-trusted approval outside App content (in the owner's most recent session, one
+trusted approval outside App content (in the owner's most recent session, preferring one they host; one
 operation per installation at a time; collaborators in a shared session see it,
 but only the owner can answer), and only the owner's answer
 there moves it to `approved` or `denied` (undecided operations expire after 10

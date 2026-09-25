@@ -136,11 +136,14 @@ impl AppControlService {
     /// decisions (install and publisher approvals keep room).
     pub(crate) fn begin_validation_prompt(&self, operation_id: &str, owner: &str) -> bool {
         const PER_OWNER: usize = 4;
+        // Half of the kernel-wide decision limit (32) stays for other kinds.
+        const TOTAL: usize = 16;
         let mut prompts = self
             .validation_prompts
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         if prompts.contains_key(operation_id)
+            || prompts.len() >= TOTAL
             || prompts.values().filter(|live| *live == owner).count() >= PER_OWNER
         {
             return false;

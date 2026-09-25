@@ -288,6 +288,19 @@ fn apply(
                     params![now_ms as i64],
                 )
                 .map_err(storage)?;
+            // An uninstalled or updated App's open operations cannot be used.
+            transaction
+                .execute(
+                    "UPDATE app_validations SET state='expired', updated_ms=?1
+                     WHERE state IN ('pending','approved') AND NOT EXISTS (
+                       SELECT 1 FROM app_installations i
+                       WHERE i.installation_id=app_validations.installation_id
+                         AND i.owner_id=app_validations.owner_id
+                         AND i.generation=app_validations.generation
+                         AND i.active_json IS NOT NULL)",
+                    params![now_ms as i64],
+                )
+                .map_err(storage)?;
             transaction
                 .execute(
                     "DELETE FROM app_validations
