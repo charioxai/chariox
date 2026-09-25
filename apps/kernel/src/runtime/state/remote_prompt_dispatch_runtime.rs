@@ -2931,7 +2931,11 @@ mod tests {
             .operational_history_store
             .load_session_history_entries(&session_id, Some(&agent_id))
             .unwrap();
-        let before_terminal = runtime.owned.terminal_stream.change_sequence();
+        let source_attachment_id = dispatch.source_attachment_id.clone();
+        let before_terminal = runtime
+            .owned
+            .terminal_stream
+            .attachment_change_sequence(&session_id, &source_attachment_id);
 
         assert!(matches!(
             runtime.owned.settle_remote_dispatch_if_current(&dispatch, Some("old-worker-run")).unwrap(),
@@ -2978,7 +2982,13 @@ mod tests {
             .expect("delivery-uncertain diagnostic must be durable");
         assert!(warning.text.contains("remains pending"));
         assert!(warning.text.contains("not replayed or cancelled"));
-        assert!(runtime.owned.terminal_stream.change_sequence() > before_terminal);
+        assert!(
+            runtime
+                .owned
+                .terminal_stream
+                .attachment_change_sequence(&session_id, &source_attachment_id)
+                > before_terminal
+        );
         assert!(
             runtime
                 .remote_prompt_projection_drain_target(&session_id, &agent_id)
