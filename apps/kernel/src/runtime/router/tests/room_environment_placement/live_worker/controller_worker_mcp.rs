@@ -109,18 +109,17 @@ async fn check_home_room_agent_uses_remote_environment_worker_browser_and_web_vi
             .map(|spec| spec.name)
             .collect::<std::collections::BTreeSet<_>>();
         for tool in ["slice_open_url", "slice_browser_status", "slice_mouse"] {
-            assert!(advertised.contains(tool), "home Room agent is missing {tool}");
+            assert!(
+                advertised.contains(tool),
+                "home Room agent is missing {tool}"
+            );
         }
 
         let url = "https://home-agent.remote-environment.test/";
         let opened = fixture
             .home
             .runtime_state
-            .dispatch_authenticated_runtime_tool_call(
-                &token,
-                "slice_open_url",
-                json!({"url": url}),
-            )
+            .dispatch_authenticated_runtime_tool_call(&token, "slice_open_url", json!({"url": url}))
             .await
             .expect("home agent Browser call must route to worker A through home admission");
         assert!(opened.ok, "{:?}", opened.payload);
@@ -158,7 +157,10 @@ async fn check_home_room_agent_uses_remote_environment_worker_browser_and_web_vi
         assert_eq!(computer.payload["session_id"], room);
         assert_eq!(computer.payload["environment_id"], environment_id);
         assert_eq!(computer.payload["agent_id"], home_agent_id);
-        assert_eq!(computer.payload["actor_id"], format!("agent:{home_agent_id}"));
+        assert_eq!(
+            computer.payload["actor_id"],
+            format!("agent:{home_agent_id}")
+        );
         assert_eq!(computer.payload["action_kind"], "pointer_move");
         let computer_action_id = computer.payload["action_id"]
             .as_str()
@@ -171,7 +173,10 @@ async fn check_home_room_agent_uses_remote_environment_worker_browser_and_web_vi
             .room_environment_snapshot(&room)
             .expect("home Room retains its worker A Environment ledger");
         assert_eq!(environment.environment_id, environment_id);
-        assert_eq!(environment.focused_tab_id.as_deref(), Some(initial_tab_id.as_str()));
+        assert_eq!(
+            environment.focused_tab_id.as_deref(),
+            Some(initial_tab_id.as_str())
+        );
         let action_count_before_denials = environment.actions.len();
         let tab = environment
             .tabs
@@ -291,7 +296,9 @@ async fn check_home_room_agent_uses_remote_environment_worker_browser_and_web_vi
         .await
         .expect_err("a fabricated lease must not authorize a home-local agent");
         assert!(
-            forged_lease.to_string().contains("agent is not remote-backed"),
+            forged_lease
+                .to_string()
+                .contains("agent is not remote-backed"),
             "forged lease must fail against the kernel-owned home agent: {forged_lease}"
         );
 
