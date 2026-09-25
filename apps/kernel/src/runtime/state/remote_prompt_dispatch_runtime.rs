@@ -4868,24 +4868,30 @@ mod tests {
             rusqlite::Connection::open(runtime.owned.durable_state_store.path()).unwrap();
         connection
             .execute_batch(
-                "CREATE TRIGGER fail_first_remote_ack BEFORE INSERT ON durable_state_events
-             WHEN NEW.kind = 'session.prompt_state.updated'
-             BEGIN SELECT RAISE(FAIL, 'injected transient acknowledgement failure'); END;",
+                "CREATE TABLE remote_ack_injected_failures (count INTEGER NOT NULL);
+                 INSERT INTO remote_ack_injected_failures (count) VALUES (0);
+                 CREATE TRIGGER fail_first_remote_ack BEFORE INSERT ON durable_state_events
+                 WHEN NEW.kind = 'session.prompt_state.updated'
+                   AND (SELECT count FROM remote_ack_injected_failures) = 0
+                 BEGIN
+                   UPDATE remote_ack_injected_failures SET count = count + 1;
+                   SELECT RAISE(FAIL, 'injected transient acknowledgement failure');
+                 END;",
             )
             .unwrap();
-        let settling = tokio::spawn({
-            let runtime = runtime.clone();
-            async move {
-                runtime
-                    .finish_remote_prompt_dispatch(dispatch, Ok("worker-run-accepted".to_string()))
-                    .await
-            }
-        });
-        tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+        runtime
+            .finish_remote_prompt_dispatch(dispatch, Ok("worker-run-accepted".to_string()))
+            .await
+            .unwrap();
+        let injected_failures: i64 = connection
+            .query_row("SELECT count FROM remote_ack_injected_failures", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(injected_failures, 1, "the first ACK append alone must fail");
         connection
             .execute_batch("DROP TRIGGER fail_first_remote_ack;")
             .unwrap();
-        settling.await.unwrap().unwrap();
         let session = runtime
             .owned
             .session_store
