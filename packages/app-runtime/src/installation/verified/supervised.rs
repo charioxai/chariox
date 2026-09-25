@@ -203,12 +203,10 @@ impl StageTrustBinding {
         let stored = load_update(tx, &self.token.installation_id, self.token.generation)?;
         if stored.token == self.token && stored.phase == UpdatePhase::Aborted {
             let installation = load_installation(tx, &self.token.installation_id)?;
-            if installation.generation == self.token.base_generation
-                && installation.pending_generation.is_none()
-            {
-                // A separate existing capability decline may have aborted the
-                // same stage. Preserve that reason while the operation
-                // receipt is terminalized in this surrounding transaction.
+            if installation.pending_generation != Some(self.token.generation) {
+                // A capability decline or an uninstall already aborted this
+                // stage. Preserve that reason while the operation receipt is
+                // terminalized in this surrounding transaction.
                 return Ok(());
             }
         }

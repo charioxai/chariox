@@ -331,3 +331,63 @@ fn an_update_stages_onto_the_active_installation_and_a_failed_start_keeps_it() {
         InstallOperationError::MigrationRequired
     );
 }
+
+#[test]
+fn uninstalling_during_an_update_leaves_its_operation_cancellable() {
+    let f = Fixture::new();
+    let next = release("1.1.0", 0, &f.store);
+    let digest = next.release_metadata().package_digest.clone();
+    f.store
+        .reserve_app_install("alice", "update", update_input(1), &digest, budget())
+        .unwrap();
+    f.store
+        .complete_app_install_preparation("alice", "update", next, budget())
+        .unwrap();
+    f.store
+        .mutate_app_installation(
+            "alice",
+            crate::durable_state::apps::AppRegistryMutation::Uninstall {
+                installation_id: "installed".into(),
+                expected_generation: 1,
+                now_ms: 5,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        f.store
+            .cancel_first_app_install("alice", "update", budget())
+            .unwrap()
+            .phase,
+        InstallPhase::Cancelled
+    );
+}
+
+#[test]
+fn protocol_348_operation_table_migrates_to_generations() {
+    let connection = Connection::open_in_memory().unwrap();
+    connection.execute_batch("CREATE TABLE app_installation_operations (
+        owner_id TEXT NOT NULL, request_id TEXT NOT NULL, installation_id TEXT NOT NULL UNIQUE,
+        package_digest TEXT NOT NULL, phase TEXT NOT NULL CHECK(phase IN ('preparing','approval','starting','committed','cancelled','failed')),
+        attempt TEXT, approval_json TEXT, failure TEXT,
+        cleanup_pending INTEGER NOT NULL DEFAULT 0 CHECK(cleanup_pending IN (0,1)),
+        created_ms INTEGER NOT NULL CHECK(created_ms>=0), updated_ms INTEGER NOT NULL CHECK(updated_ms>=0),
+        session_id TEXT, upload_handle TEXT, review_json TEXT, interaction_id TEXT,
+        PRIMARY KEY(owner_id,request_id));
+        INSERT INTO app_installation_operations(owner_id,request_id,installation_id,package_digest,phase,created_ms,updated_ms,session_id,upload_handle,interaction_id)
+        VALUES('alice','inflight','app_1','sha256:x','approval',1,2,'session','upload_x','nonce');").unwrap();
+    initialize(&connection).unwrap();
+    initialize(&connection).unwrap();
+    let operation = load(&connection, "alice", "inflight").unwrap().unwrap();
+    assert_eq!(operation.phase, InstallPhase::AwaitingApproval);
+    assert_eq!(
+        (operation.token.base_generation, operation.token.generation),
+        (0, 1)
+    );
+    let input = operation.input.unwrap();
+    assert_eq!(
+        (input.session_id.as_str(), input.upload_handle.as_str()),
+        ("session", "upload_x")
+    );
+    assert!(input.update.is_none());
+    assert_eq!(operation.interaction_id.as_deref(), Some("nonce"));
+}
