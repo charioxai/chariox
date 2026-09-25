@@ -361,6 +361,7 @@ mod workflow_console_tool;
 mod workflow_definition_owned_state;
 mod workflow_definition_settings_owned_state;
 mod workflow_dispatch;
+mod workflow_agent_owned_state;
 mod workflow_endpoint_owned_state;
 mod workflow_launch_owned_state;
 mod workflow_node_owned_state;

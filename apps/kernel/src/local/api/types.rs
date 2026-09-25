@@ -116,4 +116,6 @@ pub use workspace::*;
 /// gains `bound_agent_id`.
 /// Version 351 marks App view Tabs in the Room snapshot: `EnvironmentTab.app`
 /// with the installation and the reserved private conversation panel.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 351;
+/// Version 352 adds `CreateAgentWorkflow`: a visible one-node workflow for an
+/// agent that gets a trigger or deployment, with `WorkflowDefinition.origin`.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 352;

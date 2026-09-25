@@ -27,6 +27,11 @@ impl KernelRuntimeState {
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
+            LocalDaemonRequest::CreateAgentWorkflow(request) => {
+                let result = owned.workflow_create_from_agent(request, &caller_user_id);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
             LocalDaemonRequest::ValidateWorkflowCode(request) => (
                 self.execute_workflow_code_validate_request(
                     request,
@@ -511,6 +516,7 @@ pub(super) fn workflow_response_session(
 ) -> Option<crate::session::RuntimeSession> {
     match response {
         LocalDaemonResponse::WorkflowCreated { session, .. }
+        | LocalDaemonResponse::AgentWorkflowCreated { session, .. }
         | LocalDaemonResponse::WorkflowCodeSourceBound { session, .. }
         | LocalDaemonResponse::WorkflowCodeSourceRebuilt { session, .. }
         | LocalDaemonResponse::WorkflowCodeSourceUpdated { session, .. }

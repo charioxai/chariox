@@ -1,6 +1,7 @@
 import type { RuntimeSession, WorkflowDefinition } from "./cli-types.js"
 import type { WorkflowDesignOp } from "@chariox/kernel-client/kernel-types"
 import {
+  createAgentWorkflowRequest,
   listWorkflowsRequest,
   resolveWorkflowRequest,
 } from "./ipc-requests.js"
@@ -27,6 +28,18 @@ export function createWorkflowDefinitionController(deps: WorkflowDefinitionContr
     })
     const workflow = workflowFromSession(accepted.session, workflowId)
     const payload = { ...accepted, workflow }
+    deps.applySessionState(payload.session)
+    deps.setSelectedWorkflowId(payload.workflow.id)
+    deps.setSelectedWorkflowNodeId(null)
+    deps.rebuildTranscript()
+    deps.applyResponseLayout()
+    return payload
+  }
+
+  // A visible one-node workflow for an agent that gets a trigger or deployment.
+  const createAgentWorkflow = async (agentId: string, reason: "trigger" | "deploy", alias?: string | null) => {
+    const response = await deps.sendRequest(createAgentWorkflowRequest(deps.sessionId(), agentId, reason, "tui", alias))
+    const payload = expectVariant<{ workflow: WorkflowDefinition; endpoint: { id: string }; session: RuntimeSession }>(response, "AgentWorkflowCreated")
     deps.applySessionState(payload.session)
     deps.setSelectedWorkflowId(payload.workflow.id)
     deps.setSelectedWorkflowNodeId(null)
@@ -69,7 +82,8 @@ export function createWorkflowDefinitionController(deps: WorkflowDefinitionContr
       kind: "workflow_remove",
       workflow_id: workflow.id,
     })
-    return { workflow, session: payload.session }
+    return {
+    createAgentWorkflow, workflow, session: payload.session }
   }
 
   return {

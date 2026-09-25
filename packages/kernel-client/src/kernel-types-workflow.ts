@@ -7,6 +7,13 @@ export type WorkflowDefinition = {
   alias: string | null
   prompt?: string | null
   controlled_by_metaagent_id?: string | null
+  /** Set on a workflow generated when an agent got a trigger or deployment. */
+  origin?: {
+    source_agent_id: string
+    reason: "trigger" | "deploy"
+    surface: "web" | "tui" | "cli"
+    created_at_ms: number
+  }
   created_at_ms?: number
   revision?: number
   code_source?: WorkflowCodeSourceBinding | null

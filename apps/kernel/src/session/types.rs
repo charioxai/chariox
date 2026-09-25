@@ -26,6 +26,7 @@ pub use super::workflow_canvas::{
 pub use super::workflow_definition::{
     WorkflowCodeSourceBinding, WorkflowCodeSourceOrigin, WorkflowDefinition,
     WorkflowSchemaDefinition,
+    WorkflowOrigin, WorkflowOriginReason, WorkflowOriginSurface,
 };
 pub use super::workflow_diagnostics::{
     WorkflowConsole, WorkflowConsoleEntry, WorkflowFailureEvent, WorkflowFailureKind,

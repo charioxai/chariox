@@ -261,6 +261,7 @@ export type CliCommandActionCompositionDeps = {
   replaceWorkflowDefinitions: AnyFn
   upsertWorkflowDefinition: AnyFn
   createWorkflow: AnyFn
+  createAgentWorkflow: AnyFn
   listWorkflows: AnyFn
   resolveWorkflow: AnyFn
   assignWorkflowAlias: AnyFn
@@ -378,6 +379,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     replaceWorkflowDefinitions,
     upsertWorkflowDefinition,
     createWorkflow,
+    createAgentWorkflow,
     listWorkflows,
     resolveWorkflow,
     assignWorkflowAlias,
@@ -924,6 +926,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     replaceWorkflowDefinitions,
     upsertWorkflowDefinition,
     createWorkflow,
+    createAgentWorkflow,
     listWorkflows,
     resolveWorkflow,
     assignWorkflowAlias,

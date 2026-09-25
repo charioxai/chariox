@@ -33,6 +33,7 @@ import {
   handleWorkflowAliasCommand,
   handleWorkflowDeleteCommand,
   handleWorkflowListCommand,
+  handleWorkflowFromAgentCommand,
   handleWorkflowNewCommand,
   handleWorkflowRootCommand,
   handleWorkflowShowCommand,
@@ -99,6 +100,7 @@ export type WorkflowCommandHandlerDeps = {
   replaceWorkflowDefinitions: (workflows: WorkflowDefinition[]) => void
   upsertWorkflowDefinition: (workflow: WorkflowDefinition) => void
   createWorkflow: (alias?: string | null) => Promise<WorkflowCreatePayload>
+  createAgentWorkflow?: (agentId: string, reason: "trigger" | "deploy", alias?: string | null) => Promise<{ workflow: WorkflowDefinition; endpoint: { id: string }; session: RuntimeSession }>
   listWorkflows: () => Promise<WorkflowDefinition[]>
   resolveWorkflow: (workflowRef: string) => Promise<WorkflowResolvePayload>
   assignWorkflowAlias: (workflowId: string, alias: string) => Promise<WorkflowDefinition | null>
@@ -271,6 +273,11 @@ export async function handleWorkflowSlashCommand(
 
   if (subcommand === "new") {
     await handleWorkflowNewCommand(deps, args)
+    return
+  }
+
+  if (subcommand === "from-agent") {
+    await handleWorkflowFromAgentCommand(deps, args)
     return
   }
 
