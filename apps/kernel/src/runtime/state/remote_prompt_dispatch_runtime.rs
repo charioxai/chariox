@@ -858,7 +858,8 @@ impl KernelRuntimeState {
             ) {
                 Err(error)
                     if result.is_ok()
-                        && matches!(&error, DaemonError::SessionHistoryFailed { .. })
+                        && (matches!(&error, DaemonError::SessionHistoryFailed { .. })
+                            || crate::durable_state::is_retryable_durable_write_error(&error))
                         && append_retry < 2 =>
                 {
                     append_retry += 1;
