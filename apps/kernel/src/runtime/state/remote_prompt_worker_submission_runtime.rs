@@ -936,6 +936,236 @@ fn remote_git_turn_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use crate::app::{DaemonApp, KernelPreparedPromptSubmission};
+    use crate::attachment::{AttachRequest, ClientCapabilityLevel};
+    use crate::session::{CreateSessionRequest, PromptQueueItem, PromptStatus};
+    use chariox_relay::protocol::RelayEnvelope;
+    use tokio::sync::Mutex;
+
+    const CANCELLATION_GUARD_RELAY_URL: &str = "ws://127.0.0.1:43179";
+    const CANCELLATION_GUARD_WORKER_ID: &str = "worker-cancel-before-submit";
+    const CANCELLATION_GUARD_LEASED_AGENT_ID: &str = "leased-agent-cancel-before-submit";
+
+    async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
+        let (
+            config_projection,
+            session_store,
+            agent_store,
+            attachment_store,
+            provider_store,
+            provider_process_tracking,
+            slice_store,
+            session_projection,
+            provider_run_projection,
+            operational_history_store,
+            durable_state_store,
+            prompt_state_owner,
+            active_turns,
+            prompt_activity,
+            prompt_workspace_claims,
+            structured_output_records,
+            terminal_stream,
+            workflow_design_events,
+            metaagent_events,
+            workspace_coordinator,
+        ) = {
+            let app_locked = app.lock().await;
+            (
+                app_locked.config_projection_store(),
+                app_locked.session_state_store(),
+                app_locked.agents().clone(),
+                app_locked.attachments().clone(),
+                app_locked.providers().clone(),
+                app_locked.provider_process_tracking_store(),
+                app_locked.slices(),
+                app_locked.session_state_projection_store(),
+                app_locked.provider_run_projection_store(),
+                app_locked.operational_history_store(),
+                app_locked.durable_state_store(),
+                app_locked.prompt_state_owner(),
+                app_locked.active_turn_store(),
+                app_locked.prompt_activity_store(),
+                app_locked.prompt_workspace_claim_store(),
+                app_locked.structured_output_record_store(),
+                app_locked.terminal_stream_store(),
+                app_locked.workflow_design_event_store(),
+                app_locked.metaagent_event_store(),
+                app_locked.workspace_coordinator(),
+            )
+        };
+        KernelRuntimeState::new_with_owned_state(
+            Arc::clone(app),
+            config_projection,
+            session_store,
+            agent_store,
+            attachment_store,
+            provider_store,
+            provider_process_tracking,
+            slice_store,
+            session_projection,
+            provider_run_projection,
+            operational_history_store,
+            durable_state_store,
+            prompt_state_owner,
+            active_turns,
+            prompt_activity,
+            prompt_workspace_claims,
+            structured_output_records,
+            terminal_stream,
+            workflow_design_events,
+            metaagent_events,
+            workspace_coordinator,
+        )
+    }
+
+    #[tokio::test]
+    async fn cancelling_accepted_remote_prompt_never_sends_submit_request() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.relay_url = Some(CANCELLATION_GUARD_RELAY_URL.to_string());
+        config.relay_token = Some("cancel-before-submit-test-token".to_string());
+        let worker_config = crate::config::DaemonConfig::for_tests();
+
+        let mut app = DaemonApp::bootstrap(config).expect("home app should bootstrap");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "cancel-before-submit-workspace",
+                "cancel-before-submit-worktree",
+            ))
+            .expect("home session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "cancel-before-submit-client",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("home attachment should be created");
+        app.agents
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: CANCELLATION_GUARD_WORKER_ID.to_string(),
+                    worker_machine_id: "worker-machine-cancel-before-submit".to_string(),
+                    execution_lease_id: "lease-cancel-before-submit".to_string(),
+                    leased_agent_id: CANCELLATION_GUARD_LEASED_AGENT_ID.to_string(),
+                    active_worker_provider_run_id: None,
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .expect("home agent should bind to the fake worker");
+
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let attachment_id = attachment.id().to_string();
+        let mut submission = runtime
+            .owned
+            .submit_remote_prepared_prompt(&KernelPreparedPromptSubmission {
+                session_id: session_id.clone(),
+                prompt: PromptQueueItem::new(
+                    "pending:cancel-before-submit",
+                    &attachment_id,
+                    &agent_id,
+                    "this accepted prompt is cancelled before dispatch",
+                    PromptStatus::Queued,
+                ),
+                force_queue: false,
+                refresh_projection: true,
+            })
+            .expect("remote prompt should be admitted")
+            .expect("remote prompt should produce a dispatch");
+        let mut dispatch = submission
+            .remote_dispatch
+            .take()
+            .expect("accepted remote prompt should carry a dispatch");
+        assert_eq!(
+            runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(
+                    &runtime
+                        .owned
+                        .session_store
+                        .get_session(&session_id)
+                        .expect("session should remain available"),
+                    &agent_id,
+                )
+                .expect("accepted prompt should remain active")
+                .durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Accepted)
+        );
+        runtime
+            .owned
+            .begin_remote_prompt_cancellation(&session_id, &agent_id, &attachment_id)
+            .expect("cancellation intent should persist before dispatch begins");
+
+        let relay_state = Arc::clone(&runtime.owned.relay_state);
+        let (outgoing_tx, mut peer_requests, _event_rx) =
+            crate::transport::relay_client::RelayOutgoingSender::channel(8);
+        {
+            let mut relay = relay_state.write().await;
+            relay.test_set_connected_sender(outgoing_tx, CANCELLATION_GUARD_RELAY_URL);
+            relay.remember_peer_public_key(
+                CANCELLATION_GUARD_WORKER_ID,
+                worker_config.relay_public_key.clone(),
+            );
+        }
+        let worker_private_key = worker_config.relay_private_key.clone();
+        let prompt = dispatch.prompt.clone();
+        let submission = submit_remote_prompt_to_worker_with_binding_refresh(
+            &runtime,
+            &mut dispatch,
+            prompt,
+            Vec::new(),
+        );
+        tokio::pin!(submission);
+        tokio::select! {
+            result = &mut submission => {
+                let error = result.expect_err("cancelled Accepted prompt must not be submitted");
+                assert!(error.to_string().contains("cannot start remote dispatch"));
+                assert!(
+                    peer_requests.try_recv().is_err(),
+                    "cancelled Accepted prompt must send no relay request"
+                );
+            }
+            envelope = peer_requests.recv() => {
+                let envelope = envelope.expect("fake relay should receive any unexpected request");
+                let RelayEnvelope::DaemonPeerRequest {
+                    encrypted_request,
+                    ..
+                } = envelope else {
+                    panic!("unexpected fake relay envelope: {envelope:?}");
+                };
+                let decrypted = crate::transport::relay_crypto::decrypt_payload_for_private_key(
+                    &worker_private_key,
+                    &encrypted_request,
+                )
+                .expect("fake worker should decrypt an unexpected request");
+                let request: crate::transport::relay_peer::RelayPeerRequest =
+                    serde_json::from_slice(&decrypted.plaintext)
+                        .expect("fake worker request should decode");
+                assert!(
+                    matches!(
+                        request,
+                        crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt { .. }
+                    ),
+                    "unexpected relay request before SubmitLeasedPrompt: {request:?}"
+                );
+                panic!(
+                    "cancelled Accepted prompt sent SubmitLeasedPrompt before cancellation settled"
+                );
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
+                panic!("dispatch neither rejected cancellation nor produced a test relay request");
+            }
+        }
+    }
 
     const WORKFLOW_CREDENTIAL_CANARY: &str = "workflow-submit-token-canary";
 

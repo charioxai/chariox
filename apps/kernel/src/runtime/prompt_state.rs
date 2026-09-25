@@ -572,6 +572,23 @@ impl PromptStateOwner {
                 ),
             });
         }
+        if phase == crate::session::DurablePromptDeliveryPhase::Dispatching
+            && active.status() == PromptStatus::Cancelling
+        {
+            if active.durable_delivery_phase()
+                != Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "mark prompt delivery",
+                    message: format!(
+                        "cancelling prompt `{prompt_id}` cannot start remote dispatch"
+                    ),
+                });
+            }
+            // The delivery phase already crossed the durable pre-send boundary. Preserve its
+            // receipt identity so cancellation can reconcile the in-flight worker request.
+            return Ok(active.clone());
+        }
         active.set_durable_delivery(phase, provider_run_id, provider_session_id);
         if phase == crate::session::DurablePromptDeliveryPhase::Delivered
             && active.status() == PromptStatus::Dispatching
@@ -1549,6 +1566,127 @@ mod tests {
                 None,
             )
             .is_err());
+    }
+
+    #[test]
+    fn cancelling_accepted_prompt_cannot_transition_to_dispatching() {
+        let owner = PromptStateOwner::default();
+        let session = RuntimeSession::new(
+            "session-cancel-before-dispatch",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        );
+        let PromptSubmissionOutcome::Started { prompt } = owner
+            .submit_prepared_prompt(
+                &session,
+                PromptQueueItem::new(
+                    "prompt-cancel-before-dispatch",
+                    "attachment-1",
+                    "agent-1",
+                    "cancel before remote dispatch",
+                    PromptStatus::Queued,
+                ),
+                false,
+            )
+            .expect("prompt should be admitted")
+        else {
+            panic!("prompt should start");
+        };
+        assert_eq!(
+            prompt.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Accepted)
+        );
+        owner
+            .begin_cancelling_active_prompt(&session, "agent-1")
+            .expect("accepted prompt should enter cancellation");
+
+        let error = owner
+            .mark_active_prompt_delivery(
+                &session,
+                "agent-1",
+                prompt.id(),
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+                None,
+                None,
+            )
+            .expect_err("cancellation must win before the dispatching boundary");
+
+        assert!(error.to_string().contains("cannot start remote dispatch"));
+        let active = owner
+            .active_prompt_for_agent(&session, "agent-1")
+            .expect("same prompt should remain active for cancellation");
+        assert_eq!(active.id(), prompt.id());
+        assert_eq!(active.status(), PromptStatus::Cancelling);
+        assert_eq!(
+            active.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Accepted)
+        );
+    }
+
+    #[test]
+    fn cancelling_dispatching_prompt_keeps_receipt_identity() {
+        let owner = PromptStateOwner::default();
+        let session = RuntimeSession::new(
+            "session-cancel-during-dispatch",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        );
+        let PromptSubmissionOutcome::Started { prompt } = owner
+            .submit_prepared_prompt(
+                &session,
+                PromptQueueItem::new(
+                    "prompt-cancel-during-dispatch",
+                    "attachment-1",
+                    "agent-1",
+                    "cancel while remote dispatch is in flight",
+                    PromptStatus::Queued,
+                ),
+                false,
+            )
+            .expect("prompt should be admitted")
+        else {
+            panic!("prompt should start");
+        };
+        owner
+            .mark_active_prompt_delivery(
+                &session,
+                "agent-1",
+                prompt.id(),
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+                Some("worker-run-1".to_string()),
+                None,
+            )
+            .expect("dispatching phase should persist");
+        owner
+            .begin_cancelling_active_prompt(&session, "agent-1")
+            .expect("dispatching prompt should enter cancellation");
+
+        let active = owner
+            .mark_active_prompt_delivery(
+                &session,
+                "agent-1",
+                prompt.id(),
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+                None,
+                None,
+            )
+            .expect("already-dispatching prompt must remain eligible for receipt reconciliation");
+
+        assert_eq!(active.status(), PromptStatus::Cancelling);
+        assert_eq!(
+            active.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+        );
+        assert_eq!(
+            active.durable_delivery_provider_run_id(),
+            Some("worker-run-1")
+        );
     }
 
     #[test]
