@@ -629,10 +629,12 @@ fn on_demand_start_respects_user_stop_explicit_start_and_revocation() {
         service.start_on_demand_blocking("alice", "installed", runtime.handle().clone()),
         Err(LifecycleError::Stopped)
     ));
-    // An explicit start re-enables on-demand use.
-    service
-        .start_active_blocking("alice", "installed", runtime.handle().clone())
-        .unwrap();
+    // An explicit start re-enables on-demand use; after a user stop it is a
+    // new start (the control request reports it as `starting`).
+    assert!(matches!(
+        service.start_active_blocking("alice", "installed", runtime.handle().clone()),
+        Ok(crate::runtime::app_lifecycle::StartDisposition::Starting { .. })
+    ));
     wait(|| control.active_app_lease("alice", "installed").is_some());
     service.stop_blocking("alice", "installed").unwrap();
     service
