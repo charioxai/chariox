@@ -62,6 +62,40 @@ test("managed kernel upgrade requires an explicit valid provider topology before
   }
 })
 
+test("Path-1 upgrade drop-in guard checks both effective services", async (context) => {
+  const source = await readFile(upgrade, "utf8")
+  const guard = source.match(/assert_path1_units_have_no_dropins\(\) \{\n[\s\S]*?^\}/m)?.[0]
+  assert.ok(guard)
+  assert.match(source, /select_supervisor_service\nassert_path1_units_have_no_dropins\nrecover_transaction/)
+  assert.match(source, /systemctl daemon-reload \|\| return 1\n  assert_path1_units_have_no_dropins \|\| return 1\n  health_not_before_ms=/)
+  assert.match(source, /if ! systemctl daemon-reload \\\n  \|\| ! assert_path1_units_have_no_dropins \\\n/)
+
+  const scratch = await mkdtemp(join(tmpdir(), "chariox-upgrade-dropin-"))
+  context.after(() => rm(scratch, { recursive: true, force: true }))
+  const bin = join(scratch, "bin")
+  await put(join(bin, "systemctl"), `#!/bin/sh
+case "$*" in
+  *chariox-path1-managed-bootstrap.service) printf '%s' "\${SYSTEMD_HOME_DROP_IN_PATHS:-}" ;;
+  *chariox-disposable-worker-bootstrap.service) printf '%s' "\${SYSTEMD_WORKER_DROP_IN_PATHS:-}" ;;
+esac
+`, 0o755)
+  const command = `managed_provider_topology=path1\n${guard}\nassert_path1_units_have_no_dropins\n`
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` }
+  const clean = spawnSync("/bin/sh", ["-c", command], { encoding: "utf8", env })
+  assert.equal(clean.status, 0, clean.stderr)
+  for (const [name, unit] of [
+    ["SYSTEMD_HOME_DROP_IN_PATHS", "chariox-path1-managed-bootstrap.service"],
+    ["SYSTEMD_WORKER_DROP_IN_PATHS", "chariox-disposable-worker-bootstrap.service"],
+  ]) {
+    const inherited = spawnSync("/bin/sh", ["-c", command], {
+      encoding: "utf8",
+      env: { ...env, [name]: "/etc/systemd/system/50-hardening.conf" },
+    })
+    assert.equal(inherited.status, 1)
+    assert.match(inherited.stderr, new RegExp(`Path-1 service ${unit.replaceAll(".", "\\.")} has systemd drop-ins`))
+  }
+})
+
 test("repository release policy permits deployed protocol 325 and intermediates 326 through 332 to 333 upgrade and rollback", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-release-policy-"))
   context.after(() => rm(root, { recursive: true, force: true }))
@@ -356,6 +390,21 @@ exec /usr/bin/id "$@"
   await put(join(bin, "systemctl"), `#!/bin/sh
 set -eu
 printf '%s\n' "$*" >> "$HARNESS_STATE/systemctl.log"
+if [ "$1" = "show" ]; then
+  case "$*" in
+    *chariox-path1-managed-bootstrap.service)
+      if [ -f "$HARNESS_STATE/home-drop-in" ]; then
+        printf '%s\n' /etc/systemd/system/chariox-path1-managed-bootstrap.service.d/50-hardening.conf
+      fi
+      ;;
+    *chariox-disposable-worker-bootstrap.service)
+      if [ -f "$HARNESS_STATE/worker-drop-in" ]; then
+        printf '%s\n' /etc/systemd/system/chariox-disposable-worker-bootstrap.service.d/50-hardening.conf
+      fi
+      ;;
+  esac
+  exit 0
+fi
 presence="$CHARIOX_MANAGED_UPGRADE_ROOT/var/lib/chariox/kernels/active/kernel-1.json"
 if [ "$1" = "stop" ]; then
   if [ -f "$HARNESS_STATE/write-legacy-home-on-stop" ]; then
@@ -572,6 +621,28 @@ test("managed kernel upgrade atomically advances the release and receipt without
     `start ${serviceName}`,
     `is-active --quiet ${serviceName}`,
   ])
+})
+
+test("Path-1 upgrade rejects effective home or worker drop-ins before recovery or service mutation", async (context) => {
+  for (const [marker, unit] of [
+    ["home-drop-in", "chariox-path1-managed-bootstrap.service"],
+    ["worker-drop-in", "chariox-disposable-worker-bootstrap.service"],
+  ]) {
+    const harness = await makeHarness(context)
+    await put(join(harness.state, marker), "present\n")
+    const priorReceipt = await readFile(harness.receiptPath, "utf8")
+    const priorRelease = await readlink(join(harness.installRoot, "usr/lib/chariox/current"))
+    const result = harness.run({
+      CHARIOX_MANAGED_PROVIDER_TOPOLOGY: "path1",
+      CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY: harness.trustedKey,
+    })
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, new RegExp(`Path-1 service ${unit.replaceAll(".", "\\.")} has systemd drop-ins`))
+    const calls = (await readFile(join(harness.state, "systemctl.log"), "utf8")).trim().split("\n")
+    assert.ok(calls.every((call) => call.startsWith("show --property=DropInPaths --value ")), calls.join("\n"))
+    assert.equal(await readFile(harness.receiptPath, "utf8"), priorReceipt)
+    assert.equal(await readlink(join(harness.installRoot, "usr/lib/chariox/current")), priorRelease)
+  }
 })
 
 test("managed kernel upgrade migrates legacy home state and rejects a home collision", async (context) => {
