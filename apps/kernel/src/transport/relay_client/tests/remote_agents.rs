@@ -1567,6 +1567,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                 .get_agent(&remote_agent_id)
                 .expect("remote agent should remain available")
                 .remote_execution()
+                .cloned()
                 .expect("remote binding should remain available");
             assert_eq!(uncertainty.0, "prompt-1");
             assert_eq!(
