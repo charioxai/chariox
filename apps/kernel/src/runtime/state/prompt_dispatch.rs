@@ -240,6 +240,24 @@ impl KernelRuntimeState {
                     message: "remote binding changed while the agent message was in flight".to_string(),
                 });
             }
+            let current_session = owned.session_store.get_session(session_id)?;
+            let current_active = owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&current_session, agent_id);
+            if current_active.as_ref().is_none_or(|active| {
+                active.id() != payload.target_home_prompt_id
+                    || active.status() != crate::session::PromptStatus::Running
+            }) || current_agent
+                .remote_execution()
+                .and_then(|binding| binding.active_worker_provider_run_id.as_deref())
+                != Some(worker_provider_run_id.as_str())
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "commit remote agent message steer",
+                    message: "active remote provider turn changed while the agent message was in flight"
+                        .to_string(),
+                });
+            }
             owned.append_steering_prompt_history(
                 session_id,
                 &provider_run_id,
