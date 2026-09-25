@@ -8,7 +8,8 @@ import { mkdir, readFile, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const INDEX = 'index';
-const SCHEMA = 1;
+// The package's data schema version: 0 until it declares migrations.
+const SCHEMA = 0;
 // The index is one state value, and the kernel bounds both its size (256 KiB)
 // and its JSON node count (16384). An entry is ~0.6 KiB typically and ~3 KiB
 // at worst (long titles); `fits` checks the size before any content file is

@@ -30,7 +30,9 @@ async function fakeKernel() {
     },
     state: {
       async get(key) { return state.get(key) ?? null; },
-      async transaction({ checks, writes }) {
+      async transaction({ schemaVersion, checks, writes }) {
+        // Like the kernel: no migrations are declared, so the data schema is 0.
+        if (schemaVersion !== 0) throw new AppError('SCHEMA_MISMATCH', 'App state schema version does not match');
         await beforeCommit();
         for (const check of checks) {
           if ((state.get(check.key)?.version ?? null) !== check.version) {
