@@ -141,12 +141,20 @@ impl KernelRuntimeState {
         }
         let completion_recorded = owned.prompt_completion_recorded(provider_run_id);
         let settlement_pending = owned.prompt_completion_settlement_pending(provider_run_id);
+        let codex_provider = provider_run.adapter_key() == "codex";
         let completion_retry_observed_at_ms = owned
             .active_turns
             .get(provider_run_id)
             .filter(|turn| turn.prompt_id == active_prompt.id())
             .and_then(|turn| turn.completion_retry_observed_at_ms);
-        let codex_provider = provider_run.adapter_key() == "codex";
+        // Codex assistant-message completions are intentionally not recorded
+        // in `completion_recorded`. For Codex, this flag is the retained
+        // authoritative turn signal set above from `prompt_completed`; the
+        // retry timestamp preserves the same signal after a durable-write
+        // failure. Record it before the in-flight tool guard so a deferred
+        // completion can finish when the tool handler returns.
+        let codex_authoritative_completion_observed = codex_provider
+            && (completion_recorded || completion_retry_observed_at_ms.is_some());
         // A provider can report turn completion while an MCP HTTP request from
         // that turn is still executing. Keep the prompt (and its origin) live
         // until the handler returns; its guard schedules the next output check.
@@ -178,8 +186,7 @@ impl KernelRuntimeState {
         if !force
             && codex_provider
             && !prompt_completed
-            && !completion_recorded
-            && completion_retry_observed_at_ms.is_none()
+            && !codex_authoritative_completion_observed
         {
             owned.schedule_provider_output_check_after(
                 provider_run_id,
