@@ -57,20 +57,22 @@ async function refreshList() {
   renderList()
   const doc = current && documents.find((item) => item.id === current.id)
   if (current && !doc) close()
-  else if (doc && doc.revision !== current.revision && !dirty) await open(doc.id)
+  else if (doc && doc.revision !== current.revision && !dirty) await open(doc.id, { poll: true })
   else if (doc && doc.revision !== current.revision) say(`A newer revision (${doc.revision}) exists. Save will be refused until you reload.`, true)
 }
 
-async function open(id) {
-  if (dirty && current?.id !== id && pendingOpen !== id) {
+// A person's choice (including the open document, to reload it) asks once
+// before discarding unsaved changes; a poll never replaces them.
+async function open(id, { poll = false } = {}) {
+  if (dirty && !poll && pendingOpen !== id) {
     pendingOpen = id
     say("Unsaved changes. Choose the document again to discard them.", true)
     return
   }
   pendingOpen = null
+  resetDelete()
   const doc = await call("read_document", { id })
-  // A poll-triggered reload must not replace text typed while it was loading.
-  if (dirty && current?.id === id) return
+  if (poll && dirty && current?.id === id) return
   current = { id: doc.id, revision: doc.revision, kind: doc.kind, content: doc.content }
   dirty = false
   $("empty").hidden = true
@@ -88,6 +90,7 @@ async function open(id) {
 }
 
 function close() {
+  resetDelete()
   current = null
   dirty = false
   $("editor").hidden = true
@@ -136,10 +139,20 @@ $("toggle-preview").addEventListener("click", () => {
 $("versions").addEventListener("change", async (event) => {
   const revision = Number(event.target.value)
   if (!revision || !current) return
+  if (dirty) {
+    event.target.value = ""
+    say("Save or discard your changes before restoring a version.", true)
+    return
+  }
   const restored = await call("restore_version", { id: current.id, revision, expected_revision: current.revision })
   say(`Restored revision ${revision} as revision ${restored.revision}.`)
   await open(current.id)
 })
+function resetDelete() {
+  pendingDelete = false
+  clearTimeout(deleteTimer)
+  $("delete").textContent = "Delete"
+}
 $("delete").addEventListener("click", async () => {
   if (!current) return
   if (!pendingDelete) {
@@ -149,9 +162,7 @@ $("delete").addEventListener("click", async () => {
     deleteTimer = setTimeout(() => { pendingDelete = false; $("delete").textContent = "Delete" }, 4000)
     return
   }
-  pendingDelete = false
-  clearTimeout(deleteTimer)
-  $("delete").textContent = "Delete"
+  resetDelete()
   await call("delete_document", { id: current.id })
   close()
   await refreshList()

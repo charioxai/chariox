@@ -13,7 +13,6 @@ async function fakeKernel() {
   const data = await mkdtemp(join(tmpdir(), 'chariox-documents-'));
   const state = new Map();
   const tools = new Map();
-  const exports = [];
   let beforeCommit = async () => {};
   const chariox = {
     AppError,
@@ -28,14 +27,7 @@ async function fakeKernel() {
         await writeFile(join(data, path), contents);
         return { bytesWritten: Buffer.byteLength(contents) };
       },
-      async import(grantId, destination) {
-        await mkdir(dirname(join(data, destination)), { recursive: true });
-        await writeFile(join(data, destination), '<h1>Imported</h1><p>From a grant</p>');
-        return { bytesWritten: 1 };
-      },
-      async export(path) { exports.push(path); return { operationId: 'export-1' }; },
     },
-    host: { pickFile: async () => ({ grantIds: ['grant-1'] }) },
     state: {
       async get(key) { return state.get(key) ?? null; },
       async transaction({ checks, writes }) {
@@ -52,7 +44,7 @@ async function fakeKernel() {
   };
   register(chariox);
   const call = (name, input = {}) => tools.get(name)(input);
-  return { call, data, exports, setBeforeCommit: (hook) => { beforeCommit = hook; }, cleanup: () => rm(data, { recursive: true, force: true }) };
+  return { call, data, setBeforeCommit: (hook) => { beforeCommit = hook; }, cleanup: () => rm(data, { recursive: true, force: true }) };
 }
 
 test('documents are created, edited with revision checks, restored and deleted', async () => {
@@ -121,6 +113,26 @@ test('reading content pruned by a concurrent save is a conflict, not a crash', a
   const doc = await kernel.call('create_document', { title: 'Racy', content: 'v1' });
   await rm(join(kernel.data, 'documents', doc.id), { recursive: true });
   await assert.rejects(kernel.call('read_document', { id: doc.id }), (error) => error instanceof AppError && error.code === 'CONFLICT');
+  await kernel.cleanup();
+});
+
+test('the index stays under the kernel value limit and a refused create leaves no file', async () => {
+  const kernel = await fakeKernel();
+  const title = '\u{1F4DD}'.repeat(200);
+  let created = 0;
+  let refused;
+  while (!refused) {
+    try {
+      await kernel.call('create_document', { title, folder: title, content: 'x' });
+      created += 1;
+    } catch (error) {
+      refused = error;
+    }
+  }
+  assert.equal(refused.code, 'LIMIT_EXCEEDED');
+  assert.match(refused.message, /index is full/);
+  assert.ok(created > 50, `${created} worst-case documents fit`);
+  assert.equal((await readdir(join(kernel.data, 'documents'))).length, created);
   await kernel.cleanup();
 });
 

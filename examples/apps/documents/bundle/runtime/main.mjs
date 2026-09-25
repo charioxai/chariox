@@ -9,8 +9,12 @@ import { join } from 'node:path';
 
 const INDEX = 'index';
 const SCHEMA = 1;
-// The index is one state value (at most 256 KiB); content lives in files.
-const MAX_DOCUMENTS = 500;
+// The index is one state value; the kernel refuses values over 256 KiB. An
+// entry is ~0.6 KiB typically and ~3 KiB at worst (long titles), so the
+// serialized size, checked before any content file is written, is the real
+// bound; the count only keeps the list usable.
+const MAX_INDEX_BYTES = 256 * 1024;
+const MAX_DOCUMENTS = 300;
 const MAX_CONTENT = 512 * 1024;
 const KEEP_VERSIONS = 10;
 const KINDS = { markdown: 'md', html: 'html' };
@@ -48,6 +52,12 @@ export default function register(chariox) {
     throw fail('CONFLICT', 'Documents changed too often; try again');
   }
 
+  function fits(docs) {
+    if (Buffer.byteLength(JSON.stringify({ docs })) > MAX_INDEX_BYTES) {
+      throw fail('LIMIT_EXCEEDED', 'The document index is full; delete documents or shorten titles and folders');
+    }
+  }
+
   function find(docs, id) {
     const doc = docs.find(item => item.id === id);
     if (!doc) throw fail('NOT_FOUND', `No document with id ${id}`);
@@ -66,14 +76,16 @@ export default function register(chariox) {
     }
   }
 
-  // Writes a new revision's content and records it (bounded history).
-  async function write(doc, content) {
+  // Records a new revision (bounded history) and writes its content, only
+  // after the resulting index is known to fit.
+  async function write(docs, doc, content) {
     if (Buffer.byteLength(content) > MAX_CONTENT) throw fail('LIMIT_EXCEEDED', 'Document is larger than 512 KiB');
     const file = `${doc.revision}-${randomUUID().slice(0, 8)}.${KINDS[doc.kind]}`;
+    doc.versions = [...doc.versions, { revision: doc.revision, file }].slice(-KEEP_VERSIONS);
+    fits(docs);
     // Atomic replace does not create parents; the data root is the App's own.
     await mkdir(join(chariox.paths.data, 'documents', doc.id), { recursive: true });
     await chariox.files.atomicReplace(contentPath(doc, file), content);
-    doc.versions = [...doc.versions, { revision: doc.revision, file }].slice(-KEEP_VERSIONS);
   }
 
   // After the index commits, remove files it no longer names (older versions,
@@ -110,8 +122,8 @@ export default function register(chariox) {
     return change(async docs => {
       if (docs.length >= MAX_DOCUMENTS) throw fail('LIMIT_EXCEEDED', `At most ${MAX_DOCUMENTS} documents`);
       const doc = { id, title, folder, kind, revision: 1, versions: [], updated_at_ms: Date.now() };
-      await write(doc, content);
       docs.push(doc);
+      await write(docs, doc, content);
       return summary(doc);
     });
   });
@@ -130,8 +142,11 @@ export default function register(chariox) {
       if (folder !== undefined) doc.folder = folder;
       const previous = fileOf(doc);
       doc.revision += 1;
-      if (content !== undefined) await write(doc, content);
-      else doc.versions = [...doc.versions, { revision: doc.revision, file: previous }].slice(-KEEP_VERSIONS);
+      if (content !== undefined) await write(docs, doc, content);
+      else {
+        doc.versions = [...doc.versions, { revision: doc.revision, file: previous }].slice(-KEEP_VERSIONS);
+        fits(docs);
+      }
       doc.updated_at_ms = Date.now();
       return { ...summary(doc), kept: doc.versions.map(version => version.file) };
     });
@@ -140,13 +155,14 @@ export default function register(chariox) {
     return updated;
   });
 
+  // Restores content only; a rename or move revision restores nothing visible.
   chariox.tools.register('restore_version', async ({ id, revision, expected_revision: expected }) => {
     const restored = await change(async docs => {
       const doc = find(docs, id);
       if (doc.revision !== expected) throw fail('CONFLICT', `Document changed (now revision ${doc.revision})`);
       const content = await read(doc, revision);
       doc.revision += 1;
-      await write(doc, content);
+      await write(docs, doc, content);
       doc.updated_at_ms = Date.now();
       return { ...summary(doc), kept: doc.versions.map(version => version.file) };
     });

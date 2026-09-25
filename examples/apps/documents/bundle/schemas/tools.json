@@ -105,7 +105,7 @@
     },
     {
       "name": "restore_version",
-      "description": "Restore an earlier revision as the newest one.",
+      "description": "Restore an earlier revision's content as the newest revision. Title and folder are not restored, so a rename or move revision restores nothing visible.",
       "inputSchema": {
         "type": "object",
         "properties": {
