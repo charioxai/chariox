@@ -28,12 +28,13 @@ impl WorkerSteerReceiptStore {
     ) -> Result<Self, DaemonError> {
         let mut records = BTreeMap::new();
         for event in durable_state.load_events_by_kind(EVENT_KIND)? {
-            let record: WorkerSteerReceiptRecord = serde_json::from_value(event.payload).map_err(
-                |error| DaemonError::LocalTransport {
-                    operation: "restore worker queued-steer receipt",
-                    message: error.to_string(),
-                },
-            )?;
+            let record: WorkerSteerReceiptRecord =
+                serde_json::from_value(event.payload).map_err(|error| {
+                    DaemonError::LocalTransport {
+                        operation: "restore worker queued-steer receipt",
+                        message: error.to_string(),
+                    }
+                })?;
             if event.subject_id.as_deref() != Some(record.leased_agent_id.as_str())
                 || !receipt_record_has_identity(&record)
             {

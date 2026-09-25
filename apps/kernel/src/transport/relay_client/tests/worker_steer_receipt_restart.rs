@@ -10,8 +10,12 @@ fn isolate_test_config(
     config.user_config_path = state_root.join("config.toml");
     config.local_socket_path = state_root.join("daemon.sock");
     config.user_config.state.path = Some(state_root.join("state.db").display().to_string());
-    config.user_config.history.operational.path =
-        Some(state_root.join("operational-history.db").display().to_string());
+    config.user_config.history.operational.path = Some(
+        state_root
+            .join("operational-history.db")
+            .display()
+            .to_string(),
+    );
     config.user_config.artifacts.operational.root =
         Some(state_root.join("artifacts").display().to_string());
     config.user_config.artifacts.operational.index_path =
@@ -225,7 +229,9 @@ async fn accepted_queued_steer_receipt_reconciles_after_worker_restart_without_r
     }
 
     let _ = shutdown_worker_tx.send(true);
-    connector_worker.await.expect("old worker connector should stop");
+    connector_worker
+        .await
+        .expect("old worker connector should stop");
     app_worker
         .lock()
         .await
@@ -234,13 +240,22 @@ async fn accepted_queued_steer_receipt_reconciles_after_worker_restart_without_r
     drop(state_worker);
     drop(app_worker);
     for _ in 0..80 {
-        if registry.read().await.daemon(&worker_config.daemon_id).is_none() {
+        if registry
+            .read()
+            .await
+            .daemon(&worker_config.daemon_id)
+            .is_none()
+        {
             break;
         }
         sleep(Duration::from_millis(25)).await;
     }
     assert!(
-        registry.read().await.daemon(&worker_config.daemon_id).is_none(),
+        registry
+            .read()
+            .await
+            .daemon(&worker_config.daemon_id)
+            .is_none(),
         "old worker registration must be gone before restoring its state"
     );
 
@@ -300,7 +315,9 @@ async fn accepted_queued_steer_receipt_reconciles_after_worker_restart_without_r
     .await
     .expect("exact old binding should retrieve the accepted receipt after restart");
     let recovered = match recovered {
-        RelayPeerResponse::LeasedPromptReceiptQueried { receipt: Some(receipt) } => receipt,
+        RelayPeerResponse::LeasedPromptReceiptQueried {
+            receipt: Some(receipt),
+        } => receipt,
         other => panic!("unexpected recovered receipt response: {other:?}"),
     };
     assert_eq!(recovered.home_prompt_id, steer_id);
@@ -308,13 +325,21 @@ async fn accepted_queued_steer_receipt_reconciles_after_worker_restart_without_r
         recovered.target_home_prompt_id.as_deref(),
         Some(target_home_prompt_id)
     );
-    assert_eq!(recovered.execution_lease_id.as_deref(), Some(lease.id.as_str()));
+    assert_eq!(
+        recovered.execution_lease_id.as_deref(),
+        Some(lease.id.as_str())
+    );
     assert_eq!(
         recovered.phase,
         crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerAccepted
     );
     assert!(
-        restarted_worker.lock().await.providers().list_runs().is_empty(),
+        restarted_worker
+            .lock()
+            .await
+            .providers()
+            .list_runs()
+            .is_empty(),
         "receipt recovery must not launch or replay a provider run on the restarted worker"
     );
 
