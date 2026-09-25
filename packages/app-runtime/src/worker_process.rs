@@ -81,8 +81,16 @@ impl PreparedWorker {
         binding: &crate::installation::StageTrustBinding,
         storage_root: &std::path::Path,
         committed_generation: u64,
+        migrate_from: Option<u32>,
     ) -> Result<Self, WorkerError> {
-        platform_macos::prepare(runtime, release, binding, storage_root, committed_generation)
+        platform_macos::prepare(
+            runtime,
+            release,
+            binding,
+            storage_root,
+            committed_generation,
+            migrate_from,
+        )
     }
     /// Kernel startup recovery for macOS storage, before any worker of this
     /// kernel is prepared: detaches volumes and clears interrupted creations.
