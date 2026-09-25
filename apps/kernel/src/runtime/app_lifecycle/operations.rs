@@ -70,14 +70,14 @@ impl AppLifecycleService {
         // Completed owners with uncommitted manual-stop intent retain an entry
         // until maintenance persists it. Bound those entries as well as workers.
         if entries.len() >= LIVE_LIMIT {
-            return Err(LifecycleError::Busy);
+            return Err(LifecycleError::LiveLimit);
         }
         let live = self
             .0
             .live
             .clone()
             .try_acquire_owned()
-            .map_err(|_| LifecycleError::Busy)?;
+            .map_err(|_| LifecycleError::LiveLimit)?;
         let preparation = self
             .0
             .preparation
@@ -173,6 +173,8 @@ impl AppLifecycleService {
         }
         let key = (owner.into(), installation.into());
         let _operation_guard = self.0.operation(key.clone())?;
+        // A manual stop ends on-demand use too; its tools leave the catalog.
+        self.0.publisher.forget_dormant(owner, installation);
         let entry = self
             .0
             .entries
@@ -241,6 +243,58 @@ impl AppLifecycleService {
                 AppOperationBudget::from_supervisor(|| false),
             )
             .map_err(Into::into)
+    }
+    /// Stop an idle worker while keeping its restart intent. Its verified
+    /// catalog stays dormant so tools remain discoverable; the next tool call
+    /// or wake starts it on demand. Nothing durable changes. `still_idle` is
+    /// re-evaluated under the operation guard, so use that arrived after
+    /// candidate selection keeps the worker running; callers also treat an App
+    /// with undelivered events as busy, because delivery needs a live lease.
+    /// An event emitted between that check and the join waits for the App's
+    /// next tool call or wake (bounded by receipt expiry). Receipts held by a
+    /// paused automation also keep the App live, as before idle stop existed.
+    pub(crate) fn idle_stop_blocking(
+        &self,
+        owner: &str,
+        catalog: Arc<chariox_app_runtime::app_outbox::EventCatalog>,
+        still_idle: impl Fn() -> bool,
+    ) -> Result<()> {
+        if self.0.stopped.load(Ordering::Acquire) {
+            return Err(LifecycleError::Stopped);
+        }
+        let key = (owner.to_owned(), catalog.installation_id().to_owned());
+        let _operation_guard = self.0.operation(key.clone())?;
+        let Some(entry) = self
+            .0
+            .entries
+            .lock()
+            .map_err(|_| LifecycleError::Supervisor)?
+            .get(&key)
+            .cloned()
+        else {
+            return Ok(());
+        };
+        // A concurrent manual stop, a finished owner or new use wins.
+        if entry.control.stopped()
+            || entry.control.pending_manual_stop()
+            || !still_idle()
+            || !self.0.publisher.retain_dormant(owner, catalog)
+        {
+            return Ok(());
+        }
+        entry.control.cancel(false);
+        entry.join();
+        let mut entries = self
+            .0
+            .entries
+            .lock()
+            .map_err(|_| LifecycleError::Supervisor)?;
+        if entries.get(&key).is_some_and(|current| {
+            Arc::ptr_eq(current, &entry) && !entry.control.pending_manual_stop()
+        }) {
+            entries.remove(&key);
+        }
+        Ok(())
     }
     /// Must be called from bounded blocking shutdown ownership before runtime
     /// teardown. A Drop fallback retains the same no-orphan guarantee.

@@ -2,6 +2,7 @@
 //! never keep a process alive or grant an agent permission to invoke its tools.
 use super::AppControlService;
 use crate::runtime::app_worker::{ActivatedApp, AppWorkerError, AppWorkerLease};
+use chariox_app_runtime::app_outbox::EventCatalog;
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -9,8 +10,27 @@ use std::{
 
 const MAX_PROJECTIONS: usize = 64;
 type Key = (String, String);
+/// Live worker projections, plus the verified catalogs of Apps stopped while
+/// idle. A dormant catalog keeps tools discoverable; invoking one starts the
+/// App on demand. Current generation and signer are rechecked before use.
 #[derive(Clone, Default)]
-pub(super) struct ActiveWorkers(Arc<Mutex<BTreeMap<Key, ActivatedApp>>>);
+pub(super) struct ActiveWorkers(
+    Arc<Mutex<BTreeMap<Key, ActivatedApp>>>,
+    Arc<Mutex<BTreeMap<Key, Arc<EventCatalog>>>>,
+);
+
+impl ActiveWorkers {
+    fn is_dormant(&self, owner: &str, installation: &str) -> bool {
+        self.1
+            .lock()
+            .is_ok_and(|dormant| dormant.contains_key(&(owner.to_owned(), installation.to_owned())))
+    }
+    fn forget_dormant(&self, owner: &str, installation: &str) {
+        if let Ok(mut dormant) = self.1.lock() {
+            dormant.remove(&(owner.to_owned(), installation.to_owned()));
+        }
+    }
+}
 
 /// Retained by lifecycle threads without retaining AppControl/the lifecycle
 /// service itself. This avoids a service->thread->service shutdown cycle.
@@ -44,10 +64,32 @@ impl AppWorkerPublisher {
         if workers.contains_key(&key) || workers.len() >= MAX_PROJECTIONS {
             return Err(AppWorkerError::Busy);
         }
-        workers.insert(key, worker);
+        workers.insert(key.clone(), worker);
         drop(workers);
+        if let Ok(mut dormant) = self.workers.1.lock() {
+            dormant.remove(&key);
+        }
         self.event_pump.wake();
         Ok(())
+    }
+    pub(crate) fn is_dormant(&self, owner: &str, installation: &str) -> bool {
+        self.workers.is_dormant(owner, installation)
+    }
+    /// Recorded before an idle stop so tools stay discoverable while stopped.
+    /// False when the bounded set is full; the caller then keeps the worker.
+    pub(crate) fn retain_dormant(&self, owner: &str, catalog: Arc<EventCatalog>) -> bool {
+        let Ok(mut dormant) = self.workers.1.lock() else {
+            return false;
+        };
+        let key = (owner.to_owned(), catalog.installation_id().to_owned());
+        if !dormant.contains_key(&key) && dormant.len() >= MAX_PROJECTIONS {
+            return false;
+        }
+        dormant.insert(key, catalog);
+        true
+    }
+    pub(crate) fn forget_dormant(&self, owner: &str, installation: &str) {
+        self.workers.forget_dormant(owner, installation);
     }
 }
 
@@ -77,6 +119,37 @@ impl AppControlService {
             .get(&(owner.to_owned(), installation.to_owned()))?
             .lease(owner)
             .ok()
+    }
+
+    /// A refused or failed on-demand start withdraws the dormant catalog, so
+    /// agents stop seeing tools that cannot start.
+    pub(crate) fn forget_app_dormant(&self, owner: &str, installation: &str) {
+        self.workers.forget_dormant(owner, installation);
+    }
+
+    pub(crate) fn is_app_dormant(&self, owner: &str, installation: &str) -> bool {
+        self.workers.is_dormant(owner, installation)
+    }
+
+    pub(crate) fn dormant_app_keys(&self) -> Vec<(String, String)> {
+        self.workers
+            .1
+            .lock()
+            .map_or_else(|_| Vec::new(), |dormant| dormant.keys().cloned().collect())
+    }
+
+    /// Dormant (idle-stopped) catalogs for this owner, at most 64.
+    pub(crate) fn dormant_app_catalogs(&self, owner: &str) -> Vec<Arc<EventCatalog>> {
+        self.workers.1.lock().map_or_else(
+            |_| Vec::new(),
+            |dormant| {
+                dormant
+                    .iter()
+                    .filter(|((key_owner, _), _)| key_owner == owner)
+                    .map(|(_, catalog)| catalog.clone())
+                    .collect()
+            },
+        )
     }
 
     /// Strict lexicographic cursor; the pump wraps explicitly after a short page.

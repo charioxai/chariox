@@ -117,6 +117,9 @@ struct LiveWorker {
     catalog: Arc<EventCatalog>,
     peer: WorkerPeer,
     admission: Arc<Admission>,
+    /// Last kernel-initiated use (tool call or wake). An App's own timers or
+    /// broker calls do not keep it running.
+    last_used_ms: std::sync::atomic::AtomicU64,
 }
 
 /// Cloning a projection does not retain the native owner or revive authority.
@@ -193,6 +196,15 @@ impl ActivatedApp {
 impl AppWorkerLease {
     pub(crate) fn owner(&self) -> &str {
         &self.0.owner
+    }
+    pub(crate) fn touch(&self) {
+        self.0.last_used_ms.store(
+            crate::session::unix_epoch_ms(),
+            std::sync::atomic::Ordering::Release,
+        );
+    }
+    pub(crate) fn idle_ms(&self, now_ms: u64) -> u64 {
+        now_ms.saturating_sub(self.0.last_used_ms.load(std::sync::atomic::Ordering::Acquire))
     }
     pub(crate) fn catalog(&self) -> &Arc<EventCatalog> {
         &self.0.catalog

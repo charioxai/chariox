@@ -2,6 +2,7 @@
 //! workers on demand. The App needs no resident process to wait for a due time.
 use super::KernelRuntimeState;
 use crate::durable_state::app_wakes::{AppWakeOperation, AppWakeOutcome};
+use crate::durable_state::app_worker_lifecycle::StartGate;
 use crate::runtime::app_lifecycle::LifecycleError;
 use chariox_app_runtime::managed_state::DueWake;
 use std::{collections::BTreeMap, time::Duration};
@@ -14,6 +15,9 @@ const DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 const START_WAIT_MS: u64 = 2_000;
 /// A user-stopped App keeps its wakes until the user starts it again.
 const STOPPED_WAIT_MS: u64 = 60_000;
+/// A worker with no tool call or wake for this long stops; its tools stay
+/// discoverable and its next use starts it again.
+const IDLE_AFTER_MS: u64 = 10 * 60_000;
 
 /// Outcome of one on-demand start request for an installation.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -78,7 +82,59 @@ impl KernelRuntimeState {
         tokio::spawn(async move {
             let _pass = pass;
             runtime.app_wake_pass(now_ms).await;
+            runtime.stop_idle_apps(now_ms).await;
+            if runtime.app_control().wake_pump().prune_due(now_ms) {
+                runtime.prune_dormant_apps().await;
+            }
         });
+    }
+
+    /// Forget dormant catalogs whose installation may no longer start (revoked,
+    /// paused, uninstalled or failed), so they leave the catalog and live cap.
+    async fn prune_dormant_apps(&self) {
+        let control = self.app_control().clone();
+        let store = self.owned.durable_state_store.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            for (owner, installation) in control.dormant_app_keys() {
+                if matches!(
+                    store.app_worker_start_gate(&owner, &installation),
+                    Ok(StartGate::Refused)
+                ) {
+                    control.forget_app_dormant(&owner, &installation);
+                }
+            }
+        })
+        .await;
+    }
+
+    async fn stop_idle_apps(&self, now_ms: u64) {
+        let control = self.app_control();
+        let idle: Vec<_> = control
+            .active_app_leases(None, 16)
+            .into_iter()
+            .filter(|lease| lease.idle_ms(now_ms) >= IDLE_AFTER_MS)
+            .collect();
+        for lease in idle {
+            let lifecycle = control.lifecycle().clone();
+            let owner = lease.owner().to_owned();
+            let catalog = lease.catalog().clone();
+            drop(lease);
+            let current = control.clone();
+            let store = self.owned.durable_state_store.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                let installation = catalog.installation_id().to_owned();
+                lifecycle.idle_stop_blocking(&owner, catalog, || {
+                    // Undelivered events need the live lease: not idle yet.
+                    current
+                        .active_app_lease(&owner, &installation)
+                        .is_some_and(|lease| {
+                            lease.idle_ms(crate::session::unix_epoch_ms()) >= IDLE_AFTER_MS
+                        })
+                        && !store.has_deliverable_app_events(&owner, &installation)
+                })
+            })
+            .await;
+        }
     }
 
     async fn app_wake_pass(&self, now_ms: u64) {
@@ -111,9 +167,12 @@ impl KernelRuntimeState {
                     &wake.installation_id,
                     handle.clone(),
                 ) {
-                    Ok(_) | Err(LifecycleError::Busy) => Start::Pending,
+                    Ok(_) | Err(LifecycleError::Busy | LifecycleError::LiveLimit) => Start::Pending,
                     Err(LifecycleError::Stopped) => Start::UserStopped,
-                    Err(_) => Start::Refused,
+                    Err(_) => {
+                        planning.forget_app_dormant(&wake.owner_id, &wake.installation_id);
+                        Start::Refused
+                    }
                 },
             )
         })

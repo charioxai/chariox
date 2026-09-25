@@ -58,6 +58,9 @@ impl AppLifecycleService {
                     if first {
                         let _ =
                             service.start_first_blocking(owner, installation, task_runtime.clone());
+                    } else if service.0.publisher.is_dormant(owner, installation) {
+                        // Idle-stopped Apps start on their next use, not here.
+                        continue;
                     } else {
                         let _ = service.start(owner, installation, true, task_runtime.clone());
                     }

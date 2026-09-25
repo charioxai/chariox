@@ -110,6 +110,21 @@ impl DurableKernelStateStore {
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
+    /// Whether the installation still has receipts to deliver. Delivery needs
+    /// a live worker lease, so such an App is not idle.
+    pub(crate) fn has_deliverable_app_events(&self, owner: &str, installation: &str) -> bool {
+        let Ok(connection) = self.lock_connection("app.events.deliverable") else {
+            return true;
+        };
+        connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM app_outbox WHERE owner_id=?1 AND installation_id=?2
+                 AND state IN ('accepted','retryable'))",
+                params![owner, installation],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap_or(true)
+    }
     pub(crate) fn pending_app_events(
         &self,
         owner: &str,
