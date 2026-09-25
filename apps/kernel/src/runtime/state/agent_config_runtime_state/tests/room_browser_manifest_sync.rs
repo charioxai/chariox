@@ -20,8 +20,7 @@ async fn room_manifest_fixture() -> RoomManifestFixture {
     let home_public_key = home_config.relay_public_key.clone();
     let worker_config = crate::config::DaemonConfig::for_tests();
     let worker_private_key = worker_config.relay_private_key.clone();
-    let (app, runtime, session_id, agent_id) =
-        agent_config_runtime_with_config(home_config).await;
+    let (app, runtime, session_id, agent_id) = agent_config_runtime_with_config(home_config).await;
     crate::app::KernelSessionService::new(&mut *app.lock().await)
         .attach(crate::attachment::AttachRequest::new(
             &session_id,
@@ -148,7 +147,10 @@ async fn projected_remote_completion_admits_queued_prompt_before_ordered_deliver
         .into_iter()
         .filter(|record| record.kind == crate::terminal::TerminalOutputKind::PromptEcho)
         .count();
-    assert_eq!(pre_ack_echo_count, 0, "queued prompt echo waits for worker ACK");
+    assert_eq!(
+        pre_ack_echo_count, 0,
+        "queued prompt echo waits for worker ACK"
+    );
 
     let (active, queued_after_promotion) = {
         let mut app = fixture.runtime.app.lock().await;
@@ -160,7 +162,11 @@ async fn projected_remote_completion_admits_queued_prompt_before_ordered_deliver
                 .next_queued_prompt(&fixture.session_id, &fixture.agent_id),
         )
     };
-    assert_ne!(active.id(), pending_prompt_id, "promotion allocates a fresh prompt ID");
+    assert_ne!(
+        active.id(),
+        pending_prompt_id,
+        "promotion allocates a fresh prompt ID"
+    );
     assert_eq!(active.status(), crate::session::PromptStatus::Dispatching);
     assert_eq!(active.prompt(), "queued prompt");
     assert_eq!(active.source_attachment_id(), attachment_id.as_str());
@@ -179,7 +185,9 @@ async fn projected_remote_completion_admits_queued_prompt_before_ordered_deliver
     };
     assert_eq!(prompt, "queued prompt");
     assert_eq!(
-        git_context.expect("queued prompt delivery carries git turn context").home_prompt_id,
+        git_context
+            .expect("queued prompt delivery carries git turn context")
+            .home_prompt_id,
         active.id(),
     );
     let promoted_prompt_id = active.id().to_string();
@@ -223,13 +231,13 @@ async fn projected_remote_completion_admits_queued_prompt_before_ordered_deliver
         })
         .collect::<Vec<_>>();
     assert_eq!(echoes.len(), 1, "queued prompt should echo exactly once");
-    assert_eq!(echoes[0].source_attachment_id.as_deref(), Some(attachment_id.as_str()));
+    assert_eq!(
+        echoes[0].source_attachment_id.as_deref(),
+        Some(attachment_id.as_str())
+    );
     assert_eq!(
         echoes[0].provider_run_id,
-        crate::provider::projected_leased_provider_run_id(
-            "leased-agent-1",
-            "provider-run-next",
-        )
+        crate::provider::projected_leased_provider_run_id("leased-agent-1", "provider-run-next",)
     );
 }
 
@@ -301,7 +309,10 @@ async fn ordinary_completion_keeps_workflow_head_on_legacy_advancement_path() {
         let queued = app
             .prompt_owner_submit_prepared_prompt(&fixture.session_id, workflow_prompt, true)
             .expect("workflow prompt should queue behind ordinary work");
-        assert!(matches!(queued, crate::session::PromptSubmissionOutcome::Queued { .. }));
+        assert!(matches!(
+            queued,
+            crate::session::PromptSubmissionOutcome::Queued { .. }
+        ));
         (
             active.id().to_string(),
             attachment_id,
@@ -310,7 +321,7 @@ async fn ordinary_completion_keeps_workflow_head_on_legacy_advancement_path() {
         )
     };
 
-    let projection = tokio::spawn({
+    let mut projection = tokio::spawn({
         let runtime = fixture.runtime.clone();
         let session_id = fixture.session_id.clone();
         let agent_id = fixture.agent_id.clone();
@@ -334,7 +345,10 @@ async fn ordinary_completion_keeps_workflow_head_on_legacy_advancement_path() {
                 .await
         }
     });
-    let (request_id, request) = next_peer_request(&mut fixture).await;
+    let (request_id, request) = tokio::select! {
+        result = &mut projection => panic!("completion projection ended before workflow dispatch: {result:?}"),
+        request = next_peer_request(&mut fixture) => request,
+    };
     let crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt {
         prompt,
         workflow_context,
@@ -346,12 +360,18 @@ async fn ordinary_completion_keeps_workflow_head_on_legacy_advancement_path() {
     };
     let git_context = git_context.expect("workflow prompt should carry git context");
     assert_eq!(prompt, "queued workflow prompt");
-    assert_eq!(git_context.source_attachment_id.as_deref(), Some(
-        crate::scheduler::runtime::workflow_prompt_source_attachment_id(&workflow_run_id).as_str()
-    ));
+    assert_eq!(
+        git_context.source_attachment_id.as_deref(),
+        Some(
+            crate::scheduler::runtime::workflow_prompt_source_attachment_id(&workflow_run_id)
+                .as_str()
+        )
+    );
     assert_eq!(git_context.home_prompt_id, git_context.home_turn_id);
     assert_eq!(
-        workflow_context.expect("workflow head carries workflow context").workflow_run_id,
+        workflow_context
+            .expect("workflow head carries workflow context")
+            .workflow_run_id,
         workflow_run_id,
     );
     let promoted = crate::session::PromptQueueItem::new(
@@ -684,12 +704,9 @@ async fn delayed_bind_refresh_recomputes_after_delete_before_sending() {
             crate::session::DEFAULT_LOCAL_USER_ID,
         )
         .expect("Room slice should bind");
-    tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        bind_waiting.notified(),
-    )
-    .await
-    .expect("bind refresh should reach the per-agent lane");
+    tokio::time::timeout(std::time::Duration::from_secs(2), bind_waiting.notified())
+        .await
+        .expect("bind refresh should reach the per-agent lane");
 
     let delete_waiting = fixture
         .runtime
@@ -699,12 +716,9 @@ async fn delayed_bind_refresh_recomputes_after_delete_before_sending() {
         .runtime
         .delete_slice(&slice.id)
         .expect("bound Room slice should delete");
-    tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        delete_waiting.notified(),
-    )
-    .await
-    .expect("delete refresh should wait in the same per-agent lane");
+    tokio::time::timeout(std::time::Duration::from_secs(2), delete_waiting.notified())
+        .await
+        .expect("delete refresh should wait in the same per-agent lane");
     drop(lane);
 
     let (first_request, first_manifest) = next_manifest_update(&mut fixture).await;
@@ -727,11 +741,13 @@ async fn paused_prompt_dispatch_and_provider_launch_serialize_with_room_bind_and
         .agent_store
         .get_agent(&fixture.agent_id)
         .expect("leased agent should exist");
-    assert!(!fixture
-        .runtime
-        .remote_extension_manifest_for_agent(&initial_agent)
-        .expect("initial manifest should build")
-        .room_browser_available);
+    assert!(
+        !fixture
+            .runtime
+            .remote_extension_manifest_for_agent(&initial_agent)
+            .expect("initial manifest should build")
+            .room_browser_available
+    );
 
     let prompt_dispatch = crate::app::KernelRemotePromptDispatch {
         session_id: fixture.session_id.clone(),
@@ -790,12 +806,9 @@ async fn paused_prompt_dispatch_and_provider_launch_serialize_with_room_bind_and
             crate::session::DEFAULT_LOCAL_USER_ID,
         )
         .expect("Room slice should bind while dispatch is paused");
-    tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        bind_waiting.notified(),
-    )
-    .await
-    .expect("bind refresh should wait behind the paused dispatch");
+    tokio::time::timeout(std::time::Duration::from_secs(2), bind_waiting.notified())
+        .await
+        .expect("bind refresh should wait behind the paused dispatch");
     assert!(fixture.priority_rx.try_recv().is_err());
 
     let prompt = crate::session::PromptQueueItem::new(
@@ -871,12 +884,9 @@ async fn paused_prompt_dispatch_and_provider_launch_serialize_with_room_bind_and
             )
             .await
     });
-    tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        launch_waiting.notified(),
-    )
-    .await
-    .expect("actual provider launch sender should wait in the lease lane");
+    tokio::time::timeout(std::time::Duration::from_secs(2), launch_waiting.notified())
+        .await
+        .expect("actual provider launch sender should wait in the lease lane");
 
     let delete_waiting = fixture
         .runtime
@@ -886,12 +896,9 @@ async fn paused_prompt_dispatch_and_provider_launch_serialize_with_room_bind_and
         .runtime
         .delete_slice(&slice.id)
         .expect("bound Room slice should delete while launch is paused");
-    tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        delete_waiting.notified(),
-    )
-    .await
-    .expect("delete refresh should enter the shared lease lane");
+    tokio::time::timeout(std::time::Duration::from_secs(2), delete_waiting.notified())
+        .await
+        .expect("delete refresh should enter the shared lease lane");
     drop(held_lane);
 
     let (launch_request_id, launch_request) = next_peer_request(&mut fixture).await;
