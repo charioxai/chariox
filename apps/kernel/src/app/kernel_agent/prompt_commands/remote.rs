@@ -913,11 +913,13 @@ mod tests {
             "queued second",
             PromptStatus::Queued,
         );
-        assert!(matches!(
-            app.prompt_owner_submit_prepared_prompt(session.id(), queued.clone(), false)
-                .expect("second prompt should queue"),
-            PromptSubmissionOutcome::Queued { .. }
-        ));
+        let queued = match app
+            .prompt_owner_submit_prepared_prompt(session.id(), queued, false)
+            .expect("second prompt should queue")
+        {
+            PromptSubmissionOutcome::Queued { prompt } => prompt,
+            PromptSubmissionOutcome::Started { .. } => panic!("second prompt must queue"),
+        };
         app.prompt_owner_complete_active_prompt_only(session.id(), agent.id())
             .expect("first prompt should complete before queue promotion");
 
