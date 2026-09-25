@@ -312,6 +312,138 @@ test("provider preparation imports, spawns, and fences without attaching or prom
   assert.equal(run.checkpoints.at(-1).phase, "agent-prepared")
 })
 
+test("provider preparation selects and verifies a home-kernel agent", async () => {
+  const agent = providerAgent({ remote_execution: null })
+  const run = fixture({
+    spawnedAgent: agent,
+    state: { SessionState: { session: { id: "room", agents: [agent] } } },
+    slices: [{ id: "environment-slice", session_id: "room", agent_ids: [] }],
+  })
+  run.input.agentPlacement = { kind: "home_kernel" }
+
+  const prepared = await prepareRoomRealProviderAgent(run.input)
+  const spawn = run.calls.find((call) => call.name === "spawnAgent").args
+  assert.equal(spawn[8], undefined, "home-kernel SpawnAgent must omit kernel_ref")
+  assert.equal(spawn[10], undefined, "home-kernel SpawnAgent must omit slice_ref")
+  assert.deepEqual(prepared.placement, { kind: "home_kernel" })
+  assert.equal(prepared.slice, null)
+  assert.equal(run.calls.some((call) => call.name === "listSlices"), true)
+  assert.equal(run.calls.some((call) => call.name === "submitPrompt"), false)
+})
+
+test("provider preparation selects and verifies an exact kernel_ref agent", async () => {
+  const agent = providerAgent({ remote_execution: remoteBinding("worker-kernel-a") })
+  const run = fixture({
+    spawnedAgent: agent,
+    state: { SessionState: { session: { id: "room", agents: [agent] } } },
+    slices: [{ id: "environment-slice", session_id: "room", agent_ids: [] }],
+  })
+  run.input.agentPlacement = { kind: "kernel_ref", kernelRef: "worker-kernel-a" }
+
+  const prepared = await prepareRoomRealProviderAgent(run.input)
+  const spawn = run.calls.find((call) => call.name === "spawnAgent").args
+  assert.equal(spawn[8], "worker-kernel-a")
+  assert.equal(spawn[10], undefined, "kernel_ref SpawnAgent must omit slice_ref")
+  assert.deepEqual(prepared.placement, run.input.agentPlacement)
+  assert.equal(prepared.slice, null)
+  assert.equal(run.calls.some((call) => call.name === "listSlices"), true)
+})
+
+test("explicit slice_ref targets the agent slice while preserving the Room Environment slice", async () => {
+  const agent = providerAgent({ remote_execution: remoteBinding("agent-worker") })
+  const run = fixture({
+    spawnedAgent: { id: agent.id },
+    state: { SessionState: { session: { id: "room", agents: [agent] } } },
+    slices: [{ id: "agent-slice", session_id: "room", agent_ids: [agent.id], worker_kernel_id: "agent-worker" }],
+  })
+  run.input.sliceId = "environment-slice"
+  run.input.agentPlacement = { kind: "slice_ref", sliceRef: "agent-slice" }
+  run.input.options = { ...run.input.options, importFirst: true }
+
+  const prepared = await prepareRoomRealProviderAgent(run.input)
+  const spawn = run.calls.find((call) => call.name === "spawnAgent").args
+  assert.equal(run.calls.find((call) => call.name === "importSliceProviderAuth").args[0], "agent-slice")
+  assert.equal(spawn[8], undefined)
+  assert.equal(spawn[10], "agent-slice")
+  assert.equal(prepared.slice.id, "agent-slice")
+  assert.deepEqual(prepared.placement, { kind: "slice_ref", sliceRef: "agent-slice" })
+})
+
+test("provider preparation refuses a kernel_ref response bound to another worker", async () => {
+  const agent = providerAgent({ remote_execution: remoteBinding("worker-kernel-b") })
+  const run = fixture({
+    spawnedAgent: { id: agent.id },
+    state: { SessionState: { session: { id: "room", agents: [agent] } } },
+    slices: [{ id: "environment-slice", session_id: "room", agent_ids: [] }],
+  })
+  run.input.agentPlacement = { kind: "kernel_ref", kernelRef: "worker-kernel-a" }
+
+  await assert.rejects(prepareRoomRealProviderAgent(run.input), /requested worker kernel/)
+  assert.equal(run.calls.some((call) => call.name === "submitPrompt"), false)
+})
+
+test("home-kernel preparation fails closed when authoritative remote_execution is missing", async () => {
+  const missingBinding = fixture({
+    spawnedAgent: { id: "agent-2" },
+    state: { SessionState: { session: { id: "room", agents: [providerAgent()] } } },
+  })
+  missingBinding.input.agentPlacement = { kind: "home_kernel" }
+  await assert.rejects(prepareRoomRealProviderAgent(missingBinding.input), /requested home kernel/)
+  assert.equal(missingBinding.calls.some((call) => call.name === "submitPrompt"), false)
+})
+
+test("provider placement is mutually exclusive and unsupported imports fail before requests", async () => {
+  const conflicting = fixture()
+  conflicting.input.agentPlacement = {
+    kind: "kernel_ref",
+    kernelRef: "worker-kernel-a",
+    sliceRef: "slice",
+  }
+  await assert.rejects(prepareRoomRealProviderAgent(conflicting.input), /exactly one placement target/)
+  assert.equal(conflicting.calls.length, 0)
+
+  for (const placement of [
+    { kind: "home_kernel" },
+    { kind: "kernel_ref", kernelRef: "worker-kernel-a" },
+  ]) {
+    const run = fixture()
+    run.input.agentPlacement = placement
+    run.input.options = { ...run.input.options, importFirst: true }
+    await assert.rejects(prepareRoomRealProviderAgent(run.input), /account import is only supported for slice_ref/)
+    assert.equal(run.calls.length, 0)
+  }
+})
+
+test("official provider action uses explicit home and kernel_ref placements", async () => {
+  const cases = [
+    { placement: { kind: "home_kernel" }, binding: null, mode: "browser", actionKind: "click" },
+    { placement: { kind: "kernel_ref", kernelRef: "worker-kernel-a" },
+      binding: remoteBinding("worker-kernel-a"), mode: "computer", actionKind: "pointer_click" },
+  ]
+  for (const { placement, binding, mode, actionKind } of cases) {
+    const agent = providerAgent({ remote_execution: binding })
+    const run = fixture({
+      spawnedAgent: { id: agent.id },
+      state: { SessionState: { session: { id: "room", agents: [agent] } } },
+      slices: [{ id: "environment-slice", session_id: "room", agent_ids: [] }],
+      actions: [mode === "browser"
+        ? { actor_id: "agent:agent-2", kind: actionKind, mode, state: "completed", action_id: "browser-action",
+          sequence: 1, targets: [{ kind: "browser_tab", id: "tab-1" }] }
+        : { actor_id: "agent:agent-2", kind: actionKind, mode, state: "completed", action_id: "computer-action",
+          sequence: 1, arguments: { x: 640, y: 400, button: "left", click_count: 1 } }],
+    })
+    run.input.agentPlacement = placement
+    run.input.options = { ...run.input.options, mode }
+
+    const result = await runRoomRealProviderAction(run.input)
+    assert.equal(result.actorId, "agent:agent-2")
+    assert.equal(result.actionKind, actionKind)
+    assert.deepEqual(result.placement, placement)
+    const prompt = run.calls.find((call) => call.name === "submitPrompt")
+    assert.equal(prompt.args[2], "agent-2", "the official provider prompt must target the prepared Room agent")
+  }
+})
+
 test("provider preparation reuses an idle exact agent without import, spawn, attach, or prompt", async () => {
   const run = fixture()
   run.input.agent = { id: "agent-2" }
@@ -450,7 +582,7 @@ test("reused agent with an in-flight turn is rejected before prompt submission",
   assert.equal(run.calls.some((call) => call.name === "submitPrompt"), false)
 })
 
-function fixture({ turns = [{ turn_id: "current", prompt_id: "prompt-current", lifecycle: "completed", entries: [], blobs: [] }], priorTurns = [], blobs = {}, submit, state, actions = [], priorActions = [], slices } = {}) {
+function fixture({ turns = [{ turn_id: "current", prompt_id: "prompt-current", lifecycle: "completed", entries: [], blobs: [] }], priorTurns = [], blobs = {}, submit, state, actions = [], priorActions = [], slices, spawnedAgent } = {}) {
   const checkpoints = []
   const calls = []
   const requests = Object.fromEntries([
@@ -464,7 +596,7 @@ function fixture({ turns = [{ turn_id: "current", prompt_id: "prompt-current", l
       calls.push(request)
       switch (request.name) {
         case "importSliceProviderAuth": return { SliceProviderAuthImported: { status: "imported" } }
-        case "spawnAgent": return { AgentSpawned: { agent: { id: "agent-2", session_id: "room", provider: "opencode", model: "fixture", account_profile: "default" } } }
+        case "spawnAgent": return { AgentSpawned: { agent: spawnedAgent ?? { id: "agent-2", session_id: "room", provider: "opencode", model: "fixture", account_profile: "default" } } }
         case "attachToSession": return { SessionAttached: { attachment: { id: "attachment" } } }
         case "submitPrompt": return submit ?? { PromptSubmitted: { outcome: { Started: { prompt: { id: "prompt-current" } } } } }
         case "listRoomEnvironmentActionHistory": return { RoomEnvironmentActionHistoryListed: { page: {
@@ -488,6 +620,27 @@ function fixture({ turns = [{ turn_id: "current", prompt_id: "prompt-current", l
     waitForPhysicalEffect: async () => {}, waitForTuis: async () => {}, screenshot: async () => {},
   }
   return { input, checkpoints, calls }
+}
+
+function providerAgent(overrides = {}) {
+  return {
+    id: "agent-2",
+    session_id: "room",
+    provider: "opencode",
+    model: "fixture",
+    account_profile: "default",
+    is_processing: false,
+    ...overrides,
+  }
+}
+
+function remoteBinding(workerKernelId) {
+  return {
+    worker_kernel_id: workerKernelId,
+    worker_machine_id: `${workerKernelId}-machine`,
+    execution_lease_id: `${workerKernelId}-lease`,
+    leased_agent_id: `${workerKernelId}-agent`,
+  }
 }
 
 test("failure retains lifecycle and unrecognized provider error without copying text", async () => {
