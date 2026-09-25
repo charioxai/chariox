@@ -1116,26 +1116,26 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         .app
                         .agent_runtime_projection_store()
                         .next_queued_prompt(session_id, agent_id);
-                    let queued_head = expected_next.clone().or(
-                        self.app
-                            .prompt_owner_peek_next_queued_prompt(session_id, agent_id)?,
-                    );
-                    // Workflow prompt admission and retry remain owned by the existing
-                    // lifecycle path. Only ordinary queued prompts cross the new intent
-                    // boundary; the legacy sender must still advance a workflow head.
+                    let queued_head = expected_next.clone().or(self
+                        .app
+                        .prompt_owner_peek_next_queued_prompt(session_id, agent_id)?);
+                    // Preserve the ordered ordinary queue intent. Workflow heads
+                    // use their own deferred dispatch after the app lock is released.
                     let started_next = if queued_head.as_ref().is_some_and(|prompt| {
                         crate::app::workflow_runtime::is_workflow_prompt_source(
                             prompt.source_attachment_id(),
                         )
                     }) {
-                        self.app.advance_next_queued_prompt_remote(
-                            session_id,
-                            agent_id,
-                            &remote_execution.worker_kernel_id,
-                            &remote_execution.leased_agent_id,
-                            remote_execution.relay_url.as_deref(),
-                            remote_execution.relay_token.as_deref(),
-                        )?
+                        self.app
+                            .advance_next_queued_prompt_remote_with_workflow_dispatch(
+                                session_id,
+                                agent_id,
+                                &remote_execution.worker_kernel_id,
+                                &remote_execution.leased_agent_id,
+                                remote_execution.relay_url.as_deref(),
+                                remote_execution.relay_token.as_deref(),
+                                expected_next.as_ref(),
+                            )?
                     } else {
                         let admitted = crate::app::KernelAgentService::new(self.app)
                             .admit_next_queued_remote_prompt(

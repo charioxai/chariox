@@ -662,10 +662,16 @@ impl KernelRuntimeState {
         &self,
         operation: impl FnOnce(&mut DaemonApp) -> R,
     ) -> R {
-        let mut app =
-            crate::runtime::app_lock::lock_app_instrumented(&self.app, "kernel_runtime_state")
-                .await;
-        operation(&mut app)
+        let (result, dispatches) = {
+            let mut app =
+                crate::runtime::app_lock::lock_app_instrumented(&self.app, "kernel_runtime_state")
+                    .await;
+            let result = operation(&mut app);
+            let dispatches = app.take_deferred_workflow_remote_prompt_dispatches();
+            (result, dispatches)
+        };
+        self.spawn_deferred_workflow_remote_prompt_dispatches(dispatches);
+        result
     }
 
     pub(crate) async fn with_app_side_effect_blocking<R, F>(
@@ -677,15 +683,19 @@ impl KernelRuntimeState {
         R: Send + 'static,
     {
         let app = Arc::clone(&self.app);
-        tokio::task::spawn_blocking(move || {
+        let (result, dispatches) = tokio::task::spawn_blocking(move || {
             let mut app = app.blocking_lock();
-            operation(&mut app)
+            let result = operation(&mut app);
+            let dispatches = app.take_deferred_workflow_remote_prompt_dispatches();
+            (result, dispatches)
         })
         .await
         .map_err(|error| DaemonError::LocalTransport {
             operation: "run blocking kernel app side effect",
             message: error.to_string(),
-        })?
+        })?;
+        self.spawn_deferred_workflow_remote_prompt_dispatches(dispatches);
+        result
     }
 
     pub(crate) fn provider_account_profile_registry(
@@ -712,8 +722,28 @@ impl KernelRuntimeState {
         &self,
         operation: impl FnOnce(&mut DaemonApp) -> R,
     ) -> Option<R> {
-        let mut app = self.app.try_lock().ok()?;
-        Some(operation(&mut app))
+        let can_spawn_dispatches = tokio::runtime::Handle::try_current().is_ok();
+        let (result, dispatches) = {
+            let mut app = self.app.try_lock().ok()?;
+            let result = operation(&mut app);
+            let dispatches = if can_spawn_dispatches {
+                app.take_deferred_workflow_remote_prompt_dispatches()
+            } else {
+                Vec::new()
+            };
+            (result, dispatches)
+        };
+        self.spawn_deferred_workflow_remote_prompt_dispatches(dispatches);
+        Some(result)
+    }
+
+    fn spawn_deferred_workflow_remote_prompt_dispatches(
+        &self,
+        dispatches: Vec<crate::app::KernelRemotePromptDispatch>,
+    ) {
+        for dispatch in dispatches {
+            self.spawn_remote_prompt_dispatch(dispatch);
+        }
     }
 
     async fn append_agent_durable_event(

@@ -611,6 +611,245 @@ async fn acknowledge_peer_response(
     .await;
 }
 
+async fn queue_workflow_successor_after_ordinary_prompt(
+    fixture: &RoomManifestFixture,
+) -> String {
+    let session_id = fixture.session_id.clone();
+    let agent_id = fixture.agent_id.clone();
+    fixture
+        .runtime
+        .with_app_side_effect(move |app| -> Result<String, crate::error::DaemonError> {
+            let attachment = crate::app::KernelSessionService::new(app).attach(
+                crate::attachment::AttachRequest::new(
+                    &session_id,
+                    "workflow-successor-test",
+                    crate::attachment::ClientCapabilityLevel::FullTerminal,
+                ),
+            )?;
+            let active = crate::session::PromptQueueItem::new(
+                "ordinary-active-prompt",
+                attachment.id(),
+                &agent_id,
+                "ordinary prompt",
+                crate::session::PromptStatus::Running,
+            );
+            app.prompt_owner_sync_external_active_prompt(
+                &session_id,
+                &agent_id,
+                Some(active.clone()),
+            )?;
+
+            let workflow = app
+                .sessions_mut()
+                .create_workflow(&session_id, Some("queued successor".to_string()))?;
+            let node = app
+                .sessions_mut()
+                .add_workflow_node(&session_id, workflow.id(), &agent_id)?;
+            let endpoint = app.sessions_mut().create_workflow_endpoint(
+                &session_id,
+                workflow.id(),
+                node.id(),
+                Some("entry".to_string()),
+            )?;
+            let run = app.sessions_mut().invoke_workflow_endpoint(
+                &session_id,
+                workflow.id(),
+                endpoint.id(),
+                Some("workflow successor".to_string()),
+            )?;
+            let node_run_id = run
+                .node_runs()
+                .first()
+                .expect("workflow run should have an entry node")
+                .id()
+                .to_string();
+            app.sessions_mut().prepare_workflow_turn(
+                &session_id,
+                run.id(),
+                &node_run_id,
+                "workflow-successor-delivery-token".to_string(),
+                "workflow successor".to_string(),
+                None,
+                None,
+            )?;
+            let workflow_prompt = crate::session::PromptQueueItem::new(
+                "queued-workflow-successor",
+                crate::scheduler::runtime::workflow_prompt_source_attachment_id(run.id()),
+                &agent_id,
+                "workflow successor",
+                crate::session::PromptStatus::Queued,
+            )
+            .with_workflow_context(run.id(), &node_run_id);
+            let queued = app.prompt_owner_submit_prepared_prompt(
+                &session_id,
+                workflow_prompt,
+                false,
+            )?;
+            assert!(matches!(
+                queued,
+                crate::session::PromptSubmissionOutcome::Queued { .. }
+            ));
+            Ok(active.id().to_string())
+        })
+        .await
+        .expect("ordinary prompt and workflow successor should queue")
+}
+
+async fn project_ordinary_completion(fixture: &RoomManifestFixture, prompt_id: String) {
+    fixture
+        .runtime
+        .project_relay_remote_runtime_projection(
+            &fixture.session_id,
+            &fixture.agent_id,
+            "provider-run-current",
+            None,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                message_id: "ordinary-completion-for-workflow-successor".to_string(),
+                completed_at_ms: crate::session::unix_epoch_ms(),
+                home_prompt_id: Some(prompt_id),
+                provider_termination: None,
+            }],
+        )
+        .await
+        .expect("ordinary completion should promote the queued workflow prompt");
+}
+
+async fn active_prompt_for(
+    fixture: &RoomManifestFixture,
+) -> Option<crate::session::PromptQueueItem> {
+    let session_id = fixture.session_id.clone();
+    let agent_id = fixture.agent_id.clone();
+    fixture
+        .runtime
+        .with_app_side_effect(move |app| {
+            app.prompt_owner_active_prompt_for_agent(&session_id, &agent_id)
+        })
+        .await
+        .expect("active prompt should be readable")
+}
+
+#[tokio::test]
+async fn ordinary_completion_promotes_workflow_head_through_post_lock_ordered_sender() {
+    let mut fixture = room_manifest_fixture().await;
+    let ordinary_prompt_id = queue_workflow_successor_after_ordinary_prompt(&fixture).await;
+    let lane = fixture
+        .runtime
+        .leased_agent_operations
+        .lock("leased-agent-1")
+        .await;
+
+    project_ordinary_completion(&fixture, ordinary_prompt_id).await;
+    assert!(
+        fixture.priority_rx.try_recv().is_err(),
+        "workflow prompt transport must wait for the existing leased-agent lane"
+    );
+    let promoted = active_prompt_for(&fixture)
+        .await
+        .expect("workflow successor should be admitted before remote transport");
+    assert!(crate::app::workflow_runtime::is_workflow_prompt_source(
+        promoted.source_attachment_id()
+    ));
+    drop(lane);
+
+    let (request_id, request) = next_peer_request(&mut fixture).await;
+    let crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt {
+        prompt,
+        workflow_context,
+        git_context,
+        ..
+    } = request
+    else {
+        panic!("expected promoted workflow prompt on the ordered sender");
+    };
+    assert_eq!(prompt, "workflow successor");
+    assert!(workflow_context.is_some());
+    assert_eq!(
+        git_context
+            .as_ref()
+            .and_then(|context| context.home_prompt_id.as_deref()),
+        Some(promoted.id())
+    );
+    acknowledge_peer_response(
+        &fixture,
+        request_id,
+        crate::transport::relay_peer::RelayPeerResponse::LeasedPromptSubmitted {
+            provider_run_id: "worker-run-workflow-successor".to_string(),
+            outcome: crate::session::PromptSubmissionOutcome::Started {
+                prompt: promoted.clone(),
+            },
+        },
+    )
+    .await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if active_prompt_for(&fixture)
+                .await
+                .is_some_and(|active| {
+                    active.id() == promoted.id()
+                        && active.durable_delivery_phase()
+                            == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+                })
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("ordered sender should settle the promoted workflow prompt");
+}
+
+#[tokio::test]
+async fn rejected_promoted_workflow_head_is_not_reported_as_delivered() {
+    let mut fixture = room_manifest_fixture().await;
+    let ordinary_prompt_id = queue_workflow_successor_after_ordinary_prompt(&fixture).await;
+    project_ordinary_completion(&fixture, ordinary_prompt_id).await;
+
+    let (request_id, request) = next_peer_request(&mut fixture).await;
+    assert!(matches!(
+        request,
+        crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt {
+            workflow_context: Some(_),
+            ..
+        }
+    ));
+    acknowledge_peer_response(
+        &fixture,
+        request_id,
+        crate::transport::relay_peer::RelayPeerResponse::Pong {
+            value: "rejected workflow submission".to_string(),
+            daemon_id: "worker-1".to_string(),
+        },
+    )
+    .await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if active_prompt_for(&fixture).await.is_none() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("a rejected relay response should cancel the undispatched prompt");
+    let binding = fixture
+        .runtime
+        .owned
+        .agent_store
+        .get_agent(&fixture.agent_id)
+        .expect("leased agent should remain available");
+    assert_eq!(
+        binding
+            .remote_execution()
+            .and_then(|remote| remote.active_worker_provider_run_id.as_deref()),
+        None,
+        "rejection must not retain a worker run for an unaccepted prompt"
+    );
+}
+
 #[tokio::test]
 async fn bind_and_delete_refresh_an_already_leased_agent_without_a_prompt() {
     let mut fixture = room_manifest_fixture().await;

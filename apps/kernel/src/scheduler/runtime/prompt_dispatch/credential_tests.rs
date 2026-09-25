@@ -115,7 +115,7 @@ impl Fixture {
         .unwrap();
     }
 
-    fn dispatch(&mut self, caller: Caller) -> DaemonError {
+    fn dispatch(&mut self, caller: Caller) -> Result<(), DaemonError> {
         match caller {
             Caller::Compatibility => KernelAgentService::new(&mut self.app)
                 .submit_prompt(
@@ -125,7 +125,7 @@ impl Fixture {
                     "dispatch fixture",
                     Vec::new(),
                 )
-                .unwrap_err(),
+                .map(|_| ()),
             Caller::Queued => {
                 let prompt = PromptQueueItem::new(
                     "queued",
@@ -144,7 +144,7 @@ impl Fixture {
                         None,
                         Some(&prompt),
                     )
-                    .unwrap_err()
+                    .map(|_| ()),
             }
             Caller::Workflow => {
                 let workflow = self
@@ -198,8 +198,14 @@ impl Fixture {
                     PromptSubmissionOutcome::Started { prompt } => prompt,
                     other => panic!("workflow should start: {other:?}"),
                 };
-                dispatch_workflow_prompt(&mut self.app, &self.session_id, &self.agent_id, &prompt)
-                    .unwrap_err()
+                let dispatch = dispatch_workflow_prompt(
+                    &mut self.app,
+                    &self.session_id,
+                    &self.agent_id,
+                    &prompt,
+                )?;
+                assert!(dispatch.is_some(), "remote workflow dispatch should be deferred");
+                Ok(())
             }
         }
     }
@@ -220,9 +226,11 @@ impl Drop for Fixture {
 #[test]
 fn remote_dispatch_callers_require_vaulted_claude_token_before_transport() {
     let _env = crate::env_lock::lock();
-    for caller in [Caller::Workflow, Caller::Compatibility, Caller::Queued] {
+    for caller in [Caller::Compatibility, Caller::Queued] {
         let mut fixture = Fixture::new();
-        let error = fixture.dispatch(caller);
+        let error = fixture
+            .dispatch(caller)
+            .expect_err("legacy transport callers need the vaulted token before transport");
         assert!(
             error.to_string().contains("remote Claude launch requires"),
             "{caller:?}: {error}"
@@ -233,13 +241,15 @@ fn remote_dispatch_callers_require_vaulted_claude_token_before_transport() {
 #[test]
 fn remote_dispatch_callers_surface_locked_vault_before_transport() {
     let _env = crate::env_lock::lock();
-    for caller in [Caller::Workflow, Caller::Compatibility, Caller::Queued] {
+    for caller in [Caller::Compatibility, Caller::Queued] {
         let mut fixture = Fixture::new();
         fixture.store_token();
         crate::secret::lock_chariox_encrypted_vault(&fixture.root.join("credentials.vault"))
             .unwrap();
         crate::secret::clear_vault_secret_process_cache().unwrap();
-        let error = fixture.dispatch(caller);
+        let error = fixture
+            .dispatch(caller)
+            .expect_err("legacy transport callers should surface the locked vault");
         assert!(
             crate::secret::is_chariox_vault_locked_error(&error),
             "{caller:?}: {error}"
@@ -251,7 +261,7 @@ fn remote_dispatch_callers_surface_locked_vault_before_transport() {
 #[test]
 fn remote_dispatch_callers_admit_vaulted_launch_and_reuse_active_run_without_token() {
     let _env = crate::env_lock::lock();
-    for caller in [Caller::Workflow, Caller::Compatibility, Caller::Queued] {
+    for caller in [Caller::Compatibility, Caller::Queued] {
         for active_run in [false, true] {
             let mut fixture = Fixture::new();
             if active_run {
@@ -266,10 +276,20 @@ fn remote_dispatch_callers_admit_vaulted_launch_and_reuse_active_run_without_tok
             } else {
                 fixture.store_token();
             }
-            let error = fixture.dispatch(caller);
+            let error = fixture
+                .dispatch(caller)
+                .expect_err("compatibility send should reach transport");
             assert!(error.to_string().contains("relay_url is not configured"),
                 "{caller:?}, active={active_run}: should reach transport after credential admission: {error}");
             assert!(!error.to_string().contains("dispatch-token-canary"));
         }
     }
+}
+
+#[test]
+fn remote_workflow_dispatch_returns_an_intent_without_opening_transport() {
+    let _env = crate::env_lock::lock();
+    let mut fixture = Fixture::new();
+    let result = fixture.dispatch(Caller::Workflow);
+    assert!(result.is_ok(), "workflow should defer transport: {result:?}");
 }

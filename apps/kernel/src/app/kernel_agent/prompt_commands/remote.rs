@@ -449,6 +449,52 @@ impl<'a> KernelAgentService<'a> {
         relay_token: Option<&str>,
         expected_next: Option<&PromptQueueItem>,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
+        self.advance_next_queued_prompt_remote_inner(
+            session_id,
+            agent_id,
+            worker_kernel_id,
+            leased_agent_id,
+            relay_url,
+            relay_token,
+            expected_next,
+            false,
+        )
+    }
+
+    pub(crate) fn advance_next_queued_prompt_remote_with_workflow_dispatch(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        worker_kernel_id: &str,
+        leased_agent_id: &str,
+        relay_url: Option<&str>,
+        relay_token: Option<&str>,
+        expected_next: Option<&PromptQueueItem>,
+    ) -> Result<Option<PromptQueueItem>, DaemonError> {
+        self.advance_next_queued_prompt_remote_inner(
+            session_id,
+            agent_id,
+            worker_kernel_id,
+            leased_agent_id,
+            relay_url,
+            relay_token,
+            expected_next,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn advance_next_queued_prompt_remote_inner(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        worker_kernel_id: &str,
+        leased_agent_id: &str,
+        relay_url: Option<&str>,
+        relay_token: Option<&str>,
+        expected_next: Option<&PromptQueueItem>,
+        defer_workflow_dispatch: bool,
+    ) -> Result<Option<PromptQueueItem>, DaemonError> {
         let mut relay_config = self.app.config().clone();
         if let (Some(relay_url), Some(relay_token)) = (relay_url, relay_token) {
             relay_config
@@ -497,7 +543,65 @@ impl<'a> KernelAgentService<'a> {
                 .ensure_remote_agent_binding_protocol(remote_execution)?;
             let (required_mcps, required_skills, remote_extension_manifest) =
                 self.app.remote_prompt_capabilities_for_agent(&agent)?;
+            let workflow_context = if is_workflow_prompt && defer_workflow_dispatch {
+                Some(
+                    crate::app::RemoteWorkflowTurnContextResolver::new(self.app)
+                        .remote_workflow_turn_context_for_prompt(session_id, agent_id, &peeked)?,
+                )
+            } else {
+                None
+            };
             let home_prompt_id = self.app.sessions_mut().reserve_prompt_id();
+            if let Some(workflow_context) = workflow_context {
+                let (_session, active) = self
+                    .activate_next_queued_prompt_for_mirror_with_prompt_id(
+                        session_id,
+                        agent_id,
+                        Some(&peeked),
+                        home_prompt_id,
+                    )?;
+                let Some(active) = active else {
+                    continue;
+                };
+                let active = self.prepare_promoted_queued_prompt_start(
+                    session_id,
+                    agent_id,
+                    active.id(),
+                )?;
+                let session = self.app.sessions().get_session(session_id)?;
+                self.app.defer_workflow_remote_prompt_dispatch(
+                    crate::app::KernelRemotePromptDispatch {
+                        session_id: session_id.to_string(),
+                        agent_id: agent_id.to_string(),
+                        prompt_id: active.id().to_string(),
+                        worker_kernel_id: worker_kernel_id.to_string(),
+                        leased_agent_id: leased_agent_id.to_string(),
+                        relay_url: relay_url.map(str::to_string),
+                        relay_token: relay_token.map(str::to_string),
+                        source_attachment_id: active.source_attachment_id().to_string(),
+                        prompt: active.prompt().to_string(),
+                        hidden_system_context: active.hidden_system_context().to_string(),
+                        attachments: active.attachments().to_vec(),
+                        workspace_live_sync_mode: Some(
+                            crate::provider::provider_workspace_live_sync_mode_for_session(
+                                agent.provider(),
+                                self.app.config(),
+                                Some(&session),
+                            ),
+                        ),
+                        prompt_origin: active.prompt_origin(),
+                        external_provider: active.external_provider().map(str::to_string),
+                        external_provider_session_id: active
+                            .external_provider_session_id()
+                            .map(str::to_string),
+                        external_provider_turn_id: active
+                            .external_provider_turn_id()
+                            .map(str::to_string),
+                        workflow_context: Some(workflow_context),
+                    },
+                );
+                return Ok(Some(active));
+            }
             let response = self
                 .app
                 .send_remote_prompt_peer_request_with_credential_retry(

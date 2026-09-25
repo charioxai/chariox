@@ -740,6 +740,28 @@ impl DaemonApp {
         )
     }
 
+    pub(crate) fn advance_next_queued_prompt_remote_with_workflow_dispatch(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        worker_kernel_id: &str,
+        leased_agent_id: &str,
+        relay_url: Option<&str>,
+        relay_token: Option<&str>,
+        expected_next: Option<&crate::session::PromptQueueItem>,
+    ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
+        crate::app::KernelAgentService::new(self)
+            .advance_next_queued_prompt_remote_with_workflow_dispatch(
+                session_id,
+                agent_id,
+                worker_kernel_id,
+                leased_agent_id,
+                relay_url,
+                relay_token,
+                expected_next,
+            )
+    }
+
     pub(crate) fn serialize_remote_prompt_attachments(
         &self,
         attachments: &[PromptAttachment],

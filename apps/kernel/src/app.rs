@@ -178,6 +178,7 @@ pub struct DaemonApp {
     terminal: TerminalStreamStore,
     workflow_design_events: WorkflowDesignEventStore,
     pending_structured_output_records: provider_output::StructuredOutputRecordStore,
+    pending_workflow_remote_prompt_dispatches: Vec<KernelRemotePromptDispatch>,
     execution_leases: BTreeMap<String, ExecutionLease>,
     leased_agents: BTreeMap<String, LeasedAgent>,
     execution_lease_callers: BTreeMap<String, remote_lease::LeaseCallerBinding>,
@@ -361,6 +362,7 @@ impl DaemonApp {
             workflow_design_events: WorkflowDesignEventStore::default(),
             pending_structured_output_records:
                 provider_output::StructuredOutputRecordStore::default(),
+            pending_workflow_remote_prompt_dispatches: Vec::new(),
             execution_leases: BTreeMap::new(),
             leased_agents: BTreeMap::new(),
             execution_lease_callers: BTreeMap::new(),
