@@ -154,7 +154,8 @@ test("/app update fences the shared upload on the generation it read first", asy
   assert.match(request_id, /^app-update-/)
   assert.match(notices.at(-1)!, /Preparing App/)
   await assert.rejects(installer.install(f.path, "current-session"), /Another App installation or update is retained/)
-  assert.match(formatInstallOperation({ ...k.status!, phase: "failed", failure: "app_update_migration_required" } as never), /changes the App's data schema; updating with data migrations is not supported yet/)
+  assert.equal(formatInstallOperation({ ...k.status!, phase: "committed", installation_id: "todo" } as never), `App operation complete: todo. Operation ${request_id}. Use /app operation for status; /app cancel to cancel before it completes.`)
+  assert.match(formatInstallOperation({ ...k.status!, phase: "failed", failure: "app_update_migration_required" } as never), /^App operation failed\. This release changes the App's data schema; updating with data migrations is not supported yet/)
 })
 
 test("lost chunk and install replies resume using original IDs and authoritative offset", async t => {

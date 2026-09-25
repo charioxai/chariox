@@ -226,7 +226,7 @@ function operation(reply: Record<string, unknown>, request: string): AppInstallO
 }
 
 export function formatInstallOperation(value: AppInstallOperationSummary): string {
-  const label = { preparing: "Preparing App", awaiting_approval: "Awaiting approval in the installation session", starting: "Starting App", committed: "App installed", cancelled: "App installation cancelled", failed: "App installation failed" }[value.phase]
+  const label = { preparing: "Preparing App", awaiting_approval: "Awaiting approval in the operation's session", starting: "Starting App", committed: "App operation complete", cancelled: "App operation cancelled", failed: "App operation failed" }[value.phase]
   const failures: Record<string, string> = {
     app_install_publisher_not_enrolled: "This publisher must be enrolled in the kernel before installation.",
     app_install_publisher_revoked: "This publisher has been revoked in the kernel.",
@@ -236,9 +236,9 @@ export function formatInstallOperation(value: AppInstallOperationSummary): strin
     app_install_insufficient_storage: "The kernel has insufficient App storage.",
     app_update_migration_required: "This release changes the App's data schema; updating with data migrations is not supported yet.",
   }
-  const fallback = value.failure && /^app_(?:install|update)_[a-z_]{1,96}$/.test(value.failure) ? `Kernel failure: ${value.failure}.` : "The kernel could not complete installation."
+  const fallback = value.failure && /^app_(?:install|update)_[a-z_]{1,96}$/.test(value.failure) ? `Kernel failure: ${value.failure}.` : "The kernel could not complete the App operation."
   const detail = value.failure ? ` ${failures[value.failure] ?? fallback}` : ""
-  return `${label}${value.installation_id ? `: ${value.installation_id}` : ""}.${detail} Operation ${value.request_id}. Use /app operation for status; /app cancel to cancel before installation completes.`
+  return `${label}${value.installation_id ? `: ${value.installation_id}` : ""}.${detail} Operation ${value.request_id}. Use /app operation for status; /app cancel to cancel before it completes.`
 }
 
 export function formatInstallProgress(value: InstallProgress): string {
