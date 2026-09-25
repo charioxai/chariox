@@ -49,7 +49,7 @@ async fn forwarded_meta_request_lock_scenario() {
     release_tx
         .send(())
         .expect("release the home request barrier");
-    timeout(Duration::from_secs(10), &mut forwarded)
+    let _ = timeout(Duration::from_secs(10), &mut forwarded)
         .await
         .expect("forwarded request returns after home responds")
         .expect("forwarded request task joins");

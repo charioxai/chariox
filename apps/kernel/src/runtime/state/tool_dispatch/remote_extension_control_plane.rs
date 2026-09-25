@@ -143,24 +143,23 @@ impl KernelRuntimeState {
         let Some(remote_context) = remote_context else {
             return Ok(None);
         };
-        let response = self
-            .with_app_side_effect(|app| {
-                app.block_on_relay_future(
-                    crate::transport::relay_client::send_peer_request_via_temporary_connection(
-                        app.config(),
-                        ClientTarget {
-                            daemon_id: Some(remote_context.home_kernel_id.clone()),
-                            daemon_alias: None,
-                        },
-                        RelayPeerRequest::ForwardMetaRuntimeTool {
-                            context: remote_context.clone(),
-                            tool_name: tool_name.to_string(),
-                            arguments: arguments.clone(),
-                        },
-                    ),
-                )
-            })
-            .await?;
+        // Home may call back into this worker while handling the forwarded
+        // tool. Snapshot configuration under the app lock, then release it
+        // before waiting for the relay round trip.
+        let config = self.config_snapshot().await;
+        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection(
+            &config,
+            ClientTarget {
+                daemon_id: Some(remote_context.home_kernel_id.clone()),
+                daemon_alias: None,
+            },
+            RelayPeerRequest::ForwardMetaRuntimeTool {
+                context: remote_context,
+                tool_name: tool_name.to_string(),
+                arguments,
+            },
+        )
+        .await?;
         match response {
             RelayPeerResponse::MetaRuntimeToolHandled { result } => Ok(Some(result)),
             other => Err(DaemonError::LocalTransport {
