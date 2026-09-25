@@ -102,7 +102,14 @@ async fn check_capability_response_refresh(skill_grant: bool) {
             let events = fixture.home.runtime_state.list_home_extension_audit_events(
                 &leased.home_agent_id, DEFAULT_LOCAL_USER_ID, 100,
             ).expect("registration audit");
-            assert_eq!(events.iter().filter(|event| event.kind == "extension.registration.created" && event.payload["kind"] == "mcp" && event.payload["name"] == name).count(), 1, "read-only refresh must never replay registration");
+            // No grant push occurs here. The response manifest itself carries
+            // the updated definition, without a compare-and-set refresh.
+            let registrations = events.iter().filter(|event| {
+                event.kind == "extension.registration.created"
+                    && event.payload["kind"] == "mcp"
+                    && event.payload["name"] == name
+            }).count();
+            assert_eq!(registrations, 1, "registration executes exactly once");
         }
         let events = fixture.home.runtime_state.list_home_extension_audit_events(
             &leased.home_agent_id, DEFAULT_LOCAL_USER_ID, 100,
