@@ -43,14 +43,9 @@ impl KernelRuntimeOwnedState {
     /// answer it after a restart, and its subject would block a retry of the
     /// same operation, so it is dropped from the session.
     fn remove_orphaned_kernel_operation_interactions(&self, shutdown: bool) {
-        const INTERVAL_MS: u64 = 30_000;
-        let now = crate::session::unix_epoch_ms();
-        let last = &self.pending_interactions.orphan_sweep_ms;
-        let previous = last.load(std::sync::atomic::Ordering::Acquire);
-        if !shutdown && previous != 0 && now.saturating_sub(previous) < INTERVAL_MS {
+        if !self.orphan_sweep_due(shutdown) {
             return;
         }
-        last.store(now, std::sync::atomic::Ordering::Release);
         let Ok(_mutation) = self.pending_interactions.mutation.lock() else {
             return;
         };
@@ -92,6 +87,31 @@ impl KernelRuntimeOwnedState {
             let _ = self.session_snapshot(&session_id);
             self.terminal_stream
                 .notify_terminal_projection_change(&session_id);
+        }
+    }
+
+    /// At most one scan every 30 s per session store; the first is immediate.
+    fn orphan_sweep_due(&self, shutdown: bool) -> bool {
+        const INTERVAL_MS: u64 = 30_000;
+        let now = crate::session::unix_epoch_ms();
+        let identity = self.session_store.weak_identity();
+        let Ok(mut sweeps) = self.pending_interactions.orphan_sweeps.lock() else {
+            return false;
+        };
+        sweeps.retain(|(store, _)| store.strong_count() > 0);
+        match sweeps
+            .iter_mut()
+            .find(|(store, _)| std::sync::Weak::ptr_eq(store, &identity))
+        {
+            Some((_, last)) if !shutdown && now.saturating_sub(*last) < INTERVAL_MS => false,
+            Some((_, last)) => {
+                *last = now;
+                true
+            }
+            None => {
+                sweeps.push((identity, now));
+                true
+            }
         }
     }
 }

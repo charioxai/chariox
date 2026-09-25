@@ -391,12 +391,8 @@ async fn a_persisted_decision_without_a_responder_is_dropped_after_restart() {
         ));
         sessions.restore_session(session);
     }
-    fixture
-        .state
-        .owned
-        .pending_interactions
-        .orphan_sweep_ms
-        .store(0, std::sync::atomic::Ordering::Release);
+    // This fixture's store has not swept yet, so its first pass is unthrottled
+    // regardless of other kernels' sweeps in this process.
     fixture
         .state
         .owned
