@@ -1,9 +1,11 @@
 import assert from "node:assert/strict"
+import { createHash } from "node:crypto"
 import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 import { AppDevLoop, ignored, type AppDevDeps, type AppDevPackOptions } from "./app-dev-loop.js"
+import { AppFileInstaller } from "./app-install-file.js"
 import { handleAppSlashCommand } from "./app-command-handler.js"
 import { parseSlashCommand, sharedShellCommandForSlashCommand } from "./commands.js"
 
@@ -82,6 +84,9 @@ function harness(f: { root: string, app: string, key: string }, options: { insta
         else { generation++; installed = true; Object.assign(status, { phase: "committed", installation_id: "todo", generation: String(generation) }) }
         return { ...status } as never
       },
+      cancel: async () => assert.fail("nothing retained"),
+      retained: () => undefined,
+      discardRetained: () => false,
     },
   }
   return {
@@ -179,6 +184,84 @@ test("a failed update reports the friendly kernel failure and keeps watching", a
   await loop.settled()
   assert.equal(h.notices.at(-1), "App dev: INVALID_MANIFEST: app.json is invalid")
   assert.equal(loop.active, true)
+})
+
+/** Real installer over a kernel fixture whose connection drops after it has committed a Begin. */
+async function lostBegin(t: test.TestContext, installed: boolean) {
+  const f = await fixture(t)
+  const requests: Message[] = []
+  const ops = new Map<string, Message>()
+  const uploads = new Map<string, Message>()
+  let generation = 7
+  let offline = false
+  const installation = () => ({ installation_id: "todo", app_id: "com.example.todo", generation: String(generation), active_release: {}, pending_generation: null, admission_paused: false })
+  const send = async (request: Message): Promise<Message> => {
+    if (offline) throw new Error("socket closed")
+    requests.push(request)
+    if (request.ListAppInstallations) return { AppInstallationsListed: { installations: installed ? [installation()] : [], next_cursor: null } }
+    if (request.GetAppInstallation) return { AppInstallation: { installation: installation() } }
+    if (request.BeginAppPackageUpload) {
+      const v = request.BeginAppPackageUpload
+      if (!uploads.has(v.request_id)) uploads.set(v.request_id, { handle: `upload_${String(uploads.size).padStart(64, "0")}`, expected_size: v.expected_size, sha256: v.sha256, accepted_bytes: 0, phase: "receiving", expires_at_ms: Date.now() + 60_000 })
+      return { AppPackageUploadStatus: { upload: { ...uploads.get(v.request_id) } } }
+    }
+    const upload = [...uploads.values()].find(value => value.handle === (request.PutAppPackageUploadChunk ?? request.AbortAppPackageUpload)?.handle)
+    if (request.PutAppPackageUploadChunk) { upload!.accepted_bytes += Buffer.from(request.PutAppPackageUploadChunk.data_base64, "base64").length; return { AppPackageUploadStatus: { upload: { ...upload } } } }
+    if (request.AbortAppPackageUpload) { upload!.phase = "aborted"; return { AppPackageUploadStatus: { upload: { ...upload } } } }
+    const v = request.BeginAppInstall ?? request.BeginAppUpdate ?? request.GetAppInstallOperation
+    if (request.BeginAppInstall || request.BeginAppUpdate) {
+      generation++; installed = true
+      ops.set(v.request_id, { request_id: v.request_id, phase: "committed", installation_id: "todo", generation: String(generation), package_digest: v.expected_package_digest, interaction_id: null, failure: null })
+      if (ops.size === 1) { offline = true; throw new Error("socket closed") }
+    }
+    const op = ops.get(v.request_id)
+    return op ? { AppInstallOperationStatus: { operation: { ...op } } } : { AppRequestFailed: { code: "not_found" } }
+  }
+  const installer = new AppFileInstaller(send, () => {}, f.root)
+  const notices: string[] = []
+  const packed: string[] = []
+  let onChange: (() => void) | undefined
+  const loop = new AppDevLoop({
+    cwd: f.root, debounceMs: 5, pollMs: 1, send, installer, notice: value => { notices.push(value) }, currentSession: () => "session-1",
+    workspace: () => mkdtemp(join(f.root, "work-")),
+    watch: (_directory, change) => { onChange = () => change("bundle/ui/app.js"); return { close() {} } },
+    pack: async value => {
+      const bytes = Buffer.from(`package ${packed.length + 1}`)
+      await writeFile(value.output, bytes)
+      packed.push(`sha256:${createHash("sha256").update(bytes).digest("hex")}`)
+      return { appId: "com.example.todo", version: `1.0.${packed.length}`, packageDigest: packed.at(-1)! }
+    },
+  })
+  t.after(async () => { await loop.dispose(); await installer.dispose() })
+  await loop.start("my-app", { key: f.key })
+  await loop.settled()
+  assert.match(notices.at(-1)!, /^App dev: Connection interrupted/)
+  assert.ok(installer.retained()?.begun)
+  offline = false
+  onChange!()
+  await loop.settled()
+  const begins = requests.filter(value => value.BeginAppInstall || value.BeginAppUpdate).map(value => value.BeginAppInstall ? ["install", value.BeginAppInstall.expected_package_digest] : ["update", value.BeginAppUpdate.expected_package_digest])
+  return { notices, packed, begins, retained: installer.retained() }
+}
+
+test("after a lost update Begin, the next cycle reports it as the previous build and uploads the new pack", async t => {
+  const r = await lostBegin(t, true)
+  assert.deepEqual(r.begins, [["update", r.packed[0]], ["update", r.packed[1]]])
+  assert.equal(r.retained, undefined)
+  assert.deepEqual(r.notices.slice(-4), [
+    `Previous build (${r.packed[0]!.slice(0, 19)}…): Updated todo to generation 8; App data is kept.`, "Open its view with /app open todo",
+    `Packed com.example.todo 1.0.2 (${r.packed[1]!.slice(0, 19)}…)`, "Updated todo to generation 9; App data is kept. Reopen views opened earlier with /app open todo",
+  ])
+})
+
+test("after a lost first install that the kernel committed, the next cycle updates that installation", async t => {
+  const r = await lostBegin(t, false)
+  assert.deepEqual(r.begins, [["install", r.packed[0]], ["update", r.packed[1]]])
+  assert.equal(r.retained, undefined)
+  assert.deepEqual(r.notices.slice(-4), [
+    `Previous build (${r.packed[0]!.slice(0, 19)}…): Installed todo at generation 8.`, "Open its view with /app open todo",
+    `Packed com.example.todo 1.0.2 (${r.packed[1]!.slice(0, 19)}…)`, "Updated todo to generation 9; App data is kept. Reopen views opened earlier with /app open todo",
+  ])
 })
 
 test("ignored paths are dotfiles and dependency trees", () => {

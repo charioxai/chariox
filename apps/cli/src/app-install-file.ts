@@ -15,8 +15,9 @@ type Attempt = {
   path: string; session: string; update?: { installation: string; generation?: string }; uploadRequest: string; request: string; cancelled: boolean;
   digest?: string; size?: number; handle?: string; beginSent: boolean; status?: AppInstallOperationSummary; closed: boolean;
 }
-class KernelFailure extends Error { constructor(readonly code: string) { super(messages[code] ?? `App request failed: ${code}`) } }
+export class KernelFailure extends Error { constructor(readonly code: string) { super(messages[code] ?? `App request failed: ${code}`) } }
 class ConnectionFailure extends Error { constructor() { super("Connection interrupted. Run the same /app install or update command to resume this attempt, or /app cancel to cancel it.") } }
+const terminalPhases = new Set(["committed", "cancelled", "failed"])
 const messages: Record<string, string> = {
   unauthorized: "This connection is not authorized to install Apps.", busy: "App requests are busy. Try again shortly.",
   conflict: "The App operation or installation changed; check /app operation, or /app cancel and try again.", not_found: "App operation or upload was not found.",
@@ -60,6 +61,21 @@ export class AppFileInstaller {
     this.running = operation
     void operation.finally(() => { if (this.running === operation) this.running = undefined }).catch(() => {})
     return operation
+  }
+
+  /** The open attempt this terminal retains (e.g. after a connection failure), if any. */
+  retained(): { path: string; request: string; digest?: string; installation?: string; begun: boolean } | undefined {
+    const attempt = this.attempt
+    if (!attempt || attempt.closed) return undefined
+    return { path: attempt.path, request: attempt.request, ...(attempt.digest ? { digest: attempt.digest } : {}), ...(attempt.update ? { installation: attempt.update.installation } : {}), begun: attempt.beginSent }
+  }
+
+  /** Drops the local record of a retained attempt whose operation is terminal; the kernel receipt stays queryable by ID. */
+  discardRetained(): boolean {
+    const attempt = this.attempt
+    if (!attempt || this.running || !(attempt.closed || terminalPhases.has(attempt.status?.phase ?? ""))) return false
+    this.attempt = undefined
+    return true
   }
 
   status(requestId?: string): Promise<AppInstallOperationSummary> {
@@ -192,7 +208,7 @@ export class AppFileInstaller {
   private async releaseUpload(attempt: Attempt, status: AppInstallOperationSummary): Promise<void> {
     if (status.phase === "preparing") return
     if (attempt.handle) await this.request(abortAppPackageUploadRequest(attempt.handle), () => false).catch(() => {})
-    if (["committed", "cancelled", "failed"].includes(status.phase)) attempt.closed = true
+    if (terminalPhases.has(status.phase)) attempt.closed = true
   }
 
   private async request(request: Record<string, unknown>, cancelled: () => boolean): Promise<Record<string, unknown>> {

@@ -156,6 +156,13 @@ test("/app update fences the shared upload on the generation it read first", asy
   await assert.rejects(installer.install(f.path, "current-session"), /Another App installation or update is retained/)
   assert.equal(formatInstallOperation({ ...k.status!, phase: "committed", installation_id: "todo" } as never), `App operation complete: todo. Operation ${request_id}. Use /app operation for status; /app cancel to cancel before it completes.`)
   assert.match(formatInstallOperation({ ...k.status!, phase: "failed", failure: "app_update_migration_required" } as never), /^App operation failed\. This release changes the App's data schema; updating with data migrations is not supported yet/)
+  assert.deepEqual(installer.retained(), { path: f.path, request: request_id, digest: digest(f.bytes), installation: "todo", begun: true })
+  assert.equal(installer.discardRetained(), false)
+  k.status!.phase = "committed"
+  assert.equal((await installer.status()).phase, "committed")
+  assert.equal(installer.retained(), undefined)
+  assert.equal(installer.discardRetained(), true)
+  await assert.rejects(installer.status(), /No App installation in this terminal/)
 })
 
 test("lost chunk and install replies resume using original IDs and authoritative offset", async t => {

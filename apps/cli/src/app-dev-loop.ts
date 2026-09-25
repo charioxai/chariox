@@ -7,14 +7,14 @@ import { setTimeout as delay } from "node:timers/promises"
 import { listAppInstallationsRequest } from "@chariox/kernel-client/ipc-requests"
 import type { AppInstallationSummary, AppInstallOperationSummary } from "@chariox/kernel-client/kernel-types"
 import { packAppPackage, type PackedAppPackage } from "./app-developer.js"
-import { formatInstallFailure, terminalCwd, type AppFileInstaller } from "./app-install-file.js"
+import { formatInstallFailure, KernelFailure, terminalCwd, type AppFileInstaller } from "./app-install-file.js"
 
 type Send = (request: Record<string, unknown>) => Promise<Record<string, unknown>>
 export type AppDevWatcher = { close(): void }
 export type AppDevPackOptions = { bundle: string; manifest: string; key: string; output: string }
 export type AppDevDeps = {
   send: Send
-  installer: Pick<AppFileInstaller, "install" | "update" | "status">
+  installer: Pick<AppFileInstaller, "install" | "update" | "status" | "cancel" | "retained" | "discardRetained">
   notice: (message: string) => void
   currentSession: () => string | undefined
   pack?: (options: AppDevPackOptions) => Promise<PackedAppPackage>
@@ -148,6 +148,7 @@ class DevRun {
       return
     }
     try {
+      if (!(await this.settleRetained())) return
       await rm(this.output, { force: true })
       const packed = await (this.deps.pack ?? packAppPackage)({
         bundle: join(this.root, "bundle"), manifest: join(this.root, "app.json"), key: this.key, output: this.output,
@@ -166,6 +167,26 @@ class DevRun {
     }
   }
 
+  /**
+   * A previous cycle's attempt retained after a connection failure is settled before packing: a begun operation
+   * is followed to its end and reported as the earlier build, an unbegun upload is cancelled. The cycle then
+   * uploads the fresh pack, so the latest edit is never answered with the old operation's result.
+   */
+  private async settleRetained(): Promise<boolean> {
+    const retained = this.deps.installer.retained()
+    if (!retained || retained.path !== this.output) return true
+    const started = retained.begun ? await this.deps.installer.status(retained.request).catch((error: unknown) => {
+      if (error instanceof KernelFailure && error.code === "not_found") return undefined
+      throw error
+    }) : undefined
+    if (!started) { await this.deps.installer.cancel(); return !this.stopped }
+    const status = await this.follow(started)
+    if (!status) return false
+    this.report(status, retained.installation, `Previous build${retained.digest ? ` (${shortDigest(retained.digest)})` : ""}: `)
+    this.deps.installer.discardRetained()
+    return !this.stopped
+  }
+
   private async follow(status: AppInstallOperationSummary): Promise<AppInstallOperationSummary | undefined> {
     let announced = false
     while (activePhases.has(status.phase)) {
@@ -180,21 +201,21 @@ class DevRun {
     return status
   }
 
-  private report(status: AppInstallOperationSummary, existing: string | undefined): void {
+  private report(status: AppInstallOperationSummary, existing: string | undefined, prefix = ""): void {
     const verb = existing ? "Update" : "Install"
     if (status.phase === "failed") {
-      this.deps.notice(`${verb} failed: ${formatInstallFailure(status.failure ?? "")} Operation ${status.request_id}.`)
+      this.deps.notice(`${prefix}${verb} failed: ${formatInstallFailure(status.failure ?? "")} Operation ${status.request_id}.`)
       return
     }
     if (status.phase !== "committed") {
-      this.deps.notice(`${verb} cancelled. Operation ${status.request_id}.`)
+      this.deps.notice(`${prefix}${verb} cancelled. Operation ${status.request_id}.`)
       return
     }
     const id = status.installation_id ?? existing ?? "App"
     const generation = status.generation ?? "?"
-    if (!existing) this.deps.notice(`Installed ${id} at generation ${generation}.`)
+    if (!existing) this.deps.notice(`${prefix}Installed ${id} at generation ${generation}.`)
     // The loop opens no views; views opened on an older generation must be reopened.
-    else this.deps.notice(`Updated ${id} to generation ${generation}; App data is kept.${this.suggestedOpen ? ` Reopen views opened earlier with /app open ${id}` : ""}`)
+    else this.deps.notice(`${prefix}Updated ${id} to generation ${generation}; App data is kept.${this.suggestedOpen ? ` Reopen views opened earlier with /app open ${id}` : ""}`)
     if (!this.suggestedOpen) this.deps.notice(`Open its view with /app open ${id}`)
     this.suggestedOpen = true
   }

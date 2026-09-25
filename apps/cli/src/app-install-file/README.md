@@ -90,8 +90,13 @@ terminal attached to another session stops the loop and removes its temporary
 directory. Detaching has no separate hook: the watcher stays open until the next
 change (which then stops the loop) or exit. A cycle already running finishes its
 current kernel request; a submitted operation remains kernel-owned and visible
-with `/app operation`. After a connection failure the retained attempt behaves
-like a manual install: the next cycle resumes or discards it, or use `/app cancel`.
+with `/app operation`. After a connection failure the attempt stays retained;
+the next cycle first settles it: a submitted operation is followed to its result
+and reported as `Previous build (sha256:…): ...`, then its local record is
+dropped, while an upload that never reached Begin is cancelled. The cycle then
+packs and uploads the current sources as a new operation, updating the
+installation if the lost operation had installed it. `/app cancel` also works.
 
 Focused tests (`app-dev-loop.test.ts`) inject the watcher, packer, installer and
-kernel list; they cover install then update, coalescing, stop and failures.
+kernel list; they cover install then update, coalescing, stop and failures. Two
+use the real installer with a fixture that drops the connection after Begin.
