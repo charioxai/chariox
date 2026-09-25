@@ -161,6 +161,10 @@ impl WorkerLimits {
 pub enum WorkerError {
     #[error("app_worker_preparation")]
     Preparation,
+    /// The installation's private storage could not be prepared; the code
+    /// (e.g. `app_storage_capacity`) is stable and names no App path.
+    #[error("app_worker_storage:{0}")]
+    Storage(&'static str),
     #[error("app_worker_spawn")]
     Spawn,
     #[error("app_worker_startup_timeout")]

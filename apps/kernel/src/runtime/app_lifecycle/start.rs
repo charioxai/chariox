@@ -214,8 +214,23 @@ fn spawn(
     #[cfg(target_os = "macos")]
     {
         let _ = verified;
+        // A refused preparation (no enrolled runtime, low disk, ...) keeps its
+        // stable code visible; it names no App path or package content.
+        let failed = |step: &str, code: String| {
+            crate::logging::warn_with_fields(
+                "app.worker",
+                "App worker preparation failed",
+                serde_json::json!({
+                    "installation_id": binding.token().installation_id,
+                    "generation": binding.token().generation,
+                    "step": step,
+                    "code": code,
+                }),
+            );
+            LifecycleError::Preparation
+        };
         let runtime = chariox_app_runtime::runtime_enrollment::EnrolledRuntime::open_installed()
-            .map_err(|_| LifecycleError::Preparation)?;
+            .map_err(|error| failed("enrolled_runtime", error.to_string()))?;
         let storage_root = macos_storage_root(&context.store)?;
         let prepared = chariox_app_runtime::worker_process::PreparedWorker::prepare_macos(
             runtime,
@@ -223,12 +238,12 @@ fn spawn(
             binding,
             &storage_root,
         )
-        .map_err(|_| LifecycleError::Preparation)?;
+        .map_err(|error| failed("prepare", error.to_string()))?;
         if context.control.stopped() {
             return Err(LifecycleError::Stopped);
         }
         let process = WorkerProcess::spawn_blocking(prepared, WorkerLimits::default())
-            .map_err(|_| LifecycleError::Preparation)?;
+            .map_err(|error| failed("spawn", error.to_string()))?;
         Ok(PreparedProcess {
             process,
             #[cfg(test)]
@@ -245,7 +260,9 @@ fn spawn(
 /// Kernel-owned private APFS image root beside the kernel database. It is
 /// never derived from an App, client or package value.
 #[cfg(target_os = "macos")]
-fn macos_storage_root(store: &crate::durable_state::DurableKernelStateStore) -> Result<std::path::PathBuf> {
+fn macos_storage_root(
+    store: &crate::durable_state::DurableKernelStateStore,
+) -> Result<std::path::PathBuf> {
     use std::os::unix::fs::DirBuilderExt;
     let root = store
         .path()
@@ -261,12 +278,10 @@ fn macos_storage_root(store: &crate::durable_state::DurableKernelStateStore) -> 
     // no worker of this kernel can hold a volume. Failure retries next start.
     static RECOVERED: std::sync::Mutex<std::collections::BTreeSet<std::path::PathBuf>> =
         std::sync::Mutex::new(std::collections::BTreeSet::new());
-    let mut recovered = RECOVERED
-        .lock()
-        .map_err(|_| LifecycleError::Supervisor)?;
+    let mut recovered = RECOVERED.lock().map_err(|_| LifecycleError::Supervisor)?;
     if !recovered.contains(&root) {
-        chariox_app_runtime::worker_process::PreparedWorker::recover_macos_storage(&root)
-            .map_err(|code| {
+        chariox_app_runtime::worker_process::PreparedWorker::recover_macos_storage(&root).map_err(
+            |code| {
                 // Fail closed, but keep the cause visible (no App-supplied paths).
                 crate::logging::warn_with_fields(
                     "app.lifecycle",
@@ -274,7 +289,8 @@ fn macos_storage_root(store: &crate::durable_state::DurableKernelStateStore) -> 
                     serde_json::json!({ "code": code }),
                 );
                 LifecycleError::Preparation
-            })?;
+            },
+        )?;
         recovered.insert(root.clone());
     }
     Ok(root)

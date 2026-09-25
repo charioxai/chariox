@@ -31,9 +31,11 @@ pub(super) fn prepare(
     let installation = binding.token().installation_id.clone();
     let storage = storage_macos::StorageRoot::open(storage_root)
         .and_then(|root| root.prepare(binding.owner_id(), &installation, generation))
-        .map_err(|_| WorkerError::Preparation)?;
+        .map_err(|error| WorkerError::Storage(error.code()))?;
     let [data, temporary] = storage.paths();
-    let [data_dir, temporary_dir] = storage.directories().map_err(|_| WorkerError::Preparation)?;
+    let [data_dir, temporary_dir] = storage
+        .directories()
+        .map_err(|error| WorkerError::Storage(error.code()))?;
     require_identity(&data, data_dir)?;
     require_identity(&temporary, temporary_dir)?;
     let package = descriptor_path(release.payload())?;
@@ -147,7 +149,8 @@ fn held_file(path: &Path, expected: &File) -> Result<File> {
 
 fn process_path(pid: libc::pid_t) -> Result<PathBuf> {
     let mut buffer = vec![0u8; 4 * libc::PATH_MAX as usize];
-    let length = unsafe { libc::proc_pidpath(pid, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
+    let length =
+        unsafe { libc::proc_pidpath(pid, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
     if length <= 0 {
         return Err(WorkerError::ResourceDomain);
     }
@@ -202,8 +205,14 @@ mod tests {
         let root = std::env::temp_dir().join(format!("chariox-macos-path-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let held = File::open(&root).unwrap();
-        assert_eq!(descriptor_path(&held).unwrap(), root.canonicalize().unwrap());
+        assert_eq!(
+            descriptor_path(&held).unwrap(),
+            root.canonicalize().unwrap()
+        );
         std::fs::remove_dir(&root).unwrap();
-        assert!(descriptor_path(&held).is_err(), "a removed root no longer matches its identity");
+        assert!(
+            descriptor_path(&held).is_err(),
+            "a removed root no longer matches its identity"
+        );
     }
 }
