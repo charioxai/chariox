@@ -1,8 +1,10 @@
 import assert from "node:assert/strict"
+import { createInterface } from "node:readline/promises"
+import { PassThrough, Writable } from "node:stream"
 import test from "node:test"
 
 import type { AgentInstance, RuntimeSession } from "@chariox/kernel-client/kernel-types"
-import { createInitialShellContext, defaultKernelEndpoint, executeShellScript, executeShellScriptLines, parseShellCliArgs, shellUsage } from "./shell.js"
+import { createInitialShellContext, defaultKernelEndpoint, executeShellScript, executeShellScriptLines, parseShellCliArgs, readSecretWhileReadlineActive, shellUsage } from "./shell.js"
 
 test("parseShellCliArgs parses kernel and context options", () => {
   assert.deepEqual(parseShellCliArgs([
@@ -230,3 +232,77 @@ function makeSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
     ...overrides,
   }
 }
+
+function fakeTty() {
+  const input = Object.assign(new PassThrough(), {
+    isTTY: true,
+    isRaw: false,
+    setRawMode(enabled: boolean) {
+      input.isRaw = enabled
+      return input
+    },
+  })
+  let written = ""
+  const output = Object.assign(new Writable({
+    write(chunk, _encoding, callback) {
+      written += chunk.toString()
+      callback()
+    },
+  }), { isTTY: true, columns: 80 })
+  const error = new Writable({ write: (_chunk, _encoding, callback) => callback() })
+  return { io: { input, output, error }, written: () => written }
+}
+
+async function typeHiddenSecret(input: PassThrough, keys: string[]) {
+  for (const key of keys) {
+    input.write(key)
+    await new Promise((resolve) => setImmediate(resolve))
+  }
+}
+
+test("readSecretWhileReadlineActive never echoes secret keystrokes through the REPL readline", async () => {
+  const { io, written } = fakeTty()
+  const readline = createInterface({ input: io.input, output: io.output, terminal: true })
+  try {
+    const command = readline.question("@ ")
+    io.input.write("provider setup-token claude work\r")
+    assert.equal(await command, "provider setup-token claude work")
+
+    const before = written().length
+    const rawBefore = io.input.isRaw
+    const secret = readSecretWhileReadlineActive(readline, "token: ", io)
+    await typeHiddenSecret(io.input, ["sk-", "SECRETVALUE", "x\u007f", "\r"])
+    assert.equal(await secret, "sk-SECRETVALUE")
+    assert.equal(written().slice(before), "token: \n")
+    assert.equal(io.input.isRaw, rawBefore)
+    assert.equal(readline.line, "")
+    assert.ok(!(readline as unknown as { history: string[] }).history.some((entry) => entry.includes("SECRET")))
+
+    const next = readline.question("@ ")
+    io.input.write("exit\r")
+    assert.equal(await next, "exit")
+  } finally {
+    readline.close()
+  }
+})
+
+test("readSecretWhileReadlineActive restores readline after Ctrl-C without echoing", async () => {
+  const { io, written } = fakeTty()
+  const readline = createInterface({ input: io.input, output: io.output, terminal: true })
+  try {
+    const before = written().length
+    const secret = readSecretWhileReadlineActive(readline, "token: ", io)
+    const rejected = assert.rejects(secret, /credential input cancelled/)
+    await typeHiddenSecret(io.input, ["partialSECRET", "\u0003"])
+    await rejected
+    assert.equal(written().slice(before), "token: \n")
+    assert.equal(readline.line, "")
+
+    const next = readline.question("@ ")
+    io.input.write("exit\r")
+    assert.equal(await next, "exit")
+    assert.ok(!written().includes("SECRET"))
+  } finally {
+    readline.close()
+  }
+})

@@ -169,14 +169,7 @@ export async function runShellRepl(options: ShellCliOptions, io: ShellIo = {
           client,
           clientId,
           openRoomViewer: createShellViewer(client),
-          readSecret: async (prompt) => {
-            readline.pause()
-            try {
-              return await readHiddenLine(prompt, io)
-            } finally {
-              readline.resume()
-            }
-          },
+          readSecret: (prompt) => readSecretWhileReadlineActive(readline, prompt, io),
         },
         (text) => io.output.write(text),
       )
@@ -194,6 +187,29 @@ export async function runShellRepl(options: ShellCliOptions, io: ShellIo = {
   } finally {
     readline.close()
     await client.close()
+  }
+}
+
+// A terminal readline interface keeps a keypress listener on the input even while
+// paused, so it would echo (and buffer) every key of the secret. Detach its keypress
+// listeners for the duration of the hidden read and restore them afterwards.
+export async function readSecretWhileReadlineActive(
+  readline: { pause(): unknown; resume(): unknown },
+  prompt: string,
+  io: ShellIo,
+): Promise<string> {
+  const keypressListeners = io.input.listeners("keypress") as Array<(...args: unknown[]) => void>
+  readline.pause()
+  for (const listener of keypressListeners) {
+    io.input.off("keypress", listener)
+  }
+  try {
+    return await readHiddenLine(prompt, io)
+  } finally {
+    for (const listener of keypressListeners) {
+      io.input.on("keypress", listener)
+    }
+    readline.resume()
   }
 }
 
