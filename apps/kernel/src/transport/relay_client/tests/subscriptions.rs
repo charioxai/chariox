@@ -991,10 +991,7 @@ async fn relay_replay_after_runtime_recreation_filters_historical_resume_and_res
     )
     .await
     .expect("current post-restart heartbeat should follow the snapshot");
-    assert_eq!(
-        current_heartbeat.1["event"],
-        serde_json::json!("heartbeat")
-    );
+    assert_eq!(current_heartbeat.1["event"], serde_json::json!("heartbeat"));
     subscription_task.abort();
     let _ = subscription_task.await;
 }

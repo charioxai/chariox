@@ -20,10 +20,7 @@ fn run_event_activity_gate_hook(
 }
 
 #[cfg(test)]
-fn set_event_activity_gate_hooks(
-    before: impl FnOnce() + 'static,
-    after: impl FnOnce() + 'static,
-) {
+fn set_event_activity_gate_hooks(before: impl FnOnce() + 'static, after: impl FnOnce() + 'static) {
     BEFORE_EVENT_ACTIVITY_GATE.with(|slot| *slot.borrow_mut() = Some(Box::new(before)));
     AFTER_EVENT_ACTIVITY_GATE.with(|slot| *slot.borrow_mut() = Some(Box::new(after)));
 }
@@ -472,8 +469,8 @@ mod tests {
                 Vec::new(),
             )
             .expect("event binding should create");
-        let runtime = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1)
-            .runtime_state();
+        let runtime =
+            CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1).runtime_state();
         (runtime, session.id().to_string(), binding)
     }
 
@@ -487,8 +484,7 @@ mod tests {
             event_type: binding.event_type.clone(),
             event_type_version: binding.event_type_version,
             occurrence_id: format!("occurrence-{delivery_id}"),
-            occurred_at: chrono::Utc::now()
-                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            occurred_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             prompt: "Process the gated event.".to_string(),
             artifacts: Vec::new(),
             metadata: serde_json::json!({"test": "activity-admission"}),
@@ -497,10 +493,7 @@ mod tests {
         }
     }
 
-    fn assert_no_event_work(
-        runtime: &KernelRuntimeState,
-        session_id: &str,
-    ) {
+    fn assert_no_event_work(runtime: &KernelRuntimeState, session_id: &str) {
         let session = runtime
             .owned
             .session_store
@@ -565,8 +558,16 @@ mod tests {
             .recv_timeout(Duration::from_secs(2))
             .expect("test should own the activity gate");
         set_event_activity_gate_hooks(
-            move || before_tx.send(()).expect("before-gate hook should be observed"),
-            move || after_tx.send(()).expect("after-gate hook should be observed"),
+            move || {
+                before_tx
+                    .send(())
+                    .expect("before-gate hook should be observed")
+            },
+            move || {
+                after_tx
+                    .send(())
+                    .expect("after-gate hook should be observed")
+            },
         );
 
         let accepted = runtime
@@ -654,22 +655,27 @@ mod tests {
         runtime.owned.session_store.restore_session(session);
         let (result_tx, result_rx) = mpsc::sync_channel(1);
         let worker = std::thread::spawn(move || {
-            let outcome = runtime.accept_workflow_event_delivery(delivery(
-                &binding,
-                "delivery-rejected-queue",
-            ));
+            let outcome = runtime
+                .accept_workflow_event_delivery(delivery(&binding, "delivery-rejected-queue"));
             assert_no_event_work(&runtime, &session_id);
-            result_tx.send(outcome).expect("test should receive rejection");
+            result_tx
+                .send(outcome)
+                .expect("test should receive rejection");
         });
         let outcome = result_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("rejected enqueue must return without re-locking its session guard");
-        worker.join().expect("rejected delivery worker should finish");
-        assert!(matches!(
-            outcome,
-            Err(DaemonError::InvalidWorkflowGraphReference { reference, .. })
-                if reference == "removed-event-queue"
-        ), "removed queue must reject event admission");
+        worker
+            .join()
+            .expect("rejected delivery worker should finish");
+        assert!(
+            matches!(
+                outcome,
+                Err(DaemonError::InvalidWorkflowGraphReference { reference, .. })
+                    if reference == "removed-event-queue"
+            ),
+            "removed queue must reject event admission"
+        );
     }
 
     #[tokio::test]

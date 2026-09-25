@@ -13,7 +13,7 @@ const finalPhases = ["approved", "denied", "cancelled", "failed"]
 /** Retains exact retry identity; every trust decision remains in the kernel. */
 export class AppPublisherEnrollment {
   private attempt?: Attempt
-  private enrolling?: Promise<AppPublisherEnrollmentSummary>
+  private enrolling: Promise<AppPublisherEnrollmentSummary> | undefined
   private requests = new Set<Promise<unknown>>()
   private disposed = false
   constructor(private send: Send, private notice: (message: string) => void,

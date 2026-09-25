@@ -255,6 +255,13 @@ impl KernelRuntimeState {
             .await;
     }
 
+    /// The transport pump's abandoned-decision sweep, for tests that drive
+    /// another pump without the transport loop.
+    #[cfg(test)]
+    pub(crate) fn sweep_kernel_decisions_for_test(&self) {
+        self.owned.sweep_kernel_operation_interactions(false);
+    }
+
     pub(crate) fn waiting_room_change_sequence(&self) -> u64 {
         self.owned.runtime_projection_changes.sequence()
     }
