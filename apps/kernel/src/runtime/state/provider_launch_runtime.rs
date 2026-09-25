@@ -24,7 +24,9 @@ impl KernelRuntimeState {
             let launch_request =
                 crate::app::apply_metaagent_launch_policy(launch_request, agent.as_ref());
             if let Some(run) = owned.reusable_native_tui_run_for_launch(&launch_request)? {
-                owned.provider_run_projection.mark_leased_provider_run(run.id());
+                owned
+                    .provider_run_projection
+                    .mark_leased_provider_run(run.id());
                 return Ok(run);
             }
             if crate::provider::canonical_provider_family(&launch_request.provider)
@@ -331,11 +333,8 @@ impl KernelRuntimeState {
         let mut agent = self.owned.agent_store.get_agent(agent_id)?;
         agent.set_remote_execution(Some(remote_execution.clone()));
         if !required_mcps.is_empty() {
-            self.ensure_remote_mcp_requirements_available_for_agent(
-                &agent,
-                required_mcps.clone(),
-            )
-            .await?;
+            self.ensure_remote_mcp_requirements_available_for_agent(&agent, required_mcps.clone())
+                .await?;
         }
         if self.remote_agent_is_home_managed_slice(&agent) {
             self.ensure_remote_skill_packages_for_agent(&agent).await?;

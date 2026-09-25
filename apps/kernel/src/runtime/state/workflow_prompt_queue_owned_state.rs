@@ -1089,7 +1089,9 @@ impl KernelRuntimeOwnedState {
             let next_workflow = match self.workflow_recover_pending_entry(session_id) {
                 Ok(Some(pending)) => Ok(Some(pending)),
                 Ok(None) => {
-                    if let Err(error) = self.workflow_ensure_dispatchable_runtime_instance(session_id) {
+                    if let Err(error) =
+                        self.workflow_ensure_dispatchable_runtime_instance(session_id)
+                    {
                         self.record_notice(
                             session_id,
                             None,

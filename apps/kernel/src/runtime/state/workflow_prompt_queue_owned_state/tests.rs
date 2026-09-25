@@ -352,6 +352,8 @@ fn assert_workflow_queue_promotion_append_failure_is_retryable(requested: bool) 
         .expect("baseline should project");
     let activity_sequence = runtime.managed_activity_change_sequence();
     let projection_sequence = runtime.owned.session_projection.change_sequence();
+    // Queue promotion persists through the durable queue-start commit, whose
+    // workflow runtime event carries this reason.
     let connection = rusqlite::Connection::open(runtime.owned.durable_state_store.path())
         .expect("durable database should open for promotion failure injection");
     connection
@@ -361,7 +363,7 @@ fn assert_workflow_queue_promotion_append_failure_is_retryable(requested: bool) 
              WHEN NEW.kind = 'workflow.runtime.updated'
                AND instr(
                    NEW.payload_json,
-                   '"reason":"workflow_queued_prompt_promoted"'
+                   '"reason":"workflow_queue_run_created"'
                ) > 0
              BEGIN
                SELECT RAISE(FAIL, 'injected workflow queue promotion append failure');
@@ -486,7 +488,7 @@ fn assert_workflow_queue_promotion_append_failure_is_retryable(requested: bool) 
     assert_eq!(
         events
             .iter()
-            .filter(|event| event.payload["reason"] == "workflow_queued_prompt_promoted")
+            .filter(|event| event.payload["reason"] == "workflow_queue_run_created")
             .count(),
         1,
         "retry must durably promote exactly one prompt"
@@ -568,6 +570,8 @@ fn meta_queue_promotion_append_failure_rolls_back_and_retries_once() {
         .expect("baseline should project");
     let activity_sequence = runtime.managed_activity_change_sequence();
     let projection_sequence = runtime.owned.session_projection.change_sequence();
+    // Queue promotion persists through the durable queue-start commit, whose
+    // workflow runtime event carries this reason.
     let connection = rusqlite::Connection::open(runtime.owned.durable_state_store.path())
         .expect("durable database should open for Meta promotion failure injection");
     connection

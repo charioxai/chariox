@@ -26,11 +26,9 @@ pub(super) async fn handle_display_tunnel_open(
     let stream_id = request.stream_id.clone();
     let admission: Result<Option<RelayDisplayTunnelTarget>, RelayError> = {
         let mut guard = state.write().await;
-        if let Some(target) = guard.display_tunnel(
-            &request.tunnel_id,
-            crate::session::unix_epoch_ms(),
-        )
-        .filter(|target| matches!(&target.kind, RelayDisplayTunnelTargetKind::Selkies { .. }))
+        if let Some(target) = guard
+            .display_tunnel(&request.tunnel_id, crate::session::unix_epoch_ms())
+            .filter(|target| matches!(&target.kind, RelayDisplayTunnelTargetKind::Selkies { .. }))
         {
             // A Selkies grant is consumed exactly once. Validate the relay's
             // handshake before claiming it so a malformed or stale first open
@@ -43,10 +41,8 @@ pub(super) async fn handle_display_tunnel_open(
                 Err(error) => Err(error),
             }
         } else {
-            Ok(guard.claim_display_tunnel_for_open(
-                &request.tunnel_id,
-                crate::session::unix_epoch_ms(),
-            ))
+            Ok(guard
+                .claim_display_tunnel_for_open(&request.tunnel_id, crate::session::unix_epoch_ms()))
         }
     };
     let target = match admission {
@@ -796,11 +792,14 @@ mod tests {
                 if stream_id == "relay-stream-invalid"
                     && error.code == "display_stream_path_invalid"
         ));
-        assert!(state
-            .read()
-            .await
-            .display_tunnel(tunnel_id, crate::session::unix_epoch_ms())
-            .is_some(), "invalid handshakes must leave the grant available for retry");
+        assert!(
+            state
+                .read()
+                .await
+                .display_tunnel(tunnel_id, crate::session::unix_epoch_ms())
+                .is_some(),
+            "invalid handshakes must leave the grant available for retry"
+        );
     }
 
     #[test]

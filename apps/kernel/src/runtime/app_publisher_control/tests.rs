@@ -155,6 +155,9 @@ async fn recovery_arms_a_fresh_nonce_without_reusing_a_prior_human_wait() {
     );
     tokio::time::timeout(Duration::from_secs(8), async {
         loop {
+            // As in the transport pump, abandoned decisions are swept before
+            // publisher recovery; the old wait's subject would block the new one.
+            f.state.sweep_kernel_decisions_for_test();
             replacement.pump(&f.state).await;
             let waiting = replacement
                 .0

@@ -24,7 +24,10 @@ impl CommittedAppActivation {
         catalog: Arc<EventCatalog>,
     ) -> Result<Self> {
         catalog.app_catalog().require_current(transaction, owner)?;
-        Ok(Self { owner: owner.into(), catalog })
+        Ok(Self {
+            owner: owner.into(),
+            catalog,
+        })
     }
     pub(crate) fn owner(&self) -> &str {
         &self.owner
