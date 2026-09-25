@@ -1909,7 +1909,7 @@ impl Drop for TestRoot {
     }
 }
 
-fn runtime_state_from_app(app: DaemonApp) -> KernelRuntimeState {
+pub(in crate::runtime) fn runtime_state_from_app(app: DaemonApp) -> KernelRuntimeState {
     let config_projection = app.config_projection_store();
     let session_store = app.session_state_store();
     let agent_store = app.agents().clone();
