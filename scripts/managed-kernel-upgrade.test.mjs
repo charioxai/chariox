@@ -334,6 +334,7 @@ async function makeHarness(context, {
     root, "target", targetProtocol, privateKey, publicKey, targetTransitionPolicy, true, builderKeys,
   )
   const installRoot = join(root, "host")
+  if (path1Release) await mkdir(join(installRoot, "etc"), { recursive: true, mode: 0o755 })
   const releases = join(installRoot, "usr/lib/chariox/releases")
   const currentRelease = join(releases, current.digest.slice("sha256:".length))
   await mkdir(releases, { recursive: true })
