@@ -369,3 +369,37 @@ async fn failed_projection_removes_only_its_own_registration_and_responder() {
         Err(oneshot::error::TryRecvError::Empty)
     ));
 }
+
+#[tokio::test]
+async fn a_persisted_decision_without_a_responder_is_dropped_after_restart() {
+    let fixture = Fixture::new();
+    let _live = fixture.register("live").unwrap();
+    // A decision restored from session state after an unclean stop has no
+    // pending responder: nothing can answer it and it would block a retry.
+    let orphan = fixture.id("orphan");
+    {
+        let mut sessions = fixture.state.owned.session_store.write();
+        let mut session = sessions.get_session(&fixture.session).unwrap().clone();
+        session.add_active_interaction(RuntimeInteraction::for_kernel_operation(
+            &orphan,
+            &orphan,
+            "Install App?",
+            "Review this installation",
+            vec![RuntimeInteractionChoice::new(
+                "allow", "Install", "allow", None,
+            )],
+        ));
+        sessions.restore_session(session);
+    }
+    fixture
+        .state
+        .owned
+        .pending_interactions
+        .orphan_sweep_ms
+        .store(0, std::sync::atomic::Ordering::Release);
+    fixture
+        .state
+        .owned
+        .sweep_kernel_operation_interactions(false);
+    assert_eq!(fixture.active_ids(), vec![fixture.id("live")]);
+}

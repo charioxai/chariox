@@ -94,6 +94,8 @@ impl std::fmt::Debug for PendingInteractionResolution {
 pub(super) struct PendingInteractionStore {
     pub(super) inner: Arc<StdMutex<BTreeMap<String, PendingInteraction>>>,
     pub(super) mutation: Arc<StdMutex<()>>,
+    /// Last orphaned-decision pass (unix ms); throttles the session scan.
+    pub(super) orphan_sweep_ms: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl PendingInteractionStore {
