@@ -4,6 +4,7 @@
 //! submission work to the provider runtime without exposing owned-state internals to transports.
 
 use super::*;
+use super::prompt_queue_owned_state::RemoteQueuedPromptSteerPreparation;
 
 struct RemoteQueuedPromptSteerReservation {
     prompt: crate::session::PromptQueueItem,

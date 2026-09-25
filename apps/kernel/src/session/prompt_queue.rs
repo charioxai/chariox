@@ -201,8 +201,17 @@ fn is_false_bool(value: &bool) -> bool {
 
 impl DurablePromptPrivateState {
     pub(crate) fn from_prompt(session_id: &str, prompt: &PromptQueueItem) -> Option<Self> {
-        let remote_steer_uncertainty = prompt.remote_steer_outcome_uncertainty();
-        let metadata = prompt.private_metadata.as_deref().cloned().unwrap_or_default();
+        let remote_steer_uncertainty = prompt
+            .remote_steer_reservation
+            .uncertainty
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let metadata = prompt
+            .private_metadata
+            .as_deref()
+            .cloned()
+            .unwrap_or_default();
         (prompt.private_metadata.is_some() || remote_steer_uncertainty.is_some()).then(|| Self {
             session_id: session_id.to_string(),
             prompt_id: prompt.id.clone(),
@@ -789,9 +798,7 @@ impl PromptQueueItem {
             && private.remote_steer_uncertainty.is_none()
         {
             self.private_metadata = None;
-            self.restore_remote_steer_outcome_uncertainty(
-                private.remote_steer_uncertainty.clone(),
-            );
+            self.restore_remote_steer_outcome_uncertainty(private.remote_steer_uncertainty.clone());
             return;
         }
         self.private_metadata = Some(Box::new(PromptPrivateMetadata {
@@ -989,8 +996,8 @@ mod tests {
             before,
             "the transient steer reservation must not change serialized prompt state"
         );
-        let restored: PromptQueueItem = serde_json::from_value(before)
-            .expect("serialized prompt should deserialize");
+        let restored: PromptQueueItem =
+            serde_json::from_value(before).expect("serialized prompt should deserialize");
         assert!(!restored.remote_steer_reserved());
         assert!(clone.release_remote_steer(reservation));
         assert!(!prompt.remote_steer_reserved());

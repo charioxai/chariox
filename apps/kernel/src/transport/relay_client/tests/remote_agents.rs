@@ -1355,7 +1355,8 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
             queue_advance_deferred &= next.is_none();
             if lose_queued_prompt_reply {
                 let snapshot = app
-                    .session_snapshot(&session_id)
+                    .sessions()
+                    .get_session(&session_id)
                     .expect("home session should snapshot while worker receipt is pending");
                 let queued = snapshot
                     .queued_prompts_for_agent(&remote_agent_id)
@@ -1549,7 +1550,8 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                 "ordinary advancement must not submit a steer the worker may already have accepted"
             );
             let snapshot = home
-                .session_snapshot(&session_id)
+                .sessions()
+                .get_session(&session_id)
                 .expect("home session should remain available");
             let queued = snapshot
                 .queued_prompts_for_agent(&remote_agent_id)
