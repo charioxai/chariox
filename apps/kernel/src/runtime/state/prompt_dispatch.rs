@@ -602,34 +602,38 @@ impl KernelRuntimeState {
         if response.as_ref().is_err_and(
             super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_refresh_binding,
         ) {
-            // The stale-binding response is an explicit peer rejection. If the
-            // refresh or retry preparation fails after concurrent completion,
-            // release this queue head and let ordinary admission continue.
-            advance_after_error = true;
+            // A stale-binding response may justify refreshing the binding, but
+            // queue advancement still requires a validated rejection or a
+            // pre-send failure. In particular, message-based stale detection
+            // must not turn an ambiguous transport failure into a rejection.
             let refresh = self
                 .refresh_remote_agent_binding_for_steer(&target_agent_id, &remote_execution)
                 .await;
             let refreshed = match refresh {
                 Ok(agent) => agent,
                 Err(error) => {
-                    self.release_failed_remote_steer_and_advance_if_idle(
-                        &session_id,
-                        &target_agent_id,
-                        reservation_guard,
-                    )
-                    .await;
+                    if advance_after_error {
+                        self.release_failed_remote_steer_and_advance_if_idle(
+                            &session_id,
+                            &target_agent_id,
+                            reservation_guard,
+                        )
+                        .await;
+                    }
                     return Err(error);
                 }
             };
             remote_execution = match refreshed.remote_execution().cloned() {
                 Some(remote_execution) => remote_execution,
                 None => {
-                    self.release_failed_remote_steer_and_advance_if_idle(
-                        &session_id,
-                        &target_agent_id,
-                        reservation_guard,
-                    )
-                    .await;
+                    if advance_after_error {
+                        self.release_failed_remote_steer_and_advance_if_idle(
+                            &session_id,
+                            &target_agent_id,
+                            reservation_guard,
+                        )
+                        .await;
+                    }
                     return Err(DaemonError::LocalTransport {
                         operation: "refresh remote queued prompt steer binding",
                         message: format!(
@@ -666,12 +670,14 @@ impl KernelRuntimeState {
             relay_config = match prepared_retry {
                 Ok(relay_config) => relay_config,
                 Err(error) => {
-                    self.release_failed_remote_steer_and_advance_if_idle(
-                        &session_id,
-                        &target_agent_id,
-                        reservation_guard,
-                    )
-                    .await;
+                    if advance_after_error {
+                        self.release_failed_remote_steer_and_advance_if_idle(
+                            &session_id,
+                            &target_agent_id,
+                            reservation_guard,
+                        )
+                        .await;
+                    }
                     return Err(error);
                 }
             };
@@ -916,6 +922,71 @@ mod tests {
     use super::*;
 
     #[test]
+    fn queued_steer_advances_only_after_proven_non_delivery() {
+        for code in [
+            "no_active_provider_run",
+            "leased_agent_not_found",
+            "execution_lease_not_found",
+            crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE,
+        ] {
+            assert!(remote_queued_steer_failure_is_definitely_unaccepted(
+                &DaemonError::RelayTransport {
+                    operation: "read temporary relay peer response",
+                    code: code.to_string(),
+                    message: "explicit worker rejection".to_string(),
+                    retryable: false,
+                }
+            ));
+        }
+
+        for error in [
+            DaemonError::RelayTransport {
+                operation: "read temporary relay peer response",
+                code: "no_active_provider_run".to_string(),
+                message: "retryable response is not terminal".to_string(),
+                retryable: true,
+            },
+            DaemonError::RelayTransport {
+                operation: "read temporary relay peer response",
+                code: "unknown_peer_error".to_string(),
+                message: "unrecognized response".to_string(),
+                retryable: false,
+            },
+            DaemonError::LocalTransport {
+                operation: "read temporary relay peer response",
+                message: "timeout or disconnect".to_string(),
+            },
+            DaemonError::LocalTransport {
+                operation: "decode temporary relay peer response",
+                message: "malformed response".to_string(),
+            },
+            DaemonError::LocalTransport {
+                operation: "write temporary relay peer request",
+                message: "write may have partially delivered".to_string(),
+            },
+        ] {
+            assert!(
+                !remote_queued_steer_failure_is_definitely_unaccepted(&error),
+                "ambiguous or unknown result must not promote the queued head: {error}"
+            );
+        }
+
+        for operation in [
+            "connect temporary relay peer socket",
+            "serialize temporary relay register",
+            "write temporary relay register",
+            "serialize temporary relay peer request",
+        ] {
+            assert!(remote_queued_steer_failure_is_definitely_unaccepted(
+                &DaemonError::LocalTransport {
+                    operation,
+                    message: "failed before peer request send".to_string(),
+                }
+            ));
+        }
+    }
+
+    #[test]
     fn queued_steer_reservation_releases_when_dispatch_is_dropped() {
         let prompt = crate::session::PromptQueueItem::new(
             "prompt-queued",
@@ -949,8 +1020,16 @@ fn remote_queued_steer_failure_is_definitely_unaccepted(error: &DaemonError) -> 
     match error {
         DaemonError::RelayTransport {
             operation: "read temporary relay peer response",
+            code,
+            retryable: false,
             ..
-        } => true,
+        } => matches!(
+            code.as_str(),
+            "no_active_provider_run"
+                | "leased_agent_not_found"
+                | "execution_lease_not_found"
+                | crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE
+        ),
         DaemonError::LocalTransport { operation, .. } => matches!(
             *operation,
             "connect temporary relay peer socket"
