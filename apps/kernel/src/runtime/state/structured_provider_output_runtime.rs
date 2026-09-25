@@ -584,6 +584,7 @@ impl KernelRuntimeState {
             .provider_store
             .apply_structured_output_metadata(provider_run_id, &poll_result)?;
         let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        let codex_provider = provider_run.adapter_key() == "codex";
         let agent_id = provider_run.agent_instance_id().map(str::to_string);
         if let Some(agent_id) = provider_run.agent_instance_id() {
             owned.external_provider_sessions.mark_provider_run_attached(
@@ -721,7 +722,9 @@ impl KernelRuntimeState {
                 &completion.message_id,
                 completion.completed_at_ms,
             );
-            owned.mark_prompt_completion_recorded(provider_run_id);
+            if !codex_provider {
+                owned.mark_prompt_completion_recorded(provider_run_id);
+            }
         }
         if let Some(message) = terminal_failure {
             self.fail_owned_provider_prompt_with_termination(

@@ -1,5 +1,37 @@
 use super::*;
 
+struct InertPtyCleanup {
+    app: Arc<Mutex<DaemonApp>>,
+    provider_run_id: String,
+}
+
+impl Drop for InertPtyCleanup {
+    fn drop(&mut self) {
+        if let Ok(mut app) = self.app.try_lock() {
+            let _ = app.pty_mut().remove_process(&self.provider_run_id);
+        }
+    }
+}
+
+fn spawn_inert_pty_for_run(app: &mut DaemonApp, provider_run_id: &str) {
+    app.pty_mut()
+        .spawn(crate::pty::PtySpawnRequest {
+            process_key: provider_run_id.to_string(),
+            provider_run_id: provider_run_id.to_string(),
+            program: "/bin/sh".to_string(),
+            args: ["-c", "exec sleep 300"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            env: Default::default(),
+            env_remove: Vec::new(),
+            working_directory: None,
+            cols: 80,
+            rows: 24,
+        })
+        .expect("inert provider fixture PTY should stay live");
+}
+
 #[tokio::test]
 async fn managed_activity_reaches_zero_only_after_prompt_settlement_is_durable() {
     let worktree = crate::test_support::TestWorktree::new("output-settlement-managed");
@@ -180,6 +212,7 @@ async fn assert_workflow_completion_failure_is_retryable(
             },
         );
         run.mark_running();
+        spawn_inert_pty_for_run(&mut app, run.id());
         app.providers_mut().insert_run_for_test(run.clone());
         app.sessions
             .set_active_provider_run(session.id(), Some(run.id().to_string()))
@@ -267,6 +300,10 @@ async fn assert_workflow_completion_failure_is_retryable(
     crate::transport::flow_control::note_prompt_started(&mut app, run.id());
 
     let app = Arc::new(Mutex::new(app));
+    let _pty_cleanup = codex.then(|| InertPtyCleanup {
+        app: Arc::clone(&app),
+        provider_run_id: run.id().to_string(),
+    });
     let runtime = owned_runtime_state(&app).await;
     if verify_original_finish {
         runtime
