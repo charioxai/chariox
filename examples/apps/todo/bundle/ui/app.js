@@ -5,6 +5,8 @@ const list = $("todos")
 const status = $("status")
 let todos = []
 let shown = ""
+let listFailed = false
+list.tabIndex = -1
 
 function say(message, error = false) {
   status.textContent = message
@@ -22,15 +24,22 @@ async function call(tool, input = {}) {
 
 function render() {
   const openOnly = $("open-only").checked
-  const shown = openOnly ? todos.filter((todo) => !todo.done) : todos
-  // Keep keyboard/screen-reader focus on the same row and control.
+  const visible = openOnly ? todos.filter((todo) => !todo.done) : todos
+  // Keep keyboard/screen-reader focus on the same row and control; if that
+  // row left the list, on the row now in its place (or the list itself).
   const active = document.activeElement
   const row = active?.closest?.("li")?.dataset.id
+  const index = [...list.children].findIndex((li) => li.dataset.id === row)
   const control = active?.tagName === "BUTTON" ? "button" : active?.type === "checkbox" ? "input" : null
-  list.replaceChildren(...shown.map(item))
-  if (row && control) list.querySelector(`li[data-id="${CSS.escape(row)}"] ${control}`)?.focus()
+  list.replaceChildren(...visible.map(item))
+  if (row && control) {
+    const target = list.querySelector(`li[data-id="${CSS.escape(row)}"] ${control}`)
+      ?? list.children[Math.min(index, list.children.length - 1)]?.querySelector(control)
+      ?? list
+    target.focus()
+  }
   if (!status.classList.contains("error")) {
-    say(shown.length ? `${todos.filter((t) => !t.done).length} open` : "Nothing to do.")
+    say(visible.length ? `${todos.filter((t) => !t.done).length} open` : "Nothing to do.")
   }
 }
 
@@ -68,7 +77,21 @@ function item(todo) {
 // Re-render only when the list changed, so polling never moves keyboard or
 // screen-reader focus off the row a person is on.
 async function refresh() {
-  const result = await call("list_todos")
+  let result
+  try {
+    result = await window.chariox.call("list_todos", {})
+  } catch (error) {
+    listFailed = true
+    say(error.message || "The App could not load Todos.", true)
+    return
+  }
+  // A load error clears once loading works again; a failed change's error
+  // stays until the person's next successful change.
+  if (listFailed) {
+    listFailed = false
+    say("")
+    shown = ""
+  }
   const next = JSON.stringify(result.todos)
   if (next === shown) return
   shown = next
@@ -76,11 +99,18 @@ async function refresh() {
   render()
 }
 
-// An error stays visible until the person's next successful change.
+// Always re-render afterwards, so a refused change (e.g. a checkbox the
+// browser already flipped) shows the stored state again.
 async function mutate(tool, input) {
-  await call(tool, input)
-  say("")
+  let ok = false
+  try {
+    await call(tool, input)
+    ok = true
+    say("")
+  } catch {}
+  shown = ""
   await refresh()
+  return ok
 }
 
 $("new-todo").addEventListener("submit", async (event) => {
@@ -90,7 +120,7 @@ $("new-todo").addEventListener("submit", async (event) => {
   const due = $("due").value
   const input = { title }
   if (due) input.due_at_ms = new Date(due).getTime()
-  await mutate("create_todo", input)
+  if (!(await mutate("create_todo", input))) return
   $("new-todo").reset()
   $("title").focus()
 })
@@ -98,5 +128,5 @@ $("open-only").addEventListener("change", () => render())
 
 // Agents and other views change Todos too; a short poll keeps this view current
 // without any network access.
-refresh().catch(() => {})
-setInterval(() => { if (!document.hidden) refresh().catch(() => {}) }, 2000)
+refresh()
+setInterval(() => { if (!document.hidden) refresh() }, 2000)
