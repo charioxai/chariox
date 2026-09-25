@@ -570,8 +570,6 @@ fn meta_queue_promotion_append_failure_rolls_back_and_retries_once() {
         .expect("baseline should project");
     let activity_sequence = runtime.managed_activity_change_sequence();
     let projection_sequence = runtime.owned.session_projection.change_sequence();
-    // Queue promotion persists through the durable queue-start commit, whose
-    // workflow runtime event carries this reason.
     let connection = rusqlite::Connection::open(runtime.owned.durable_state_store.path())
         .expect("durable database should open for Meta promotion failure injection");
     connection
