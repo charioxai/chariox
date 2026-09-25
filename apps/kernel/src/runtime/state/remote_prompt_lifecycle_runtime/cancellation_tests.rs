@@ -85,11 +85,10 @@ async fn next_peer_request(
     receiver: &mut mpsc::Receiver<RelayEnvelope>,
     worker_private_key: &str,
 ) -> (String, String, RelayPeerRequest) {
-    let envelope =
-        tokio::time::timeout(std::time::Duration::from_secs(2), receiver.recv())
-            .await
-            .expect("fake relay should receive the peer request")
-            .expect("fake relay request channel should remain open");
+    let envelope = tokio::time::timeout(std::time::Duration::from_secs(2), receiver.recv())
+        .await
+        .expect("fake relay should receive the peer request")
+        .expect("fake relay request channel should remain open");
     let RelayEnvelope::DaemonPeerRequest {
         request_id,
         target,
@@ -213,9 +212,7 @@ async fn accepted_cancellation_waits_through_dispatch_and_durable_ack_then_forwa
         workspace_live_sync_mode: None,
         prompt_origin: prompt.prompt_origin(),
         external_provider: prompt.external_provider().map(str::to_string),
-        external_provider_session_id: prompt
-            .external_provider_session_id()
-            .map(str::to_string),
+        external_provider_session_id: prompt.external_provider_session_id().map(str::to_string),
         external_provider_turn_id: prompt.external_provider_turn_id().map(str::to_string),
         workflow_context: None,
     };
@@ -288,12 +285,12 @@ async fn accepted_cancellation_waits_through_dispatch_and_durable_ack_then_forwa
             )
             .await
     });
-    assert!(tokio::time::timeout(
-        std::time::Duration::from_millis(100),
-        peer_requests.recv()
-    )
-    .await
-    .is_err(), "CancelLeasedPrompt must wait for the in-flight submit ACK");
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), peer_requests.recv())
+            .await
+            .is_err(),
+        "CancelLeasedPrompt must wait for the in-flight submit ACK"
+    );
 
     runtime
         .owned
@@ -327,17 +324,19 @@ async fn accepted_cancellation_waits_through_dispatch_and_durable_ack_then_forwa
             .expect("fake worker should ACK"),
         WORKER_RUN_ID
     );
-    assert!(tokio::time::timeout(
-        std::time::Duration::from_millis(100),
-        peer_requests.recv()
-    )
-    .await
-    .is_err(), "worker ACK alone must not outrun the durable home ACK");
-    runtime
-        .owned
-        .settle_remote_dispatch_if_current(&dispatch, Some(WORKER_RUN_ID))
-        .expect("home should persist the submission ACK")
-        .expect("ACK should settle the same active home prompt");
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), peer_requests.recv())
+            .await
+            .is_err(),
+        "worker ACK alone must not outrun the durable home ACK"
+    );
+    assert!(matches!(
+        runtime
+            .owned
+            .settle_remote_dispatch_if_current(&dispatch, Some(WORKER_RUN_ID))
+            .expect("home should persist the submission ACK"),
+        RemotePromptDispatchSettlement::Settled(_)
+    ));
 
     let (cancel_request_id, target_id, request) =
         next_peer_request(&mut peer_requests, &worker_private_key).await;
