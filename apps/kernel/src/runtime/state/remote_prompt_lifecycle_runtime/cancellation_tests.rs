@@ -135,7 +135,7 @@ async fn acknowledge_peer_request(
 }
 
 #[tokio::test]
-async fn dispatching_cancellation_waits_for_submit_ack_then_forwards_once_to_that_worker_run() {
+async fn accepted_cancellation_waits_through_dispatch_and_durable_ack_then_forwards_once() {
     let mut config = crate::config::DaemonConfig::for_tests();
     config.relay_url = Some(RELAY_URL.to_string());
     config.relay_token = Some("cancel-ack-test-token".to_string());
@@ -189,6 +189,11 @@ async fn dispatching_cancellation_waits_for_submit_ack_then_forwards_once_to_tha
     let crate::session::PromptSubmissionOutcome::Started { prompt } = submission else {
         panic!("remote prompt should become active immediately");
     };
+    assert_eq!(
+        prompt.durable_delivery_phase(),
+        Some(crate::session::DurablePromptDeliveryPhase::Accepted),
+        "an admitted remote prompt starts in Accepted before dispatch claims it"
+    );
     let prompt_id = prompt.id().to_string();
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();
@@ -217,17 +222,6 @@ async fn dispatching_cancellation_waits_for_submit_ack_then_forwards_once_to_tha
 
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
-    runtime
-        .owned
-        .mark_active_prompt_delivery(
-            &session_id,
-            &agent_id,
-            &prompt_id,
-            crate::session::DurablePromptDeliveryPhase::Dispatching,
-            None,
-            None,
-        )
-        .expect("home prompt should enter Dispatching before worker submission");
 
     let relay_state = Arc::clone(&runtime.owned.relay_state);
     let (outgoing_tx, mut peer_requests, _event_rx) =
@@ -301,6 +295,17 @@ async fn dispatching_cancellation_waits_for_submit_ack_then_forwards_once_to_tha
     .await
     .is_err(), "CancelLeasedPrompt must wait for the in-flight submit ACK");
 
+    runtime
+        .owned
+        .mark_active_prompt_delivery(
+            &session_id,
+            &agent_id,
+            &prompt_id,
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+            None,
+            None,
+        )
+        .expect("home prompt should enter Dispatching before worker submission completes");
     let worker_prompt = prompt.clone();
     acknowledge_peer_request(
         &relay_state,
@@ -322,6 +327,12 @@ async fn dispatching_cancellation_waits_for_submit_ack_then_forwards_once_to_tha
             .expect("fake worker should ACK"),
         WORKER_RUN_ID
     );
+    assert!(tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        peer_requests.recv()
+    )
+    .await
+    .is_err(), "worker ACK alone must not outrun the durable home ACK");
     runtime
         .owned
         .settle_remote_dispatch_if_current(&dispatch, Some(WORKER_RUN_ID))

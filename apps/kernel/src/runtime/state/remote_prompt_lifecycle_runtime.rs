@@ -21,18 +21,21 @@ impl KernelRuntimeState {
         {
             return Ok(None);
         }
-        let dispatching_prompt_id = owned
+        let pending_delivery_prompt_id = owned
             .prompt_state_owner
             .active_prompt_for_agent(
                 &owned.session_store.get_session(session_id)?,
                 target_agent_id,
             )
             .filter(|prompt| {
-                prompt.durable_delivery_phase()
-                    == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+                matches!(
+                    prompt.durable_delivery_phase(),
+                    Some(crate::session::DurablePromptDeliveryPhase::Accepted)
+                        | Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+                )
             })
             .map(|prompt| prompt.id().to_string());
-        if let Some(prompt_id) = dispatching_prompt_id.as_deref() {
+        if let Some(prompt_id) = pending_delivery_prompt_id.as_deref() {
             self.wait_for_remote_prompt_dispatch_ack(
                 session_id,
                 target_agent_id,
@@ -58,11 +61,11 @@ impl KernelRuntimeState {
             .prompt_state_owner
             .active_prompt_for_agent(&session, target_agent_id)
             .is_some_and(|prompt| prompt.status() == crate::session::PromptStatus::Cancelling);
-        if dispatching_prompt_id.is_some() {
+        if pending_delivery_prompt_id.is_some() {
             let prompt = owned
                 .prompt_state_owner
                 .active_prompt_for_agent(&session, target_agent_id)
-                .filter(|prompt| Some(prompt.id()) == dispatching_prompt_id.as_deref())
+                .filter(|prompt| Some(prompt.id()) == pending_delivery_prompt_id.as_deref())
                 .ok_or_else(|| DaemonError::NoActivePrompt {
                     session_id: session_id.to_string(),
                 })?;
