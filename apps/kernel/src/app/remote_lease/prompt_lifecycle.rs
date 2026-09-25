@@ -27,7 +27,7 @@ pub(crate) struct PreparedLeasedPromptSubmission {
 
 impl<'a> RemoteLeaseRuntime<'a> {
     pub(crate) fn leased_prompt_receipt(
-        &self,
+        &mut self,
         leased_agent_id: &str,
         home_prompt_id: &str,
     ) -> Result<Option<LeasedPromptReceipt>, DaemonError> {
