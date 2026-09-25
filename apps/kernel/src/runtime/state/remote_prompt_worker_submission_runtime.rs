@@ -1003,6 +1003,13 @@ mod tests {
                 .provider_account_profile_registry()
                 .create_managed(DEFAULT_LOCAL_USER_ID, "claude", "Workflow submit fixture")
                 .unwrap();
+            crate::test_support::authenticate_provider_account(
+                &app.provider_account_profile_registry(),
+                DEFAULT_LOCAL_USER_ID,
+                "claude",
+                &profile.profile_id,
+            )
+            .expect("workflow fixture account should be authenticated");
             let agent = KernelSessionService::new(&mut app)
                 .spawn_agent(
                     crate::agent::CreateAgentRequest::new(session.id(), "claude")
