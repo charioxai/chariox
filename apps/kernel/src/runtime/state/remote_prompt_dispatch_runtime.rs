@@ -11,6 +11,7 @@ use super::remote_prompt_worker_submission_runtime::{
     submit_remote_prompt_to_worker_with_binding_refresh,
 };
 use super::*;
+use crate::transport::relay_peer::RelayPeerEvent;
 
 const REMOTE_PROMPT_PROJECTION_RESPONSE_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(5);
