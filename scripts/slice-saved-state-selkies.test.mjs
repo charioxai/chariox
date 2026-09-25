@@ -170,3 +170,25 @@ test("new saved-state volumes are labeled and cleaned up after restore failure",
   assert.match(output, /DOCKER_CALL volume create --label io\.chariox\.saved-home\.archive-sha256=/)
   assert.match(output, /DOCKER_CALL volume rm saved-home/)
 })
+
+test("slice screen diagnostics redact JSON-quoted secret keys", async () => {
+  const source = await readFile(provisionerPath, "utf8")
+  const diagnostics = section(source, "slice_screen_diagnostics() {", "run_required_phase() {")
+  const probe = runProbe([
+    "log() { printf '%s\\n' \"$*\" >&2; }",
+    "run_with_timeout() { printf '%s\\n' \"$PROBE_DIAGNOSTICS\"; }",
+    "SLICE_NAME=diagnostic-probe",
+    diagnostics,
+    "slice_screen_diagnostics",
+  ], {
+    PROBE_DIAGNOSTICS: [
+      '{"relay_token": "CANARY_JSON_TOKEN"}',
+      '{"password":"CANARY_JSON_PASSWORD"}',
+      "ordinary diagnostic",
+    ].join("\n"),
+  })
+  assert.equal(probe.status, 0, probe.stderr)
+  assert.doesNotMatch(probe.stderr, /CANARY_JSON_/)
+  assert.match(probe.stderr, /\[REDACTED\]/)
+  assert.match(probe.stderr, /ordinary diagnostic/)
+})
