@@ -33,10 +33,26 @@ impl KernelRuntimeState {
         agent_id: &str,
         reservation: RemoteQueuedPromptSteerReservation,
     ) {
-        drop(reservation);
+        let prompt_id = reservation.prompt.id().to_string();
+        let reservation_id = reservation.id();
+        let reserved_prompt = reservation.prompt.clone();
         let owned = &self.owned;
         let admitted = self
             .with_app_side_effect(|app| {
+                owned.clear_remote_queued_prompt_steer_uncertainty(
+                    session_id,
+                    agent_id,
+                    &reserved_prompt,
+                    reservation_id,
+                )?;
+                if !reserved_prompt.release_remote_steer(reservation_id) {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "release rejected remote queued prompt steer",
+                        message: format!(
+                            "queued prompt `{prompt_id}` no longer matches its steer reservation"
+                        ),
+                    });
+                }
                 let session = owned.session_store.get_session(session_id)?;
                 if owned
                     .prompt_state_owner
@@ -49,6 +65,7 @@ impl KernelRuntimeState {
                     .admit_next_queued_remote_prompt(session_id, agent_id, None)
             })
             .await;
+        drop(reservation);
         match admitted {
             Ok(Some((_, intent))) => self.spawn_remote_prompt_dispatch(intent.dispatch),
             Ok(None) => {}
@@ -61,6 +78,66 @@ impl KernelRuntimeState {
                     "error": error.to_string(),
                 }),
             ),
+        }
+    }
+
+    async fn uncertain_remote_steer_error(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prepared: &RemoteQueuedPromptSteerPreparation,
+        remote_execution: &crate::agent::RemoteAgentBinding,
+        reservation: &RemoteQueuedPromptSteerReservation,
+        cause: &DaemonError,
+    ) -> DaemonError {
+        let target_home_prompt_id = prepared.target_active_prompt_id.clone();
+        let worker_provider_run_id = remote_execution.active_worker_provider_run_id.clone();
+        let worker_kernel_id = remote_execution.worker_kernel_id.clone();
+        let worker_machine_id = remote_execution.worker_machine_id.clone();
+        let execution_lease_id = remote_execution.execution_lease_id.clone();
+        let leased_agent_id = remote_execution.leased_agent_id.clone();
+        let queued_prompt = reservation.prompt.clone();
+        let reservation_id = reservation.id();
+        let owned = &self.owned;
+        let persisted = self
+            .with_app_side_effect(|_| {
+                owned.mark_remote_queued_prompt_steer_uncertain(
+                    session_id,
+                    agent_id,
+                    &queued_prompt,
+                    reservation_id,
+                    target_home_prompt_id.clone(),
+                    worker_provider_run_id.clone(),
+                    worker_kernel_id.clone(),
+                    worker_machine_id.clone(),
+                    execution_lease_id.clone(),
+                    leased_agent_id.clone(),
+                )
+            })
+            .await;
+        let prefix = match persisted {
+            Ok(()) => format!(
+                "queued prompt `{}` remote steer outcome is uncertain for home prompt `{}` on worker `{}` run `{}`; the exact item is durably blocked until an exact worker receipt is reconciled",
+                prepared.prompt.id(),
+                target_home_prompt_id,
+                worker_kernel_id,
+                worker_provider_run_id
+                    .as_deref()
+                    .unwrap_or("unknown"),
+            ),
+            Err(persist_error) => format!(
+                "queued prompt `{}` remote steer outcome is uncertain for home prompt `{}` on worker `{}` run `{}`; durable hold could not be confirmed, so do not retry or advance this item: {persist_error}",
+                prepared.prompt.id(),
+                target_home_prompt_id,
+                worker_kernel_id,
+                worker_provider_run_id
+                    .as_deref()
+                    .unwrap_or("unknown"),
+            ),
+        };
+        DaemonError::LocalTransport {
+            operation: "steer remote queued prompt",
+            message: format!("{prefix}; relay result: {cause}"),
         }
     }
 
@@ -521,6 +598,7 @@ impl KernelRuntimeState {
                 target_agent_id,
                 attachment_id,
                 prompt_id,
+                None,
             )?
             .ok_or_else(|| DaemonError::LocalTransport {
                 operation: "steer remote queued prompt",
@@ -558,6 +636,7 @@ impl KernelRuntimeState {
                         &target_agent_id,
                         &attachment_id,
                         &prompt_id,
+                        None,
                     )?
                     .ok_or_else(|| DaemonError::LocalTransport {
                         operation: "steer remote queued prompt",
@@ -580,6 +659,21 @@ impl KernelRuntimeState {
                     &prepared,
                 )?;
                 let remote_execution = current.remote_execution;
+                if let Err(error) = owned.mark_remote_queued_prompt_steer_uncertain(
+                    &session_id,
+                    &target_agent_id,
+                    &current.prompt,
+                    reservation,
+                    current.target_active_prompt_id.clone(),
+                    remote_execution.active_worker_provider_run_id.clone(),
+                    remote_execution.worker_kernel_id.clone(),
+                    remote_execution.worker_machine_id.clone(),
+                    remote_execution.execution_lease_id.clone(),
+                    remote_execution.leased_agent_id.clone(),
+                ) {
+                    let _ = current.prompt.release_remote_steer(reservation);
+                    return Err(error);
+                }
                 let relay_config = app.relay_config_for_remote_execution(&remote_execution);
                 Ok((
                     remote_execution,
@@ -589,6 +683,7 @@ impl KernelRuntimeState {
             })
             .await?;
         let reservation_id = reservation_guard.id();
+        let mut last_sent_remote_execution = remote_execution.clone();
 
         let mut response = send_remote_queued_prompt_steer(
             &relay_config,
@@ -619,6 +714,17 @@ impl KernelRuntimeState {
                             reservation_guard,
                         )
                         .await;
+                    } else {
+                        return Err(self
+                            .uncertain_remote_steer_error(
+                                &session_id,
+                                &target_agent_id,
+                                &prepared,
+                                &last_sent_remote_execution,
+                                &reservation_guard,
+                                &error,
+                            )
+                            .await);
                     }
                     return Err(error);
                 }
@@ -633,6 +739,23 @@ impl KernelRuntimeState {
                             reservation_guard,
                         )
                         .await;
+                    } else {
+                        let error = DaemonError::LocalTransport {
+                            operation: "refresh remote queued prompt steer binding",
+                            message: format!(
+                                "agent `{target_agent_id}` did not have remote execution after binding refresh"
+                            ),
+                        };
+                        return Err(self
+                            .uncertain_remote_steer_error(
+                                &session_id,
+                                &target_agent_id,
+                                &prepared,
+                                &last_sent_remote_execution,
+                                &reservation_guard,
+                                &error,
+                            )
+                            .await);
                     }
                     return Err(DaemonError::LocalTransport {
                         operation: "refresh remote queued prompt steer binding",
@@ -650,6 +773,7 @@ impl KernelRuntimeState {
                             &target_agent_id,
                             &attachment_id,
                             &prompt_id,
+                            Some(reservation_id),
                         )?
                         .ok_or_else(|| DaemonError::LocalTransport {
                             operation: "retry remote queued prompt steer",
@@ -664,6 +788,18 @@ impl KernelRuntimeState {
                             message: "queued prompt, active turn, or remote binding changed before retry".to_string(),
                         });
                     }
+                    owned.mark_remote_queued_prompt_steer_uncertain(
+                        &session_id,
+                        &target_agent_id,
+                        &current.prompt,
+                        reservation_id,
+                        current.target_active_prompt_id.clone(),
+                        remote_execution.active_worker_provider_run_id.clone(),
+                        remote_execution.worker_kernel_id.clone(),
+                        remote_execution.worker_machine_id.clone(),
+                        remote_execution.execution_lease_id.clone(),
+                        remote_execution.leased_agent_id.clone(),
+                    )?;
                     Ok(app.relay_config_for_remote_execution(&remote_execution))
                 })
                 .await;
@@ -677,10 +813,22 @@ impl KernelRuntimeState {
                             reservation_guard,
                         )
                         .await;
+                    } else {
+                        return Err(self
+                            .uncertain_remote_steer_error(
+                                &session_id,
+                                &target_agent_id,
+                                &prepared,
+                                &last_sent_remote_execution,
+                                &reservation_guard,
+                                &error,
+                            )
+                            .await);
                     }
                     return Err(error);
                 }
             };
+            last_sent_remote_execution = remote_execution.clone();
             response = send_remote_queued_prompt_steer(
                 &relay_config,
                 &remote_execution,
@@ -704,8 +852,18 @@ impl KernelRuntimeState {
                         reservation_guard,
                     )
                     .await;
+                    return Err(error);
                 }
-                return Err(error);
+                return Err(self
+                    .uncertain_remote_steer_error(
+                        &session_id,
+                        &target_agent_id,
+                        &prepared,
+                        &last_sent_remote_execution,
+                        &reservation_guard,
+                        &error,
+                    )
+                    .await);
             }
         };
         let provider_run_id = match response {
@@ -715,10 +873,20 @@ impl KernelRuntimeState {
                 ..
             } if steer_id == payload.steer_id => provider_run_id,
             other => {
-                return Err(DaemonError::LocalTransport {
+                let error = DaemonError::LocalTransport {
                     operation: "steer remote queued prompt",
                     message: format!("unexpected remote prompt steer response: {other:?}"),
-                });
+                };
+                return Err(self
+                    .uncertain_remote_steer_error(
+                        &session_id,
+                        &target_agent_id,
+                        &prepared,
+                        &last_sent_remote_execution,
+                        &reservation_guard,
+                        &error,
+                    )
+                    .await);
             }
         };
         let committed = self
@@ -728,7 +896,7 @@ impl KernelRuntimeState {
                     &target_agent_id,
                     &attachment_id,
                     &prepared,
-                    &remote_execution,
+                    &last_sent_remote_execution,
                     reservation_id,
                     &provider_run_id,
                 )?;
@@ -755,7 +923,16 @@ impl KernelRuntimeState {
                 Ok(steer)
             }
             Ok((steer, None)) => Ok(steer),
-            Err(error) => Err(error),
+            Err(error) => Err(self
+                .uncertain_remote_steer_error(
+                    &session_id,
+                    &target_agent_id,
+                    &prepared,
+                    &remote_execution,
+                    &reservation_guard,
+                    &error,
+                )
+                .await),
         }
     }
 
