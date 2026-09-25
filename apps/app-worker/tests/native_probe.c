@@ -101,6 +101,12 @@ int chariox_app_runtime_run(const struct chariox_runtime_config* config) {
   size_t page_size_length = sizeof(page_size);
   check("page_size_sysctl_allowed",
       sysctlbyname("hw.pagesize", &page_size, &page_size_length, NULL, 0) == 0 && page_size > 0);
+  // The lookup that failed before the prefix rule was by MIB, not by name.
+  int page_size_mib[2] = {CTL_HW, HW_PAGESIZE};
+  page_size = 0;
+  page_size_length = sizeof(page_size);
+  check("page_size_mib_sysctl_allowed",
+      sysctl(page_size_mib, 2, &page_size, &page_size_length, NULL, 0) == 0 && page_size > 0);
 #endif
   snprintf(path, sizeof(path), "%s/fixture.bin", getenv("CHARIOX_APP_PACKAGE"));
 #if defined(__APPLE__)
