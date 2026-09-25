@@ -166,6 +166,30 @@ struct WorkingDirectoryProtection {
     files: Vec<PathBuf>,
 }
 
+/// A copied repository is caller workspace, never a kernel-owned exception to
+/// the ordinary working-directory protections. The caller supplies a resolved
+/// root so aliases through symlinked ancestors are checked at their target.
+pub(crate) fn preflight_managed_repository_root(canonical_root: &Path) -> Result<(), DaemonError> {
+    let operation = "preflight_managed_repository_root";
+    let protection = ordinary_working_directory_protection(operation)?;
+    if crate::managed_bootstrap::canonical_managed_repository_root_is_protected(canonical_root)
+        || protection
+            .directories
+            .iter()
+            .any(|root| canonical_path_is_within(canonical_root, root))
+        || protection.files.iter().any(|file| file == canonical_root)
+    {
+        return Err(working_directory_error(
+            operation,
+            format!(
+                "managed repository path `{}` is protected Chariox service state",
+                canonical_root.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn ordinary_working_directory_protection(
     operation: &'static str,
 ) -> Result<WorkingDirectoryProtection, DaemonError> {
@@ -176,7 +200,9 @@ fn ordinary_working_directory_protection(
             protection.directories.push(home);
         } else {
             for name in CHARIOX_STATE_DIRECTORY_NAMES {
-                protection.directories.push(home.join(name));
+                protection
+                    .directories
+                    .push(canonical_or_lexical_path(&home.join(name), operation)?);
             }
         }
     } else if let Some(raw_home) = std::env::var_os("HOME") {
@@ -628,11 +654,12 @@ fn default_worktree_directory_base(repo_name: &str, branch_or_ref: &str) -> Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        default_worktree_directory_base, is_git_worktree, preflight_working_directory,
-        prepare_workflow_runtime_worktree_or_reuse_directory, remove_workflow_runtime_worktree,
+        default_worktree_directory_base, is_git_worktree, preflight_managed_repository_root,
+        preflight_working_directory, prepare_workflow_runtime_worktree_or_reuse_directory,
+        remove_workflow_runtime_worktree,
     };
     use crate::agent::GitWorktreePlacement;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn plain_temp_directory(label: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
@@ -786,6 +813,53 @@ mod tests {
         restore_env("CHARIOX_MANAGED_PROVIDER_ISOLATION", previous_isolation);
         restore_env("CHARIOX_MANAGED_PROVIDER_TOPOLOGY", previous_topology);
         std::fs::remove_dir_all(root).expect("preflight fixture should be removable");
+    }
+
+    #[test]
+    fn managed_root_preflight_reapplies_fixed_bootstrap_roots_after_canonicalization() {
+        let _env = crate::env_lock::lock();
+        for protected in [
+            "/",
+            "/var/lib/chariox",
+            "/var/lib/chariox/workspaces",
+            "/usr/lib/chariox/releases",
+            "/home/chariox/.chariox/workspaces",
+        ] {
+            assert!(
+                preflight_managed_repository_root(Path::new(protected)).is_err(),
+                "canonical managed root {protected} must remain protected"
+            );
+        }
+        for allowed in ["/home/chariox", "/tmp", "/var/lib", "/usr/lib"] {
+            preflight_managed_repository_root(Path::new(allowed))
+                .unwrap_or_else(|error| panic!("canonical managed root {allowed}: {error}"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nonstandard_chariox_home_protects_symlinked_state_directory_target() {
+        use std::os::unix::fs::symlink;
+
+        let _env = crate::env_lock::lock();
+        let root = plain_temp_directory("nonstandard-home-state-alias");
+        let service_home = root.join("service-home");
+        let state_target = root.join("protected-state");
+        let selected = state_target.join("repository");
+        std::fs::create_dir_all(&service_home).expect("create service home");
+        std::fs::create_dir_all(&selected).expect("create protected repository");
+        symlink(&state_target, service_home.join("state")).expect("alias state directory");
+        let previous = std::env::var_os("CHARIOX_HOME");
+        std::env::set_var("CHARIOX_HOME", &service_home);
+
+        let error = preflight_working_directory(&selected, "state-alias.cwd", false, &[])
+            .expect_err("symlinked service state must remain protected");
+        assert!(error
+            .to_string()
+            .contains("protected Chariox service state"));
+
+        restore_env("CHARIOX_HOME", previous);
+        std::fs::remove_dir_all(root).expect("remove state alias fixture");
     }
 
     #[test]

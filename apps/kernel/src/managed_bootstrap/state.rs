@@ -477,7 +477,7 @@ pub(super) fn normalize_managed_repository_root(value: &str) -> Result<String, D
     Ok(normalized)
 }
 
-fn overlaps_protected_managed_root(candidate: &str) -> bool {
+pub(super) fn overlaps_protected_managed_root(candidate: &str) -> bool {
     ["/", "/var/lib/chariox", "/usr/lib/chariox"]
         .iter()
         .any(|protected| candidate == *protected || candidate.starts_with(&format!("{protected}/")))
