@@ -362,3 +362,71 @@ async fn app_worker_and_automation_requests_are_owner_scoped_and_need_no_worker(
         failed(AppRequestErrorCode::NotFound)
     );
 }
+
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+#[tokio::test]
+async fn uninstall_is_owner_scoped_generation_checked_and_deactivates() {
+    use crate::local::{AppRequestErrorCode, UninstallAppRequest};
+    let root = TestRoot::new();
+    let app = crate::DaemonApp::bootstrap(root.config()).unwrap();
+    let store = app.durable_state_store();
+    crate::durable_state::app_state::fixture_event_catalog(&store);
+    let generation = store
+        .get_app_installation("alice", "installed")
+        .unwrap()
+        .generation
+        .to_string();
+    let router =
+        CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 8);
+    let cache = CommandResultCache::default();
+    let uninstall = |expected_generation: &str| {
+        LocalDaemonRequest::UninstallApp(UninstallAppRequest {
+            installation_id: "installed".into(),
+            expected_generation: expected_generation.into(),
+        })
+    };
+    let failed = |code| LocalDaemonResponse::AppRequestFailed { code };
+    assert_eq!(
+        dispatch(
+            &router,
+            &cache,
+            Some("bob"),
+            uninstall(&generation),
+            "u-bob"
+        )
+        .await,
+        failed(AppRequestErrorCode::NotFound)
+    );
+    assert_eq!(
+        dispatch(&router, &cache, Some("alice"), uninstall("999"), "u-stale").await,
+        failed(AppRequestErrorCode::Conflict)
+    );
+    // A stale uninstall has no side effect: the App is not user-stopped.
+    let worker = LocalDaemonRequest::GetAppWorker(crate::local::AppWorkerRequest {
+        installation_id: "installed".into(),
+    });
+    let LocalDaemonResponse::AppWorker { worker } =
+        dispatch(&router, &cache, Some("alice"), worker, "u-worker").await
+    else {
+        panic!("worker status")
+    };
+    assert_eq!(worker.phase, crate::local::AppWorkerPhase::NotStarted);
+    assert!(worker.enabled);
+    assert_eq!(
+        dispatch(&router, &cache, Some("alice"), uninstall("x"), "u-bad").await,
+        failed(AppRequestErrorCode::InvalidRequest)
+    );
+    let LocalDaemonResponse::AppInstallation { installation } = dispatch(
+        &router,
+        &cache,
+        Some("alice"),
+        uninstall(&generation),
+        "u-ok",
+    )
+    .await
+    else {
+        panic!("Alice uninstalls her App")
+    };
+    assert!(installation.active_release.is_none());
+    assert_ne!(installation.generation, generation);
+}

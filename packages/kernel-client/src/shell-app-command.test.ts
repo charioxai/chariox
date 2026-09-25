@@ -92,3 +92,26 @@ test("App open targets the attached session unless one is given", async () => {
   assert.equal(detached.ok, false)
   assert.match(detached.message!, /Attach to a session/)
 })
+
+test("App uninstall is fenced by the generation it just read", async () => {
+  const sent: Record<string, unknown>[] = []
+  const installation = { installation_id: "todo", app_id: "com.chariox.todo", generation: "7", active_release: null, pending_generation: null, admission_paused: false }
+  const result = await executeAppCommand(["uninstall", "todo"], { send: async (request) => {
+    sent.push(request)
+    return { AppInstallation: { installation } }
+  } })
+  assert.deepEqual(sent, [
+    { GetAppInstallation: { installation_id: "todo" } },
+    { UninstallApp: { installation_id: "todo", expected_generation: "7" } },
+  ])
+  assert.equal(result.ok, true)
+  assert.match(result.message!, /Uninstalled todo\. Its data is kept\./)
+  const missing = await executeAppCommand(["uninstall", "gone"], { send: async () => ({ AppRequestFailed: { code: "not_found" } }) })
+  assert.equal(missing.message, "App installation not found.")
+  const pinned: Record<string, unknown>[] = []
+  await executeAppCommand(["uninstall", "todo", "--generation", "5"], { send: async (request) => {
+    pinned.push(request)
+    return { AppInstallation: { installation } }
+  } })
+  assert.deepEqual(pinned, [{ UninstallApp: { installation_id: "todo", expected_generation: "5" } }])
+})

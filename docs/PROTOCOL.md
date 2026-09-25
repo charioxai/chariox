@@ -1787,6 +1787,12 @@ Workflow trigger and deployment direction:
   reports the controller's open App targets; the kernel drops bindings for
   closed Tabs registered before that poll and stops polling when none remain. UI files are limited to
   2 MiB per view.
+- protocol 347 adds `UninstallApp {installation_id, expected_generation}`,
+  returning `AppInstallation` with no active release. The kernel records a user
+  stop, withdraws the dormant catalog, then deactivates the installation at the
+  expected generation (`conflict` when stale), fencing all prior generations.
+  App data, user workflows and agents are retained; wakes and events of the
+  inactive installation are refused by the normal start gate.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

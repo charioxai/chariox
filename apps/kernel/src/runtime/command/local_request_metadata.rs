@@ -531,6 +531,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ConfigureAppAutomation(_) => "app.automation.configure",
         LocalDaemonRequest::DisableAppAutomation(_) => "app.automation.disable",
         LocalDaemonRequest::OpenAppView(_) => "app.view.open",
+        LocalDaemonRequest::UninstallApp(_) => "app.uninstall",
         LocalDaemonRequest::CreateSession(_) => "session.create",
         LocalDaemonRequest::ListProjects(_) => "project.list",
         LocalDaemonRequest::RenameProject(_) => "project.rename",
