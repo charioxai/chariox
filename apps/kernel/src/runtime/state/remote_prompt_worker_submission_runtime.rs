@@ -1337,7 +1337,13 @@ mod tests {
             .remote_dispatch
             .take()
             .expect("accepted remote prompt should carry a dispatch");
-        let submitted_prompt = dispatch.prompt.clone();
+        let submitted_prompt = PromptQueueItem::new(
+            format!("worker-{}", dispatch.prompt_id),
+            "worker-attachment",
+            &dispatch.leased_agent_id,
+            dispatch.prompt.clone(),
+            PromptStatus::Running,
+        );
 
         let relay_state = Arc::clone(&runtime.owned.relay_state);
         let (outgoing_tx, mut peer_requests, _event_rx) =

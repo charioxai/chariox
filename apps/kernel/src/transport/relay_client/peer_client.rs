@@ -239,6 +239,7 @@ pub(crate) async fn enqueue_peer_request_to_known_kernel_via_relay_with_timeout(
     }
     let response_deadline = tokio::time::Instant::now() + response_timeout;
     let private_key = config.relay_private_key.clone();
+    let state = Arc::clone(state);
     Ok(RelayPeerResponseWaiter::new(async move {
         let envelope = match tokio::time::timeout_at(response_deadline, response_rx).await {
             Ok(Ok(envelope)) => envelope,
