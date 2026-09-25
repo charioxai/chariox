@@ -933,6 +933,16 @@ test("timed-out or disconnected dialog replies terminate and do not leak default
   assert.equal(JSON.stringify(trace).includes("old private default"), false);
 });
 
+test("any command's new controller connection sweeps leftover App Tabs", async () => {
+  const connection = new FakeConnection();
+  connection.extraTargets = [{ targetId: "app-left", type: "page", url: "https://a1.app.chariox.internal/", title: "App" }];
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  await handleBrowserControllerRequest({ id: 1, method: "browser.reconcile", params: { viewport } }, { browser });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(connection.closedTargetIds.has("app-left"), "the non-App command's connection ran the App sweep");
+  assert.ok(!connection.closedTargetIds.has("target-a"));
+});
+
 class FakeConnection {
   constructor() {
     this.calls = [];
@@ -972,6 +982,7 @@ class FakeConnection {
             ? [{ targetId: "worker-a", type: "worker", url: "https://a.test/worker.js" }]
             : []),
           { targetId: "target-b", type: "page", url: "https://b.test/", title: "B" },
+          ...(this.extraTargets ?? []),
         ].filter(({ targetId }) => !this.closedTargetIds.has(targetId)),
       };
     }
