@@ -1345,6 +1345,13 @@ fn linux_docker_slice_auto_build_refreshes_protocol_or_runtime_incompatible_work
         assert!(dockerfile.contains(&format!("COPY packages/{package} packages/{package}")));
         assert!(script.contains(&format!("packages/{package}")));
     }
+    for file in [
+        "apps/app-worker/bundle.lock.json",
+        "deploy/managed-kernel/chariox-app-storage.service",
+    ] {
+        assert!(dockerfile.contains(&format!("COPY {file} {file}")));
+        assert!(script.contains(file));
+    }
     assert!(dockerfile.contains("COPY Cargo.toml Cargo.lock ./"));
     assert!(dockerfile.contains("cargo build --locked --release"));
     assert!(dockerfile.contains("npm ci --omit=dev"));

@@ -25,7 +25,8 @@ runtime_source_revision() {
         adapters/rust \
         apps/aegs-dummy apps/kernel apps/relay \
         examples/workflow-code \
-        packages/aegs-sdk packages/event-protocol packages/app-package packages/app-runtime packages/app-sdk
+        packages/aegs-sdk packages/event-protocol packages/app-package packages/app-runtime packages/app-sdk \
+        apps/app-worker/bundle.lock.json deploy/managed-kernel/chariox-app-storage.service
     else
       find \
         Cargo.toml Cargo.lock \
@@ -33,6 +34,7 @@ runtime_source_revision() {
         apps/aegs-dummy apps/kernel apps/relay \
         examples/workflow-code \
         packages/aegs-sdk packages/event-protocol packages/app-package packages/app-runtime packages/app-sdk \
+        apps/app-worker/bundle.lock.json deploy/managed-kernel/chariox-app-storage.service \
         -type f \
         ! -path '*/target/*' \
         ! -path '*/node_modules/*' \

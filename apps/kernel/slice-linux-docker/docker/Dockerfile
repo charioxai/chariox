@@ -25,6 +25,8 @@ COPY packages/event-protocol packages/event-protocol
 COPY packages/app-package packages/app-package
 COPY packages/app-runtime packages/app-runtime
 COPY packages/app-sdk packages/app-sdk
+COPY apps/app-worker/bundle.lock.json apps/app-worker/bundle.lock.json
+COPY deploy/managed-kernel/chariox-app-storage.service deploy/managed-kernel/chariox-app-storage.service
 COPY apps/kernel/slice-linux-docker/prebuilt /opt/chariox-prebuilt
 ARG CHARIOX_PREBUILT_RUNTIME=0
 ARG CARGO_PROFILE_RELEASE_OPT_LEVEL=3
