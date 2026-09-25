@@ -166,6 +166,29 @@ struct WorkingDirectoryProtection {
     files: Vec<PathBuf>,
 }
 
+/// A copied repository is caller workspace, never a kernel-owned exception to
+/// the ordinary working-directory protections. The caller supplies a resolved
+/// root so aliases through symlinked ancestors are checked at their target.
+pub(crate) fn preflight_managed_repository_root(canonical_root: &Path) -> Result<(), DaemonError> {
+    let operation = "preflight_managed_repository_root";
+    let protection = ordinary_working_directory_protection(operation)?;
+    if protection
+        .directories
+        .iter()
+        .any(|root| canonical_path_is_within(canonical_root, root))
+        || protection.files.iter().any(|file| file == canonical_root)
+    {
+        return Err(working_directory_error(
+            operation,
+            format!(
+                "managed repository root `{}` is protected Chariox service state",
+                canonical_root.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn ordinary_working_directory_protection(
     operation: &'static str,
 ) -> Result<WorkingDirectoryProtection, DaemonError> {
