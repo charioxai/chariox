@@ -44,11 +44,87 @@ fn leased_prompt_steer_receipt_projection(
 }
 
 impl<'a> RemoteLeaseRuntime<'a> {
+    fn worker_steer_receipt(
+        &self,
+        leased_agent_id: &str,
+        steer_id: &str,
+    ) -> Option<LeasedPromptSteerReceipt> {
+        self.app
+            .worker_steer_receipts
+            .get(leased_agent_id, steer_id)
+            .map(|record| record.receipt.clone())
+            .or_else(|| {
+                self.app
+                    .leased_agents
+                    .get(leased_agent_id)?
+                    .home_steer_receipts
+                    .iter()
+                    .find(|receipt| receipt.steer_id == steer_id)
+                    .cloned()
+            })
+    }
+
+    fn persist_worker_steer_receipt(
+        &mut self,
+        leased_agent_id: &str,
+        receipt: LeasedPromptSteerReceipt,
+    ) -> Result<(), DaemonError> {
+        let caller = self
+            .app
+            .leased_agent_callers
+            .get(leased_agent_id)
+            .cloned();
+        let record = crate::durable_state::worker_steer_receipts::WorkerSteerReceiptRecord {
+            leased_agent_id: leased_agent_id.to_string(),
+            receipt: receipt.clone(),
+            caller,
+        };
+        let record = self.app.worker_steer_receipts.persist(record)?;
+        if let Some(leased_agent) = self.app.leased_agents.get_mut(leased_agent_id) {
+            if let Some(existing) = leased_agent
+                .home_steer_receipts
+                .iter_mut()
+                .find(|existing| existing.steer_id == record.receipt.steer_id)
+            {
+                *existing = record.receipt;
+            } else {
+                leased_agent.home_steer_receipts.push(record.receipt);
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_requested_worker_steer_receipt(
+        receipt: &LeasedPromptSteerReceipt,
+        target_home_prompt_id: &str,
+        worker_provider_run_id: &str,
+        execution_lease_id: &str,
+    ) -> Result<(), DaemonError> {
+        if receipt.target_home_prompt_id != target_home_prompt_id
+            || receipt.worker_provider_run_id != worker_provider_run_id
+            || receipt.execution_lease_id != execution_lease_id
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "reconcile leased prompt steer receipt",
+                message: "existing worker receipt conflicts with the requested steer identity"
+                    .to_string(),
+            });
+        }
+        Ok(())
+    }
+
     pub(crate) fn leased_prompt_receipt_provider_run_id(
         &self,
         leased_agent_id: &str,
         home_prompt_id: &str,
     ) -> Result<Option<String>, DaemonError> {
+        if let Some(receipt) = self
+            .app
+            .worker_steer_receipts
+            .get(leased_agent_id, home_prompt_id)
+        {
+            return Ok(Some(receipt.receipt.worker_provider_run_id.clone()));
+        }
         let leased_agent = self.app.leased_agents.get(leased_agent_id).ok_or_else(|| {
             DaemonError::LeasedAgentNotFound {
                 leased_agent_id: leased_agent_id.to_string(),
@@ -78,6 +154,15 @@ impl<'a> RemoteLeaseRuntime<'a> {
     ) -> Result<Option<LeasedPromptReceipt>, DaemonError> {
         if home_prompt_id.is_empty() {
             return Ok(None);
+        }
+        if let Some(record) = self
+            .app
+            .worker_steer_receipts
+            .get(leased_agent_id, home_prompt_id)
+        {
+            return Ok(Some(leased_prompt_steer_receipt_projection(
+                &record.receipt,
+            )));
         }
         let leased_agent = self
             .app
@@ -196,6 +281,19 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         .to_string(),
             });
         }
+        if let Some(record) = self
+            .app
+            .worker_steer_receipts
+            .get(leased_agent_id, steer_id)
+        {
+            Self::validate_requested_worker_steer_receipt(
+                &record.receipt,
+                target_home_prompt_id,
+                worker_provider_run_id,
+                execution_lease_id,
+            )?;
+            return Ok(leased_prompt_steer_receipt_projection(&record.receipt));
+        }
         let leased_agent = self
             .app
             .leased_agents
@@ -210,11 +308,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 message: "requested execution lease does not match the leased worker".to_string(),
             });
         }
-        if let Some(receipt) = leased_agent
-            .home_steer_receipts
-            .iter()
-            .find(|receipt| receipt.steer_id == steer_id)
-        {
+        if let Some(receipt) = self.worker_steer_receipt(leased_agent_id, steer_id) {
             if receipt.target_home_prompt_id != target_home_prompt_id
                 || receipt.worker_provider_run_id != worker_provider_run_id
                 || receipt.execution_lease_id != execution_lease_id
@@ -225,7 +319,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         .to_string(),
                 });
             }
-            return Ok(leased_prompt_steer_receipt_projection(receipt));
+            self.persist_worker_steer_receipt(leased_agent_id, receipt.clone())?;
+            return Ok(leased_prompt_steer_receipt_projection(&receipt));
         }
         if leased_agent
             .applied_home_steer_ids
@@ -234,7 +329,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
         {
             return Err(DaemonError::LocalTransport {
                 operation: "reconcile leased prompt steer receipt",
-                message: "legacy applied steer has no exact durable receipt; refusing to infer its outcome".to_string(),
+                message: "legacy applied steer has no exact durable receipt; refusing to infer its outcome"
+                    .to_string(),
             });
         }
 
@@ -248,12 +344,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             execution_lease_id: execution_lease_id.to_string(),
             phase: LeasedPromptSteerReceiptPhase::Rejected,
         };
-        self.app
-            .leased_agents
-            .get_mut(leased_agent_id)
-            .expect("leased agent was checked above")
-            .home_steer_receipts
-            .push(receipt.clone());
+        self.persist_worker_steer_receipt(leased_agent_id, receipt.clone())?;
         Ok(leased_prompt_steer_receipt_projection(&receipt))
     }
 
@@ -621,11 +712,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 operation: "steer leased prompt",
             });
         }
-        if let Some(receipt) = leased_agent
-            .home_steer_receipts
-            .iter()
-            .find(|receipt| receipt.steer_id == steer_id)
-        {
+        if let Some(receipt) = self.worker_steer_receipt(leased_agent_id, steer_id) {
             if receipt.target_home_prompt_id != target_home_prompt_id
                 || receipt.worker_provider_run_id != provider_run.id()
                 || receipt.execution_lease_id != leased_agent.lease_id
@@ -708,7 +795,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let leased_agent = self
             .app
             .leased_agents
-            .get_mut(leased_agent_id)
+            .get(leased_agent_id)
+            .cloned()
             .ok_or_else(|| DaemonError::LeasedAgentNotFound {
                 leased_agent_id: leased_agent_id.to_string(),
             })?;
@@ -721,11 +809,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 ),
             });
         }
-        if let Some(receipt) = leased_agent
-            .home_steer_receipts
-            .iter()
-            .find(|receipt| receipt.steer_id == steer_id)
-        {
+        if let Some(receipt) = self.worker_steer_receipt(leased_agent_id, steer_id) {
             if receipt.target_home_prompt_id != target_home_prompt_id
                 || receipt.worker_provider_run_id != worker_provider_run_id
                 || receipt.execution_lease_id != leased_agent.lease_id
@@ -749,18 +833,22 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 ),
             });
         }
-        leased_agent
-            .applied_home_steer_ids
-            .push(steer_id.to_string());
-        leased_agent
-            .home_steer_receipts
-            .push(LeasedPromptSteerReceipt {
+        self.persist_worker_steer_receipt(
+            leased_agent_id,
+            LeasedPromptSteerReceipt {
                 steer_id: steer_id.to_string(),
                 target_home_prompt_id: target_home_prompt_id.to_string(),
                 worker_provider_run_id: worker_provider_run_id.to_string(),
                 execution_lease_id: leased_agent.lease_id.clone(),
                 phase: LeasedPromptSteerReceiptPhase::Dispatching,
-            });
+            },
+        )?;
+        self.app
+            .leased_agents
+            .get_mut(leased_agent_id)
+            .expect("leased agent was checked above")
+            .applied_home_steer_ids
+            .push(steer_id.to_string());
         Ok(true)
     }
 
@@ -787,15 +875,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
         target_home_prompt_id: &str,
         worker_provider_run_id: &str,
     ) -> Result<bool, DaemonError> {
-        let Some(leased_agent) = self.app.leased_agents.get(leased_agent_id) else {
+        let Some(leased_agent) = self.app.leased_agents.get(leased_agent_id).cloned() else {
             return Ok(false);
         };
-        let lease_id = leased_agent.lease_id.clone();
-        if leased_agent
-            .home_steer_receipts
-            .iter()
-            .any(|receipt| receipt.steer_id == steer_id)
-        {
+        if self.worker_steer_receipt(leased_agent_id, steer_id).is_some() {
             // A caller without a dispatch-specific proof must never turn an
             // existing in-flight or accepted receipt into a rejection.
             return Ok(false);
@@ -807,18 +890,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
         {
             return Ok(false);
         }
-        self.app
-            .leased_agents
-            .get_mut(leased_agent_id)
-            .expect("leased agent checked above")
-            .home_steer_receipts
-            .push(LeasedPromptSteerReceipt {
+        self.persist_worker_steer_receipt(
+            leased_agent_id,
+            LeasedPromptSteerReceipt {
                 steer_id: steer_id.to_string(),
                 target_home_prompt_id: target_home_prompt_id.to_string(),
                 worker_provider_run_id: worker_provider_run_id.to_string(),
-                execution_lease_id: lease_id,
+                execution_lease_id: leased_agent.lease_id,
                 phase: LeasedPromptSteerReceiptPhase::Rejected,
-            });
+            },
+        )?;
         Ok(true)
     }
 
@@ -829,15 +910,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
         target_home_prompt_id: &str,
         worker_provider_run_id: &str,
     ) -> Result<bool, DaemonError> {
-        let Some(leased_agent) = self.app.leased_agents.get(leased_agent_id) else {
+        let Some(leased_agent) = self.app.leased_agents.get(leased_agent_id).cloned() else {
             return Ok(false);
         };
         let lease_id = leased_agent.lease_id.clone();
-        let receipt = leased_agent
-            .home_steer_receipts
-            .iter()
-            .find(|receipt| receipt.steer_id == steer_id)
-            .cloned();
+        let receipt = self.worker_steer_receipt(leased_agent_id, steer_id);
         if let Some(receipt) = receipt {
             if receipt.target_home_prompt_id != target_home_prompt_id
                 || receipt.worker_provider_run_id != worker_provider_run_id
@@ -867,18 +944,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
         {
             return Ok(false);
         }
-        self.app
-            .leased_agents
-            .get_mut(leased_agent_id)
-            .expect("leased agent checked above")
-            .home_steer_receipts
-            .push(LeasedPromptSteerReceipt {
+        self.persist_worker_steer_receipt(
+            leased_agent_id,
+            LeasedPromptSteerReceipt {
                 steer_id: steer_id.to_string(),
                 target_home_prompt_id: target_home_prompt_id.to_string(),
                 worker_provider_run_id: worker_provider_run_id.to_string(),
                 execution_lease_id: lease_id,
                 phase: LeasedPromptSteerReceiptPhase::Rejected,
-            });
+            },
+        )?;
         Ok(true)
     }
 
@@ -893,15 +968,14 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let leased_agent = self
             .app
             .leased_agents
-            .get_mut(leased_agent_id)
+            .get(leased_agent_id)
+            .cloned()
             .ok_or_else(|| DaemonError::LeasedAgentNotFound {
                 leased_agent_id: leased_agent_id.to_string(),
             })?;
         let lease_id = leased_agent.lease_id.clone();
-        let receipt = leased_agent
-            .home_steer_receipts
-            .iter_mut()
-            .find(|receipt| receipt.steer_id == steer_id)
+        let mut receipt = self
+            .worker_steer_receipt(leased_agent_id, steer_id)
             .ok_or_else(|| DaemonError::LocalTransport {
                 operation: "settle leased prompt steer",
                 message: format!("steer `{steer_id}` has no durable dispatch receipt"),
@@ -922,7 +996,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             });
         }
         receipt.phase = phase;
-        Ok(())
+        self.persist_worker_steer_receipt(leased_agent_id, receipt)
     }
 
     pub(crate) fn rollback_leased_prompt_steer(&mut self, leased_agent_id: &str, steer_id: &str) {

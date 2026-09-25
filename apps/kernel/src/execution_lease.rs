@@ -77,9 +77,9 @@ pub struct LeasedAgent {
     pub active_home_prompt_started_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub applied_home_steer_ids: Vec<String>,
-    /// Exact receipts for queued prompt steers accepted by this worker. These
-    /// survive completion of the target turn so the home can reconcile a lost
-    /// relay reply without resubmitting the prompt.
+    /// In-memory projection of exact queued-steer receipts retained for wire
+    /// compatibility. DurableKernelStateStore is authoritative across worker
+    /// restarts so the home can reconcile a lost relay reply without replay.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub home_steer_receipts: Vec<LeasedPromptSteerReceipt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

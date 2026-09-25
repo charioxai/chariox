@@ -4,5 +4,6 @@ mod peer_transport;
 mod project_environment_setup_status_latency;
 mod registration;
 mod remote_agents;
+mod worker_steer_receipt_restart;
 mod subscriptions;
 mod support;

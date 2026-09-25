@@ -155,6 +155,7 @@ pub struct DaemonApp {
     history: SessionHistoryStore,
     operational_history: OperationalHistoryStore,
     durable_state: DurableKernelStateStore,
+    worker_steer_receipts: crate::durable_state::worker_steer_receipts::WorkerSteerReceiptStore,
     managed_context_transfers: crate::managed_context::transfer::ManagedContextTransferStore,
     managed_context_outbound:
         crate::managed_context::outbound_service::ManagedContextOutboundOperationStore,
@@ -264,6 +265,10 @@ impl DaemonApp {
 
         let durable_state_started = Instant::now();
         let durable_state = DurableKernelStateStore::open_owned(config.durable_state_path())?;
+        let worker_steer_receipts =
+            crate::durable_state::worker_steer_receipts::WorkerSteerReceiptStore::restore(
+                durable_state.clone(),
+            )?;
         let managed_context_root = config.private_runtime_state_root();
         let managed_kernel_registration =
             crate::managed_bootstrap::confirmed_managed_kernel_registration_from_env()?;
@@ -338,6 +343,7 @@ impl DaemonApp {
             history,
             operational_history,
             durable_state,
+            worker_steer_receipts,
             managed_context_transfers,
             managed_context_outbound,
             managed_kernel_registration,
