@@ -447,8 +447,7 @@ async fn check_room_browser_on_environment_worker_serves_same_worker_agent_and_w
             .resolve_slice("desktop")
             .expect("resolve the headed Environment on worker A");
         assert_eq!(
-            remote_execution.worker_kernel_id,
-            environment_worker_kernel_id,
+            remote_execution.worker_kernel_id, environment_worker_kernel_id,
             "the Room agent and headed Environment must use worker A"
         );
         assert_eq!(
@@ -457,7 +456,10 @@ async fn check_room_browser_on_environment_worker_serves_same_worker_agent_and_w
         );
         assert_eq!(
             remote_execution.worker_machine_id,
-            environment_slice.worker_machine_id.as_deref().unwrap_or_default(),
+            environment_slice
+                .worker_machine_id
+                .as_deref()
+                .unwrap_or_default(),
             "the Room agent and headed Environment must share worker A's machine"
         );
 
@@ -474,18 +476,17 @@ async fn check_room_browser_on_environment_worker_serves_same_worker_agent_and_w
             .map(|spec| spec.name)
             .collect::<std::collections::BTreeSet<_>>();
         for tool in ["slice_open_url", "slice_browser_status", "slice_mouse"] {
-            assert!(advertised.contains(tool), "leased Room agent is missing {tool}");
+            assert!(
+                advertised.contains(tool),
+                "leased Room agent is missing {tool}"
+            );
         }
 
         let url = "https://same-worker.room-agent.test/";
         let opened = fixture
             .worker
             .runtime_state
-            .dispatch_authenticated_runtime_tool_call(
-                &token,
-                "slice_open_url",
-                json!({"url": url}),
-            )
+            .dispatch_authenticated_runtime_tool_call(&token, "slice_open_url", json!({"url": url}))
             .await
             .expect("worker A Browser call must pass through home Room admission");
         assert!(opened.ok, "{:?}", opened.payload);
@@ -537,7 +538,9 @@ async fn check_room_browser_on_environment_worker_serves_same_worker_agent_and_w
             .runtime_state
             .dispatch_authenticated_runtime_tool_call(&token, "slice_browser_status", json!({}))
             .await
-            .expect("worker A agent must read back its shared Browser state through home admission");
+            .expect(
+                "worker A agent must read back its shared Browser state through home admission",
+            );
         assert!(status.ok, "{:?}", status.payload);
         assert_eq!(status.payload["environment_id"], environment_id);
         assert_eq!(status.payload["tab_id"], initial_tab_id);
@@ -549,7 +552,10 @@ async fn check_room_browser_on_environment_worker_serves_same_worker_agent_and_w
             .room_environment_snapshot(&room)
             .expect("home Room owns the single shared action ledger");
         assert_eq!(environment.environment_id, environment_id);
-        assert_eq!(environment.focused_tab_id.as_deref(), Some(initial_tab_id.as_str()));
+        assert_eq!(
+            environment.focused_tab_id.as_deref(),
+            Some(initial_tab_id.as_str())
+        );
         let tab = environment
             .tabs
             .iter()
