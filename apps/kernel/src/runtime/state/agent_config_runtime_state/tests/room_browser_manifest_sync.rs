@@ -144,7 +144,7 @@ async fn projected_remote_completion_admits_queued_prompt_before_ordered_deliver
     assert_eq!(pre_ack_echo_count, 0, "queued prompt echo waits for worker ACK");
 
     let (active, queued_after_promotion) = {
-        let app = fixture.runtime.app.lock().await;
+        let mut app = fixture.runtime.app.lock().await;
         (
             app.prompt_owner_active_prompt_for_agent(&fixture.session_id, &fixture.agent_id)
                 .expect("promoted prompt state should be readable")
@@ -187,7 +187,7 @@ async fn projected_remote_completion_admits_queued_prompt_before_ordered_deliver
     .await;
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
-            let app = fixture.runtime.app.lock().await;
+            let mut app = fixture.runtime.app.lock().await;
             let delivered = app
                 .prompt_owner_active_prompt_for_agent(&fixture.session_id, &fixture.agent_id)
                 .expect("active prompt should be readable")
@@ -369,7 +369,7 @@ async fn ordinary_completion_keeps_workflow_head_on_legacy_advancement_path() {
         .expect("completion projection should finish")
         .expect("projection task should join")
         .expect("ordinary completion with queued workflow should succeed");
-    let app = fixture.runtime.app.lock().await;
+    let mut app = fixture.runtime.app.lock().await;
     let active = app
         .prompt_owner_active_prompt_for_agent(&fixture.session_id, &fixture.agent_id)
         .expect("active prompt state should be readable")
@@ -468,7 +468,7 @@ async fn rejected_ordered_queued_dispatch_uses_shared_sender_failure_semantics()
     .await;
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
-            let app = fixture.runtime.app.lock().await;
+            let mut app = fixture.runtime.app.lock().await;
             if app
                 .prompt_owner_active_prompt_for_agent(&fixture.session_id, &fixture.agent_id)
                 .expect("active prompt state should be readable")
