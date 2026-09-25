@@ -55,6 +55,15 @@ async fn leased_claude_failure_reaches_home_projection_without_terminal_polling(
         .provider_account_profile_registry()
         .create_managed("owner", "claude", "fixture")
         .expect("isolated worker account profile");
+    // Prompt admission checks the account observation independently from the
+    // per-launch token. Observe the isolated CLI, just as account setup does.
+    crate::local::provider_requests::observe_provider_auth_status(
+        &app.provider_account_profile_registry(),
+        "owner",
+        "claude",
+        &account.profile_id,
+    )
+    .expect("observe isolated fixture account");
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
     let lease = runtime
@@ -183,6 +192,10 @@ fn run_isolated_launch_fixture() {
     let executable = root.join("claude");
     std::fs::write(&executable, r#"#!/bin/bash
 if [[ "$1" == "--version" ]]; then printf 'Claude Code 2.1.207\n'; exit 0; fi
+if [[ "$1" == "auth" && "$2" == "status" && "$3" == "--json" ]]; then
+    printf '%s\n' '{"loggedIn":true,"authMethod":"claude.ai","email":"fixture@example.test","subscriptionType":"pro"}'
+    exit 0
+fi
 if IFS= read -r -t 10 line; then
     : > "$CHARIOX_TEST_RECEIVED"
     printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"error":"Fixture Claude login required"}'
