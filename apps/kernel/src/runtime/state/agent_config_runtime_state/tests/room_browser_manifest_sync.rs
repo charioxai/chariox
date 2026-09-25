@@ -609,12 +609,22 @@ async fn acknowledge_peer_response(
     .await;
 }
 
-async fn queue_workflow_successor_after_ordinary_prompt(fixture: &RoomManifestFixture) -> String {
+struct WorkflowSuccessorSetup {
+    ordinary_prompt_id: String,
+    workflow_id: String,
+}
+
+type WorkflowSuccessorSetupResult =
+    Result<WorkflowSuccessorSetup, crate::error::DaemonError>;
+
+async fn queue_workflow_successor_after_ordinary_prompt(
+    fixture: &RoomManifestFixture,
+) -> WorkflowSuccessorSetup {
     let session_id = fixture.session_id.clone();
     let agent_id = fixture.agent_id.clone();
     fixture
         .runtime
-        .with_app_side_effect(move |app| -> Result<String, crate::error::DaemonError> {
+        .with_app_side_effect(move |app| -> WorkflowSuccessorSetupResult {
             let attachment = crate::app::KernelSessionService::new(app).attach(
                 crate::attachment::AttachRequest::new(
                     &session_id,
@@ -682,7 +692,10 @@ async fn queue_workflow_successor_after_ordinary_prompt(fixture: &RoomManifestFi
                 queued,
                 crate::session::PromptSubmissionOutcome::Queued { .. }
             ));
-            Ok(active.id().to_string())
+            Ok(WorkflowSuccessorSetup {
+                ordinary_prompt_id: active.id().to_string(),
+                workflow_id: workflow.id().to_string(),
+            })
         })
         .await
         .expect("ordinary prompt and workflow successor should queue")
@@ -727,7 +740,8 @@ async fn active_prompt_for(
 #[tokio::test]
 async fn ordinary_completion_restores_persisted_workflow_ids_before_ordered_dispatch() {
     let mut fixture = room_manifest_fixture().await;
-    let ordinary_prompt_id = queue_workflow_successor_after_ordinary_prompt(&fixture).await;
+    let successor = queue_workflow_successor_after_ordinary_prompt(&fixture).await;
+    let ordinary_prompt_id = successor.ordinary_prompt_id;
     let persisted_session = fixture
         .runtime
         .owned
@@ -894,7 +908,9 @@ async fn ordinary_completion_restores_persisted_workflow_ids_before_ordered_disp
 #[tokio::test]
 async fn rejected_promoted_workflow_head_is_not_reported_as_delivered() {
     let mut fixture = room_manifest_fixture().await;
-    let ordinary_prompt_id = queue_workflow_successor_after_ordinary_prompt(&fixture).await;
+    let successor = queue_workflow_successor_after_ordinary_prompt(&fixture).await;
+    let workflow_id = successor.workflow_id;
+    let ordinary_prompt_id = successor.ordinary_prompt_id;
     project_ordinary_completion(&fixture, ordinary_prompt_id).await;
 
     let (request_id, request) = next_peer_request(&mut fixture).await;
@@ -961,13 +977,53 @@ async fn rejected_promoted_workflow_head_is_not_reported_as_delivered() {
         failed_workflow.status(),
         crate::session::WorkflowRunStatus::Failed
     );
+    assert_eq!(
+        failed_workflow.workflow_id(),
+        workflow_id.as_str(),
+        "the durable failure belongs to the exact queued workflow"
+    );
+    assert_eq!(
+        failed_workflow.id(),
+        workflow_run_id.as_str(),
+        "the durable failure belongs to the run sent to the worker"
+    );
     assert!(failed_workflow.node_runs().iter().any(|node_run| {
         node_run.id() == workflow_node_run_id.as_str()
             && node_run.status() == crate::session::WorkflowNodeRunStatus::Failed
     }));
-    assert!(failed_workflow.failure_events().iter().any(|event| {
-        event.kind() == crate::session::WorkflowFailureKind::TransportFailure
-            && event.source_node_run_id() == workflow_node_run_id.as_str()
+    assert_eq!(
+        failed_workflow
+            .failure_events()
+            .iter()
+            .filter(|event| {
+                event.kind() == crate::session::WorkflowFailureKind::TransportFailure
+                    && event.source_node_run_id() == workflow_node_run_id.as_str()
+            })
+            .count(),
+        1,
+        "exact workflow and node run should retain one TransportFailure"
+    );
+    assert_eq!(failed_workflow.failure_events().len(), 1);
+    assert!(
+        failed_workflow
+            .node_runs()
+            .iter()
+            .all(|node_run| node_run.status() != crate::session::WorkflowNodeRunStatus::Completed),
+        "the rejected workflow must not record a completed node"
+    );
+    assert_eq!(failed_workflow.completed_by_node_run_id(), None);
+    assert!(failed_workflow.final_output().is_none());
+    let durable_history = fixture
+        .runtime
+        .owned
+        .operational_history_store
+        .load_session_events(&fixture.session_id, Some(&fixture.agent_id))
+        .expect("workflow history should remain readable");
+    assert!(!durable_history.iter().any(|event| {
+        event.kind == crate::history::HistoryEventKind::WorkflowNodeCompleted
+            && event.workflow_id.as_deref() == Some(workflow_id.as_str())
+            && event.workflow_run_id.as_deref() == Some(workflow_run_id.as_str())
+            && event.workflow_node_id.as_deref() == Some(workflow_node_run_id.as_str())
     }));
 
     let binding = fixture
