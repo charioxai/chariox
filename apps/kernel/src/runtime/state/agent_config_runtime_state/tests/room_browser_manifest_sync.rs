@@ -867,11 +867,10 @@ async fn ordinary_completion_restores_persisted_workflow_ids_before_ordered_disp
         manifest_waiting.notified(),
     )
     .await
-    .expect("manifest sync should queue behind the ordered prompt relay round-trip");
-    assert!(
-        fixture.priority_rx.try_recv().is_err(),
-        "manifest sync must not overtake the pending workflow prompt request"
-    );
+    .expect("manifest sync should queue after the ordered prompt envelope");
+    let (manifest_request_id, manifest) = next_manifest_update(&mut fixture).await;
+    assert!(manifest.room_browser_available);
+    acknowledge_manifest_update(&fixture, manifest_request_id).await;
 
     acknowledge_peer_response(
         &fixture,
@@ -898,10 +897,6 @@ async fn ordinary_completion_restores_persisted_workflow_ids_before_ordered_disp
     })
     .await
     .expect("ordered sender should settle the promoted workflow prompt");
-
-    let (manifest_request_id, manifest) = next_manifest_update(&mut fixture).await;
-    assert!(manifest.room_browser_available);
-    acknowledge_manifest_update(&fixture, manifest_request_id).await;
 }
 
 #[tokio::test]
@@ -1250,8 +1245,10 @@ async fn paused_prompt_dispatch_and_provider_launch_serialize_with_room_bind_and
         .expect("Room slice should bind while dispatch is paused");
     tokio::time::timeout(std::time::Duration::from_secs(2), bind_waiting.notified())
         .await
-        .expect("bind refresh should wait behind the paused dispatch");
-    assert!(fixture.priority_rx.try_recv().is_err());
+        .expect("bind refresh should enter the shared lease lane after dispatch enqueue");
+    let (bind_request, bind_manifest) = next_manifest_update(&mut fixture).await;
+    assert!(bind_manifest.room_browser_available);
+    acknowledge_manifest_update(&fixture, bind_request).await;
 
     let prompt = crate::session::PromptQueueItem::new(
         "room-manifest-dispatch-prompt",
@@ -1273,10 +1270,6 @@ async fn paused_prompt_dispatch_and_provider_launch_serialize_with_room_bind_and
         .await
         .expect("dispatch task should complete")
         .expect("actual remote prompt sender should succeed");
-    let (bind_request, bind_manifest) = next_manifest_update(&mut fixture).await;
-    assert!(bind_manifest.room_browser_available);
-    acknowledge_manifest_update(&fixture, bind_request).await;
-
     let stale_agent = fixture
         .runtime
         .owned
@@ -1352,7 +1345,9 @@ async fn paused_prompt_dispatch_and_provider_launch_serialize_with_room_bind_and
         panic!("expected the actual provider launch sender request");
     };
     assert!(!remote_extension_manifest.room_browser_available);
-    assert!(fixture.priority_rx.try_recv().is_err());
+    let (delete_request, delete_manifest) = next_manifest_update(&mut fixture).await;
+    assert!(!delete_manifest.room_browser_available);
+    acknowledge_manifest_update(&fixture, delete_request).await;
     acknowledge_peer_response(
         &fixture,
         launch_request_id,
@@ -1372,9 +1367,6 @@ async fn paused_prompt_dispatch_and_provider_launch_serialize_with_room_bind_and
             if value == "launch request observed" && daemon_id == "worker-1"
     ));
 
-    let (delete_request, delete_manifest) = next_manifest_update(&mut fixture).await;
-    assert!(!delete_manifest.room_browser_available);
-    acknowledge_manifest_update(&fixture, delete_request).await;
     assert!(fixture.priority_rx.try_recv().is_err());
 }
 
