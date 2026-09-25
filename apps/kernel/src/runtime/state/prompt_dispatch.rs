@@ -27,6 +27,42 @@ impl Drop for RemoteQueuedPromptSteerReservation {
     }
 }
 
+fn advance_next_remote_prompt_if_idle(
+    app: &mut crate::app::DaemonApp,
+    session_id: &str,
+    agent_id: &str,
+) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
+    if app
+        .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
+        .is_some()
+    {
+        return Ok(None);
+    }
+    let next = app
+        .agent_runtime_projection_store()
+        .next_queued_prompt(session_id, agent_id)
+        .or(app.prompt_owner_peek_next_queued_prompt(session_id, agent_id)?);
+    let Some(next) = next.filter(|prompt| !prompt.remote_steer_reserved()) else {
+        return Ok(None);
+    };
+    let agent = app.agents().get_agent(agent_id)?;
+    let remote = agent.remote_execution().cloned().ok_or_else(|| {
+        DaemonError::LocalTransport {
+            operation: "advance remote queued prompt",
+            message: format!("agent `{agent_id}` lost its remote binding"),
+        }
+    })?;
+    app.advance_next_queued_prompt_remote_with_workflow_dispatch(
+        session_id,
+        agent_id,
+        &remote.worker_kernel_id,
+        &remote.leased_agent_id,
+        remote.relay_url.as_deref(),
+        remote.relay_token.as_deref(),
+        Some(&next),
+    )
+}
+
 impl KernelRuntimeState {
     async fn release_failed_remote_steer_and_advance_if_idle(
         &self,
@@ -54,22 +90,12 @@ impl KernelRuntimeState {
                         ),
                     });
                 }
-                let session = owned.session_store.get_session(session_id)?;
-                if owned
-                    .prompt_state_owner
-                    .active_prompt_for_agent(&session, agent_id)
-                    .is_some()
-                {
-                    return Ok(None);
-                }
-                crate::app::KernelAgentService::new(app)
-                    .admit_next_queued_remote_prompt(session_id, agent_id, None)
+                advance_next_remote_prompt_if_idle(app, session_id, agent_id)
             })
             .await;
         drop(reservation);
         match admitted {
-            Ok(Some((_, intent))) => self.spawn_remote_prompt_dispatch(intent.dispatch),
-            Ok(None) => {}
+            Ok(_) => {}
             Err(error) => crate::logging::warn_with_fields(
                 "daemon.remote_prompt_dispatch",
                 "failed to advance queued prompt after rejected remote steer",
@@ -280,7 +306,7 @@ impl KernelRuntimeState {
             });
         }
         let owned = &self.owned;
-        let (settlement, next_dispatch) = self
+        let settlement = self
             .with_app_side_effect(|app| {
                 let settlement = owned.reconcile_remote_queued_prompt_steer_receipt(
                     session_id,
@@ -288,26 +314,15 @@ impl KernelRuntimeState {
                     queued_prompt_id,
                     &receipt,
                 )?;
-                let next_dispatch = if matches!(
+                if matches!(
                     &settlement,
                     super::prompt_queue_owned_state::RemoteQueuedPromptSteerReceiptSettlement::Rejected
-                ) && owned
-                    .prompt_state_owner
-                    .active_prompt_for_agent(&owned.session_store.get_session(session_id)?, agent_id)
-                    .is_none()
-                {
-                    crate::app::KernelAgentService::new(app)
-                        .admit_next_queued_remote_prompt(session_id, agent_id, None)?
-                        .map(|(_, intent)| intent.dispatch)
-                } else {
-                    None
-                };
-                Ok::<_, DaemonError>((settlement, next_dispatch))
+                ) {
+                    advance_next_remote_prompt_if_idle(app, session_id, agent_id)?;
+                }
+                Ok::<_, DaemonError>(settlement)
             })
             .await?;
-        if let Some(dispatch) = next_dispatch {
-            self.spawn_remote_prompt_dispatch(dispatch);
-        }
         Ok(settlement)
     }
 
@@ -1066,29 +1081,12 @@ impl KernelRuntimeState {
                     reservation_id,
                     &provider_run_id,
                 )?;
-                let has_active = owned
-                    .prompt_state_owner
-                    .active_prompt_for_agent(
-                        &owned.session_store.get_session(&session_id)?,
-                        &target_agent_id,
-                    )
-                    .is_some();
-                let next_dispatch = if has_active {
-                    None
-                } else {
-                    crate::app::KernelAgentService::new(app)
-                        .admit_next_queued_remote_prompt(&session_id, &target_agent_id, None)?
-                        .map(|(_, intent)| intent.dispatch)
-                };
-                Ok((steer, next_dispatch))
+                advance_next_remote_prompt_if_idle(app, &session_id, &target_agent_id)?;
+                Ok(steer)
             })
             .await;
         match committed {
-            Ok((steer, Some(dispatch))) => {
-                self.spawn_remote_prompt_dispatch(dispatch);
-                Ok(steer)
-            }
-            Ok((steer, None)) => Ok(steer),
+            Ok(steer) => Ok(steer),
             Err(error) => Err(self
                 .uncertain_remote_steer_error(
                     &session_id,
@@ -1346,6 +1344,146 @@ mod tests {
         assert!(prompt.remote_steer_reservation_matches(reservation));
         drop(guard);
         assert!(!prompt.remote_steer_reserved());
+    }
+
+    #[test]
+    fn idle_remote_queue_advances_workflow_after_ordinary_prompt_once() {
+        let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon should bootstrap");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session and agent should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "remote-workflow-queue-source",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("prompt source should attach");
+        app.agents()
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "worker-kernel".to_string(),
+                    worker_machine_id: "worker-machine".to_string(),
+                    execution_lease_id: "execution-lease".to_string(),
+                    leased_agent_id: "leased-agent".to_string(),
+                    active_worker_provider_run_id: None,
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
+                },
+            )
+            .expect("agent should be bound to the remote worker");
+
+        let active = crate::session::PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            attachment.id(),
+            agent.id(),
+            "ordinary active prompt",
+            crate::session::PromptStatus::Queued,
+        );
+        assert!(matches!(
+            app.prompt_owner_submit_prepared_prompt(session.id(), active, false)
+                .expect("ordinary prompt should start"),
+            crate::session::PromptSubmissionOutcome::Started { .. }
+        ));
+
+        let workflow = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("queued-follow-up".to_string()))
+            .expect("workflow should be created");
+        let node = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), workflow.id(), agent.id())
+            .expect("workflow node should be created");
+        let endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                node.id(),
+                Some("entry".to_string()),
+            )
+            .expect("workflow endpoint should be created");
+        let workflow_run = app
+            .sessions_mut()
+            .invoke_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("workflow queued prompt".to_string()),
+            )
+            .expect("workflow run should be created");
+        let workflow_node_run_id = workflow_run.node_runs()[0].id().to_string();
+        app.sessions_mut()
+            .prepare_workflow_turn(
+                session.id(),
+                workflow_run.id(),
+                &workflow_node_run_id,
+                format!("workflow-ack:{workflow_node_run_id}"),
+                "workflow queued prompt".to_string(),
+                None,
+                None,
+            )
+            .expect("workflow turn should be prepared");
+        app.sessions_mut()
+            .start_workflow_node_run(session.id(), workflow_run.id(), &workflow_node_run_id)
+            .expect("workflow node should start before prompt queueing");
+        let crate::session::PromptSubmissionOutcome::Queued {
+            prompt: queued_workflow,
+        } = app
+            .prompt_owner_submit_workflow_prompt(
+                session.id(),
+                &crate::scheduler::runtime::workflow_prompt_source_attachment_id(
+                    workflow_run.id(),
+                ),
+                agent.id(),
+                workflow_run.id(),
+                &workflow_node_run_id,
+                "workflow queued prompt",
+            )
+            .expect("workflow prompt should queue behind the active ordinary prompt")
+        else {
+            panic!("workflow prompt must remain queued while the ordinary prompt is active");
+        };
+        assert_eq!(queued_workflow.workflow_run_id(), Some(workflow_run.id()));
+
+        app.prompt_owner_complete_active_prompt_only(session.id(), agent.id())
+            .expect("ordinary active prompt should complete");
+        let promoted = advance_next_remote_prompt_if_idle(&mut app, session.id(), agent.id())
+            .expect("idle queue advancement should succeed")
+            .expect("workflow prompt must advance into the idle remote agent");
+        assert_eq!(promoted.workflow_run_id(), Some(workflow_run.id()));
+        assert_eq!(
+            promoted.workflow_node_run_id(),
+            Some(workflow_node_run_id.as_str())
+        );
+        assert_eq!(promoted.status(), crate::session::PromptStatus::Running);
+
+        let deferred = app.take_deferred_workflow_remote_prompt_dispatches();
+        assert_eq!(deferred.len(), 1, "the promoted workflow should dispatch exactly once");
+        assert_eq!(deferred[0].prompt_id, promoted.id());
+        assert_eq!(deferred[0].worker_kernel_id, "worker-kernel");
+        assert_eq!(deferred[0].leased_agent_id, "leased-agent");
+        let context = deferred[0]
+            .workflow_context
+            .as_ref()
+            .expect("remote workflow dispatch must preserve its workflow context");
+        assert_eq!(context.home_session_id, session.id());
+        assert_eq!(context.home_agent_id, agent.id());
+        assert_eq!(context.workflow_run_id, workflow_run.id());
+        assert_eq!(context.workflow_node_run_id, workflow_node_run_id);
+
+        assert!(advance_next_remote_prompt_if_idle(&mut app, session.id(), agent.id())
+            .expect("repeat idle check should succeed")
+            .is_none());
+        assert!(
+            app.take_deferred_workflow_remote_prompt_dispatches().is_empty(),
+            "an active workflow prompt must not be dispatched twice"
+        );
     }
 }
 
