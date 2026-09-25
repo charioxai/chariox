@@ -226,6 +226,7 @@ export function createManagedBrowserComputerParityTransportFromPublicClient({
     attachmentIds: new Set(),
     attachmentsByClient: new Map(),
     agentIds: new Set(),
+    providerAgentId: null,
     identity: null,
     stableIdentity: null,
     detachedAttachmentIds: new Set(),
@@ -1576,6 +1577,12 @@ async function runKernelProviderAction({
   const beforeAttachments = await readSessionAttachmentIds({ client, requestApi, roomId: binding.roomId, signal })
   const { runRoomRealProviderAction } = await import("./live-room-real-provider.mjs")
   const beforeAgents = await readRoomAgentRecords({ client, requestApi, roomId: binding.roomId, signal })
+  const agent = ownedResources.providerAgentId
+    ? beforeAgents.get(ownedResources.providerAgentId)
+    : null
+  if (ownedResources.providerAgentId && !agent) {
+    throw new Error("managed parity provider agent is no longer in the Room")
+  }
   let result
   let actionError
   try {
@@ -1584,6 +1591,7 @@ async function runKernelProviderAction({
       requests: requestApi,
       sessionId: binding.roomId,
       sliceId,
+      ...(agent ? { agent } : {}),
       workspace: request.worktreeId
         ?? parityConfig?.worktreeId
         ?? parityConfig?.provider?.worktreeId,
@@ -1614,7 +1622,17 @@ async function runKernelProviderAction({
       ownedResources.agentIds.add(agentId)
     }
   }
-  if (result?.agentId) ownedResources.agentIds.add(requireText(result.agentId, `selkies.${mode} provider agent id`))
+  if (result?.agentId) {
+    const agentId = requireText(result.agentId, `selkies.${mode} provider agent id`)
+    if (ownedResources.providerAgentId && ownedResources.providerAgentId !== agentId) {
+      throw new Error("managed parity Browser and Computer actions used different Room agents")
+    }
+    if (!afterAgents.has(agentId)) {
+      throw new Error("managed parity provider action returned an unregistered Room agent")
+    }
+    ownedResources.agentIds.add(agentId)
+    ownedResources.providerAgentId = agentId
+  }
   if (actionError) throw actionError
   await rememberNewSessionAttachments({
     client,
@@ -4273,6 +4291,7 @@ function clearOwnedResources(ownedResources) {
   ownedResources.attachmentIds.clear()
   ownedResources.attachmentsByClient.clear()
   ownedResources.agentIds.clear()
+  ownedResources.providerAgentId = null
   ownedResources.identity = null
 }
 
