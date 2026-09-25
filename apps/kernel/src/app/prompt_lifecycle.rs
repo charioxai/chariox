@@ -334,6 +334,12 @@ pub(crate) struct KernelRemotePromptDispatch {
     pub(crate) workflow_context: Option<RemoteWorkflowTurnContext>,
 }
 
+/// Queued prompt delivery behavior that must occur only after worker ACK.
+pub(crate) struct KernelRemotePromptDispatchIntent {
+    pub(crate) dispatch: KernelRemotePromptDispatch,
+    pub(crate) echo_to_all_attachments: bool,
+}
+
 pub(crate) struct KernelPromptCancellation {
     pub(crate) cancellation: PromptCancellation,
     pub(crate) session: crate::session::RuntimeSession,

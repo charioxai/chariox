@@ -133,6 +133,15 @@ async fn projected_remote_completion_admits_queued_prompt_before_ordered_deliver
     .expect("projection must return without waiting on the leased-agent lane")
     .expect("worker completion projection should succeed");
     assert!(fixture.priority_rx.try_recv().is_err());
+    let pre_ack_echo_count = fixture
+        .runtime
+        .owned
+        .terminal_stream
+        .drain_output_records(&fixture.session_id, &attachment_id)
+        .into_iter()
+        .filter(|record| record.kind == crate::terminal::TerminalOutputKind::PromptEcho)
+        .count();
+    assert_eq!(pre_ack_echo_count, 0, "queued prompt echo waits for worker ACK");
 
     let (active, queued_after_promotion) = {
         let app = fixture.runtime.app.lock().await;
@@ -145,6 +154,7 @@ async fn projected_remote_completion_admits_queued_prompt_before_ordered_deliver
         )
     };
     assert_ne!(active.id(), pending_prompt_id, "promotion allocates a fresh prompt ID");
+    assert_eq!(active.status(), crate::session::PromptStatus::Dispatching);
     assert_eq!(active.prompt(), "queued prompt");
     assert_eq!(active.source_attachment_id(), attachment_id.as_str());
     assert_eq!(active.target_agent_id(), fixture.agent_id.as_str());
@@ -165,6 +175,7 @@ async fn projected_remote_completion_admits_queued_prompt_before_ordered_deliver
         git_context.expect("queued prompt delivery carries git turn context").home_prompt_id,
         active.id(),
     );
+    let promoted_prompt_id = active.id().to_string();
     acknowledge_peer_response(
         &fixture,
         request_id,
@@ -174,6 +185,45 @@ async fn projected_remote_completion_admits_queued_prompt_before_ordered_deliver
         },
     )
     .await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let app = fixture.runtime.app.lock().await;
+            let delivered = app
+                .prompt_owner_active_prompt_for_agent(&fixture.session_id, &fixture.agent_id)
+                .expect("active prompt should be readable")
+                .is_some_and(|prompt| {
+                    prompt.durable_delivery_phase()
+                        == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+                });
+            if delivered {
+                break;
+            }
+            drop(app);
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("acknowledged dispatch should settle");
+    let echoes = fixture
+        .runtime
+        .owned
+        .terminal_stream
+        .drain_output_records(&fixture.session_id, &attachment_id)
+        .into_iter()
+        .filter(|record| {
+            record.kind == crate::terminal::TerminalOutputKind::PromptEcho
+                && record.prompt_id.as_deref() == Some(promoted_prompt_id.as_str())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(echoes.len(), 1, "queued prompt should echo exactly once");
+    assert_eq!(echoes[0].source_attachment_id.as_deref(), Some(attachment_id.as_str()));
+    assert_eq!(
+        echoes[0].provider_run_id,
+        crate::provider::projected_leased_provider_run_id(
+            "leased-agent-1",
+            "provider-run-next",
+        )
+    );
 }
 
 #[tokio::test]
@@ -404,10 +454,9 @@ async fn rejected_ordered_queued_dispatch_uses_shared_sender_failure_semantics()
         request,
         crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt { .. }
     ));
-    // The shared ordered sender treats rejection as a failed admitted active
-    // prompt and cancels it. The old queued sender rejected before promotion,
-    // leaving the item queued for another advancement attempt; retry policy is
-    // therefore intentionally different in this bounded partial change.
+    // Characterize the current shared sender's failure side effect only: it
+    // cancels the admitted prompt. This is not approval of the difference from
+    // the old queued retry path; root review owns that retry-policy decision.
     acknowledge_peer_response(
         &fixture,
         request_id,

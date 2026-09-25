@@ -586,8 +586,7 @@ impl<'a> KernelAgentService<'a> {
         session_id: &str,
         agent_id: &str,
         expected_next: Option<&PromptQueueItem>,
-        provider_run_id: &str,
-    ) -> Result<Option<(PromptQueueItem, KernelRemotePromptDispatch)>, DaemonError> {
+    ) -> Result<Option<(PromptQueueItem, crate::app::KernelRemotePromptDispatchIntent)>, DaemonError> {
         let mut expected_next = expected_next.cloned();
         loop {
             let Some(candidate) = self.next_queued_prompt_candidate(
@@ -641,17 +640,6 @@ impl<'a> KernelAgentService<'a> {
                 continue;
             };
             let active = self.prepare_promoted_remote_prompt_start(session_id, agent_id, &active)?;
-            let source_attachment_id = self
-                .app
-                .promoted_prompt_source_attachment_id(session_id, active.source_attachment_id())?;
-            self.app.echo_promoted_queued_prompt_to_attachments(
-                session_id,
-                provider_run_id,
-                active.id(),
-                &source_attachment_id,
-                active.prompt(),
-                active.attachments(),
-            );
             let workflow_context = if crate::app::workflow_runtime::is_workflow_prompt_source(
                 active.source_attachment_id(),
             ) {
@@ -683,7 +671,13 @@ impl<'a> KernelAgentService<'a> {
                 external_provider_turn_id: active.external_provider_turn_id().map(str::to_string),
                 workflow_context,
             };
-            return Ok(Some((active, dispatch)));
+            return Ok(Some((
+                active,
+                crate::app::KernelRemotePromptDispatchIntent {
+                    dispatch,
+                    echo_to_all_attachments: true,
+                },
+            )));
         }
     }
 
@@ -693,7 +687,12 @@ impl<'a> KernelAgentService<'a> {
         agent_id: &str,
         prompt: &PromptQueueItem,
     ) -> Result<PromptQueueItem, DaemonError> {
-        let active = self.app.prompt_owner_mark_active_prompt_running(session_id, agent_id)?;
+        let active = self
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })?;
         if active.id() != prompt.id() {
             return Err(DaemonError::LocalTransport {
                 operation: "admit remote queued prompt",

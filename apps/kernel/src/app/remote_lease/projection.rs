@@ -21,7 +21,7 @@ pub(crate) struct RemoteRuntimeProjectionOutcome {
     pub(crate) accepted: bool,
     pub(crate) completions: Vec<PromptCompletion>,
     pub(crate) provider_failure: Option<RemoteProviderFailure>,
-    pub(crate) remote_dispatches: Vec<crate::app::KernelRemotePromptDispatch>,
+    pub(crate) remote_dispatches: Vec<crate::app::KernelRemotePromptDispatchIntent>,
 }
 
 #[derive(Debug)]
@@ -1142,10 +1142,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
                                 session_id,
                                 agent_id,
                                 expected_next.as_ref(),
-                                &projected_provider_run_id,
                             )?;
-                        if let Some((prompt, dispatch)) = admitted {
-                            outcome.remote_dispatches.push(dispatch);
+                        if let Some((prompt, dispatch_intent)) = admitted {
+                            outcome.remote_dispatches.push(dispatch_intent);
                             Some(prompt)
                         } else {
                             None

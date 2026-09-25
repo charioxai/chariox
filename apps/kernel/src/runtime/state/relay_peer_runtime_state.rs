@@ -925,8 +925,11 @@ impl KernelRuntimeState {
         if !outcome.accepted {
             return Ok(());
         }
-        for dispatch in outcome.remote_dispatches {
-            self.spawn_remote_prompt_dispatch(dispatch);
+        for intent in outcome.remote_dispatches {
+            self.spawn_remote_prompt_dispatch_with_queued_echo(
+                intent.dispatch,
+                intent.echo_to_all_attachments,
+            );
         }
         if let Some(failure) = outcome.provider_failure {
             self.finish_remote_provider_failure(

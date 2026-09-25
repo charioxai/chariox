@@ -847,6 +847,16 @@ impl KernelRuntimeState {
         dispatch: crate::app::KernelRemotePromptDispatch,
         result: Result<String, DaemonError>,
     ) -> Result<(), DaemonError> {
+        self.finish_remote_prompt_dispatch_with_queued_echo(dispatch, result, false)
+            .await
+    }
+
+    async fn finish_remote_prompt_dispatch_with_queued_echo(
+        &self,
+        dispatch: crate::app::KernelRemotePromptDispatch,
+        result: Result<String, DaemonError>,
+        echo_to_all_attachments: bool,
+    ) -> Result<(), DaemonError> {
         let session_id = dispatch.session_id.clone();
         let agent_id = dispatch.agent_id.clone();
         use super::remote_prompt_owned_state::RemotePromptDispatchSettlement;
@@ -925,14 +935,30 @@ impl KernelRuntimeState {
             match result {
                 Ok(remote_provider_run_id) => {
                     let _ = owned.session_snapshot(&dispatch.session_id)?;
-                    owned.echo_prompt_to_other_attachments(
-                        &dispatch.session_id,
-                        &remote_provider_run_id,
-                        &dispatch.prompt_id,
-                        &dispatch.source_attachment_id,
-                        &dispatch.prompt,
-                        &dispatch.attachments,
-                    );
+                    if echo_to_all_attachments {
+                        let projected_provider_run_id =
+                            crate::provider::projected_leased_provider_run_id(
+                                &dispatch.leased_agent_id,
+                                &remote_provider_run_id,
+                            );
+                        owned.echo_promoted_queued_prompt_to_attachments(
+                            &dispatch.session_id,
+                            &projected_provider_run_id,
+                            &dispatch.prompt_id,
+                            &dispatch.source_attachment_id,
+                            &dispatch.prompt,
+                            &dispatch.attachments,
+                        );
+                    } else {
+                        owned.echo_prompt_to_other_attachments(
+                            &dispatch.session_id,
+                            &remote_provider_run_id,
+                            &dispatch.prompt_id,
+                            &dispatch.source_attachment_id,
+                            &dispatch.prompt,
+                            &dispatch.attachments,
+                        );
+                    }
                     owned.update_metaagent_event_prompt_delivery_for_prompt(
                         &dispatch.prompt_id,
                         crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Delivered,
@@ -1011,7 +1037,23 @@ impl KernelRuntimeState {
 
     pub(crate) fn spawn_remote_prompt_dispatch(
         &self,
+        dispatch: crate::app::KernelRemotePromptDispatch,
+    ) {
+        self.spawn_remote_prompt_dispatch_inner(dispatch, false);
+    }
+
+    pub(crate) fn spawn_remote_prompt_dispatch_with_queued_echo(
+        &self,
+        dispatch: crate::app::KernelRemotePromptDispatch,
+        echo_to_all_attachments: bool,
+    ) {
+        self.spawn_remote_prompt_dispatch_inner(dispatch, echo_to_all_attachments);
+    }
+
+    fn spawn_remote_prompt_dispatch_inner(
+        &self,
         mut dispatch: crate::app::KernelRemotePromptDispatch,
+        echo_to_all_attachments: bool,
     ) {
         // A stale projection drain can discover a dead lease while the initial
         // dispatch is already refreshing that same binding. Both paths submit
@@ -1124,7 +1166,13 @@ impl KernelRuntimeState {
                     }),
                 ),
             }
-            let _ = state.finish_remote_prompt_dispatch(dispatch, result).await;
+            let _ = state
+                .finish_remote_prompt_dispatch_with_queued_echo(
+                    dispatch,
+                    result,
+                    echo_to_all_attachments,
+                )
+                .await;
         });
     }
 }
