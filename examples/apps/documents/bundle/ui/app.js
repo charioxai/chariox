@@ -10,6 +10,7 @@ let dirty = false
 // destructive steps ask for a second click instead.
 let pendingOpen = null
 let pendingDelete = false
+let saving = false
 let deleteTimer = null
 
 function say(message, error = false) {
@@ -56,7 +57,10 @@ async function refreshList() {
   documents = result.documents
   renderList()
   const doc = current && documents.find((item) => item.id === current.id)
-  if (current && !doc) close()
+  if (current && !doc) {
+    if (dirty) say("This document was deleted elsewhere. Your unsaved text is still shown; copy it before closing.", true)
+    else close()
+  }
   else if (doc && doc.revision !== current.revision && !dirty) await open(doc.id, { poll: true })
   else if (doc && doc.revision !== current.revision) say(`A newer revision (${doc.revision}) exists. Save will be refused until you reload.`, true)
 }
@@ -81,12 +85,16 @@ async function open(id, { poll = false } = {}) {
   $("folder").value = doc.folder
   $("kind").value = doc.kind
   $("content").value = doc.content
-  $("revision").textContent = `revision ${doc.revision}`
-  $("versions").replaceChildren(new Option("Restore…", ""),
-    ...doc.versions.filter((revision) => revision !== doc.revision).reverse().map((revision) => new Option(`revision ${revision}`, String(revision))))
+  showRevision(doc)
   say("")
   renderPreview()
   renderList()
+}
+
+function showRevision({ revision, versions }) {
+  $("revision").textContent = `revision ${revision}`
+  $("versions").replaceChildren(new Option("Restore…", ""),
+    ...versions.filter((each) => each !== revision).reverse().map((each) => new Option(`revision ${each}`, String(each))))
 }
 
 function close() {
@@ -106,22 +114,36 @@ function renderPreview() {
   else article.replaceChildren(sanitizeHtmlInto(markdownToHtml(text), document))
 }
 
+// Typing continues while a save is in flight; only the fields that were sent
+// count as saved, so later keystrokes stay in the editor and stay dirty.
+const fields = () => ({ content: $("content").value, title: $("title").value, folder: $("folder").value })
 async function save() {
-  if (!current) return
+  if (!current || !dirty || saving) return
+  saving = true
+  const sent = fields()
   try {
     const saved = await call("update_document", {
       id: current.id, expected_revision: current.revision,
-      content: $("content").value, title: $("title").value.trim() || "Untitled", folder: $("folder").value.trim(),
+      content: sent.content, title: sent.title.trim() || "Untitled", folder: sent.folder.trim(),
     })
-    dirty = false
+    if (current?.id !== saved.id) return
+    Object.assign(current, { revision: saved.revision, content: sent.content })
+    showRevision(saved)
+    if (JSON.stringify(fields()) === JSON.stringify(sent)) dirty = false
     say(`Saved revision ${saved.revision}.`)
-    await open(saved.id)
     await refreshList()
-  } catch {}
+  } catch {} finally { saving = false }
 }
 
 $("new-doc").addEventListener("click", async () => {
+  if (dirty && pendingOpen !== "new") {
+    pendingOpen = "new"
+    say("Unsaved changes. Choose New again to discard them.", true)
+    return
+  }
+  pendingOpen = null
   const doc = await call("create_document", { title: "Untitled", kind: $("new-kind").value })
+  dirty = false
   await refreshList()
   await open(doc.id)
 })
@@ -144,9 +166,14 @@ $("versions").addEventListener("change", async (event) => {
     say("Save or discard your changes before restoring a version.", true)
     return
   }
-  const restored = await call("restore_version", { id: current.id, revision, expected_revision: current.revision })
-  say(`Restored revision ${revision} as revision ${restored.revision}.`)
-  await open(current.id)
+  // Restore replaces the text by design, so nothing can be typed meanwhile.
+  const locked = ["content", "title", "folder"].map($)
+  for (const field of locked) field.readOnly = true
+  try {
+    const restored = await call("restore_version", { id: current.id, revision, expected_revision: current.revision })
+    await open(restored.id)
+    say(`Restored revision ${revision} as revision ${restored.revision}.`)
+  } catch {} finally { for (const field of locked) field.readOnly = false }
 })
 function resetDelete() {
   pendingDelete = false

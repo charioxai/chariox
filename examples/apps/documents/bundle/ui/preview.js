@@ -51,10 +51,12 @@ export function sanitizeHtmlInto(html, target, parse = (text) => new DOMParser()
   const copy = (node, into) => {
     for (const child of node.childNodes) {
       if (child.nodeType === 3) { into.append(target.createTextNode(child.textContent)); continue }
-      if (child.nodeType !== 1 || DROP_WITH_CONTENT.has(child.tagName)) continue
-      if (!ALLOWED.has(child.tagName)) { copy(child, into); continue }
-      const element = target.createElement(child.tagName.toLowerCase())
-      const href = child.tagName === "A" ? child.getAttribute("href") : null
+      // Foreign (SVG, MathML) element names keep their case, so compare upper-cased.
+      const name = child.nodeType === 1 ? child.nodeName.toUpperCase() : ""
+      if (!name || DROP_WITH_CONTENT.has(name)) continue
+      if (!ALLOWED.has(name)) { copy(child, into); continue }
+      const element = target.createElement(name.toLowerCase())
+      const href = name === "A" ? child.getAttribute("href") : null
       if (href && /^#[\w-]*$/.test(href)) element.setAttribute("href", href)
       copy(child, element)
       into.append(element)

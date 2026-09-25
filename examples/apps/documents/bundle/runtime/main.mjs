@@ -9,10 +9,11 @@ import { join } from 'node:path';
 
 const INDEX = 'index';
 const SCHEMA = 1;
-// The index is one state value; the kernel refuses values over 256 KiB. An
-// entry is ~0.6 KiB typically and ~3 KiB at worst (long titles), so the
-// serialized size, checked before any content file is written, is the real
-// bound; the count only keeps the list usable.
+// The index is one state value, and the kernel bounds both its size (256 KiB)
+// and its JSON node count (16384). An entry is ~0.6 KiB typically and ~3 KiB
+// at worst (long titles); `fits` checks the size before any content file is
+// written. With full history an entry is ~38 nodes, so ~431 documents would
+// exceed the node budget; MAX_DOCUMENTS keeps the count well under it.
 const MAX_INDEX_BYTES = 256 * 1024;
 const MAX_DOCUMENTS = 300;
 const MAX_CONTENT = 512 * 1024;

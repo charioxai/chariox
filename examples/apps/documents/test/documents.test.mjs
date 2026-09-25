@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { AppError } from '../../../../packages/app-sdk/src/errors.js';
 import register from '../bundle/runtime/main.mjs';
-import { markdownToHtml } from '../bundle/ui/preview.js';
+import { markdownToHtml, sanitizeHtmlInto } from '../bundle/ui/preview.js';
 
 async function fakeKernel() {
   const data = await mkdtemp(join(tmpdir(), 'chariox-documents-'));
@@ -142,4 +142,15 @@ test('Markdown preview escapes document text and emits only its own tags', () =>
   assert.match(html, /<h1>Title &lt;script&gt;x&lt;\/script&gt;<\/h1>/);
   assert.match(html, /<ul>\n<li><strong>bold<\/strong> <code>a&lt;b&gt;<\/code><\/li>\n<\/ul>/);
   assert.match(html, /<pre><code>&lt;img src=x onerror=1&gt;<\/code><\/pre>/);
+});
+
+test('HTML preview drops foreign SVG and MathML subtrees whose names are lowercase', () => {
+  // A parsed tree as DOMParser shapes it: HTML names upper-case, foreign ones as written.
+  const el = (nodeName, ...childNodes) => ({ nodeType: 1, nodeName, tagName: nodeName, childNodes, getAttribute: () => null });
+  const text = (textContent) => ({ nodeType: 3, textContent });
+  const body = el('BODY', el('P', text('kept')), el('svg', el('a', text('svg link'))), el('math', el('mi', text('x'))), el('FONT', text('unwrapped')));
+  const node = (name) => ({ name, children: [], append(...nodes) { this.children.push(...nodes); }, setAttribute() {} });
+  const target = { createTextNode: (value) => value, createElement: node, createDocumentFragment: () => node('') };
+  const render = (item) => typeof item === 'string' ? item : item.name ? `<${item.name}>${item.children.map(render).join('')}</${item.name}>` : item.children.map(render).join('');
+  assert.equal(render(sanitizeHtmlInto('', target, () => ({ body }))), '<p>kept</p>unwrapped');
 });
