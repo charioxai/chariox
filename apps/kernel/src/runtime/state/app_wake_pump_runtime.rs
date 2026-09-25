@@ -63,6 +63,27 @@ fn plan(
     (deliver, records)
 }
 
+/// A delivered wake completes. A failed one waits without spending an
+/// attempt while an update drained its worker (the new generation gets it);
+/// any other failure, including the App's own handler error, counts.
+fn after_delivery(
+    wake: DueWake,
+    delivered: bool,
+    update_pending: bool,
+    now_ms: u64,
+) -> AppWakeOperation {
+    if delivered {
+        AppWakeOperation::Delivered(wake)
+    } else if update_pending {
+        AppWakeOperation::Postponed {
+            wake,
+            until_ms: now_ms.saturating_add(START_WAIT_MS),
+        }
+    } else {
+        AppWakeOperation::Failed { wake, now_ms }
+    }
+}
+
 impl KernelRuntimeState {
     /// Coordinator wiring only: one bounded pass per reservation.
     pub(crate) fn schedule_app_wake_pump(&self) {
@@ -182,18 +203,25 @@ impl KernelRuntimeState {
         };
         for wake in deliver {
             let overdue = now_ms.saturating_sub(wake.wake.due_at_ms) > OVERDUE_AFTER_MS;
-            let delivered = match control.active_app_lease(&wake.owner_id, &wake.installation_id) {
-                Some(lease) => lease
-                    .deliver_wake(&wake.wake, overdue, DELIVERY_TIMEOUT)
-                    .await
-                    .is_ok(),
-                None => false,
+            // The worker left since planning (drained for an update or
+            // stopped): wait for the next one without spending an attempt.
+            let Some(lease) = control.active_app_lease(&wake.owner_id, &wake.installation_id)
+            else {
+                records.push(AppWakeOperation::Postponed {
+                    wake,
+                    until_ms: now_ms.saturating_add(START_WAIT_MS),
+                });
+                continue;
             };
-            records.push(if delivered {
-                AppWakeOperation::Delivered(wake)
-            } else {
-                AppWakeOperation::Failed { wake, now_ms }
-            });
+            let delivered = lease
+                .deliver_wake(&wake.wake, overdue, DELIVERY_TIMEOUT)
+                .await
+                .is_ok();
+            let update_pending = !delivered
+                && self
+                    .app_update_pending(&wake.owner_id, &wake.installation_id)
+                    .await;
+            records.push(after_delivery(wake, delivered, update_pending, now_ms));
         }
         let store = self.owned.durable_state_store.clone();
         let _ = tokio::task::spawn_blocking(move || {
@@ -202,6 +230,20 @@ impl KernelRuntimeState {
             }
         })
         .await;
+    }
+
+    /// Whether an update of the installation is staged (not yet committed or
+    /// aborted).
+    async fn app_update_pending(&self, owner: &str, installation: &str) -> bool {
+        let store = self.owned.durable_state_store.clone();
+        let (owner, installation) = (owner.to_owned(), installation.to_owned());
+        tokio::task::spawn_blocking(move || {
+            store
+                .get_app_installation(&owner, &installation)
+                .is_ok_and(|installation| installation.pending_generation.is_some())
+        })
+        .await
+        .unwrap_or(false)
     }
 }
 
@@ -273,5 +315,21 @@ mod tests {
         assert!(records
             .iter()
             .all(|record| matches!(record, AppWakeOperation::Failed { now_ms: 100, .. })));
+    }
+
+    #[test]
+    fn a_wake_interrupted_by_an_update_waits_without_spending_an_attempt() {
+        assert!(matches!(
+            after_delivery(due("a", "w"), true, false, 10),
+            AppWakeOperation::Delivered(_)
+        ));
+        assert!(matches!(
+            after_delivery(due("a", "w"), false, true, 10),
+            AppWakeOperation::Postponed { until_ms, .. } if until_ms == 10 + START_WAIT_MS
+        ));
+        assert!(matches!(
+            after_delivery(due("a", "w"), false, false, 10),
+            AppWakeOperation::Failed { now_ms: 10, .. }
+        ));
     }
 }
