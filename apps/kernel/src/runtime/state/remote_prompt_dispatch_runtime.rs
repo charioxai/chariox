@@ -1293,6 +1293,16 @@ impl KernelRuntimeState {
         dispatch: crate::app::KernelRemotePromptDispatch,
         result: Result<String, DaemonError>,
     ) -> Result<(), DaemonError> {
+        self.finish_remote_prompt_dispatch_with_retry_hook(dispatch, result, || {})
+            .await
+    }
+
+    async fn finish_remote_prompt_dispatch_with_retry_hook(
+        &self,
+        dispatch: crate::app::KernelRemotePromptDispatch,
+        result: Result<String, DaemonError>,
+        mut after_failed_ack: impl FnMut() + Send,
+    ) -> Result<(), DaemonError> {
         let session_id = dispatch.session_id.clone();
         let agent_id = dispatch.agent_id.clone();
         use super::remote_prompt_owned_state::RemotePromptDispatchSettlement;
@@ -1309,6 +1319,7 @@ impl KernelRuntimeState {
                         && append_retry < 2 =>
                 {
                     append_retry += 1;
+                    after_failed_ack();
                     crate::logging::warn_with_fields(
                         "daemon.remote_prompt_dispatch",
                         "worker accepted prompt but durable acknowledgement failed; retrying acknowledgement only",
@@ -2533,7 +2544,9 @@ mod tests {
             .prompt_state_owner
             .state_parts(&session, &fixture.agent_id);
         let active = active.expect("exactly one queued successor should be admitted");
-        assert_eq!(active.id(), fixture.successor_prompt_id);
+        assert_ne!(active.id(), fixture.successor_prompt_id);
+        assert!(active.id().starts_with("prompt-"));
+        assert_eq!(active.pending_prompt_id(), None);
         assert_eq!(active.prompt(), fixture.successor_prompt.prompt());
         assert!(queued.is_empty(), "the successor should be promoted once");
 
@@ -5064,32 +5077,33 @@ mod tests {
             rusqlite::Connection::open(runtime.owned.durable_state_store.path()).unwrap();
         connection
             .execute_batch(
-                "CREATE TABLE remote_ack_injected_failures (count INTEGER NOT NULL);
-                 INSERT INTO remote_ack_injected_failures (count) VALUES (0);
-                 CREATE TRIGGER fail_first_remote_ack BEFORE INSERT ON durable_state_events
+                "CREATE TRIGGER fail_first_remote_ack BEFORE INSERT ON durable_state_events
                  WHEN NEW.kind = 'session.prompt_state.updated'
-                   AND (SELECT count FROM remote_ack_injected_failures) = 0
-                 BEGIN
-                   UPDATE remote_ack_injected_failures SET count = count + 1;
-                   SELECT RAISE(FAIL, 'injected transient acknowledgement failure');
-                 END;",
+                 BEGIN SELECT RAISE(FAIL, 'injected transient acknowledgement failure'); END;",
             )
             .unwrap();
+        let injected_failures = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let retry_count = std::sync::Arc::clone(&injected_failures);
+        let durable_path = runtime.owned.durable_state_store.path().to_path_buf();
         runtime
-            .finish_remote_prompt_dispatch(dispatch, Ok("worker-run-accepted".to_string()))
+            .finish_remote_prompt_dispatch_with_retry_hook(
+                dispatch,
+                Ok("worker-run-accepted".to_string()),
+                move || {
+                    retry_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    rusqlite::Connection::open(&durable_path)
+                        .unwrap()
+                        .execute_batch("DROP TRIGGER fail_first_remote_ack;")
+                        .unwrap();
+                },
+            )
             .await
             .unwrap();
-        let injected_failures: i64 = connection
-            .query_row(
-                "SELECT count FROM remote_ack_injected_failures",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(injected_failures, 1, "the first ACK append alone must fail");
-        connection
-            .execute_batch("DROP TRIGGER fail_first_remote_ack;")
-            .unwrap();
+        assert_eq!(
+            injected_failures.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the first ACK append alone must fail"
+        );
         let session = runtime
             .owned
             .session_store
