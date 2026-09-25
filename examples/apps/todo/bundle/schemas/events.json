@@ -1,0 +1,29 @@
+{
+  "events": [
+    {
+      "name": "todo_due",
+      "schemaVersion": 1,
+      "direction": "outgoing",
+      "payloadSchema": {
+        "type": "object",
+        "properties": {
+          "todo_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "due_at_ms": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "todo_id",
+          "title",
+          "due_at_ms"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

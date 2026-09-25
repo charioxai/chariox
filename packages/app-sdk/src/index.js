@@ -2,7 +2,7 @@ import { AppError } from './errors.js';
 import { object, token } from './protocol.js';
 import { AppPeer } from './peer.js';
 import { createHttp } from './http.js';
-import { validateOccurrence, validateOccurrences } from './occurrences.js';
+import { occurrenceId, validateOccurrence, validateOccurrences } from './occurrences.js';
 
 export { AppError } from './errors.js';
 export { occurrenceId } from './occurrences.js';
@@ -131,6 +131,9 @@ export function createAppSdk({ transport, generation, paths, declarations = {}, 
   });
   const call = (method, params, options) => peer.request(method, params, options);
   const sdk = {
+    // The only error type whose code and message reach callers; any other
+    // thrown value becomes HANDLER_FAILED so private details never leak.
+    AppError,
     paths: Object.freeze({ package: paths.package, data: paths.data, temporary: paths.temporary }),
     tools: Object.freeze({ register: tools.register }),
     events: Object.freeze({
@@ -139,6 +142,7 @@ export function createAppSdk({ transport, generation, paths, declarations = {}, 
         return call('events.emit', validateOccurrence(occurrence), options);
       },
       status: (receiptId, options) => call('events.status', { receiptId: name(receiptId, 'receipt identity') }, options),
+      occurrenceId,
       retry: (receiptId, options) => call('events.retry', { receiptId: name(receiptId, 'receipt identity') }, options),
     }),
     lifecycle: Object.freeze({ on: lifecycle.register }),

@@ -240,3 +240,10 @@ test('a due wake without a registered handler is a typed failure', async () => {
   assert.equal(transport.sent[0].error.code, 'METHOD_NOT_FOUND');
   sdk.close();
 });
+
+test('Apps receive AppError and the occurrence identity helper', async () => {
+  const { sdk } = setup();
+  assert.equal(sdk.AppError, AppError);
+  assert.equal(sdk.events.occurrenceId('todo:1:2', 1000), occurrenceId('todo:1:2', 1000));
+  sdk.close();
+});

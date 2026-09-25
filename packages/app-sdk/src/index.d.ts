@@ -104,6 +104,8 @@ export interface OutputRequest {
 }
 
 export interface AppSdk {
+  /** Throw to return a caller-visible code and message; other errors become HANDLER_FAILED. */
+  readonly AppError: typeof AppError;
   readonly paths: Readonly<{ package: string; data: string; temporary: string }>;
   readonly tools: { register<Input = Json, Output = Json | void>(name: string, handler: Handler<Input, Output>): void };
   readonly events: {
@@ -111,6 +113,8 @@ export interface AppSdk {
     register<Payload = Json>(name: string, handler: Handler<Readonly<{ occurrenceId: string; payload: Payload }>>): void;
     emit(occurrence: EventOccurrence, options?: CallOptions): Promise<EventReceipt>;
     status(receiptId: string, options?: CallOptions): Promise<EventReceipt>;
+    /** Stable replay identity for an occurrence; see WIRE.md. */
+    occurrenceId(sourceKey: string, occurredAtMs: number): string;
     /** Reconcile a due, kernel-classified retryable receipt; never restart a terminal operation. */
     retry(receiptId: string, options?: CallOptions): Promise<EventReceipt>;
   };
