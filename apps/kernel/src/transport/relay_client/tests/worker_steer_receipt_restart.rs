@@ -288,8 +288,14 @@ async fn accepted_queued_steer_receipt_reconciles_after_worker_restart_without_r
     other_home_config.relay_token = Some("secret".to_string());
     other_home_config.relay_heartbeat_ms = 50;
     assert_ne!(other_home_config.daemon_id, home_config.daemon_id);
-    assert_ne!(other_home_config.host_machine_id, home_config.host_machine_id);
-    assert_ne!(other_home_config.relay_public_key, home_config.relay_public_key);
+    assert_ne!(
+        other_home_config.host_machine_id,
+        home_config.host_machine_id
+    );
+    assert_ne!(
+        other_home_config.relay_public_key,
+        home_config.relay_public_key
+    );
     let app_other_home = Arc::new(Mutex::new(
         DaemonApp::bootstrap(other_home_config.clone()).expect("other home should bootstrap"),
     ));
