@@ -27,6 +27,43 @@ impl Drop for RemoteQueuedPromptSteerReservation {
 }
 
 impl KernelRuntimeState {
+    async fn release_failed_remote_steer_and_advance_if_idle(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        reservation: RemoteQueuedPromptSteerReservation,
+    ) {
+        drop(reservation);
+        let owned = &self.owned;
+        let admitted = self
+            .with_app_side_effect(|app| {
+                let session = owned.session_store.get_session(session_id)?;
+                if owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, agent_id)
+                    .is_some()
+                {
+                    return Ok(None);
+                }
+                crate::app::KernelAgentService::new(app)
+                    .admit_next_queued_remote_prompt(session_id, agent_id, None)
+            })
+            .await;
+        match admitted {
+            Ok(Some((_, intent))) => self.spawn_remote_prompt_dispatch(intent.dispatch),
+            Ok(None) => {}
+            Err(error) => crate::logging::warn_with_fields(
+                "daemon.remote_prompt_dispatch",
+                "failed to advance queued prompt after rejected remote steer",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "agent_id": agent_id,
+                    "error": error.to_string(),
+                }),
+            ),
+        }
+    }
+
     async fn refresh_remote_agent_binding_for_steer(
         &self,
         agent_id: &str,
@@ -559,19 +596,40 @@ impl KernelRuntimeState {
             &payload,
         )
         .await;
+        let mut advance_after_error = response
+            .as_ref()
+            .is_err_and(remote_queued_steer_failure_is_definitely_unaccepted);
         if response.as_ref().is_err_and(
             super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_refresh_binding,
         ) {
+            // The stale-binding response is an explicit peer rejection. If the
+            // refresh or retry preparation fails after concurrent completion,
+            // release this queue head and let ordinary admission continue.
+            advance_after_error = true;
             let refresh = self
                 .refresh_remote_agent_binding_for_steer(&target_agent_id, &remote_execution)
                 .await;
             let refreshed = match refresh {
                 Ok(agent) => agent,
-                Err(error) => return Err(error),
+                Err(error) => {
+                    self.release_failed_remote_steer_and_advance_if_idle(
+                        &session_id,
+                        &target_agent_id,
+                        reservation_guard,
+                    )
+                    .await;
+                    return Err(error);
+                }
             };
             remote_execution = match refreshed.remote_execution().cloned() {
                 Some(remote_execution) => remote_execution,
                 None => {
+                    self.release_failed_remote_steer_and_advance_if_idle(
+                        &session_id,
+                        &target_agent_id,
+                        reservation_guard,
+                    )
+                    .await;
                     return Err(DaemonError::LocalTransport {
                         operation: "refresh remote queued prompt steer binding",
                         message: format!(
@@ -607,7 +665,15 @@ impl KernelRuntimeState {
                 .await;
             relay_config = match prepared_retry {
                 Ok(relay_config) => relay_config,
-                Err(error) => return Err(error),
+                Err(error) => {
+                    self.release_failed_remote_steer_and_advance_if_idle(
+                        &session_id,
+                        &target_agent_id,
+                        reservation_guard,
+                    )
+                    .await;
+                    return Err(error);
+                }
             };
             response = send_remote_queued_prompt_steer(
                 &relay_config,
@@ -615,10 +681,26 @@ impl KernelRuntimeState {
                 &payload,
             )
             .await;
+            // A retry timeout or disconnect is ambiguous: the worker might
+            // have accepted the steer, so only an explicit peer rejection or
+            // a classified pre-send failure permits ordinary promotion.
+            advance_after_error = response
+                .as_ref()
+                .is_err_and(remote_queued_steer_failure_is_definitely_unaccepted);
         }
         let response = match response {
             Ok(response) => response,
-            Err(error) => return Err(error),
+            Err(error) => {
+                if advance_after_error {
+                    self.release_failed_remote_steer_and_advance_if_idle(
+                        &session_id,
+                        &target_agent_id,
+                        reservation_guard,
+                    )
+                    .await;
+                }
+                return Err(error);
+            }
         };
         let provider_run_id = match response {
             RelayPeerResponse::LeasedPromptSteered {
@@ -861,6 +943,23 @@ struct RemoteQueuedPromptSteerPayload {
     hidden_system_context: String,
     attachments: Vec<crate::transport::relay_peer::RelayPromptAttachment>,
     required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
+}
+
+fn remote_queued_steer_failure_is_definitely_unaccepted(error: &DaemonError) -> bool {
+    match error {
+        DaemonError::RelayTransport {
+            operation: "read temporary relay peer response",
+            ..
+        } => true,
+        DaemonError::LocalTransport { operation, .. } => matches!(
+            *operation,
+            "connect temporary relay peer socket"
+                | "serialize temporary relay register"
+                | "write temporary relay register"
+                | "serialize temporary relay peer request"
+        ),
+        _ => false,
+    }
 }
 
 fn remote_steer_binding_identity_matches(
