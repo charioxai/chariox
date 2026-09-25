@@ -462,6 +462,9 @@ fn codex_duplicate_assistant_completion_does_not_settle_before_authoritative_tur
         .prompt_owner_active_prompt_for_agent_snapshot(&session_id, &agent_id)
         .expect("authoritative Codex completion should begin settlement")
         .is_some());
+    // The first authoritative completion starts the final-output quiet period.
+    // A second pump cannot settle until that period has elapsed.
+    std::thread::sleep(std::time::Duration::from_millis(75));
     pump_structured_test_run(&mut app, &session_id, &attachment_id, &provider_run_id);
     assert!(app
         .prompt_owner_active_prompt_for_agent_snapshot(&session_id, &agent_id)
