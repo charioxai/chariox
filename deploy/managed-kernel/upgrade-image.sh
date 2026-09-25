@@ -118,6 +118,20 @@ select_supervisor_service() {
   fi
 }
 
+assert_path1_units_have_no_dropins() {
+  [ "$managed_provider_topology" = path1 ] || return 0
+  for unit in chariox-path1-managed-bootstrap.service chariox-disposable-worker-bootstrap.service; do
+    drop_in_paths=$(systemctl show --property=DropInPaths --value "$unit") || {
+      echo "could not inspect effective systemd drop-ins for $unit" >&2
+      return 1
+    }
+    if [ -n "$drop_in_paths" ]; then
+      echo "Path-1 service $unit has systemd drop-ins: $drop_in_paths" >&2
+      return 1
+    fi
+  done
+}
+
 verify_selected_release() {
   if [ "$managed_provider_topology" = path1 ]; then
     node "$script_root/verify-image-release.mjs" "$@" path1 "$trusted_builder_public_key"
@@ -461,6 +475,7 @@ rollback_transaction() {
   atomic_symlink "$previous_slice_build_context" "$slice_build_context_link" || return 1
   verify_slice_build_context_facade "$previous_slice_build_context" || return 1
   systemctl daemon-reload || return 1
+  assert_path1_units_have_no_dropins || return 1
   health_not_before_ms=$(node -e 'process.stdout.write(String(Date.now()))') || return 1
   systemctl start "$service_name" || return 1
   active_previous_protocol=$(protocol_version "$current_link/usr/local/bin/chariox-kernel") || return 1
@@ -635,6 +650,7 @@ require_root_owned_directory "$releases_root"
 require_private_regular_file "$receipt_path" "managed bootstrap receipt"
 require_safe_ancestor_chain "$receipt_path" "managed bootstrap receipt"
 select_supervisor_service
+assert_path1_units_have_no_dropins
 recover_transaction
 select_receipt_path
 require_private_regular_file "$receipt_path" "managed bootstrap receipt"
@@ -810,6 +826,7 @@ if [ "${activation_failed:-0}" -ne 0 ]; then
 fi
 write_phase activated
 if ! systemctl daemon-reload \
+  || ! assert_path1_units_have_no_dropins \
   || ! health_not_before_ms=$(node -e 'process.stdout.write(String(Date.now()))') \
   || ! systemctl start "$service_name" \
   || ! check_health "$target_protocol" "$expected_new_digest" "$health_not_before_ms"; then
