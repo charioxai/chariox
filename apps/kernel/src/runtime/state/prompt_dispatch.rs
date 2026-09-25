@@ -263,7 +263,7 @@ impl KernelRuntimeState {
             );
             Ok(Some(projected_provider_run_id))
         })
-        .await?
+        .await
     }
 
     pub(crate) async fn submit_prepared_prompt(

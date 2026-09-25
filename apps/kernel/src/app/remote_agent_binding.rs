@@ -1871,6 +1871,7 @@ fn update_remote_binding_materialization_status(
             last_error: last_error.map(str::to_string),
         },
     )
+    .map(|_| ())
 }
 
 async fn ensure_remote_skill_packages_off_lock(
